@@ -5,8 +5,8 @@
 
 use core::{iter::Peekable, mem::size_of_val};
 
-use backend_version::{Domain, GenerationId};
 use backend_version::object::{ObjectRef, RemoteBase};
+use backend_version::{Domain, GenerationId};
 use thiserror::Error;
 
 use crate::root::locality::LocalityEncoder;

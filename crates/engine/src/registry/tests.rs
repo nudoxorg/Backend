@@ -2709,7 +2709,10 @@ retract [v1.2.0, v1.2.3]
         .iter()
         .find(|row| row.target.name.as_str() == "example.com/indirect")
         .expect("indirect require");
-    assert_eq!(indirect.scope, backend_library::DependencyScope::Development);
+    assert_eq!(
+        indirect.scope,
+        backend_library::DependencyScope::Development
+    );
     assert!(!indirect.optional);
 }
 
@@ -2747,6 +2750,82 @@ require (
     assert_eq!(rows[0].target.name.as_str(), "example.com/shared");
     assert_eq!(rows[0].scope, backend_library::DependencyScope::Runtime);
     assert!(!rows[0].optional);
+}
+
+#[test]
+fn dependency_coalescing_keeps_distinct_requirements_sources_and_evidence() {
+    use backend_library::{
+        DependencyAuthority, DependencyEvidence, DependencyScope, PackageDependencyRecord,
+        PackageDependencyTarget, PackageGraphSourceAuthority, PackageReference,
+    };
+
+    let make_row = |source: &str, requirement: &str, scope, optional, frontier| {
+        PackageDependencyRecord::new(
+            PackageReference::parse(source.to_owned()).expect("source coordinate"),
+            PackageDependencyTarget::new(RegistryEcosystem::Npm, "lodash", requirement, None)
+                .expect("target coordinate"),
+            scope,
+            optional,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [frontier; 32],
+                provenance: [9; 32],
+            },
+        )
+    };
+
+    let source_v1 = "pkg:npm/demo@1.0.0";
+    let source_v2 = "pkg:npm/demo@2.0.0";
+    let rows = coalesce_runtime_development_dependency_rows(vec![
+        make_row(source_v1, "^4.0.0", DependencyScope::Runtime, true, 1),
+        make_row(source_v1, "^4.0.0", DependencyScope::Development, false, 1),
+        make_row(source_v1, "^5.0.0", DependencyScope::Development, false, 1),
+        make_row(source_v2, "^4.0.0", DependencyScope::Development, false, 1),
+        make_row(source_v1, "^4.0.0", DependencyScope::Development, false, 2),
+        PackageDependencyRecord::new_with_source_authority(
+            PackageReference::parse(source_v1.to_owned()).expect("source coordinate"),
+            PackageGraphSourceAuthority::Archive([7; 32]),
+            PackageDependencyTarget::new(RegistryEcosystem::Npm, "lodash", "^4.0.0", None)
+                .expect("target coordinate"),
+            DependencyScope::Development,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::ArchiveManifest,
+                frontier: [1; 32],
+                provenance: [9; 32],
+            },
+        ),
+    ]);
+
+    assert_eq!(rows.len(), 5);
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v1
+            && row.target.requirement.as_str() == "^4.0.0"
+            && row.scope == DependencyScope::Runtime
+            && row.optional
+    }));
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v1
+            && row.target.requirement.as_str() == "^5.0.0"
+            && row.scope == DependencyScope::Development
+    }));
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v2
+            && row.target.requirement.as_str() == "^4.0.0"
+            && row.scope == DependencyScope::Development
+    }));
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v1
+            && row.target.requirement.as_str() == "^4.0.0"
+            && row.scope == DependencyScope::Development
+            && row.evidence.frontier == [2; 32]
+    }));
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v1
+            && row.source_authority == PackageGraphSourceAuthority::Archive([7; 32])
+            && row.target.requirement.as_str() == "^4.0.0"
+            && row.scope == DependencyScope::Development
+    }));
 }
 
 #[test]

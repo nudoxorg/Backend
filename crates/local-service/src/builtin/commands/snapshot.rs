@@ -86,13 +86,7 @@ pub(super) fn semantic_package_snapshot<'view>(
             let activated =
                 activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
             for image in activated.images() {
-                append_semantic_image(
-                    view,
-                    package,
-                    image,
-                    &mut declarations,
-                    &mut links,
-                )?;
+                append_semantic_image(view, package, image, &mut declarations, &mut links)?;
             }
         }
         let Some(next) = page.next().cloned() else {
@@ -113,9 +107,9 @@ fn append_semantic_image<'view>(
     )>,
     links: &mut Vec<SemanticLinkSummary>,
 ) -> Result<(), BuiltinModelError> {
-    let image = image.reopen().map_err(|error| {
-        BuiltinModelError(format!("reopen semantic diff image: {error}"))
-    })?;
+    let image = image
+        .reopen()
+        .map_err(|error| BuiltinModelError(format!("reopen semantic diff image: {error}")))?;
     for entity in image.canonical_entities() {
         let identity = entity.version.identity();
         let symbol = super::super::view_build::semantic_symbol(package, identity);

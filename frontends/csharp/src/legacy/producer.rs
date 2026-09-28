@@ -99,6 +99,8 @@ pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
     pub package_root: &'request Path,
     /// Exact source file whose bytes and spans the image must bind.
     pub source_path: &'request Path,
+    /// Exact `.csproj` selected by a V2 CSharpProject unit, when present.
+    pub project_file: Option<&'request Path>,
     /// Exact source bytes that the caller will lower after authority entry.
     pub source: &'request [u8],
     /// Closed C# language version selected for Roslyn parsing.
@@ -257,6 +259,31 @@ impl CSharpOracle {
             });
         }
 
+        let project_file = request
+            .project_file
+            .map(|path| {
+                let canonical =
+                    fs::canonicalize(path).map_err(|source| CSharpAuthorityError::Path {
+                        phase: CSharpAuthorityPhase::Admission,
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+                if canonical.strip_prefix(&package_root).is_err()
+                    || !canonical.is_file()
+                    || canonical
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .map_or(true, |extension| !extension.eq_ignore_ascii_case("csproj"))
+                {
+                    return Err(CSharpAuthorityError::ProjectOutsidePackage {
+                        package_root: package_root.clone().into_boxed_path(),
+                        project_file: canonical.into_boxed_path(),
+                    });
+                }
+                Ok(canonical)
+            })
+            .transpose()?;
+
         checkpoint(request.control, CSharpAuthorityPhase::Source)?;
         let source_length = fs::metadata(&source_path)
             .map_err(|source| CSharpAuthorityError::Path {
@@ -298,6 +325,10 @@ impl CSharpOracle {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        if let Some(project_file) = &project_file {
+            command.arg("--project-file").arg(project_file);
+        }
 
         let configuration = request.configuration;
         if let Some(name) = configuration.assembly_name {
@@ -475,6 +506,14 @@ pub enum CSharpAuthorityError {
         package_root: Box<Path>,
         /// Canonical source path.
         source_path: Box<Path>,
+    },
+    /// The exact project file is outside the admitted package or is not a `.csproj` file.
+    #[error("C# project {project_file:?} is not an admitted project beneath {package_root:?}")]
+    ProjectOutsidePackage {
+        /// Admitted package root.
+        package_root: Box<Path>,
+        /// Rejected project path.
+        project_file: Box<Path>,
     },
     /// The source file changed or differs from the bytes supplied to the compiler.
     #[error("C# authority source binding differs for {source_path:?}")]
@@ -755,6 +794,7 @@ mod tests {
         let result = oracle.authority_image(CSharpAuthorityRequest {
             package_root: Path::new("/missing"),
             source_path: Path::new("/missing/source.cs"),
+            project_file: None,
             source: b"class C {}",
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
@@ -783,6 +823,7 @@ mod tests {
         let result = oracle.authority_image(CSharpAuthorityRequest {
             package_root,
             source_path: &source_path,
+            project_file: None,
             source: b"class Different {}",
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,

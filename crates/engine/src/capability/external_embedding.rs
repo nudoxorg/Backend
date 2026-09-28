@@ -74,7 +74,18 @@ impl fmt::Display for ExternalEmbeddingActivationError {
     }
 }
 
-impl std::error::Error for ExternalEmbeddingActivationError {}
+impl std::error::Error for ExternalEmbeddingActivationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Runtime(error) => Some(error),
+            Self::NumericRepresentation
+            | Self::MissingTokenizer
+            | Self::MissingRuntime
+            | Self::TokenizerIdentity
+            | Self::RuntimeIdentity => None,
+        }
+    }
+}
 
 impl CapabilityRuntime<EmbeddingModel> for ExternalEmbeddingCapability {
     type Loader = ExternalEmbeddingLoader;

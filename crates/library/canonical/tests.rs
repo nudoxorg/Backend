@@ -159,15 +159,28 @@ fn no_fact_rows() -> Vec<(&'static str, Row)> {
         basis,
         "bare",
     );
-    vec![("structural", structural), ("semantic", semantic), ("bare", bare)]
+    vec![
+        ("structural", structural),
+        ("semantic", semantic),
+        ("bare", bare),
+    ]
 }
 
 #[test]
 fn rows_that_state_no_facts_keep_their_canonical_bytes() {
     let expected = [
-        ("structural", "a869e2ace4b99ab6304f5bbaa12b4fc0201d59478d6fa16b7d52adcc8a445374"),
-        ("semantic", "8d5e2ab93640ba4262b100653ea878556f2f758e158015830c26fe4dbc38dab8"),
-        ("bare", "eec1d4cb338c73c69aba95b8cbbb043d160c0b40c40c2e88cc809dfa2437109a"),
+        (
+            "structural",
+            "a869e2ace4b99ab6304f5bbaa12b4fc0201d59478d6fa16b7d52adcc8a445374",
+        ),
+        (
+            "semantic",
+            "8d5e2ab93640ba4262b100653ea878556f2f758e158015830c26fe4dbc38dab8",
+        ),
+        (
+            "bare",
+            "eec1d4cb338c73c69aba95b8cbbb043d160c0b40c40c2e88cc809dfa2437109a",
+        ),
     ];
     let mut actual = Vec::new();
     for (name, row) in no_fact_rows() {
@@ -199,9 +212,17 @@ fn stated_facts_are_an_append_only_suffix_that_commits_their_text() {
         encode_row(&row, &mut historical);
         let mut stated = Vec::new();
         encode_row(&row.clone().with_facts(stated_facts()), &mut stated);
-        assert_eq!(stated.get(..historical.len()), Some(historical.as_slice()), "{name}");
+        assert_eq!(
+            stated.get(..historical.len()),
+            Some(historical.as_slice()),
+            "{name}"
+        );
         let suffix = &stated[historical.len()..];
-        assert_eq!(suffix.first(), Some(&2), "{name}: the facts tag follows every field");
+        assert_eq!(
+            suffix.first(),
+            Some(&2),
+            "{name}: the facts tag follows every field"
+        );
         for text in [&b"1.2.0"[..], b"use `fresh`"] {
             assert!(
                 suffix.windows(text.len()).any(|window| window == text),
@@ -224,7 +245,10 @@ fn stated_facts_are_an_append_only_suffix_that_commits_their_text() {
     });
     let unobserved = encode(crate::DeclarationFacts::UNOBSERVED);
     let other_note = encode(crate::DeclarationFacts {
-        deprecation: crate::Fact::Present(crate::Deprecation::new(Some("1.2.0"), Some("use `new`"))),
+        deprecation: crate::Fact::Present(crate::Deprecation::new(
+            Some("1.2.0"),
+            Some("use `new`"),
+        )),
         obligation: crate::Fact::Present(crate::Obligation::Required),
     });
     assert_ne!(absent, unobserved);

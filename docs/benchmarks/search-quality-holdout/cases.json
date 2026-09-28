@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "holdout_id": "search-quality-adversarial-holdout-v1",
+  "source_snapshot_id": "benchmark-holdout:search-quality:v1",
+  "lane": "synthetic-adversarial-only",
+  "cases": [
+    {
+      "id": "scope-before-pagination",
+      "query": "ecosystem-overflow-sentinel",
+      "scope": ["pypi"],
+      "expected_document_ids": ["fixture:holdout/pypi/scope-target@9.0.0"],
+      "out_of_scope_noise_count": 257,
+      "assertion": "The scoped PyPI target remains visible after 257 higher-ranked npm alias matches."
+    },
+    {
+      "id": "cross-source-exact-name",
+      "query": "shared-source-name",
+      "scope": ["cargo", "pypi"],
+      "expected_document_ids": [
+        "fixture:holdout/cargo/shared-source-name@1.0.0",
+        "fixture:holdout/pypi/shared-source-name@1.0.0"
+      ],
+      "assertion": "Equal package names from distinct ecosystems retain distinct canonical result identities."
+    },
+    {
+      "id": "duplicate-lineage-group",
+      "query": "lineage-holdout-alias",
+      "scope": ["cargo"],
+      "expected_groups": {
+        "lineage-alpha": [
+          "fixture:holdout/cargo/lineage-alpha@1.0.0",
+          "fixture:holdout/cargo/lineage-alpha@1.1.0"
+        ],
+        "lineage-beta": ["fixture:holdout/cargo/lineage-beta@1.0.0"]
+      },
+      "assertion": "Two releases in one package lineage form one group, while a second lineage remains separate."
+    },
+    {
+      "id": "npm-package-retraction",
+      "query": "withdraw-holdout-alias",
+      "scope": ["npm"],
+      "package_name": "@holdout/retract-me",
+      "expected_document_ids": [
+        "fixture:holdout/npm/@holdout/retract-me@1.0.0",
+        "fixture:holdout/npm/@holdout/retract-me@2.0.0"
+      ],
+      "expected_retraction_standing": "withdrawn",
+      "assertion": "One package retraction updates every previously observed release to withdrawn standing."
+    }
+  ]
+}

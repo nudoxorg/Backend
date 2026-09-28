@@ -36,6 +36,23 @@ use windows_sys::Win32::Storage::FileSystem::{
 /// Returns an error when the path cannot be opened for `WRITE_DAC` or the
 /// security descriptor cannot be replaced.
 pub fn restrict_to_current_user(path: &Path) -> io::Result<()> {
+    let file = OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    restrict_handle_to_current_user(&file)
+}
+
+/// Replaces the DACL of an already-open file or directory handle with one
+/// granting full access only to the current user and blocks inherited access.
+///
+/// The caller must open the handle with `WRITE_DAC`. Applying the ACL through
+/// the handle keeps a checked open object stable if its path is replaced.
+///
+/// # Errors
+/// Returns an error when the handle cannot be opened for `WRITE_DAC` or the
+/// security descriptor cannot be replaced.
+pub fn restrict_handle_to_current_user(handle: &impl AsRawHandle) -> io::Result<()> {
     let user = current_user()?;
     let mut sid = user.as_bytes().to_vec();
     let entry = EXPLICIT_ACCESS_W {
@@ -60,16 +77,12 @@ pub fn restrict_to_current_user(path: &Path) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(status.cast_signed()));
     }
     let acl = LocalAllocation(acl.cast());
-    let file = OpenOptions::new()
-        .access_mode(READ_CONTROL | WRITE_DAC)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    // SAFETY: `file` is open with `WRITE_DAC`; `acl` is the ACL built above
+    // SAFETY: `handle` is open with `WRITE_DAC`; `acl` is the ACL built above
     // and stays allocated until it drops after this call. Owner, group, and
     // SACL are left unchanged by passing null and omitting their flags.
     let status = unsafe {
         SetSecurityInfo(
-            file.as_raw_handle().cast(),
+            handle.as_raw_handle().cast(),
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
             ptr::null_mut(),

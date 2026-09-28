@@ -3,40 +3,115 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! One single-request local compiler specialization over explicit local ownership.
 
+use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
 use crate::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment,
-    CompiledSemantic, DeclarationScope, PackageDeclarationScopeFault, ToolchainSelection,
+    DeclarationScope, PackageDeclarationScopeFault, ToolchainSelection,
     compile_semantic as compile_fused_semantic,
 };
 use crate::publication::{
-    OpenSemanticPublicationScratch, PublishControl, PublishedCompilation,
-    SemanticImageArtifactFacts, SemanticPublicationScratch, open_published_semantic,
-    open_semantic_generation, publish_semantic, semantic_generation_requirements,
+    OpenSemanticPublicationScratch, PreparedSemanticOutput, PublishControl, PublishedCompilation,
+    SemanticImageArtifactFacts, SemanticPublicationScratch, StagedSemanticObjectClaim,
+    open_published_semantic, open_semantic_generation, prepare_semantic_bytes,
+    publish_semantic_bytes, semantic_generation_requirements,
+};
+use backend_compile::{
+    EmbeddingExecutable, EmbeddingExecutionIdentity, EmbeddingInvocation, EmbeddingNormalization,
+    EmbeddingPurpose,
 };
 use backend_library::interface::{
-    CompilerCapability, CompilerReadiness, CompilerRequest as ApplicationCompilerRequest,
-    CompilerTerminal, GeneratedArtifact, PackageCompilePhase, PackageCompileRequest,
-    PackageDeclarationScopeCause, PackageSourceCause, PublicationAuthority,
+    CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
+    CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
+    GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, PackageDeclarationScopeCause,
+    PackageSourceCause, PublicationAuthority, PublicationCause, PublicationPhase,
     SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot, SourceAuthority,
+};
+use backend_semantic::ir::{
+    EmbeddingPlaneIdentity, MAX_SEMANTIC_SEGMENT_BYTES, SemanticBuildIdentity,
+    SemanticInputWitness, SemanticIrPlane, SemanticManifestError, SemanticPlane, SemanticPlaneKind,
+    SemanticPlaneManifest, SemanticPlaneSegment, SemanticSegmentId,
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
 use backend_store::journal::{
     DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
 };
+use backend_version::Coverage;
+use backend_version::ScopeRoot;
 use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+};
 use thiserror::Error;
 
+use crate::application::executor::StagedOutputLease;
 use crate::application::{
-    LocalCompilerConfig, LocalCompilerOpenError, LocalCompilerPath, LocalCompilerScratch,
-    LocalPackageRootSet, PackageAuthorityConfiguration, PackageAuthorityError,
-    PackageAuthorityRequest, enter_package_authority, package_source,
+    LocalCompilerConfig, LocalCompilerControl, LocalCompilerExecutionIdentity,
+    LocalCompilerOpenError, LocalCompilerPath, LocalCompilerPlaneExecutionIdentity,
+    LocalCompilerPlaneExecutionSeed, LocalCompilerScratch, LocalPackageRootSet,
+    PackageAuthorityConfiguration, PackageAuthorityError, PackageAuthorityRequest,
+    enter_package_authority, package_source,
     terminal::{compile_terminal, source_authority},
 };
 
-const MAX_PACKAGE_FRAGMENT_BYTES: usize = 64 * 1024 * 1024;
-const MAX_PACKAGE_SEMANTIC_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const MAX_PACKAGE_FRAGMENT_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_PACKAGE_SEMANTIC_BYTES: usize = 512 * 1024 * 1024;
+/// Maximum optional embedding payload bytes retained for one staged package.
+pub const MAX_PACKAGE_EMBEDDING_BYTES: usize = 64 * 1024 * 1024;
+
+/// Whether an embedding failure should leave a typed unavailable plane or fail compilation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EmbeddingRequirement {
+    /// Keep IR available and record unavailable embedding coverage on inference failure.
+    #[default]
+    Optional,
+    /// Require every source to produce one validated vector before staging succeeds.
+    Required,
+}
+
+/// Closed cause for configured embedding provisioning that did not activate.
+///
+/// This is distinct from no embedding configuration and from an inference failure after a
+/// concrete model identity has been activated. It intentionally carries no paths or arbitrary
+/// process text.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum EmbeddingProvisioningFailure {
+    /// A required model artifact was unavailable to the owner.
+    ModelUnavailable,
+    /// A required tokenizer artifact was unavailable to the owner.
+    TokenizerUnavailable,
+    /// Model or tokenizer bytes did not match the configured content identities.
+    ArtifactIdentityMismatch,
+    /// The configured embedding executable was unavailable or did not match its identity.
+    ExecutableUnavailable,
+    /// Runtime activation or its bounded readiness probe failed.
+    ActivationRejected,
+    /// The platform could not enforce a required process resource limit.
+    ResourceLimitUnavailable,
+    /// Private artifact materialization is unsupported on this platform.
+    PlatformUnsupported,
+}
+
+/// Typed embedding-plane state retained by staged output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StagedEmbeddingStatus<'reason> {
+    /// No embedding runtime was configured for this compiler owner.
+    NotConfigured,
+    /// Embedding was configured, but verified artifacts could not activate a runtime.
+    ProvisioningUnavailable {
+        /// Closed safe-to-log provisioning cause.
+        cause: EmbeddingProvisioningFailure,
+    },
+    /// Every artifact has a validated vector under this exact identity.
+    Available { identity: EmbeddingPlaneIdentity },
+    /// Optional inference failed; IR remains usable and the plane has unavailable coverage.
+    Unavailable {
+        identity: EmbeddingPlaneIdentity,
+        reason: &'reason str,
+    },
+}
 
 /// One already-admitted source member of a package compilation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,11 +160,14 @@ impl<'source> PackageSource<'source> {
 }
 
 /// Checked package-wide semantic compilation input.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PackageSourceSet<'source> {
     request: &'source PackageCompileRequest,
+    package_target: CompilerPackageTargetV2,
     package_root: &'source std::path::Path,
     sources: &'source [PackageSource<'source>],
+    input_claim: Option<SemanticInputWitness>,
+    embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -103,8 +181,41 @@ impl<'source> PackageSourceSet<'source> {
         package_root: &'source std::path::Path,
         sources: &'source [PackageSource<'source>],
     ) -> Result<Self, PackageSourceSetError> {
+        let package_target = CompilerPackageTargetV2::for_package(request.as_ref().clone());
+        Self::new_for_unit(request, &package_target, package_root, sources)
+    }
+
+    /// Admits a package source frontier for one exact package-plus-native-unit target.
+    ///
+    /// # Errors
+    /// Returns an error for a target bound to another package or a malformed source frontier.
+    pub fn new_for_unit(
+        request: &'source PackageCompileRequest,
+        package_target: &CompilerPackageTargetV2,
+        package_root: &'source std::path::Path,
+        sources: &'source [PackageSource<'source>],
+    ) -> Result<Self, PackageSourceSetError> {
         if !package_root.is_absolute() {
             return Err(PackageSourceSetError::RelativeRoot);
+        }
+        if package_target.package() != request.as_ref() {
+            return Err(PackageSourceSetError::PackageTargetMismatch);
+        }
+        match package_target.unit_key() {
+            CompilationUnitKeyV2::PackageRoot => {}
+            CompilationUnitKeyV2::RustCrate { root, .. }
+                if request.target.profile.language()
+                    == backend_semantic::vocabulary::Language::Rust
+                    && sources
+                        .iter()
+                        .any(|source| source.relative_path() == root.as_ref()) => {}
+            CompilationUnitKeyV2::CSharpProject { .. }
+                if request.target.profile.language()
+                    == backend_semantic::vocabulary::Language::CSharp
+                    && sources.iter().any(|source| {
+                        unit_source_matches(package_target.unit_key(), source.relative_path())
+                    }) => {}
+            _ => return Err(PackageSourceSetError::CompilationUnitMismatch),
         }
         if sources.is_empty() || sources.len() > crate::application::MAX_MANIFEST_ENTRIES {
             return Err(PackageSourceSetError::Cardinality {
@@ -120,10 +231,132 @@ impl<'source> PackageSourceSet<'source> {
         }
         Ok(Self {
             request,
+            package_target: package_target.clone(),
             package_root,
             sources,
+            input_claim: None,
+            embedding_provisioning_failure: None,
         })
     }
+
+    /// Attaches an opaque input-manifest claim to the exact admitted source frontier.
+    ///
+    /// This records caller-provided provenance bytes only. It does not prove the manifest
+    /// preimage or grant completeness authority; those checks remain at the input admission
+    /// boundary.
+    #[must_use]
+    pub fn with_input_claim(mut self, input: SemanticInputWitness) -> Self {
+        self.input_claim = Some(input);
+        self
+    }
+
+    /// Records a configured embedding runtime that failed before activation.
+    ///
+    /// The caller must use this only when embedding was requested and provisioning failed. A
+    /// genuinely absent configuration remains `None` and reports `NotConfigured`.
+    #[must_use]
+    pub(crate) fn with_embedding_provisioning_failure(
+        mut self,
+        cause: EmbeddingProvisioningFailure,
+    ) -> Self {
+        self.embedding_provisioning_failure = Some(cause);
+        self
+    }
+
+    fn compilation_sources(&self) -> impl Iterator<Item = PackageSource<'source>> + '_ {
+        self.sources.iter().copied().filter(move |source| {
+            unit_source_matches(self.package_target.unit_key(), source.relative_path())
+        })
+    }
+}
+
+fn unit_source_matches(unit: &CompilationUnitKeyV2, relative_path: &str) -> bool {
+    match unit {
+        CompilationUnitKeyV2::PackageRoot => true,
+        CompilationUnitKeyV2::RustCrate { root, .. } => relative_path == root.as_ref(),
+        CompilationUnitKeyV2::CSharpProject { project_path } => {
+            let Some((directory, _)) = project_path.rsplit_once('/') else {
+                return true;
+            };
+            directory.is_empty()
+                || relative_path
+                    .strip_prefix(directory)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        }
+        _ => false,
+    }
+}
+
+fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInputWitness {
+    let mut input = blake3::Hasher::new();
+    input.update(b"backend.compiler.package-source-frontier.v1\0");
+    for source in package.compilation_sources() {
+        let path = source.relative_path().as_bytes();
+        let contents = source.source().as_bytes();
+        input.update(&(path.len() as u64).to_be_bytes());
+        input.update(path);
+        input.update(&(contents.len() as u64).to_be_bytes());
+        input.update(contents);
+    }
+    let root = *input.finalize().as_bytes();
+    SemanticInputWitness::claimed_state(root, ScopeRoot::from_bytes(root), Coverage::Partial)
+}
+
+fn semantic_embedding_identity(
+    identity: EmbeddingExecutionIdentity,
+) -> Result<EmbeddingPlaneIdentity, Box<str>> {
+    let normalization = match identity.normalization() {
+        EmbeddingNormalization::None => backend_semantic::ir::EmbeddingNormalization::None,
+        EmbeddingNormalization::L2 => backend_semantic::ir::EmbeddingNormalization::L2,
+    };
+    EmbeddingPlaneIdentity::new(
+        identity.model(),
+        identity.model_version(),
+        identity.tokenizer(),
+        identity.dimension(),
+        normalization,
+        identity.executable(),
+        identity.recipe(),
+    )
+    .map_err(|error| error.to_string().into_boxed_str())
+}
+
+fn stage_embedding_artifact(
+    runtime: &EmbeddingExecutable,
+    identity: EmbeddingExecutionIdentity,
+    relative_path: &str,
+    source: &str,
+) -> Result<StagedEmbeddingArtifact, Box<str>> {
+    let coordinates = runtime
+        .infer(EmbeddingInvocation {
+            purpose: EmbeddingPurpose::Document,
+            text: source,
+        })
+        .map_err(|error| error.to_string().into_boxed_str())?;
+    if coordinates.purpose() != EmbeddingPurpose::Document
+        || coordinates.recipe() != identity.recipe()
+        || coordinates.model().as_bytes() != identity.model()
+        || coordinates.tokenizer().as_bytes() != identity.tokenizer()
+        || coordinates.normalization() != identity.normalization()
+        || u32::try_from(coordinates.values().len()).ok() != Some(identity.dimension())
+    {
+        return Err("embedding response identity differs from its activated runtime".into());
+    }
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(coordinates.canonical_payload_len())
+        .map_err(|error| error.to_string().into_boxed_str())?;
+    payload.resize(coordinates.canonical_payload_len(), 0);
+    coordinates
+        .encode_canonical_payload(&mut payload)
+        .map_err(|error| error.to_string().into_boxed_str())?;
+    let mut key = blake3::Hasher::new_derive_key("backend.semantic.embedding.source-key.v1");
+    key.update(&(relative_path.len() as u64).to_be_bytes());
+    key.update(relative_path.as_bytes());
+    Ok(StagedEmbeddingArtifact {
+        key: *key.finalize().as_bytes(),
+        payload: payload.into_boxed_slice(),
+    })
 }
 
 /// Package-source-frontier admission failure.
@@ -146,6 +379,12 @@ pub enum PackageSourceSetError {
     /// Source paths were duplicated or unordered.
     #[error("package source frontier is not strictly ordered")]
     Order,
+    /// The exact unit target names a different canonical package than the request.
+    #[error("compilation-unit target belongs to a different package")]
+    PackageTargetMismatch,
+    /// The native compilation unit is unsupported for this profile or absent from the frontier.
+    #[error("compilation-unit target is incompatible with the profile or source frontier")]
+    CompilationUnitMismatch,
 }
 
 /// One atomically published package generation and its reopened semantic images.
@@ -155,6 +394,515 @@ pub struct PublishedSemanticPackage {
     pub publication: PublishedCompilation,
     /// Complete semantic images copied only after the publication owner reopened the closure.
     pub images: Box<[SemanticImageSnapshot]>,
+}
+
+/// Canonical member facts in one complete, not-yet-selected semantic compiler output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedSemanticArtifact {
+    source: backend_semantic::ir::SourceIdentity,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
+    semantic_image: SemanticImageArtifactFacts,
+    fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+    fragment_claim: StagedSemanticObjectClaim,
+    semantic_claim: StagedSemanticObjectClaim,
+}
+
+impl StagedSemanticArtifact {
+    /// Returns the exact source authority bound by the compact and semantic output.
+    #[must_use]
+    pub const fn source(self) -> backend_semantic::ir::SourceIdentity {
+        self.source
+    }
+
+    /// Returns the exact toolchain/environment recipe bound by the output bytes.
+    #[must_use]
+    pub const fn recipe(self) -> backend_semantic::vocabulary::CompileRecipeFact {
+        self.recipe
+    }
+
+    /// Returns the exact compact fragment identity derived from its canonical bytes.
+    #[must_use]
+    pub const fn fragment(self) -> ArtifactId<IrFragmentEncoding, IrFragmentDomain> {
+        self.fragment
+    }
+
+    /// Returns the complete semantic image identity and byte length.
+    #[must_use]
+    pub const fn semantic_image(self) -> SemanticImageArtifactFacts {
+        self.semantic_image
+    }
+
+    /// Returns the fragment's exact generation entry claim.
+    #[must_use]
+    pub const fn fragment_claim(self) -> StagedSemanticObjectClaim {
+        self.fragment_claim
+    }
+
+    /// Returns the semantic image's exact generation entry claim.
+    #[must_use]
+    pub const fn semantic_claim(self) -> StagedSemanticObjectClaim {
+        self.semantic_claim
+    }
+}
+
+/// One borrowed canonical object payload ready for a bounded artifact sink.
+#[derive(Clone, Copy, Debug)]
+pub struct StagedSemanticOutputObject<'bytes> {
+    claim: StagedSemanticObjectClaim,
+    bytes: &'bytes [u8],
+}
+
+impl<'bytes> StagedSemanticOutputObject<'bytes> {
+    /// Returns the exact object key, parent, and typed reference in the verified generation.
+    #[must_use]
+    pub const fn claim(self) -> StagedSemanticObjectClaim {
+        self.claim
+    }
+
+    /// Returns canonical object bytes for this exact claim.
+    #[must_use]
+    pub const fn bytes(self) -> &'bytes [u8] {
+        self.bytes
+    }
+}
+
+/// Complete canonical compiler output prepared for transport or storage, before local selection.
+///
+/// This value owns the bounded lane output and keeps its global byte-credit lease alive until it
+/// is dropped. The output object order and references are the same ones used by local publication.
+pub struct StagedSemanticPackage {
+    staged: StagedPackageCompilation,
+    prepared: PreparedSemanticOutput,
+    artifacts: Box<[StagedSemanticArtifact]>,
+    package_identity: [u8; 32],
+    target_identity: ContentId<backend_version::CompilationTargetDomain>,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    stage: backend_semantic::vocabulary::Stage,
+    input: SemanticInputWitness,
+    execution_identity: Option<LocalCompilerExecutionIdentity>,
+    plane_execution_identity: Option<LocalCompilerPlaneExecutionIdentity>,
+    _budget_lease: Option<StagedOutputLease>,
+}
+
+/// One borrowed, identity-checked semantic plane segment in a staged output.
+#[derive(Clone, Copy, Debug)]
+pub struct StagedVersionedPlaneSegment<'bytes> {
+    kind: SemanticPlaneKind,
+    id: SemanticSegmentId,
+    payload: &'bytes [u8],
+}
+
+impl<'bytes> StagedVersionedPlaneSegment<'bytes> {
+    /// Returns the exact IR or embedding plane identity committed by the segment ID.
+    #[must_use]
+    pub const fn kind(self) -> SemanticPlaneKind {
+        self.kind
+    }
+
+    /// Returns the ID computed from the exact plane, key range, and borrowed payload bytes.
+    #[must_use]
+    pub const fn id(self) -> SemanticSegmentId {
+        self.id
+    }
+
+    /// Returns the canonical payload without copying it.
+    #[must_use]
+    pub const fn payload(self) -> &'bytes [u8] {
+        self.payload
+    }
+}
+
+/// One exact artifact's canonical plane manifest and borrowed segment payloads.
+#[derive(Clone, Debug)]
+pub struct StagedVersionedPlaneArtifact<'bytes> {
+    artifact_ordinal: usize,
+    manifest_bytes: Box<[u8]>,
+    segments: Box<[StagedVersionedPlaneSegment<'bytes>]>,
+}
+
+impl<'bytes> StagedVersionedPlaneArtifact<'bytes> {
+    /// Returns the artifact ordinal in the canonical compiler manifest.
+    #[must_use]
+    pub const fn artifact_ordinal(&self) -> usize {
+        self.artifact_ordinal
+    }
+
+    /// Returns exact canonical semantic-plane manifest bytes.
+    #[must_use]
+    pub fn manifest_bytes(&self) -> &[u8] {
+        &self.manifest_bytes
+    }
+
+    /// Returns the number of payloads in manifest order.
+    #[must_use]
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    /// Borrows one exact manifest segment and its payload.
+    #[must_use]
+    pub fn segment(&self, ordinal: usize) -> Option<StagedVersionedPlaneSegment<'bytes>> {
+        self.segments.get(ordinal).copied()
+    }
+}
+
+/// Complete per-artifact versioned-plane output borrowed from one staged package.
+#[derive(Clone, Debug)]
+pub struct StagedVersionedPlanes<'bytes> {
+    artifacts: Box<[StagedVersionedPlaneArtifact<'bytes>]>,
+    embedding_status: StagedEmbeddingStatus<'bytes>,
+}
+
+impl<'bytes> StagedVersionedPlanes<'bytes> {
+    /// Returns per-artifact manifests in canonical compilation-manifest order.
+    #[must_use]
+    pub fn artifacts(&self) -> &[StagedVersionedPlaneArtifact<'bytes>] {
+        &self.artifacts
+    }
+
+    /// Returns explicit embedding availability for the exact staged package.
+    #[must_use]
+    pub const fn embedding_status(&self) -> StagedEmbeddingStatus<'bytes> {
+        self.embedding_status
+    }
+}
+
+/// Rejection while binding bounded versioned-plane metadata to a staged package.
+#[derive(Debug, Error)]
+pub enum StagedVersionedPlaneError {
+    /// The staged result has neither portable nor host-local admitted runtime identity.
+    #[error("semantic-plane output requires an admitted compiler runtime identity")]
+    ExecutionIdentityUnavailable,
+    /// The runtime identity does not govern the exact staged package target/profile/stage.
+    #[error("semantic-plane identity does not match the staged compiler target")]
+    ExecutionIdentityMismatch,
+    /// One canonical semantic image was empty and cannot form a nonempty segment range.
+    #[error("semantic image {artifact_ordinal} is empty")]
+    EmptySemanticImage { artifact_ordinal: usize },
+    /// The segment constructor did not return an admitted ID for its exact in-memory payload.
+    #[error("semantic segment claim did not contain its computed payload ID")]
+    MissingAdmittedSegmentId,
+    /// Exact semantic plane metadata or segment validation failed.
+    #[error(transparent)]
+    Manifest(#[from] SemanticManifestError),
+    /// A bounded metadata allocation failed.
+    #[error("semantic-plane output allocation failed")]
+    Allocation(#[source] std::collections::TryReserveError),
+}
+
+impl StagedSemanticPackage {
+    /// Returns the exact verified generation root facts for this output closure.
+    #[must_use]
+    pub const fn generation_facts(&self) -> backend_store::hydration::VerifiedGenerationFacts {
+        self.prepared.generation
+    }
+
+    /// Returns the canonical semantic manifest facts.
+    #[must_use]
+    pub const fn manifest_facts(&self) -> crate::publication::manifest::CompilationManifestFacts {
+        self.prepared.manifest
+    }
+
+    /// Returns the canonical generation binding facts.
+    #[must_use]
+    pub const fn binding_facts(&self) -> crate::publication::binding::CompilationBindingFacts {
+        self.prepared.binding
+    }
+
+    /// Returns exact canonical manifest bytes for the output closure.
+    #[must_use]
+    pub fn manifest_bytes(&self) -> &[u8] {
+        &self.prepared.manifest_bytes
+    }
+
+    /// Returns exact generation-to-manifest binding bytes.
+    #[must_use]
+    pub fn binding_bytes(&self) -> &[u8] {
+        &self.prepared.binding_bytes
+    }
+
+    /// Returns canonical member metadata in the exact manifest order.
+    #[must_use]
+    pub fn artifacts(&self) -> &[StagedSemanticArtifact] {
+        &self.artifacts
+    }
+
+    /// Returns the exact opened runtime identity retained by this staged result, when present.
+    #[must_use]
+    pub const fn execution_identity(&self) -> Option<LocalCompilerExecutionIdentity> {
+        self.execution_identity
+    }
+
+    /// Returns the host-scoped identity used for local versioned-plane publication.
+    ///
+    /// This is a distinct capability from the portable worker identity and retains the exact
+    /// input witness claim without upgrading its coverage state.
+    #[must_use]
+    pub const fn plane_execution_identity(&self) -> Option<LocalCompilerPlaneExecutionIdentity> {
+        self.plane_execution_identity
+    }
+
+    /// Returns the exact input/read witness claim carried by source admission.
+    ///
+    /// A claim from `with_input_claim` is opaque until a separate authority boundary admits its
+    /// preimage and completeness; the source-only fallback remains Partial.
+    #[must_use]
+    pub const fn input_witness(&self) -> SemanticInputWitness {
+        self.input
+    }
+
+    /// Returns the semantic VCS generation ID for one exact canonical image payload.
+    ///
+    /// This is the same byte identity used by `SemanticSnapshot::generation`. It is distinct
+    /// from the durable publisher's selected root, generation binding, and plane-manifest root.
+    #[must_use]
+    pub fn semantic_vcs_generation(
+        &self,
+        artifact_ordinal: usize,
+    ) -> Option<backend_semantic::ir::GenerationId> {
+        let input_ordinal = *self.prepared.canonical_ordinals.get(artifact_ordinal)?;
+        let region = *self.staged.image_plan.get(input_ordinal)?;
+        let bytes = region.bytes(&self.staged.semantic_images)?;
+        Some(backend_semantic::ir::GenerationId::from_canonical_bytes(
+            bytes,
+        ))
+    }
+
+    /// Returns explicit embedding availability retained during source staging.
+    #[must_use]
+    pub fn embedding_status(&self) -> StagedEmbeddingStatus<'_> {
+        if let Some(cause) = self.staged.embedding_provisioning_failure {
+            return StagedEmbeddingStatus::ProvisioningUnavailable { cause };
+        }
+        match self.staged.embeddings.as_ref() {
+            None => StagedEmbeddingStatus::NotConfigured,
+            Some(output) => match output.unavailable_reason.as_deref() {
+                Some(reason) => StagedEmbeddingStatus::Unavailable {
+                    identity: output.identity,
+                    reason,
+                },
+                None => StagedEmbeddingStatus::Available {
+                    identity: output.identity,
+                },
+            },
+        }
+    }
+
+    /// Builds one exact per-image manifest over bounded ranges of the canonical IR bytes.
+    ///
+    /// The portable runtime identity is preferred when available. Local-only authorities use a
+    /// distinct host-scoped identity which commits the exact input witness but cannot be promoted
+    /// to worker portability. A source-only witness remains Partial because it does not prove
+    /// config files, negative reads, or ambient-read completeness. Payload bytes are borrowed from
+    /// the existing canonical image buffer, so creating a range bundle does not copy a full image.
+    pub fn versioned_planes(&self) -> Result<StagedVersionedPlanes<'_>, StagedVersionedPlaneError> {
+        if self
+            .plane_execution_identity
+            .is_some_and(|identity| identity.input_witness() != self.input)
+        {
+            return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
+        }
+        let (target, profile, stage, toolchain, environment, target_platform, recipe) =
+            if let Some(identity) = self.execution_identity {
+                let recipe = identity.invocation_recipe();
+                (
+                    identity.target(),
+                    identity.profile(),
+                    identity.stage(),
+                    identity.toolchain_identity(),
+                    identity.environment_identity(),
+                    identity.target_platform_identity(),
+                    *recipe.identity().as_ref(),
+                )
+            } else if let Some(identity) = self.plane_execution_identity {
+                (
+                    identity.target(),
+                    identity.profile(),
+                    identity.stage(),
+                    identity.toolchain_identity(),
+                    identity.environment_identity(),
+                    identity.target_platform_identity(),
+                    identity.recipe_identity().as_bytes(),
+                )
+            } else {
+                return Err(StagedVersionedPlaneError::ExecutionIdentityUnavailable);
+            };
+        if target != self.target_identity || profile != self.profile || stage != self.stage {
+            return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
+        }
+        let build = SemanticBuildIdentity::new(
+            self.package_identity,
+            *target.as_ref(),
+            profile,
+            stage,
+            recipe,
+            toolchain,
+            environment,
+            target_platform,
+        );
+        let input = self.input;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(self.artifacts.len())
+            .map_err(StagedVersionedPlaneError::Allocation)?;
+
+        for artifact_ordinal in 0..self.artifacts.len() {
+            let input_ordinal = *self
+                .prepared
+                .canonical_ordinals
+                .get(artifact_ordinal)
+                .ok_or(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
+            let region = *self
+                .staged
+                .image_plan
+                .get(input_ordinal)
+                .ok_or(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
+            let image = region
+                .bytes(&self.staged.semantic_images)
+                .ok_or(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
+            if image.is_empty() {
+                return Err(StagedVersionedPlaneError::EmptySemanticImage { artifact_ordinal });
+            }
+            let segment_count = image.len().div_ceil(MAX_SEMANTIC_SEGMENT_BYTES);
+            let embedding = self.staged.embeddings.as_ref();
+            let embedding_segment_count =
+                usize::from(embedding.is_some_and(|output| output.unavailable_reason.is_none()));
+            let mut segments = Vec::new();
+            segments
+                .try_reserve_exact(
+                    segment_count
+                        .checked_add(embedding_segment_count)
+                        .ok_or(SemanticManifestError::CountOverflow)?,
+                )
+                .map_err(StagedVersionedPlaneError::Allocation)?;
+            let mut metadata_segments = Vec::new();
+            metadata_segments
+                .try_reserve_exact(segment_count)
+                .map_err(StagedVersionedPlaneError::Allocation)?;
+            let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+            for (segment_ordinal, payload) in image.chunks(MAX_SEMANTIC_SEGMENT_BYTES).enumerate() {
+                let segment_ordinal = u64::try_from(segment_ordinal)
+                    .map_err(|_| SemanticManifestError::CountOverflow)?;
+                let mut key = [0; 32];
+                key[24..].copy_from_slice(&segment_ordinal.to_be_bytes());
+                let segment = SemanticPlaneSegment::from_payload_with_witness(
+                    kind, key, key, 1, payload, input,
+                )?;
+                let id = segment
+                    .admitted_id()
+                    .ok_or(StagedVersionedPlaneError::MissingAdmittedSegmentId)?;
+                segments.push(StagedVersionedPlaneSegment { kind, id, payload });
+                metadata_segments.push(segment);
+            }
+            let plane = SemanticPlane::claimed(kind, metadata_segments, Coverage::Complete)?;
+            let generation = backend_semantic::ir::GenerationId::from_canonical_bytes(image);
+            let mut planes = Vec::new();
+            planes
+                .try_reserve_exact(1 + usize::from(embedding.is_some()))
+                .map_err(StagedVersionedPlaneError::Allocation)?;
+            planes.push(plane);
+            if let Some(embedding) = embedding {
+                let kind = SemanticPlaneKind::Embeddings(embedding.identity);
+                let mut vector_segments = Vec::new();
+                let coverage = if embedding.unavailable_reason.is_some() {
+                    Coverage::Unavailable
+                } else {
+                    let Some(vector) = embedding.artifacts.get(input_ordinal) else {
+                        return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
+                    };
+                    vector_segments
+                        .try_reserve_exact(1)
+                        .map_err(StagedVersionedPlaneError::Allocation)?;
+                    let vector_segment = SemanticPlaneSegment::from_payload_with_witness(
+                        kind,
+                        vector.key,
+                        vector.key,
+                        1,
+                        &vector.payload,
+                        input,
+                    )?;
+                    let id = vector_segment
+                        .admitted_id()
+                        .ok_or(StagedVersionedPlaneError::MissingAdmittedSegmentId)?;
+                    segments.push(StagedVersionedPlaneSegment {
+                        kind,
+                        id,
+                        payload: &vector.payload,
+                    });
+                    vector_segments.push(vector_segment);
+                    Coverage::Complete
+                };
+                planes.push(SemanticPlane::claimed(kind, vector_segments, coverage)?);
+            }
+            let manifest = SemanticPlaneManifest::new(generation, build, input, planes)?;
+            output.push(StagedVersionedPlaneArtifact {
+                artifact_ordinal,
+                manifest_bytes: manifest.encode()?.into_boxed_slice(),
+                segments: segments.into_boxed_slice(),
+            });
+        }
+        Ok(StagedVersionedPlanes {
+            artifacts: output.into_boxed_slice(),
+            embedding_status: self.embedding_status(),
+        })
+    }
+
+    /// Returns the currently supported IR plane bundle under the explicit IR name.
+    pub fn versioned_ir_planes(
+        &self,
+    ) -> Result<StagedVersionedPlanes<'_>, StagedVersionedPlaneError> {
+        self.versioned_planes()
+    }
+
+    /// Returns the number of immutable objects in the generation closure.
+    #[must_use]
+    pub fn output_object_count(&self) -> usize {
+        self.prepared.object_claims.len()
+    }
+
+    /// Returns one canonical generation claim and its payload bytes.
+    #[must_use]
+    pub fn output_object(&self, ordinal: usize) -> Option<StagedSemanticOutputObject<'_>> {
+        let claim = *self.prepared.object_claims.get(ordinal)?;
+        let bytes = match ordinal {
+            0 => self.prepared.manifest_bytes.as_ref(),
+            value if value % 2 == 1 => {
+                let artifact_ordinal = value / 2;
+                let artifact = *self.prepared.canonical_ordinals.get(artifact_ordinal)?;
+                self.staged.artifacts.get(artifact)?.fragment.as_ref()
+            }
+            value => {
+                let artifact_ordinal = value / 2 - 1;
+                let artifact = *self.prepared.canonical_ordinals.get(artifact_ordinal)?;
+                let region = *self.staged.image_plan.get(artifact)?;
+                region.bytes(&self.staged.semantic_images)?
+            }
+        };
+        Some(StagedSemanticOutputObject { claim, bytes })
+    }
+
+    /// Returns the semantic image claim and bytes for one canonical artifact ordinal.
+    ///
+    /// This accessor binds through the prepared canonical order and keeps callers from deriving
+    /// image object positions from the manifest/binding/fragment interleave.
+    #[must_use]
+    pub fn semantic_output_object(
+        &self,
+        artifact_ordinal: usize,
+    ) -> Option<StagedSemanticOutputObject<'_>> {
+        let artifact = *self.artifacts.get(artifact_ordinal)?;
+        let input_ordinal = *self.prepared.canonical_ordinals.get(artifact_ordinal)?;
+        let image_region = *self.staged.image_plan.get(input_ordinal)?;
+        let bytes = image_region.bytes(&self.staged.semantic_images)?;
+        Some(StagedSemanticOutputObject {
+            claim: artifact.semantic_claim,
+            bytes,
+        })
+    }
+
+    pub(crate) fn retain_budget_lease(&mut self, lease: StagedOutputLease) {
+        self._budget_lease = Some(lease);
+    }
 }
 
 /// One immutable semantic generation reopened by exact claim rather than local journal head.
@@ -188,6 +936,14 @@ pub enum PackageSemanticError {
         /// Exact closed compiler terminal.
         terminal: Box<CompilerTerminal>,
     },
+    /// Required embedding inference could not produce a complete bounded output plane.
+    #[error("required package embedding failed for {path}: {cause}")]
+    Embedding {
+        /// Source member that failed embedding admission.
+        path: Box<str>,
+        /// Exact embedding runtime or output-bound failure.
+        cause: Box<str>,
+    },
     /// A checked size computation overflowed or exceeded the package budget.
     #[error("package semantic publication exceeds its {lane} byte budget")]
     Capacity {
@@ -209,6 +965,9 @@ pub enum PackageSemanticError {
     /// Immutable package publication failed.
     #[error("package semantic publication failed")]
     Publish(#[source] crate::publication::PublishSemanticError),
+    /// A canonical compiler output failed preparation before any local publication.
+    #[error("package semantic output could not be prepared for transport")]
+    StagedOutput(#[source] crate::publication::PublishSemanticError),
     /// The publication owner could not reopen its selected closure.
     #[error("package semantic publication could not be reopened")]
     Reopen(#[source] crate::publication::OpenPublishedError),
@@ -253,6 +1012,558 @@ pub struct LocalCompiler<'path, 'scratch, 'cancel> {
     publisher: DurablePublisher,
     scratch: &'scratch mut LocalCompilerScratch,
     retained_semantic_image: Option<SemanticImageAuthority>,
+}
+
+/// Native compilation inputs shared by the embedded client and service worker lanes.
+///
+/// A lane owns its scratch and cancellation token. This value only borrows immutable admitted
+/// configuration; durable publication remains with [`LocalCompiler`].
+#[derive(Clone)]
+pub(crate) struct LocalCompilerExecution<'path, 'cancel> {
+    config: LocalCompilerConfig<'path, 'cancel>,
+    package_roots: LocalPackageRootSet<'path>,
+    package_authority: PackageAuthorityConfiguration<'path>,
+    native_work_directory: Box<Path>,
+}
+
+/// Fully owned single-source native result waiting for the durable publication owner.
+pub(crate) struct StagedCompilerArtifact {
+    source: backend_semantic::ir::SourceIdentity,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
+    fragment: Box<[u8]>,
+    semantic_image: Box<[u8]>,
+}
+
+/// Fully owned complete package result waiting for the durable publication owner.
+pub(crate) struct StagedPackageCompilation {
+    artifacts: Vec<StagedPackageArtifact>,
+    image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
+    semantic_images: Box<[u8]>,
+    package_identity: [u8; 32],
+    target_identity: ContentId<backend_version::CompilationTargetDomain>,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    stage: backend_semantic::vocabulary::Stage,
+    input: SemanticInputWitness,
+    execution_identity: Option<LocalCompilerExecutionIdentity>,
+    plane_execution_identity: Option<LocalCompilerPlaneExecutionIdentity>,
+    embeddings: Option<StagedEmbeddingOutput>,
+    embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+}
+
+struct StagedPackageArtifact {
+    source: backend_semantic::ir::SourceIdentity,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
+    fragment: Box<[u8]>,
+}
+
+struct StagedEmbeddingOutput {
+    identity: EmbeddingPlaneIdentity,
+    artifacts: Box<[StagedEmbeddingArtifact]>,
+    unavailable_reason: Option<Box<str>>,
+}
+
+struct StagedEmbeddingArtifact {
+    key: [u8; 32],
+    payload: Box<[u8]>,
+}
+
+impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
+    pub(crate) fn with_native_work_directory(mut self, path: PathBuf) -> Self {
+        self.native_work_directory = path.into_boxed_path();
+        self
+    }
+
+    pub(crate) fn stage_generate(
+        &self,
+        request: ApplicationCompilerRequest<'_>,
+        scratch: &mut LocalCompilerScratch,
+        cancelled: &AtomicBool,
+        progress: &mut impl FnMut(PackageCompilePhase),
+    ) -> Result<StagedCompilerArtifact, CompilerTerminal> {
+        let source = request_source(request).map_err(source_terminal)?;
+        let toolchain = self
+            .toolchain(request)
+            .map_err(|cause| toolchain_terminal(source, request, cause))?;
+        let control = self.compile_control(cancelled).map_err(|timeout| {
+            CompilerTerminal::DeadlineConstruction {
+                source,
+                language: request.profile.language(),
+                stage: request.stage,
+                timeout: *timeout,
+            }
+        })?;
+        self.stage_prepared(
+            request,
+            source,
+            DeclarationScope::standalone(request.profile),
+            toolchain,
+            crate::driver::SemanticAuthorityInput::None,
+            control,
+            scratch,
+            progress,
+        )
+    }
+
+    pub(crate) fn stage_package(
+        &self,
+        request: &PackageCompileRequest,
+        scratch: &mut LocalCompilerScratch,
+        cancelled: &AtomicBool,
+        progress: &mut impl FnMut(PackageCompilePhase),
+    ) -> Result<StagedCompilerArtifact, CompilerTerminal> {
+        let target = request.as_ref().identity;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(CompilerTerminal::PackageCancelled {
+                target,
+                phase: PackageCompilePhase::Locate,
+            });
+        }
+        progress(PackageCompilePhase::Locate);
+        let resolved =
+            package_source::resolve(self.package_roots, request.as_ref()).map_err(|cause| {
+                CompilerTerminal::PackageSource {
+                    target,
+                    phase: PackageCompilePhase::Locate,
+                    cause,
+                }
+            })?;
+        progress(PackageCompilePhase::EnterSource);
+        let source = std::str::from_utf8(&resolved.bytes).map_err(|cause| {
+            CompilerTerminal::PackageSource {
+                target,
+                phase: PackageCompilePhase::EnterSource,
+                cause: PackageSourceCause::InvalidUtf8 {
+                    valid_up_to: cause.valid_up_to(),
+                    error_len: cause
+                        .error_len()
+                        .and_then(|length| u8::try_from(length).ok()),
+                },
+            }
+        })?;
+        let package = request.as_ref();
+        let scope =
+            DeclarationScope::for_package(package, &resolved.relative_source).map_err(|cause| {
+                CompilerTerminal::PackageSource {
+                    target,
+                    phase: PackageCompilePhase::EnterSource,
+                    cause: PackageSourceCause::DeclarationScope {
+                        cause: declaration_scope_cause(cause),
+                    },
+                }
+            })?;
+        progress(PackageCompilePhase::Authority);
+        let application_request = ApplicationCompilerRequest {
+            profile: request.target.profile,
+            stage: request.target.stage,
+            source,
+        };
+        let source_authority = request_source(application_request).map_err(source_terminal)?;
+        let toolchain = self
+            .toolchain(application_request)
+            .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))?;
+        let control = self.compile_control(cancelled).map_err(|timeout| {
+            CompilerTerminal::DeadlineConstruction {
+                source: source_authority,
+                language: application_request.profile.language(),
+                stage: application_request.stage,
+                timeout: *timeout,
+            }
+        })?;
+        let unit_key = CompilationUnitKeyV2::PackageRoot;
+        let authority = enter_package_authority(PackageAuthorityRequest {
+            package_root: &resolved.package_root,
+            source_path: &resolved.source_path,
+            source: &resolved.bytes,
+            unit_key: &unit_key,
+            profile: application_request.profile,
+            toolchain,
+            control,
+            configuration: self.package_authority,
+        })
+        .map_err(|cause| {
+            package_authority_terminal(
+                target,
+                application_request,
+                source_authority,
+                toolchain,
+                cause,
+            )
+        })?;
+        self.stage_prepared(
+            application_request,
+            source_authority,
+            scope,
+            toolchain,
+            authority.input(),
+            control,
+            scratch,
+            progress,
+        )
+    }
+
+    pub(crate) fn stage_package_sources(
+        &self,
+        package: PackageSourceSet<'_>,
+        execution_identity: Option<LocalCompilerExecutionIdentity>,
+        plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
+        embedding_runtime: Option<&EmbeddingExecutable>,
+        embedding_requirement: EmbeddingRequirement,
+        scratch: &mut LocalCompilerScratch,
+        cancelled: &AtomicBool,
+        progress: &mut impl FnMut(PackageCompilePhase),
+    ) -> Result<StagedPackageCompilation, PackageSemanticError> {
+        let request = package.request.as_ref();
+        let target = package.request.target;
+        let input = package
+            .input_claim
+            .unwrap_or_else(|| package_source_input_witness(&package));
+        let first_source =
+            package
+                .compilation_sources()
+                .next()
+                .ok_or(PackageSemanticError::Capacity {
+                    lane: "compilation unit source",
+                })?;
+        let first_authority = request_source(ApplicationCompilerRequest {
+            profile: target.profile,
+            stage: target.stage,
+            source: first_source.source,
+        })
+        .map_err(source_terminal)
+        .map_err(|terminal| PackageSemanticError::Compile {
+            path: first_source.relative_path.into(),
+            terminal: Box::new(terminal),
+        })?;
+        let control =
+            self.compile_control(cancelled)
+                .map_err(|timeout| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(CompilerTerminal::DeadlineConstruction {
+                        source: first_authority,
+                        language: target.profile.language(),
+                        stage: target.stage,
+                        timeout: *timeout,
+                    }),
+                })?;
+        let source_count = package.compilation_sources().count();
+        if (embedding_runtime.is_none() || package.embedding_provisioning_failure.is_some())
+            && embedding_requirement == EmbeddingRequirement::Required
+        {
+            return Err(PackageSemanticError::Embedding {
+                path: first_source.relative_path.into(),
+                cause: "required embedding runtime is not configured".into(),
+            });
+        }
+        let embedding_execution_identity =
+            embedding_runtime.map(EmbeddingExecutable::execution_identity);
+        let embedding_identity = embedding_execution_identity
+            .map(semantic_embedding_identity)
+            .transpose()
+            .map_err(|cause| PackageSemanticError::Embedding {
+                path: first_source.relative_path.into(),
+                cause,
+            })?;
+        let embedding_extent =
+            embedding_runtime.map_or(0, EmbeddingExecutable::canonical_payload_max_bytes);
+        let mut embedding_unavailable = source_count
+            .checked_mul(embedding_extent)
+            .filter(|extent| *extent > MAX_PACKAGE_EMBEDDING_BYTES)
+            .map(|_| "package embedding output exceeds its bounded byte budget".into());
+        if embedding_requirement == EmbeddingRequirement::Required
+            && embedding_unavailable.is_some()
+        {
+            return Err(PackageSemanticError::Embedding {
+                path: first_source.relative_path.into(),
+                cause: "package embedding output exceeds its bounded byte budget".into(),
+            });
+        }
+        let mut embedding_artifacts = Vec::new();
+        if embedding_runtime.is_some() && embedding_unavailable.is_none() {
+            if let Err(error) = embedding_artifacts.try_reserve_exact(source_count) {
+                if embedding_requirement == EmbeddingRequirement::Required {
+                    return Err(PackageSemanticError::Embedding {
+                        path: first_source.relative_path.into(),
+                        cause: error.to_string().into(),
+                    });
+                }
+                embedding_unavailable = Some("embedding output allocation failed".into());
+            }
+        }
+        let mut artifacts = Vec::new();
+        artifacts
+            .try_reserve_exact(source_count)
+            .map_err(PackageSemanticError::Allocation)?;
+        let mut image_plan = Vec::new();
+        image_plan
+            .try_reserve_exact(source_count)
+            .map_err(PackageSemanticError::Allocation)?;
+        let mut semantic_images = Vec::new();
+        let mut fragment_bytes = 0_usize;
+        let mut semantic_bytes = 0_usize;
+
+        for source in package.compilation_sources() {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(PackageSemanticError::Compile {
+                    path: source.relative_path.into(),
+                    terminal: Box::new(CompilerTerminal::PackageCancelled {
+                        target: package.package_target.target(),
+                        phase: PackageCompilePhase::Lower,
+                    }),
+                });
+            }
+            if embedding_unavailable.is_none()
+                && let (Some(runtime), Some(identity)) =
+                    (embedding_runtime, embedding_execution_identity)
+            {
+                match stage_embedding_artifact(
+                    runtime,
+                    identity,
+                    source.relative_path,
+                    source.source,
+                ) {
+                    Ok(artifact) => embedding_artifacts.push(artifact),
+                    Err(cause) if embedding_requirement == EmbeddingRequirement::Required => {
+                        return Err(PackageSemanticError::Embedding {
+                            path: source.relative_path.into(),
+                            cause,
+                        });
+                    }
+                    Err(cause) => {
+                        embedding_artifacts.clear();
+                        embedding_unavailable = Some(cause);
+                    }
+                }
+            }
+            progress(PackageCompilePhase::Authority);
+            let application_request = ApplicationCompilerRequest {
+                profile: target.profile,
+                stage: target.stage,
+                source: source.source,
+            };
+            let source_authority = request_source(application_request)
+                .map_err(source_terminal)
+                .map_err(|terminal| PackageSemanticError::Compile {
+                    path: source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                })?;
+            let toolchain = self
+                .toolchain(application_request)
+                .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))
+                .map_err(|terminal| PackageSemanticError::Compile {
+                    path: source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                })?;
+            let scope =
+                DeclarationScope::for_package(request, source.relative_path).map_err(|_| {
+                    PackageSemanticError::Scope {
+                        path: source.relative_path.into(),
+                    }
+                })?;
+            let source_path = package.package_root.join(source.relative_path);
+            let authority = enter_package_authority(PackageAuthorityRequest {
+                package_root: package.package_root,
+                source_path: &source_path,
+                source: source.source.as_bytes(),
+                unit_key: package.package_target.unit_key(),
+                profile: target.profile,
+                toolchain,
+                control,
+                configuration: self.package_authority,
+            })
+            .map_err(|cause| {
+                package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    toolchain,
+                    cause,
+                )
+            })
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+            let compiled = self
+                .stage_prepared(
+                    application_request,
+                    source_authority,
+                    scope,
+                    toolchain,
+                    authority.input(),
+                    control,
+                    scratch,
+                    progress,
+                )
+                .map_err(|terminal| PackageSemanticError::Compile {
+                    path: source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                })?;
+            let fragment_length = compiled.fragment.len();
+            fragment_bytes = checked_package_bytes(
+                fragment_bytes,
+                fragment_length,
+                MAX_PACKAGE_FRAGMENT_BYTES,
+                "compact fragment",
+            )?;
+            let image_bytes = compiled.semantic_image.len();
+            semantic_bytes = checked_package_bytes(
+                semantic_bytes,
+                image_bytes,
+                MAX_PACKAGE_SEMANTIC_BYTES,
+                "semantic image",
+            )?;
+            let byte_length =
+                u32::try_from(image_bytes).map_err(|_| PackageSemanticError::Capacity {
+                    lane: "semantic image",
+                })?;
+            let offset = semantic_images.len();
+            semantic_images
+                .try_reserve_exact(image_bytes)
+                .map_err(PackageSemanticError::Allocation)?;
+            semantic_images.extend_from_slice(&compiled.semantic_image);
+            image_plan.push(
+                crate::publication::manifest::SemanticImageRegion::from_measurement(
+                    offset,
+                    byte_length,
+                ),
+            );
+            artifacts.push(StagedPackageArtifact {
+                source: compiled.source,
+                recipe: compiled.recipe,
+                fragment: compiled.fragment,
+            });
+        }
+        Ok(StagedPackageCompilation {
+            artifacts,
+            image_plan: image_plan.into_boxed_slice(),
+            semantic_images: semantic_images.into_boxed_slice(),
+            package_identity: *package.request.as_ref().identity.as_ref(),
+            target_identity: package.package_target.target(),
+            profile: target.profile,
+            stage: target.stage,
+            input,
+            execution_identity,
+            plane_execution_identity: plane_execution_seed.map(|seed| seed.bind_input(input)),
+            embeddings: embedding_identity.map(|identity| StagedEmbeddingOutput {
+                identity,
+                artifacts: if embedding_unavailable.is_some() {
+                    Box::new([])
+                } else {
+                    embedding_artifacts.into_boxed_slice()
+                },
+                unavailable_reason: embedding_unavailable,
+            }),
+            embedding_provisioning_failure: package.embedding_provisioning_failure,
+        })
+    }
+
+    fn stage_prepared(
+        &self,
+        request: ApplicationCompilerRequest<'_>,
+        _source: SourceAuthority,
+        declaration_scope: DeclarationScope<'_>,
+        toolchain: ToolchainSelection<'_>,
+        authority: crate::driver::SemanticAuthorityInput<'_>,
+        control: CompileControl<'_>,
+        scratch: &mut LocalCompilerScratch,
+        progress: &mut impl FnMut(PackageCompilePhase),
+    ) -> Result<StagedCompilerArtifact, CompilerTerminal> {
+        progress(PackageCompilePhase::Lower);
+        let compiled = compile_fused_semantic(
+            CompileRequest {
+                profile: request.profile,
+                stage: request.stage,
+                source: request.source.as_bytes(),
+                declaration_scope,
+                toolchain,
+                authority,
+                control,
+            },
+            CompileScratch {
+                diagnostic_output: &mut scratch.diagnostic_output,
+                native_work: &self.native_work_directory,
+            },
+            CompileOutput {
+                fragment_output: scratch.fragment_output.as_mut(),
+            },
+        )
+        .map_err(compile_terminal)?;
+        let mut fragment = Vec::new();
+        fragment
+            .try_reserve_exact(compiled.artifact.fragment.as_ref().len())
+            .map_err(|_| {
+                staged_output_terminal(
+                    compiled.artifact.source,
+                    compiled.artifact.recipe,
+                    PublicationPhase::Fragment,
+                )
+            })?;
+        fragment.extend_from_slice(compiled.artifact.fragment.as_ref());
+
+        let prepared =
+            backend_semantic::ir::PreparedFullSemanticImage::new(&compiled.ir).map_err(|_| {
+                staged_output_terminal(
+                    compiled.artifact.source,
+                    compiled.artifact.recipe,
+                    PublicationPhase::SemanticImage,
+                )
+            })?;
+        if prepared.byte_len() > MAX_PACKAGE_SEMANTIC_BYTES {
+            return Err(staged_output_terminal(
+                compiled.artifact.source,
+                compiled.artifact.recipe,
+                PublicationPhase::SemanticImage,
+            ));
+        }
+        let mut semantic_image = Vec::new();
+        semantic_image
+            .try_reserve_exact(prepared.byte_len())
+            .map_err(|_| {
+                staged_output_terminal(
+                    compiled.artifact.source,
+                    compiled.artifact.recipe,
+                    PublicationPhase::SemanticImage,
+                )
+            })?;
+        semantic_image.resize(prepared.byte_len(), 0);
+        prepared.encode_into(&mut semantic_image).map_err(|_| {
+            staged_output_terminal(
+                compiled.artifact.source,
+                compiled.artifact.recipe,
+                PublicationPhase::SemanticImage,
+            )
+        })?;
+        Ok(StagedCompilerArtifact {
+            source: compiled.artifact.source,
+            recipe: compiled.artifact.recipe,
+            fragment: fragment.into_boxed_slice(),
+            semantic_image: semantic_image.into_boxed_slice(),
+        })
+    }
+
+    fn compile_control<'a>(
+        &self,
+        cancelled: &'a AtomicBool,
+    ) -> Result<CompileControl<'a>, crate::application::LocalCompilerTimeout> {
+        let timeout = LocalCompilerControl {
+            timeout: self.config.control.timeout,
+            cancelled,
+        };
+        Ok(CompileControl {
+            deadline: timeout.deadline()?,
+            cancelled,
+        })
+    }
+
+    fn toolchain(
+        &self,
+        request: ApplicationCompilerRequest<'_>,
+    ) -> Result<ToolchainSelection<'path>, ToolchainRouteError> {
+        let route = FullRegistry
+            .route(request.profile.language(), request.stage)
+            .map_err(ToolchainRouteError::UnsupportedStage)?;
+        select_toolchain(self.config.toolchains, route)
+    }
 }
 
 impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
@@ -335,6 +1646,410 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         })
     }
 
+    pub(crate) fn execution(&self) -> LocalCompilerExecution<'path, 'cancel> {
+        LocalCompilerExecution {
+            config: self.config,
+            package_roots: self.package_roots,
+            package_authority: self.package_authority,
+            native_work_directory: self
+                .config
+                .native_work_directory
+                .to_path_buf()
+                .into_boxed_path(),
+        }
+    }
+
+    /// Publishes a completed lane result through this compiler's one durable authority.
+    pub(crate) fn publish_staged_package(
+        &mut self,
+        staged: StagedPackageCompilation,
+        cancelled: &AtomicBool,
+        progress: &mut impl FnMut(PackageCompilePhase),
+    ) -> Result<PublishedSemanticPackage, PackageSemanticError> {
+        let count = staged.artifacts.len();
+        if count == 0 {
+            return Err(PackageSemanticError::Capacity { lane: "manifest" });
+        }
+        let mut fragment_bytes = 0_usize;
+        for artifact in &staged.artifacts {
+            fragment_bytes = checked_package_bytes(
+                fragment_bytes,
+                artifact.fragment.len(),
+                MAX_PACKAGE_FRAGMENT_BYTES,
+                "compact fragment",
+            )?;
+        }
+        let semantic_bytes = staged.semantic_images.len();
+        if semantic_bytes > MAX_PACKAGE_SEMANTIC_BYTES {
+            return Err(PackageSemanticError::Capacity {
+                lane: "semantic image",
+            });
+        }
+
+        let manifest_bytes = crate::publication::manifest::COMPILATION_MANIFEST_HEADER_BYTES
+            .checked_add(
+                count
+                    .checked_mul(
+                        crate::publication::manifest::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
+                    )
+                    .ok_or(PackageSemanticError::Capacity { lane: "manifest" })?,
+            )
+            .ok_or(PackageSemanticError::Capacity { lane: "manifest" })?;
+        self.scratch
+            .prepare_publication(count, manifest_bytes, fragment_bytes, semantic_bytes)
+            .map_err(PackageSemanticError::Scratch)?;
+
+        let mut compiled = Vec::new();
+        compiled
+            .try_reserve_exact(count)
+            .map_err(PackageSemanticError::Allocation)?;
+        for (ordinal, artifact) in staged.artifacts.iter().enumerate() {
+            let fragment = backend_semantic::ir::FragmentView::validate(&artifact.fragment)
+                .map_err(|source| PackageSemanticError::Fragment { ordinal, source })?;
+            compiled.push(CompiledFragment {
+                source: artifact.source,
+                recipe: artifact.recipe,
+                fragment,
+            });
+        }
+
+        progress(PackageCompilePhase::Publish);
+        let publication = publish_semantic_bytes(
+            &self.publisher,
+            self.config.artifact_directory,
+            &compiled,
+            &staged.image_plan,
+            &staged.semantic_images,
+            PublishControl::Observe(cancelled),
+            SemanticPublicationScratch {
+                manifest_output: &mut self.scratch.manifest_output,
+                manifest_facts: &mut self.scratch.manifest_facts,
+                ordinals: &mut self.scratch.ordinals,
+                semantic_image_plan: &mut self.scratch.semantic_image_plan,
+                semantic_image_output: &mut self.scratch.semantic_image_output,
+                locality_output: &mut self.scratch.locality_output,
+                binding_output: &mut self.scratch.binding_output,
+            },
+        )
+        .map_err(PackageSemanticError::Publish)?;
+        drop(compiled);
+
+        progress(PackageCompilePhase::Reopen);
+        let opened = open_published_semantic(
+            &self.publisher,
+            self.config.artifact_directory,
+            OpenSemanticPublicationScratch {
+                manifest_output: &mut self.scratch.manifest_output,
+                manifest_facts: &mut self.scratch.manifest_facts,
+                fragment_output: &mut self.scratch.reopened_fragment_output,
+                semantic_image_output: &mut self.scratch.semantic_image_output,
+                locality_output: &mut self.scratch.locality_output,
+            },
+        )
+        .map_err(PackageSemanticError::Reopen)?
+        .ok_or(PackageSemanticError::MissingPublication)?;
+        let mut images = Vec::new();
+        images
+            .try_reserve_exact(count)
+            .map_err(PackageSemanticError::Allocation)?;
+        for (ordinal, artifact) in opened.artifacts().enumerate() {
+            let artifact =
+                artifact.map_err(|source| PackageSemanticError::Artifact { ordinal, source })?;
+            let facts = artifact.fragment.facts.semantic_image.ok_or(
+                PackageSemanticError::ReopenedCardinality {
+                    expected: count,
+                    observed: ordinal,
+                },
+            )?;
+            images.push(
+                SemanticImageSnapshot::try_from_reopened(
+                    SemanticImageAuthority {
+                        identity: facts.identity,
+                        byte_len: facts.byte_length,
+                    },
+                    artifact.semantic_image.as_ref(),
+                )
+                .map_err(|cause| PackageSemanticError::Snapshot { ordinal, cause })?,
+            );
+        }
+        if images.len() != count {
+            return Err(PackageSemanticError::ReopenedCardinality {
+                expected: count,
+                observed: images.len(),
+            });
+        }
+        Ok(PublishedSemanticPackage {
+            publication,
+            images: images.into_boxed_slice(),
+        })
+    }
+
+    pub(crate) fn prepare_staged_package(
+        &mut self,
+        staged: StagedPackageCompilation,
+        cancelled: &AtomicBool,
+    ) -> Result<StagedSemanticPackage, PackageSemanticError> {
+        let package_identity = staged.package_identity;
+        let target_identity = staged.target_identity;
+        let profile = staged.profile;
+        let stage = staged.stage;
+        let input = staged.input;
+        let execution_identity = staged.execution_identity;
+        let plane_execution_identity = staged.plane_execution_identity;
+        let count = staged.artifacts.len();
+        if count == 0 {
+            return Err(PackageSemanticError::Capacity { lane: "manifest" });
+        }
+        let mut fragment_bytes = 0_usize;
+        for artifact in &staged.artifacts {
+            fragment_bytes = checked_package_bytes(
+                fragment_bytes,
+                artifact.fragment.len(),
+                MAX_PACKAGE_FRAGMENT_BYTES,
+                "compact fragment",
+            )?;
+        }
+        let semantic_bytes = staged.semantic_images.len();
+        if semantic_bytes > MAX_PACKAGE_SEMANTIC_BYTES {
+            return Err(PackageSemanticError::Capacity {
+                lane: "semantic image",
+            });
+        }
+        let manifest_bytes = crate::publication::manifest::COMPILATION_MANIFEST_HEADER_BYTES
+            .checked_add(
+                count
+                    .checked_mul(
+                        crate::publication::manifest::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
+                    )
+                    .ok_or(PackageSemanticError::Capacity { lane: "manifest" })?,
+            )
+            .ok_or(PackageSemanticError::Capacity { lane: "manifest" })?;
+        self.scratch
+            .prepare_publication(count, manifest_bytes, fragment_bytes, semantic_bytes)
+            .map_err(PackageSemanticError::Scratch)?;
+
+        let mut compiled = Vec::new();
+        compiled
+            .try_reserve_exact(count)
+            .map_err(PackageSemanticError::Allocation)?;
+        for (ordinal, artifact) in staged.artifacts.iter().enumerate() {
+            let fragment = backend_semantic::ir::FragmentView::validate(&artifact.fragment)
+                .map_err(|source| PackageSemanticError::Fragment { ordinal, source })?;
+            compiled.push(CompiledFragment {
+                source: artifact.source,
+                recipe: artifact.recipe,
+                fragment,
+            });
+        }
+
+        let prepared = prepare_semantic_bytes(
+            &compiled,
+            &staged.image_plan,
+            &staged.semantic_images,
+            PublishControl::Observe(cancelled),
+            SemanticPublicationScratch {
+                manifest_output: &mut self.scratch.manifest_output,
+                manifest_facts: &mut self.scratch.manifest_facts,
+                ordinals: &mut self.scratch.ordinals,
+                semantic_image_plan: &mut self.scratch.semantic_image_plan,
+                semantic_image_output: &mut self.scratch.semantic_image_output,
+                locality_output: &mut self.scratch.locality_output,
+                binding_output: &mut self.scratch.binding_output,
+            },
+        )
+        .map_err(PackageSemanticError::StagedOutput)?;
+        drop(compiled);
+
+        let required_claims = count
+            .checked_mul(2)
+            .and_then(|pairs| pairs.checked_add(1))
+            .ok_or(PackageSemanticError::Capacity {
+                lane: "generation claims",
+            })?;
+        if prepared.object_claims.len() != required_claims
+            || prepared.canonical_ordinals.len() != count
+        {
+            return Err(PackageSemanticError::Capacity {
+                lane: "generation claims",
+            });
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PackageSemanticError::StagedOutput(
+                crate::publication::PublishSemanticError::CancelledBeforeStorage,
+            ));
+        }
+
+        let mut artifacts = Vec::new();
+        artifacts
+            .try_reserve_exact(count)
+            .map_err(PackageSemanticError::Allocation)?;
+        for (canonical_ordinal, input_ordinal) in
+            prepared.canonical_ordinals.iter().copied().enumerate()
+        {
+            let Some(artifact) = staged.artifacts.get(input_ordinal) else {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                });
+            };
+            let Some(region) = staged.image_plan.get(input_ordinal).copied() else {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                });
+            };
+            let Some(semantic_image) = region.facts(&staged.semantic_images) else {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                });
+            };
+            let Some(fragment_claim) = prepared
+                .object_claims
+                .get(1 + canonical_ordinal * 2)
+                .copied()
+            else {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                });
+            };
+            let Some(semantic_claim) = prepared
+                .object_claims
+                .get(2 + canonical_ordinal * 2)
+                .copied()
+            else {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                });
+            };
+            artifacts.push(StagedSemanticArtifact {
+                source: artifact.source,
+                recipe: artifact.recipe,
+                semantic_image,
+                fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+                    artifact.fragment.as_ref(),
+                ),
+                fragment_claim,
+                semantic_claim,
+            });
+        }
+
+        Ok(StagedSemanticPackage {
+            staged,
+            prepared,
+            artifacts: artifacts.into_boxed_slice(),
+            package_identity,
+            target_identity,
+            profile,
+            stage,
+            input,
+            execution_identity,
+            plane_execution_identity,
+            _budget_lease: None,
+        })
+    }
+
+    /// Publishes one completed compile lane result and captures its exact reopened image.
+    pub(crate) fn publish_staged_single(
+        &mut self,
+        staged: StagedCompilerArtifact,
+        cancelled: &AtomicBool,
+        progress: &mut impl FnMut(PackageCompilePhase),
+    ) -> Result<GeneratedArtifact, CompilerTerminal> {
+        let artifact = staged;
+        self.retained_semantic_image = None;
+        let source = source_authority(artifact.source);
+        let recipe = artifact.recipe;
+        let fragment = ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+            artifact.fragment.as_ref(),
+        );
+        let fragment_view = backend_semantic::ir::FragmentView::validate(&artifact.fragment)
+            .map_err(|_| CompilerTerminal::Compile {
+                attempted: CompilerAttempt {
+                    source,
+                    recipe: recipe.identity,
+                },
+                cause: CompilerCause::Fragment(FragmentCause::Validate),
+            })?;
+        let compiled = CompiledFragment {
+            source: artifact.source,
+            recipe,
+            fragment: fragment_view,
+        };
+        let semantic_length = artifact.semantic_image.len();
+        self.scratch
+            .prepare_publication(
+                1,
+                crate::publication::manifest::COMPILATION_MANIFEST_HEADER_BYTES
+                    + crate::publication::manifest::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
+                artifact.fragment.len(),
+                semantic_length,
+            )
+            .map_err(|_| {
+                staged_output_terminal(artifact.source, recipe, PublicationPhase::SemanticImage)
+            })?;
+        let image_length = u32::try_from(semantic_length).map_err(|_| {
+            staged_output_terminal(artifact.source, recipe, PublicationPhase::SemanticImage)
+        })?;
+        let image_plan = [
+            crate::publication::manifest::SemanticImageRegion::from_measurement(0, image_length),
+        ];
+        progress(PackageCompilePhase::Publish);
+        let publication = publish_semantic_bytes(
+            &self.publisher,
+            self.config.artifact_directory,
+            core::slice::from_ref(&compiled),
+            &image_plan,
+            &artifact.semantic_image,
+            PublishControl::Observe(cancelled),
+            SemanticPublicationScratch {
+                manifest_output: &mut self.scratch.manifest_output,
+                manifest_facts: &mut self.scratch.manifest_facts,
+                ordinals: &mut self.scratch.ordinals,
+                semantic_image_plan: &mut self.scratch.semantic_image_plan,
+                semantic_image_output: &mut self.scratch.semantic_image_output,
+                locality_output: &mut self.scratch.locality_output,
+                binding_output: &mut self.scratch.binding_output,
+            },
+        )
+        .map_err(|error| {
+            crate::application::terminal::semantic_publication_terminal(source, recipe, error)
+        })?;
+        drop(compiled);
+        progress(PackageCompilePhase::Reopen);
+        let opened = open_published_semantic(
+            &self.publisher,
+            self.config.artifact_directory,
+            OpenSemanticPublicationScratch {
+                manifest_output: &mut self.scratch.manifest_output,
+                manifest_facts: &mut self.scratch.manifest_facts,
+                fragment_output: self.scratch.fragment_output.as_mut(),
+                semantic_image_output: &mut self.scratch.semantic_image_output,
+                locality_output: &mut self.scratch.locality_output,
+            },
+        )
+        .map_err(|error| {
+            crate::application::terminal::semantic_reopen_terminal(source, recipe, error)
+        })?
+        .ok_or_else(|| crate::application::terminal::semantic_reopen_absent(source, recipe))?;
+        let mut artifacts = opened.artifacts();
+        let semantic = artifacts
+            .next()
+            .ok_or_else(|| crate::application::terminal::semantic_reopen_absent(source, recipe))?
+            .map_err(|error| {
+                crate::application::terminal::semantic_artifact_terminal(source, recipe, error)
+            })?;
+        let semantic_facts =
+            semantic.fragment.facts.semantic_image.ok_or_else(|| {
+                crate::application::terminal::semantic_reopen_absent(source, recipe)
+            })?;
+        if artifacts.next().is_some() {
+            return Err(crate::application::terminal::semantic_reopen_cardinality(
+                source, recipe,
+            ));
+        }
+        let generated = generated(source, recipe, fragment, semantic_facts, &publication);
+        self.retained_semantic_image = Some(generated.semantic_image);
+        Ok(generated)
+    }
+
     /// Copies the one currently retained, already-reopened semantic image into an owned snapshot.
     ///
     /// # Errors
@@ -383,247 +2098,55 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
     where
         Progress: FnMut(PackageCompilePhase),
     {
-        let request = package.request.as_ref();
-        let target = package.request.target;
-        let first_source = package.sources[0];
-        let first_authority = request_source(ApplicationCompilerRequest {
-            profile: target.profile,
-            stage: target.stage,
-            source: first_source.source,
-        })
-        .map_err(source_terminal)
-        .map_err(|terminal| PackageSemanticError::Compile {
-            path: first_source.relative_path.into(),
-            terminal: Box::new(terminal),
-        })?;
-        let deadline =
-            self.config
-                .control
-                .deadline()
-                .map_err(|timeout| PackageSemanticError::Compile {
-                    path: first_source.relative_path.into(),
-                    terminal: Box::new(CompilerTerminal::DeadlineConstruction {
-                        source: first_authority,
-                        language: target.profile.language(),
-                        stage: target.stage,
-                        timeout: *timeout,
-                    }),
-                })?;
-        let control = CompileControl {
-            deadline,
-            cancelled: self.config.control.cancelled,
-        };
-        let mut staged = Vec::new();
-        staged
-            .try_reserve_exact(package.sources.len())
-            .map_err(PackageSemanticError::Allocation)?;
-        let mut fragments = Vec::new();
-        fragments
-            .try_reserve_exact(package.sources.len())
-            .map_err(PackageSemanticError::Allocation)?;
-        let mut fragment_bytes = 0_usize;
-        let mut semantic_bytes = 0_usize;
+        let execution = self.execution();
+        let cancelled = self.config.control.cancelled;
+        let staged = execution.stage_package_sources(
+            package,
+            None,
+            None,
+            None,
+            EmbeddingRequirement::Optional,
+            self.scratch,
+            cancelled,
+            progress,
+        )?;
+        self.publish_staged_package(staged, cancelled, progress)
+    }
 
-        for source in package.sources {
-            progress(PackageCompilePhase::Authority);
-            let application_request = ApplicationCompilerRequest {
-                profile: target.profile,
-                stage: target.stage,
-                source: source.source,
-            };
-            let source_authority = request_source(application_request)
-                .map_err(source_terminal)
-                .map_err(|terminal| PackageSemanticError::Compile {
-                    path: source.relative_path.into(),
-                    terminal: Box::new(terminal),
-                })?;
-            let toolchain = self
-                .toolchain(application_request)
-                .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))
-                .map_err(|terminal| PackageSemanticError::Compile {
-                    path: source.relative_path.into(),
-                    terminal: Box::new(terminal),
-                })?;
-            let scope =
-                DeclarationScope::for_package(request, source.relative_path).map_err(|_| {
-                    PackageSemanticError::Scope {
-                        path: source.relative_path.into(),
-                    }
-                })?;
-            let source_path = package.package_root.join(source.relative_path);
-            let authority = enter_package_authority(PackageAuthorityRequest {
-                package_root: package.package_root,
-                source_path: &source_path,
-                source: source.source.as_bytes(),
-                profile: target.profile,
-                toolchain,
-                control,
-                configuration: self.package_authority,
-            })
-            .map_err(|cause| {
-                package_authority_terminal(
-                    request.identity,
-                    application_request,
-                    source_authority,
-                    toolchain,
-                    cause,
-                )
-            })
-            .map_err(|terminal| PackageSemanticError::Compile {
-                path: source.relative_path.into(),
-                terminal: Box::new(terminal),
-            })?;
-            progress(PackageCompilePhase::Lower);
-            let compiled = compile_fused_semantic(
-                CompileRequest {
-                    profile: target.profile,
-                    stage: target.stage,
-                    source: source.source.as_bytes(),
-                    declaration_scope: scope,
-                    toolchain,
-                    authority: authority.input(),
-                    control,
-                },
-                CompileScratch {
-                    diagnostic_output: &mut self.scratch.diagnostic_output,
-                    native_work: self.config.native_work_directory,
-                },
-                CompileOutput {
-                    fragment_output: self.scratch.fragment_output.as_mut(),
-                },
-            )
-            .map_err(compile_terminal)
-            .map_err(|terminal| PackageSemanticError::Compile {
-                path: source.relative_path.into(),
-                terminal: Box::new(terminal),
-            })?;
-            let fragment = copy_bytes(compiled.artifact.fragment.as_ref())?;
-            fragment_bytes = checked_package_bytes(
-                fragment_bytes,
-                fragment.len(),
-                MAX_PACKAGE_FRAGMENT_BYTES,
-                "compact fragment",
-            )?;
-            let image_bytes =
-                backend_semantic::ir::full_semantic_image_len(&compiled.ir).map_err(|_| {
-                    PackageSemanticError::Capacity {
-                        lane: "semantic image",
-                    }
-                })?;
-            semantic_bytes = checked_package_bytes(
-                semantic_bytes,
-                image_bytes,
-                MAX_PACKAGE_SEMANTIC_BYTES,
-                "semantic image",
-            )?;
-            fragments.push(fragment);
-            staged.push(StagedPackageArtifact {
-                source: compiled.artifact.source,
-                recipe: compiled.artifact.recipe,
-                ir: compiled.ir,
-            });
-        }
-
-        let manifest_bytes = crate::publication::manifest::COMPILATION_MANIFEST_HEADER_BYTES
-            .checked_add(
-                package
-                    .sources
-                    .len()
-                    .checked_mul(
-                        crate::publication::manifest::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
-                    )
-                    .ok_or(PackageSemanticError::Capacity { lane: "manifest" })?,
-            )
-            .ok_or(PackageSemanticError::Capacity { lane: "manifest" })?;
-        self.scratch
-            .prepare_publication(staged.len(), manifest_bytes, fragment_bytes, semantic_bytes)
-            .map_err(PackageSemanticError::Scratch)?;
-
-        let mut compiled = Vec::new();
-        compiled
-            .try_reserve_exact(staged.len())
-            .map_err(PackageSemanticError::Allocation)?;
-        for (ordinal, (artifact, bytes)) in staged.into_iter().zip(&fragments).enumerate() {
-            let fragment = backend_semantic::ir::FragmentView::validate(bytes)
-                .map_err(|source| PackageSemanticError::Fragment { ordinal, source })?;
-            compiled.push(CompiledSemantic {
-                artifact: CompiledFragment {
-                    source: artifact.source,
-                    recipe: artifact.recipe,
-                    fragment,
-                },
-                ir: artifact.ir,
-            });
-        }
-
+    /// Compiles an exact package source frontier into canonical output bytes without selecting a
+    /// local journal head.
+    ///
+    /// The caller supplies the package root used by language authorities. A worker may mount a
+    /// complete immutable workspace closure there and pass the matching ordered source frontier;
+    /// this operation deliberately makes no precise-read-set or completeness claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first exact authority, compilation, cancellation, capacity, or canonical
+    /// output preparation failure. The result can be admitted by an artifact sink independently
+    /// of this compiler's local publisher.
+    pub fn compile_package_sources_staged<Progress>(
+        &mut self,
+        package: PackageSourceSet<'_>,
+        progress: &mut Progress,
+    ) -> Result<StagedSemanticPackage, PackageSemanticError>
+    where
+        Progress: FnMut(PackageCompilePhase),
+    {
+        let execution = self.execution();
+        let cancelled = self.config.control.cancelled;
+        let staged = execution.stage_package_sources(
+            package,
+            None,
+            None,
+            None,
+            EmbeddingRequirement::Optional,
+            self.scratch,
+            cancelled,
+            progress,
+        )?;
         progress(PackageCompilePhase::Publish);
-        let publication = publish_semantic(
-            &self.publisher,
-            self.config.artifact_directory,
-            &compiled,
-            PublishControl::Observe(self.config.control.cancelled),
-            SemanticPublicationScratch {
-                manifest_output: &mut self.scratch.manifest_output,
-                manifest_facts: &mut self.scratch.manifest_facts,
-                ordinals: &mut self.scratch.ordinals,
-                semantic_image_plan: &mut self.scratch.semantic_image_plan,
-                semantic_image_output: &mut self.scratch.semantic_image_output,
-                locality_output: &mut self.scratch.locality_output,
-                binding_output: &mut self.scratch.binding_output,
-            },
-        )
-        .map_err(PackageSemanticError::Publish)?;
-        drop(compiled);
-
-        progress(PackageCompilePhase::Reopen);
-        let opened = open_published_semantic(
-            &self.publisher,
-            self.config.artifact_directory,
-            OpenSemanticPublicationScratch {
-                manifest_output: &mut self.scratch.manifest_output,
-                manifest_facts: &mut self.scratch.manifest_facts,
-                fragment_output: &mut self.scratch.reopened_fragment_output,
-                semantic_image_output: &mut self.scratch.semantic_image_output,
-                locality_output: &mut self.scratch.locality_output,
-            },
-        )
-        .map_err(PackageSemanticError::Reopen)?
-        .ok_or(PackageSemanticError::MissingPublication)?;
-        let mut images = Vec::new();
-        images
-            .try_reserve_exact(package.sources.len())
-            .map_err(PackageSemanticError::Allocation)?;
-        for (ordinal, artifact) in opened.artifacts().enumerate() {
-            let artifact =
-                artifact.map_err(|source| PackageSemanticError::Artifact { ordinal, source })?;
-            let facts = artifact.fragment.facts.semantic_image.ok_or(
-                PackageSemanticError::ReopenedCardinality {
-                    expected: package.sources.len(),
-                    observed: ordinal,
-                },
-            )?;
-            let authority = SemanticImageAuthority {
-                identity: facts.identity,
-                byte_len: facts.byte_length,
-            };
-            images.push(
-                SemanticImageSnapshot::try_from_reopened(
-                    authority,
-                    artifact.semantic_image.as_ref(),
-                )
-                .map_err(|cause| PackageSemanticError::Snapshot { ordinal, cause })?,
-            );
-        }
-        if images.len() != package.sources.len() {
-            return Err(PackageSemanticError::ReopenedCardinality {
-                expected: package.sources.len(),
-                observed: images.len(),
-            });
-        }
-        Ok(PublishedSemanticPackage {
-            publication,
-            images: images.into_boxed_slice(),
-        })
+        self.prepare_staged_package(staged, cancelled)
     }
 
     /// Reopens one exact immutable semantic claim independently of the local journal head.
@@ -709,186 +2232,15 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         })
     }
 
-    #[allow(
-        clippy::result_large_err,
-        reason = "this single outer application boundary retains source, recipe, and publication authorities inline; any emitted native diagnostic is already the only cold boxed fact"
-    )]
     fn compile_and_publish(
         &mut self,
         request: ApplicationCompilerRequest<'_>,
     ) -> Result<GeneratedArtifact, CompilerTerminal> {
+        let execution = self.execution();
+        let cancelled = self.config.control.cancelled;
         let mut ignored = |_| {};
-        self.compile_scoped_and_publish(
-            request,
-            DeclarationScope::standalone(request.profile),
-            crate::driver::SemanticAuthorityInput::None,
-            &mut ignored,
-        )
-    }
-
-    #[allow(
-        clippy::result_large_err,
-        reason = "this single outer application boundary retains source, recipe, and publication authorities inline; any emitted native diagnostic is already the only cold boxed fact"
-    )]
-    fn compile_scoped_and_publish<Progress>(
-        &mut self,
-        request: ApplicationCompilerRequest<'_>,
-        declaration_scope: DeclarationScope<'_>,
-        authority: crate::driver::SemanticAuthorityInput<'_>,
-        progress: &mut Progress,
-    ) -> Result<GeneratedArtifact, CompilerTerminal>
-    where
-        Progress: FnMut(PackageCompilePhase),
-    {
-        let source = request_source(request).map_err(source_terminal)?;
-        let toolchain = self
-            .toolchain(request)
-            .map_err(|cause| toolchain_terminal(source, request, cause))?;
-        let deadline = self.config.control.deadline().map_err(|timeout| {
-            CompilerTerminal::DeadlineConstruction {
-                source,
-                language: request.profile.language(),
-                stage: request.stage,
-                timeout: *timeout,
-            }
-        })?;
-        self.compile_prepared_and_publish(
-            request,
-            source,
-            declaration_scope,
-            toolchain,
-            authority,
-            CompileControl {
-                deadline,
-                cancelled: self.config.control.cancelled,
-            },
-            progress,
-        )
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::result_large_err,
-        reason = "the prepared boundary keeps one source, toolchain, permit, scope, and authority transaction coherent through publication"
-    )]
-    fn compile_prepared_and_publish<Progress>(
-        &mut self,
-        request: ApplicationCompilerRequest<'_>,
-        _source: SourceAuthority,
-        declaration_scope: DeclarationScope<'_>,
-        toolchain: ToolchainSelection<'_>,
-        authority: crate::driver::SemanticAuthorityInput<'_>,
-        control: CompileControl<'_>,
-        progress: &mut Progress,
-    ) -> Result<GeneratedArtifact, CompilerTerminal>
-    where
-        Progress: FnMut(PackageCompilePhase),
-    {
-        self.retained_semantic_image = None;
-        progress(PackageCompilePhase::Lower);
-        let scratch = &mut *self.scratch;
-        let compiled = compile_fused_semantic(
-            CompileRequest {
-                profile: request.profile,
-                stage: request.stage,
-                source: request.source.as_bytes(),
-                declaration_scope,
-                toolchain,
-                authority,
-                control,
-            },
-            CompileScratch {
-                diagnostic_output: &mut scratch.diagnostic_output,
-                native_work: self.config.native_work_directory,
-            },
-            CompileOutput {
-                fragment_output: scratch.fragment_output.as_mut(),
-            },
-        )
-        .map_err(compile_terminal)?;
-        let source = source_authority(compiled.artifact.source);
-        let recipe = compiled.artifact.recipe;
-        let fragment = ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
-            compiled.artifact.fragment.as_ref(),
-        );
-        let semantic_length =
-            backend_semantic::ir::full_semantic_image_len(&compiled.ir).map_err(|cause| {
-                crate::application::terminal::semantic_publication_terminal(
-                    source,
-                    recipe,
-                    crate::publication::PublishSemanticError::ImageMeasure {
-                        ordinal: 0,
-                        source: cause,
-                    },
-                )
-            })?;
-        scratch.semantic_image_output.resize(semantic_length, 0);
-        progress(PackageCompilePhase::Publish);
-        let publication = publish_semantic(
-            &self.publisher,
-            self.config.artifact_directory,
-            core::slice::from_ref(&compiled),
-            PublishControl::Observe(self.config.control.cancelled),
-            SemanticPublicationScratch {
-                manifest_output: &mut scratch.manifest_output,
-                manifest_facts: &mut scratch.manifest_facts,
-                ordinals: &mut scratch.ordinals,
-                semantic_image_plan: &mut scratch.semantic_image_plan,
-                semantic_image_output: &mut scratch.semantic_image_output,
-                locality_output: &mut scratch.locality_output,
-                binding_output: &mut scratch.binding_output,
-            },
-        )
-        .map_err(|error| {
-            crate::application::terminal::semantic_publication_terminal(source, recipe, error)
-        })?;
-        drop(compiled);
-
-        progress(PackageCompilePhase::Reopen);
-        let opened = open_published_semantic(
-            &self.publisher,
-            self.config.artifact_directory,
-            OpenSemanticPublicationScratch {
-                manifest_output: &mut scratch.manifest_output,
-                manifest_facts: &mut scratch.manifest_facts,
-                fragment_output: scratch.fragment_output.as_mut(),
-                semantic_image_output: &mut scratch.semantic_image_output,
-                locality_output: &mut scratch.locality_output,
-            },
-        )
-        .map_err(|error| {
-            crate::application::terminal::semantic_reopen_terminal(source, recipe, error)
-        })?
-        .ok_or_else(|| crate::application::terminal::semantic_reopen_absent(source, recipe))?;
-        let mut artifacts = opened.artifacts();
-        let semantic = artifacts
-            .next()
-            .ok_or_else(|| crate::application::terminal::semantic_reopen_absent(source, recipe))?
-            .map_err(|error| {
-                crate::application::terminal::semantic_artifact_terminal(source, recipe, error)
-            })?;
-        let semantic_facts =
-            semantic.fragment.facts.semantic_image.ok_or_else(|| {
-                crate::application::terminal::semantic_reopen_absent(source, recipe)
-            })?;
-        if artifacts.next().is_some() {
-            return Err(crate::application::terminal::semantic_reopen_cardinality(
-                source, recipe,
-            ));
-        }
-        let generated = generated(source, recipe, fragment, semantic_facts, &publication);
-        self.retained_semantic_image = Some(generated.semantic_image);
-        Ok(generated)
-    }
-
-    fn toolchain(
-        &self,
-        request: ApplicationCompilerRequest<'_>,
-    ) -> Result<ToolchainSelection<'path>, ToolchainRouteError> {
-        let route = FullRegistry
-            .route(request.profile.language(), request.stage)
-            .map_err(ToolchainRouteError::UnsupportedStage)?;
-        select_toolchain(self.config.toolchains, route)
+        let staged = execution.stage_generate(request, self.scratch, cancelled, &mut ignored)?;
+        self.publish_staged_single(staged, cancelled, &mut ignored)
     }
 }
 
@@ -933,107 +2285,11 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
     where
         Progress: FnMut(PackageCompilePhase),
     {
-        let target = request.as_ref().identity;
-        if self
-            .config
-            .control
-            .cancelled
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(CompilerTerminal::PackageCancelled {
-                target,
-                phase: PackageCompilePhase::Locate,
-            });
-        }
-        progress(PackageCompilePhase::Locate);
-        let resolved =
-            package_source::resolve(self.package_roots, request.as_ref()).map_err(|cause| {
-                CompilerTerminal::PackageSource {
-                    target,
-                    phase: PackageCompilePhase::Locate,
-                    cause,
-                }
-            })?;
-        progress(PackageCompilePhase::EnterSource);
-        let source = std::str::from_utf8(&resolved.bytes).map_err(|cause| {
-            CompilerTerminal::PackageSource {
-                target,
-                phase: PackageCompilePhase::EnterSource,
-                cause: PackageSourceCause::InvalidUtf8 {
-                    valid_up_to: cause.valid_up_to(),
-                    error_len: cause
-                        .error_len()
-                        .and_then(|length| u8::try_from(length).ok()),
-                },
-            }
-        })?;
-        let package = request.as_ref();
-        let scope =
-            DeclarationScope::for_package(package, &resolved.relative_source).map_err(|cause| {
-                CompilerTerminal::PackageSource {
-                    target,
-                    phase: PackageCompilePhase::EnterSource,
-                    cause: PackageSourceCause::DeclarationScope {
-                        cause: declaration_scope_cause(cause),
-                    },
-                }
-            })?;
-        progress(PackageCompilePhase::Authority);
-        let application_request = ApplicationCompilerRequest {
-            profile: request.target.profile,
-            stage: request.target.stage,
-            source,
-        };
-        let source_authority = request_source(application_request).map_err(source_terminal)?;
-        let toolchain = self
-            .toolchain(application_request)
-            .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))?;
-        let deadline = self.config.control.deadline().map_err(|timeout| {
-            CompilerTerminal::DeadlineConstruction {
-                source: source_authority,
-                language: application_request.profile.language(),
-                stage: application_request.stage,
-                timeout: *timeout,
-            }
-        })?;
-        let control = CompileControl {
-            deadline,
-            cancelled: self.config.control.cancelled,
-        };
-        let authority = enter_package_authority(PackageAuthorityRequest {
-            package_root: &resolved.package_root,
-            source_path: &resolved.source_path,
-            source: &resolved.bytes,
-            profile: application_request.profile,
-            toolchain,
-            control,
-            configuration: self.package_authority,
-        })
-        .map_err(|cause| {
-            package_authority_terminal(
-                target,
-                application_request,
-                source_authority,
-                toolchain,
-                cause,
-            )
-        })?;
-        self.compile_prepared_and_publish(
-            application_request,
-            source_authority,
-            scope,
-            toolchain,
-            authority.input(),
-            control,
-            progress,
-        )
+        let execution = self.execution();
+        let cancelled = self.config.control.cancelled;
+        let staged = execution.stage_package(request, self.scratch, cancelled, progress)?;
+        self.publish_staged_single(staged, cancelled, progress)
     }
-}
-
-struct StagedPackageArtifact {
-    source: backend_semantic::ir::SourceIdentity,
-    recipe: backend_semantic::vocabulary::CompileRecipeFact,
-    ir: backend_semantic::ir::Ir,
 }
 
 fn copy_bytes(bytes: &[u8]) -> Result<Box<[u8]>, PackageSemanticError> {
@@ -1058,6 +2314,20 @@ fn checked_package_bytes(
         return Err(PackageSemanticError::Capacity { lane });
     }
     Ok(total)
+}
+
+fn staged_output_terminal(
+    source: backend_semantic::ir::SourceIdentity,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
+    phase: PublicationPhase,
+) -> CompilerTerminal {
+    CompilerTerminal::Publication {
+        attempted: CompilerAttempt {
+            source: source_authority(source),
+            recipe: recipe.identity,
+        },
+        cause: PublicationCause::Rejected(phase),
+    }
 }
 
 const fn lineage_cause(
@@ -1241,6 +2511,8 @@ const fn package_authority_projection(
     match cause {
         PackageAuthorityError::SourceOutsidePackage { .. }
         | PackageAuthorityError::TypeScriptEntryPath { .. }
+        | PackageAuthorityError::CompilationUnitMismatch { .. }
+        | PackageAuthorityError::CompilationUnitSourceMismatch { .. }
         | PackageAuthorityError::RustToolchainExecutableMismatch { .. }
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
@@ -1308,16 +2580,25 @@ const fn toolchain_terminal(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{
+        path::Path,
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
     use crate::driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
+    use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest};
     use backend_semantic::registry::AdapterRoute;
     use backend_semantic::vocabulary::NativeTool;
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, RustEdition, Stage};
     use thiserror::Error;
 
     use crate::application::{LocalToolchainSet, LocalToolchainSetError};
 
-    use super::{ToolchainRouteError, select_toolchain};
+    use super::{
+        EmbeddingProvisioningFailure, PackageSource, PackageSourceSet, PackageSourceSetError,
+        StagedEmbeddingStatus, ToolchainRouteError, select_toolchain,
+    };
+    use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
 
     #[derive(Debug, Error)]
     enum RouteTestError {
@@ -1353,5 +2634,178 @@ mod tests {
             Err(observed) => Err(RouteTestError::Route { observed }),
             Ok(_) => Err(RouteTestError::Accepted),
         }
+    }
+
+    #[test]
+    fn rust_crate_units_select_the_exact_root_and_reject_unit_mutations() {
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(1),
+                profile: LanguageProfile::Rust(RustEdition::Rust2024),
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::parse("pkg:cargo/workspace@1.0.0")
+                .expect("fixture package URL is canonical"),
+        )
+        .expect("package and profile agree");
+        let sources = [
+            PackageSource::new("src/a.rs", "pub fn a() {}")
+                .expect("first source path is normalized"),
+            PackageSource::new("src/b.rs", "pub fn b() {}")
+                .expect("second source path is normalized"),
+        ];
+        let target_a = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            CompilationUnitKeyV2::RustCrate {
+                name: "a".into(),
+                root: "src/a.rs".into(),
+            },
+        )
+        .expect("unit A is canonical");
+        let target_b = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            CompilationUnitKeyV2::RustCrate {
+                name: "b".into(),
+                root: "src/b.rs".into(),
+            },
+        )
+        .expect("unit B is canonical");
+        assert_ne!(target_a.target(), target_b.target());
+
+        let unit_a =
+            PackageSourceSet::new_for_unit(&request, &target_a, Path::new("/workspace"), &sources)
+                .expect("unit A is present in the immutable frontier");
+        let unit_b =
+            PackageSourceSet::new_for_unit(&request, &target_b, Path::new("/workspace"), &sources)
+                .expect("unit B is present in the immutable frontier");
+        assert_eq!(unit_a.embedding_provisioning_failure, None);
+        let configured_failure = unit_a
+            .clone()
+            .with_embedding_provisioning_failure(EmbeddingProvisioningFailure::ModelUnavailable);
+        assert_eq!(
+            configured_failure.embedding_provisioning_failure,
+            Some(EmbeddingProvisioningFailure::ModelUnavailable)
+        );
+        assert_ne!(
+            StagedEmbeddingStatus::NotConfigured,
+            StagedEmbeddingStatus::ProvisioningUnavailable {
+                cause: EmbeddingProvisioningFailure::ModelUnavailable,
+            }
+        );
+        assert_eq!(
+            unit_a
+                .compilation_sources()
+                .map(|source| source.relative_path())
+                .collect::<Vec<_>>(),
+            ["src/a.rs"]
+        );
+        assert_eq!(
+            unit_b
+                .compilation_sources()
+                .map(|source| source.relative_path())
+                .collect::<Vec<_>>(),
+            ["src/b.rs"]
+        );
+
+        let wrong_unit = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            CompilationUnitKeyV2::CSharpProject {
+                project_path: "src/a.csproj".into(),
+            },
+        )
+        .expect("wire unit itself is canonical");
+        assert_eq!(
+            PackageSourceSet::new_for_unit(
+                &request,
+                &wrong_unit,
+                Path::new("/workspace"),
+                &sources,
+            )
+            .err(),
+            Some(PackageSourceSetError::CompilationUnitMismatch)
+        );
+    }
+
+    #[test]
+    fn csharp_project_units_select_distinct_source_roots_and_reject_missing_roots() {
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(2),
+                profile: LanguageProfile::CSharp(
+                    backend_semantic::vocabulary::CSharpVersion::CSharp14,
+                ),
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::parse("pkg:nuget/workspace@1.0.0")
+                .expect("fixture package URL is canonical"),
+        )
+        .expect("package and profile agree");
+        let sources = [
+            PackageSource::new("src/alpha/Alpha.cs", "public sealed class Alpha {}")
+                .expect("first source path is normalized"),
+            PackageSource::new("src/beta/Beta.cs", "public sealed class Beta {}")
+                .expect("second source path is normalized"),
+        ];
+        let target_alpha = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            CompilationUnitKeyV2::CSharpProject {
+                project_path: "src/alpha/Alpha.csproj".into(),
+            },
+        )
+        .expect("first C# project target is canonical");
+        let target_beta = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            CompilationUnitKeyV2::CSharpProject {
+                project_path: "src/beta/Beta.csproj".into(),
+            },
+        )
+        .expect("second C# project target is canonical");
+        assert_ne!(target_alpha.target(), target_beta.target());
+
+        let alpha = PackageSourceSet::new_for_unit(
+            &request,
+            &target_alpha,
+            Path::new("/workspace"),
+            &sources,
+        )
+        .expect("the first project has a source in its exact directory");
+        let beta = PackageSourceSet::new_for_unit(
+            &request,
+            &target_beta,
+            Path::new("/workspace"),
+            &sources,
+        )
+        .expect("the second project has a source in its exact directory");
+        assert_eq!(
+            alpha
+                .compilation_sources()
+                .map(|source| source.relative_path())
+                .collect::<Vec<_>>(),
+            ["src/alpha/Alpha.cs"]
+        );
+        assert_eq!(
+            beta.compilation_sources()
+                .map(|source| source.relative_path())
+                .collect::<Vec<_>>(),
+            ["src/beta/Beta.cs"]
+        );
+
+        let mutated_target = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            CompilationUnitKeyV2::CSharpProject {
+                project_path: "src/missing/Missing.csproj".into(),
+            },
+        )
+        .expect("the mutated target is itself canonical");
+        assert_eq!(
+            PackageSourceSet::new_for_unit(
+                &request,
+                &mutated_target,
+                Path::new("/workspace"),
+                &sources,
+            )
+            .err(),
+            Some(PackageSourceSetError::CompilationUnitMismatch)
+        );
     }
 }

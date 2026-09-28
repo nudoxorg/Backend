@@ -1936,12 +1936,14 @@ impl<'source> FactSet<'source> {
         let (count, matches) = match lane {
             ReferenceListLane::Atoms => {
                 let count = self.atom_list_len;
-                let matches = (0..count).find(|index| self.atom_lists.row(*index) == Some(elements));
+                let matches =
+                    (0..count).find(|index| self.atom_lists.row(*index) == Some(elements));
                 (count, matches)
             }
             ReferenceListLane::Types => {
                 let count = self.type_list_len;
-                let matches = (0..count).find(|index| self.type_lists.row(*index) == Some(elements));
+                let matches =
+                    (0..count).find(|index| self.type_lists.row(*index) == Some(elements));
                 (count, matches)
             }
             ReferenceListLane::Entities => {
@@ -1962,7 +1964,8 @@ impl<'source> FactSet<'source> {
             ReferenceListLane::Types => &mut self.type_lists,
             ReferenceListLane::Entities => &mut self.entity_lists,
         };
-        pool.push(elements).map_err(|_| FactFault::RefListElements)?;
+        pool.push(elements)
+            .map_err(|_| FactFault::RefListElements)?;
         match lane {
             ReferenceListLane::Atoms => self.atom_list_len = count + 1,
             ReferenceListLane::Types => self.type_list_len = count + 1,
@@ -2281,10 +2284,7 @@ impl<'source> FactSet<'source> {
         Ok(())
     }
 
-    fn materialize_occurrence<'a>(
-        &'a self,
-        index: usize,
-    ) -> Result<Occurrence<'a>, (u32, usize)> {
+    fn materialize_occurrence<'a>(&'a self, index: usize) -> Result<Occurrence<'a>, (u32, usize)> {
         if index >= self.occurrence_len {
             return Err((0, self.foreign_text.len()));
         }
@@ -4208,19 +4208,18 @@ fn live_type<'source>(
             let parameter = tree.intern_atom(record.text.unwrap_or(b"K"))?;
             // The staged cell carries the lattice's frozen discriminant
             // (`Add = 0`, `Remove = 1`, `Absent = 2`), not the owned IR's.
-            let modifier = |value: u32| match backend_semantic::ir::LatticeMappedModifier::try_from(
-                value,
-            ) {
-                Ok(backend_semantic::ir::LatticeMappedModifier::Add) => {
-                    backend_semantic::ir::MappedModifier::Add
-                }
-                Ok(backend_semantic::ir::LatticeMappedModifier::Remove) => {
-                    backend_semantic::ir::MappedModifier::Remove
-                }
-                Ok(backend_semantic::ir::LatticeMappedModifier::Absent) | Err(_) => {
-                    backend_semantic::ir::MappedModifier::Preserve
-                }
-            };
+            let modifier =
+                |value: u32| match backend_semantic::ir::LatticeMappedModifier::try_from(value) {
+                    Ok(backend_semantic::ir::LatticeMappedModifier::Add) => {
+                        backend_semantic::ir::MappedModifier::Add
+                    }
+                    Ok(backend_semantic::ir::LatticeMappedModifier::Remove) => {
+                        backend_semantic::ir::MappedModifier::Remove
+                    }
+                    Ok(backend_semantic::ir::LatticeMappedModifier::Absent) | Err(_) => {
+                        backend_semantic::ir::MappedModifier::Preserve
+                    }
+                };
             tree.intern_computed(ComputedType::Mapped {
                 parameter,
                 constraint: child_type(0)?,
@@ -5501,8 +5500,9 @@ pub(super) fn admit<'source, 'output>(
         .iter()
         .enumerate()
     {
-        let occurrence = facts.materialize_occurrence(index).map_err(
-            |(slot, stored)| {
+        let occurrence = facts
+            .materialize_occurrence(index)
+            .map_err(|(slot, stored)| {
                 // An owned package slot outside the text lane is an unbound
                 // staging coordinate, reported through the extension-atom fault
                 // so the public compile-failure enum stays unchanged.
@@ -5511,8 +5511,7 @@ pub(super) fn admit<'source, 'output>(
                     provisional: slot,
                     atom_count: stored,
                 }
-            },
-        )?;
+            })?;
         occurrence_inputs[index] = OccurrenceInput {
             owner: backend_semantic::ir::EntityId::new(*owner),
             occurrence,
@@ -5564,7 +5563,12 @@ pub(super) fn admit<'source, 'output>(
                 atom_count: 0,
             });
         };
-        type_list_elements.push(row.iter().copied().map(remap_staged_type).collect::<Vec<_>>());
+        type_list_elements.push(
+            row.iter()
+                .copied()
+                .map(remap_staged_type)
+                .collect::<Vec<_>>(),
+        );
     }
     let pooled_type_lists = type_list_elements
         .iter()

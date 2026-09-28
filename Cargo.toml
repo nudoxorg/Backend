@@ -44,6 +44,7 @@ ignore = "0.4.33"
 gpui = { package = "gpui-ce", version = "=0.2.2", default-features = false }
 gpui_platform = { package = "gpui_ce_platform", version = "=0.1.0", default-features = false }
 gpui_component = { package = "gpui_ce_components", version = "=0.2.0" }
+hmac = "0.12.1"
 loom = "0.7.2"
 opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = "=0.32.0"

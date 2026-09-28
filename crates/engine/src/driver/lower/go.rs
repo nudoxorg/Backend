@@ -951,7 +951,6 @@ fn absent_name(index: usize) -> &'static [u8] {
     }
 }
 
-
 /// Whether one Go identifier does not bind at its declaration site.
 fn is_unbound_name(name: &[u8]) -> bool {
     name.is_empty() || name == b"_"
@@ -1408,11 +1407,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// declaration positively lives in a sibling file (version-6 `name_span`
     /// without the digest-bound flag) stay unresolved here so the occurrence
     /// keeps the package import-path key the join layer matches.
-    fn local_type_target(
-        &self,
-        package: &[u8],
-        name: &[u8],
-    ) -> Option<OccurrenceTarget<'source>> {
+    fn local_type_target(&self, package: &[u8], name: &[u8]) -> Option<OccurrenceTarget<'source>> {
         let ordinal = self.lookup(package, name)?;
         let cross_file = self
             .names
@@ -1430,11 +1425,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// (version-6 `name_span` without the digest-bound flag) stay unresolved
     /// here so the occurrence keeps the package import-path key the join
     /// layer matches.
-    fn local_const_target(
-        &self,
-        package: &[u8],
-        name: &[u8],
-    ) -> Option<OccurrenceTarget<'source>> {
+    fn local_const_target(&self, package: &[u8], name: &[u8]) -> Option<OccurrenceTarget<'source>> {
         let ordinal = self.lookup(package, name)?;
         let cross_file = self
             .names
@@ -1452,11 +1443,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// (version-6 `name_span` without the digest-bound flag) stay unresolved
     /// here so the occurrence keeps the package import-path key the join
     /// layer matches.
-    fn local_var_target(
-        &self,
-        package: &[u8],
-        name: &[u8],
-    ) -> Option<OccurrenceTarget<'source>> {
+    fn local_var_target(&self, package: &[u8], name: &[u8]) -> Option<OccurrenceTarget<'source>> {
         let ordinal = self.lookup(package, name)?;
         let cross_file = self
             .names
@@ -1494,12 +1481,11 @@ impl<'x, 'source> Projector<'x, 'source> {
                 _ => None,
             }
         } else {
-            let same_file_bound: Vec<_> = bound
-                .iter()
-                .filter(|key| key.file == use_file)
-                .collect();
+            let same_file_bound: Vec<_> = bound.iter().filter(|key| key.file == use_file).collect();
             match same_file_bound.len() {
-                1 => Some(OccurrenceTarget::Local(EntityId::new(same_file_bound[0].ordinal))),
+                1 => Some(OccurrenceTarget::Local(EntityId::new(
+                    same_file_bound[0].ordinal,
+                ))),
                 _ => None,
             }
         }
@@ -1521,7 +1507,6 @@ impl<'x, 'source> Projector<'x, 'source> {
     ) -> bool {
         image_version == 6 && !method.bound
     }
-
 
     /// Reports whether one unqualified identifier already names a declaration
     /// row in the authority image.
@@ -1553,12 +1538,15 @@ impl<'x, 'source> Projector<'x, 'source> {
             if self.image_declared(unqualified)? {
                 continue;
             }
-            let fact = RootType::leaf(unknown_record(TypeReason::UnresolvedExternal, Some(spelling)))
-                .attach(SemanticFact::new(
-                    EntityKind::Alias,
-                    spelling,
-                    constructor(EntityKind::Alias),
-                ));
+            let fact = RootType::leaf(unknown_record(
+                TypeReason::UnresolvedExternal,
+                Some(spelling),
+            ))
+            .attach(SemanticFact::new(
+                EntityKind::Alias,
+                spelling,
+                constructor(EntityKind::Alias),
+            ));
             let ordinal = push(self.facts, fact)?;
             self.facts
                 .mark_parentage_root(ordinal)
@@ -1690,12 +1678,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 return Ok(OccurrenceTarget::Local(EntityId::new(ordinal)));
             }
         }
-        foreign_target(
-            reference_index,
-            package,
-            target,
-            foreign_entity_kind(class),
-        )
+        foreign_target(reference_index, package, target, foreign_entity_kind(class))
     }
 
     /// Resolves one receiver-qualified member to a local fact. Fields whose
@@ -1745,8 +1728,16 @@ impl<'x, 'source> Projector<'x, 'source> {
                     && key.member == member
             })
             .collect();
-        let bound: Vec<_> = matches.iter().copied().filter(|key| !key.cross_file).collect();
-        let cross: Vec<_> = matches.iter().copied().filter(|key| key.cross_file).collect();
+        let bound: Vec<_> = matches
+            .iter()
+            .copied()
+            .filter(|key| !key.cross_file)
+            .collect();
+        let cross: Vec<_> = matches
+            .iter()
+            .copied()
+            .filter(|key| key.cross_file)
+            .collect();
         if cross.is_empty() {
             if bound.len() == 1 {
                 Some(OccurrenceTarget::Local(EntityId::new(bound[0].ordinal)))
@@ -1754,7 +1745,11 @@ impl<'x, 'source> Projector<'x, 'source> {
                 None
             }
         } else {
-            let same_file_bound: Vec<_> = bound.iter().copied().filter(|key| key.file == use_file).collect();
+            let same_file_bound: Vec<_> = bound
+                .iter()
+                .copied()
+                .filter(|key| key.file == use_file)
+                .collect();
             if same_file_bound.len() == 1 {
                 Some(OccurrenceTarget::Local(EntityId::new(
                     same_file_bound[0].ordinal,
@@ -1764,8 +1759,6 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
         }
     }
-
-
 
     /// Records one image declaration's primary-source facts: its fact's
     /// source span (the full authority-bound declaration extent, the exact
@@ -2505,12 +2498,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 } else if row.target_class == ReferenceTargetClass::Var {
                     self.local_var_target(owner_package, row.target)
                 } else if row.target_class == ReferenceTargetClass::Method {
-                    self.resolve_method_target(
-                        owner_package,
-                        row.recv_type,
-                        row.target,
-                        row.file,
-                    )
+                    self.resolve_method_target(owner_package, row.recv_type, row.target, row.file)
                 } else if row.target_class == ReferenceTargetClass::Field {
                     self.local_member_target(owner_package, row.recv_type, row.target)
                 } else if row.target_class == ReferenceTargetClass::Func {
@@ -3561,8 +3549,10 @@ impl<'x, 'source> Projector<'x, 'source> {
             b"string" | b"untyped string" => {
                 SemanticTypeRecord::leaf(SemanticTypeTag::Primitive).with_shape(SHAPE_STR)
             }
-            b"untyped int" | b"untyped rune" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
-                .with_shape(SHAPE_ARBITRARY_INTEGER),
+            b"untyped int" | b"untyped rune" => {
+                SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
+                    .with_shape(SHAPE_ARBITRARY_INTEGER)
+            }
             b"int" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
                 .with_shape(SHAPE_NATIVE_SIGNED_INTEGER),
             b"uint" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
@@ -5898,7 +5888,9 @@ mod tests {
             return Err(TestError::Missing("two same-typed blank declarations"));
         }
         if identities[0] == identities[1] {
-            return Err(TestError::Missing("blank declarations must not share one identity"));
+            return Err(TestError::Missing(
+                "blank declarations must not share one identity",
+            ));
         }
         Ok(())
     }
@@ -6189,7 +6181,8 @@ mod tests {
     fn assert_duplicate_function_homonym_resolution(bound_first: bool) -> Result<(), TestError> {
         use backend_semantic::ir::{ForeignKey, ForeignOrigin, PackageLineage};
 
-        let source = b"package demo\n\nfunc SetNote() {}\n\nfunc Use() { f := SetNote; _ = f; SetNote() }\n";
+        let source =
+            b"package demo\n\nfunc SetNote() {}\n\nfunc Use() { f := SetNote; _ = f; SetNote() }\n";
         let mut fix = Fixture::new();
         let (bound_index, sibling_index, use_fn, use_sibling) =
             duplicate_function_homonym_fixture(&mut fix, source, bound_first)?;
@@ -6205,14 +6198,12 @@ mod tests {
             return Err(TestError::Missing("distinct homonym ordinals"));
         }
         let use_owner = EntityId::new(u32::try_from(use_fn).map_err(TestError::from)?);
-        let use_sibling_owner =
-            EntityId::new(u32::try_from(use_sibling).map_err(TestError::from)?);
+        let use_sibling_owner = EntityId::new(u32::try_from(use_sibling).map_err(TestError::from)?);
         let package_key = OccurrenceTarget::Foreign(
             ForeignKey::new(
                 ForeignOrigin::Package(
-                    PackageLineage::new("go", "example.com/demo").map_err(|_| {
-                        TestError::Missing("package lineage")
-                    })?,
+                    PackageLineage::new("go", "example.com/demo")
+                        .map_err(|_| TestError::Missing("package lineage"))?,
                 ),
                 "SetNote",
                 "SetNote",
@@ -6294,14 +6285,14 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_function_homonym_resolves_by_use_file_when_bound_declared_first() -> Result<(), TestError>
-    {
+    fn duplicate_function_homonym_resolves_by_use_file_when_bound_declared_first()
+    -> Result<(), TestError> {
         assert_duplicate_function_homonym_resolution(true)
     }
 
     #[test]
-    fn duplicate_function_homonym_resolves_by_use_file_when_sibling_declared_first() -> Result<(), TestError>
-    {
+    fn duplicate_function_homonym_resolves_by_use_file_when_sibling_declared_first()
+    -> Result<(), TestError> {
         assert_duplicate_function_homonym_resolution(false)
     }
 
@@ -6397,6 +6388,8 @@ mod tests {
         let state = fix.declaration(KIND_VAR, b"state", None);
         let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
         let set_name = fix.method(lang, b"SetName", None);
+        // The receiver-qualified call targets a method bound in this package image.
+        fix.methods[set_name].bound = true;
         let string_row = fix.basic(b"string");
         let lang_row = fix.start_row(ROW_STRUCT);
         fix.field(lang_row, b"Name", Some(string_row));
@@ -6528,10 +6521,7 @@ mod tests {
         field_name: &[u8],
     ) -> Result<EntityId, TestError> {
         let owner = entity_of(view, owner_name)?;
-        let facts = go_extension(
-            view,
-            usize::try_from(owner.raw).map_err(TestError::from)?,
-        )?;
+        let facts = go_extension(view, usize::try_from(owner.raw).map_err(TestError::from)?)?;
         if facts.fields.raw == 0 {
             return Err(TestError::Missing("type field list"));
         }
@@ -6669,7 +6659,9 @@ mod tests {
             return Err(TestError::Missing("typed foreign promoted field key"));
         }
         if occurrences.next().is_some() {
-            return Err(TestError::Missing("exact ambiguous promoted field occurrences"));
+            return Err(TestError::Missing(
+                "exact ambiguous promoted field occurrences",
+            ));
         }
         Ok(())
     }
@@ -6696,7 +6688,9 @@ mod tests {
         let outer_value = field_on_type(&view, b"Outer", b"Value")?;
         let inner_value = field_on_type(&view, b"Inner", b"Value")?;
         if outer_value == inner_value {
-            return Err(TestError::Missing("distinct direct and embedded Value fields"));
+            return Err(TestError::Missing(
+                "distinct direct and embedded Value fields",
+            ));
         }
         let mut occurrences = view
             .occurrences()
@@ -6751,7 +6745,9 @@ mod tests {
             return Err(TestError::Missing("pointer embed promotes Inner.Value"));
         }
         if occurrences.next().is_some() {
-            return Err(TestError::Missing("exact pointer promoted field occurrences"));
+            return Err(TestError::Missing(
+                "exact pointer promoted field occurrences",
+            ));
         }
         Ok(())
     }
@@ -6793,10 +6789,14 @@ mod tests {
             || access.occurrence.kind != ReferenceKind::FieldAccess
             || access.occurrence.confidence != OccurrenceConfidence::Oracle
         {
-            return Err(TestError::Missing("two-level promotion resolves to Inner.Value"));
+            return Err(TestError::Missing(
+                "two-level promotion resolves to Inner.Value",
+            ));
         }
         if occurrences.next().is_some() {
-            return Err(TestError::Missing("exact two-level promoted field occurrences"));
+            return Err(TestError::Missing(
+                "exact two-level promoted field occurrences",
+            ));
         }
         Ok(())
     }
@@ -6832,7 +6832,9 @@ mod tests {
         if access.owner != use_entity
             || access.occurrence.target == OccurrenceTarget::Local(inner_value)
         {
-            return Err(TestError::Missing("cross-file direct field is not the embed"));
+            return Err(TestError::Missing(
+                "cross-file direct field is not the embed",
+            ));
         }
         let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
             return Err(TestError::Missing("cross-file direct field stays foreign"));
@@ -6848,10 +6850,14 @@ mod tests {
             || access.occurrence.kind != ReferenceKind::FieldAccess
             || access.occurrence.confidence != OccurrenceConfidence::Oracle
         {
-            return Err(TestError::Missing("typed foreign cross-file direct field key"));
+            return Err(TestError::Missing(
+                "typed foreign cross-file direct field key",
+            ));
         }
         if occurrences.next().is_some() {
-            return Err(TestError::Missing("exact cross-file direct field occurrences"));
+            return Err(TestError::Missing(
+                "exact cross-file direct field occurrences",
+            ));
         }
         Ok(())
     }
@@ -6900,10 +6906,14 @@ mod tests {
             || access.occurrence.kind != ReferenceKind::FieldAccess
             || access.occurrence.confidence != OccurrenceConfidence::Oracle
         {
-            return Err(TestError::Missing("diamond promotion resolves to Inner.Value"));
+            return Err(TestError::Missing(
+                "diamond promotion resolves to Inner.Value",
+            ));
         }
         if occurrences.next().is_some() {
-            return Err(TestError::Missing("exact diamond promoted field occurrences"));
+            return Err(TestError::Missing(
+                "exact diamond promoted field occurrences",
+            ));
         }
         Ok(())
     }
@@ -6935,7 +6945,9 @@ mod tests {
             .ok_or(TestError::Missing("method-shaped promoted read"))??;
         if access.owner != use_entity || access.occurrence.target == OccurrenceTarget::Local(value)
         {
-            return Err(TestError::Missing("method-shaped read is not the promoted field"));
+            return Err(TestError::Missing(
+                "method-shaped read is not the promoted field",
+            ));
         }
         let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
             return Err(TestError::Missing("method-shaped read stays foreign"));
@@ -6954,7 +6966,9 @@ mod tests {
             return Err(TestError::Missing("typed foreign method key"));
         }
         if occurrences.next().is_some() {
-            return Err(TestError::Missing("exact method-shaped promoted occurrences"));
+            return Err(TestError::Missing(
+                "exact method-shaped promoted occurrences",
+            ));
         }
         Ok(())
     }
@@ -7005,10 +7019,14 @@ mod tests {
             || access.occurrence.kind != ReferenceKind::FieldAccess
             || access.occurrence.confidence != OccurrenceConfidence::Oracle
         {
-            return Err(TestError::Missing("typed foreign cross-file promoted field key"));
+            return Err(TestError::Missing(
+                "typed foreign cross-file promoted field key",
+            ));
         }
         if occurrences.next().is_some() {
-            return Err(TestError::Missing("exact cross-file promoted field occurrences"));
+            return Err(TestError::Missing(
+                "exact cross-file promoted field occurrences",
+            ));
         }
         Ok(())
     }
@@ -7042,7 +7060,9 @@ mod tests {
         let inner_value = field_on_type(&view, b"Inner", b"Value")?;
         let side_value = field_on_type(&view, b"Side", b"Value")?;
         if inner_value == side_value {
-            return Err(TestError::Missing("distinct local and sibling Value fields"));
+            return Err(TestError::Missing(
+                "distinct local and sibling Value fields",
+            ));
         }
         let mut occurrences = view
             .occurrences()
@@ -7070,10 +7090,14 @@ mod tests {
             || access.occurrence.kind != ReferenceKind::FieldAccess
             || access.occurrence.confidence != OccurrenceConfidence::Oracle
         {
-            return Err(TestError::Missing("typed foreign blocked promoted field key"));
+            return Err(TestError::Missing(
+                "typed foreign blocked promoted field key",
+            ));
         }
         if occurrences.next().is_some() {
-            return Err(TestError::Missing("exact blocked promoted field occurrences"));
+            return Err(TestError::Missing(
+                "exact blocked promoted field occurrences",
+            ));
         }
         Ok(())
     }
@@ -7382,9 +7406,7 @@ mod tests {
         Ok(())
     }
 
-    fn count_set_note_method_calls(
-        view: &FragmentView<'_>,
-    ) -> Result<(usize, usize), TestError> {
+    fn count_set_note_method_calls(view: &FragmentView<'_>) -> Result<(usize, usize), TestError> {
         let mut local = 0_usize;
         let mut namespace = 0_usize;
         let mut occurrences = view
@@ -7663,5 +7685,4 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         assert_cross_file_method_resolution(&view, bound_method_ordinal, use_main, use_sibling)
     }
-
 }

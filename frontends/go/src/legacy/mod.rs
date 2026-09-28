@@ -24,6 +24,7 @@ pub use self::image::{
 };
 pub use self::oracle::{
     ConfiguredGoOracle, GoOracle, GoOracleConfiguration, GoOracleConfigurationError,
-    GoOracleExecutable, GoOracleExecutableView, OracleError, Output,
+    GoOracleExecutable, GoOracleExecutableView, GoOracleInvocationModeV1,
+    GoOracleInvocationOptionsV1, OracleError, Output,
 };
 pub use self::staging::{StagedGoModule, StagingError, stage_module};

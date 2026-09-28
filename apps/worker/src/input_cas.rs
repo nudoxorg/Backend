@@ -8,10 +8,10 @@ use crate::closure_index::DurableNodeIndex;
 #[path = "durable_sink.rs"]
 mod durable_sink;
 use backend_engine::{
-    AdmittedChunk, AuthorityClaim, CanonicalDigest, CheckedWorkspaceManifest, Frame,
-    ImmutableObjectSchema, ObjectKey, ObjectRequest, ObjectVersion, ReceivingCas,
-    ReceivingCheckpoint, ReplicationError, Schema, TransferId, TransportLimits,
-    UntrustedWorkspaceManifest, WireIdentity, WorkspaceRoot,
+    AdmittedChunk, AuthorityClaim, CheckedWorkspaceManifest, Frame, ImmutableObjectSchema,
+    ObjectKey, ObjectRequest, ObjectVersion, ReceivingCas, ReceivingCheckpoint, ReplicationError,
+    Schema, TransferId, TransportLimits, UntrustedWorkspaceManifest, UnverifiedObjectRequest,
+    WireIdentity, WireReceivingCheckpoint, WorkspaceRoot,
 };
 use durable_sink::DurableSink;
 #[path = "input_progress.rs"]
@@ -32,6 +32,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
+use std::{fs::Metadata, io};
 
 /// Bytes admitted by file type and byte length before a durable grammar
 /// decoder observes them.
@@ -42,29 +43,15 @@ impl BoundedFileImage {
         path: &Path,
         maximum: usize,
     ) -> Result<Option<Self>, ReplicationError> {
-        #[cfg(unix)]
-        let file = {
-            use rustix::fs::{Mode, OFlags, open};
-            match open(
-                path,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            ) {
-                Ok(file) => File::from(file),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(_) => return Err(ReplicationError::Disconnected),
-            }
-        };
-        #[cfg(not(unix))]
-        let file = match File::open(path) {
+        let file = match open_readonly_nofollow(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(ReplicationError::Disconnected),
+            Err(_) => return Err(ReplicationError::CorruptFrame),
         };
         let metadata = file
             .metadata()
             .map_err(|_| ReplicationError::Disconnected)?;
-        if !metadata.is_file() {
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(ReplicationError::CorruptFrame);
         }
         if metadata.len() > maximum as u64 {
@@ -92,6 +79,130 @@ impl BoundedFileImage {
     pub(super) fn into_vec(self) -> Vec<u8> {
         self.0
     }
+}
+
+pub(super) fn checked_regular_metadata(path: &Path) -> Result<Option<Metadata>, ReplicationError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ReplicationError::Disconnected),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(metadata))
+}
+
+pub(super) fn create_new_temp_nofollow(path: &Path) -> Result<File, ReplicationError> {
+    let parent = path.parent().ok_or(ReplicationError::CorruptFrame)?;
+    let name = path.file_name().ok_or(ReplicationError::CorruptFrame)?;
+    let parent_metadata =
+        fs::symlink_metadata(parent).map_err(|_| ReplicationError::Disconnected)?;
+    if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{AtFlags, Mode, OFlags, open, openat, unlinkat};
+        let directory = open(
+            parent,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(|_| ReplicationError::CorruptFrame)?;
+        match unlinkat(&directory, name, AtFlags::empty()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(ReplicationError::CorruptFrame),
+        }
+        openat(
+            &directory,
+            name,
+            OFlags::WRONLY
+                | OFlags::CREATE
+                | OFlags::EXCL
+                | OFlags::NOFOLLOW
+                | OFlags::CLOEXEC
+                | OFlags::NONBLOCK,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map(File::from)
+        .map_err(|_| ReplicationError::CorruptFrame)?
+    };
+    #[cfg(not(unix))]
+    let file = {
+        let directory = backend_platform::durability::open_directory(parent)
+            .map_err(|_| ReplicationError::Disconnected)?;
+        if !directory
+            .metadata()
+            .map_err(|_| ReplicationError::Disconnected)?
+            .is_dir()
+        {
+            return Err(ReplicationError::CorruptFrame);
+        }
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(ReplicationError::CorruptFrame),
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        options
+            .open(path)
+            .map_err(|_| ReplicationError::CorruptFrame)?
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|_| ReplicationError::Disconnected)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+    open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(io::Error::from)
+}
+
+#[cfg(windows)]
+fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "symbolic link"));
+    }
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "symbolic link"));
+    }
+    File::open(path)
 }
 
 const MAX_ACTIVE_SESSIONS: usize = 64;
@@ -134,6 +245,7 @@ impl CasGcBudget {
 pub struct InputCas<T: Schema = ImmutableObjectSchema> {
     pub(in crate::input_cas) sink: DurableSink<T>,
     pub(in crate::input_cas) active: BTreeMap<TransferId, ReceivingCas<DurableSink<T>, T>>,
+    pub(in crate::input_cas) partial: BTreeMap<TransferId, PersistedTransfer<T>>,
     pub(super) limits: TransportLimits,
     pub(super) max_extents: usize,
     pub(super) admitted_workspace: Option<WorkspaceRoot>,
@@ -146,6 +258,11 @@ pub struct InputCas<T: Schema = ImmutableObjectSchema> {
     pub(super) received_memory: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
     pub(super) root_epoch: u64,
     pub(super) root_claims_memory: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
+}
+
+pub(in crate::input_cas) struct PersistedTransfer<T: Schema> {
+    pub(in crate::input_cas) root: [u8; 32],
+    pub(in crate::input_cas) checkpoint: WireReceivingCheckpoint<T>,
 }
 
 impl<T: Schema> fmt::Debug for InputCas<T> {
@@ -175,10 +292,10 @@ impl<T: Schema> fmt::Debug for InputCas<T> {
 
 impl<T: Schema> Drop for InputCas<T> {
     fn drop(&mut self) {
-        let active = std::mem::take(&mut self.active);
-        for (_, session) in active {
-            session.abort(&mut self.sink);
-        }
+        // Every sparse write is synced before its checkpoint sidecar is
+        // atomically published. Dropping the in-memory cursor preserves that
+        // durable pair so the next process can reopen it.
+        self.active.clear();
     }
 }
 
@@ -218,6 +335,7 @@ impl<T: Schema> InputCas<T> {
         let mut cas = Self {
             sink,
             active: BTreeMap::new(),
+            partial: BTreeMap::new(),
             limits,
             max_extents: limits.max_ranges,
             admitted_workspace,
@@ -231,6 +349,7 @@ impl<T: Schema> InputCas<T> {
             root_epoch,
             root_claims_memory: BTreeMap::new(),
         };
+        cas.load_transfer_checkpoints()?;
         // A workspace manifest is published before the root lease during
         // closure completion. If the process stopped between those durable
         // boundaries, discard the manifest that belongs to a different
@@ -376,26 +495,6 @@ fn hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
-fn digest_file<T: Schema>(path: &Path, len: u64) -> Result<[u8; 32], ReplicationError> {
-    let mut file = File::open(path).map_err(|_| ReplicationError::Disconnected)?;
-    let mut digest = CanonicalDigest::<T>::new(len);
-    let mut offset = 0_u64;
-    let mut buffer = vec![0_u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|_| ReplicationError::Disconnected)?;
-        if read == 0 {
-            break;
-        }
-        digest.push(offset, &buffer[..read])?;
-        offset = offset
-            .checked_add(read as u64)
-            .ok_or(ReplicationError::Overflow)?;
-    }
-    digest.finish()
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -408,6 +507,74 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
         std::env::temp_dir().join(format!("backend-worker-input-cas-{label}-{nonce}"))
+    }
+
+    fn transfer_limits() -> TransportLimits {
+        TransportLimits {
+            max_frame: 1024,
+            max_chunk: 3,
+            max_object: 1024,
+            max_objects: 16,
+            max_ranges: 16,
+            max_capabilities: 8,
+            max_key_bytes: 32,
+            max_inputs: 8,
+        }
+    }
+
+    fn transfer_authority() -> AuthorityClaim {
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(b"stream-authority");
+        AuthorityClaim::from_typed(&key, backend_engine::AuthorityEpoch(1))
+    }
+
+    fn transfer_root() -> backend_engine::MerkleRoot {
+        let root_object = ObjectVersion::<ImmutableObjectSchema>::from_value(b"stream-root");
+        backend_engine::MerkleRoot::from_admitted_manifest(1, root_object)
+    }
+
+    fn chunk_frames(
+        bytes: &[u8],
+        transfer: TransferId,
+        key: ObjectKey<ImmutableObjectSchema>,
+        version: ObjectVersion<ImmutableObjectSchema>,
+        authority: AuthorityClaim,
+    ) -> Vec<Frame<ImmutableObjectSchema>> {
+        let mut previous = backend_engine::ChunkChain([0; 32]);
+        bytes
+            .chunks(3)
+            .enumerate()
+            .map(|(sequence, payload)| {
+                let frame = Frame::new(
+                    transfer,
+                    key,
+                    version,
+                    backend_engine::ChunkParts {
+                        object_len: bytes.len() as u64,
+                        offset: (sequence * 3) as u64,
+                        sequence: sequence as u64,
+                        previous_chain: previous,
+                        payload: payload.to_vec(),
+                    },
+                    authority,
+                )
+                .expect("construct test chunk");
+                previous = frame.chain;
+                frame
+            })
+            .collect()
+    }
+
+    fn declare_missing(
+        cas: &mut InputCas,
+        root: backend_engine::MerkleRoot,
+        version: ObjectVersion<ImmutableObjectSchema>,
+    ) {
+        cas.append_missing(root, WireIdentity::from_typed(&version))
+            .expect("declare missing object");
+    }
+
+    fn open_transfer_cas(path: &Path) -> InputCas {
+        InputCas::<ImmutableObjectSchema>::open(path, transfer_limits()).expect("open transfer CAS")
     }
 
     #[test]
@@ -505,6 +672,140 @@ mod tests {
         symlink(&outside, path.join("WORKSPACE")).expect("link marker");
         assert!(
             InputCas::<ImmutableObjectSchema>::open(&path, TransportLimits::default()).is_err()
+        );
+        let _ = fs::remove_dir_all(path);
+        let _ = fs::remove_file(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_and_canonical_object_symlinks_are_never_followed() {
+        use std::os::unix::fs::symlink;
+
+        let path = temp_directory("transfer-symlinks");
+        let outside = temp_directory("transfer-symlink-target");
+        fs::create_dir_all(&path).expect("create CAS directory");
+        fs::write(&outside, b"outside bytes stay unchanged").expect("write outside target");
+        let bytes: &[u8] = b"abcdef";
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(bytes);
+        let version = ObjectVersion::<ImmutableObjectSchema>::from_value(bytes);
+        let transfer = TransferId::new(74).expect("transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let frames = chunk_frames(bytes, transfer, key, version, authority);
+        let part = path.join(format!(".{:016x}.part", transfer.get()));
+        symlink(&outside, &part).expect("link part to outside target");
+
+        let mut cas = open_transfer_cas(&path);
+        assert!(
+            !part.exists(),
+            "cold open safely unlinks an uncheckpointed orphan staging link"
+        );
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                .expect("receive into a fresh no-follow staging file"),
+            "the first partial frame must not complete the object"
+        );
+        assert_eq!(
+            fs::read(&outside).expect("read outside target"),
+            b"outside bytes stay unchanged"
+        );
+        let object = path.join(hex(version.to_bytes()));
+        symlink(&outside, &object).expect("link canonical object to outside target");
+        assert!(!cas.contains_claim(WireIdentity::from_typed(&version)));
+        assert_eq!(
+            fs::read(&outside).expect("read outside target after claim lookup"),
+            b"outside bytes stay unchanged"
+        );
+        drop(cas);
+        fs::remove_file(&part).expect("remove part symlink");
+        assert!(matches!(
+            InputCas::<ImmutableObjectSchema>::open(&path, TransportLimits::default()),
+            Err(ReplicationError::CorruptFrame)
+        ));
+        assert_eq!(
+            fs::read(&outside).expect("read outside target after reopen"),
+            b"outside bytes stay unchanged"
+        );
+        let _ = fs::remove_dir_all(path);
+        let _ = fs::remove_file(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temporary_sidecar_links_are_unlinked_without_mutating_the_root() {
+        use std::fs::hard_link;
+        use std::os::unix::fs::symlink;
+
+        let path = temp_directory("sidecar-temp-symlink");
+        let outside = temp_directory("sidecar-temp-target");
+        fs::create_dir_all(&path).expect("create CAS directory");
+        fs::write(&outside, b"outside sidecar bytes").expect("write outside target");
+        let mut cas = InputCas::<ImmutableObjectSchema>::open(&path, TransportLimits::default())
+            .expect("open CAS");
+        let root = transfer_root();
+        cas.record_root(root).expect("admit durable root");
+        let temporary = path.join(".WORKSPACE.part");
+        symlink(&outside, &temporary).expect("link temporary sidecar");
+        cas.record_workspace_claim([7; 32])
+            .expect("replace stale symlink without following it");
+        assert_eq!(cas.admitted_root(), Some(root));
+        hard_link(&outside, &temporary).expect("link stale temp to outside inode");
+        cas.record_workspace_claim([8; 32])
+            .expect("replace stale hard link without truncating it");
+        assert_eq!(cas.admitted_root(), Some(root));
+        fs::create_dir(&temporary).expect("make invalid temp directory");
+        assert!(cas.record_workspace_claim([9; 32]).is_err());
+        assert_eq!(cas.admitted_root(), Some(root));
+        assert_eq!(
+            fs::read(&outside).expect("read outside target"),
+            b"outside sidecar bytes"
+        );
+        drop(cas);
+        fs::remove_dir(&temporary).expect("remove invalid temporary directory");
+        let cas = InputCas::<ImmutableObjectSchema>::open(&path, TransportLimits::default())
+            .expect("reopen CAS after rejected temp path");
+        assert!(cas.durable_root_matches(root));
+        drop(cas);
+        let _ = fs::remove_dir_all(path);
+        let _ = fs::remove_file(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_part_symlink_is_rejected_on_cold_reopen() {
+        use std::os::unix::fs::symlink;
+
+        let path = temp_directory("persisted-part-symlink");
+        let outside = temp_directory("persisted-part-target");
+        fs::write(&outside, b"outside bytes stay unchanged").expect("write outside target");
+        let bytes: &[u8] = b"abcdef";
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(bytes);
+        let version = ObjectVersion::<ImmutableObjectSchema>::from_value(bytes);
+        let transfer = TransferId::new(75).expect("transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let frames = chunk_frames(bytes, transfer, key, version, authority);
+        let part = path.join(format!(".{:016x}.part", transfer.get()));
+
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                .expect("persist first sparse extent")
+        );
+        drop(cas);
+        fs::remove_file(&part).expect("remove original sparse staging file");
+        symlink(&outside, &part).expect("replace staging file with link");
+
+        assert!(matches!(
+            InputCas::<ImmutableObjectSchema>::open(&path, TransportLimits::default()),
+            Err(ReplicationError::CorruptFrame)
+        ));
+        assert_eq!(
+            fs::read(&outside).expect("read outside target"),
+            b"outside bytes stay unchanged"
         );
         let _ = fs::remove_dir_all(path);
         let _ = fs::remove_file(outside);
@@ -717,6 +1018,376 @@ mod tests {
         assert_eq!(cas.root_epoch, 9);
         cas.record_root(marker).expect("advance root lease");
         assert_eq!(cas.root_epoch, 10);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sparse_shuffled_extents_resume_across_crashes_and_duplicate_retries() {
+        let path = temp_directory("sparse-restart");
+        let bytes: &[u8] = b"abcdefghi";
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(bytes);
+        let version = ObjectVersion::<ImmutableObjectSchema>::from_value(bytes);
+        let transfer = TransferId::new(71).expect("transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let frames = chunk_frames(bytes, transfer, key, version, authority);
+        let object_path = path.join(hex(version.to_bytes()));
+
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[2].clone(), authority)
+                .expect("sparse final extent")
+        );
+        assert!(!object_path.exists(), "incomplete bytes stay unpublished");
+        assert!(
+            cas.sink.committed.is_empty(),
+            "disk staging avoids a full Arc"
+        );
+        drop(cas);
+
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                .expect("sparse first extent")
+        );
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                .expect("idempotent duplicate retry")
+        );
+        assert_eq!(cas.partial.len(), 1);
+        drop(cas);
+
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[2].clone(), authority)
+                .expect("retry retained out-of-order extent")
+        );
+        assert!(
+            cas.ingest_authenticated_frame(root, frames[1].clone(), authority)
+                .expect("complete shuffled closure object")
+        );
+        assert!(object_path.is_file());
+        assert_eq!(
+            fs::read(&object_path).expect("read committed object"),
+            bytes
+        );
+        assert!(cas.contains_claim(WireIdentity::from_typed(&version)));
+        assert!(!path.join(format!(".recv-{:016x}", transfer.get())).exists());
+        assert!(!path.join(format!(".{:016x}.part", transfer.get())).exists());
+        drop(cas);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn tampered_key_claim_never_publishes_complete_bytes() {
+        let path = temp_directory("tampered-key");
+        let bytes: &[u8] = b"abcdef";
+        let version = ObjectVersion::<ImmutableObjectSchema>::from_value(bytes);
+        let wrong_key = ObjectKey::<ImmutableObjectSchema>::from_value(b"other logical key");
+        let transfer = TransferId::new(72).expect("transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let frames = chunk_frames(bytes, transfer, wrong_key, version, authority);
+        let object_path = path.join(hex(version.to_bytes()));
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                .expect("stage first tampered-key extent")
+        );
+        assert_eq!(
+            cas.ingest_authenticated_frame(root, frames[1].clone(), authority),
+            Err(ReplicationError::IdentityMismatch)
+        );
+        assert!(!object_path.exists());
+        assert!(!path.join(format!(".{:016x}.part", transfer.get())).exists());
+        drop(cas);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn mismatched_retry_cannot_rebind_or_erase_a_staged_partial() {
+        let path = temp_directory("mismatched-retry");
+        let bytes: &[u8] = b"abcdef";
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(bytes);
+        let wrong_key = ObjectKey::<ImmutableObjectSchema>::from_value(b"another key");
+        let version = ObjectVersion::<ImmutableObjectSchema>::from_value(bytes);
+        let transfer = TransferId::new(76).expect("transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let frames = chunk_frames(bytes, transfer, key, version, authority);
+        let wrong_frames = chunk_frames(bytes, transfer, wrong_key, version, authority);
+        let part = path.join(format!(".{:016x}.part", transfer.get()));
+        let marker = path.join(format!(".recv-{:016x}", transfer.get()));
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                .expect("stage original request")
+        );
+        drop(cas);
+
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert_eq!(
+            cas.ingest_authenticated_frame(root, wrong_frames[1].clone(), authority),
+            Err(ReplicationError::ReplayConflict)
+        );
+        assert!(
+            part.is_file(),
+            "mismatched replay leaves the partial intact"
+        );
+        assert!(
+            marker.is_file(),
+            "mismatched replay leaves its checkpoint intact"
+        );
+        assert!(
+            cas.ingest_authenticated_frame(root, frames[1].clone(), authority)
+                .expect("continue original request")
+        );
+        assert!(path.join(hex(version.to_bytes())).is_file());
+        drop(cas);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn committed_object_shortcut_cannot_erase_a_different_partial() {
+        let path = temp_directory("committed-shortcut-replay");
+        let partial_bytes: &[u8] = b"partial";
+        let partial_key = ObjectKey::<ImmutableObjectSchema>::from_value(partial_bytes);
+        let partial_version = ObjectVersion::<ImmutableObjectSchema>::from_value(partial_bytes);
+        let committed_bytes: &[u8] = b"existing";
+        let committed_key = ObjectKey::<ImmutableObjectSchema>::from_value(committed_bytes);
+        let committed_version = ObjectVersion::<ImmutableObjectSchema>::from_value(committed_bytes);
+        let transfer = TransferId::new(77).expect("partial transfer");
+        let committed_transfer = TransferId::new(78).expect("committed transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let partial_frames = chunk_frames(
+            partial_bytes,
+            transfer,
+            partial_key,
+            partial_version,
+            authority,
+        );
+        let committed_frames = chunk_frames(
+            committed_bytes,
+            committed_transfer,
+            committed_key,
+            committed_version,
+            authority,
+        );
+        let committed_replay_frames = chunk_frames(
+            committed_bytes,
+            transfer,
+            committed_key,
+            committed_version,
+            authority,
+        );
+        let committed_path = path.join(hex(committed_version.to_bytes()));
+        let partial_path = path.join(format!(".{:016x}.part", transfer.get()));
+        let marker_path = path.join(format!(".recv-{:016x}", transfer.get()));
+
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, partial_version);
+        declare_missing(&mut cas, root, committed_version);
+        for (index, frame) in committed_frames.iter().cloned().enumerate() {
+            let completed = cas
+                .ingest_authenticated_frame(root, frame, authority)
+                .expect("receive canonical committed object");
+            assert_eq!(completed, index + 1 == committed_frames.len());
+        }
+        cas.record_input_claim(root, WireIdentity::from_typed(&committed_version))
+            .expect("retain the committed object under the closure claim");
+        cas.record_root(root)
+            .expect("durably lease the input closure");
+        assert!(
+            !cas.ingest_authenticated_frame(root, partial_frames[0].clone(), authority)
+                .expect("stage partial object")
+        );
+        drop(cas);
+
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, partial_version);
+        declare_missing(&mut cas, root, committed_version);
+        assert!(matches!(
+            cas.ingest_authenticated_frame(root, committed_replay_frames[0].clone(), authority),
+            Err(ReplicationError::ReplayConflict)
+        ));
+        assert!(partial_path.is_file());
+        assert!(marker_path.is_file());
+        assert!(
+            !cas.ingest_authenticated_frame(root, partial_frames[1].clone(), authority)
+                .expect("continue original partial")
+        );
+        assert!(
+            cas.ingest_authenticated_frame(root, partial_frames[2].clone(), authority)
+                .expect("finish original partial")
+        );
+        assert_eq!(
+            fs::read(&committed_path).expect("read committed object"),
+            committed_bytes
+        );
+        assert_eq!(
+            fs::read(path.join(hex(partial_version.to_bytes()))).expect("read completed partial"),
+            partial_bytes
+        );
+        drop(cas);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn tampered_version_claim_never_publishes_complete_bytes() {
+        let path = temp_directory("tampered-version");
+        let bytes: &[u8] = b"abcdef";
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(bytes);
+        let wrong_version = ObjectVersion::<ImmutableObjectSchema>::from_value(b"other version");
+        let transfer = TransferId::new(73).expect("transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let frames = chunk_frames(bytes, transfer, key, wrong_version, authority);
+        let object_path = path.join(hex(wrong_version.to_bytes()));
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, wrong_version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                .expect("stage first tampered-version extent")
+        );
+        assert_eq!(
+            cas.ingest_authenticated_frame(root, frames[1].clone(), authority),
+            Err(ReplicationError::IdentityMismatch)
+        );
+        assert!(!object_path.exists());
+        assert!(!path.join(format!(".{:016x}.part", transfer.get())).exists());
+        drop(cas);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn overlapping_extent_with_conflicting_placement_is_rejected() {
+        let path = temp_directory("overlap");
+        let bytes: &[u8] = b"abcdef";
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(bytes);
+        let version = ObjectVersion::<ImmutableObjectSchema>::from_value(bytes);
+        let transfer = TransferId::new(74).expect("transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let first = chunk_frames(bytes, transfer, key, version, authority)
+            .into_iter()
+            .next()
+            .expect("first frame");
+        let overlap = Frame::new(
+            transfer,
+            key,
+            version,
+            backend_engine::ChunkParts {
+                object_len: bytes.len() as u64,
+                offset: 2,
+                sequence: 1,
+                previous_chain: first.chain,
+                payload: b"Xde".to_vec(),
+            },
+            authority,
+        )
+        .expect("overlap frame");
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, first, authority)
+                .expect("stage first extent")
+        );
+        assert_eq!(
+            cas.ingest_authenticated_frame(root, overlap, authority),
+            Err(ReplicationError::ReplayConflict)
+        );
+        assert!(!path.join(hex(version.to_bytes())).exists());
+        drop(cas);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn torn_temporary_checkpoint_is_ignored_but_torn_published_checkpoint_fails_closed() {
+        let path = temp_directory("checkpoint-tear");
+        let bytes: &[u8] = b"abcdef";
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(bytes);
+        let version = ObjectVersion::<ImmutableObjectSchema>::from_value(bytes);
+        let transfer = TransferId::new(75).expect("transfer");
+        let root = transfer_root();
+        let authority = transfer_authority();
+        let frames = chunk_frames(bytes, transfer, key, version, authority);
+        let marker = path.join(format!(".recv-{:016x}", transfer.get()));
+        let temporary = path.join(format!(".recv-{:016x}.tmp", transfer.get()));
+
+        let mut cas = open_transfer_cas(&path);
+        declare_missing(&mut cas, root, version);
+        assert!(
+            !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                .expect("stage first extent")
+        );
+        drop(cas);
+        fs::write(&temporary, b"torn uncommitted marker").expect("write torn temp marker");
+        let cas = open_transfer_cas(&path);
+        assert!(!temporary.exists());
+        assert_eq!(cas.partial.len(), 1);
+        drop(cas);
+
+        let mut marker_bytes = fs::read(&marker).expect("read checkpoint marker");
+        let last = marker_bytes.len() - 1;
+        marker_bytes[last] ^= 0x80;
+        fs::write(&marker, marker_bytes).expect("tear published marker");
+        assert!(matches!(
+            InputCas::<ImmutableObjectSchema>::open(&path, transfer_limits()),
+            Err(ReplicationError::CorruptFrame)
+        ));
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn interrupted_transfers_remain_charged_to_object_and_byte_budgets() {
+        let path = temp_directory("partial-budget");
+        let limits = TransportLimits {
+            max_object: 6,
+            max_objects: 1,
+            ..transfer_limits()
+        };
+        let root = transfer_root();
+        let authority = transfer_authority();
+        for index in 0..3_u64 {
+            let mut cas =
+                InputCas::<ImmutableObjectSchema>::open(&path, limits).expect("open budgeted CAS");
+            let bytes = [b'a' + u8::try_from(index).expect("small index"); 6];
+            let key = ObjectKey::<ImmutableObjectSchema>::from_value(&bytes);
+            let version = ObjectVersion::<ImmutableObjectSchema>::from_value(&bytes);
+            let transfer = TransferId::new(80 + index).expect("transfer");
+            let frames = chunk_frames(&bytes, transfer, key, version, authority);
+            declare_missing(&mut cas, root, version);
+            if index < 2 {
+                assert!(
+                    !cas.ingest_authenticated_frame(root, frames[0].clone(), authority)
+                        .expect("stage a budgeted partial object")
+                );
+            } else {
+                assert_eq!(
+                    cas.ingest_authenticated_frame(root, frames[0].clone(), authority),
+                    Err(ReplicationError::Backpressure),
+                    "two durable partials consume the configured two-object budget"
+                );
+            }
+            drop(cas);
+        }
+
+        let cas = InputCas::<ImmutableObjectSchema>::open(&path, limits)
+            .expect("reopen within partial retention budget");
+        assert_eq!(cas.partial.len(), 2);
+        for transfer in [80_u64, 81] {
+            assert!(path.join(format!(".{transfer:016x}.part")).is_file());
+            assert!(path.join(format!(".recv-{transfer:016x}")).is_file());
+        }
+        assert!(!path.join(".0000000000000052.part").exists());
+        drop(cas);
         let _ = fs::remove_dir_all(path);
     }
 }

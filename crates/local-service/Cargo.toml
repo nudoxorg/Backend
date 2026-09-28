@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+search-bench = []
+cluster-process-journey-hooks = ["backend-store-s3/test-support"]
+
 [dependencies]
 backend-compile = { path = "../compile" }
 backend-engine = { path = "../engine" }
@@ -22,18 +26,29 @@ backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 backend-library = { path = "../library" }
 backend-platform = { path = "../platform" }
+backend-replication = { path = "../replication" }
 backend-runtime = { path = "../runtime" }
 backend-semantic = { path = "../semantic" }
 backend-store = { path = "../store" }
+backend-store-s3 = { path = "../store-s3" }
 backend-version = { path = "../version" }
 blake3.workspace = true
+base64.workspace = true
+hmac.workspace = true
+tantivy.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true
 flate2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 toml.workspace = true
 ureq.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
+unicode-normalization = "0.1.25"
+
+[dev-dependencies]
+backend-store-s3 = { path = "../store-s3", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }

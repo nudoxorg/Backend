@@ -8,8 +8,8 @@ use crate::ir::{
     AtomId, AtomListId, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
     CSharpReferenceKind, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, Confidence,
     EntityListId, FreePredicateListId, GoFacts, GoSignature, JavaFacts, PythonFacts,
-    PythonParameterKind, RustFacts,
-    RustOwnership, SourceSpan, TypeId, TypeListId, TypeParameterListId, TypeScriptFacts,
+    PythonParameterKind, RustFacts, RustOwnership, SourceSpan, TypeId, TypeListId,
+    TypeParameterListId, TypeScriptFacts,
 };
 
 use super::{
@@ -176,8 +176,7 @@ pub(crate) fn rust(
     let where_clauses = TypeParameterListId::new(cursor.id(counts.typed.count(6), counts, 0)?);
     let macros = AtomListId::new(cursor.id(counts.typed.count(5), counts, 0)?);
     let const_defaults = AtomListId::new(cursor.id(counts.typed.count(5), counts, 0)?);
-    let free_predicates =
-        FreePredicateListId::new(cursor.id(counts.typed.count(8), counts, 0)?);
+    let free_predicates = FreePredicateListId::new(cursor.id(counts.typed.count(8), counts, 0)?);
     cursor.finish()?;
     Ok(RustFacts {
         ownership,

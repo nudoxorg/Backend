@@ -34,10 +34,7 @@ static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 fn unique(prefix: &str) -> PathBuf {
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    env::temp_dir().join(format!(
-        "{prefix}-{}-{sequence}",
-        std::process::id()
-    ))
+    env::temp_dir().join(format!("{prefix}-{}-{sequence}", std::process::id()))
 }
 
 struct Script(PathBuf);

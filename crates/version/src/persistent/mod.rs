@@ -19,7 +19,8 @@ mod work;
 pub use interner::{NoInterner, TreeInterner};
 pub use iter::{TreeIter, TreeRangeIter};
 pub use lazy::{
-    LazyPreparedUpdate, LazyTree, LazyTreeError, LazyTreePage, LazyTreeWork, PersistedTreeRoot,
+    LazyPreparedUpdate, LazyTree, LazyTreeError, LazyTreeMetadataShape, LazyTreePage,
+    LazyTreeUpdateBudget, LazyTreeWork, PersistedTreeRoot,
 };
 pub use node::{TreeNodeHandle, TreeNodeId, TreeNodeSummary, WeakTreeNodeHandle};
 pub use view::{

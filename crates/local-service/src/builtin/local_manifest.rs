@@ -3,8 +3,9 @@
 use backend_engine::{PackageDependencyRecord, PackageReference, RegistryPackageRecord};
 use backend_library::{
     AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
-    PackageDependencySourceFacts, PackageDependencyTarget, ProductText, RegistryDownloadCount,
-    RegistryEcosystem, RegistryFactAvailability, RegistryNativeMetadata, RegistryReleaseStanding,
+    PackageDependencySourceFacts, PackageDependencyTarget, PackageGraphSourceAuthority,
+    PackageGraphSourceKey, ProductText, RegistryDownloadCount, RegistryEcosystem,
+    RegistryFactAvailability, RegistryNativeMetadata, RegistryReleaseStanding,
     admit_dependency_rows,
 };
 use backend_semantic::vocabulary::{
@@ -89,7 +90,12 @@ fn cargo_package_fields(
     let package = root
         .get("package")
         .and_then(toml::Value::as_table)
-        .ok_or_else(|| format!("local manifest {} has no [package] table", manifest.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "local manifest {} has no [package] table",
+                manifest.display()
+            )
+        })?;
     let name = package_string_field(package, project_root, &manifest, "name")?;
     let version = package_string_field(package, project_root, &manifest, "version")?;
     let source = PackageReference::parse(format!("pkg:cargo/{name}@{version}")).map_err(|_| {
@@ -202,7 +208,12 @@ pub(crate) fn cargo_language_profile(project_root: &Path) -> Result<LanguageProf
     let package = root
         .get("package")
         .and_then(toml::Value::as_table)
-        .ok_or_else(|| format!("local manifest {} has no [package] table", manifest.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "local manifest {} has no [package] table",
+                manifest.display()
+            )
+        })?;
     let edition = package_string_field(package, project_root, &manifest, "edition")?;
     match edition.as_str() {
         "2021" => Ok(LanguageProfile::Rust(RustEdition::Rust2021)),
@@ -236,11 +247,20 @@ pub(crate) fn cargo_dependency_facts(
     let package = root
         .get("package")
         .and_then(toml::Value::as_table)
-        .ok_or_else(|| format!("local manifest {} has no [package] table", manifest.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "local manifest {} has no [package] table",
+                manifest.display()
+            )
+        })?;
     let name = package_string_field(package, project_root, &manifest, "name")?;
     let version = package_string_field(package, project_root, &manifest, "version")?;
-    let source = PackageReference::parse(format!("pkg:cargo/{name}@{version}"))
-        .map_err(|_| format!("local manifest {} has an invalid package identity", manifest.display()))?;
+    let source = PackageReference::parse(format!("pkg:cargo/{name}@{version}")).map_err(|_| {
+        format!(
+            "local manifest {} has an invalid package identity",
+            manifest.display()
+        )
+    })?;
     let provenance = *blake3::hash(&bytes).as_bytes();
     let frontier = *blake3::hash(project_root.as_os_str().as_encoded_bytes()).as_bytes();
     let mut rows = Vec::new();
@@ -275,8 +295,10 @@ pub(crate) fn cargo_dependency_facts(
                 None,
             )
             .map_err(|error| format!("admit local dependency {dependency_name}: {error:?}"))?;
-            rows.push(PackageDependencyRecord::new(
+            let source_authority = PackageGraphSourceAuthority::Local(frontier);
+            rows.push(PackageDependencyRecord::new_with_source_authority(
                 source.clone(),
+                source_authority,
                 target,
                 scope,
                 optional,
@@ -291,7 +313,10 @@ pub(crate) fn cargo_dependency_facts(
     let facts = admit_dependency_rows(rows)
         .map(DependencyFacts::Known)
         .map_err(|error| format!("local manifest dependency rows are invalid: {error:?}"))?;
-    Ok(Some((source, facts)))
+    Ok(Some((
+        PackageGraphSourceKey::new(source, PackageGraphSourceAuthority::Local(frontier)),
+        facts,
+    )))
 }
 
 /// Identity and language profile proved by one indexed local manifest.
@@ -411,6 +436,7 @@ fn manifest_record(
         standing: RegistryReleaseStanding::Available,
         downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
         facts_version: *blake3::hash(bytes).as_bytes(),
+        authority: None,
         native_metadata_version: native_metadata
             .identity()
             .map_err(|error| error.to_string())?,
@@ -987,6 +1013,16 @@ pub(crate) fn local_dependency_facts(
     project_root: &Path,
 ) -> Result<Option<PackageDependencySourceFacts>, String> {
     dependencies::local_dependency_facts(project_root)
+}
+
+/// Builds the exact local source key used by both resident indexing and path
+/// lookups, so local dependency facts cannot alias a registry fact at the same
+/// coordinate.
+pub(crate) fn dependency_source_key(
+    project_root: &Path,
+    coordinate: PackageReference,
+) -> PackageGraphSourceKey {
+    dependencies::source_key(project_root, coordinate)
 }
 
 #[cfg(test)]

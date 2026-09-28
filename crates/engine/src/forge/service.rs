@@ -167,6 +167,29 @@ impl ForgeAcquisitionService {
         }
     }
 
+    /// Returns metadata-only snapshots for all currently cached forge
+    /// coordinates in stable identity order. The indexer can rebuild from
+    /// these rows without rehydrating or rereading archive objects.
+    pub fn search_records(&self) -> Result<Vec<ForgeSearchRecord>, ForgeAcquisitionError> {
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| ForgeAcquisitionError::Corrupt)?;
+        Ok(catalog
+            .values()
+            .filter_map(|event| match event {
+                ForgeJournalEvent::Published(record) => Some(ForgeSearchRecord {
+                    coordinate: record.coordinate.clone(),
+                    resolution: record.resolution.clone(),
+                    archive: record.archive,
+                    metadata: record.metadata.clone(),
+                    manifests: record.manifests.clone().into_boxed_slice(),
+                }),
+                ForgeJournalEvent::Tombstone { .. } => None,
+            })
+            .collect())
+    }
+
     /// Acquires one exact source through a typed transport and the shared CAS.
     pub fn acquire<T: ForgeTransport>(
         &self,

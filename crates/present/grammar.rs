@@ -45,10 +45,14 @@ pub enum ArgumentKind {
     SubjectKind,
     /// A closed compiler language and dialect profile.
     LanguageProfile,
+    /// The requested Add compilation execution class.
+    ExecutionIntent,
     /// An immutable compiler generation identity, as 64 hexadecimal digits.
     Generation,
     /// A bounded page size between 1 and 200.
     Limit,
+    /// Opaque continuation token returned by a previous page.
+    Cursor,
     /// A boolean switch that is absent or present.
     Flag,
 }
@@ -70,8 +74,10 @@ impl ArgumentKind {
             Self::NodeId => "NODE",
             Self::SubjectKind => "SUBJECT",
             Self::LanguageProfile => "PROFILE",
+            Self::ExecutionIntent => "INTENT",
             Self::Generation => "GENERATION",
             Self::Limit => "COUNT",
+            Self::Cursor => "CURSOR",
             Self::Flag => "",
         }
     }
@@ -102,6 +108,7 @@ impl ArgumentKind {
                 "c",
                 "cpp",
             ],
+            Self::ExecutionIntent => &["interactive", "background"],
             _ => &[],
         }
     }
@@ -110,7 +117,10 @@ impl ArgumentKind {
 /// One operand of one command.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ArgumentSpec {
+    /// CLI option spelling and the shared lowering key.
     name: &'static str,
+    /// MCP input property spelling, when it differs from the CLI name.
+    json_name: &'static str,
     kind: ArgumentKind,
     required: bool,
     repeated: bool,
@@ -121,6 +131,7 @@ impl ArgumentSpec {
     const fn required(name: &'static str, kind: ArgumentKind, help: &'static str) -> Self {
         Self {
             name,
+            json_name: name,
             kind,
             required: true,
             repeated: false,
@@ -131,6 +142,7 @@ impl ArgumentSpec {
     const fn optional(name: &'static str, kind: ArgumentKind, help: &'static str) -> Self {
         Self {
             name,
+            json_name: name,
             kind,
             required: false,
             repeated: false,
@@ -141,6 +153,7 @@ impl ArgumentSpec {
     const fn repeated(name: &'static str, kind: ArgumentKind, help: &'static str) -> Self {
         Self {
             name,
+            json_name: name,
             kind,
             required: true,
             repeated: true,
@@ -148,10 +161,32 @@ impl ArgumentSpec {
         }
     }
 
-    /// Returns the operand name shared by the CLI flag and the MCP field.
+    const fn optional_with_json_name(
+        name: &'static str,
+        json_name: &'static str,
+        kind: ArgumentKind,
+        help: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            json_name,
+            kind,
+            required: false,
+            repeated: false,
+            help,
+        }
+    }
+
+    /// Returns the CLI option spelling and lowering key.
     #[must_use]
     pub const fn name(self) -> &'static str {
         self.name
+    }
+
+    /// Returns the MCP input property name.
+    #[must_use]
+    pub const fn json_name(self) -> &'static str {
+        self.json_name
     }
 
     /// Returns what the operand means.
@@ -410,6 +445,11 @@ const LIMIT: ArgumentSpec = ArgumentSpec::optional(
     ArgumentKind::Limit,
     "Maximum rows in this page, 1 to 200.",
 );
+const CURSOR: ArgumentSpec = ArgumentSpec::optional(
+    "cursor",
+    ArgumentKind::Cursor,
+    "Opaque continuation returned by the preceding page; bound to its query and index snapshot.",
+);
 
 /// The calling convention of every registry row, in registry order.
 pub const GRAMMARS: [CommandGrammar; 42] = [
@@ -463,8 +503,13 @@ pub const GRAMMARS: [CommandGrammar; 42] = [
             ArgumentKind::ProjectPath,
             "Absolute project directory to add to the shelf.",
         )],
-        options: &[],
-        when: "Pass the absolute project directory. This adds that package to the shelf. Call it when packages does not list the project, or when its source changed.",
+        options: &[ArgumentSpec::optional_with_json_name(
+            "execution-intent",
+            "execution_intent",
+            ArgumentKind::ExecutionIntent,
+            "Compilation class: interactive protects local latency; background permits bounded remote calibration. Defaults to interactive.",
+        )],
+        when: "Pass the absolute project directory. This adds that package to the shelf. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.",
     },
     CommandGrammar {
         name: "remove",
@@ -578,7 +623,7 @@ pub const GRAMMARS: [CommandGrammar; 42] = [
             ArgumentKind::Text,
             "A readable declaration name or address.",
         )],
-        options: &[LIMIT],
+        options: &[LIMIT, CURSOR],
         when: "Use when you have a name from prose or a stack trace and need the exact coordinates it could mean.",
     },
     CommandGrammar {
@@ -682,7 +727,7 @@ pub const GRAMMARS: [CommandGrammar; 42] = [
             ArgumentKind::Text,
             "Name prefix or term.",
         )],
-        options: &[LIMIT],
+        options: &[LIMIT, CURSOR],
         when: "Use for a name-first lookup across every package the local registry index knows, indexed or not.",
     },
     CommandGrammar {

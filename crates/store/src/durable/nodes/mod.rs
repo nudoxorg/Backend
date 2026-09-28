@@ -14,12 +14,27 @@ mod relation;
 mod tree;
 mod wire;
 
-pub use manifest::{DurableManifest, DurableManifestPage, ManifestReadStats};
+pub use manifest::{
+    DurableManifest, DurableManifestIdPage, DurableManifestPage, ManifestReadStats,
+};
 pub use relation::{OwnedRelationNodeLoader, RelationNodeChild, RelationNodeRead};
 pub use tree::DurableTree;
 pub(in crate::durable) use wire::{
     decode_manifest_descriptor, encode_manifest_descriptor, is_manifest_descriptor,
 };
+
+pub(in crate::durable) fn write_relation_reference(
+    store: &super::FileStore,
+    schema: backend_version::SchemaIdentity,
+    version: &Hash,
+    object: ObjectId,
+) -> Result<bool, StoreError> {
+    store.write_relation_reference(schema, version, object)
+}
+
+pub(in crate::durable) fn relation_reference_bytes() -> usize {
+    wire::relation_ref_encoded_len()
+}
 
 pub(super) const TREE_PACK_MAGIC: &[u8] = b"LUNA_TREE_PACK_V1\0";
 pub(super) const MANIFEST_INDEX_MAGIC: &[u8] = b"LUNA_MANIFEST_INDEX_V2\0";

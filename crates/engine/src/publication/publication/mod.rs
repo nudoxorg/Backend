@@ -11,7 +11,9 @@ pub use open::{
     open_published, open_published_semantic, open_semantic_generation,
     semantic_generation_requirements,
 };
+pub(crate) use publish::{prepare_semantic_bytes, publish_semantic_bytes};
 pub use publish::{publish_compiled, publish_semantic};
+pub(crate) use types::PreparedSemanticOutput;
 pub use types::{
     OpenPublicationScratch, OpenPublishedError, OpenSemanticPublicationScratch, OpenedCompilation,
     OpenedFragment, OpenedFragmentCursor, OpenedFragmentError, OpenedFragmentFactMismatch,
@@ -19,5 +21,5 @@ pub use types::{
     OpenedSemanticArtifactError, OpenedSemanticCompilation, OpenedSemanticGeneration,
     PublicationScratch, PublishCompiledError, PublishControl, PublishSemanticError,
     PublishedCompilation, SemanticGenerationRequirements, SemanticPublicationScratch,
-    UncommittedPublication, UncommittedPublicationFacts,
+    StagedSemanticObjectClaim, UncommittedPublication, UncommittedPublicationFacts,
 };

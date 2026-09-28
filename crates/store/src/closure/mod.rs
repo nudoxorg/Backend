@@ -224,16 +224,20 @@ impl WorkspaceBinding {
 }
 
 fn object_commitment(object: &TypedObject) -> Hash {
-    let mut bytes = Vec::with_capacity(1 + 2 + 1 + ID_BYTES * 2 + 8 + object.bytes.len());
-    bytes.push(object.schema.domain());
-    bytes.extend_from_slice(&object.schema.ty().to_le_bytes());
-    bytes.push(object.schema.version());
-    bytes.extend_from_slice(&object.key);
-    bytes.extend_from_slice(&object.version);
     let length = u64::try_from(object.bytes.len()).unwrap_or(u64::MAX);
-    bytes.extend_from_slice(&length.to_le_bytes());
-    bytes.extend_from_slice(&object.bytes);
-    digest(OBJECT_DOMAIN, &bytes)
+    let fixed_preimage_len = u64::try_from(1_usize + 2 + 1 + ID_BYTES * 2 + 8).unwrap_or(u64::MAX);
+    let preimage_len = fixed_preimage_len.saturating_add(length);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(OBJECT_DOMAIN);
+    hasher.update(&preimage_len.to_le_bytes());
+    hasher.update(&[object.schema.domain()]);
+    hasher.update(&object.schema.ty().to_le_bytes());
+    hasher.update(&[object.schema.version()]);
+    hasher.update(&object.key);
+    hasher.update(&object.version);
+    hasher.update(&length.to_le_bytes());
+    hasher.update(&object.bytes);
+    *hasher.finalize().as_bytes()
 }
 
 fn put_u32(output: &mut Vec<u8>, value: usize) -> Result<(), StoreError> {

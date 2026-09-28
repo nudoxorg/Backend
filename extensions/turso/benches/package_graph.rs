@@ -1,8 +1,8 @@
-//! Package-graph projection: a root move that keeps every edge, and a one-edge edit.
+//! Package-graph projection: exact reuse, a root-only move, and a one-edge edit.
 //!
-//! Fact rows and roots are built outside the timer. The cold publish is outside
-//! the timer too. Each sample uses a new root, so the same-root reuse path is
-//! not what is measured.
+//! Checked fact snapshots and roots are built outside the timer. The cold
+//! publish is outside the timer too. Each sample times a root-only move, exact
+//! reuse, and then a same-root one-edge mutation using a new checked snapshot.
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -14,9 +14,9 @@ use std::time::Instant;
 
 use backend_extension_turso::{ProjectionUpdate, TursoProjection};
 use backend_library::{
-    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
-    PackageDependencyRecord, PackageDependencyTarget, PackageReference, RegistryEcosystem,
-    view_state_root,
+    CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
+    DependencyScope, PackageDependencyRecord, PackageDependencyTarget, PackageReference,
+    PackageGraphSourceKey, RegistryEcosystem, view_state_root,
 };
 
 const EDGES: usize = 512;
@@ -47,7 +47,7 @@ fn edge(index: usize, requirement: &str) -> PackageDependencyRecord {
 fn facts(
     requirement_for_first: &str,
 ) -> Vec<(
-    PackageReference,
+    PackageGraphSourceKey,
     DependencyFacts<Box<[PackageDependencyRecord]>>,
 )> {
     let source = PackageReference::parse("pkg:cargo/app@1.0.0").expect("source");
@@ -62,7 +62,10 @@ fn facts(
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    vec![(source, DependencyFacts::Known(rows))]
+    vec![(
+        PackageGraphSourceKey::unattributed(source),
+        DependencyFacts::Known(rows),
+    )]
 }
 
 fn percentile(samples: &mut [u128], rank: usize) -> u128 {
@@ -80,10 +83,10 @@ fn main() {
         std::fs::create_dir(&path).expect("root");
         let database = path.join("projection.turso");
         let mut projection = TursoProjection::open(&database).await.expect("open");
-        let stable = facts("^1");
+        let stable = CheckedPackageGraphFacts::new(facts("^1")).expect("checked stable facts");
         let cold_root = view_state_root(&[("graph".to_owned(), "cold".to_owned())]);
         let cold = projection
-            .synchronize_package_graph(cold_root, &stable)
+            .synchronize_checked_package_graph(cold_root, &stable)
             .await
             .expect("cold");
         assert_eq!(cold, ProjectionUpdate::Rebuilt { rows: EDGES as u64 });
@@ -91,16 +94,32 @@ fn main() {
             .map(|index| view_state_root(&[("graph".to_owned(), format!("move-{index}"))]))
             .collect::<Vec<_>>();
         let edit_facts = (0..WARMUPS + SAMPLES)
-            .map(|index| facts(&format!("^edit{index}")))
+            .map(|index| {
+                CheckedPackageGraphFacts::new(facts(&format!("^edit{index}")))
+                    .expect("checked changed facts")
+            })
             .collect::<Vec<_>>();
-        let edit_roots = (0..WARMUPS + SAMPLES)
-            .map(|index| view_state_root(&[("graph".to_owned(), format!("edit-{index}"))]))
-            .collect::<Vec<_>>();
+        assert!(
+            edit_facts
+                .iter()
+                .all(|changed| changed.witness() != stable.witness()),
+            "a changed fact set must use a new checked snapshot and witness"
+        );
+        assert!(
+            edit_facts
+                .windows(2)
+                .all(|pair| pair[0].witness() != pair[1].witness())
+        );
+        // Keep one selected root so edits exercise the facts-witness mismatch
+        // path, rather than rebuilding only because the view root changed.
+        let edit_root = view_state_root(&[("graph".to_owned(), "same-edit-root".to_owned())]);
+        let edit_roots = vec![edit_root.clone(); WARMUPS + SAMPLES];
         let mut move_samples = [0_u128; SAMPLES];
+        let mut reuse_samples = [0_u128; SAMPLES];
         for sample in 0..(WARMUPS + SAMPLES) {
             let started = Instant::now();
             let update = projection
-                .synchronize_package_graph(move_roots[sample], &stable)
+                .synchronize_checked_package_graph(move_roots[sample], &stable)
                 .await
                 .expect("move");
             let elapsed = started.elapsed().as_nanos();
@@ -111,12 +130,24 @@ fn main() {
             if sample >= WARMUPS {
                 move_samples[sample - WARMUPS] = elapsed;
             }
+            let reused_at = Instant::now();
+            let reused = projection
+                .synchronize_checked_package_graph(move_roots[sample], &stable)
+                .await
+                .expect("reuse exact root and facts");
+            assert_eq!(
+                black_box(reused),
+                ProjectionUpdate::Reused { rows: EDGES as u64 }
+            );
+            if sample >= WARMUPS {
+                reuse_samples[sample - WARMUPS] = reused_at.elapsed().as_nanos();
+            }
         }
         let mut edit_samples = [0_u128; SAMPLES];
         for sample in 0..(WARMUPS + SAMPLES) {
             let started = Instant::now();
             let update = projection
-                .synchronize_package_graph(edit_roots[sample], &edit_facts[sample])
+                .synchronize_checked_package_graph(edit_roots[sample], &edit_facts[sample])
                 .await
                 .expect("edit");
             let elapsed = started.elapsed().as_nanos();
@@ -129,7 +160,9 @@ fn main() {
             }
         }
         println!(
-            "package_graph edges={EDGES} move_median_ns={} move_p95_ns={} edit_median_ns={} edit_p95_ns={}",
+            "package_graph edges={EDGES} reuse_median_ns={} reuse_p95_ns={} move_median_ns={} move_p95_ns={} edit_median_ns={} edit_p95_ns={}",
+            percentile(&mut reuse_samples, SAMPLES / 2),
+            percentile(&mut reuse_samples, SAMPLES * 95 / 100),
             percentile(&mut move_samples, SAMPLES / 2),
             percentile(&mut move_samples, SAMPLES * 95 / 100),
             percentile(&mut edit_samples, SAMPLES / 2),

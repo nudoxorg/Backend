@@ -1,9 +1,9 @@
 //! Provenance validation, deterministic ranking, deduplication, and terminal state.
 
-use core::cmp::Ordering;
-use core::mem::size_of;
 use backend_semantic::index_core::{EntityDocumentId, IndexSnapshotId};
 use backend_semantic::index_vocabulary::LexicalSegmentId;
+use core::cmp::Ordering;
+use core::mem::size_of;
 use thiserror::Error;
 
 use super::authority::{
@@ -391,8 +391,9 @@ fn insert_open(
     reason = "BLAKE3 digest is fixed at 32 bytes"
 )]
 fn document_hash(document: EntityDocumentId) -> usize {
-    let digest = blake3::hash(&<[u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES]>::from(
-        document,
+    let digest = blake3::hash(&<[u8;
+        backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES]>::from(
+        document
     ));
     let mut bytes = [0_u8; size_of::<usize>()];
     let width = bytes.len();

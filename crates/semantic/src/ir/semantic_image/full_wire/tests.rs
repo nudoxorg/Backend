@@ -12,8 +12,8 @@ use crate::ir::{
     DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability,
     FreePredicate, Ir, IrBuilder, ItemKind, LanguageExtensionInput, LanguageProfile,
     ParentageAuthority, RustEdition, RustFacts, RustOwnership, SemanticCoreReader,
-    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, TreeItemInput,
-    TypeExpr, TypeParameterBound, TypeScriptSource, VariantFingerprint, Visibility,
+    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, TreeItemInput, TypeExpr,
+    TypeParameterBound, TypeScriptSource, VariantFingerprint, Visibility,
 };
 
 use super::wire::{
@@ -378,7 +378,8 @@ fn full_image_rejects_noncanonical_extension_bindings_and_fact_pools()
 fn rust_free_predicate_image() -> Result<Ir, crate::ir::BuildError> {
     let mut builder = IrBuilder::new();
     builder.set_language_profile(LanguageProfile::Rust(RustEdition::Rust2024))?;
-    let subject = builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::I32)))?;
+    let subject =
+        builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::I32)))?;
     let bound_type =
         builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::Bool)))?;
     let bound_lifetime = builder.intern_atom(b"'scope")?;
@@ -386,8 +387,7 @@ fn rust_free_predicate_image() -> Result<Ir, crate::ir::BuildError> {
         TypeParameterBound::Type(bound_type),
         TypeParameterBound::Lifetime(bound_lifetime),
     ])?;
-    let free_predicates =
-        builder.intern_free_predicates(&[FreePredicate { subject, bounds }])?;
+    let free_predicates = builder.intern_free_predicates(&[FreePredicate { subject, bounds }])?;
     let facts = RustFacts {
         ownership: RustOwnership::SharedBorrow,
         lifetimes: builder.intern_attributes(&[])?,
@@ -507,7 +507,11 @@ fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
         let name = builder.intern_atom(spelling.as_bytes())?;
         shared.push(crate::ir::TypeParameter {
             name,
-            bounds: if index % 2 == 0 { mixed_bounds } else { empty_bounds },
+            bounds: if index % 2 == 0 {
+                mixed_bounds
+            } else {
+                empty_bounds
+            },
             default: None,
             variance: crate::ir::Variance::Covariant,
             kind: TypeParameterKind::Type {
@@ -540,9 +544,8 @@ fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
         let spelling = spellings[index].as_bytes();
         let parameter_spelling = alloc::format!("P{index}");
         let parameter = builder.intern_atom(parameter_spelling.as_bytes())?;
-        let parameter_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::Parameter(
-            parameter,
-        )))?;
+        let parameter_type =
+            builder.intern_type(TypeExpr::Concrete(ConcreteType::Parameter(parameter)))?;
         let semantic_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::CPointer {
             target: parameter_type,
         }))?;
@@ -595,7 +598,10 @@ fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
         bytes.len(),
         elapsed.as_millis(),
     );
-    assert!(type_rows >= 9_000, "expected ~10k type rows, saw {type_rows}");
+    assert!(
+        type_rows >= 9_000,
+        "expected ~10k type rows, saw {type_rows}"
+    );
     assert_eq!(facts_rows, ENTITIES);
     assert_eq!(parameter_rows, ENTITIES * SHARED_PARAMETERS);
     // Debug-profile CI headroom; the decode itself is single-pass and the

@@ -97,7 +97,10 @@ internal static class SourceLoader
         // Narrow to the one project the caller actually asked for, when the
         // evidence to do so unambiguously exists. See `ScopeToMatchingProject`
         // for why this exists and what it deliberately does not do.
-        var roots = ScopeToMatchingProject(options.Roots, options.AssemblyName);
+        var identityRoot = Path.GetFullPath(options.Roots[0]);
+        var roots = options.ProjectFile is { } exactProject
+            ? ScopeToExactProject(options.Roots, exactProject)
+            : ScopeToMatchingProject(options.Roots, options.AssemblyName);
 
         var files = CollectSourceFiles(roots);
         if (files.Count == 0)
@@ -186,8 +189,34 @@ internal static class SourceLoader
             ErrorCount = errors.Count,
             ReportableDiagnostics = reported,
             GeneratorSupport = generatorSupport,
-            Root = Path.GetFullPath(roots[0]),
+            Root = identityRoot,
         };
+    }
+
+    /// <summary>Scopes source loading to one exact admitted project file.</summary>
+    private static IReadOnlyList<string> ScopeToExactProject(
+        IReadOnlyList<string> packageRoots, string projectFile)
+    {
+        var fullProject = Path.GetFullPath(projectFile);
+        var packageRoot = Path.GetFullPath(packageRoots[0]);
+        var relative = Path.GetRelativePath(packageRoot, fullProject);
+        if (relative == "."
+            || Path.IsPathRooted(relative)
+            || relative == ".."
+            || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            || relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal)
+            || !File.Exists(fullProject)
+            || !string.Equals(Path.GetExtension(fullProject), ".csproj", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new OracleFailure("--project-file must name one .csproj beneath the package root");
+        }
+
+        var projectDirectory = Path.GetDirectoryName(fullProject);
+        if (projectDirectory is null)
+        {
+            throw new OracleFailure("--project-file has no containing directory");
+        }
+        return [projectDirectory];
     }
 
     /// <summary>

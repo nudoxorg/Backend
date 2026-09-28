@@ -7,11 +7,11 @@ use backend_semantic::ir::{
     EntityAuthorityFacts, EntityId, EntityKind, EntityVersion, FactAvailability, ForeignOrigin,
     FragmentView, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage,
     ParentageAuthority, PrepareError, PreparedFragment, PythonFacts, PythonParameterKind,
-    ReferenceKind, ReopenedTypeParameterList, RelSpan, RustFacts, RustOwnership, SemanticCoreReader,
-    SemanticImageView, SemanticReader, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord,
-    SemanticTypeTag, SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId,
-    TypeQuadPayload, TypeTriplePayload, VariadicForm, Visibility, encode_full_semantic_image,
-    full_semantic_image_len,
+    ReferenceKind, RelSpan, ReopenedTypeParameterList, RustFacts, RustOwnership,
+    SemanticCoreReader, SemanticImageView, SemanticReader, SemanticTypeChild, SemanticTypeFault,
+    SemanticTypeRecord, SemanticTypeTag, SourceIdentity, TypeExpr, TypeHeader, TypePairPayload,
+    TypeParameterListId, TypeQuadPayload, TypeTriplePayload, VariadicForm, Visibility,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use backend_semantic::vocabulary::{
@@ -368,9 +368,7 @@ fn c_occurrences_pass_the_declaration_ceiling() -> Result<(), TestError> {
     push_pending_seed(&mut facts)?;
     let occurrence = Occurrence {
         target: backend_semantic::ir::OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
-            origin: backend_semantic::ir::ForeignOrigin::Universe {
-                ecosystem: "c",
-            },
+            origin: backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "c" },
             path: "header.h",
             display: "symbol",
             kind: None,
@@ -380,13 +378,13 @@ fn c_occurrences_pass_the_declaration_ceiling() -> Result<(), TestError> {
         span: backend_semantic::ir::RelSpan { start: 0, end: 0 },
     };
     for _ in 0..=MAX_EMISSION_FACTS {
-        facts
-            .push_occurrence(0, occurrence)
-            .map_err(|cause| rejected(RejectedFact {
+        facts.push_occurrence(0, occurrence).map_err(|cause| {
+            rejected(RejectedFact {
                 fact: 0,
                 name: b"symbol",
                 cause,
-            }))?;
+            })
+        })?;
     }
     Ok(())
 }
@@ -396,13 +394,11 @@ fn owned_package_occurrence_admits_the_real_module_path() -> Result<(), TestErro
     let mut facts = pending_plan();
     push_pending_seed(&mut facts)?;
     facts
-        .push(
-            SemanticFact::new(
-                EntityKind::Function,
-                b"drive",
-                SemanticProductConstructor::PRODUCT,
-            ),
-        )
+        .push(SemanticFact::new(
+            EntityKind::Function,
+            b"drive",
+            SemanticProductConstructor::PRODUCT,
+        ))
         .map_err(rejected)?;
     facts
         .push_owned_package_occurrence(

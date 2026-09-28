@@ -1,22 +1,23 @@
 //! Durable sink for the canonical receiving CAS.
 
-use super::{BoundedFileImage, CasGcBudget};
+use super::CasGcBudget;
 use backend_engine::{
-    CanonicalDigest, ObjectKey, ObjectVersion, ReceivingCasSink, ReceivingCheckpoint,
-    ReplicationError, Schema, StagedExtent, TransferId,
+    CanonicalDigest, ChunkChainDigest, ObjectKey, ObjectVersion, ReceivingCasSink,
+    ReceivingCheckpoint, ReplicationError, Schema, SchemaWireObjectKey, SchemaWireObjectVersion,
+    StagedExtent, TransferId, WireReceivingCheckpoint,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(super) struct SinkSession<T: Schema> {
     transfer: TransferId,
-    key: ObjectKey<T>,
-    version: ObjectVersion<T>,
+    key: Option<ObjectKey<T>>,
+    version: Option<ObjectVersion<T>>,
     len: u64,
     extents: BTreeMap<[u8; 32], StagedExtent>,
     bytes: BTreeMap<[u8; 32], Arc<[u8]>>,
@@ -39,7 +40,7 @@ pub(super) struct DurableSink<T: Schema> {
 
 #[derive(Clone, Copy, Debug)]
 struct Reservation<T: Schema> {
-    version: ObjectVersion<T>,
+    version: Option<ObjectVersion<T>>,
     len: u64,
     replaced_bytes: u64,
     adds_object: bool,
@@ -59,12 +60,15 @@ impl<T: Schema> DurableSink<T> {
             usize::try_from(max_object_bytes).map_err(|_| ReplicationError::InvalidLimits)?;
         let path = path.as_ref();
         fs::create_dir_all(path).map_err(|_| ReplicationError::Disconnected)?;
+        let root_metadata =
+            fs::symlink_metadata(path).map_err(|_| ReplicationError::Disconnected)?;
+        if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+            return Err(ReplicationError::CorruptFrame);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut mode = fs::metadata(path)
-                .map_err(|_| ReplicationError::Disconnected)?
-                .permissions();
+            let mut mode = root_metadata.permissions();
             mode.set_mode(0o700);
             fs::set_permissions(path, mode).map_err(|_| ReplicationError::Disconnected)?;
         }
@@ -87,6 +91,44 @@ impl<T: Schema> DurableSink<T> {
         (self.retained_objects, self.retained_bytes)
     }
 
+    pub(super) fn restore_partial_reservation(
+        &mut self,
+        transfer: TransferId,
+        len: u64,
+    ) -> Result<(), ReplicationError> {
+        let path = self
+            .temporary_path(transfer)
+            .ok_or(ReplicationError::CorruptFrame)?;
+        let file = open_optional_readonly_nofollow(&path)?.ok_or(ReplicationError::CorruptFrame)?;
+        if file
+            .metadata()
+            .map_err(|_| ReplicationError::Disconnected)?
+            .len()
+            != len
+        {
+            return Err(ReplicationError::CorruptFrame);
+        }
+        self.reserve(transfer, None, len)
+    }
+
+    pub(super) fn discard_partial(&mut self, transfer: TransferId) -> Result<(), ReplicationError> {
+        self.release_reservation(transfer);
+        let Some(path) = self.temporary_path(transfer) else {
+            return Ok(());
+        };
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(ReplicationError::Disconnected),
+        }
+        if let Some(root) = &self.root {
+            backend_platform::durability::open_directory(root)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| ReplicationError::Disconnected)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn within_budget(&self) -> bool {
         self.retained_objects <= self.max_retained_objects
             && self.retained_bytes <= self.max_retained_bytes
@@ -106,13 +148,22 @@ impl<T: Schema> DurableSink<T> {
         let mut bytes = 0_u64;
         for entry in fs::read_dir(root).map_err(|_| ReplicationError::Disconnected)? {
             let entry = entry.map_err(|_| ReplicationError::Disconnected)?;
-            let metadata = entry
-                .metadata()
-                .map_err(|_| ReplicationError::Disconnected)?;
-            if metadata.is_file() && entry.file_name().to_str().is_some_and(is_object_filename) {
+            if entry.file_name().to_str().is_some_and(is_object_filename) {
+                let metadata = entry
+                    .file_type()
+                    .map_err(|_| ReplicationError::Disconnected)?;
+                if !metadata.is_file() {
+                    return Err(ReplicationError::CorruptFrame);
+                }
+                let file = open_optional_readonly_nofollow(&entry.path())?
+                    .ok_or(ReplicationError::CorruptFrame)?;
                 objects = objects.checked_add(1).ok_or(ReplicationError::Overflow)?;
                 bytes = bytes
-                    .checked_add(metadata.len())
+                    .checked_add(
+                        file.metadata()
+                            .map_err(|_| ReplicationError::Disconnected)?
+                            .len(),
+                    )
                     .ok_or(ReplicationError::Overflow)?;
             }
         }
@@ -134,14 +185,89 @@ impl<T: Schema> DurableSink<T> {
                 [bytes.as_ref()],
             ) == version.to_bytes();
         }
-        self.object_path(version).is_some_and(|path| {
-            let Ok(metadata) = fs::metadata(&path) else {
-                return false;
-            };
-            metadata.is_file()
-                && digest_file::<T>(&path, metadata.len())
-                    .is_ok_and(|digest| digest == version.to_bytes())
-        })
+        let Some(path) = self.object_path(version) else {
+            return false;
+        };
+        let Ok(Some(file)) = open_optional_readonly_nofollow(&path) else {
+            return false;
+        };
+        let Ok(metadata) = file.metadata() else {
+            return false;
+        };
+        digest_open_file::<T>(file, metadata.len()).is_ok_and(|digest| digest == version.to_bytes())
+    }
+
+    pub(super) fn contains_claims(
+        &self,
+        key: SchemaWireObjectKey<T>,
+        version: SchemaWireObjectVersion<T>,
+    ) -> Result<bool, ReplicationError> {
+        if key.context() != backend_engine::IdContext::object_key::<T>()
+            || version.context() != backend_engine::IdContext::schema::<T>()
+        {
+            return Err(ReplicationError::IdentityContext);
+        }
+        if let Some(bytes) = self.committed.iter().find_map(|(stored, bytes)| {
+            (stored.as_bytes() == version.as_bytes()).then_some(bytes.as_ref())
+        }) {
+            let mut digest = CanonicalDigest::<T>::new(bytes.len() as u64);
+            digest.push(0, bytes)?;
+            let (actual_key, actual_version) = digest.finish_identities()?;
+            return Ok(actual_key.as_bytes() == key.as_bytes()
+                && actual_version.as_bytes() == version.as_bytes());
+        }
+        let Some(root) = self.root.as_ref() else {
+            return Ok(false);
+        };
+        let path = root.join(hex(*version.as_bytes()));
+        let Some(mut file) = open_optional_readonly_nofollow(&path)? else {
+            return Ok(false);
+        };
+        let metadata = file
+            .metadata()
+            .map_err(|_| ReplicationError::Disconnected)?;
+        let mut digest = CanonicalDigest::<T>::new(metadata.len());
+        let mut offset = 0_u64;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|_| ReplicationError::Disconnected)?;
+            if read == 0 {
+                break;
+            }
+            digest.push(offset, &buffer[..read])?;
+            offset = offset
+                .checked_add(read as u64)
+                .ok_or(ReplicationError::Overflow)?;
+        }
+        let (actual_key, actual_version) = digest.finish_identities()?;
+        Ok(actual_key.as_bytes() == key.as_bytes()
+            && actual_version.as_bytes() == version.as_bytes())
+    }
+
+    pub(super) fn contains_wire_claim(&self, claim: [u8; 32]) -> bool {
+        if let Some((version, bytes)) = self
+            .committed
+            .iter()
+            .find(|(version, _)| version.as_bytes() == &claim)
+        {
+            return backend_engine::canonical_object_digest::<T>(
+                bytes.len() as u64,
+                [bytes.as_ref()],
+            ) == version.to_bytes();
+        }
+        let Some(root) = self.root.as_ref() else {
+            return false;
+        };
+        let path = root.join(hex(claim));
+        let Ok(Some(file)) = open_optional_readonly_nofollow(&path) else {
+            return false;
+        };
+        let Ok(metadata) = file.metadata() else {
+            return false;
+        };
+        digest_open_file::<T>(file, metadata.len()).is_ok_and(|digest| digest == claim)
     }
 
     /// Removes object files which are not reachable from the caller's live
@@ -178,26 +304,33 @@ impl<T: Schema> DurableSink<T> {
                 if live_versions.contains(&version) {
                     continue;
                 }
-                let metadata = entry
+                let file_type = entry
+                    .file_type()
+                    .map_err(|_| ReplicationError::Disconnected)?;
+                if !file_type.is_file() {
+                    return Err(ReplicationError::CorruptFrame);
+                }
+                let file = open_optional_readonly_nofollow(&entry.path())?
+                    .ok_or(ReplicationError::CorruptFrame)?;
+                let metadata = file
                     .metadata()
                     .map_err(|_| ReplicationError::Disconnected)?;
-                if metadata.is_file() {
-                    if !budget.take(metadata.len()) {
-                        break;
-                    }
-                    fs::remove_file(entry.path()).map_err(|_| ReplicationError::Disconnected)?;
-                    removed_objects = removed_objects
-                        .checked_add(1)
-                        .ok_or(ReplicationError::Overflow)?;
-                    removed_bytes = removed_bytes
-                        .checked_add(metadata.len())
-                        .ok_or(ReplicationError::Overflow)?;
-                    self.retained_objects = self.retained_objects.saturating_sub(1);
-                    self.retained_bytes = self
-                        .retained_bytes
-                        .checked_sub(metadata.len())
-                        .ok_or(ReplicationError::CorruptFrame)?;
+                drop(file);
+                if !budget.take(metadata.len()) {
+                    break;
                 }
+                fs::remove_file(entry.path()).map_err(|_| ReplicationError::Disconnected)?;
+                removed_objects = removed_objects
+                    .checked_add(1)
+                    .ok_or(ReplicationError::Overflow)?;
+                removed_bytes = removed_bytes
+                    .checked_add(metadata.len())
+                    .ok_or(ReplicationError::Overflow)?;
+                self.retained_objects = self.retained_objects.saturating_sub(1);
+                self.retained_bytes = self
+                    .retained_bytes
+                    .checked_sub(metadata.len())
+                    .ok_or(ReplicationError::CorruptFrame)?;
             }
             backend_platform::durability::open_directory(&root)
                 .and_then(|directory| directory.sync_all())
@@ -211,32 +344,39 @@ impl<T: Schema> DurableSink<T> {
     fn reserve(
         &mut self,
         transfer: TransferId,
-        version: ObjectVersion<T>,
+        version: Option<ObjectVersion<T>>,
         len: u64,
     ) -> Result<(), ReplicationError> {
         if self.reservations.contains_key(&transfer)
-            || self
-                .reservations
-                .values()
-                .any(|reservation| reservation.version == version)
+            || version.is_some_and(|version| {
+                self.reservations
+                    .values()
+                    .any(|reservation| reservation.version == Some(version))
+            })
         {
             return Err(ReplicationError::ReplayConflict);
         }
-        let path = self.object_path(version);
-        let replaced_bytes = path
-            .as_ref()
-            .and_then(|path| fs::metadata(path).ok())
-            .filter(Metadata::is_file)
-            .map_or_else(
-                || {
-                    self.committed
-                        .get(&version)
-                        .map_or(0, |bytes| bytes.len() as u64)
-                },
-                |metadata| metadata.len(),
-            );
-        let object_exists = path.as_ref().is_some_and(|path| path.is_file())
-            || self.committed.contains_key(&version);
+        let (replaced_bytes, object_exists) = if let Some(version) = version {
+            let path = self
+                .object_path(version)
+                .ok_or(ReplicationError::Disconnected)?;
+            let existing = open_optional_readonly_nofollow(&path)?;
+            let replaced_bytes = if let Some(file) = existing.as_ref() {
+                file.metadata()
+                    .map_err(|_| ReplicationError::Disconnected)?
+                    .len()
+            } else {
+                self.committed
+                    .get(&version)
+                    .map_or(0, |bytes| bytes.len() as u64)
+            };
+            (
+                replaced_bytes,
+                existing.is_some() || self.committed.contains_key(&version),
+            )
+        } else {
+            (0, false)
+        };
         let adds_object = !object_exists;
         let reserved_objects = self
             .reservations
@@ -290,6 +430,34 @@ impl<T: Schema> DurableSink<T> {
             .map(|root| root.join(format!(".{:016x}.part", transfer.get())))
     }
 
+    fn create_sparse_staging(
+        &self,
+        transfer: TransferId,
+        len: u64,
+    ) -> Result<Option<PathBuf>, ReplicationError> {
+        let Some(path) = self.temporary_path(transfer) else {
+            return Ok(None);
+        };
+        let file = match OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(ReplicationError::ReplayConflict);
+            }
+            Err(_) => return Err(ReplicationError::Disconnected),
+        };
+        if file.set_len(len).and_then(|()| file.sync_all()).is_err() {
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(ReplicationError::Disconnected);
+        }
+        Ok(Some(path))
+    }
+
     pub(super) fn read(
         &mut self,
         version: ObjectVersion<T>,
@@ -305,13 +473,28 @@ impl<T: Schema> DurableSink<T> {
         let Some(path) = self.object_path(version) else {
             return Ok(None);
         };
-        if !path.is_file() {
-            return Ok(None);
-        }
-        let Some(bytes) = BoundedFileImage::read_optional(&path, self.max_object_bytes)? else {
+        let Some(file) = open_optional_readonly_nofollow(&path)? else {
             return Ok(None);
         };
-        let bytes: Arc<[u8]> = Arc::from(bytes.into_vec().into_boxed_slice());
+        let len = file
+            .metadata()
+            .map_err(|_| ReplicationError::Disconnected)?
+            .len();
+        if len > self.max_object_bytes as u64 {
+            return Err(ReplicationError::MessageTooLarge);
+        }
+        let capacity = usize::try_from(len).map_err(|_| ReplicationError::MessageTooLarge)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .map_err(|_| ReplicationError::Backpressure)?;
+        file.take((self.max_object_bytes as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|_| ReplicationError::Disconnected)?;
+        if bytes.len() > self.max_object_bytes {
+            return Err(ReplicationError::MessageTooLarge);
+        }
+        let bytes: Arc<[u8]> = Arc::from(bytes.into_boxed_slice());
         if backend_engine::canonical_object_digest::<T>(bytes.len() as u64, [bytes.as_ref()])
             != version.to_bytes()
         {
@@ -333,26 +516,42 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
         version: ObjectVersion<T>,
         len: u64,
     ) -> Result<Self::Session, ReplicationError> {
-        self.reserve(transfer, version, len)?;
-        let temporary = self.temporary_path(transfer);
-        if let Some(path) = &temporary
-            && let Err(error) = OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(path)
-        {
-            let _ = self.release_reservation(transfer);
-            return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
-                ReplicationError::ReplayConflict
-            } else {
-                ReplicationError::Disconnected
-            });
-        }
+        self.reserve(transfer, Some(version), len)?;
+        let temporary = match self.create_sparse_staging(transfer, len) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = self.release_reservation(transfer);
+                return Err(error);
+            }
+        };
         Ok(SinkSession {
             transfer,
-            key,
-            version,
+            key: Some(key),
+            version: Some(version),
+            len,
+            extents: BTreeMap::new(),
+            bytes: BTreeMap::new(),
+            temporary,
+        })
+    }
+
+    fn begin_unverified(
+        &mut self,
+        transfer: TransferId,
+        len: u64,
+    ) -> Result<Self::Session, ReplicationError> {
+        self.reserve(transfer, None, len)?;
+        let temporary = match self.create_sparse_staging(transfer, len) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = self.release_reservation(transfer);
+                return Err(error);
+            }
+        };
+        Ok(SinkSession {
+            transfer,
+            key: None,
+            version: None,
             len,
             extents: BTreeMap::new(),
             bytes: BTreeMap::new(),
@@ -368,15 +567,12 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
         len: u64,
         checkpoint: &ReceivingCheckpoint<T>,
     ) -> Result<Self::Session, ReplicationError> {
-        self.reserve(transfer, version, len)?;
-        let temporary = self
-            .temporary_path(transfer)
-            .filter(|path| path.is_file())
-            .ok_or_else(|| {
-                let _ = self.release_reservation(transfer);
-                ReplicationError::Disconnected
-            })?;
-        if let Err(_error) = File::open(&temporary) {
+        self.reserve(transfer, Some(version), len)?;
+        let temporary = self.temporary_path(transfer).ok_or_else(|| {
+            let _ = self.release_reservation(transfer);
+            ReplicationError::Disconnected
+        })?;
+        if open_optional_readonly_nofollow(&temporary)?.is_none() {
             let _ = self.release_reservation(transfer);
             return Err(ReplicationError::Disconnected);
         }
@@ -387,11 +583,55 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
         }
         Ok(SinkSession {
             transfer,
-            key,
-            version,
+            key: Some(key),
+            version: Some(version),
             len,
             extents,
             bytes,
+            temporary: Some(temporary),
+        })
+    }
+
+    fn resume_unverified(
+        &mut self,
+        transfer: TransferId,
+        len: u64,
+        checkpoint: &WireReceivingCheckpoint<T>,
+    ) -> Result<Self::Session, ReplicationError> {
+        if !self.reservations.contains_key(&transfer) {
+            self.reserve(transfer, None, len)?;
+        }
+        let temporary = self.temporary_path(transfer).ok_or_else(|| {
+            let _ = self.release_reservation(transfer);
+            ReplicationError::Disconnected
+        })?;
+        let metadata = open_optional_readonly_nofollow(&temporary)?
+            .ok_or(ReplicationError::Disconnected)?
+            .metadata()
+            .map_err(|_| ReplicationError::Disconnected)?;
+        if metadata.len() != len {
+            let _ = self.release_reservation(transfer);
+            return Err(ReplicationError::CorruptFrame);
+        }
+        let mut extents = BTreeMap::new();
+        for extent in &checkpoint.extents {
+            let extent: StagedExtent = (*extent).into();
+            if extents.insert(extent.id.as_bytes(), extent).is_some() {
+                let _ = self.release_reservation(transfer);
+                return Err(ReplicationError::ReplayConflict);
+            }
+            if let Err(error) = verify_extent_file(&temporary, extent) {
+                let _ = self.release_reservation(transfer);
+                return Err(error);
+            }
+        }
+        Ok(SinkSession {
+            transfer,
+            key: None,
+            version: None,
+            len,
+            extents,
+            bytes: BTreeMap::new(),
             temporary: Some(temporary),
         })
     }
@@ -406,10 +646,7 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
             return Err(ReplicationError::Range);
         }
         if let Some(path) = &session.temporary {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .open(path)
-                .map_err(|_| ReplicationError::Disconnected)?;
+            let mut file = open_existing_writeonly_nofollow(path)?;
             file.seek(SeekFrom::Start(extent.offset))
                 .and_then(|_| file.write_all(&bytes))
                 .and_then(|()| file.sync_data())
@@ -434,7 +671,8 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
         let Some(path) = &session.temporary else {
             return Err(ReplicationError::CorruptFrame);
         };
-        let mut file = File::open(path).map_err(|_| ReplicationError::Disconnected)?;
+        let mut file =
+            open_optional_readonly_nofollow(path)?.ok_or(ReplicationError::Disconnected)?;
         let mut bytes =
             vec![0_u8; usize::try_from(extent.len).map_err(|_| ReplicationError::Overflow)?];
         file.seek(SeekFrom::Start(extent.offset))
@@ -452,17 +690,64 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
         _digest: [u8; 32],
     ) -> Result<Self::Receipt, ReplicationError> {
         let durable = session.temporary.is_some();
-        if session.key != key || session.version != version || session.len != len {
+        if session.key.is_some_and(|session_key| session_key != key)
+            || session
+                .version
+                .is_some_and(|session_version| session_version != version)
+            || session.len != len
+        {
             let _ = self.release_reservation(session.transfer);
             return Err(ReplicationError::IdentityMismatch);
+        }
+        if self
+            .reservations
+            .get(&session.transfer)
+            .is_some_and(|reservation| reservation.version.is_none())
+        {
+            if self.reservations.iter().any(|(transfer, existing)| {
+                *transfer != session.transfer && existing.version == Some(version)
+            }) {
+                let _ = self.release_reservation(session.transfer);
+                return Err(ReplicationError::ReplayConflict);
+            }
+            let path = self.object_path(version);
+            let existing = path
+                .as_ref()
+                .map(|path| open_optional_readonly_nofollow(path))
+                .transpose()?
+                .flatten();
+            let replaced_bytes = existing
+                .as_ref()
+                .map(|file| {
+                    file.metadata()
+                        .map(|metadata| metadata.len())
+                        .map_err(|_| ReplicationError::Disconnected)
+                })
+                .transpose()?
+                .unwrap_or_else(|| {
+                    self.committed
+                        .get(&version)
+                        .map_or(0, |bytes| bytes.len() as u64)
+                });
+            let adds_object = existing.is_none() && !self.committed.contains_key(&version);
+            let Some(reservation) = self.reservations.get_mut(&session.transfer) else {
+                return Err(ReplicationError::Disconnected);
+            };
+            reservation.replaced_bytes = replaced_bytes;
+            reservation.adds_object = adds_object;
+            reservation.version = Some(version);
         }
         if let Some(path) = session.temporary.as_ref() {
             let result = (|| {
                 let destination = self
                     .object_path(version)
                     .ok_or(ReplicationError::Disconnected)?;
-                if destination.is_file() {
-                    if digest_file::<T>(&destination, len)? == version.to_bytes() {
+                if let Some(existing) = open_optional_readonly_nofollow(&destination)? {
+                    let existing_len = existing
+                        .metadata()
+                        .map_err(|_| ReplicationError::Disconnected)?
+                        .len();
+                    if digest_open_file::<T>(existing, existing_len)? == version.to_bytes() {
                         fs::remove_file(path).map_err(|_| ReplicationError::Disconnected)?;
                     } else {
                         // A corrupt prior object is a repair target. The staged
@@ -496,16 +781,18 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
             // local cache.
             if let Some(reservation) = reservation {
                 let old_bytes = reservation.replaced_bytes;
-                let new_bytes = if self
+                let new_bytes = self
                     .object_path(version)
-                    .as_ref()
-                    .and_then(|path| fs::metadata(path).ok())
-                    .is_some_and(|metadata| metadata.is_file())
-                {
-                    len
-                } else {
-                    0
-                };
+                    .map(|path| open_optional_readonly_nofollow(&path))
+                    .transpose()?
+                    .flatten()
+                    .map(|file| {
+                        file.metadata()
+                            .map(|metadata| metadata.len())
+                            .map_err(|_| ReplicationError::Disconnected)
+                    })
+                    .transpose()?
+                    .unwrap_or(0);
                 if reservation.adds_object {
                     self.retained_objects = self.retained_objects.saturating_add(1);
                 }
@@ -553,6 +840,116 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
     }
 }
 
+fn open_optional_readonly_nofollow(path: &Path) -> Result<Option<File>, ReplicationError> {
+    let link_metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ReplicationError::Disconnected),
+    };
+    if !link_metadata.is_file() || link_metadata.file_type().is_symlink() {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    let file = open_readonly_nofollow(path).map_err(|_| ReplicationError::CorruptFrame)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| ReplicationError::Disconnected)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    Ok(Some(file))
+}
+
+fn open_existing_writeonly_nofollow(path: &Path) -> Result<File, ReplicationError> {
+    let link_metadata = fs::symlink_metadata(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            ReplicationError::Disconnected
+        } else {
+            ReplicationError::CorruptFrame
+        }
+    })?;
+    if !link_metadata.is_file() || link_metadata.file_type().is_symlink() {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    let file = open_writeonly_nofollow(path).map_err(|_| ReplicationError::CorruptFrame)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| ReplicationError::Disconnected)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+    open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(io::Error::from)
+}
+
+#[cfg(windows)]
+fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "symbolic link"));
+    }
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "symbolic link"));
+    }
+    File::open(path)
+}
+
+#[cfg(unix)]
+fn open_writeonly_nofollow(path: &Path) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+    open(
+        path,
+        OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(io::Error::from)
+}
+
+#[cfg(windows)]
+fn open_writeonly_nofollow(path: &Path) -> io::Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "symbolic link"));
+    }
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .write(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_writeonly_nofollow(path: &Path) -> io::Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "symbolic link"));
+    }
+    OpenOptions::new().write(true).open(path)
+}
+
 fn hex(bytes: [u8; 32]) -> String {
     let mut out = String::with_capacity(64);
     for byte in bytes {
@@ -587,8 +984,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn digest_file<T: Schema>(path: &Path, len: u64) -> Result<[u8; 32], ReplicationError> {
-    let mut file = File::open(path).map_err(|_| ReplicationError::Disconnected)?;
+fn digest_open_file<T: Schema>(mut file: File, len: u64) -> Result<[u8; 32], ReplicationError> {
     let mut digest = CanonicalDigest::<T>::new(len);
     let mut offset = 0_u64;
     let mut buffer = vec![0_u8; 64 * 1024];
@@ -605,4 +1001,34 @@ fn digest_file<T: Schema>(path: &Path, len: u64) -> Result<[u8; 32], Replication
             .ok_or(ReplicationError::Overflow)?;
     }
     digest.finish()
+}
+
+fn verify_extent_file(path: &Path, extent: StagedExtent) -> Result<(), ReplicationError> {
+    if extent.len == 0 {
+        return Err(ReplicationError::Range);
+    }
+    let mut file = open_optional_readonly_nofollow(path)?.ok_or(ReplicationError::Disconnected)?;
+    file.seek(SeekFrom::Start(extent.offset))
+        .map_err(|_| ReplicationError::Disconnected)?;
+    let mut remaining = extent.len;
+    let mut buffer = vec![
+        0_u8;
+        usize::try_from(extent.len.min(64 * 1024))
+            .map_err(|_| ReplicationError::Overflow)?
+    ];
+    let mut chain = ChunkChainDigest::new(extent.previous_chain, extent.sequence, extent.len);
+    while remaining > 0 {
+        let take = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| ReplicationError::Overflow)?;
+        file.read_exact(&mut buffer[..take])
+            .map_err(|_| ReplicationError::CorruptFrame)?;
+        chain.push(&buffer[..take])?;
+        remaining = remaining
+            .checked_sub(take as u64)
+            .ok_or(ReplicationError::Overflow)?;
+    }
+    if chain.finish()? != extent.chain {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    Ok(())
 }

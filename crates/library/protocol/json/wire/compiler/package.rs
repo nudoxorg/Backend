@@ -190,6 +190,7 @@ struct CompilerRuntimePanicWire {
 )]
 pub(crate) enum CompilerRuntimeCauseWire {
     RequestInFlight,
+    QueueFull,
     RequestOwnerStopped,
     ResponseOwnerStopped,
     ToolchainProbeTimeout,

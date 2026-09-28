@@ -174,7 +174,10 @@ impl<'fragment> SemanticDataView<'fragment> {
 
     /// Reads one pooled child-list span.
     #[must_use]
-    pub fn list(self, ordinal: ProductListId) -> Option<crate::ir::ListSpan<crate::ir::ProductChildren>> {
+    pub fn list(
+        self,
+        ordinal: ProductListId,
+    ) -> Option<crate::ir::ListSpan<crate::ir::ProductChildren>> {
         let record = self.record(self.layout.lists_start, ordinal.raw, SEMANTIC_LIST_BYTES)?;
         Some(crate::ir::ListSpan::new(
             read_u32(record, 0),

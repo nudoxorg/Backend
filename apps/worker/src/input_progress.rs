@@ -152,7 +152,19 @@ impl<T: Schema> InputCas<T> {
     /// Starts a fresh need journal for a root offer. It is safe to remove the
     /// old journal because committed objects remain content addressed in the
     /// canonical object namespace.
-    pub fn clear_missing(&mut self, root: backend_engine::MerkleRoot) {
+    pub fn clear_missing(
+        &mut self,
+        root: backend_engine::MerkleRoot,
+    ) -> Result<(), ReplicationError> {
+        let root_digest = root.digest().as_bytes();
+        let stale_transfers = self
+            .partial
+            .iter()
+            .filter_map(|(transfer, partial)| (partial.root != root_digest).then_some(*transfer))
+            .collect::<Vec<_>>();
+        for transfer in stale_transfers {
+            self.discard_transfer(transfer)?;
+        }
         self.need_memory.remove(&root.digest().as_bytes());
         self.received_memory.remove(&root.digest().as_bytes());
         if let Some(directory) = self.sink.root.as_ref() {
@@ -176,6 +188,7 @@ impl<T: Schema> InputCas<T> {
                 );
             }
         }
+        Ok(())
     }
 
     /// Persists the exact recipe-input version discovered in a closure leaf.
@@ -388,10 +401,16 @@ impl<T: Schema> InputCas<T> {
         let count = read_optional_counter(&count_path)?;
         let received = read_optional_counter(&received_path)?;
         match (count, received) {
-            (Some(count), Some(received)) => return Ok(count == received),
-            (Some(_), None) | (None, Some(_)) => {
+            (Some(count), Some(received)) if received <= count => {
+                return Ok(count == received);
+            }
+            (Some(_), Some(_)) | (None, Some(_)) => {
                 return Err(ReplicationError::CorruptFrame);
             }
+            // A missing receipt counter means no objects from this closure
+            // have completed yet. It is the normal state while the first
+            // declared object is still arriving in multiple chunks.
+            (Some(count), None) => return Ok(count == 0),
             (None, None) => {}
         }
         let path = directory.join(format!(".need-{}", hex(root.digest().as_bytes())));

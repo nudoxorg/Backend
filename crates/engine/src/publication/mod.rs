@@ -25,6 +25,10 @@ mod storage;
 pub use self::binding_store::{BindingIoPhase, BindingStoreError};
 /// Exact construction failures while rebuilding one complete compiler generation closure.
 pub use self::generation::GenerationBuildError;
+pub(crate) use self::generation::verify_reopened_semantic_generation;
+pub(crate) use self::publication::PreparedSemanticOutput;
+pub(crate) use self::publication::prepare_semantic_bytes;
+pub(crate) use self::publication::publish_semantic_bytes;
 /// Durable compiler publication and verified reopen public boundary.
 pub use self::publication::{
     OpenPublicationScratch, OpenPublishedError, OpenSemanticPublicationScratch, OpenedCompilation,
@@ -33,8 +37,9 @@ pub use self::publication::{
     OpenedSemanticArtifactError, OpenedSemanticCompilation, OpenedSemanticGeneration,
     PublicationScratch, PublishCompiledError, PublishControl, PublishSemanticError,
     PublishedCompilation, SemanticGenerationRequirements, SemanticPublicationScratch,
-    UncommittedPublication, UncommittedPublicationFacts, open_published, open_published_semantic,
-    open_semantic_generation, publish_compiled, publish_semantic, semantic_generation_requirements,
+    StagedSemanticObjectClaim, UncommittedPublication, UncommittedPublicationFacts, open_published,
+    open_published_semantic, open_semantic_generation, publish_compiled, publish_semantic,
+    semantic_generation_requirements,
 };
 pub use self::semantic_immutable::{
     ImmutableSemanticImageError, ImmutableSemanticImageStore, SemanticImageArtifactFacts,

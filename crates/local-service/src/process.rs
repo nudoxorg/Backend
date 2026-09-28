@@ -31,16 +31,21 @@
 use crate::listener::{ListenerConfig, ListenerError, RunReport, UnixListenerService};
 use crate::protocol::ProtocolError;
 use crate::service::{LocaldService, OwnerService};
+use backend_engine::UnixEndpointPath;
 use backend_engine::advisory::AdvisorySource;
 use backend_engine::registry::{
     AcquisitionLimits, AcquisitionPolicy, AuthenticationToken, RegistryEcosystem, RegistryEndpoint,
     RegistrySource, RegistrySourceSet,
 };
-use backend_engine::UnixEndpointPath;
-use backend_engine::{AcquisitionGate, OfflinePolicy};
+use backend_engine::{
+    AcquisitionGate, ForgeAcquisitionLimits, ForgeAcquisitionPolicy, ForgeAuthToken, ForgeProvider,
+    OfflinePolicy,
+};
 use backend_runtime::WorkspacePaths;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::num::NonZeroU8;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -80,6 +85,12 @@ pub const REGISTRY_AUTH_SCOPES_ENV: &str = "BACKEND_REGISTRY_AUTH_SCOPES";
 pub const ADVISORY_POLICY_ENV: &str = "BACKEND_ADVISORY_POLICY";
 /// Environment variable overriding the maximum admitted registry archive bytes.
 pub const REGISTRY_MAX_ARCHIVE_BYTES_ENV: &str = "BACKEND_REGISTRY_MAX_ARCHIVE_BYTES";
+/// Optional source-only catalog discovery feeds (`cargo=URL,nuget=URL`).
+pub const REGISTRY_DISCOVERY_SOURCES_ENV: &str = "BACKEND_REGISTRY_DISCOVERY_SOURCES";
+/// Disable network effects for catalog discovery while retaining cached claims.
+pub const REGISTRY_DISCOVERY_OFFLINE_ENV: &str = "BACKEND_REGISTRY_DISCOVERY_OFFLINE";
+/// Maximum NuGet catalog pages admitted in one discovery observation.
+pub const REGISTRY_DISCOVERY_MAX_PAGES_ENV: &str = "BACKEND_REGISTRY_DISCOVERY_MAX_PAGES";
 /// Environment variable naming an OSV JSON/batch feed path or HTTPS URL.
 pub const ADVISORY_OSV_ENV: &str = "BACKEND_ADVISORY_OSV";
 /// Environment variable naming a RustSec TOML/tree path or HTTPS URL.
@@ -90,6 +101,14 @@ pub const ADVISORY_GHSA_ENV: &str = "BACKEND_ADVISORY_GHSA";
 pub const ADVISORY_MAX_AGE_ENV: &str = "BACKEND_ADVISORY_MAX_AGE_SECS";
 /// Environment variable disabling advisory network refreshes.
 pub const ADVISORY_OFFLINE_ENV: &str = "BACKEND_ADVISORY_OFFLINE";
+/// Environment variable disabling network acquisition for forge sources.
+pub const FORGE_OFFLINE_ENV: &str = "BACKEND_FORGE_OFFLINE";
+/// Environment variable carrying an optional default forge bearer token.
+pub const FORGE_AUTH_ENV: &str = "BACKEND_FORGE_AUTH";
+/// Environment variable naming an optional forge bearer token file.
+pub const FORGE_AUTH_FILE_ENV: &str = "BACKEND_FORGE_AUTH_FILE";
+/// Environment variable carrying comma-separated `provider=token` forge credentials.
+pub const FORGE_AUTH_SCOPES_ENV: &str = "BACKEND_FORGE_AUTH_SCOPES";
 
 /// Default registry archive admission for a single source archive.
 ///
@@ -100,6 +119,7 @@ pub const ADVISORY_OFFLINE_ENV: &str = "BACKEND_ADVISORY_OFFLINE";
 const REGISTRY_MAX_ARCHIVE_DEFAULT_BYTES: usize = 512 * 1024 * 1024;
 const REGISTRY_MAX_ARCHIVE_CEILING_BYTES: usize = 1024 * 1024 * 1024;
 const ADVISORY_MAX_FEED_BYTES: usize = 256 * 1024 * 1024;
+const FORGE_MAX_AUTH_BYTES: usize = 4096;
 
 const EX_USAGE: u8 = 64;
 const EX_UNAVAILABLE: u8 = 69;
@@ -124,6 +144,332 @@ pub struct ProcessConfig {
     pub registry: RegistryConfig,
     /// Durable OSV/RustSec/GHSA authority composition.
     pub advisory: AdvisoryConfig,
+    /// Durable code-forge source acquisition authority.
+    pub forge: ForgeConfig,
+    /// Source-only package catalog discovery, backed by the official public
+    /// feed for each ecosystem unless explicit discovery sources are set.
+    pub discovery: RegistryDiscoveryConfig,
+}
+
+/// Source-only catalog discovery configuration. Zero-configuration locald
+/// selects bounded public feeds for all seven ecosystems; explicit source
+/// settings replace that set, and offline mode retains the durable snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryDiscoveryConfig {
+    /// Source endpoints for the seven registry protocols. Each endpoint uses
+    /// its ecosystem's discovery surface (for example an index API root or a
+    /// catalog/replication feed), not an archive URL.
+    pub sources: Vec<RegistryEndpoint>,
+    /// Whether refresh requests are disabled.
+    pub offline: bool,
+    /// Maximum number of source pages or rows admitted in one refresh.
+    pub max_pages: usize,
+}
+
+impl RegistryDiscoveryConfig {
+    fn from_options(
+        source_specs: Vec<String>,
+        offline: bool,
+        max_pages: Option<usize>,
+    ) -> Result<Self, ProcessError> {
+        let mut specs = source_specs;
+        if let Ok(value) = std::env::var(REGISTRY_DISCOVERY_SOURCES_ENV) {
+            specs.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            );
+        }
+        let sources = if specs.is_empty() {
+            official_discovery_sources()?
+        } else {
+            let mut sources = Vec::new();
+            for spec in specs {
+                let (ecosystem, endpoint) = parse_source_spec(&spec)?;
+                let endpoint = RegistryEndpoint::new(ecosystem, endpoint).map_err(|_| {
+                    ProcessError::Usage(
+                        "registry discovery source is not an admitted absolute HTTPS or loopback HTTP URL"
+                            .to_owned(),
+                    )
+                })?;
+                if sources
+                    .iter()
+                    .any(|source: &RegistryEndpoint| source.id() == endpoint.id())
+                {
+                    return Err(ProcessError::Usage(
+                        "registry discovery source is repeated".to_owned(),
+                    ));
+                }
+                sources.push(endpoint);
+            }
+            sources
+        };
+        let environment_max_pages = std::env::var(REGISTRY_DISCOVERY_MAX_PAGES_ENV)
+            .ok()
+            .map(|value| {
+                value.parse::<usize>().map_err(|_| {
+                    ProcessError::Usage(
+                        "registry discovery page limit must be an integer".to_owned(),
+                    )
+                })
+            })
+            .transpose()?;
+        let max_pages = max_pages.or(environment_max_pages).unwrap_or(64);
+        if max_pages == 0 || max_pages > 1024 {
+            return Err(ProcessError::Usage(
+                "registry discovery page limit must be between 1 and 1024".to_owned(),
+            ));
+        }
+        Ok(Self {
+            sources,
+            offline: offline || env_flag(REGISTRY_DISCOVERY_OFFLINE_ENV),
+            max_pages,
+        })
+    }
+}
+
+/// Feed endpoints consumed by the seven bounded source-only adapters. These
+/// are catalog APIs, indexes, or source metadata trees; archive acquisition
+/// continues to use its separate router and never follows discovery URLs.
+fn official_discovery_sources() -> Result<Vec<RegistryEndpoint>, ProcessError> {
+    [
+        (RegistryEcosystem::Cargo, "https://crates.io"),
+        (
+            RegistryEcosystem::Npm,
+            "https://replicate.npmjs.com/registry",
+        ),
+        (RegistryEcosystem::Pypi, "https://pypi.org"),
+        (RegistryEcosystem::Maven, "https://search.maven.org"),
+        (
+            RegistryEcosystem::Nuget,
+            "https://api.nuget.org/v3/catalog0/index.json",
+        ),
+        (RegistryEcosystem::Golang, "https://index.golang.org"),
+        (
+            RegistryEcosystem::Cpp,
+            "https://api.github.com/repos/conan-io/conan-center-index",
+        ),
+    ]
+    .into_iter()
+    .map(|(ecosystem, endpoint)| {
+        RegistryEndpoint::new(ecosystem, endpoint).map_err(|_| {
+            ProcessError::Profile(format!(
+                "built-in discovery endpoint for {} is invalid",
+                ecosystem.as_str()
+            ))
+        })
+    })
+    .collect()
+}
+
+/// Code-forge source acquisition settings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForgeConfig {
+    /// Online or cache-only acquisition policy. Forge-reference is always cache-only.
+    pub policy: ForgeAcquisitionPolicy,
+    /// Resource limits applied before source and metadata admission.
+    pub limits: ForgeAcquisitionLimits,
+    /// Optional process-local default and provider-specific bearer credentials.
+    pub authentication: ForgeAuthentication,
+}
+
+/// Forge credentials kept only in process memory and scoped by provider.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ForgeAuthentication {
+    default: Option<ForgeAuthToken>,
+    providers: BTreeMap<ForgeProvider, ForgeAuthToken>,
+}
+
+impl ForgeAuthentication {
+    /// Returns a provider-scoped credential, falling back to the optional default.
+    #[must_use]
+    pub fn for_provider(&self, provider: ForgeProvider) -> Option<ForgeAuthToken> {
+        self.providers
+            .get(&provider)
+            .cloned()
+            .or_else(|| self.default.clone())
+    }
+}
+
+impl ForgeConfig {
+    fn from_options(
+        offline: bool,
+        auth_file: Option<String>,
+        auth_scopes: Vec<String>,
+        auth_file_scopes: Vec<String>,
+        max_archive_bytes: Option<usize>,
+        max_metadata_bytes: Option<usize>,
+        max_readme_bytes: Option<usize>,
+        max_entries: Option<usize>,
+        max_tree_bytes: Option<usize>,
+        max_path_bytes: Option<usize>,
+        max_entry_bytes: Option<usize>,
+    ) -> Result<Self, ProcessError> {
+        let defaults = ForgeAcquisitionLimits::default();
+        let limits = ForgeAcquisitionLimits {
+            max_archive_bytes: max_archive_bytes
+                .map_or(Ok(defaults.max_archive_bytes), u64::try_from)
+                .map_err(|_| ProcessError::Usage("forge archive limit is oversized".to_owned()))?,
+            max_metadata_bytes: max_metadata_bytes.unwrap_or(defaults.max_metadata_bytes),
+            max_readme_bytes: max_readme_bytes.unwrap_or(defaults.max_readme_bytes),
+            archive_budget: backend_engine::acquisition::ArchiveBudget {
+                max_entries: max_entries.unwrap_or(defaults.archive_budget.max_entries),
+                max_bytes: max_tree_bytes
+                    .map_or(Ok(defaults.archive_budget.max_bytes), u64::try_from)
+                    .map_err(|_| ProcessError::Usage("forge tree limit is oversized".to_owned()))?,
+                max_path_bytes: max_path_bytes.unwrap_or(defaults.archive_budget.max_path_bytes),
+                max_entry_bytes: max_entry_bytes
+                    .map_or(Ok(defaults.archive_budget.max_entry_bytes), u64::try_from)
+                    .map_err(|_| {
+                        ProcessError::Usage("forge entry limit is oversized".to_owned())
+                    })?,
+            },
+        };
+        if limits.max_archive_bytes == 0
+            || limits.max_archive_bytes > defaults.max_archive_bytes
+            || limits.max_metadata_bytes == 0
+            || limits.max_metadata_bytes > defaults.max_metadata_bytes
+            || limits.max_readme_bytes == 0
+            || limits.max_readme_bytes > defaults.max_readme_bytes
+            || limits.archive_budget.max_entries == 0
+            || limits.archive_budget.max_bytes == 0
+            || limits.archive_budget.max_bytes > defaults.archive_budget.max_bytes
+            || limits.archive_budget.max_path_bytes == 0
+            || limits.archive_budget.max_path_bytes > defaults.archive_budget.max_path_bytes
+            || limits.archive_budget.max_entry_bytes == 0
+            || limits.archive_budget.max_entry_bytes > defaults.archive_budget.max_entry_bytes
+        {
+            return Err(ProcessError::Usage(
+                "forge limits must be positive and within the built-in acquisition ceilings"
+                    .to_owned(),
+            ));
+        }
+        let policy = if offline || env_flag(FORGE_OFFLINE_ENV) {
+            ForgeAcquisitionPolicy::Offline
+        } else {
+            ForgeAcquisitionPolicy::Online
+        };
+        let authentication_value =
+            if let Some(path) = auth_file.or_else(|| std::env::var(FORGE_AUTH_FILE_ENV).ok()) {
+                Some(read_forge_authentication_file(&path)?)
+            } else {
+                std::env::var(FORGE_AUTH_ENV).ok()
+            };
+        let default = authentication_value.map(forge_auth_token).transpose()?;
+        let mut providers = BTreeMap::new();
+        let mut auth_scopes = auth_scopes;
+        if let Ok(value) = std::env::var(FORGE_AUTH_SCOPES_ENV) {
+            auth_scopes.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            );
+        }
+        for spec in auth_scopes {
+            let (provider, token) = spec.split_once('=').ok_or_else(|| {
+                ProcessError::Usage("forge auth scope must use provider=token spelling".to_owned())
+            })?;
+            let provider = parse_forge_provider(provider.trim())?;
+            if providers
+                .insert(provider, forge_auth_token(token.trim().to_owned())?)
+                .is_some()
+            {
+                return Err(ProcessError::Usage(
+                    "forge auth scope repeats a provider".to_owned(),
+                ));
+            }
+        }
+        for spec in auth_file_scopes {
+            let (provider, path) = spec.split_once('=').ok_or_else(|| {
+                ProcessError::Usage(
+                    "forge auth file scope must use provider=path spelling".to_owned(),
+                )
+            })?;
+            let provider = parse_forge_provider(provider.trim())?;
+            let path = path.trim();
+            if path.is_empty() {
+                return Err(ProcessError::Usage(
+                    "forge auth file scope path is empty".to_owned(),
+                ));
+            }
+            let token = read_forge_authentication_file(path)?;
+            if providers
+                .insert(provider, forge_auth_token(token)?)
+                .is_some()
+            {
+                return Err(ProcessError::Usage(
+                    "forge auth scope repeats a provider".to_owned(),
+                ));
+            }
+        }
+        Ok(Self {
+            policy,
+            limits,
+            authentication: ForgeAuthentication { default, providers },
+        })
+    }
+}
+
+fn parse_forge_provider(value: &str) -> Result<ForgeProvider, ProcessError> {
+    match value.to_ascii_lowercase().as_str() {
+        "github" => Ok(ForgeProvider::Github),
+        "gitlab" => Ok(ForgeProvider::Gitlab),
+        "codeberg" => Ok(ForgeProvider::Codeberg),
+        "generic-https-git" => Ok(ForgeProvider::GenericHttpsGit),
+        _ => Err(ProcessError::Usage(
+            "forge auth scope names an unsupported provider".to_owned(),
+        )),
+    }
+}
+
+fn forge_auth_token(value: String) -> Result<ForgeAuthToken, ProcessError> {
+    if value.len() > FORGE_MAX_AUTH_BYTES {
+        return Err(ProcessError::Usage(
+            "forge authentication value is oversized".to_owned(),
+        ));
+    }
+    ForgeAuthToken::new(value)
+        .map_err(|_| ProcessError::Usage("forge authentication value is invalid".to_owned()))
+}
+
+fn read_forge_authentication_file(path: &str) -> Result<String, ProcessError> {
+    #[cfg(unix)]
+    let file = {
+        let descriptor = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|_| ProcessError::Usage("could not open forge authentication file".to_owned()))?;
+        fs::File::from(descriptor)
+    };
+    #[cfg(not(unix))]
+    let file = fs::File::open(path)
+        .map_err(|_| ProcessError::Usage("could not open forge authentication file".to_owned()))?;
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return Err(ProcessError::Usage(
+            "forge authentication path is not a regular file".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(FORGE_MAX_AUTH_BYTES + 1);
+    file.take((FORGE_MAX_AUTH_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ProcessError::Usage("could not read forge authentication file".to_owned()))?;
+    if bytes.len() > FORGE_MAX_AUTH_BYTES {
+        return Err(ProcessError::Usage(
+            "forge authentication file is oversized".to_owned(),
+        ));
+    }
+    String::from_utf8(bytes)
+        .map(|value| value.trim_end_matches(['\r', '\n']).to_owned())
+        .map_err(|_| ProcessError::Usage("forge authentication file is not UTF-8".to_owned()))
 }
 
 /// One source location admitted by the local-first advisory composition.
@@ -493,6 +839,20 @@ impl ProcessConfig {
             advisory_ghsa,
             advisory_offline,
             advisory_max_age_secs,
+            forge_offline,
+            forge_auth_file,
+            forge_auth_scopes,
+            forge_auth_file_scopes,
+            forge_max_archive_bytes,
+            forge_max_metadata_bytes,
+            forge_max_readme_bytes,
+            forge_max_entries,
+            forge_max_tree_bytes,
+            forge_max_path_bytes,
+            forge_max_entry_bytes,
+            registry_discovery_sources,
+            registry_discovery_offline,
+            registry_discovery_max_pages,
             help,
         } = parse_options(args)?;
         if help {
@@ -576,6 +936,24 @@ impl ProcessConfig {
             advisory_offline,
             advisory_max_age_secs,
         )?;
+        let forge = ForgeConfig::from_options(
+            forge_offline,
+            forge_auth_file,
+            forge_auth_scopes,
+            forge_auth_file_scopes,
+            forge_max_archive_bytes,
+            forge_max_metadata_bytes,
+            forge_max_readme_bytes,
+            forge_max_entries,
+            forge_max_tree_bytes,
+            forge_max_path_bytes,
+            forge_max_entry_bytes,
+        )?;
+        let discovery = RegistryDiscoveryConfig::from_options(
+            registry_discovery_sources,
+            registry_discovery_offline || registry_offline,
+            registry_discovery_max_pages,
+        )?;
         Ok(Self {
             endpoint,
             workspace: paths.data().to_path_buf(),
@@ -585,6 +963,8 @@ impl ProcessConfig {
             listener,
             registry,
             advisory,
+            forge,
+            discovery,
         })
     }
 }
@@ -612,6 +992,20 @@ struct ParsedOptions {
     advisory_ghsa: Option<String>,
     advisory_offline: bool,
     advisory_max_age_secs: Option<usize>,
+    forge_offline: bool,
+    forge_auth_file: Option<String>,
+    forge_auth_scopes: Vec<String>,
+    forge_auth_file_scopes: Vec<String>,
+    forge_max_archive_bytes: Option<usize>,
+    forge_max_metadata_bytes: Option<usize>,
+    forge_max_readme_bytes: Option<usize>,
+    forge_max_entries: Option<usize>,
+    forge_max_tree_bytes: Option<usize>,
+    forge_max_path_bytes: Option<usize>,
+    forge_max_entry_bytes: Option<usize>,
+    registry_discovery_sources: Vec<String>,
+    registry_discovery_offline: bool,
+    registry_discovery_max_pages: Option<usize>,
     help: bool,
 }
 
@@ -639,6 +1033,20 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
         advisory_ghsa: None,
         advisory_offline: false,
         advisory_max_age_secs: None,
+        forge_offline: false,
+        forge_auth_file: None,
+        forge_auth_scopes: Vec::new(),
+        forge_auth_file_scopes: Vec::new(),
+        forge_max_archive_bytes: None,
+        forge_max_metadata_bytes: None,
+        forge_max_readme_bytes: None,
+        forge_max_entries: None,
+        forge_max_tree_bytes: None,
+        forge_max_path_bytes: None,
+        forge_max_entry_bytes: None,
+        registry_discovery_sources: Vec::new(),
+        registry_discovery_offline: false,
+        registry_discovery_max_pages: None,
         help: false,
     };
     let mut args = args.into_iter();
@@ -716,6 +1124,69 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
                 parsed.advisory_max_age_secs = Some(parse_count(
                     &next_value(&mut args, "--advisory-max-age-secs")?,
                     "--advisory-max-age-secs",
+                )?);
+            }
+            "--forge-offline" => parsed.forge_offline = true,
+            "--forge-auth-file" => {
+                parsed.forge_auth_file = Some(next_value(&mut args, "--forge-auth-file")?);
+            }
+            "--forge-auth-file-for" => {
+                parsed
+                    .forge_auth_file_scopes
+                    .push(next_value(&mut args, "--forge-auth-file-for")?);
+            }
+            "--forge-max-archive-bytes" => {
+                parsed.forge_max_archive_bytes = Some(parse_positive(
+                    &next_value(&mut args, "--forge-max-archive-bytes")?,
+                    "--forge-max-archive-bytes",
+                )?);
+            }
+            "--forge-max-metadata-bytes" => {
+                parsed.forge_max_metadata_bytes = Some(parse_positive(
+                    &next_value(&mut args, "--forge-max-metadata-bytes")?,
+                    "--forge-max-metadata-bytes",
+                )?);
+            }
+            "--forge-max-readme-bytes" => {
+                parsed.forge_max_readme_bytes = Some(parse_positive(
+                    &next_value(&mut args, "--forge-max-readme-bytes")?,
+                    "--forge-max-readme-bytes",
+                )?);
+            }
+            "--forge-max-entries" => {
+                parsed.forge_max_entries = Some(parse_positive(
+                    &next_value(&mut args, "--forge-max-entries")?,
+                    "--forge-max-entries",
+                )?);
+            }
+            "--forge-max-tree-bytes" => {
+                parsed.forge_max_tree_bytes = Some(parse_positive(
+                    &next_value(&mut args, "--forge-max-tree-bytes")?,
+                    "--forge-max-tree-bytes",
+                )?);
+            }
+            "--forge-max-path-bytes" => {
+                parsed.forge_max_path_bytes = Some(parse_positive(
+                    &next_value(&mut args, "--forge-max-path-bytes")?,
+                    "--forge-max-path-bytes",
+                )?);
+            }
+            "--forge-max-entry-bytes" => {
+                parsed.forge_max_entry_bytes = Some(parse_positive(
+                    &next_value(&mut args, "--forge-max-entry-bytes")?,
+                    "--forge-max-entry-bytes",
+                )?);
+            }
+            "--registry-discovery-source" => {
+                parsed
+                    .registry_discovery_sources
+                    .push(next_value(&mut args, "--registry-discovery-source")?);
+            }
+            "--registry-discovery-offline" => parsed.registry_discovery_offline = true,
+            "--registry-discovery-max-pages" => {
+                parsed.registry_discovery_max_pages = Some(parse_positive(
+                    &next_value(&mut args, "--registry-discovery-max-pages")?,
+                    "--registry-discovery-max-pages",
                 )?);
             }
             other => return Err(ProcessError::Usage(format!("unknown option: {other}"))),
@@ -833,10 +1304,10 @@ pub fn main_entry() -> ExitCode {
 
 fn print_help() {
     println!(
-        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-source ECO=URL]... [--registry-auth-for URL=TOKEN]... [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--advisory-osv PATH|URL] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
+        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-source ECO=URL]... [--registry-auth-for URL=TOKEN]... [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--advisory-osv PATH|URL] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--forge-offline] [--forge-auth-file PATH] [--forge-auth-file-for PROVIDER=PATH]... [--forge-max-archive-bytes BYTES] [--forge-max-metadata-bytes BYTES] [--forge-max-readme-bytes BYTES] [--forge-max-entries COUNT] [--forge-max-tree-bytes BYTES] [--forge-max-path-bytes BYTES] [--forge-max-entry-bytes BYTES] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
     );
     println!(
-        "without paths, locald opens .backend/v2 for the current project and derives a short local endpoint"
+        "without paths, locald opens this project's private per-user app-data root and derives a short local endpoint"
     );
     println!(
         "locald retires itself after --idle-timeout-ms with no connected client (default 600000); 0 never times out"
@@ -885,6 +1356,129 @@ mod tests {
         let Ok(result) = result else { return };
         assert_eq!(result.registry.sources.len(), 7);
         assert!(result.registry.endpoint.is_none());
+        assert_eq!(result.discovery.sources.len(), 7);
+        assert!(!result.discovery.offline);
+        assert_eq!(result.discovery.max_pages, 64);
+        assert!(
+            result
+                .discovery
+                .sources
+                .iter()
+                .all(|source| source.as_str().starts_with("https://"))
+        );
+        assert_eq!(result.forge.policy, ForgeAcquisitionPolicy::Online);
+        assert_eq!(result.forge.limits, ForgeAcquisitionLimits::default());
+    }
+
+    #[test]
+    fn discovery_sources_are_overridden_explicitly_and_offline_is_network_free() {
+        let explicit = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-discovery-source.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-discovery-source".to_owned(),
+            "--registry-discovery-source".to_owned(),
+            "cargo=http://127.0.0.1:43121".to_owned(),
+            "--registry-discovery-offline".to_owned(),
+        ])
+        .expect("parse local fixture without starting a network worker");
+        assert_eq!(explicit.discovery.sources.len(), 1);
+        assert_eq!(
+            explicit.discovery.sources[0].as_str(),
+            "http://127.0.0.1:43121"
+        );
+        assert!(explicit.discovery.offline);
+        assert!(explicit.forge.authentication.default.is_none());
+        assert!(explicit.forge.authentication.providers.is_empty());
+    }
+
+    #[test]
+    fn forge_policy_limits_and_provider_credentials_are_process_local() {
+        let token_path = std::env::temp_dir().join(format!(
+            "backend-locald-forge-auth-{}-{}.token",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::write(&token_path, "forge-secret\n").expect("write scoped forge credential");
+        let parsed = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-forge-config.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-forge-config".to_owned(),
+            "--forge-offline".to_owned(),
+            "--forge-auth-file-for".to_owned(),
+            format!("codeberg={}", token_path.display()),
+            "--forge-max-entries".to_owned(),
+            "64".to_owned(),
+            "--forge-max-tree-bytes".to_owned(),
+            "1048576".to_owned(),
+        ])
+        .expect("parse explicit forge configuration");
+        let _ = fs::remove_file(&token_path);
+        assert_eq!(parsed.forge.policy, ForgeAcquisitionPolicy::Offline);
+        assert_eq!(parsed.forge.limits.archive_budget.max_entries, 64);
+        assert_eq!(parsed.forge.limits.archive_budget.max_bytes, 1_048_576);
+        assert!(
+            parsed
+                .forge
+                .authentication
+                .for_provider(ForgeProvider::Github)
+                .is_none()
+        );
+        assert_eq!(
+            parsed
+                .forge
+                .authentication
+                .for_provider(ForgeProvider::Codeberg),
+            Some(ForgeAuthToken::new("forge-secret").expect("test token"))
+        );
+        assert!(
+            !format!("{:?}", parsed.forge).contains("forge-secret"),
+            "Debug must redact process-local forge credentials"
+        );
+    }
+
+    #[test]
+    fn forge_auth_files_are_bounded_and_plaintext_argv_is_not_supported() {
+        let token_path = std::env::temp_dir().join(format!(
+            "backend-locald-forge-auth-large-{}.token",
+            std::process::id()
+        ));
+        fs::write(&token_path, vec![b'x'; FORGE_MAX_AUTH_BYTES + 1])
+            .expect("write oversized forge credential fixture");
+        let result = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-forge-auth-large.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-forge-auth-large".to_owned(),
+            "--forge-auth-file".to_owned(),
+            token_path.to_string_lossy().into_owned(),
+        ]);
+        let _ = fs::remove_file(&token_path);
+        assert!(matches!(result, Err(ProcessError::Usage(_))));
+
+        let result = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-forge-auth-argv.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-forge-auth-argv".to_owned(),
+            "--forge-auth".to_owned(),
+            "plaintext-secret".to_owned(),
+        ]);
+        assert!(matches!(result, Err(ProcessError::Usage(_))));
+    }
+
+    #[test]
+    fn forge_limits_fail_closed_above_the_acquisition_ceiling() {
+        let parsed = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-forge-limit.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-forge-limit".to_owned(),
+            "--forge-max-tree-bytes".to_owned(),
+            (ForgeAcquisitionLimits::default().archive_budget.max_bytes + 1).to_string(),
+        ]);
+        assert!(matches!(parsed, Err(ProcessError::Usage(_))));
     }
 
     #[test]
@@ -925,11 +1519,13 @@ mod tests {
         assert!(result.is_ok(), "offline source configuration: {result:?}");
         let Ok(result) = result else { return };
         assert_eq!(result.registry.sources.len(), 7);
-        assert!(result
-            .registry
-            .sources
-            .sources()
-            .all(|source| source.policy() == AcquisitionPolicy::Offline));
+        assert!(
+            result
+                .registry
+                .sources
+                .sources()
+                .all(|source| source.policy() == AcquisitionPolicy::Offline)
+        );
     }
 
     #[test]

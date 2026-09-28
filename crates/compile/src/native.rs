@@ -662,7 +662,7 @@ impl PersistentNativeSession {
             let _ = self.process.terminate();
             return Err(NativeRunnerError::Process(ProcessError::InputLimit));
         }
-        if self.session.state() != crate::SessionState::Ready || self.key.manifest() != manifest {
+        if self.session.state() != crate::SessionState::Ready {
             self.session.fallback_to_cold();
             let _ = self.process.terminate();
             return Err(NativeRunnerError::Unavailable);
@@ -701,11 +701,15 @@ impl PersistentNativeSession {
             let _ = self.process.terminate();
             return Err(NativeRunnerError::Protocol);
         };
+        // Retain the new exact-input fence only after the process has returned
+        // a response accepted by the session protocol. Every failed send or
+        // receive above retires the process and leaves its prior key intact.
+        self.key = self.key.with_manifest(manifest);
         Ok(NativeObservation::running(
             response,
             self.process.take_stderr(),
             payload,
-            ScopeRoot::from_bytes(self.key.manifest().to_bytes()),
+            ScopeRoot::from_bytes(manifest.to_bytes()),
         ))
     }
 

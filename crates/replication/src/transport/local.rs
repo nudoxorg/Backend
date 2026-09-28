@@ -32,6 +32,12 @@ pub const LOCAL_CONTROL_MAX_PENDING: usize = 256;
 /// frame limit. This independent byte cap keeps retention bounded when a peer
 /// sends large out-of-order subscription pages.
 pub const LOCAL_CONTROL_MAX_PENDING_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum canonical semantic-range request or reply DTO bytes. The semantic
+/// segment payload itself is limited to 16 KiB; this leaves bounded room for
+/// selected-stamp and segment metadata.
+pub const LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD: usize = 64 * 1024;
+/// Maximum canonical catalog/manifest DTO bytes accepted in one local frame.
+pub const LOCAL_CONTROL_MAX_SEMANTIC_METADATA_PAYLOAD: usize = 64 * 1024;
 
 const TAG_REPLICATE: u8 = 1;
 const TAG_COMPLETE: u8 = 2;
@@ -43,10 +49,15 @@ const TAG_SUBSCRIPTION_ACK: u8 = 7;
 const TAG_SUBSCRIPTION_RENEW: u8 = 8;
 const TAG_SUBSCRIPTION_CANCEL: u8 = 9;
 const TAG_SUBSCRIPTION_PAGE: u8 = 10;
+const TAG_SEMANTIC_RANGE_GET: u8 = 11;
+const TAG_SEMANTIC_METADATA_GET: u8 = 12;
 const STATUS_ACCEPTED: u8 = 0;
 const STATUS_REJECTED: u8 = 1;
 const STATUS_QUEUED: u8 = 2;
 const STATUS_SUBSCRIPTION: u8 = 3;
+const STATUS_SEMANTIC_RANGE_CHUNK: u8 = 4;
+const STATUS_SEMANTIC_METADATA_CHUNK: u8 = 5;
+const STATUS_SEMANTIC_STALE_SELECTION: u8 = 6;
 const SUBSCRIPTION_OPENED: u8 = 1;
 const SUBSCRIPTION_RESUMED: u8 = 2;
 const SUBSCRIPTION_BATCH: u8 = 3;
@@ -74,6 +85,8 @@ const SUBSCRIPTION_RENEW_PREFIX_BYTES: usize =
 const SUBSCRIPTION_CANCEL_BYTES: usize = LOCAL_CONTROL_HEADER_BYTES + SUBSCRIPTION_ID_BYTES;
 const SUBSCRIPTION_PAGE_PREFIX_BYTES: usize =
     LOCAL_CONTROL_HEADER_BYTES + SUBSCRIPTION_ID_BYTES + 4 + 8;
+const SEMANTIC_RANGE_PREFIX_BYTES: usize = LOCAL_CONTROL_HEADER_BYTES + 4;
+const SEMANTIC_METADATA_PREFIX_BYTES: usize = LOCAL_CONTROL_HEADER_BYTES + 4;
 
 #[path = "../transport/local_types.rs"]
 mod local_types;
@@ -163,6 +176,102 @@ mod tests {
         let mut reader = Cursor::new(frame(b"next", limits()).expect("frame"));
         read_frame_into(&mut reader, &mut reused, limits()).expect("read into reused");
         assert_eq!(reused, b"next");
+    }
+
+    #[test]
+    fn semantic_range_requests_have_a_distinct_bounded_control_tag() {
+        let request = LocalControlRequest::SemanticRangeGet {
+            request_id: 29,
+            payload: Box::from(b"semantic-range-get-v1".as_slice()),
+        };
+        let encoded = encode_request(&request, limits()).expect("encode range request");
+        assert_eq!(encoded[5], TAG_SEMANTIC_RANGE_GET);
+        assert_eq!(control_request_id(&encoded), Some(29));
+        assert_eq!(
+            decode_request(&encoded, limits()).expect("decode range"),
+            request
+        );
+
+        let empty = LocalControlRequest::SemanticRangeGet {
+            request_id: 30,
+            payload: Box::new([]),
+        };
+        assert_eq!(
+            encode_request(&empty, limits()),
+            Err(LocalControlError::Invalid("semantic range payload bounds"))
+        );
+        let oversized = LocalControlRequest::SemanticRangeGet {
+            request_id: 31,
+            payload: vec![0; LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD + 1].into_boxed_slice(),
+        };
+        assert_eq!(
+            encode_request(&oversized, LocalControlLimits::default()),
+            Err(LocalControlError::Invalid("semantic range payload bounds"))
+        );
+
+        let response = LocalControlResponse::SemanticRangeChunk {
+            request_id: 29,
+            payload: Box::from(b"semantic-range-chunk-v1".as_slice()),
+        };
+        let encoded = encode_response(&response, limits()).expect("encode range chunk");
+        assert_eq!(encoded[5], STATUS_SEMANTIC_RANGE_CHUNK);
+        assert_eq!(
+            decode_response(&encoded, limits()).expect("decode chunk"),
+            response
+        );
+
+        let stale = LocalControlResponse::SemanticStaleSelection { request_id: 29 };
+        let encoded = encode_response(&stale, limits()).expect("encode stale selection");
+        assert_eq!(encoded[5], STATUS_SEMANTIC_STALE_SELECTION);
+        assert_eq!(
+            decode_response(&encoded, limits()).expect("decode stale selection"),
+            stale
+        );
+        let oversized = LocalControlResponse::SemanticRangeChunk {
+            request_id: 32,
+            payload: vec![0; LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD + 1].into_boxed_slice(),
+        };
+        assert_eq!(
+            encode_response(&oversized, LocalControlLimits::default()),
+            Err(LocalControlError::Invalid("semantic range payload bounds"))
+        );
+    }
+
+    #[test]
+    fn semantic_metadata_pages_have_an_independent_bounded_control_tag() {
+        let request = LocalControlRequest::SemanticMetadataGet {
+            request_id: 44,
+            payload: Box::from(b"semantic-catalog-page-v1".as_slice()),
+        };
+        let encoded = encode_request(&request, limits()).expect("encode metadata request");
+        assert_eq!(encoded[5], TAG_SEMANTIC_METADATA_GET);
+        assert_eq!(control_request_id(&encoded), Some(44));
+        assert_eq!(
+            decode_request(&encoded, limits()).expect("decode metadata"),
+            request
+        );
+
+        let response = LocalControlResponse::SemanticMetadataChunk {
+            request_id: 44,
+            payload: Box::from(b"semantic-catalog-chunk-v1".as_slice()),
+        };
+        let encoded = encode_response(&response, limits()).expect("encode metadata chunk");
+        assert_eq!(encoded[5], STATUS_SEMANTIC_METADATA_CHUNK);
+        assert_eq!(
+            decode_response(&encoded, limits()).expect("decode metadata chunk"),
+            response
+        );
+
+        let oversized = LocalControlRequest::SemanticMetadataGet {
+            request_id: 45,
+            payload: vec![0; LOCAL_CONTROL_MAX_SEMANTIC_METADATA_PAYLOAD + 1].into_boxed_slice(),
+        };
+        assert_eq!(
+            encode_request(&oversized, LocalControlLimits::default()),
+            Err(LocalControlError::Invalid(
+                "semantic metadata payload bounds"
+            ))
+        );
     }
 
     #[test]

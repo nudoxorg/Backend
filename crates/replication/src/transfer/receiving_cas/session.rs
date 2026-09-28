@@ -4,11 +4,14 @@ use super::super::cas::CanonicalDigest;
 use super::super::lease::{GcRoot, TransferLease};
 use super::super::protocol::ChunkChainDigest;
 use super::validation::validate_chain_links;
-use super::{LeasedReceivingCheckpoint, ReceivingCasSink, ReceivingCheckpoint, StagedExtent};
+use super::{
+    LeasedReceivingCheckpoint, ReceivingCasSink, ReceivingCheckpoint, StagedExtent,
+    WireReceivingCheckpoint,
+};
 use crate::{
     AdmittedChunk, AuthorityClaim, ByteRange, ImmutableObjectSchema, ObjectRequest,
-    ReplicationError, SparseCoverage, TransferReceipt, TransportLimits, claim_schema_object_key,
-    claim_schema_object_version,
+    ReplicationError, SparseCoverage, TransferReceipt, TransportLimits, UnverifiedObjectRequest,
+    claim_schema_object_key, claim_schema_object_version,
 };
 use backend_version::Schema;
 use std::{collections::BTreeMap, fmt, marker::PhantomData};
@@ -18,7 +21,8 @@ pub struct ReceivingCas<C, T: Schema = ImmutableObjectSchema>
 where
     C: ReceivingCasSink<T>,
 {
-    request: ObjectRequest<T>,
+    request: Option<ObjectRequest<T>>,
+    unverified_request: Option<UnverifiedObjectRequest<T>>,
     authority: AuthorityClaim,
     limits: TransportLimits,
     max_extents: usize,
@@ -37,6 +41,13 @@ where
         formatter
             .debug_struct("ReceivingCas")
             .field("request", &self.request)
+            .field(
+                "unverified_request",
+                &self
+                    .unverified_request
+                    .as_ref()
+                    .map(|request| (request.transfer, request.len)),
+            )
             .field("authority", &self.authority)
             .field("limits", &self.limits)
             .field("max_extents", &self.max_extents)
@@ -74,7 +85,41 @@ where
         let coverage = SparseCoverage::new(limits.max_ranges)?;
         let session = cas.begin(request.transfer, request.key, request.version, request.len)?;
         Ok(Self {
-            request,
+            request: Some(request),
+            unverified_request: None,
+            authority,
+            limits,
+            max_extents,
+            coverage,
+            extents: BTreeMap::new(),
+            session: Some(session),
+            marker: PhantomData,
+        })
+    }
+
+    /// Starts a sparse transfer from untrusted identity claims. The claims
+    /// remain untrusted until `finish` hashes the complete canonical file and
+    /// verifies both the key and version before publication.
+    ///
+    /// # Errors
+    /// Returns a request, limit, or storage error when an unpublished session
+    /// cannot be opened.
+    pub fn new_unverified(
+        request: UnverifiedObjectRequest<T>,
+        authority: AuthorityClaim,
+        limits: TransportLimits,
+        max_extents: usize,
+        cas: &mut C,
+    ) -> Result<Self, ReplicationError> {
+        request.validate(limits)?;
+        if max_extents == 0 {
+            return Err(ReplicationError::InvalidLimits);
+        }
+        let coverage = SparseCoverage::new(limits.max_ranges)?;
+        let session = cas.begin_unverified(request.transfer, request.len)?;
+        Ok(Self {
+            request: None,
+            unverified_request: Some(request),
             authority,
             limits,
             max_extents,
@@ -116,7 +161,56 @@ where
             .map(|extent| (extent.sequence, extent))
             .collect();
         Ok(Self {
-            request,
+            request: Some(request),
+            unverified_request: None,
+            authority,
+            limits,
+            max_extents,
+            coverage: checkpoint.coverage,
+            extents,
+            session: Some(session),
+            marker: PhantomData,
+        })
+    }
+
+    /// Reopens an unverified sparse transfer from a validated durable wire
+    /// checkpoint. The checkpoint's claims are still compared with the full
+    /// streamed bytes before the CAS object is published.
+    ///
+    /// # Errors
+    /// Returns a stale-fence, checkpoint, limit, or storage error when the
+    /// checkpoint cannot be resumed.
+    pub fn resume_unverified(
+        request: UnverifiedObjectRequest<T>,
+        authority: AuthorityClaim,
+        limits: TransportLimits,
+        max_extents: usize,
+        checkpoint: WireReceivingCheckpoint<T>,
+        cas: &mut C,
+    ) -> Result<Self, ReplicationError> {
+        request.validate(limits)?;
+        checkpoint.validate(limits, max_extents)?;
+        if checkpoint.transfer != request.transfer
+            || checkpoint.key != request.key
+            || checkpoint.version != request.version
+            || checkpoint.len != request.len
+            || checkpoint.authority != authority
+        {
+            return Err(ReplicationError::StaleFence);
+        }
+        let session = cas.resume_unverified(request.transfer, request.len, &checkpoint)?;
+        let extents = checkpoint
+            .extents
+            .iter()
+            .copied()
+            .map(|extent| {
+                let extent: StagedExtent = extent.into();
+                (extent.sequence, extent)
+            })
+            .collect();
+        Ok(Self {
+            request: None,
+            unverified_request: Some(request),
             authority,
             limits,
             max_extents,
@@ -190,11 +284,49 @@ where
     /// Returns a bounds, identity, range, replay, or chain error when the
     /// retained metadata cannot form a durable checkpoint.
     pub fn checkpoint(&self) -> Result<ReceivingCheckpoint<T>, ReplicationError> {
+        let request = self
+            .request
+            .as_ref()
+            .ok_or(ReplicationError::IdentityMismatch)?;
         ReceivingCheckpoint::new(
-            &self.request,
+            request,
             self.authority,
             self.coverage.clone(),
             self.extents.values().copied().collect(),
+            self.limits,
+            self.max_extents,
+        )
+    }
+
+    /// Returns a bounded wire checkpoint for either a typed or unverified
+    /// request. The wire form preserves claims without upgrading their trust.
+    ///
+    /// # Errors
+    /// Returns a bounds, identity, range, replay, or chain error when the
+    /// retained metadata cannot form a durable checkpoint.
+    pub fn checkpoint_wire(&self) -> Result<WireReceivingCheckpoint<T>, ReplicationError> {
+        let (transfer, key, version, len) = if let Some(request) = &self.request {
+            (
+                request.transfer,
+                claim_schema_object_key(request.key).map_err(ReplicationError::from)?,
+                claim_schema_object_version(request.version).map_err(ReplicationError::from)?,
+                request.len,
+            )
+        } else {
+            let request = self
+                .unverified_request
+                .as_ref()
+                .ok_or(ReplicationError::InvalidWire)?;
+            (request.transfer, request.key, request.version, request.len)
+        };
+        WireReceivingCheckpoint::new(
+            transfer,
+            key,
+            version,
+            len,
+            self.authority,
+            self.coverage.clone(),
+            self.extents.values().copied().map(Into::into).collect(),
             self.limits,
             self.max_extents,
         )
@@ -234,18 +366,25 @@ where
         let Some(mut session) = self.session.take() else {
             return Err(ReplicationError::InvalidWire);
         };
-        if !self.coverage.is_complete(self.request.len) {
+        let len = match self.transfer_len() {
+            Ok(len) => len,
+            Err(error) => {
+                cas.abort(session);
+                return Err(error);
+            }
+        };
+        if !self.coverage.is_complete(len) {
             cas.abort(session);
             return Err(ReplicationError::Incomplete);
         }
         let by_sequence = self.extents.clone();
-        if let Err(error) = validate_chain_links(&by_sequence, self.request.len) {
+        if let Err(error) = validate_chain_links(&by_sequence, len) {
             cas.abort(session);
             return Err(error);
         }
         let mut by_offset = self.extents.values().copied().collect::<Vec<_>>();
         by_offset.sort_unstable_by_key(|extent| extent.offset);
-        let mut digest = CanonicalDigest::<T>::new(self.request.len);
+        let mut digest = CanonicalDigest::<T>::new(len);
         for extent in by_offset {
             let mut chunk_digest =
                 ChunkChainDigest::new(extent.previous_chain, extent.sequence, extent.len);
@@ -280,24 +419,143 @@ where
                 return Err(error);
             }
         }
-        let digest = match digest.finish() {
-            Ok(digest) => digest,
+        let (key, version) = match digest.finish_identities() {
+            Ok(identities) => identities,
             Err(error) => {
                 cas.abort(session);
                 return Err(error);
             }
         };
-        if digest != *self.request.version.as_bytes() {
+        if let Some(request) = &self.request
+            && version != request.version
+        {
             cas.abort(session);
             return Err(ReplicationError::IdentityMismatch);
         }
-        cas.commit(
-            session,
-            self.request.key,
-            self.request.version,
-            self.request.len,
-            digest,
-        )
+        if let Some(request) = &self.unverified_request
+            && (key.as_bytes() != request.key.as_bytes()
+                || version.as_bytes() != request.version.as_bytes())
+        {
+            cas.abort(session);
+            return Err(ReplicationError::IdentityMismatch);
+        }
+        cas.commit(session, key, version, len, *version.as_bytes())
+    }
+
+    /// Finalizes an unverified sparse transfer only after a caller-owned
+    /// admission callback accepts the complete bytes. The callback runs
+    /// before backend-version key and version identities are derived and
+    /// before the sink publishes the object. This is intended for payloads
+    /// whose authority comes from a separate manifest, such as semantic IR
+    /// segments; wire key/version claims remain routing hints and are not
+    /// promoted to the committed object's identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an incomplete, corruption, identity, storage, or admission
+    /// error when the staged bytes cannot be fully checked and committed.
+    pub fn finish_unverified_with_admission(
+        mut self,
+        cas: &mut C,
+        mut admit: impl FnMut(&[u8]) -> Result<(), ReplicationError>,
+    ) -> Result<C::Receipt, ReplicationError> {
+        if self.unverified_request.is_none() || self.request.is_some() {
+            return Err(ReplicationError::IdentityMismatch);
+        }
+        let Some(mut session) = self.session.take() else {
+            return Err(ReplicationError::InvalidWire);
+        };
+        let len = match self.transfer_len() {
+            Ok(len) => len,
+            Err(error) => {
+                cas.abort(session);
+                return Err(error);
+            }
+        };
+        if !self.coverage.is_complete(len) {
+            cas.abort(session);
+            return Err(ReplicationError::Incomplete);
+        }
+        let by_sequence = self.extents.clone();
+        if let Err(error) = validate_chain_links(&by_sequence, len) {
+            cas.abort(session);
+            return Err(error);
+        }
+        let capacity = match usize::try_from(len) {
+            Ok(capacity) => capacity,
+            Err(_) => {
+                cas.abort(session);
+                return Err(ReplicationError::ObjectTooLarge);
+            }
+        };
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(capacity).is_err() {
+            cas.abort(session);
+            return Err(ReplicationError::Backpressure);
+        }
+        let mut by_offset = self.extents.values().copied().collect::<Vec<_>>();
+        by_offset.sort_unstable_by_key(|extent| extent.offset);
+        let mut digest = CanonicalDigest::<T>::new(len);
+        for extent in by_offset {
+            let mut chunk_digest =
+                ChunkChainDigest::new(extent.previous_chain, extent.sequence, extent.len);
+            let mut offset = extent.offset;
+            let read_result = cas.read_extent(&mut session, extent, &mut |piece| {
+                chunk_digest.push(piece)?;
+                digest.push(offset, piece)?;
+                bytes.extend_from_slice(piece);
+                offset = offset
+                    .checked_add(
+                        u64::try_from(piece.len()).map_err(|_| ReplicationError::Overflow)?,
+                    )
+                    .ok_or(ReplicationError::Overflow)?;
+                Ok(())
+            });
+            if let Err(error) = read_result
+                .and_then(|()| chunk_digest.finish())
+                .and_then(|chain| {
+                    if chain == extent.chain
+                        && offset
+                            == extent
+                                .offset
+                                .checked_add(extent.len)
+                                .ok_or(ReplicationError::Overflow)?
+                    {
+                        Ok(())
+                    } else {
+                        Err(ReplicationError::CorruptFrame)
+                    }
+                })
+            {
+                cas.abort(session);
+                return Err(error);
+            }
+        }
+        let observed_len = match u64::try_from(bytes.len()) {
+            Ok(observed_len) => observed_len,
+            Err(_) => {
+                cas.abort(session);
+                return Err(ReplicationError::Overflow);
+            }
+        };
+        if observed_len != len {
+            cas.abort(session);
+            return Err(ReplicationError::Incomplete);
+        }
+        if let Err(error) = admit(&bytes) {
+            cas.abort(session);
+            return Err(error);
+        }
+        // Derive the backend-store object identities only after the semantic
+        // manifest has accepted these exact bytes.
+        let (key, version) = match digest.finish_identities() {
+            Ok(identities) => identities,
+            Err(error) => {
+                cas.abort(session);
+                return Err(error);
+            }
+        };
+        cas.commit(session, key, version, len, *version.as_bytes())
     }
 
     /// Explicitly discards all unpublished extents.
@@ -318,21 +576,29 @@ where
 
     /// Returns the active request without exposing CAS session internals.
     #[must_use]
-    pub const fn request(&self) -> &ObjectRequest<T> {
-        &self.request
+    pub fn request(&self) -> Option<&ObjectRequest<T>> {
+        self.request.as_ref()
     }
 
     fn validate_chunk(&self, chunk: &AdmittedChunk<T>) -> Result<(), ReplicationError> {
-        if chunk.transfer() != self.request.transfer
-            || chunk.object_len() != self.request.len
+        if chunk.transfer() != self.transfer_id()?
+            || chunk.object_len() != self.transfer_len()?
             || chunk.authority() != self.authority
         {
             return Err(ReplicationError::StaleFence);
         }
-        let expected_key =
-            claim_schema_object_key(self.request.key).map_err(ReplicationError::from)?;
-        let expected_version =
-            claim_schema_object_version(self.request.version).map_err(ReplicationError::from)?;
+        let (expected_key, expected_version) = if let Some(request) = &self.request {
+            (
+                claim_schema_object_key(request.key).map_err(ReplicationError::from)?,
+                claim_schema_object_version(request.version).map_err(ReplicationError::from)?,
+            )
+        } else {
+            let request = self
+                .unverified_request
+                .as_ref()
+                .ok_or(ReplicationError::InvalidWire)?;
+            (request.key, request.version)
+        };
         if chunk.key().context() != expected_key.context()
             || chunk.version().context() != expected_version.context()
         {
@@ -341,7 +607,7 @@ where
         if chunk.key() != expected_key || chunk.version() != expected_version {
             return Err(ReplicationError::StaleFence);
         }
-        if chunk.sequence() >= self.request.len {
+        if chunk.sequence() >= self.transfer_len()? {
             return Err(ReplicationError::Range);
         }
         let bytes_len =
@@ -350,9 +616,29 @@ where
             return Err(ReplicationError::ChunkTooLarge);
         }
         let range = ByteRange::new(chunk.offset(), bytes_len)?;
-        if range.end()? > self.request.len {
+        if range.end()? > self.transfer_len()? {
             return Err(ReplicationError::Range);
         }
         Ok(())
+    }
+
+    fn transfer_id(&self) -> Result<crate::TransferId, ReplicationError> {
+        self.request
+            .as_ref()
+            .map(|request| request.transfer)
+            .or_else(|| {
+                self.unverified_request
+                    .as_ref()
+                    .map(|request| request.transfer)
+            })
+            .ok_or(ReplicationError::InvalidWire)
+    }
+
+    fn transfer_len(&self) -> Result<u64, ReplicationError> {
+        self.request
+            .as_ref()
+            .map(|request| request.len)
+            .or_else(|| self.unverified_request.as_ref().map(|request| request.len))
+            .ok_or(ReplicationError::InvalidWire)
     }
 }

@@ -297,6 +297,20 @@ pub struct Pyrefly {
     timeout: Duration,
 }
 
+/// Borrowed, path-independent Pyrefly invocation options for portable recipes.
+#[derive(Clone, Copy, Debug)]
+pub struct PyreflyInvocationOptionsV1<'options> {
+    arguments: &'options [String],
+}
+
+impl<'options> PyreflyInvocationOptionsV1<'options> {
+    /// Returns explicit arguments in the exact order passed before the Pyrefly subcommand.
+    #[must_use]
+    pub const fn arguments(self) -> &'options [String] {
+        self.arguments
+    }
+}
+
 /// Rejection while admitting an explicit pyrefly executable.
 #[derive(Debug, Error)]
 pub enum PyreflyExecutableError {
@@ -321,6 +335,27 @@ impl Default for Pyrefly {
 }
 
 impl Pyrefly {
+    /// Returns ordered explicit arguments without exposing the host-local executable path.
+    #[must_use]
+    pub fn portable_invocation_options(&self) -> PyreflyInvocationOptionsV1<'_> {
+        PyreflyInvocationOptionsV1 {
+            arguments: &self.arguments,
+        }
+    }
+
+    /// Reports whether this adapter executes the exact selected toolchain program.
+    #[must_use]
+    pub fn uses_toolchain_executable(&self, executable: &Path) -> bool {
+        self.program == executable
+    }
+
+    /// Sets ordered arguments inserted before the `pyrefly` subcommand.
+    #[must_use]
+    pub fn with_arguments(mut self, arguments: Vec<String>) -> Self {
+        self.arguments = arguments;
+        self
+    }
+
     /// Returns a host-local fingerprint of the explicit checker command and
     /// its output/deadline bounds. Path bytes make this a drift detector
     /// rather than a cross-host closure identity.
@@ -2023,6 +2058,28 @@ mod tests {
                 "expected a spawn or output-limit terminal, observed {other:?}"
             ),
         }
+    }
+
+    #[test]
+    fn portable_arguments_preserve_order_and_ignore_executable_location() {
+        let first = Pyrefly::from_executable(PathBuf::from("/host-a/bin/pyrefly"))
+            .expect("absolute executable")
+            .with_arguments(vec!["check".to_owned(), "--strict".to_owned()]);
+        let relocated = Pyrefly::from_executable(PathBuf::from("/host-b/tools/pyrefly"))
+            .expect("absolute executable")
+            .with_arguments(vec!["check".to_owned(), "--strict".to_owned()]);
+        let reordered = Pyrefly::from_executable(PathBuf::from("/host-b/tools/pyrefly"))
+            .expect("absolute executable")
+            .with_arguments(vec!["--strict".to_owned(), "check".to_owned()]);
+
+        assert_eq!(
+            first.portable_invocation_options().arguments(),
+            relocated.portable_invocation_options().arguments()
+        );
+        assert_ne!(
+            first.portable_invocation_options().arguments(),
+            reordered.portable_invocation_options().arguments()
+        );
     }
 
     /// The output bound is enforced on both streams with the exact operands.

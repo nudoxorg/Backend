@@ -154,7 +154,9 @@ const fn probe_is_repeatable(probe: &Probe<'_>) -> Repeatable {
         | Probe::Names { .. }
         | Probe::Outline(_)
         | Probe::OutlinePage { .. } => Repeatable::Yes,
-        Probe::Index(_) | Probe::Remove(_) => Repeatable::No,
+        Probe::Index(_) | Probe::IndexWithExecutionIntent { .. } | Probe::Remove(_) => {
+            Repeatable::No
+        }
     }
 }
 
@@ -364,6 +366,10 @@ mod tests {
                     self.record("index")?;
                     CommandReply::Added(Intent::request_package(package_key(path)).id())
                 }
+                Probe::IndexWithExecutionIntent { path, .. } => {
+                    self.record("index")?;
+                    CommandReply::Added(Intent::request_package(package_key(path)).id())
+                }
                 Probe::OutlinePage { .. } => {
                     self.record("outline-page")?;
                     CommandReply::ProjectionPage(ProjectionPage {
@@ -479,6 +485,13 @@ mod tests {
                     Ok(ReplyDto::new(1, CommandReply::Packages(empty_snapshot())))
                 }
                 Probe::Index(path) => {
+                    self.record_idle("index")?;
+                    Ok(ReplyDto::new(
+                        1,
+                        CommandReply::Added(Intent::request_package(package_key(path)).id()),
+                    ))
+                }
+                Probe::IndexWithExecutionIntent { path, .. } => {
                     self.record_idle("index")?;
                     Ok(ReplyDto::new(
                         1,

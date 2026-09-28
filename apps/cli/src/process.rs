@@ -37,6 +37,18 @@ pub fn main_entry() -> ExitCode {
         Ok(split) => split,
         Err(fault) => return report(&fault, &Options::fallback()),
     };
+    if words.first().is_some_and(|word| word == "cluster") {
+        return match crate::cluster::run(&words[1..], &options) {
+            Ok(output) => emit(&output),
+            Err(fault) => report(&fault, &options),
+        };
+    }
+    if words.first().is_some_and(|word| word == "semantic-hydrate") {
+        return match crate::semantic_hydrate::run(&words[1..], &options) {
+            Ok(output) => emit(&output),
+            Err(fault) => report(&fault, &options),
+        };
+    }
     match run_words(&words, &options) {
         Ok(output) => emit(&output),
         Err(fault) => report(&fault, &options),
@@ -44,12 +56,27 @@ pub fn main_entry() -> ExitCode {
 }
 
 fn early_exit(args: &[String]) -> Option<ExitCode> {
+    if args.first().is_some_and(|word| word == "semantic-hydrate")
+        && args
+            .iter()
+            .any(|word| matches!(word.as_str(), "--help" | "-h"))
+    {
+        println!("{}", crate::semantic_hydrate::help_text());
+        return Some(ExitCode::SUCCESS);
+    }
     if args.is_empty() || args.iter().any(|word| word == "--help" || word == "-h") {
         let topic = args
             .iter()
             .find(|word| !word.starts_with('-'))
             .and_then(|word| grammar_for(word));
-        println!("{}", topic.map_or_else(invoke::help, invoke::help_for));
+        let is_cluster_command = options::split(args)
+            .ok()
+            .is_some_and(|(_, words)| words.first().is_some_and(|word| word == "cluster"));
+        if is_cluster_command {
+            println!("{}", crate::cluster::help_text());
+        } else {
+            println!("{}", topic.map_or_else(invoke::help, invoke::help_for));
+        }
         return Some(ExitCode::SUCCESS);
     }
     if args.iter().any(|word| word == "--version" || word == "-V") {

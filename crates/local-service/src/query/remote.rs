@@ -8,6 +8,7 @@
 use super::{LocalAnswer, QueryCoordinator, QueryResult, SemanticAcceleration, SemanticDocument};
 use backend_engine::RowId;
 use backend_extension_qdrant as qdrant;
+use backend_library::{SemanticSearchReason, SemanticSearchStatus};
 use backend_version::{CoverageWitness, RelationState};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -194,6 +195,61 @@ impl RemoteSemantic {
         }
     }
 
+    /// Searches while retaining a per-query semantic-lane status beside the
+    /// complete lexical result.
+    #[must_use]
+    pub fn search_with_status(
+        &mut self,
+        coordinator: &QueryCoordinator,
+        coverage: CoverageWitness,
+        local: LocalAnswer,
+        text: &str,
+        reconciliation_failed: bool,
+    ) -> (QueryResult, SemanticSearchStatus) {
+        match self {
+            Self::Unconfigured => (
+                local.finish(),
+                SemanticSearchStatus::Unavailable {
+                    reason: SemanticSearchReason::Unconfigured,
+                },
+            ),
+            Self::Unavailable(_) => (
+                local.finish(),
+                SemanticSearchStatus::Unavailable {
+                    reason: SemanticSearchReason::InvalidConfiguration,
+                },
+            ),
+            Self::Configured(configured) => {
+                let active_matches = configured.active.as_ref().is_some_and(|active| {
+                    active.matches(coordinator) && active.coverage() == coverage
+                });
+                let fallback = if configured.producer.is_none() {
+                    SemanticSearchStatus::Unavailable {
+                        reason: SemanticSearchReason::ModelUnavailable,
+                    }
+                } else if configured.active.is_some() && !active_matches {
+                    SemanticSearchStatus::Stale {
+                        reason: SemanticSearchReason::StaleProjection,
+                    }
+                } else if reconciliation_failed
+                    || configured.producer_health.failure().is_some()
+                    || active_matches
+                {
+                    SemanticSearchStatus::Unavailable {
+                        reason: SemanticSearchReason::ProviderUnavailable,
+                    }
+                } else {
+                    SemanticSearchStatus::Unavailable {
+                        reason: SemanticSearchReason::NoActiveProjection,
+                    }
+                };
+                let result = configured.search(coordinator, coverage, local, text);
+                let status = semantic_status_from_result(&result).unwrap_or(fallback);
+                (result, status)
+            }
+        }
+    }
+
     /// Replaces the baseline embedding slot with this process's honest
     /// configured state while preserving every independently owned status.
     ///
@@ -268,6 +324,25 @@ impl RemoteSemantic {
         rows.sort_unstable_by_key(backend_engine::CapabilityStatus::id);
         backend_engine::CapabilityInventory::try_new(rows)
             .map_err(|_| RemoteConfigError::InvalidInventory)
+    }
+}
+
+fn semantic_status_from_result(result: &QueryResult) -> Option<SemanticSearchStatus> {
+    let semantic = result
+        .lanes
+        .iter()
+        .rev()
+        .find(|lane| lane.lane == super::Lane::Semantic)?;
+    match (semantic.coverage, semantic.freshness) {
+        (super::CoverageBasis::CandidateSubset { .. }, super::Freshness::Current) => {
+            Some(SemanticSearchStatus::Available)
+        }
+        (super::CoverageBasis::Unavailable, super::Freshness::Stale) => {
+            Some(SemanticSearchStatus::Stale {
+                reason: SemanticSearchReason::StaleProjection,
+            })
+        }
+        _ => None,
     }
 }
 
@@ -1306,6 +1381,150 @@ mod tests {
     }
 
     #[test]
+    fn unconfigured_cold_start_returns_lexical_rows_with_unavailable_status() {
+        let (coordinator, coverage, _, _, _) = http_projection_inputs();
+        let local = coordinator
+            .search_local(LocalQuery::prefix("alpha", 3).expect("query"))
+            .expect("local search");
+        let lexical_ids = local
+            .rows
+            .iter()
+            .map(|ranked| ranked.row.id)
+            .collect::<Vec<_>>();
+        let mut remote = RemoteSemantic::Unconfigured;
+
+        let (result, status) =
+            remote.search_with_status(&coordinator, coverage, local, "alpha", false);
+
+        assert!(!result.rows.is_empty());
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|ranked| ranked.row.id)
+                .collect::<Vec<_>>(),
+            lexical_ids
+        );
+        assert_eq!(
+            status,
+            SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::Unconfigured,
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn qdrant_query_outage_keeps_lexical_rows_and_reports_degraded_status() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "backend-query-outage-fixture-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("fixture directory");
+        let program = directory.join("embed.sh");
+        let model = directory.join("model.bin");
+        let tokenizer = directory.join("tokenizer.json");
+        fs::write(
+            &program,
+            b"#!/bin/sh\nIFS= read -r input || true\nprintf '{\"abi\":1,\"dimensions\":2,\"values\":[1.0,0.0]}'\n",
+        )
+        .expect("fixture producer");
+        let mut permissions = fs::metadata(&program)
+            .expect("producer metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions).expect("producer executable");
+        fs::write(&model, b"query outage model").expect("model artifact");
+        fs::write(&tokenizer, b"query outage tokenizer").expect("tokenizer artifact");
+        let program_bytes = fs::read(&program).expect("program bytes");
+        let model_bytes = fs::read(&model).expect("model bytes");
+        let tokenizer_bytes = fs::read(&tokenizer).expect("tokenizer bytes");
+        let program_identity = *blake3::hash(&program_bytes).as_bytes();
+        let model_identity = *blake3::hash(&model_bytes).as_bytes();
+        let tokenizer_identity = *blake3::hash(&tokenizer_bytes).as_bytes();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.embedding.producer.v1\0");
+        hasher.update(&program_bytes);
+        hasher.update(&model_bytes);
+        hasher.update(&tokenizer_bytes);
+        hasher.update(&EMBEDDING_PROTOCOL_ABI.to_be_bytes());
+        let producer = EmbeddingProducer {
+            program,
+            model,
+            tokenizer,
+            program_identity,
+            model_identity,
+            tokenizer_identity,
+            dimensions: NonZeroU32::new(2).expect("dimension"),
+            manifest: *hasher.finalize().as_bytes(),
+        };
+
+        let (coordinator, coverage, documents, selected_point, recipe) = http_projection_inputs();
+        let (endpoint, server) = serve_projection(ProjectionScript {
+            requests: 6,
+            expected_points: documents.len(),
+            selected_point,
+            count_offset: 0,
+            swap_query_id: false,
+            corrupt_coordinate: false,
+            fail_query: true,
+        });
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let mut configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: Some(producer),
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        configured.active = Some(
+            configured
+                .activate(&coordinator, coverage, documents)
+                .expect("initial projection activates before outage"),
+        );
+        let mut remote = RemoteSemantic::Configured(Box::new(configured));
+        let local = coordinator
+            .search_local(LocalQuery::prefix("alpha", 3).expect("query"))
+            .expect("local search");
+        let lexical_ids = local
+            .rows
+            .iter()
+            .map(|ranked| ranked.row.id)
+            .collect::<Vec<_>>();
+
+        let (result, status) =
+            remote.search_with_status(&coordinator, coverage, local, "alpha", false);
+
+        assert!(!result.rows.is_empty());
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|ranked| ranked.row.id)
+                .collect::<Vec<_>>(),
+            lexical_ids
+        );
+        assert_eq!(
+            status,
+            SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::ProviderUnavailable,
+            }
+        );
+        let lines = server.join().expect("fixture server");
+        assert_eq!(
+            request_kinds(&lines),
+            ["get", "get", "retrieve", "put", "count", "query"]
+        );
+        drop(remote);
+        fs::remove_dir_all(directory).expect("remove fixture directory");
+    }
+
+    #[test]
     fn verified_http_projection_constructs_the_real_source() {
         let (workspace, view) = super::super::tests::selected_view();
         let coverage = crate::builtin::admitted_coverage().expect("coverage");
@@ -1362,6 +1581,10 @@ mod tests {
         let accelerated = active.accelerate(local, vec![1.0, 0.0]);
         assert_eq!(accelerated.rows[0].row.id, row);
         assert_eq!(accelerated.lanes[2].freshness, Freshness::Current);
+        assert_eq!(
+            semantic_status_from_result(&accelerated),
+            Some(SemanticSearchStatus::Available)
+        );
 
         let extra = Row::new(
             RowId::Symbol(backend_engine::symbol_key("next::generation")),
@@ -1401,6 +1624,12 @@ mod tests {
         );
         assert_eq!(stale.lanes[2].freshness, Freshness::Stale);
         assert_eq!(stale.lanes[2].coverage, CoverageBasis::Unavailable);
+        assert_eq!(
+            semantic_status_from_result(&stale),
+            Some(SemanticSearchStatus::Stale {
+                reason: SemanticSearchReason::StaleProjection,
+            })
+        );
         let lines = server.join().expect("fixture server");
         assert_eq!(
             request_kinds(&lines),
@@ -1418,6 +1647,7 @@ mod tests {
             count_offset: -1,
             swap_query_id: false,
             corrupt_coordinate: false,
+            fail_query: false,
         });
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
@@ -1459,6 +1689,7 @@ mod tests {
             count_offset: 0,
             swap_query_id: true,
             corrupt_coordinate: false,
+            fail_query: false,
         });
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
@@ -1500,6 +1731,7 @@ mod tests {
             count_offset: 0,
             swap_query_id: false,
             corrupt_coordinate: false,
+            fail_query: false,
         });
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
@@ -1537,6 +1769,7 @@ mod tests {
             count_offset: 0,
             swap_query_id: false,
             corrupt_coordinate: true,
+            fail_query: false,
         });
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
@@ -2005,6 +2238,7 @@ mod tests {
             count_offset: 0,
             swap_query_id: false,
             corrupt_coordinate: false,
+            fail_query: false,
         })
     }
 
@@ -2015,6 +2249,7 @@ mod tests {
         count_offset: i64,
         swap_query_id: bool,
         corrupt_coordinate: bool,
+        fail_query: bool,
     }
 
     fn serve_projection(script: ProjectionScript) -> (String, thread::JoinHandle<Vec<String>>) {
@@ -2084,9 +2319,14 @@ mod tests {
                 } else {
                     panic!("unexpected Qdrant request: {first}");
                 };
+                let status = if script.fail_query && first.contains("/points/query") {
+                    "503 Service Unavailable"
+                } else {
+                    "200 OK"
+                };
                 write!(
                     stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 )
                 .expect("fixture response");

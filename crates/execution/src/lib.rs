@@ -10,6 +10,7 @@ pub mod adaptive;
 mod admission;
 mod attempt;
 mod cancel;
+mod compiler_cluster;
 mod placement;
 mod planner;
 /// Snapshot-pinned horizontal routing, planning, and deterministic merge.
@@ -30,6 +31,27 @@ pub use attempt::{
     ResultReceipt, UntrustedAuthorityClaim, UntrustedOutputClaim, UntrustedResultReceipt,
 };
 pub use cancel::{CancelHandle, Cancellation, Waiter, WaiterError, WaiterTable};
+pub use compiler_cluster::{
+    CompilerAssignment, CompilerAssignmentError, CompilerAssignmentOutcome,
+    CompilerAssignmentRoute, CompilerAttemptToken, CompilerBackoffPolicy, CompilerBalancedRemote,
+    CompilerBalancingRequest, CompilerByteCredits, CompilerClusterScheduler, CompilerCpuCredits,
+    CompilerDemand, CompilerHedgeAssignments, CompilerIdentityError, CompilerInputIdentityClaim,
+    CompilerInputScope, CompilerMemoryCredits, CompilerNodeCapacityClaim,
+    CompilerNodeCapacityError, CompilerNodeCapacityVerifier, CompilerPeerId, CompilerPeerRestart,
+    CompilerPeerRetryRecord, CompilerPlacement, CompilerPlacementPolicy,
+    CompilerRemoteEvidenceError, CompilerRemoteEvidenceVerifier, CompilerRemotePreflightError,
+    CompilerRemotePreflightVerifier, CompilerRemoteProbeBinding, CompilerResourceCredits,
+    CompilerRetrySnapshot, CompilerSessionAffinity, CompilerStealLease, CompilerWorkIdentity,
+    CompilerWorkQueue, CompilerWorkQueueError, ExactCompileReadSetClaim, ExactCompileReadSetError,
+    ExactCompileReadSetVerifier, FullWorkspaceInputClaim, FullWorkspaceInputError,
+    FullWorkspaceInputVerifier, LocalCompilerAvailability, MAX_COMPILER_PROBE_WINDOW_MS,
+    MAX_PACKAGE_LINEAGE_COMPONENT_BYTES, PackageLineageComponent, PackageLineageId,
+    RemoteCompilerCapabilityClaim, RemoteCompilerCompletionClaim, RemoteCompilerCostClaim,
+    RemoteCompilerEvidenceClaim, RemoteCompilerPreflightClaim, RemoteHaveClaim,
+    StoredCompilerCandidate, VerifiedCompileReadSet, VerifiedCompilerInput,
+    VerifiedCompilerNodeCapacity, VerifiedRemoteCompiler, VerifierAcceptedFullWorkspaceInput,
+    compiler_full_workspace_transfer_work_id, compiler_transfer_work_id,
+};
 pub use placement::{
     CompletionCost, CostObservation, CostSnapshot, CostVerifier, HedgeError, HedgeRace, HedgeSide,
     HedgeWinner, LocalCapability, LocalCapabilityVerifier, LocalState, ObservationError,

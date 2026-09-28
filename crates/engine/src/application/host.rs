@@ -14,18 +14,21 @@ use std::{
     fs, io,
     num::NonZeroUsize,
     path::{Path, PathBuf},
+    sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use authority::NativeExecutables;
+use backend_compile::EmbeddingExecutable;
 use backend_semantic::vocabulary::NativeTool;
 use backend_store::journal::PublicationLimits;
 use paths::create_directory;
 
 use crate::application::{
-    LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
-    LocalCompilerScratch, LocalCompilerTimeout, ToolchainProbeLimits,
+    EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerClient,
+    LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths, LocalCompilerScratch,
+    LocalCompilerTimeout, ToolchainProbeLimits,
 };
 
 pub use error::LocalCompilerHostError;
@@ -174,6 +177,40 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     /// Explicitly configured broken paths fail admission; they never become silent unavailable
     /// rows. A genuinely absent optional tool remains an honest unavailable row.
     pub fn open(&self) -> Result<LocalCompilerClient, LocalCompilerHostError> {
+        self.open_with_embedding_state(None, None, EmbeddingRequirement::Optional)
+    }
+
+    /// Opens the compiler with one already activated shared embedding runtime.
+    ///
+    /// Passing `None` means embeddings were not configured; if configured provisioning failed,
+    /// use [`Self::open_with_embedding_provisioning_failure`] so staged output can report that
+    /// state distinctly.
+    pub fn open_with_embedding_runtime(
+        &self,
+        runtime: Option<Arc<EmbeddingExecutable>>,
+        requirement: EmbeddingRequirement,
+    ) -> Result<LocalCompilerClient, LocalCompilerHostError> {
+        self.open_with_embedding_state(runtime, None, requirement)
+    }
+
+    /// Opens the compiler with a closed status for configured embedding provisioning failure.
+    ///
+    /// Optional compilation keeps IR available and reports this status; required compilation
+    /// fails when the first package is staged.
+    pub fn open_with_embedding_provisioning_failure(
+        &self,
+        cause: EmbeddingProvisioningFailure,
+        requirement: EmbeddingRequirement,
+    ) -> Result<LocalCompilerClient, LocalCompilerHostError> {
+        self.open_with_embedding_state(None, Some(cause), requirement)
+    }
+
+    fn open_with_embedding_state(
+        &self,
+        embedding_runtime: Option<Arc<EmbeddingExecutable>>,
+        embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+        embedding_requirement: EmbeddingRequirement,
+    ) -> Result<LocalCompilerClient, LocalCompilerHostError> {
         let data_root = self.data_root()?;
         create_directory(LocalHostDirectory::DataRoot, &data_root)?;
         let artifact_directory = data_root.join("artifacts");
@@ -247,7 +284,18 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 nonzero(PUBLICATION_GROUP_CAPACITY),
             )?,
             LocalCompilerScratch::with_fragment_capacity(nonzero(FRAGMENT_SCRATCH_BYTES))?,
-        )?;
+        )?
+        .with_embedding_requirement(embedding_requirement);
+        let configuration = match embedding_runtime {
+            Some(runtime) => configuration.with_embedding_runtime(runtime, embedding_requirement),
+            None => configuration,
+        };
+        let configuration = match embedding_provisioning_failure {
+            Some(cause) => {
+                configuration.with_embedding_provisioning_failure(cause, embedding_requirement)
+            }
+            None => configuration,
+        };
         LocalCompilerClient::start(configuration).map_err(Into::into)
     }
 

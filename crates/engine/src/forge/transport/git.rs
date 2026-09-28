@@ -100,11 +100,7 @@ impl GitCommandTransport {
         Ok(target)
     }
 
-    fn configure_partial_remote(
-        &self,
-        target: &str,
-        url: &str,
-    ) -> Result<(), ForgeTransportError> {
+    fn configure_partial_remote(&self, target: &str, url: &str) -> Result<(), ForgeTransportError> {
         self.git_quiet(&["-C", target, "remote", "add", "origin", url])?;
         self.git_quiet(&["-C", target, "config", "remote.origin.promisor", "true"])?;
         self.git_quiet(&[

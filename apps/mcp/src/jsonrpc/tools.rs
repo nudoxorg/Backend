@@ -86,13 +86,13 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     let mut properties = Map::new();
     let mut required = Vec::new();
     for spec in grammar.positional() {
-        properties.insert(spec.name().to_owned(), property(*spec));
+        properties.insert(spec.json_name().to_owned(), property(*spec));
         if spec.is_required() || (grammar.tool() == "backend.index" && spec.name() == "path") {
-            required.push(Value::String(spec.name().to_owned()));
+            required.push(Value::String(spec.json_name().to_owned()));
         }
     }
     for spec in grammar.options() {
-        properties.insert(spec.name().to_owned(), property(*spec));
+        properties.insert(spec.json_name().to_owned(), property(*spec));
     }
     // Presentation controls are shared by every read tool. Keeping them out
     // of the command grammar avoids making a presentation preference look
@@ -156,6 +156,9 @@ fn property(spec: ArgumentSpec) -> Value {
         scalar["minimum"] = json!(1);
         scalar["maximum"] = json!(200);
         scalar["default"] = json!(DEFAULT_LIMIT);
+    }
+    if spec.kind() == ArgumentKind::ExecutionIntent {
+        scalar["default"] = json!("interactive");
     }
     let mut value = if spec.is_repeated() {
         json!({ "type": "array", "items": scalar, "minItems": 1 })

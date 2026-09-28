@@ -175,7 +175,9 @@ fn validated_section(
 
 #[cfg(test)]
 mod read_tests {
-    use backend_version::schema::{FRAME_HEADER_BYTES, LimitError, LimitKind, MAX_ROWS, SectionKind};
+    use backend_version::schema::{
+        FRAME_HEADER_BYTES, LimitError, LimitKind, MAX_ROWS, SectionKind,
+    };
 
     use super::{SectionReadError, validated_section};
 

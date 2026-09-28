@@ -6,18 +6,18 @@ use super::{
 };
 use backend_engine::{RowId, package_key};
 use backend_extension_trustfall::{
-    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation,
-    SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact,
-    SemanticQueryPresentation, SemanticQueryRequest, execute_semantic_query,
+    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation, SemanticQueryCorpus,
+    SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
+    SemanticQueryRequest, execute_semantic_query,
 };
 use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityFacts,
     EntityVersion, ExternalDeclarationIdentity, ExternalId, ExternalTarget, FactAvailability,
-    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind, LinkKind,
-    LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader, SemanticImageView,
-    SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
-    VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
-    full_semantic_image_len,
+    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind,
+    LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader,
+    SemanticImageView, SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput,
+    TreeLinkTarget, VariantAvailability, VariantFingerprint, Visibility,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,

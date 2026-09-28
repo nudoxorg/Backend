@@ -7,6 +7,9 @@
 
 pub mod builtin;
 mod closure_index;
+pub mod cluster_config;
+pub mod cluster_embedding;
+pub mod cluster_runtime;
 pub mod input_cas;
 pub mod listener;
 pub mod process;

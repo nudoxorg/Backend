@@ -1,9 +1,9 @@
 //! Owner-side worker connection and authenticated transport setup.
 
 use super::{AsyncWorkerTransport, Duration, ProcessError, TransportLimits};
-use std::net::{SocketAddr, TcpStream};
 #[cfg(any(unix, windows))]
 use backend_engine::LocalStream;
+use std::net::{SocketAddr, TcpStream};
 
 /// Connects to a configured worker and completes the transport handshake.
 ///

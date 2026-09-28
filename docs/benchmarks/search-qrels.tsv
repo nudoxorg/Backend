@@ -1,0 +1,18 @@
+query_id	document_id	grade	provenance
+cargo.tantivy	cargo:tantivy@0.25.0	3	.config/nix/corpus-pins.json exact immutable coordinate and archive hash
+cargo.thiserror	cargo:thiserror@2.0.20	3	.config/nix/corpus-pins.json exact immutable coordinate and archive hash
+npm.zod	npm:zod@3.25.76	3	.config/nix/corpus-pins.json exact immutable coordinate and archive hash
+npm.query_core	npm:@tanstack/query-core@5.62.8	3	.config/nix/corpus-pins.json exact immutable coordinate and archive hash
+pypi.requests	pypi:requests@2.32.3	3	.config/nix/corpus-pins.json exact immutable coordinate and archive hash
+pypi.attrs	pypi:attrs@26.1.0	3	.config/nix/corpus-pins.json newer of the two frozen attrs coordinates
+pypi.attrs	pypi:attrs@25.3.0	2	.config/nix/corpus-pins.json older of the two frozen attrs coordinates
+go.chi	golang:github.com/go-chi/chi/v5@v5.0.12	3	.config/nix/corpus-pins.json exact immutable coordinate and archive hash
+go.x_sync	golang:golang.org/x/sync@v0.11.0	3	.config/nix/corpus-pins.json newer of the two frozen x/sync coordinates
+go.x_sync	golang:golang.org/x/sync@v0.10.0	2	.config/nix/corpus-pins.json older of the two frozen x/sync coordinates
+maven.jackson	maven:com.fasterxml.jackson.core:jackson-databind@2.17.1	3	.config/nix/corpus-pins.json exact immutable coordinate and archive hash
+maven.servlet	maven:jakarta.servlet:jakarta.servlet-api@6.0.0	3	.config/nix/corpus-pins.json newer of the two frozen Jakarta Servlet coordinates
+maven.servlet	maven:jakarta.servlet:jakarta.servlet-api@5.0.0	2	.config/nix/corpus-pins.json older of the two frozen Jakarta Servlet coordinates
+nuget.distinctby	nuget:morelinq.source.moreenumerable.distinctby@1.0.2	3	.config/nix/corpus-pins.json exact immutable coordinate and archive hash
+nuget.esp_net_source	nuget:esp-net-source@0.6.4	3	.config/nix/corpus-pins.json newer of the two frozen ESP.NET coordinates
+nuget.esp_net_source	nuget:esp-net-source@0.2.3	2	.config/nix/corpus-pins.json older of the two frozen ESP.NET coordinates
+clang.json_c	clang:json-c#sha256-MRLB8l057KZh/j/GY0MeEwzG4vkAwIFzgxf7pJ0p4pg=	3	.config/nix/corpus-pins.json pinned URL/tag and fixed-output archive hash; release version is not in the PURL

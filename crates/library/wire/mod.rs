@@ -61,5 +61,5 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version.
-pub const DTO_VERSION: u16 = 8;
+/// Current transport DTO version; version 11 adds strict Add execution intent.
+pub const DTO_VERSION: u16 = 11;

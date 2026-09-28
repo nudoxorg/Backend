@@ -119,9 +119,7 @@ pub(crate) enum SourceAvailabilityWire {
     NotCaptured,
     NotHydrated,
     Unconfigured,
-    StaleFile {
-        path: String,
-    },
+    StaleFile { path: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

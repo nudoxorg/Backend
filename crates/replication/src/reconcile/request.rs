@@ -9,6 +9,112 @@ use crate::{
     TransferId, TransportLimits, WireStateRoot, claim_state_root,
 };
 
+/// A bounded receiving request whose wire identities remain unverified until
+/// the complete object bytes have been streamed through the canonical hashers.
+///
+/// This request is for receive paths where an authenticated closure proves
+/// that the claimed identities are expected, but the receiver has not yet
+/// seen the object preimage. It intentionally cannot be converted into the
+/// typed [`ObjectRequest`] without proving the key and version from bytes.
+pub struct UnverifiedObjectRequest<T: Schema = crate::ImmutableObjectSchema> {
+    /// Transfer identifier used to fence replayed chunks.
+    pub transfer: TransferId,
+    /// Untrusted logical object key claim.
+    pub key: SchemaWireObjectKey<T>,
+    /// Untrusted complete object version claim.
+    pub version: SchemaWireObjectVersion<T>,
+    /// Complete canonical byte length.
+    pub len: u64,
+}
+
+impl<T: Schema> Copy for UnverifiedObjectRequest<T> {}
+
+#[allow(
+    clippy::expl_impl_clone_on_copy,
+    reason = "wire identity claims are fixed-width and cloning preserves their untrusted state"
+)]
+impl<T: Schema> Clone for UnverifiedObjectRequest<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Schema> PartialEq for UnverifiedObjectRequest<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.transfer == other.transfer
+            && self.key == other.key
+            && self.version == other.version
+            && self.len == other.len
+    }
+}
+
+impl<T: Schema> Eq for UnverifiedObjectRequest<T> {}
+
+impl<T: Schema> fmt::Debug for UnverifiedObjectRequest<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UnverifiedObjectRequest")
+            .field("transfer", &self.transfer)
+            .field("key", &self.key)
+            .field("version", &self.version)
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+impl<T: Schema> UnverifiedObjectRequest<T> {
+    /// Creates a bounded request while retaining both digests as untrusted
+    /// claims.
+    ///
+    /// # Errors
+    /// Returns an identifier, size, limit, or identity-context error when the
+    /// request is malformed or exceeds negotiated limits.
+    pub fn new(
+        transfer: TransferId,
+        key: SchemaWireObjectKey<T>,
+        version: SchemaWireObjectVersion<T>,
+        len: u64,
+        limits: TransportLimits,
+    ) -> Result<Self, ReplicationError> {
+        limits.validate()?;
+        if transfer.get() == 0 || len == 0 {
+            return Err(ReplicationError::InvalidIdentifier);
+        }
+        if len > limits.max_object {
+            return Err(ReplicationError::ObjectTooLarge);
+        }
+        key.admit_context(backend_version::IdContext::object_key::<T>())?;
+        version.admit_context(backend_version::IdContext::schema::<T>())?;
+        Ok(Self {
+            transfer,
+            key,
+            version,
+            len,
+        })
+    }
+
+    /// Revalidates this request against the negotiated object bounds and
+    /// schema contexts.
+    ///
+    /// # Errors
+    /// Returns an identifier, size, limit, or identity-context error when the
+    /// request is malformed or exceeds negotiated limits.
+    pub fn validate(&self, limits: TransportLimits) -> Result<(), ReplicationError> {
+        limits.validate()?;
+        if self.transfer.get() == 0 || self.len == 0 {
+            return Err(ReplicationError::InvalidIdentifier);
+        }
+        if self.len > limits.max_object {
+            return Err(ReplicationError::ObjectTooLarge);
+        }
+        self.key
+            .admit_context(backend_version::IdContext::object_key::<T>())?;
+        self.version
+            .admit_context(backend_version::IdContext::schema::<T>())?;
+        Ok(())
+    }
+}
+
 /// A requested immutable object or a bounded part of its byte stream.
 pub struct ObjectRequest<T: Schema = crate::ImmutableObjectSchema> {
     /// Transfer identifier used to fence replayed chunks.

@@ -885,11 +885,7 @@ fn write_link_target(output: &mut impl fmt::Write, ir: &Ir, target: LinkTarget) 
 
 /// A re-export's target is the fact the entry holds. A foreign path is that
 /// target; a local alias keeps the name, which is the only path this entry has.
-fn write_reexport_target(
-    output: &mut impl fmt::Write,
-    ir: &Ir,
-    item: ItemView<'_>,
-) -> fmt::Result {
+fn write_reexport_target(output: &mut impl fmt::Write, ir: &Ir, item: ItemView<'_>) -> fmt::Result {
     if let Some((_, link)) = item
         .links_from()
         .find(|(_, link)| link.kind == LinkKind::Reexports)

@@ -11,6 +11,8 @@ use super::{
     write_immutable_with_status,
 };
 use crate::{UntrustedObjectId, WorkspaceClosure};
+use std::collections::HashSet;
+use std::io::Read as _;
 
 impl FileStore {
     /// Opens or creates a bounded filesystem store at `root`.
@@ -180,6 +182,7 @@ impl FileStore {
         sync_parent: bool,
     ) -> Result<ObjectWriteReceipt, StoreError> {
         object.verify_wire_version(&self.relation_registry)?;
+        self.verify_object_value_targets(object)?;
         let encoded = encode_object(object, limit)?;
         let id = object.id();
         let path = self.object_path(id);
@@ -193,6 +196,28 @@ impl FileStore {
             created,
             u64::try_from(encoded.len()).map_err(|_| StoreError::Bounds)?,
         ))
+    }
+
+    fn verify_object_value_targets(&self, object: &TypedObject) -> Result<(), StoreError> {
+        if !self.relation_registry.contains_schema(object.schema()) {
+            return Ok(());
+        }
+        let references = self.relation_registry.node_references(
+            object.schema(),
+            object.version(),
+            object.bytes(),
+        )?;
+        let mut checked = HashSet::new();
+        checked
+            .try_reserve(references.value_references.len())
+            .map_err(|_| StoreError::Bounds)?;
+        for reference in references.value_references {
+            if !checked.insert(reference) {
+                continue;
+            }
+            self.verify_object_claim(UntrustedObjectId::from_bytes(reference))?;
+        }
+        Ok(())
     }
 
     /// Checks whether an immutable object file exists and is a regular file.
@@ -280,6 +305,7 @@ impl FileStore {
         manifest: &ClosureManifest,
         selected_roots: &[TypedObject],
     ) -> Result<ClosureId, StoreError> {
+        self.verify_manifest_value_targets(manifest)?;
         let mut changed = manifest
             .changed_objects()
             .map(|object| (*object).clone())
@@ -307,6 +333,45 @@ impl FileStore {
         let path = self.closure_path(manifest.id());
         write_immutable(&path, &bytes, &self.root.join("closures"))?;
         Ok(manifest.id())
+    }
+
+    /// Makes sure every cross-closure relation value edge has a local CAS
+    /// target before this closure can become durable. Same-closure targets are
+    /// admitted from the supplied manifest and written as part of this
+    /// operation. This preserves the GC rule that ordinary relation edges
+    /// must resolve locally even when an unrelated selected closure has a
+    /// remote-residency receipt.
+    fn verify_manifest_value_targets(&self, manifest: &ClosureManifest) -> Result<(), StoreError> {
+        let mut members = HashSet::new();
+        members
+            .try_reserve(manifest.objects().len())
+            .map_err(|_| StoreError::Bounds)?;
+        members.extend(manifest.objects().iter().map(TypedObject::id));
+
+        for object in manifest.objects() {
+            if !self.relation_registry.contains_schema(object.schema()) {
+                continue;
+            }
+            let references = self.relation_registry.node_references(
+                object.schema(),
+                object.version(),
+                object.bytes(),
+            )?;
+            let mut checked = HashSet::new();
+            checked
+                .try_reserve(references.value_references.len())
+                .map_err(|_| StoreError::Bounds)?;
+            for reference in references.value_references {
+                if !checked.insert(reference) {
+                    continue;
+                }
+                let target = ObjectId::from_bytes(reference);
+                if !members.contains(&target) {
+                    self.verify_object_claim(UntrustedObjectId::from_bytes(reference))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn write_root_closure(
@@ -388,13 +453,8 @@ impl FileStore {
     /// Returns [`StoreError::Corrupt`] for a missing, flat, or malformed
     /// closure descriptor and [`StoreError::Io`] for filesystem failures.
     pub fn open_closure(&self, id: ClosureId) -> Result<DurableManifest, StoreError> {
-        let path = self.closure_path(id);
-        let metadata = fs::metadata(&path).map_err(|error| map_read_error(&error))?;
         let limit = envelope_limit(self.max_pack_bytes)?;
-        if metadata.len() > u64::try_from(limit).map_err(|_| StoreError::Bounds)? {
-            return Err(StoreError::Bounds);
-        }
-        let bytes = fs::read(path).map_err(|error| map_read_error(&error))?;
+        let bytes = self.read_closure_envelope(id, limit)?;
         if !nodes::is_manifest_descriptor(&bytes) {
             return Err(StoreError::Corrupt);
         }
@@ -414,13 +474,8 @@ impl FileStore {
         id: ClosureId,
         verify_edges: bool,
     ) -> Result<ClosureManifest, StoreError> {
-        let path = self.closure_path(id);
-        let metadata = fs::metadata(&path).map_err(|error| map_read_error(&error))?;
         let limit = envelope_limit(self.max_pack_bytes)?;
-        if metadata.len() > u64::try_from(limit).map_err(|_| StoreError::Bounds)? {
-            return Err(StoreError::Bounds);
-        }
-        let bytes = fs::read(path).map_err(|error| map_read_error(&error))?;
+        let bytes = self.read_closure_envelope(id, limit)?;
         let compact = nodes::is_manifest_descriptor(&bytes);
         let manifest = if compact {
             let descriptor = nodes::decode_manifest_descriptor(&bytes, id)?;
@@ -442,6 +497,34 @@ impl FileStore {
             }
         }
         Ok(manifest)
+    }
+
+    fn read_closure_envelope(
+        &self,
+        id: ClosureId,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, StoreError> {
+        let file = super::artifact_fs::open_closure(self, id)?;
+        let metadata = file.metadata().map_err(|error| io_error(&error))?;
+        let length = usize::try_from(metadata.len()).map_err(|_| StoreError::Bounds)?;
+        if length > maximum_bytes {
+            return Err(StoreError::Bounds);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| StoreError::Bounds)?;
+        file.take(
+            u64::try_from(maximum_bytes)
+                .map_err(|_| StoreError::Bounds)?
+                .saturating_add(1),
+        )
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error(&error))?;
+        if bytes.len() != length {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(bytes)
     }
 
     /// Reads a complete closure and returns its checked immutable-object

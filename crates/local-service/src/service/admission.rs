@@ -3,6 +3,38 @@
 use super::{CompletionClaim, EngineStatus, ProtocolError, daemon_replicate};
 use std::fmt;
 
+/// Read-only semantic range request admission for the local versioned plane.
+///
+/// The callback receives canonical DTO bytes after local frame admission.
+/// Implementations decode them strictly, then bind the caller's
+/// selected-generation stamp to a fresh authority read before exposing bytes.
+pub trait SemanticRangeAdmission {
+    /// Reopens and serves one bounded semantic range request.
+    fn serve(&mut self, request_id: u64, request: Box<[u8]>) -> Result<Box<[u8]>, ProtocolError>;
+}
+
+/// Explicit default that refuses semantic range requests without an authority
+/// resolver and checked CAS reader.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoSemanticRangeAdmission;
+
+impl SemanticRangeAdmission for NoSemanticRangeAdmission {
+    fn serve(&mut self, _request_id: u64, _request: Box<[u8]>) -> Result<Box<[u8]>, ProtocolError> {
+        Err(ProtocolError::InvalidControl(
+            "semantic range admission is not configured",
+        ))
+    }
+}
+
+impl<F> SemanticRangeAdmission for F
+where
+    F: FnMut(u64, Box<[u8]>) -> Result<Box<[u8]>, ProtocolError>,
+{
+    fn serve(&mut self, request_id: u64, request: Box<[u8]>) -> Result<Box<[u8]>, ProtocolError> {
+        self(request_id, request)
+    }
+}
+
 /// Completion admission seam supplied by the engine composition root.
 pub trait CompletionAdmission<M: backend_engine::WorkspaceModel, V, A>
 where

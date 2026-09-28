@@ -159,6 +159,19 @@ impl RelationAdmissionRegistry {
         self.node_references(schema, version, bytes).map(|_| ())
     }
 
+    pub(crate) fn admit_relation_object(
+        &self,
+        schema: SchemaIdentity,
+        key: &Hash,
+        version: &Hash,
+        bytes: &[u8],
+    ) -> Result<RelationNodeReferences, StoreError> {
+        if !self.contains_schema(schema) || key != &super::relation_key(schema) {
+            return Err(StoreError::Corrupt);
+        }
+        self.node_references(schema, version, bytes)
+    }
+
     pub(crate) fn node_references(
         &self,
         schema: SchemaIdentity,

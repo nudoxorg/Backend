@@ -4,12 +4,14 @@
 use alloc::boxed::Box;
 use core::ops::Deref;
 
-use backend_version::{ContentId, Domain};
 use backend_version::object::{ObjectLength, ObjectRef};
 use backend_version::observe::Probe;
+use backend_version::{ContentId, Domain};
 use thiserror::Error;
 
-use crate::memory::backing::{BackingError, HeapBacking, InitializedTable, InlineBacking, MetadataBacking};
+use crate::memory::backing::{
+    BackingError, HeapBacking, InitializedTable, InlineBacking, MetadataBacking,
+};
 use crate::memory::capacity::{
     ByteCapacity, OccupiedSlots, RetainedBytes, SlotCapacity, StoreCapacity, StoreInitError,
     StoreLayout, StoreStats,

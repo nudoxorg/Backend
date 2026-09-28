@@ -80,9 +80,9 @@ use backend_frontend_rust::legacy::{
 };
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
-    ExternalFragmentId, ForeignKey, ForeignOrigin, PackageLineage,
-    ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape,
-    ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
+    ExternalFragmentId, ForeignKey, ForeignOrigin, ListSpan, NominalRef, Occurrence,
+    OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape, ProductChildRole,
+    ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
 };
 use ra_ap_syntax::{
@@ -541,7 +541,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// expansion-made declaration has no written attributes here, and a row
     /// whose attribute text cannot be borrowed from the source stays
     /// unobserved rather than claiming it has none.
-    fn emit_attributes(&mut self, declarations: &[Decl<'source>]) -> Result<(), RustAuthorityError> {
+    fn emit_attributes(
+        &mut self,
+        declarations: &[Decl<'source>],
+    ) -> Result<(), RustAuthorityError> {
         for (index, declaration) in declarations.iter().enumerate() {
             let Some(Some(owner)) = self.ordinals.get(index).copied() else {
                 continue;
@@ -573,7 +576,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             for bytes in written {
                 atoms.push(self.facts.intern_atom(bytes).map_err(|_| admission())?);
             }
-            let list = self.facts.intern_atom_list(&atoms).map_err(|_| admission())?;
+            let list = self
+                .facts
+                .intern_atom_list(&atoms)
+                .map_err(|_| admission())?;
             self.facts
                 .attach_item_attributes(owner as usize, list)
                 .map_err(|_| admission())?;
@@ -1359,7 +1365,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
             let ownership = parameter_ownership(self.database, &semantic);
             let wildcard = name == b"_";
-            let ordinal = self.push_parameter(name, lowered, ownership, wildcard.then_some(position))?;
+            let ordinal =
+                self.push_parameter(name, lowered, ownership, wildcard.then_some(position))?;
             parameter_ordinals.push(ordinal);
             signature_children.push(ordinal);
         }
@@ -2139,7 +2146,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         match self.trait_bound_constraint(bound)? {
             TraitBoundTarget::Committed(ordinal) => {
                 return self.lower_trait_bound_application(bound, ordinal, MAX_TYPE_DEPTH - 1);
-            },
+            }
             TraitBoundTarget::Foreign => {
                 let spelling = self.bytes_of_node(bound.syntax())?;
                 let record = self.unresolved_record_with(Some(spelling));
@@ -2337,10 +2344,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             return Ok(());
         }
         // `scoped_names` keys use `SemanticKind`, not `EntityKind`.
-        if self
-            .scoped_names
-            .contains(&(None, SemanticKind::Module as u8, CRATE_FILE_OWNER_NAME.to_vec()))
-        {
+        if self.scoped_names.contains(&(
+            None,
+            SemanticKind::Module as u8,
+            CRATE_FILE_OWNER_NAME.to_vec(),
+        )) {
             return Ok(());
         }
         if !self.has_orphan_module_import() {
@@ -2371,11 +2379,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .map_err(|_| admission())?;
         let slot = usize::try_from(ordinal).map_err(|_| admission())?;
         self.facts
-            .attach_extension_with_type_parameters(
-                slot,
-                EmissionExtension::Rust(extension),
-                range,
-            )
+            .attach_extension_with_type_parameters(slot, EmissionExtension::Rust(extension), range)
             .map_err(|_| admission())?;
         self.facts
             .set_free_predicate_range(slot, &EmissionExtension::Rust(extension), free_range)
@@ -2605,11 +2609,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         .first()
                         .and_then(|bound| bound.ty());
                     let target = match bound_ty {
-                        Some(bound_ty) => self.lower_trait_bound_application(
-                            &bound_ty,
-                            ordinal,
-                            depth - 1,
-                        )?,
+                        Some(bound_ty) => {
+                            self.lower_trait_bound_application(&bound_ty, ordinal, depth - 1)?
+                        }
                         None => ordinal,
                     };
                     Ok(Lowered {
@@ -2818,7 +2820,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 children,
             });
         };
-        let argument_children = self.lower_written_application_arguments(arguments, anchor, depth)?;
+        let argument_children =
+            self.lower_written_application_arguments(arguments, anchor, depth)?;
         if argument_children.is_empty() {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
             record.nominal = Some(NominalRef::Local(EntityId::new(ordinal)));
@@ -2902,9 +2905,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         Some(semantic) => self.lower_type(&semantic, Some(&ty), depth)?,
                         None => Lowered::leaf(unknown_record(TypeReason::OracleGap, None)),
                     }
-                } else if let Some(konst) = binding
-                    .const_arg()
-                    .and_then(|argument| argument.expr())
+                } else if let Some(konst) = binding.const_arg().and_then(|argument| argument.expr())
                 {
                     self.const_argument_lowered(self.bytes_of_node(konst.syntax()).ok())
                 } else {
@@ -2941,11 +2942,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// `Item = u8` is not `Item = String`, and neither is a bare `Iterator`.
-    fn assoc_binding_lowered(
-        &self,
-        name: Option<&'source [u8]>,
-        value: u32,
-    ) -> Lowered<'source> {
+    fn assoc_binding_lowered(&self, name: Option<&'source [u8]>, value: u32) -> Lowered<'source> {
         let Some(name) = name else {
             return Lowered::leaf(unknown_record(TypeReason::OracleGap, None));
         };
@@ -3054,7 +3051,6 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             record: SemanticTypeRecord::leaf(SemanticTypeTag::ImplTrait),
             children,
         })
-
     }
 
     /// Lowers one generic-parameter use: the implicit trait `Self` stays a
@@ -3144,7 +3140,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 canonical.push_str(name.as_str());
             }
         }
-        Some(ExternalFragmentId::from_canonical_bytes(canonical.as_bytes()))
+        Some(ExternalFragmentId::from_canonical_bytes(
+            canonical.as_bytes(),
+        ))
     }
 
     /// Borrows the written lifetime behind one reference anchor.
@@ -3254,8 +3252,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             if let Some(function) = call.target {
                 let definition = ra_ap_hir::ModuleDef::from(function);
                 if self.ordinal_of_definition(&definition).is_none()
-                    && let Some(package_path) =
-                        authority.cross_file_method_package_path(function)
+                    && let Some(package_path) = authority.cross_file_method_package_path(function)
                     && let Some(owner) = self.owner_of(span)
                 {
                     let owner_span = self
@@ -3379,7 +3376,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 }
             }
             let confidence = occurrence_confidence(target.is_some());
-            let target = target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
+            let target =
+                target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
             self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
         }
         let paths: Vec<_> = authority.top_level_paths().collect();
@@ -3589,7 +3587,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .descendants_with_tokens()
                 .filter_map(|element| element.into_token())
             {
-                for descended in authority.semantics.descend_into_macros_no_opaque(token, false) {
+                for descended in authority
+                    .semantics
+                    .descend_into_macros_no_opaque(token, false)
+                {
                     let Some(syntax) = descended
                         .value
                         .parent()
@@ -3808,8 +3809,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Captures the written visibility prefix of one syntax item.
     fn visibility_of(&self, syntax: &ra_ap_syntax::SyntaxNode) -> backend_semantic::ir::Visibility {
-        let Some(visibility) = ast::AnyHasVisibility::cast(syntax.clone())
-            .and_then(|item| item.visibility())
+        let Some(visibility) =
+            ast::AnyHasVisibility::cast(syntax.clone()).and_then(|item| item.visibility())
         else {
             return backend_semantic::ir::Visibility::Private;
         };
@@ -4571,8 +4572,7 @@ mod tests {
             .as_nanos();
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let root =
-            std::env::temp_dir().join(format!("nudox-rust-lane-{nonce}-{pid}-{sequence}"));
+        let root = std::env::temp_dir().join(format!("nudox-rust-lane-{nonce}-{pid}-{sequence}"));
         fs::create_dir_all(root.join("src")).map_err(|source| TestError::Io {
             operation: "create fixture",
             source,
@@ -5102,9 +5102,7 @@ mod tests {
     /// pointer stays a function row with one child per argument.
     #[test]
     fn a_nine_argument_fn_pointer_keeps_every_argument() -> Result<(), TestError> {
-        let view = lower(
-            "pub fn probe(value: fn(u8, u8, u8, u8, u8, u8, u8, u8, u8)) {}\n",
-        )?;
+        let view = lower("pub fn probe(value: fn(u8, u8, u8, u8, u8, u8, u8, u8, u8)) {}\n")?;
         let parameter = fact_of(&view, b"value", EntityKind::Parameter)?;
         let row = row_for_entity(&view, parameter)?;
         let children = local_type_children(&view, row.record)?;
@@ -5279,19 +5277,20 @@ mod tests {
                 "Iterator<Item = u8> and Iterator<Item = String> must differ",
             ));
         }
-        let parameter_application = |name: &[u8]| -> Result<Vec<backend_semantic::ir::TypeId>, TestError> {
-            let function = row_for_entity(&view, fact_of(&view, name, EntityKind::Function)?)?;
-            let parameter = local_type_children(&view, function.record)?
-                .first()
-                .and_then(|target| rows.get(target.index()))
-                .ok_or(TestError::Missing("parameter row"))?;
-            if parameter.record.tag != SemanticTypeTag::Apply
-                || parameter.record.children.length != 2
-            {
-                return Err(TestError::Missing("const generic application structure"));
-            }
-            local_type_children(&view, parameter.record)
-        };
+        let parameter_application =
+            |name: &[u8]| -> Result<Vec<backend_semantic::ir::TypeId>, TestError> {
+                let function = row_for_entity(&view, fact_of(&view, name, EntityKind::Function)?)?;
+                let parameter = local_type_children(&view, function.record)?
+                    .first()
+                    .and_then(|target| rows.get(target.index()))
+                    .ok_or(TestError::Missing("parameter row"))?;
+                if parameter.record.tag != SemanticTypeTag::Apply
+                    || parameter.record.children.length != 2
+                {
+                    return Err(TestError::Missing("const generic application structure"));
+                }
+                local_type_children(&view, parameter.record)
+            };
         if parameter_application(b"c")? == parameter_application(b"d")? {
             return Err(TestError::Missing("Foo<false> and Foo<true> must differ"));
         }
@@ -5342,7 +5341,9 @@ mod tests {
             .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
             .collect::<Vec<_>>();
         if field_accesses.len() != 1 {
-            return Err(TestError::Missing("exactly one macro field access occurrence"));
+            return Err(TestError::Missing(
+                "exactly one macro field access occurrence",
+            ));
         }
         let access = field_accesses[0];
         if access.0 != read {
@@ -5472,7 +5473,9 @@ mod tests {
             .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::MacroInvocation)
             .collect::<Vec<_>>();
         if macro_invocations.len() != 1 {
-            return Err(TestError::Missing("exactly one macro invocation occurrence"));
+            return Err(TestError::Missing(
+                "exactly one macro invocation occurrence",
+            ));
         }
         let invocation = macro_invocations[0];
         if invocation.0 != caller
@@ -5480,7 +5483,9 @@ mod tests {
                 != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(my_macro))
             || invocation.1.confidence != OccurrenceConfidence::Oracle
         {
-            return Err(TestError::Missing("local my_macro target at oracle confidence"));
+            return Err(TestError::Missing(
+                "local my_macro target at oracle confidence",
+            ));
         }
         Ok(())
     }
@@ -5499,11 +5504,15 @@ mod tests {
             .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::MacroInvocation)
             .collect::<Vec<_>>();
         if macro_invocations.len() != 1 {
-            return Err(TestError::Missing("exactly one unresolved macro invocation"));
+            return Err(TestError::Missing(
+                "exactly one unresolved macro invocation",
+            ));
         }
         let invocation = macro_invocations[0];
         if invocation.0 != caller || invocation.1.confidence != OccurrenceConfidence::Syntactic {
-            return Err(TestError::Missing("syntactic unresolved macro owned by caller"));
+            return Err(TestError::Missing(
+                "syntactic unresolved macro owned by caller",
+            ));
         }
         let backend_semantic::ir::OccurrenceTarget::Foreign(key) = invocation.1.target else {
             return Err(TestError::Missing("foreign target"));
@@ -5537,7 +5546,9 @@ mod tests {
         }
         let invocation = macro_invocations[0];
         if invocation.0 != caller || invocation.1.confidence != OccurrenceConfidence::Oracle {
-            return Err(TestError::Missing("oracle println invocation owned by caller"));
+            return Err(TestError::Missing(
+                "oracle println invocation owned by caller",
+            ));
         }
         let backend_semantic::ir::OccurrenceTarget::Foreign(key) = invocation.1.target else {
             return Err(TestError::Missing("foreign target"));

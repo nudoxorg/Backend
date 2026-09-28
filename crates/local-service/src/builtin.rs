@@ -34,9 +34,10 @@ use backend_engine::{
 };
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -76,11 +77,22 @@ use replication::BuiltinReplication;
 #[path = "builtin/worker.rs"]
 mod worker;
 use worker::connect_worker;
+#[path = "builtin/cluster_dispatch.rs"]
+mod cluster_dispatch;
 #[path = "builtin/generation_residence.rs"]
 mod generation_residence;
+#[path = "builtin/pending_stored.rs"]
+mod pending_stored;
+#[path = "builtin/s3_publication.rs"]
+mod s3_publication;
+#[path = "builtin/semantic_authority.rs"]
+mod semantic_authority;
+#[path = "builtin/versioned_planes.rs"]
+mod versioned_planes;
 #[path = "builtin/view_build/mod.rs"]
 mod view_build;
 use generation_residence::SemanticGenerationResidence;
+use semantic_authority::SemanticAuthority;
 #[path = "builtin/view_journal.rs"]
 mod view_journal;
 #[path = "builtin/view_publish.rs"]
@@ -92,8 +104,16 @@ mod commands;
 #[path = "builtin/registry.rs"]
 mod registry;
 use registry::RegistryGateway;
+#[path = "builtin/forge_gateway.rs"]
+mod forge_gateway;
+use crate::discovery::DiscoveryGateway;
+use forge_gateway::ForgeGateway;
 
 mod browse;
+#[path = "builtin/discovery_search.rs"]
+mod discovery_search;
+#[cfg(feature = "search-bench")]
+pub use discovery_search::benchmark as search_benchmark;
 #[path = "builtin/product_state.rs"]
 mod product_state;
 use product_state::ProductState;
@@ -199,12 +219,18 @@ fn load_semantic_publication(
     claim: backend_engine::builtin::SemanticPublicationClaim,
     generations: &mut SemanticGenerationResidence,
 ) -> Result<ActivatedProductSemantics, BuiltinModelError> {
-    let images = generations.load(claim, || {
-        compiler
-            .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
-            .map(|activated| activated.images)
-            .map_err(|error| BuiltinModelError(format!("activate semantic publication: {error}")))
-    })?;
+    let images = if generations.has_selected_loader() {
+        generations.load_selected(key, claim)?
+    } else {
+        generations.load(claim, || {
+            compiler
+                .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
+                .map(|activated| activated.images)
+                .map_err(|error| {
+                    BuiltinModelError(format!("activate semantic publication: {error}"))
+                })
+        })?
+    };
     Ok(ActivatedProductSemantics { images })
 }
 
@@ -1333,11 +1359,29 @@ pub(crate) fn compose_owner(
         relation_registry,
     )
     .map_err(|error| ProcessError::Profile(error.to_string()))?;
-    let compiler = backend_engine::application::LocalCompilerHost::production_at(
-        config.workspace.join("compiler"),
+    let compiler_root = config.workspace.join("compiler");
+    let embedding = backend_engine::application::EmbeddingRuntimeProvision::open(
+        compiler_root.join("embedding.config"),
     )
-    .open()
-    .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
+    .map_err(|error| ProcessError::Profile(format!("open compiler embedding runtime: {error}")))?;
+    let compiler_host =
+        backend_engine::application::LocalCompilerHost::production_at(compiler_root);
+    let compiler =
+        match embedding.provisioning_failure() {
+            Some(cause) => compiler_host
+                .open_with_embedding_provisioning_failure(cause, embedding.requirement()),
+            None => compiler_host
+                .open_with_embedding_runtime(embedding.runtime(), embedding.requirement()),
+        }
+        .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
+    let mut semantic_authority = SemanticAuthority::open(&config.workspace)
+        .map_err(|error| ProcessError::Profile(error.to_string()))?;
+    let mut image_rows = view_build::ImageRowResidence::default();
+    let mut generations = SemanticGenerationResidence::default();
+    semantic_authority.install_image_loader(&mut generations);
+    semantic_authority
+        .reconcile_workspace(&mut daemon)
+        .map_err(|error| ProcessError::Profile(format!("reconcile semantic authority: {error}")))?;
     // Admit optional semantic configuration without network I/O. Missing or
     // malformed remote settings remain a retained unavailable state and can
     // never delay the local owner or its lexical query path. The classification
@@ -1358,8 +1402,6 @@ pub(crate) fn compose_owner(
         .engine_mut()
         .daemon_mut()
         .set_view_persistence(Box::new(view_journal));
-    let mut image_rows = view_build::ImageRowResidence::default();
-    let mut generations = SemanticGenerationResidence::default();
     if let Some(recovered) = recovered_view {
         let admission = BuiltinViewAdmission {
             workspace_root,
@@ -1426,6 +1468,53 @@ pub(crate) fn compose_owner(
         sql_projection.synchronize(daemon.engine().daemon().library().view()),
     )
     .map_err(|error| ProcessError::Profile(format!("align Turso projection: {error}")))?;
+    semantic_authority
+        .mark_projections_current()
+        .map_err(|error| {
+            ProcessError::Profile(format!("advance semantic projection watermarks: {error}"))
+        })?;
+    let owner_cluster = cluster_dispatch::OwnerCompilerClusterRuntime::open_if_configured(
+        &config.workspace,
+        semantic_authority.store(),
+    )
+    .map_err(|error| ProcessError::Profile(format!("open compiler cluster owner: {error}")))?
+    .map(Arc::new);
+    let pending_stored_acks = owner_cluster
+        .as_ref()
+        .map(|_| pending_stored::PendingStoredAckJournal::open(&config.workspace))
+        .transpose()
+        .map_err(|error| {
+            ProcessError::Profile(format!("open pending compiler result ACK journal: {error}"))
+        })?
+        .map(|journal| Arc::new(Mutex::new(journal)));
+    if let (Some(owner_cluster), Some(pending_stored_acks)) =
+        (owner_cluster.as_ref(), pending_stored_acks.as_ref())
+    {
+        // Retry reconciliation runs off the command path. In particular, an unavailable worker
+        // must not hold locald startup before its socket becomes available.
+        let retry_owner = Arc::clone(owner_cluster);
+        let retry_journal = Arc::clone(pending_stored_acks);
+        let retry_workspace = config.workspace.clone();
+        owner_cluster
+            .start_pending_ack_retry_worker(move || {
+                // SemanticAuthority contains thread-affine SQLite state, so open it inside the
+                // dedicated retry thread and retain it there across sweeps.
+                let mut authority = None;
+                let mut cursor = None;
+                move || {
+                    retry_one_pending_compiler_ack(
+                        &retry_owner,
+                        &mut authority,
+                        &retry_workspace,
+                        &retry_journal,
+                        &mut cursor,
+                    )
+                }
+            })
+            .map_err(|error| {
+                ProcessError::Profile(format!("start pending compiler ACK retry: {error}"))
+            })?;
+    }
     let search_snapshots = query::SearchSnapshotOwner::default();
     let worker_secret = match profile.kind {
         BuiltinProfile::Product => product_secret.ok_or_else(|| {
@@ -1468,9 +1557,24 @@ pub(crate) fn compose_owner(
     }
     let product_state = ProductState::open(config.workspace.join("product-state.json"))
         .map_err(|error| ProcessError::Profile(format!("open product state: {error}")))?;
-    let mut commands = commands::CommandAdapter::new(
+    let forge = ForgeGateway::open(config.workspace.join("forge"), config.forge.clone())
+        .map_err(|error| ProcessError::Profile(format!("open forge owner: {error}")))?;
+    let discovery = if config.discovery.sources.is_empty() {
+        None
+    } else {
+        Some(
+            DiscoveryGateway::open(
+                config.workspace.join("registry-discovery"),
+                config.discovery.clone(),
+            )
+            .map_err(|error| ProcessError::Profile(format!("open discovery owner: {error}")))?,
+        )
+    };
+    let commands = commands::CommandAdapter::new(
         sql_projection,
         registry,
+        forge,
+        discovery,
         product_state,
         compiler,
         search_snapshots,
@@ -1478,14 +1582,274 @@ pub(crate) fn compose_owner(
         Some(published_roots),
         image_rows,
         generations,
+        semantic_authority,
+        owner_cluster,
+        pending_stored_acks,
     );
+    let commands = Arc::new(Mutex::new(commands));
+    let command_commands = Arc::clone(&commands);
     let command = move |daemon: &mut crate::Locald<
         BuiltinModel,
         BuiltinValidator,
         BuiltinAuthorityVerifier,
     >,
-                        body: &[u8]| { commands.execute(daemon, body) };
-    Ok(daemon.into_owner_with_admission(command, NoCompletionAdmission, replication))
+                        body: &[u8]| {
+        command_commands
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .execute(daemon, body)
+    };
+    let range_commands = Arc::clone(&commands);
+    let semantic_ranges = move |request_id, payload| {
+        range_commands
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .serve_semantic_control(request_id, payload)
+    };
+    Ok(daemon.into_owner_with_admission_and_semantic_ranges(
+        command,
+        NoCompletionAdmission,
+        replication,
+        semantic_ranges,
+    ))
+}
+
+/// Processes one durable row per retry sweep, rotating through unresolved rows so an older
+/// ambiguous selection cannot starve a later independently selected result.
+fn retry_one_pending_compiler_ack(
+    owner: &cluster_dispatch::OwnerCompilerClusterRuntime,
+    authority: &mut Option<SemanticAuthority>,
+    authority_workspace: &Path,
+    journal: &Arc<Mutex<pending_stored::PendingStoredAckJournal>>,
+    cursor: &mut Option<[u8; 32]>,
+) -> cluster_dispatch::PendingAckRetryOutcome {
+    let rows = journal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retry_rows()
+        .map(|(id, entry)| (*id, entry.clone()))
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return cluster_dispatch::PendingAckRetryOutcome::Idle;
+    }
+    let after = *cursor;
+    let selected = after
+        .and_then(|after| rows.iter().find(|(id, _)| *id > after))
+        .or_else(|| rows.first())
+        .cloned();
+    let Some((id, record)) = selected else {
+        return cluster_dispatch::PendingAckRetryOutcome::Idle;
+    };
+    *cursor = Some(id);
+    let result = match record {
+        pending_stored::PendingStoredAckEntry::Selection(record) => {
+            match resolve_and_ack_pending_compiler_result(
+                owner,
+                authority,
+                authority_workspace,
+                journal,
+                &record,
+            ) {
+                Ok(true) => Ok(true),
+                proof_result
+                    if record.state == pending_stored::PendingStoredAckState::AwaitingSelection =>
+                {
+                    if authority.is_none() {
+                        match SemanticAuthority::open(authority_workspace) {
+                            Ok(opened) => *authority = Some(opened),
+                            Err(error) => {
+                                return cluster_dispatch::PendingAckRetryOutcome::TransientFailure;
+                            }
+                        }
+                    }
+                    match authority.as_mut() {
+                        Some(authority) => {
+                            let recovered = commands::recover_awaiting_selection(
+                                owner, authority, journal, &record,
+                            );
+                            match (proof_result, recovered) {
+                                (_, Ok(progress)) => Ok(progress),
+                                (Err(proof_error), Err(recovery_error)) => Err(format!(
+                                    "selection proof unresolved ({proof_error}); cold readmission unresolved ({recovery_error})"
+                                )),
+                                (Ok(false), Err(recovery_error)) => Err(recovery_error),
+                                (Ok(true), Err(recovery_error)) => Err(recovery_error),
+                            }
+                        }
+                        None => {
+                            Err("semantic authority is unavailable for selection recovery".into())
+                        }
+                    }
+                }
+                Ok(false) => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
+        pending_stored::PendingStoredAckEntry::RejectedAdmission(_) => {
+            resolve_and_ack_pending_rejected_compiler_result(owner, journal, id)
+        }
+        pending_stored::PendingStoredAckEntry::Reservation(_) => (|| -> Result<bool, String> {
+            if authority.is_none() {
+                *authority = Some(SemanticAuthority::open(authority_workspace).map_err(
+                    |error| format!("open semantic authority for offered-result recovery: {error}"),
+                )?);
+            }
+            let Some(authority) = authority.as_mut() else {
+                return Err("semantic authority is unavailable for offered-result recovery".into());
+            };
+            commands::recover_offered_reservation(owner, authority, journal, id)
+        })(),
+    };
+    match result {
+        Ok(true) => {
+            let remaining = journal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retry_rows()
+                .count();
+            cluster_dispatch::PendingAckRetryOutcome::Progress { remaining }
+        }
+        Ok(false) => cluster_dispatch::PendingAckRetryOutcome::TransientFailure,
+        Err(error) => {
+            eprintln!("pending compiler ACK retry remains unresolved: {error}");
+            cluster_dispatch::PendingAckRetryOutcome::TransientFailure
+        }
+    }
+}
+
+/// Replays a durable preselection rejection through the same worker retirement handshake as a
+/// Stored result. Rejection-only intent is itself durable and exact; it may finish cleanup after
+/// execution-grant revocation, but it cannot authorize Stored or another assignment. Rows in
+/// AwaitingRetirementConfirm need only the final confirmation half.
+fn resolve_and_ack_pending_rejected_compiler_result(
+    owner: &cluster_dispatch::OwnerCompilerClusterRuntime,
+    journal: &Arc<Mutex<pending_stored::PendingStoredAckJournal>>,
+    journal_id: [u8; 32],
+) -> Result<bool, String> {
+    let owner_endpoint_id = *owner.owner_id().as_bytes();
+    let scope = {
+        let journal_guard = journal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(scope) =
+            journal_guard.retirement_confirmation_scope(&journal_id, owner_endpoint_id)
+        {
+            scope
+        } else {
+            drop(journal_guard);
+            journal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .rejected_ack_scope(&journal_id, owner_endpoint_id)
+                .map_err(|error| format!("admit pending rejection ACK: {error}"))?
+        }
+    };
+    let receipt = owner.acknowledge_recovered(&scope, |retired| {
+        journal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mark_rejected_awaiting_confirm_by_id(journal_id, retired)
+            .map_err(|error| format!("persist rejected-result retirement receipt: {error}"))
+    });
+    let Ok(receipt) = receipt else {
+        return Ok(false);
+    };
+    journal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .complete_ack(&receipt)
+        .map_err(|error| format!("complete pending rejection ACK: {error}"))?;
+    Ok(true)
+}
+
+/// Reconciles one already durable remote-result intent with Turso and retries its exact ACK.
+/// An unresolved authority query leaves the journal row intact for a later owner restart.
+fn resolve_and_ack_pending_compiler_result(
+    owner: &cluster_dispatch::OwnerCompilerClusterRuntime,
+    authority: &mut Option<SemanticAuthority>,
+    authority_workspace: &Path,
+    journal: &Arc<Mutex<pending_stored::PendingStoredAckJournal>>,
+    record: &pending_stored::PendingStoredAckRecord,
+) -> Result<bool, String> {
+    use pending_stored::RecoveredAckScope;
+
+    let owner_endpoint_id = *owner.owner_id().as_bytes();
+    let scope = match record.state {
+        pending_stored::PendingStoredAckState::StoredAwaitingRetirementConfirm
+        | pending_stored::PendingStoredAckState::SupersededAwaitingRetirementConfirm => {
+            // The journal state is written only after a live authority proof
+            // and an exact authenticated ResultRetired receipt. It authorizes
+            // this confirmation only, so trust revocation cannot strand a
+            // worker after it has durably retired the result.
+            let Ok(scope) = journal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retirement_confirmation_scope(&record.id(), owner_endpoint_id)
+            else {
+                return Ok(false);
+            };
+            scope
+        }
+        _ => {
+            let Ok(key) = record.product_semantic_key() else {
+                return Ok(false);
+            };
+            let identity = record.authority_identity();
+            if authority.is_none() {
+                match SemanticAuthority::open(authority_workspace) {
+                    Ok(opened) => *authority = Some(opened),
+                    Err(error) => {
+                        return Err(format!(
+                            "open semantic authority for pending ACK proof: {error}"
+                        ));
+                    }
+                }
+            }
+            let Some(authority) = authority.as_ref() else {
+                return Ok(false);
+            };
+            let Ok(proof) = authority.prove_pending_remote_result(&key, &identity) else {
+                return Ok(false);
+            };
+            let scope = match &proof {
+                semantic_authority::PendingRemoteResultProof::SelectedHistory(_) => journal
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .selected_stored_cleanup_scope(&record.id(), owner_endpoint_id, &proof),
+                semantic_authority::PendingRemoteResultProof::Superseded(_) => {
+                    let Ok(trust) = owner.trusted_workers() else {
+                        return Ok(false);
+                    };
+                    RecoveredAckScope::from_proof(record, owner_endpoint_id, &trust, &proof)
+                }
+            };
+            let Ok(scope) = scope else {
+                return Ok(false);
+            };
+            scope
+        }
+    };
+    journal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .resolve(&scope)
+        .map_err(|error| format!("resolve pending Stored ACK intent: {error}"))?;
+    let receipt = owner.acknowledge_recovered(&scope, |retired| {
+        journal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mark_awaiting_retirement_confirmation(&scope, retired)
+            .map_err(|error| format!("persist worker retirement receipt: {error}"))
+    });
+    let Ok(receipt) = receipt else {
+        return Ok(false);
+    };
+    journal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .complete_ack(&receipt)
+        .map_err(|error| format!("complete pending Stored ACK intent: {error}"))?;
+    Ok(true)
 }
 
 /// Times one-package structural projection against a full workspace rebuild.

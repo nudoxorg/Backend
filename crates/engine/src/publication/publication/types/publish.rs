@@ -15,6 +15,9 @@ use backend_semantic::ir::{
 };
 use backend_store::hydration::VerifiedGenerationFacts;
 use backend_store::journal::{PublicationFacts, SharedPublicationFailure};
+use backend_store::root::EntryKey;
+use backend_version::ObjectDomain;
+use backend_version::object::ObjectRef;
 use thiserror::Error;
 
 use crate::publication::{
@@ -119,6 +122,51 @@ pub struct PublishedCompilation {
     pub manifest: CompilationManifestFacts,
     /// Immutable binding facts that were persisted before submission and matched post-stable facts.
     pub binding: CompilationBindingFacts,
+}
+
+/// One exact object placement in a verified staged compiler generation.
+///
+/// This is a transport claim only. It does not admit bytes or select a local
+/// generation head; the receiving artifact sink must still verify every object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedSemanticObjectClaim {
+    pub(crate) key: EntryKey,
+    pub(crate) parent: Option<EntryKey>,
+    pub(crate) object: ObjectRef<ObjectDomain>,
+}
+
+/// Fully validated semantic compilation facts and canonical output metadata, before selection.
+///
+/// The payload bytes remain owned by the application staging lane. This value only carries the
+/// canonical order and exact generation claims derived from those bytes.
+pub(crate) struct PreparedSemanticOutput {
+    pub(crate) generation: VerifiedGenerationFacts,
+    pub(crate) manifest: CompilationManifestFacts,
+    pub(crate) binding: CompilationBindingFacts,
+    pub(crate) manifest_bytes: Box<[u8]>,
+    pub(crate) binding_bytes: Box<[u8]>,
+    pub(crate) canonical_ordinals: Box<[usize]>,
+    pub(crate) object_claims: Box<[StagedSemanticObjectClaim]>,
+}
+
+impl StagedSemanticObjectClaim {
+    /// Returns the stable generation entry key.
+    #[must_use]
+    pub const fn key(self) -> EntryKey {
+        self.key
+    }
+
+    /// Returns the containing generation entry, or `None` for the root manifest.
+    #[must_use]
+    pub const fn parent(self) -> Option<EntryKey> {
+        self.parent
+    }
+
+    /// Returns the exact typed object reference proved by generation verification.
+    #[must_use]
+    pub const fn object(self) -> ObjectRef<ObjectDomain> {
+        self.object
+    }
 }
 /// Exact attempted compiler publication facts retained when journal publication did not commit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -238,6 +286,21 @@ pub enum PublishCompiledError {
 pub enum PublishSemanticError {
     #[error("semantic publication was cancelled before image preparation or storage")]
     CancelledBeforeStorage,
+    #[error("semantic publication has {fragments} fragments but {semantic_images} image regions")]
+    ImageCountMismatch {
+        fragments: usize,
+        semantic_images: usize,
+    },
+    #[error("semantic publication could not reserve its bounded compact-fragment descriptors")]
+    ArtifactDescriptorAllocation(#[source] std::collections::TryReserveError),
+    #[error("semantic staged-output metadata allocation failed")]
+    OutputAllocation(#[source] std::collections::TryReserveError),
+    #[error("semantic publication compact fragment {ordinal} failed its independent validation")]
+    FragmentValidation {
+        ordinal: usize,
+        #[source]
+        source: backend_semantic::ir::FragmentError,
+    },
     #[error("semantic image plan has {available} slots, requires {required}")]
     ImagePlanTooSmall { required: usize, available: usize },
     #[error("semantic image {ordinal} could not be measured")]
@@ -266,6 +329,14 @@ pub enum PublishSemanticError {
         offset: usize,
         length: usize,
     },
+    #[error("semantic image {ordinal} begins at {observed}, expected contiguous offset {expected}")]
+    ImageRegionOffset {
+        ordinal: usize,
+        expected: usize,
+        observed: usize,
+    },
+    #[error("semantic image bytes contain {observed} bytes, expected exactly {expected}")]
+    ImageBytesLength { expected: usize, observed: usize },
     #[error("semantic image output has {available} bytes, requires {required}")]
     ImageOutputTooSmall { required: usize, available: usize },
     #[error("semantic image {ordinal} could not be encoded")]

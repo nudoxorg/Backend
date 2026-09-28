@@ -142,7 +142,10 @@ pub(super) fn validate_extensions(
     Ok(())
 }
 
-fn authority_selects_plane(authority: SemanticImageAuthority, language: crate::ir::Language) -> bool {
+fn authority_selects_plane(
+    authority: SemanticImageAuthority,
+    language: crate::ir::Language,
+) -> bool {
     matches!(authority, SemanticImageAuthority::Language(profile) if crate::ir::Language::from(profile) == language)
 }
 

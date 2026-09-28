@@ -33,20 +33,10 @@ mod semantic_image;
 pub mod semantic_render;
 mod type_facts;
 mod vcs;
+mod versioned;
 mod view;
 mod wire;
 
-pub use authority::{
-    AuthorityFactFault, AuthorityFactPlane, EntityAuthorityColumns, EntityAuthorityFacts,
-    FactAvailability, ImageProvenance, ImageProvenanceClaim, OccurrenceAuthorityColumns,
-    OccurrenceAuthorityFacts, ParentageAuthority, SemanticScopeClaim, SemanticScopeFacts,
-    UnrepresentedAuthorityOwner,
-};
-pub use canonical_data::{
-    CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
-    DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
-    canonicalize_data_with_budget,
-};
 pub use crate::ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use crate::ir_vocabulary::{
     AnnotationKind, AnonRecordForm, AnonRecordFormError, ChannelDirection, ChildCountLaw,
@@ -71,6 +61,17 @@ pub use crate::vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,
 };
+pub use authority::{
+    AuthorityFactFault, AuthorityFactPlane, EntityAuthorityColumns, EntityAuthorityFacts,
+    FactAvailability, ImageProvenance, ImageProvenanceClaim, OccurrenceAuthorityColumns,
+    OccurrenceAuthorityFacts, ParentageAuthority, SemanticScopeClaim, SemanticScopeFacts,
+    UnrepresentedAuthorityOwner,
+};
+pub use canonical_data::{
+    CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
+    DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
+    canonicalize_data_with_budget,
+};
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
 };
@@ -85,11 +86,10 @@ pub use extension_pools::{
     DecodedTypeParameterBoundCursor, DecodedTypeParameterBoundList, DecodedTypeParameterCursor,
     DecodedTypeParameterKind, DecodedTypeParameterList, DecodedTypeParameterSemantics,
     ExtensionFreePredicate, ExtensionPoolFault, ExtensionPoolListLane, ExtensionPoolsLane,
-    ExtensionRefList,
-    ExtensionTypeParameter, ExtensionTypeParameterBound, ExtensionTypeParameterBoundRange,
-    ExtensionTypeParameterKind, ExtensionTypeParameterRange, ReopenedExtensionPools,
-    ReopenedTypeParameterList, TypeParameterField, TypeParameterListBounds, TypeParameterTagField,
-    reopen_extension_pools,
+    ExtensionRefList, ExtensionTypeParameter, ExtensionTypeParameterBound,
+    ExtensionTypeParameterBoundRange, ExtensionTypeParameterKind, ExtensionTypeParameterRange,
+    ReopenedExtensionPools, ReopenedTypeParameterList, TypeParameterField, TypeParameterListBounds,
+    TypeParameterTagField, reopen_extension_pools,
 };
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
@@ -125,24 +125,23 @@ pub use semantic::{
     ConcreteTypeId, Confidence, CorePayloadCoverage, CorePayloadHash, CorePayloadPlane,
     CxxReferenceCategory, DeclarationLinkTarget, DocFragment, DocId, DocInput, EntityColumns,
     EntityListId, EntityRange, EntityVersion, External, ExternalId, ExternalTarget,
-    ForeignExternalTarget, ForeignTargetOrigin, FrontendTree, GoExtension, GoFacts, GoSignature,
-    GraphColumns, GuardedType, Ir, IrBuilder, Item, ItemIdIter, ItemKind, ItemView, JavaExtension,
-    JavaFacts, LanguageExtensionColumnView, LanguageExtensionInput, LanguageExtensionViolation,
-    LanguageExtensionsView, Link, LinkId, LinkIter, LinkKind, LinkOccurrence,
-    LinkOccurrenceColumns, LinkOccurrenceId, LinkOccurrenceIter, LinkOccurrenceSpace, LinkSpace,
-    LinkTarget, LiteralType, MappedModifier, Mutability, NativeCharacterRole, ObjectMember,
-    FreePredicate, FreePredicateListId, ObjectMemberListId, OptionalId, PropertyKey, PythonExtension,
-    PythonFacts, PythonParameterKind, QualifiedSegments, RustExtension, RustFacts, RustOwnership,
-    SemanticImageAuthority,
-    SemanticSpace, SourceColumnsView, SourceSpan, SparseColumnView, StorageColumns, TemplatePart,
-    TemplatePartListId, TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput,
-    TreeLinkTarget, TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr,
-    TypeHeader, TypeListId, TypePairPayload, TypeParameter, TypeParameterBound,
-    TypeParameterBoundListId, TypeParameterInference, TypeParameterKind, TypeParameterListId,
-    TypeParameterPrimaryRequirement, TypeParameterRequirements, TypeQuadPayload, TypeQuery,
-    TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
-    UnknownReason, UnknownState, UnknownType, UnknownTypeId, VariadicForm, Variance, VcsColumns,
-    Visibility, WildcardBound,
+    ForeignExternalTarget, ForeignTargetOrigin, FreePredicate, FreePredicateListId, FrontendTree,
+    GoExtension, GoFacts, GoSignature, GraphColumns, GuardedType, Ir, IrBuilder, Item, ItemIdIter,
+    ItemKind, ItemView, JavaExtension, JavaFacts, LanguageExtensionColumnView,
+    LanguageExtensionInput, LanguageExtensionViolation, LanguageExtensionsView, Link, LinkId,
+    LinkIter, LinkKind, LinkOccurrence, LinkOccurrenceColumns, LinkOccurrenceId,
+    LinkOccurrenceIter, LinkOccurrenceSpace, LinkSpace, LinkTarget, LiteralType, MappedModifier,
+    Mutability, NativeCharacterRole, ObjectMember, ObjectMemberListId, OptionalId, PropertyKey,
+    PythonExtension, PythonFacts, PythonParameterKind, QualifiedSegments, RustExtension, RustFacts,
+    RustOwnership, SemanticImageAuthority, SemanticSpace, SourceColumnsView, SourceSpan,
+    SparseColumnView, StorageColumns, TemplatePart, TemplatePartListId, TreeBuilder, TreeEntity,
+    TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind,
+    TupleElementListId, TypeColumns, TypeExpr, TypeHeader, TypeListId, TypePairPayload,
+    TypeParameter, TypeParameterBound, TypeParameterBoundListId, TypeParameterInference,
+    TypeParameterKind, TypeParameterListId, TypeParameterPrimaryRequirement,
+    TypeParameterRequirements, TypeQuadPayload, TypeQuery, TypeScriptExtension, TypeScriptFacts,
+    TypeState, TypeTag, TypeTriplePayload, TypedTypeId, UnknownReason, UnknownState, UnknownType,
+    UnknownTypeId, VariadicForm, Variance, VcsColumns, Visibility, WildcardBound,
 };
 pub use semantic_data_view::{
     SemanticDataAtom, SemanticDataAtomCursor, SemanticDataChild, SemanticDataCounts,
@@ -166,13 +165,13 @@ pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
 pub use semantic_image::{
-    CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
-    CoreSemanticImageField, ExtensionPlanFault, FullEntityFault, FullPlanError,
-    FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
-    AdmittedSemanticImage, FullSemanticImageIdentityField, GraphPlanFault, ScopeComponent,
+    AdmittedSemanticImage, CoreProvenanceFault, CoreProvenanceIdentityField,
+    CoreSemanticImageFault, CoreSemanticImageField, ExtensionPlanFault, FullEntityFault,
+    FullPlanError, FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
+    FullSemanticImageIdentityField, GraphPlanFault, PreparedFullSemanticImage, ScopeComponent,
     SemanticImageEncodeError, SemanticImageIdentity, SemanticImageReopenError, SemanticImageView,
-    TerminalPoolDomain, reset_semantic_image_validations, semantic_image_validations,
-    TerminalPoolFault, encode_full_semantic_image, full_semantic_image_len,
+    TerminalPoolDomain, TerminalPoolFault, encode_full_semantic_image, full_semantic_image_len,
+    reset_semantic_image_validations, semantic_image_validations,
 };
 pub use semantic_render::{
     CFamilySemanticDocumentDialect, CSharpSemanticDocumentDialect, CanonicalTypeRenderError,
@@ -191,10 +190,22 @@ pub use type_facts::{
     TypeFactFault, TypeFactInput, TypeFactLane, TypeFactSegment,
 };
 pub use vcs::{
-    Delta, Diff, EntityChange, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
-    LinkChanges, SemanticDiff, SemanticEntityChange, SemanticEntityChanges, SemanticEntityRef,
-    SemanticLinkChange, SemanticLinkChangeKind, SemanticLinkChanges, SemanticSnapshot,
-    SemanticStableLink, SemanticStableLinks, Snapshot, StableLink, StableLinkKey, StableLinks,
+    Delta, Diff, EntityChange, EntityChanges, EntityFacetChanges, FacetChange, FacetComparison,
+    FacetCoverage, GenerationId, LinkChange, LinkChangeKind, LinkChanges, SemanticDiff,
+    SemanticEntityChange, SemanticEntityChanges, SemanticEntityRef, SemanticLinkChange,
+    SemanticLinkChangeKind, SemanticLinkChanges, SemanticSnapshot, SemanticStableLink,
+    SemanticStableLinks, Snapshot, StableLink, StableLinkKey, StableLinks,
+};
+pub use versioned::{
+    EmbeddingNormalization, EmbeddingPlaneIdentity, MAX_SEMANTIC_SEGMENT_BYTES,
+    SemanticBuildIdentity, SemanticCoverageState, SemanticDeltaAction, SemanticDeltaCursor,
+    SemanticHydrationCoverage, SemanticHydrationCursor, SemanticHydrationCursorToken,
+    SemanticInputWitness, SemanticIrPlane, SemanticManifestCoverageScope, SemanticManifestError,
+    SemanticManifestRoot, SemanticPlane, SemanticPlaneCatalog, SemanticPlaneCatalogEntry,
+    SemanticPlaneCatalogRoot, SemanticPlaneCoverageScope, SemanticPlaneImageKey, SemanticPlaneKind,
+    SemanticPlaneManifest, SemanticPlaneRoot, SemanticPlaneSegment, SemanticRangeRequest,
+    SemanticSegmentId, UntrustedSemanticSegmentId, VERSIONED_PLANE_MANIFEST_SCHEMA,
+    VERSIONED_PLANE_SEGMENT_SCHEMA, VersionedPlaneManifestSchema, VersionedPlaneSegmentSchema,
 };
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{

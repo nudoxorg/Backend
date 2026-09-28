@@ -314,8 +314,13 @@ fn local_search_excludes_only_the_synthetic_result_slot() {
     let ctor_id = backend_engine::symbol_key("pkg::Foo::Foo");
 
     let project = Row::new(RowId::Package(package), base.basis(), "pkg");
-    let ferris = Row::in_package(RowId::Symbol(ferris_id), base.basis(), package, "pkg::ferris")
-        .with_kind(backend_engine::DeclarationKind::Function);
+    let ferris = Row::in_package(
+        RowId::Symbol(ferris_id),
+        base.basis(),
+        package,
+        "pkg::ferris",
+    )
+    .with_kind(backend_engine::DeclarationKind::Function);
     // The result slot's own label ends in "::ferris" too: it is named
     // exactly like the function it belongs to.
     let slot = Row::in_package(
@@ -378,7 +383,12 @@ fn local_search_excludes_only_the_synthetic_result_slot() {
                     .map_or("project", backend_engine::DeclarationKind::name)
                     .to_owned(),
                 coordinate: row.label.clone(),
-                name: row.label.rsplit("::").next().unwrap_or(&row.label).to_owned(),
+                name: row
+                    .label
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&row.label)
+                    .to_owned(),
                 signature: None,
                 documentation: String::new(),
                 score: None,
@@ -395,8 +405,8 @@ fn local_search_excludes_only_the_synthetic_result_slot() {
         fact(&class, None),
         fact(&ctor, Some(RowId::Symbol(class_id))),
     ];
-    let evidence =
-        backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts).expect("typed evidence");
+    let evidence = backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts)
+        .expect("typed evidence");
 
     let coordinator = QueryCoordinator::new(
         workspace,
@@ -448,8 +458,13 @@ fn qualified_owner_search_finds_the_named_method() {
     let update_os_id = backend_engine::symbol_key("pkg::OtherService::update");
 
     let project = Row::new(RowId::Package(package), base.basis(), "pkg");
-    let service = Row::in_package(RowId::Symbol(service_id), base.basis(), package, "pkg::Service")
-        .with_kind(backend_engine::DeclarationKind::Module);
+    let service = Row::in_package(
+        RowId::Symbol(service_id),
+        base.basis(),
+        package,
+        "pkg::Service",
+    )
+    .with_kind(backend_engine::DeclarationKind::Module);
     let workout_service = Row::in_package(
         RowId::Symbol(workout_service_id),
         base.basis(),
@@ -533,7 +548,12 @@ fn qualified_owner_search_finds_the_named_method() {
                     .map_or("project", backend_engine::DeclarationKind::name)
                     .to_owned(),
                 coordinate: row.label.clone(),
-                name: row.label.rsplit("::").next().unwrap_or(&row.label).to_owned(),
+                name: row
+                    .label
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&row.label)
+                    .to_owned(),
                 signature: None,
                 documentation: String::new(),
                 score: None,
@@ -552,8 +572,8 @@ fn qualified_owner_search_finds_the_named_method() {
         fact(&other_service, None),
         fact(&update_os, Some(RowId::Symbol(other_service_id))),
     ];
-    let evidence =
-        backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts).expect("typed evidence");
+    let evidence = backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts)
+        .expect("typed evidence");
 
     let coordinator = QueryCoordinator::new(
         workspace,

@@ -31,8 +31,8 @@ mod unix_journeys {
     };
     use backend_library::{
         CapabilityFamily, CapabilityLifecycle, Command, CommandDto, CommandReply,
-        LanguageOracleTask, PageTerminal, ReplyDto, ViewRoot, WireCertificate, WireClaim,
-        WireSchema,
+        CompileExecutionIntent, LanguageOracleTask, PageTerminal, ReplyDto, ViewRoot,
+        WireCertificate, WireClaim, WireSchema,
     };
     use backend_replication::{RecipeCapability, SchemaDescriptor, VersionRange};
     use backend_semantic::vocabulary::LanguageProfile;
@@ -1913,8 +1913,14 @@ mod unix_journeys {
         });
         let reply = backend_mcp::CommandTransport::request(
             client,
-            CommandDto::new(200 + index as u64, Command::Add { package: key })
-                .with_certificate(certificate),
+            CommandDto::new(
+                200 + index as u64,
+                Command::Add {
+                    package: key,
+                    execution_intent: CompileExecutionIntent::Interactive,
+                },
+            )
+            .with_certificate(certificate),
         )
         .unwrap_or_else(|error| panic!("product mutation {index}: {error}"));
         assert!(

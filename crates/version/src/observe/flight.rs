@@ -177,8 +177,8 @@ mod tests {
     };
     use std::{rc::Rc, vec::Vec};
 
-    use super::{DropNewest, FlightRecorder, OverwriteOldest, RecordingDisposition};
     use super::Probe;
+    use super::{DropNewest, FlightRecorder, OverwriteOldest, RecordingDisposition};
 
     #[test]
     fn noop_and_drop_newest_do_not_construct_event_fields() {

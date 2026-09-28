@@ -7,13 +7,13 @@ use super::identity::{
     declaration_coordinate, declaration_family, declaration_kind, external_semantic_symbol,
     semantic_coordinate, semantic_identity, semantic_symbol,
 };
+use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::structural::{
     FileContainment, ProfileSourceIdentities, ProfileSourcePaths, ProjectTypeIndex,
     StructuralDeclaration, StructuralParent, StructuralProjectionPlan, StructuralSymbol,
     duplicate_declaration_coordinates, is_file_module, profile_source_identities,
     profile_source_paths, projected_source_capacity,
 };
-use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
     semantic_profile_is_complete,
@@ -371,39 +371,38 @@ fn structural_declaration_row(
     language: backend_engine::SourceLanguage,
     prepared: &StructuralDeclaration,
 ) -> Result<Row, BuiltinModelError> {
-        let coordinate = &prepared.coordinate;
-        let symbol = prepared.id;
-        let document = if prepared.is_file_module {
-            vec![Fragment::Text(format!("{} source · {path}", language.name()))]
-        } else if declaration.documentation().is_empty() {
-            Vec::new()
-        } else {
-            vec![Fragment::Text(declaration.documentation().to_owned())]
-        };
-        let row = Row::in_package(symbol, initial.basis(), package, coordinate.as_str())
-            .with_document(document)
-            .with_signature(declaration.signature())
-            .with_kind(declaration.kind())
-            .with_source(declaration.location().clone())
-            .with_excerpt(declaration.source_excerpt().clone())
-            .with_facts(declaration.facts().clone());
-        let row = match prepared.identity_preimage.clone() {
-            Some(preimage) => row.with_identity_preimage(preimage),
-            None => row,
-        };
-        Ok(match prepared.parent.as_deref() {
-            Some(parent) => match structural_parent_symbol(
-                plan,
-                file_key,
-                project,
-                parent,
-                resident_labels,
-            )? {
+    let coordinate = &prepared.coordinate;
+    let symbol = prepared.id;
+    let document = if prepared.is_file_module {
+        vec![Fragment::Text(format!(
+            "{} source · {path}",
+            language.name()
+        ))]
+    } else if declaration.documentation().is_empty() {
+        Vec::new()
+    } else {
+        vec![Fragment::Text(declaration.documentation().to_owned())]
+    };
+    let row = Row::in_package(symbol, initial.basis(), package, coordinate.as_str())
+        .with_document(document)
+        .with_signature(declaration.signature())
+        .with_kind(declaration.kind())
+        .with_source(declaration.location().clone())
+        .with_excerpt(declaration.source_excerpt().clone())
+        .with_facts(declaration.facts().clone());
+    let row = match prepared.identity_preimage.clone() {
+        Some(preimage) => row.with_identity_preimage(preimage),
+        None => row,
+    };
+    Ok(match prepared.parent.as_deref() {
+        Some(parent) => {
+            match structural_parent_symbol(plan, file_key, project, parent, resident_labels)? {
                 Some(parent) => row.with_parent(parent),
                 None => row,
-            },
-            None => row,
-        })
+            }
+        }
+        None => row,
+    })
 }
 
 fn structural_parent_symbol(
@@ -428,7 +427,7 @@ fn structural_parent_symbol(
         StructuralParent::Symbol(RowId::Symbol(parent)) => Some(parent),
         StructuralParent::Symbol(RowId::Package(_))
         | StructuralParent::Symbol(RowId::Object(_))
-        |         StructuralParent::Package(_) => None,
+        | StructuralParent::Package(_) => None,
     })
 }
 
@@ -543,9 +542,7 @@ fn semantic_rows(
         } else {
             relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
         }
-        .map_err(|error| {
-            BuiltinModelError(format!("read semantic publication page: {error}"))
-        })?;
+        .map_err(|error| BuiltinModelError(format!("read semantic publication page: {error}")))?;
         let mut package_ended = false;
         for (key, record) in page.entries() {
             if let Some(bounds) = &bounds
@@ -582,7 +579,8 @@ fn semantic_rows(
                     "semantic publication refers to a missing package frontier".to_owned(),
                 )
             })?;
-            let activated = super::super::load_semantic_publication(compiler, key, *claim, generations)?;
+            let activated =
+                super::super::load_semantic_publication(compiler, key, *claim, generations)?;
             // An image already admitted for this publication key keeps its
             // path and source identity. Row projection is reused when the
             // freshness overlay is already resident.
@@ -598,9 +596,12 @@ fn semantic_rows(
             let mut opened = Vec::new();
             let mut pending = activated.images();
             while let Some((image, rest)) = pending.split_first() {
-                match super::image_rows::open_compiled_snapshot(image, admission, residence)?
-                {
-                    super::image_rows::CompiledImage::Opened { path, identity, view } => {
+                match super::image_rows::open_compiled_snapshot(image, admission, residence)? {
+                    super::image_rows::CompiledImage::Opened {
+                        path,
+                        identity,
+                        view,
+                    } => {
                         super::image_rows::bind_opened_image(
                             image.as_ref(),
                             admission,
@@ -689,9 +690,7 @@ fn semantic_rows(
                             residence,
                         )? {
                             let view = super::image_rows::reopen_resident_image(
-                                bytes,
-                                *snapshot,
-                                residence,
+                                bytes, *snapshot, residence,
                             )?;
                             super::image_rows::append_resident_image_rows(
                                 &view,
@@ -723,11 +722,9 @@ fn semantic_rows(
         }
         if package_ended || (bounds.is_some() && page.next().is_none()) {
             bound_index = bound_index.saturating_add(1);
-            from = bounds.as_ref().and_then(|bounds| {
-                bounds
-                    .get(bound_index)
-                    .map(|(_, start)| start.clone())
-            });
+            from = bounds
+                .as_ref()
+                .and_then(|bounds| bounds.get(bound_index).map(|(_, start)| start.clone()));
             after = None;
             continue;
         }
@@ -877,7 +874,9 @@ pub(super) fn compiled_source(
 }
 
 /// Returns the exact relative source path one image was compiled from.
-pub(crate) fn compiled_source_path(image: &SemanticImageView<'_>) -> Result<String, BuiltinModelError> {
+pub(crate) fn compiled_source_path(
+    image: &SemanticImageView<'_>,
+) -> Result<String, BuiltinModelError> {
     compiled_source(image).map(|(path, _)| path)
 }
 
@@ -1037,7 +1036,9 @@ pub(super) fn project_image_rows(
             Some(parent) => Some(
                 session
                     .entity(parent)
-                    .map_err(|error| BuiltinModelError(format!("project semantic parent: {error}")))?
+                    .map_err(|error| {
+                        BuiltinModelError(format!("project semantic parent: {error}"))
+                    })?
                     .entity
                     .kind,
             ),
@@ -1069,23 +1070,19 @@ pub(super) fn project_image_rows(
             charges.push(Charge::Add(STALE_NOTE.len()));
             document.push(Fragment::Text(STALE_NOTE.to_owned()));
         }
-        let mut row = Row::in_package(
-            RowId::Symbol(symbol),
-            basis,
-            project.package,
-            coordinate,
-        )
-        .try_with_identity_preimage(&semantic_identity(project.package, identity))
-        .map_err(|error| BuiltinModelError(format!("semantic row identity preimage: {error}")))?
-        .with_kind(declaration_kind(entity.entity.kind))
-        .with_document(document)
-        .with_facts(facts);
+        let mut row = Row::in_package(RowId::Symbol(symbol), basis, project.package, coordinate)
+            .try_with_identity_preimage(&semantic_identity(project.package, identity))
+            .map_err(|error| BuiltinModelError(format!("semantic row identity preimage: {error}")))?
+            .with_kind(declaration_kind(entity.entity.kind))
+            .with_document(document)
+            .with_facts(facts);
         if let Some(site) = sites.get(&identity) {
             let excerpt_bytes = site.source_excerpt().text().map_or(0, str::len);
             charges.push(Charge::Sub(excerpt_bytes));
-            let location = backend_compile::SourceLocation::new(path, site.line()).map_err(|error| {
-                BuiltinModelError(format!("semantic declaration source site: {error}"))
-            })?;
+            let location =
+                backend_compile::SourceLocation::new(path, site.line()).map_err(|error| {
+                    BuiltinModelError(format!("semantic declaration source site: {error}"))
+                })?;
             row = row
                 .with_source(location)
                 .with_excerpt(site.source_excerpt().clone());
@@ -1229,9 +1226,9 @@ fn semantic_facts<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
         Fact::Unobserved
     };
     let obligation = match language {
-        Language::Go if entity.kind == ItemKind::Function => Fact::observed(
-            (parent_kind == Some(ItemKind::Trait)).then_some(Obligation::Required),
-        ),
+        Language::Go if entity.kind == ItemKind::Function => {
+            Fact::observed((parent_kind == Some(ItemKind::Trait)).then_some(Obligation::Required))
+        }
         Language::Python
             if attributes_captured
                 && attributes
@@ -1406,8 +1403,8 @@ mod tests {
         samples[samples.len() / 2]
     }
 
-    use super::publication_seek_bounds;
     use super::super::super::IndexedProject;
+    use super::publication_seek_bounds;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 

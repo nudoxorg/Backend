@@ -42,9 +42,9 @@ use std::{
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 
 pub(crate) use crate::containment::{DefinitionIndex, container_of};
-pub(crate) use crate::syntax_kind::declaration_kind;
 use crate::facts::DeclarationFacts;
 use crate::syntax_facts::declaration_facts;
+pub(crate) use crate::syntax_kind::declaration_kind;
 
 const MAX_DECLARATIONS: usize = 16_384;
 const MAX_TEXT_BYTES: usize = 4_096;
@@ -1306,7 +1306,10 @@ fn xml_documentation_text(text: &str) -> String {
     }
     for (attributes, body) in xml_elements(text, "param") {
         let name = xml_attribute(attributes, "name").unwrap_or_default();
-        lines.push(format!("@param {name} {}", xml_prose(body).replace('\n', " ")));
+        lines.push(format!(
+            "@param {name} {}",
+            xml_prose(body).replace('\n', " ")
+        ));
     }
     for (_, body) in xml_elements(text, "returns") {
         lines.push(format!("@returns {}", xml_prose(body).replace('\n', " ")));
@@ -1314,7 +1317,10 @@ fn xml_documentation_text(text: &str) -> String {
     for (attributes, body) in xml_elements(text, "exception") {
         let cref = xml_attribute(attributes, "cref").unwrap_or_default();
         let cref = cref.rsplit(':').next().unwrap_or(cref);
-        lines.push(format!("@throws {cref} {}", xml_prose(body).replace('\n', " ")));
+        lines.push(format!(
+            "@throws {cref} {}",
+            xml_prose(body).replace('\n', " ")
+        ));
     }
     for (_, body) in xml_elements(text, "example") {
         lines.push(format!("@example {}", xml_prose(body)));
@@ -1459,13 +1465,7 @@ fn push_typescript_import(node: Node<'_>, text: &str, imports: &mut Vec<Extracte
                         "identifier" => {
                             let local = node_text(clause_child, text);
                             if !local.is_empty() {
-                                imports.push(value_import(
-                                    local,
-                                    line,
-                                    &specifier,
-                                    local,
-                                    excerpt,
-                                ));
+                                imports.push(value_import(local, line, &specifier, local, excerpt));
                             }
                         }
                         "named_imports" => {
@@ -1485,10 +1485,7 @@ fn push_typescript_import(node: Node<'_>, text: &str, imports: &mut Vec<Extracte
                                     let local = node_text(ns_child, text);
                                     if !local.is_empty() {
                                         imports.push(qualifier_import(
-                                            local,
-                                            line,
-                                            &specifier,
-                                            excerpt,
+                                            local, line, &specifier, excerpt,
                                         ));
                                     }
                                 }
@@ -1542,7 +1539,9 @@ fn typescript_import_is_type_only(node: Node<'_>, text: &str) -> bool {
 
 fn typescript_import_specifier_is_type_only(specifier: Node<'_>) -> bool {
     let mut cursor = specifier.walk();
-    specifier.children(&mut cursor).any(|child| child.kind() == "type" && !child.is_named())
+    specifier
+        .children(&mut cursor)
+        .any(|child| child.kind() == "type" && !child.is_named())
 }
 
 fn walk_rust_imports(node: Node<'_>, text: &str, imports: &mut Vec<ExtractedImport>) {
@@ -1793,7 +1792,13 @@ fn push_python_import_from(node: Node<'_>, text: &str, imports: &mut Vec<Extract
                     .next()
                     .unwrap_or(exported.as_str())
                     .to_owned();
-                imports.push(value_import(local.clone(), line, &specifier, &local, excerpt));
+                imports.push(value_import(
+                    local.clone(),
+                    line,
+                    &specifier,
+                    &local,
+                    excerpt,
+                ));
             }
         }
     }

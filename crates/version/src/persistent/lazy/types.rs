@@ -18,6 +18,12 @@ pub struct LazyTreeWork {
     pub removed_entries: usize,
     /// Total bytes in the changed frontier.
     pub emitted_bytes: usize,
+    /// Conservative peak metadata charge for a bounded batch update.
+    ///
+    /// Unbounded updates leave this at zero. For bounded updates this is the
+    /// preflight charge for the edit vectors, per-change frontier and overlay,
+    /// and the bounded path-copy scratch space.
+    pub peak_metadata_bytes: usize,
 }
 
 /// A checked target root produced by a lazy path copy.

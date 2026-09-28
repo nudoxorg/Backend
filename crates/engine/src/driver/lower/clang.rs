@@ -76,8 +76,7 @@ use backend_semantic::ir::{
     EntityKind, ExternalFragmentId, ForeignKey, ForeignOrigin, NominalRef, Occurrence,
     OccurrenceConfidence, OccurrenceTarget, PackageLineage, ProductChildRole,
     ReferenceKind as LaneReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
-    SemanticTypeTag, StableRef,
-    TypeParameterListId, TypeReason, TypeWidth, VariantFingerprint,
+    SemanticTypeTag, StableRef, TypeParameterListId, TypeReason, TypeWidth, VariantFingerprint,
 };
 use backend_semantic::vocabulary::{LanguageProfile, LoweringUnsupported};
 
@@ -2598,38 +2597,36 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 {
                     if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
                         if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
-                            let entity_kind = self
-                                .authority
-                                .declarations
-                                .iter()
-                                .find(|declaration| declaration.identity == Some(identity))
-                                .and_then(|declaration| match declaration.kind {
-                                    DeclarationKind::Variable => Some(EntityKind::Static),
-                                    DeclarationKind::Enumerator => Some(EntityKind::Variant),
-                                    DeclarationKind::Function | DeclarationKind::Method => {
-                                        Some(EntityKind::Function)
-                                    }
-                                    DeclarationKind::Constructor
-                                    | DeclarationKind::Destructor => None,
-                                    _ => None,
-                                });
+                            let entity_kind =
+                                self.authority
+                                    .declarations
+                                    .iter()
+                                    .find(|declaration| declaration.identity == Some(identity))
+                                    .and_then(|declaration| match declaration.kind {
+                                        DeclarationKind::Variable => Some(EntityKind::Static),
+                                        DeclarationKind::Enumerator => Some(EntityKind::Variant),
+                                        DeclarationKind::Function | DeclarationKind::Method => {
+                                            Some(EntityKind::Function)
+                                        }
+                                        DeclarationKind::Constructor
+                                        | DeclarationKind::Destructor => None,
+                                        _ => None,
+                                    });
                             if let Some(entity_kind) = entity_kind {
                                 if let Some(ordinal) = self.ordinal_of(identity) {
                                     self.facts
                                         .push_occurrence(
                                             owner,
                                             Occurrence {
-                                                target: OccurrenceTarget::Local(
-                                                    EntityId::new(ordinal),
-                                                ),
+                                                target: OccurrenceTarget::Local(EntityId::new(
+                                                    ordinal,
+                                                )),
                                                 kind: lane_reference_kind(reference.kind),
                                                 confidence: OccurrenceConfidence::Oracle,
                                                 span,
                                             },
                                         )
-                                        .map_err(|fault| {
-                                            lane_terminal(&self.facts, 0, fault)
-                                        })?;
+                                        .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
                                     continue;
                                 }
                                 if is_source_identifier(written) {
@@ -3019,7 +3016,10 @@ fn type_reference_name_bytes<'source>(written: &'source [u8]) -> Option<&'source
             continue;
         }
         let rest = written.get(prefix.len()..)?;
-        let skip = rest.iter().take_while(|byte| byte.is_ascii_whitespace()).count();
+        let skip = rest
+            .iter()
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .count();
         let ident = rest.get(skip..)?;
         let name_len = ident
             .iter()
@@ -3038,10 +3038,7 @@ fn type_reference_name_span(source: &[u8], span: SourceSpan, written: &[u8]) -> 
         return span;
     };
     let offset = name.as_ptr() as usize - source.as_ptr() as usize;
-    match (
-        u32::try_from(offset),
-        u32::try_from(offset + name.len()),
-    ) {
+    match (u32::try_from(offset), u32::try_from(offset + name.len())) {
         (Ok(start), Ok(end)) if start >= span.start && end <= span.end => SourceSpan { start, end },
         _ => span,
     }
@@ -3068,9 +3065,7 @@ fn member_call_callee_span(source: &[u8], span: SourceSpan) -> Option<SourceSpan
         return None;
     }
     let after_name = rest.get(name_len..)?;
-    let next = after_name
-        .iter()
-        .find(|byte| !byte.is_ascii_whitespace())?;
+    let next = after_name.iter().find(|byte| !byte.is_ascii_whitespace())?;
     if *next != b'(' {
         return None;
     }
@@ -3089,9 +3084,7 @@ fn member_call_callee_name<'source>(
     span: SourceSpan,
 ) -> Option<&'source [u8]> {
     let callee = member_call_callee_span(source, span)?;
-    source.get(
-        usize::try_from(callee.start).ok()?..usize::try_from(callee.end).ok()?,
-    )
+    source.get(usize::try_from(callee.start).ok()?..usize::try_from(callee.end).ok()?)
 }
 
 /// Maximum bytes after a member-access authority span to recover a field name
@@ -3138,9 +3131,7 @@ fn member_field_name_bytes<'source>(
         return Some(written);
     }
     member_field_name_span_after_receiver(source, span).and_then(|field| {
-        source.get(
-            usize::try_from(field.start).ok()?..usize::try_from(field.end).ok()?,
-        )
+        source.get(usize::try_from(field.start).ok()?..usize::try_from(field.end).ok()?)
     })
 }
 
@@ -3194,7 +3185,9 @@ fn member_receiver_call_shape(tail: &[u8]) -> bool {
 /// `->name`, and the next non-whitespace byte must not be `(`.
 fn member_field_name_span_after_receiver(source: &[u8], span: SourceSpan) -> Option<SourceSpan> {
     let tail_start = usize::try_from(span.end).ok()?;
-    let window_end = tail_start.saturating_add(MEMBER_FIELD_SCAN_WINDOW).min(source.len());
+    let window_end = tail_start
+        .saturating_add(MEMBER_FIELD_SCAN_WINDOW)
+        .min(source.len());
     let tail = source.get(tail_start..window_end)?;
     let (prefix_len, rest) = if let Some(rest) = tail.strip_prefix(b".") {
         (1, rest)
@@ -3211,9 +3204,7 @@ fn member_field_name_span_after_receiver(source: &[u8], span: SourceSpan) -> Opt
         return None;
     }
     let after_name = rest.get(name_len..)?;
-    let next = after_name
-        .iter()
-        .find(|byte| !byte.is_ascii_whitespace())?;
+    let next = after_name.iter().find(|byte| !byte.is_ascii_whitespace())?;
     if *next == b'(' {
         return None;
     }

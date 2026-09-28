@@ -107,13 +107,20 @@ fn roundtrip_re_admits_occurrence_disambiguated_row_identity() {
             .load_for_workspace(head.root(), &capability)
             .expect("load occurrence row after restart")
             .expect("occurrence snapshot after restart");
-        assert_eq!(cold.cursor, cursor, "cold restart {restart} changed revision");
+        assert_eq!(
+            cold.cursor, cursor,
+            "cold restart {restart} changed revision"
+        );
         assert_eq!(
             cold.view.version(),
             view.version(),
             "cold restart {restart} changed version"
         );
-        assert_eq!(cold.view.root(), view.root(), "cold restart {restart} changed root");
+        assert_eq!(
+            cold.view.root(),
+            view.root(),
+            "cold restart {restart} changed root"
+        );
         assert_eq!(
             cold.view.rows(),
             view.rows(),
@@ -542,8 +549,7 @@ mod stale_generation {
     fn generations() -> Generations {
         let genesis = super::super::super::genesis().expect("checked builtin genesis");
         let label = "fixture:intervening-workspace";
-        let intent =
-            BuiltinIntent::add(backend_engine::package_key(label), label).expect("intent");
+        let intent = BuiltinIntent::add(backend_engine::package_key(label), label).expect("intent");
         let other = super::super::super::test_head_for_intent(&intent).expect("second head");
         assert_ne!(
             genesis.root(),
@@ -751,7 +757,10 @@ fn a_reopened_journal_keeps_every_row_fact_with_its_text() {
     )
     .with_facts(facts.clone());
     let prepared = base
-        .prepare(backend_engine::ViewDelta::Upsert { row }, capability.clone())
+        .prepare(
+            backend_engine::ViewDelta::Upsert { row },
+            capability.clone(),
+        )
         .expect("prepare facts row");
     let (view, _) = base.commit(prepared).expect("commit facts row");
     let cursor = Cursor::for_view_root(&view);
@@ -766,7 +775,11 @@ fn a_reopened_journal_keeps_every_row_fact_with_its_text() {
         .expect("facts snapshot");
     assert_eq!(recovered.view.root(), view.root());
     let row = &recovered.view.rows()[0];
-    let notice = row.facts.deprecation.present().expect("deprecation survived");
+    let notice = row
+        .facts
+        .deprecation
+        .present()
+        .expect("deprecation survived");
     assert_eq!(notice.since(), Some("1.2.0"));
     assert_eq!(notice.note(), Some("use `fresh` instead"));
     assert_eq!(row.facts, facts);

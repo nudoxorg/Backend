@@ -10,6 +10,15 @@ impl DurableManifest {
         self.descriptor.id
     }
 
+    /// Returns the physical root node for this authenticated manifest index.
+    ///
+    /// Durable GC uses this to retain only the local closure-index tree when
+    /// an exact remote receipt roots the closure's leaf objects elsewhere.
+    #[must_use]
+    pub(in crate::durable) const fn root_node_object_id(&self) -> ObjectId {
+        self.descriptor.root
+    }
+
     /// Returns the checked object count recorded in the root descriptor.
     ///
     /// Legacy V1 descriptors did not retain this count and therefore return
@@ -17,6 +26,19 @@ impl DurableManifest {
     #[must_use]
     pub const fn entry_count(&self) -> Option<usize> {
         self.descriptor.count
+    }
+
+    /// Returns the authenticated number of member IDs in the closure index.
+    #[must_use]
+    pub fn object_count(&self) -> u64 {
+        self.root_node.node().row_count()
+    }
+
+    /// Checks exact closure-index membership without reading the member
+    /// object's envelope or payload.
+    pub fn contains_object_id(&self, id: ObjectId) -> Result<bool, StoreError> {
+        self.admit_claim(UntrustedObjectId::from_bytes(*id.as_bytes()))
+            .map(|admitted| admitted == Some(id))
     }
 
     /// Looks up one immutable object by its exact manifest identity.
@@ -155,6 +177,118 @@ impl DurableManifest {
         limit: usize,
     ) -> Result<DurableManifestPage, StoreError> {
         self.page_inner(after, limit, None)
+    }
+
+    /// Reads at most `limit` authenticated member IDs after `after` in
+    /// canonical identity order, without opening member object payloads.
+    ///
+    /// This page proves only membership in the checked closure index. Callers
+    /// that need object contents must separately verify each returned ID with
+    /// [`FileStore::verify_object_claim`](super::super::super::FileStore::verify_object_claim)
+    /// or [`FileStore::write_verified_object_payload`](super::super::super::FileStore::write_verified_object_payload).
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Corrupt`] when a branch, reference, or manifest
+    /// node is malformed, and [`StoreError::Bounds`] when `limit` exceeds the
+    /// store's page bound.
+    pub fn page_ids(
+        &self,
+        after: Option<ObjectId>,
+        limit: usize,
+    ) -> Result<DurableManifestIdPage, StoreError> {
+        if limit > NODE_MAX_COUNT {
+            return Err(StoreError::Bounds);
+        }
+        if limit == 0 {
+            return Ok(DurableManifestIdPage {
+                object_ids: Vec::new(),
+                next: None,
+                stats: ManifestReadStats::default(),
+            });
+        }
+        let schema = SchemaIdentity::of_relation::<ManifestRelation>();
+        let mut stack = vec![ManifestPageTask {
+            object_id: Some(self.descriptor.root),
+            version: None,
+            expected_first_key: None,
+            expected_level: None,
+            expected_row_count: None,
+            cached: Some(self.root_node.as_ref().clone()),
+        }];
+        let mut remaining_after = after.map(|id| *id.as_bytes());
+        let mut object_ids = Vec::with_capacity(limit);
+        let mut stats = ManifestReadStats::default();
+        let mut has_more = false;
+        'walk: while let Some(task) = stack.pop() {
+            let node = if let Some(node) = task.cached {
+                account_manifest_node(&node, &mut stats)?;
+                node
+            } else {
+                let object_id = if let Some(object_id) = task.object_id {
+                    object_id
+                } else if let Some(version) = task.version {
+                    self.store.read_relation_ref(schema, &version)?
+                } else {
+                    return Err(StoreError::Corrupt);
+                };
+                self.store.read_manifest_node_checked(
+                    object_id,
+                    task.expected_first_key.as_ref(),
+                    task.expected_level,
+                    task.expected_row_count,
+                    &mut stats,
+                )?
+            };
+            if node.node().level() == 0 {
+                let entries = node.leaf_entries().map_err(|_| StoreError::Corrupt)?;
+                for (index, (key, ())) in entries.iter().enumerate() {
+                    if remaining_after.is_some_and(|after| *key <= after) {
+                        continue;
+                    }
+                    object_ids.push(ObjectId::from_bytes(*key));
+                    remaining_after = None;
+                    if object_ids.len() == limit {
+                        has_more = index + 1 < entries.len() || !stack.is_empty();
+                        break 'walk;
+                    }
+                }
+                remaining_after = None;
+                continue;
+            }
+            let children = node.child_summaries().map_err(|_| StoreError::Corrupt)?;
+            if children.is_empty() {
+                return Err(StoreError::Corrupt);
+            }
+            let start = remaining_after.map_or(0, |after| {
+                children
+                    .partition_point(|child| child.first_key.as_slice() <= after.as_slice())
+                    .saturating_sub(1)
+            });
+            let child_level = node
+                .node()
+                .level()
+                .checked_sub(1)
+                .ok_or(StoreError::Corrupt)?;
+            for child in children.iter().skip(start).rev() {
+                if child.level != child_level {
+                    return Err(StoreError::Corrupt);
+                }
+                stack.push(ManifestPageTask {
+                    object_id: None,
+                    version: Some(child.commitment.to_bytes()),
+                    expected_first_key: Some(child.first_key),
+                    expected_level: Some(child_level),
+                    expected_row_count: Some(child.row_count),
+                    cached: None,
+                });
+            }
+        }
+        let next = has_more.then(|| object_ids.last().copied()).flatten();
+        Ok(DurableManifestIdPage {
+            object_ids,
+            next,
+            stats,
+        })
     }
 
     /// Reads a bounded page while charging selected object payload bytes.

@@ -1712,14 +1712,20 @@ mod tests {
             )),
             obligation: backend_compile::Fact::Absent,
         });
-        let required =
-            SourceDeclaration::at_path("src/lib.rs", "execute", "method", 11, "fn execute(&self)", "")
-                .expect("declaration")
-                .with_container(super::Container::attached("Service"))
-                .with_facts(backend_compile::DeclarationFacts {
-                    deprecation: backend_compile::Fact::Absent,
-                    obligation: backend_compile::Fact::Present(backend_compile::Obligation::Required),
-                });
+        let required = SourceDeclaration::at_path(
+            "src/lib.rs",
+            "execute",
+            "method",
+            11,
+            "fn execute(&self)",
+            "",
+        )
+        .expect("declaration")
+        .with_container(super::Container::attached("Service"))
+        .with_facts(backend_compile::DeclarationFacts {
+            deprecation: backend_compile::Fact::Absent,
+            obligation: backend_compile::Fact::Present(backend_compile::Obligation::Required),
+        });
         let record = ProductSourceRecord::file(
             [3; 32],
             "src/lib.rs",

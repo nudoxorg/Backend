@@ -13,7 +13,7 @@ mod surface_matrix;
 use backend_client::Session;
 use backend_library::{HealthReport, ViewStateRoot, encode_id};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
@@ -407,6 +407,326 @@ fn assert_product_lane(value: &Value, lane: &str, surface: &str) -> bool {
     false
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum OracleState {
+    Match,
+    Unsupported(&'static str),
+    Mismatch(String),
+}
+
+fn contains_field(actual: Option<&str>, expected: &str, field: &'static str) -> OracleState {
+    match actual {
+        Some(actual) if actual.contains(expected) => OracleState::Match,
+        Some(actual) => OracleState::Mismatch(format!(
+            "expected fragment {expected:?} in {field}, got {actual:?}"
+        )),
+        None => OracleState::Unsupported("field was not published"),
+    }
+}
+
+fn oracle_result(
+    case: surface_matrix::LanguageCase,
+    search_record: &Value,
+    document: &Value,
+    source: &Value,
+) -> BTreeMap<&'static str, OracleState> {
+    let identity = &search_record["identity"];
+    let declaration = if identity["path"].as_str() == Some(case.path)
+        && identity["name"].as_str() == Some(case.name)
+        && search_record["language"].as_str() == Some(case.language)
+        && document["identity"]["path"].as_str() == Some(case.path)
+        && document["identity"]["name"].as_str() == Some(case.name)
+        && document["language"].as_str() == Some(case.language)
+    {
+        OracleState::Match
+    } else {
+        OracleState::Mismatch(format!(
+            "expected {}/{}/{}, search={}, document={}",
+            case.language, case.path, case.name, search_record, document
+        ))
+    };
+
+    let kind = match (search_record["kind"].as_str(), document["kind"].as_str()) {
+        (Some(search_kind), Some(document_kind))
+            if search_kind == case.oracle.kind && document_kind == case.oracle.kind =>
+        {
+            OracleState::Match
+        }
+        (Some(search_kind), Some(document_kind)) => OracleState::Mismatch(format!(
+            "expected kind {:?} in search and document, got {search_kind:?}/{document_kind:?}",
+            case.oracle.kind
+        )),
+        _ => OracleState::Unsupported("typed declaration kind was not published"),
+    };
+    let signature = contains_field(
+        document["signature"].as_str(),
+        case.oracle.signature_fragment,
+        "signature",
+    );
+    let prose = document["prose"]
+        .as_array()
+        .map(|paragraphs| {
+            paragraphs
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let documentation = if prose.contains(case.oracle.documentation_marker) {
+        OracleState::Match
+    } else if prose.is_empty() {
+        OracleState::Unsupported("producer did not publish documentation prose")
+    } else {
+        OracleState::Mismatch(format!(
+            "expected marker {:?} in prose, got {prose:?}",
+            case.oracle.documentation_marker
+        ))
+    };
+    let source_path = source["source"]["path"].as_str();
+    let source_lines = source["source"]["lines"]
+        .as_array()
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let source_payload = if source_path == Some(case.path)
+        && source_lines.contains(case.oracle.payload_sentinel)
+    {
+        OracleState::Match
+    } else {
+        OracleState::Mismatch(format!(
+            "expected source path {:?} and payload {:?}, got path={source_path:?}, lines={source_lines:?}",
+            case.path, case.oracle.payload_sentinel
+        ))
+    };
+
+    BTreeMap::from([
+        ("declaration", declaration),
+        ("kind", kind),
+        ("signature", signature),
+        ("documentation", documentation),
+        ("source_payload", source_payload),
+    ])
+}
+
+fn matching_record<'value>(
+    value: &'value Value,
+    case: surface_matrix::LanguageCase,
+) -> &'value Value {
+    let matches = value["records"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|record| {
+            record["identity"]["path"].as_str() == Some(case.path)
+                && record["identity"]["name"].as_str() == Some(case.name)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "independent oracle expected exactly one {} row for {}:{}, got {}",
+        case.language,
+        case.path,
+        case.name,
+        matches.len()
+    );
+    matches[0]
+}
+
+fn state_name(state: &OracleState) -> &'static str {
+    match state {
+        OracleState::Match => "PASS",
+        OracleState::Unsupported(_) => "UNSUPPORTED",
+        OracleState::Mismatch(_) => "FAIL",
+    }
+}
+
+fn assert_oracle_matches(
+    case: surface_matrix::LanguageCase,
+    search_record: &Value,
+    document: &Value,
+    source: &Value,
+) -> BTreeMap<&'static str, OracleState> {
+    let result = oracle_result(case, search_record, document, source);
+    for (field, state) in &result {
+        match state {
+            OracleState::Match => {}
+            OracleState::Unsupported(reason) => eprintln!(
+                "index-fabric-evidence {}",
+                json!({
+                    "kind": "oracle",
+                    "language": case.language,
+                    "name": case.name,
+                    "field": field,
+                    "state": state_name(state),
+                    "reason": reason,
+                })
+            ),
+            OracleState::Mismatch(detail) => panic!(
+                "independent {} oracle rejected {}:{}: {detail}",
+                field, case.path, case.name
+            ),
+        }
+        if matches!(state, OracleState::Match) {
+            eprintln!(
+                "index-fabric-evidence {}",
+                json!({
+                    "kind": "oracle",
+                    "language": case.language,
+                    "name": case.name,
+                    "field": field,
+                    "state": state_name(state),
+                })
+            );
+        }
+    }
+    result
+}
+
+fn verify_oracle_mutation_rejections(
+    cases: &[(
+        surface_matrix::LanguageCase,
+        Value,
+        Value,
+        Value,
+        BTreeMap<&'static str, OracleState>,
+    )],
+) {
+    let mutations = [
+        "declaration",
+        "kind",
+        "signature",
+        "documentation",
+        "source_payload",
+    ];
+    for field in mutations {
+        for mutation in ["swap", "omit"] {
+            let mut rejected = 0_usize;
+            let mut unsupported = 0_usize;
+            let mut swapped_from = BTreeSet::new();
+            for (case, search_record, document, source, baseline) in cases {
+                if matches!(baseline.get(field), Some(OracleState::Unsupported(_))) {
+                    unsupported = unsupported.saturating_add(1);
+                    continue;
+                }
+
+                let replacement = cases
+                    .iter()
+                    .map(|(candidate, _, _, _, _)| candidate)
+                    .find(|candidate| {
+                        candidate.name != case.name
+                            && (field != "kind" || candidate.oracle.kind != case.oracle.kind)
+                    })
+                    .expect("asymmetric matrix has a distinct replacement fixture");
+                let mut changed_search = search_record.clone();
+                let mut changed_document = document.clone();
+                let mut changed_source = source.clone();
+                match (field, mutation) {
+                    ("declaration", "swap") => {
+                        changed_search["identity"]["name"] = json!(replacement.name);
+                        changed_search["identity"]["path"] = json!(replacement.path);
+                        changed_search["language"] = json!(replacement.language);
+                        changed_document["identity"]["name"] = json!(replacement.name);
+                        changed_document["identity"]["path"] = json!(replacement.path);
+                        changed_document["language"] = json!(replacement.language);
+                    }
+                    ("declaration", "omit") => {
+                        changed_search["identity"]
+                            .as_object_mut()
+                            .expect("search identity is an object")
+                            .remove("name");
+                        changed_document["identity"]
+                            .as_object_mut()
+                            .expect("document identity is an object")
+                            .remove("name");
+                    }
+                    ("kind", "swap") => {
+                        changed_search["kind"] = json!(replacement.oracle.kind);
+                        changed_document["kind"] = json!(replacement.oracle.kind);
+                    }
+                    ("kind", "omit") => {
+                        changed_search
+                            .as_object_mut()
+                            .expect("search record is an object")
+                            .remove("kind");
+                        changed_document
+                            .as_object_mut()
+                            .expect("document is an object")
+                            .remove("kind");
+                    }
+                    ("signature", "swap") => {
+                        changed_document["signature"] =
+                            json!(replacement.oracle.signature_fragment);
+                    }
+                    ("signature", "omit") => {
+                        changed_document
+                            .as_object_mut()
+                            .expect("document is an object")
+                            .remove("signature");
+                    }
+                    ("documentation", "swap") => {
+                        changed_document["prose"] =
+                            json!([replacement.oracle.documentation_marker]);
+                    }
+                    ("documentation", "omit") => {
+                        changed_document
+                            .as_object_mut()
+                            .expect("document is an object")
+                            .remove("prose");
+                    }
+                    ("source_payload", "swap") => {
+                        changed_source["source"]["lines"] =
+                            json!([replacement.oracle.payload_sentinel]);
+                    }
+                    ("source_payload", "omit") => {
+                        changed_source["source"]
+                            .as_object_mut()
+                            .expect("source result is an object")
+                            .remove("lines");
+                    }
+                    _ => unreachable!(),
+                }
+                let changed =
+                    oracle_result(*case, &changed_search, &changed_document, &changed_source);
+                assert!(
+                    !matches!(changed.get(field), Some(OracleState::Match)),
+                    "oracle accepted a deliberate {mutation} of {field} for {}:{}: {changed:?}",
+                    case.path,
+                    case.name
+                );
+                if mutation == "swap" {
+                    swapped_from.insert(replacement.name);
+                }
+                rejected = rejected.saturating_add(1);
+            }
+            assert!(
+                rejected > 0,
+                "no live {} payload exercised the {mutation} {field} mutation",
+                cases[0].0.language
+            );
+            eprintln!(
+                "index-fabric-evidence {}",
+                json!({
+                    "kind": "mutation",
+                    "field": field,
+                    "mutation": mutation,
+                    "state": if unsupported == 0 { "REJECTED" } else { "PARTIAL" },
+                    "rejected": rejected,
+                    "unsupported": unsupported,
+                    "tested": rejected.saturating_add(unsupported),
+                    "swapped_from": swapped_from,
+                })
+            );
+        }
+    }
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -442,6 +762,7 @@ fn production_surface_matrix_is_identity_equal_across_languages_and_restarts() {
     let mut expected = BTreeMap::new();
     let mut cli_documents = BTreeMap::new();
     let mut cli_sources = BTreeMap::new();
+    let mut oracle_cases = Vec::new();
     for case in surface_matrix::LANGUAGE_CASES {
         let search = cli_json(
             &endpoint,
@@ -487,9 +808,19 @@ fn production_surface_matrix_is_identity_equal_across_languages_and_restarts() {
             "source projection lost {}",
             case.name
         );
+        let search_record = matching_record(&search, case).clone();
+        let oracle = assert_oracle_matches(case, &search_record, &document, &source_value);
+        oracle_cases.push((
+            case,
+            search_record,
+            document.clone(),
+            source_value.clone(),
+            oracle,
+        ));
         cli_documents.insert(coordinate.clone(), document);
         cli_sources.insert(coordinate, source_value);
     }
+    verify_oracle_mutation_rejections(&oracle_cases);
 
     let cli_outline = cli_json(
         &endpoint,
@@ -523,7 +854,9 @@ fn production_surface_matrix_is_identity_equal_across_languages_and_restarts() {
     let calls = surface_matrix::mcp_calls(&project, &package_coordinate, &expected);
     let replies = mcp(&endpoint, &workspace, &project, &authority, &calls);
     for (id, response) in &replies {
-        let bytes = serde_json::to_vec(response).expect("MCP response serializes").len();
+        let bytes = serde_json::to_vec(response)
+            .expect("MCP response serializes")
+            .len();
         assert!(
             bytes <= backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
             "local daemon MCP response {id} is {bytes} bytes, above the {} byte budget: {response}",

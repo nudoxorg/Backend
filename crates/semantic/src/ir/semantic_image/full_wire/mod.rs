@@ -19,7 +19,7 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use encode::{encode_full_semantic_image, full_semantic_image_len};
+pub use encode::{PreparedFullSemanticImage, encode_full_semantic_image, full_semantic_image_len};
 pub use fault::{
     FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
     FullSemanticImageIdentityField,

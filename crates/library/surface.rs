@@ -1,6 +1,9 @@
 //! Typed commands and results owned by the durable product service.
 
-use crate::{CommandId, RegistryForgeAssociation, RegistryNativeMetadata};
+use crate::{
+    CommandId, DependencyFacts, ForgeCoordinate, ForgeObjectId, ForgeRevision,
+    PackageDependencyRecord, RegistryForgeAssociation, RegistryNativeMetadata,
+};
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
@@ -10,6 +13,8 @@ use std::num::NonZeroU64;
 pub const MAX_PRODUCT_TEXT_BYTES: usize = 4096;
 /// Largest row collection in one product request or reply.
 pub const MAX_PRODUCT_ROWS: usize = 256;
+/// Largest opaque continuation token accepted by the shared index-search surface.
+pub const MAX_INDEX_SEARCH_CURSOR_BYTES: usize = 64 * 1024;
 
 /// Nonempty, bounded, NUL-free product text.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -348,6 +353,37 @@ pub struct SemanticVersionRecord {
     pub complete: bool,
     /// Whether the mutable target row currently selects this generation.
     pub selected: bool,
+    /// Whether this generation was compiled for the latest admitted source input.
+    ///
+    /// This is distinct from `selected`: an operator may deliberately select a
+    /// retained historical generation while the newest source observation
+    /// continues to name a newer input. Older peers that do not provide this
+    /// field decode as `Unverified` instead of being claimed as current.
+    #[serde(default)]
+    pub freshness: SemanticVersionFreshness,
+}
+
+/// Source-input status for one immutable semantic generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SemanticVersionFreshness {
+    /// The selected generation's exact compiler input digest matches the latest observation.
+    Current { input_digest: [u8; 32] },
+    /// The generation uses an older input than the latest admitted observation.
+    Historical {
+        /// Exact input digest retained by this generation.
+        selected_input: [u8; 32],
+        /// Latest exact input digest observed for this semantic target.
+        latest_input: [u8; 32],
+    },
+    /// The sender predates persisted input freshness or no typed evidence was available.
+    Unverified,
+}
+
+impl Default for SemanticVersionFreshness {
+    fn default() -> Self {
+        Self::Unverified
+    }
 }
 
 impl SemanticVersionRecord {
@@ -433,6 +469,8 @@ pub enum SurfaceCommand {
         query: ProductText,
         /// Bounded page size.
         limit: u16,
+        /// Opaque continuation returned by the prior page.
+        cursor: Option<IndexSearchCursor>,
     },
     /// Read versions recorded under one package name.
     PackageVersions {
@@ -862,6 +900,114 @@ impl DiffRecord {
     }
 }
 
+/// Completeness of one registry fact group on a selected package release.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistryPackageFactCompleteness {
+    /// The source supplied the complete fact group.
+    Complete,
+    /// The source supplied only part of the fact group.
+    Partial,
+    /// The source does not record this fact group.
+    NotRecorded,
+    /// The source does not support this fact group.
+    Unsupported,
+    /// The source could not provide this fact group.
+    Unavailable,
+    /// Completeness is not known.
+    Unknown,
+}
+
+/// Kind of source proof that observed selected registry release facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RegistryPackageFactProof {
+    /// A durable acquisition receipt selected a verified source snapshot.
+    AcquisitionReceipt {
+        /// Identity of the accepted acquisition receipt.
+        receipt: [u8; 32],
+        /// Identity of the selected source snapshot.
+        snapshot: [u8; 32],
+    },
+    /// A source supplied an authenticated negative fact with a bounded lease.
+    SourceNegativeFact {
+        /// Registry source authority identity.
+        authority: [u8; 32],
+        /// Source proof identity.
+        source_proof: [u8; 32],
+        /// Source cursor at which the fact was observed.
+        cursor: [u8; 32],
+        /// Source-reported observation time in Unix milliseconds.
+        observed_at_millis: u64,
+        /// Source-reported expiration time in Unix milliseconds.
+        expires_at_millis: u64,
+        /// Registry policy epoch used to admit the proof.
+        policy_epoch: u64,
+        /// Typed meaning of the negative fact.
+        fact: RegistryNegativeFactKind,
+    },
+}
+
+/// Typed category of a source-reported negative package fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistryNegativeFactKind {
+    /// The exact release does not exist at this source.
+    NotFound,
+    /// The exact release has been yanked.
+    Yanked,
+    /// Advisory policy blocks this release.
+    AdvisoryBlocked,
+    /// The source does not support this package coordinate.
+    Unsupported,
+}
+
+/// Freshness and provenance of the selected release-fact observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum RegistryPackageFactFreshness {
+    /// A source proof observed these facts during its validity window.
+    Current {
+        /// Time of the accepted observation in Unix milliseconds.
+        observed_at_millis: u64,
+        /// End of the observation's validity window in Unix milliseconds.
+        valid_until_millis: u64,
+        /// Proof that selected the observed facts.
+        proof: RegistryPackageFactProof,
+    },
+    /// Durable source facts remain selected, but this process cannot attest a
+    /// current observation after reopening or expiry.
+    Historical,
+}
+
+/// Versioned source authority paired with a registry package reply.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryPackageFactAuthority {
+    /// Registry source identity.
+    pub source: [u8; 32],
+    /// Versioned root of the source facts selected for this row.
+    pub source_facts_root: [u8; 32],
+    /// Provenance identity of the selected package publication.
+    pub source_provenance: [u8; 32],
+    /// Content identity of the selected release facts.
+    pub facts_version: [u8; 32],
+    /// Content identity of the selected advisory facts.
+    pub advisory_facts_version: [u8; 32],
+    /// Identity of the complete selected-facts decision.
+    pub selection_version: [u8; 32],
+    /// Completeness of release-standing facts.
+    pub standing: RegistryPackageFactCompleteness,
+    /// Completeness of release download-count facts.
+    pub downloads: RegistryPackageFactCompleteness,
+    /// Completeness of advisory facts.
+    pub advisories: RegistryPackageFactCompleteness,
+    /// Freshness of package standing and download facts.
+    pub release_facts_freshness: RegistryPackageFactFreshness,
+    /// Freshness of advisory-feed facts, tracked independently.
+    pub advisory_freshness: backend_advisory::FreshnessState,
+}
+
 /// One locally committed registry publication.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -882,6 +1028,10 @@ pub struct RegistryPackageRecord {
     pub downloads: RegistryDownloadCount,
     /// Content identity of the registry fact groups above.
     pub facts_version: [u8; 32],
+    /// Authority, completeness, and freshness for a registry-selected row.
+    /// Local manifest and synthetic records leave this unset.
+    #[serde(default)]
+    pub authority: Option<RegistryPackageFactAuthority>,
     /// Identity of the versioned native metadata DTO.
     pub native_metadata_version: [u8; 32],
     /// Complete bounded native registry metadata for this release.
@@ -891,6 +1041,565 @@ pub struct RegistryPackageRecord {
     pub forge_sources: Box<[RegistryForgeAssociation]>,
     /// Complete typed advisory evidence and acquisition decision for this version.
     pub advisory: AdvisoryPackageDto,
+}
+
+/// Freshness of an unacquired package claim returned by catalog discovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum RegistryDiscoveryFreshness {
+    /// The source claim was observed in this process and remains inside its
+    /// configured freshness horizon.
+    Current {
+        observed_at_millis: u64,
+        valid_until_millis: u64,
+    },
+    /// The claim was recovered from durable history after a cold reopen.
+    Historical { observed_at_millis: u64 },
+    /// The source has not refreshed the claim within its freshness horizon.
+    Expired {
+        observed_at_millis: u64,
+        valid_until_millis: u64,
+    },
+    /// The last source refresh failed, so this is the last durable claim.
+    Unavailable {
+        observed_at_millis: u64,
+        historical: bool,
+    },
+}
+
+/// Completeness of the source view that produced an unacquired candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistryDiscoveryCompleteness {
+    /// Every catalog event through the reported source cursor was processed.
+    CompleteThroughCursor,
+    /// A mutable or page-bounded source view can omit candidates.
+    Windowed,
+    /// The source does not provide this discovery feed.
+    Unsupported,
+    /// A valid response could not be admitted in full.
+    Incomplete,
+}
+
+/// Source-reported release standing for an unacquired candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistryDiscoveryStanding {
+    /// The source reports this release as published or listed.
+    Published,
+    /// The source reports this release as yanked or unlisted.
+    Yanked,
+    /// The source reports this release was deleted or withdrawn.
+    Withdrawn,
+    /// A source package recipe exists, but no binary release is asserted.
+    RecipeAvailable,
+}
+
+/// A source-attributed optional metadata claim. `Absent` means the registry
+/// schema does not publish the facet; `Unknown` means this observation did not
+/// establish it. Neither state is equivalent to a known empty value.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "kebab-case")]
+pub enum RegistryEvidenceFacet<T> {
+    /// The source reported this value, including an empty collection or zero.
+    Known(T),
+    /// The source schema does not expose this facet.
+    Absent,
+    /// This observation did not establish whether a value exists.
+    Unknown,
+}
+
+impl<T> Default for RegistryEvidenceFacet<T> {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+/// Advisory evidence attached to the enclosing registry source claim.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryDiscoveryAdvisory {
+    /// Source-native advisory identifier.
+    pub id: ProductText,
+    /// Alternate source-provided advisory identifiers.
+    pub aliases: Box<[ProductText]>,
+    /// Source-provided short summary.
+    pub summary: RegistryEvidenceFacet<ProductText>,
+    /// Source-provided severity label, without inferred scoring.
+    pub severity: RegistryEvidenceFacet<ProductText>,
+    /// Source-provided fixed versions, without inferred version ordering.
+    pub fixed_in: RegistryEvidenceFacet<Box<[ProductText]>>,
+}
+
+/// Advisory and download observations for one exact registry release.
+/// Every known facet is attributed to the enclosing candidate's `source`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryDiscoveryMetadata {
+    /// Exact per-release download count. Zero remains distinct from absence.
+    pub downloads: RegistryEvidenceFacet<u64>,
+    /// Advisory source facts for this release.
+    pub advisories: RegistryEvidenceFacet<Box<[RegistryDiscoveryAdvisory]>>,
+    /// Explicit source-reported yank state, separate from package standing.
+    pub yanked: RegistryEvidenceFacet<bool>,
+}
+
+/// One discovered release claim, kept distinct by source identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryDiscoveryCandidate {
+    /// Stable source identity digest. Competing sources remain separate rows.
+    pub source: [u8; 32],
+    /// Exact version-pinned coordinate from the source.
+    pub coordinate: PackageCoordinate,
+    /// Source-reported standing; this does not imply local acquisition.
+    pub standing: RegistryDiscoveryStanding,
+    /// Source completeness attached to this claim.
+    pub completeness: RegistryDiscoveryCompleteness,
+    /// Whether the source's last observation reached its captured high watermark.
+    pub caught_up: bool,
+    /// Historical/current observation evidence.
+    pub freshness: RegistryDiscoveryFreshness,
+    /// Digest of the exact source record that produced this claim.
+    pub proof: [u8; 32],
+    /// Optional source-attributed advisory, download, and yank facts.
+    #[serde(default)]
+    pub metadata: RegistryDiscoveryMetadata,
+}
+
+impl RegistryDiscoveryCandidate {
+    /// Checks the user-facing candidate boundary after decoding.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        match self.freshness {
+            RegistryDiscoveryFreshness::Current {
+                observed_at_millis,
+                valid_until_millis,
+            }
+            | RegistryDiscoveryFreshness::Expired {
+                observed_at_millis,
+                valid_until_millis,
+            } if valid_until_millis < observed_at_millis => {
+                Err(ProductAdmissionError::RegistryDiscoveryFreshness)
+            }
+            RegistryDiscoveryFreshness::Current { .. }
+            | RegistryDiscoveryFreshness::Historical { .. }
+            | RegistryDiscoveryFreshness::Expired { .. }
+            | RegistryDiscoveryFreshness::Unavailable { .. } => {
+                admit_registry_discovery_metadata(&self.metadata)
+            }
+        }
+    }
+}
+
+fn admit_registry_discovery_metadata(
+    metadata: &RegistryDiscoveryMetadata,
+) -> Result<(), ProductAdmissionError> {
+    let RegistryEvidenceFacet::Known(advisories) = &metadata.advisories else {
+        return Ok(());
+    };
+    if advisories.len() > 128 {
+        return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+    }
+    for advisory in advisories.iter() {
+        if advisory.aliases.len() > 32 {
+            return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+        }
+        for facet in [&advisory.summary, &advisory.severity] {
+            if matches!(facet, RegistryEvidenceFacet::Known(value) if value.as_str().len() > 4096) {
+                return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+            }
+        }
+        if matches!(&advisory.fixed_in, RegistryEvidenceFacet::Known(values) if values.len() > 256 || values.iter().any(|value| value.as_str().len() > 4096))
+        {
+            return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+        }
+    }
+    Ok(())
+}
+
+/// Opaque continuation for a bounded index-search page.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct IndexSearchCursor(String);
+
+impl IndexSearchCursor {
+    /// Admits a bounded URL-safe opaque token.
+    pub fn new(value: impl Into<String>) -> Result<Self, ProductAdmissionError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > MAX_INDEX_SEARCH_CURSOR_BYTES
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(ProductAdmissionError::IndexSearchCursor);
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the opaque token unchanged for a subsequent request.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for IndexSearchCursor {
+    type Error = ProductAdmissionError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<IndexSearchCursor> for String {
+    fn from(value: IndexSearchCursor) -> Self {
+        value.0
+    }
+}
+
+/// Whether the search plane can prove an exact total or only a lower bound.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "kebab-case")]
+pub enum IndexSearchResultCount {
+    /// Exact number of distinct results matching the request.
+    Exact(u32),
+    /// At least this many results matched; more remain beyond the bounded probe.
+    AtLeast(u32),
+    /// The search projection could not establish a count.
+    Unknown,
+}
+
+/// One page from the stable selected index snapshot.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexSearchPage {
+    /// Structural index snapshot shared by every page in a cursor chain.
+    pub snapshot: [u8; 32],
+    /// Wall-clock time at which mutable freshness/evidence overlays were read.
+    pub evaluated_at_millis: u64,
+    /// Distinct canonical package lineages and local declaration matches.
+    pub hits: Box<[RegistrySearchHit]>,
+    /// Opaque continuation for the next bounded page.
+    pub next_cursor: Option<IndexSearchCursor>,
+    /// Exact count or lower bound, when the projections can establish one.
+    pub result_count: IndexSearchResultCount,
+}
+
+/// A package/version found in an acquired forge tree. The PURL identifies the
+/// package version; typed repository metadata keeps an identical registry
+/// coordinate visibly attributable to its forge source.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeDiscoveryCandidate {
+    /// Stable identity of the exact forge repository/ref/subdirectory claim.
+    pub source: [u8; 32],
+    /// Canonical package/version identity derived from the source manifest.
+    pub coordinate: PackageCoordinate,
+    /// Exact canonical repository coordinate that was acquired.
+    pub forge_coordinate: ProductText,
+    /// Commit resolved by the forge authority.
+    pub commit: ForgeFact<ProductText>,
+    /// Manifest corresponding to this package/version hit.
+    pub manifest: ForgeManifestRecord,
+    /// Repository metadata, including typed unknown README and license facts.
+    pub metadata: ForgeRepositoryMetadataRecord,
+}
+
+impl ForgeDiscoveryCandidate {
+    /// Checks that the source coordinate and package identity remain bound.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        let source = crate::ForgeCoordinate::parse(self.forge_coordinate.as_str().to_owned())
+            .map_err(|_| ProductAdmissionError::ForgeSearchShape)?;
+        let parsed = PackageCoordinate::parse(self.coordinate.as_str().to_owned())
+            .map_err(|_| ProductAdmissionError::ForgeSearchShape)?;
+        if !source.identity_is_valid()
+            || source.identity() != self.source
+            || parsed != self.coordinate
+            || self.manifest.path.as_str().is_empty()
+            || self.manifest.ecosystem.as_str() != self.coordinate.package_type().as_str()
+        {
+            return Err(ProductAdmissionError::ForgeSearchShape);
+        }
+        Ok(())
+    }
+}
+
+/// A forge manifest row that preserves source revision pins separately from
+/// actual package versions and leaves registry-only facts unknown.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgePackageDetailRecord {
+    /// Exact canonical repository/ref/subdirectory claim.
+    pub source: ForgeCoordinate,
+    /// Stable identity of the source authority.
+    pub source_id: [u8; 32],
+    /// Exact commit selected for this source claim.
+    pub resolved_commit: ForgeObjectId,
+    /// Exact tree selected by the authority, when reported.
+    pub resolved_tree: Option<ForgeObjectId>,
+    /// Package PURL only when the manifest recorded a valid name and version.
+    pub package_coordinate: Option<PackageCoordinate>,
+    /// Whether this row represents a package release or only a source pin.
+    pub pin: ForgePackagePin,
+    /// Source manifest facts with unavailable values preserved.
+    pub manifest: ForgePackageManifestDetail,
+    /// Metadata returned by the forge authority.
+    pub metadata: ForgeRepositoryMetadataRecord,
+    /// Registry-only evidence stays distinct from forge source facts.
+    pub registry: ForgePackageRegistryEvidence,
+}
+
+impl ForgePackageDetailRecord {
+    /// Validates source, manifest, pin, and optional release-coordinate agreement.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if !self.source.identity_is_valid()
+            || self.source_id != self.source.identity()
+            || self.manifest.path.as_str().is_empty()
+        {
+            return Err(ProductAdmissionError::ForgePackageDetailShape);
+        }
+        match (&self.pin, &self.package_coordinate) {
+            (ForgePackagePin::PackageVersion { coordinate }, Some(package_coordinate))
+                if coordinate == package_coordinate
+                    && forge_manifest_coordinate(&self.manifest).as_ref() == Some(coordinate) => {}
+            (
+                ForgePackagePin::PinnedRevision {
+                    requested_revision,
+                    resolved_commit,
+                },
+                None,
+            ) if requested_revision == self.source.revision()
+                && resolved_commit == &self.resolved_commit => {}
+            _ => return Err(ProductAdmissionError::ForgePackageDetailShape),
+        }
+        Ok(())
+    }
+}
+
+/// Whether a forge manifest establishes a package version or only a source pin.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "kebab-case")]
+pub enum ForgePackagePin {
+    /// The manifest itself recorded this exact package version.
+    PackageVersion { coordinate: PackageCoordinate },
+    /// The source resolved to a commit, but the manifest supplied no valid release PURL.
+    PinnedRevision {
+        requested_revision: ForgeRevision,
+        resolved_commit: ForgeObjectId,
+    },
+}
+
+/// Manifest details whose name and version availability is source-attributed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgePackageManifestDetail {
+    /// Path relative to the selected repository subdirectory.
+    pub path: ProductText,
+    /// Ecosystem parser that admitted the manifest.
+    pub ecosystem: RegistryEcosystem,
+    /// Registry-native package name, when the manifest reported one.
+    pub name: ForgeFact<ProductText>,
+    /// Registry-native package version, when the manifest reported one.
+    pub version: ForgeFact<ProductText>,
+    /// Dependency facts admitted from the manifest.
+    pub dependencies: DependencyFacts<Box<[PackageDependencyRecord]>>,
+}
+
+/// Registry-only evidence attached to a forge manifest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgePackageRegistryEvidence {
+    /// Registry yank/unlist state; forge acquisition cannot establish it.
+    pub yanked: RegistryEvidenceFacet<bool>,
+    /// Download telemetry; forge acquisition cannot establish it.
+    pub downloads: RegistryDownloadCount,
+    /// Advisory coverage, including an explicit unknown state.
+    pub advisory: AdvisoryPackageDto,
+}
+
+fn forge_manifest_coordinate(manifest: &ForgePackageManifestDetail) -> Option<PackageCoordinate> {
+    let (ForgeFact::Recorded(name), ForgeFact::Recorded(version)) =
+        (&manifest.name, &manifest.version)
+    else {
+        return None;
+    };
+    let package_name = if manifest.ecosystem == RegistryEcosystem::Maven {
+        name.as_str().replace(':', "/")
+    } else {
+        name.as_str().to_owned()
+    };
+    PackageCoordinate::parse(format!(
+        "pkg:{}/{}@{}",
+        manifest.ecosystem.package_type().as_str(),
+        package_name,
+        version.as_str()
+    ))
+    .ok()
+}
+
+/// Ranked catalog-search item, with acquisition and discovery kept as
+/// different variants and source conflicts kept as separate candidates.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "kebab-case")]
+pub enum RegistrySearchHit {
+    /// A package record backed by locally acquired registry artifacts.
+    Acquired(RegistryPackageRecord),
+    /// A source-only package claim. No archive or compiler artifact exists yet.
+    Discovered(RegistryDiscoveryCandidate),
+    /// A package/version discovered in a code-forge source tree.
+    ForgeDiscovered(ForgeDiscoveryCandidate),
+    /// A code-forge source pin whose manifest does not establish a package version.
+    ForgeSourcePin(ForgePackageDetailRecord),
+    /// A local indexed declaration returned by the combined search surface.
+    LocalDeclaration(RegistryPackageRecord),
+    /// One source-scoped canonical package lineage with bounded release facets.
+    PackageGroup(RegistryPackageSearchGroup),
+}
+
+/// Which source plane supplies every release in a lineage group.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistrySearchGroupKind {
+    /// Locally acquired releases from one recorded registry authority.
+    Acquired,
+    /// Source-only registry observations that remain unacquired.
+    Discovered,
+    /// Package manifests found in one acquired forge source.
+    Forge,
+}
+
+/// Whether the bounded version facets themselves matched the query or are
+/// source-backed representatives for a lineage-level metadata match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistryReleaseMatchScope {
+    /// Every listed release matched the query on its own indexed facts.
+    ReleaseMatches,
+    /// The lineage matched by combining indexed facts across releases; the
+    /// listed releases are representatives and are not claimed to match.
+    LineageMetadataOnly,
+}
+
+/// One bounded set of version-specific facets for a canonical package name.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryPackageSearchGroup {
+    /// Group's source-plane type.
+    pub kind: RegistrySearchGroupKind,
+    /// Stable identity of the source making this claim.
+    pub source: [u8; 32],
+    /// Canonical ecosystem for the lineage.
+    pub ecosystem: RegistryEcosystem,
+    /// Canonical package lineage without its version pin.
+    pub lineage: ProductText,
+    /// Release-specific evidence, ordered by the search projection. Consult
+    /// `release_match_scope` before presenting these as query matches.
+    pub releases: Box<[RegistrySearchRelease]>,
+    /// Describes whether listed releases matched individually or represent a
+    /// lineage-level metadata match.
+    pub release_match_scope: RegistryReleaseMatchScope,
+    /// True when more releases in `release_match_scope` were withheld by the
+    /// per-group bound. For `LineageMetadataOnly`, this means more source
+    /// releases exist in the lineage, not that they matched the query.
+    pub more_releases: bool,
+}
+
+/// One exact, version-pinned member of a package-lineage result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "kebab-case")]
+pub enum RegistrySearchRelease {
+    /// Release acquired into the local registry catalog.
+    Acquired(RegistryPackageRecord),
+    /// Source-only registry release claim.
+    Discovered(RegistryDiscoveryCandidate),
+    /// Manifest-backed package found in a forge source tree.
+    ForgeDiscovered(ForgeDiscoveryCandidate),
+}
+
+impl RegistryPackageSearchGroup {
+    /// Validates release grouping, provenance, and nested collection bounds.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if self.releases.is_empty() || self.releases.len() > 16 {
+            return Err(ProductAdmissionError::RegistrySearchGroup);
+        }
+        let mut coordinates = std::collections::BTreeSet::new();
+        for release in self.releases.iter() {
+            let (kind, source, ecosystem, coordinate) = match release {
+                RegistrySearchRelease::Acquired(record) => {
+                    admit_registry_record(record)?;
+                    let source = record
+                        .authority
+                        .map_or([0; 32], |authority| authority.source);
+                    let PackageReference::Purl(coordinate) = &record.coordinate else {
+                        return Err(ProductAdmissionError::RegistrySearchGroup);
+                    };
+                    (
+                        RegistrySearchGroupKind::Acquired,
+                        source,
+                        record.ecosystem,
+                        coordinate.clone(),
+                    )
+                }
+                RegistrySearchRelease::Discovered(candidate) => {
+                    candidate.admit()?;
+                    let coordinate =
+                        PackageCoordinate::parse(candidate.coordinate.as_str().to_owned())
+                            .map_err(|_| ProductAdmissionError::RegistrySearchGroup)?;
+                    (
+                        RegistrySearchGroupKind::Discovered,
+                        candidate.source,
+                        coordinate
+                            .package_type()
+                            .registry()
+                            .ok_or(ProductAdmissionError::RegistrySearchGroup)?,
+                        coordinate,
+                    )
+                }
+                RegistrySearchRelease::ForgeDiscovered(candidate) => {
+                    candidate.admit()?;
+                    let coordinate =
+                        PackageCoordinate::parse(candidate.coordinate.as_str().to_owned())
+                            .map_err(|_| ProductAdmissionError::RegistrySearchGroup)?;
+                    let ecosystem = coordinate
+                        .package_type()
+                        .registry()
+                        .unwrap_or(RegistryEcosystem::Cpp);
+                    (
+                        RegistrySearchGroupKind::Forge,
+                        candidate.source,
+                        ecosystem,
+                        coordinate,
+                    )
+                }
+            };
+            let lineage = registry_package_lineage(&coordinate, ecosystem);
+            if kind != self.kind
+                || source != self.source
+                || ecosystem != self.ecosystem
+                || lineage != self.lineage.as_str()
+                || !coordinates.insert(coordinate.as_str().to_owned())
+            {
+                return Err(ProductAdmissionError::RegistrySearchGroup);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn registry_package_lineage(
+    coordinate: &PackageCoordinate,
+    ecosystem: RegistryEcosystem,
+) -> String {
+    let path = coordinate.lineage_name();
+    if matches!(ecosystem, RegistryEcosystem::Maven | RegistryEcosystem::Cpp) {
+        path.rsplit_once('/').map_or_else(
+            || path.to_owned(),
+            |(namespace, name)| format!("{namespace}:{name}"),
+        )
+    } else {
+        path.to_owned()
+    }
 }
 
 /// A bounded fact whose absence is preserved as a typed state.
@@ -935,8 +1644,9 @@ pub struct ForgeManifestRecord {
     pub name: Option<ProductText>,
     /// Immutable package version when the manifest records one.
     pub version: Option<ProductText>,
-    /// Number of dependency rows admitted from the shared package graph.
-    pub dependency_count: u16,
+    /// Dependency facts admitted from this source manifest. Unknown and
+    /// unavailable facts remain distinct from a known empty edge set.
+    pub dependencies: crate::DependencyFacts<Box<[crate::PackageDependencyRecord]>>,
 }
 
 /// Product DTO for a source acquired from GitHub, GitLab, Codeberg, or generic HTTPS Git.
@@ -1114,6 +1824,13 @@ pub enum SurfaceReply {
     Explored(Box<[RegistryPackageRecord]>),
     /// Exact package records.
     Package(Box<[RegistryPackageRecord]>),
+    /// Exact package records from registry and forge authorities, kept apart.
+    PackageDetails {
+        /// Acquired registry facts matching the requested PURL.
+        registry: Box<[RegistryPackageRecord]>,
+        /// Forge manifests matching the requested PURL.
+        forge: Box<[ForgePackageDetailRecord]>,
+    },
     /// Result of acquiring a forge source.
     ForgePackageAdded(ForgePackageRecord),
     /// Result of referencing a cached forge source.
@@ -1126,6 +1843,11 @@ pub enum SurfaceReply {
     Owner(RegistryMetadata<Box<[RegistryPackageRecord]>>),
     /// Bounded local index matches.
     IndexSearch(Box<[RegistryPackageRecord]>),
+    /// Globally ranked search matches with acquired packages and source-only
+    /// candidates represented by distinct typed hit variants.
+    IndexSearchWithDiscovery(Box<[RegistrySearchHit]>),
+    /// Cursor-based cross-plane page bound to one selected structural snapshot.
+    IndexSearchPage(IndexSearchPage),
     /// Recorded versions.
     PackageVersions(Box<[RegistryPackageRecord]>),
     /// Immutable compiler generations for one exact package.
@@ -1138,6 +1860,10 @@ pub enum SurfaceReply {
         latest: Option<RegistryPackageRecord>,
         /// Recorded version count.
         versions: u64,
+        /// Authority for the newest recorded release considered for latest.
+        /// This remains populated when `latest` is withheld as historical.
+        #[serde(default)]
+        candidate_authority: Option<RegistryPackageFactAuthority>,
     },
     /// Subscription after mutation.
     Subscribed(SubscriptionRecord),
@@ -1182,12 +1908,15 @@ impl SurfaceReply {
             Self::Diff(_) => CommandId::Diff,
             Self::Explored(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
+            Self::PackageDetails { .. } => CommandId::Package,
             Self::ForgePackageAdded(_) => CommandId::ForgeAdd,
             Self::ForgePackageReferenced(_) => CommandId::ForgeReference,
             Self::Dependents(_) => CommandId::Dependents,
             Self::Dependencies(_) => CommandId::Dependencies,
             Self::Owner(_) => CommandId::Owner,
             Self::IndexSearch(_) => CommandId::IndexSearch,
+            Self::IndexSearchWithDiscovery(_) => CommandId::IndexSearch,
+            Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
             Self::SemanticVersions(_) => CommandId::SemanticVersions,
             Self::SemanticVersionSelected(_) => CommandId::SelectSemanticVersion,
@@ -1246,6 +1975,9 @@ impl SurfaceReply {
             | Self::PackageVersions(v)
             | Self::Dependents(RegistryMetadata::Recorded(v))
             | Self::Owner(RegistryMetadata::Recorded(v)) => v.len(),
+            Self::IndexSearchWithDiscovery(hits) => hits.len(),
+            Self::PackageDetails { registry, forge } => registry.len().saturating_add(forge.len()),
+            Self::IndexSearchPage(page) => page.hits.len(),
             Self::Dependencies(crate::DependencyFacts::Known(v)) => v.len(),
             Self::SemanticVersions(records) => {
                 let mut selected = 0_usize;
@@ -1290,13 +2022,66 @@ impl SurfaceReply {
                         admit_registry_record(row)?;
                     }
                 }
+                Self::IndexSearchWithDiscovery(hits) => {
+                    for hit in hits {
+                        match hit {
+                            RegistrySearchHit::Acquired(record)
+                            | RegistrySearchHit::LocalDeclaration(record) => {
+                                admit_registry_record(record)?;
+                            }
+                            RegistrySearchHit::Discovered(candidate) => candidate.admit()?,
+                            RegistrySearchHit::ForgeDiscovered(candidate) => candidate.admit()?,
+                            RegistrySearchHit::ForgeSourcePin(candidate) => candidate.admit()?,
+                            RegistrySearchHit::PackageGroup(group) => group.admit()?,
+                        }
+                    }
+                }
+                Self::IndexSearchPage(page) => {
+                    if page.hits.len() > MAX_PRODUCT_ROWS {
+                        return Err(ProductAdmissionError::RowBound);
+                    }
+                    if page.next_cursor.as_ref().is_some_and(|cursor| {
+                        IndexSearchCursor::new(cursor.as_str().to_owned()).is_err()
+                    }) {
+                        return Err(ProductAdmissionError::IndexSearchCursor);
+                    }
+                    for hit in page.hits.iter() {
+                        match hit {
+                            RegistrySearchHit::Acquired(record)
+                            | RegistrySearchHit::LocalDeclaration(record) => {
+                                admit_registry_record(record)?;
+                            }
+                            RegistrySearchHit::Discovered(candidate) => candidate.admit()?,
+                            RegistrySearchHit::ForgeDiscovered(candidate) => candidate.admit()?,
+                            RegistrySearchHit::ForgeSourcePin(candidate) => candidate.admit()?,
+                            RegistrySearchHit::PackageGroup(group) => group.admit()?,
+                        }
+                    }
+                }
                 Self::Dependents(RegistryMetadata::Recorded(rows))
                 | Self::Owner(RegistryMetadata::Recorded(rows)) => {
                     for row in rows {
                         admit_registry_record(row)?;
                     }
                 }
-                Self::PackageProfile { latest: Some(row), .. } => admit_registry_record(row)?,
+                Self::PackageDetails { registry, forge } => {
+                    for row in registry {
+                        admit_registry_record(row)?;
+                    }
+                    for row in forge {
+                        row.admit()?;
+                    }
+                }
+                Self::PackageProfile {
+                    latest: Some(row),
+                    candidate_authority,
+                    ..
+                } => {
+                    admit_registry_record(row)?;
+                    if candidate_authority != &row.authority {
+                        return Err(ProductAdmissionError::RegistryAuthority);
+                    }
+                }
                 _ => {}
             }
             Ok(())
@@ -1329,10 +2114,41 @@ impl SurfaceReply {
             | Self::PackageVersions(records)
             | Self::Dependents(RegistryMetadata::Recorded(records))
             | Self::Owner(RegistryMetadata::Recorded(records)) => registry_records_bound(records),
+            Self::IndexSearchWithDiscovery(hits) => hits.iter().fold(0_usize, |bound, hit| {
+                bound.saturating_add(match hit {
+                    RegistrySearchHit::Acquired(record)
+                    | RegistrySearchHit::LocalDeclaration(record) => {
+                        registry_package_record_bound(record)
+                    }
+                    RegistrySearchHit::Discovered(candidate) => {
+                        fixed_record_bound().saturating_add(candidate.coordinate.as_str().len())
+                    }
+                    RegistrySearchHit::ForgeDiscovered(candidate) => fixed_record_bound()
+                        .saturating_add(
+                            serde_json::to_vec(candidate).map_or(0, |bytes| bytes.len()),
+                        ),
+                    RegistrySearchHit::ForgeSourcePin(candidate) => fixed_record_bound()
+                        .saturating_add(
+                            serde_json::to_vec(candidate).map_or(0, |bytes| bytes.len()),
+                        ),
+                    RegistrySearchHit::PackageGroup(group) => fixed_record_bound()
+                        .saturating_add(serde_json::to_vec(group).map_or(0, |bytes| bytes.len())),
+                })
+            }),
+            Self::IndexSearchPage(page) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
             Self::ForgePackageAdded(record) | Self::ForgePackageReferenced(record) => {
                 fixed_record_bound()
                     .saturating_add(serde_json::to_vec(record).map_or(0, |bytes| bytes.len()))
             }
+            Self::PackageDetails { registry, forge } => registry_records_bound(registry)
+                .saturating_add(forge.iter().fold(0_usize, |bound, record| {
+                    bound.saturating_add(
+                        fixed_record_bound().saturating_add(
+                            serde_json::to_vec(record).map_or(0, |bytes| bytes.len()),
+                        ),
+                    )
+                })),
             Self::SemanticVersions(records) => records.iter().fold(0_usize, |bound, record| {
                 bound
                     .saturating_add(fixed_record_bound())
@@ -1344,16 +2160,23 @@ impl SurfaceReply {
                 .saturating_add(record.coordinate.as_str().len()),
             Self::Dependents(RegistryMetadata::NotRecorded(reason))
             | Self::Owner(RegistryMetadata::NotRecorded(reason)) => text_bound(reason),
-            Self::Dependencies(crate::DependencyFacts::Known(records)) => records
-                .iter()
-                .fold(0_usize, |bound, record| {
+            Self::Dependencies(crate::DependencyFacts::Known(records)) => {
+                records.iter().fold(0_usize, |bound, record| {
                     bound.saturating_add(dependency_record_bound(record))
-                }),
+                })
+            }
             Self::Dependencies(crate::DependencyFacts::Unknown(reason))
             | Self::Dependencies(crate::DependencyFacts::Unavailable(reason)) => text_bound(reason),
-            Self::PackageProfile { latest, .. } => {
-                latest.as_ref().map_or(64, registry_package_record_bound)
-            }
+            Self::PackageProfile {
+                latest,
+                candidate_authority,
+                ..
+            } => latest
+                .as_ref()
+                .map_or(64, registry_package_record_bound)
+                .saturating_add(
+                    serde_json::to_vec(candidate_authority).map_or(0, |bytes| bytes.len()),
+                ),
             Self::Subscribed(record) => subscription_record_bound(record),
             Self::Unsubscribed(_) | Self::ProjectDeleted(_) | Self::TreeClosed(_) => 64,
             Self::Subscriptions(records) => records.iter().fold(0_usize, |bound, record| {
@@ -1436,16 +2259,21 @@ fn registry_records_bound(records: &[RegistryPackageRecord]) -> usize {
 }
 
 fn registry_package_record_bound(record: &RegistryPackageRecord) -> usize {
+    // The closed authority DTO contains six 32-byte identities, at most three
+    // more in a negative-fact proof, and a bounded set of enum/integer fields.
+    // 2 KiB safely covers their JSON form without allocating on each reply.
+    const REGISTRY_AUTHORITY_BOUND: usize = 2_048;
     fixed_record_bound()
         .saturating_add(package_reference_bound(&record.coordinate))
         .saturating_add(text_bound(&record.name))
         .saturating_add(text_bound(&record.version))
-        .saturating_add(
-            serde_json::to_vec(&record.native_metadata).map_or(0, |bytes| bytes.len()),
-        )
-        .saturating_add(
-            serde_json::to_vec(&record.forge_sources).map_or(0, |bytes| bytes.len()),
-        )
+        .saturating_add(serde_json::to_vec(&record.native_metadata).map_or(0, |bytes| bytes.len()))
+        .saturating_add(serde_json::to_vec(&record.forge_sources).map_or(0, |bytes| bytes.len()))
+        .saturating_add(if record.authority.is_some() {
+            REGISTRY_AUTHORITY_BOUND
+        } else {
+            0
+        })
         .saturating_add(serde_json::to_vec(&record.advisory).map_or(0, |bytes| bytes.len()))
 }
 
@@ -1456,6 +2284,19 @@ fn admit_registry_record(record: &RegistryPackageRecord) -> Result<(), ProductAd
         .is_ok_and(|identity| identity == record.native_metadata_version);
     if record.native_metadata.admit().is_err() || !native_identity_matches {
         return Err(ProductAdmissionError::NativeMetadata);
+    }
+    if record.authority.is_some_and(|authority| {
+        authority.facts_version != record.facts_version
+            || matches!(
+                authority.release_facts_freshness,
+                RegistryPackageFactFreshness::Current {
+                    observed_at_millis,
+                    valid_until_millis,
+                    ..
+                } if valid_until_millis < observed_at_millis
+            )
+    }) {
+        return Err(ProductAdmissionError::RegistryAuthority);
     }
     if record.forge_sources.len() > crate::MAX_REGISTRY_FORGE_ASSOCIATIONS
         || record
@@ -1546,6 +2387,20 @@ pub enum ProductAdmissionError {
     DependencyShape,
     /// Native registry metadata is malformed, oversized, or has a stale identity.
     NativeMetadata,
+    /// Registry fact authority is inconsistent with the selected package facts.
+    RegistryAuthority,
+    /// An unacquired discovery candidate has invalid freshness evidence.
+    RegistryDiscoveryFreshness,
+    /// A registry discovery metadata facet is outside the product bounds.
+    RegistryDiscoveryMetadata,
+    /// An index-search continuation is malformed or exceeds its byte bound.
+    IndexSearchCursor,
+    /// A forge search hit is not bound to its source or manifest coordinate.
+    ForgeSearchShape,
+    /// A forge package detail has inconsistent source, manifest, pin, or registry facts.
+    ForgePackageDetailShape,
+    /// A package-lineage search group mixes source, ecosystem, or coordinates.
+    RegistrySearchGroup,
     /// Registry-to-forge lineage facts are malformed, stale, or attached to another package.
     ForgeAssociation,
 }
@@ -1562,6 +2417,23 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::SemanticVersionShape => "semantic version selection is inconsistent",
             Self::DependencyShape => "dependency fact has an invalid or duplicate identity",
             Self::NativeMetadata => "native registry metadata is invalid or has a stale identity",
+            Self::RegistryAuthority => {
+                "registry fact authority is inconsistent with selected package facts"
+            }
+            Self::RegistryDiscoveryFreshness => {
+                "registry discovery freshness evidence is inconsistent"
+            }
+            Self::RegistryDiscoveryMetadata => {
+                "registry discovery metadata exceeds its evidence bounds"
+            }
+            Self::IndexSearchCursor => "index-search cursor is malformed or too large",
+            Self::ForgeSearchShape => "forge search candidate is not bound to its source manifest",
+            Self::ForgePackageDetailShape => {
+                "forge package detail has inconsistent source, manifest, or pin facts"
+            }
+            Self::RegistrySearchGroup => {
+                "registry search group has inconsistent lineage or provenance"
+            }
             Self::ForgeAssociation => {
                 "registry-to-forge lineage is invalid or has a stale identity"
             }
@@ -1586,11 +2458,14 @@ mod tests {
         };
         command.admit().expect("advisory command admission");
         let command_json = serde_json::to_vec(&command).expect("command encoding");
-        let decoded: SurfaceCommand = serde_json::from_slice(&command_json).expect("command decoding");
+        let decoded: SurfaceCommand =
+            serde_json::from_slice(&command_json).expect("command decoding");
         assert_eq!(decoded, command);
 
         let reply = SurfaceReply::Advisory(AdvisoryPackageDto::unknown());
-        reply.admit(CommandId::Advisory).expect("advisory reply admission");
+        reply
+            .admit(CommandId::Advisory)
+            .expect("advisory reply admission");
         let reply_json = serde_json::to_vec(&reply).expect("reply encoding");
         let decoded: SurfaceReply = serde_json::from_slice(&reply_json).expect("reply decoding");
         assert_eq!(decoded, reply);
@@ -1608,6 +2483,7 @@ mod tests {
     fn registry_download_coverage_round_trips_as_a_typed_state() {
         let native_metadata =
             RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "test fixture");
+        let facts_version = [2; 32];
         let record = RegistryPackageRecord {
             coordinate: PackageReference::parse("pkg:cargo/demo@1.0.0").expect("package"),
             ecosystem: RegistryEcosystem::Cargo,
@@ -1616,8 +2492,30 @@ mod tests {
             bytes: 12,
             standing: RegistryReleaseStanding::Available,
             downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
-            facts_version: [0; 32],
-            native_metadata_version: native_metadata.identity().expect("native metadata identity"),
+            facts_version,
+            authority: Some(RegistryPackageFactAuthority {
+                source: [3; 32],
+                source_facts_root: [4; 32],
+                source_provenance: [5; 32],
+                facts_version,
+                advisory_facts_version: [6; 32],
+                selection_version: [7; 32],
+                standing: RegistryPackageFactCompleteness::Complete,
+                downloads: RegistryPackageFactCompleteness::Unsupported,
+                advisories: RegistryPackageFactCompleteness::Unknown,
+                release_facts_freshness: RegistryPackageFactFreshness::Current {
+                    observed_at_millis: 10,
+                    valid_until_millis: 20,
+                    proof: RegistryPackageFactProof::AcquisitionReceipt {
+                        receipt: [8; 32],
+                        snapshot: [9; 32],
+                    },
+                },
+                advisory_freshness: backend_advisory::FreshnessState::Stale,
+            }),
+            native_metadata_version: native_metadata
+                .identity()
+                .expect("native metadata identity"),
             native_metadata,
             forge_sources: Box::new([]),
             advisory: AdvisoryPackageDto::unknown(),
@@ -1633,6 +2531,20 @@ mod tests {
         assert_eq!(
             records[0].downloads,
             RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported)
+        );
+        assert_eq!(
+            records[0]
+                .authority
+                .expect("authority")
+                .release_facts_freshness,
+            RegistryPackageFactFreshness::Current {
+                observed_at_millis: 10,
+                valid_until_millis: 20,
+                proof: RegistryPackageFactProof::AcquisitionReceipt {
+                    receipt: [8; 32],
+                    snapshot: [9; 32],
+                },
+            }
         );
     }
 }

@@ -1,22 +1,20 @@
 //! Python package field reads fall through to module functions when no field/static/const matches.
 
-use super::{
-    compiled_source_path, join_project_field, query_semantic_id, semantic_coordinate,
-};
+use super::{compiled_source_path, join_project_field, query_semantic_id, semantic_coordinate};
 use backend_engine::{RowId, package_key};
 use backend_extension_trustfall::{
-    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation,
-    SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryFact, SemanticQueryEvidence,
-    SemanticQueryPresentation, SemanticQueryRequest, execute_semantic_query,
+    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation, SemanticQueryCorpus,
+    SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
+    SemanticQueryRequest, execute_semantic_query,
 };
 use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityFacts,
     EntityVersion, ExternalDeclarationIdentity, ExternalId, ExternalTarget, FactAvailability,
-    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind, LinkKind,
-    LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader, SemanticImageView,
-    SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
-    VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
-    full_semantic_image_len,
+    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind,
+    LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader,
+    SemanticImageView, SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput,
+    TreeLinkTarget, VariantAvailability, VariantFingerprint, Visibility,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
@@ -707,7 +705,8 @@ fn join_project_field_python_static_wins_over_function() -> Result<(), String> {
 }
 
 #[test]
-fn join_project_field_python_static_and_constant_do_not_fall_through_to_function() -> Result<(), String> {
+fn join_project_field_python_static_and_constant_do_not_fall_through_to_function()
+-> Result<(), String> {
     let service_bytes = project_module_items_image(
         "workout/service.py",
         1,

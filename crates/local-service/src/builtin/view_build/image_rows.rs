@@ -2254,8 +2254,18 @@ mod tests {
         let fixture = fixture();
         let key = fixture_key("pkg:cargo/fixture@1.0.0");
         let mut residence = ImageRowResidence::default();
-        admit_activated_images(&[super::admitted_snapshot(&fixture.bytes)], &key, &mut residence).expect("cold");
-        admit_activated_images(&[super::admitted_snapshot(&fixture.bytes)], &key, &mut residence).expect("warm");
+        admit_activated_images(
+            &[super::admitted_snapshot(&fixture.bytes)],
+            &key,
+            &mut residence,
+        )
+        .expect("cold");
+        admit_activated_images(
+            &[super::admitted_snapshot(&fixture.bytes)],
+            &key,
+            &mut residence,
+        )
+        .expect("warm");
         assert_eq!(residence.reopens(), 1);
     }
 
@@ -2265,8 +2275,17 @@ mod tests {
         let key = fixture_key("pkg:cargo/fixture@1.0.0");
         let foreign = fixture_key("pkg:cargo/other@1.0.0");
         let mut residence = ImageRowResidence::default();
-        admit_activated_images(&[super::admitted_snapshot(&fixture.bytes)], &key, &mut residence).expect("admit");
-        let rejected = admit_activated_images(&[super::admitted_snapshot(&fixture.bytes)], &foreign, &mut residence);
+        admit_activated_images(
+            &[super::admitted_snapshot(&fixture.bytes)],
+            &key,
+            &mut residence,
+        )
+        .expect("admit");
+        let rejected = admit_activated_images(
+            &[super::admitted_snapshot(&fixture.bytes)],
+            &foreign,
+            &mut residence,
+        );
         assert!(
             rejected
                 .expect_err("foreign package")
@@ -2274,10 +2293,18 @@ mod tests {
                 .contains("bind semantic publication")
         );
         assert_eq!(residence.reopens(), 2);
-        admit_activated_images(&[super::admitted_snapshot(&fixture.bytes)], &key, &mut residence).expect("kept");
+        admit_activated_images(
+            &[super::admitted_snapshot(&fixture.bytes)],
+            &key,
+            &mut residence,
+        )
+        .expect("kept");
         assert_eq!(residence.reopens(), 2);
-        let rejected_again =
-            admit_activated_images(&[super::admitted_snapshot(&fixture.bytes)], &foreign, &mut residence);
+        let rejected_again = admit_activated_images(
+            &[super::admitted_snapshot(&fixture.bytes)],
+            &foreign,
+            &mut residence,
+        );
         assert!(rejected_again.is_err(), "a rejected key was remembered");
         assert_eq!(residence.reopens(), 3);
     }
@@ -2319,7 +2346,10 @@ mod tests {
         let left = first.reopen().expect("first");
         let right = second.reopen().expect("second");
         assert_eq!(backend_semantic::ir::semantic_image_validations(), 2);
-        assert_eq!(declaration_identities(&left), declaration_identities(&right));
+        assert_eq!(
+            declaration_identities(&left),
+            declaration_identities(&right)
+        );
     }
 
     #[test]

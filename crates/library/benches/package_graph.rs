@@ -11,7 +11,8 @@ use std::time::Instant;
 use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
-    PackageGraphIndex, PackageReference, RegistryEcosystem, linear_dependent_sources,
+    PackageGraphIndex, PackageGraphSourceKey, PackageReference, RegistryEcosystem,
+    linear_dependent_sources,
 };
 
 const SOURCES: usize = 4_096;
@@ -105,7 +106,10 @@ fn fixture(sources: usize, edges: usize) -> Vec<PackageDependencySourceFacts> {
                 },
             ));
         }
-        facts.push((source, DependencyFacts::Known(rows.into_boxed_slice())));
+        facts.push((
+            PackageGraphSourceKey::unattributed(source),
+            DependencyFacts::Known(rows.into_boxed_slice()),
+        ));
     }
     facts
 }

@@ -1,9 +1,9 @@
 //! Worker request/reply protocol and the allocation-free in-memory backend.
 
-#[cfg(test)]
-use core::fmt;
 use backend_semantic::index_core::IndexSnapshotId;
 use backend_semantic::index_vocabulary::LexicalSegmentId;
+#[cfg(test)]
+use core::fmt;
 use thiserror::Error;
 
 use super::authority::{OrderingRecipe, QueryDigest, RouteId, SegmentOrdinal, TopK, WorkerId};

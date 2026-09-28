@@ -1,0 +1,14 @@
+query_id	ecosystem	query_text	intent
+cargo.tantivy	cargo	tantivy	Exact pinned Rust crate name.
+cargo.thiserror	cargo	thiserror	Exact pinned Rust crate name.
+npm.zod	npm	zod	Exact pinned npm package name.
+npm.query_core	npm	tanstack query core	Scoped npm package name with punctuation removed.
+pypi.requests	pypi	requests	Exact pinned Python package name.
+pypi.attrs	pypi	attrs	Compare two pinned releases; 26.1.0 is the newer version.
+go.chi	golang	go chi	Exact pinned Go module name.
+go.x_sync	golang	x sync	Compare two pinned releases; v0.11.0 is the newer version.
+maven.jackson	maven	jackson databind	Pinned Maven group/artifact name.
+maven.servlet	maven	jakarta servlet api	Compare pinned 5.0.0 and 6.0.0 releases.
+nuget.distinctby	nuget	distinctby	Exact pinned NuGet source package name.
+nuget.esp_net_source	nuget	esp net source	Compare pinned 0.2.3 and 0.6.4 releases.
+clang.json_c	clang	json c	Exact pinned C/C++ project name; version is absent from its PURL.

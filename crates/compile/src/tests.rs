@@ -234,8 +234,52 @@ fn session_key_changes_with_authority_and_manifest() -> Result<(), Box<dyn Error
         typed_of::<FlowSchema>(b"flow"),
         typed_of::<SemanticBasisSchema>(b"semantic"),
     );
-    assert_ne!(key, changed_key);
+    assert_ne!(
+        key, changed_key,
+        "exact manifest remains part of the request key"
+    );
+    assert_eq!(
+        key.lineage(),
+        changed_key.lineage(),
+        "source edits advance within the same authority/profile/flow lineage"
+    );
     assert!(key.matches(&authority.identity(), first.manifest()));
+    assert!(!changed_key.matches(&authority.identity(), first.manifest()));
+    let different_profile = SessionKey::new(
+        authority.identity(),
+        first.manifest(),
+        typed_of::<ProfileSchema>(b"different-profile"),
+        typed_of::<FlowSchema>(b"flow"),
+        typed_of::<SemanticBasisSchema>(b"semantic"),
+    );
+    let different_authority = SessionKey::new(
+        AuthorityIdentity {
+            toolchain: typed_of::<ToolchainSchema>(b"different-toolchain"),
+            ..authority.identity()
+        },
+        first.manifest(),
+        typed_of::<ProfileSchema>(b"profile"),
+        typed_of::<FlowSchema>(b"flow"),
+        typed_of::<SemanticBasisSchema>(b"semantic"),
+    );
+    let different_flow = SessionKey::new(
+        authority.identity(),
+        first.manifest(),
+        typed_of::<ProfileSchema>(b"profile"),
+        typed_of::<FlowSchema>(b"different-flow"),
+        typed_of::<SemanticBasisSchema>(b"semantic"),
+    );
+    let different_semantic_basis = SessionKey::new(
+        authority.identity(),
+        first.manifest(),
+        typed_of::<ProfileSchema>(b"profile"),
+        typed_of::<FlowSchema>(b"flow"),
+        typed_of::<SemanticBasisSchema>(b"different-semantic-basis"),
+    );
+    assert_ne!(key.lineage(), different_profile.lineage());
+    assert_ne!(key.lineage(), different_authority.lineage());
+    assert_ne!(key.lineage(), different_flow.lineage());
+    assert_ne!(key.lineage(), different_semantic_basis.lineage());
     Ok(())
 }
 
@@ -1588,10 +1632,11 @@ while True:
     // the process, so the fixture bound covers all forty audited responses
     // while remaining bounded well below the protocol maximum.
     let process_limits = limits(4 * 1024, 12 * 1024, Duration::from_secs(2), 16 * 1024)?;
+    let script = vec![script_path.to_string_lossy().into_owned()];
     let command = SupervisedCommand::for_authority(
-        python,
-        vec![script_path.to_string_lossy().into_owned()],
-        environment,
+        python.clone(),
+        script.clone(),
+        environment.clone(),
         workspace.clone(),
         ProcessStdin::null(),
         authority.identity().toolchain,
@@ -1610,15 +1655,84 @@ while True:
         "rust",
         &[],
     )?;
+    let changed_manifest = InputManifest::new(vec![
+        Input::new(InputKind::Source, "src/main", b"edited")?,
+        Input::absent(InputKind::NegativeDependency, "dep/optional")?,
+    ])?;
+    let changed_manifest_id = changed_manifest.digest();
+    let changed_session_key = SessionKey::new(
+        authority.identity(),
+        &changed_manifest,
+        typed_of::<ProfileSchema>(b"profile"),
+        typed_of::<FlowSchema>(b"flow"),
+        typed_of::<SemanticBasisSchema>(b"semantic"),
+    );
+    assert_eq!(key.lineage(), changed_session_key.lineage());
+    let changed_revision = revision.saturating_add(1);
+    let changed_preparation_key = PreparationKey::new(
+        authority.identity(),
+        changed_manifest_id,
+        changed_session_key,
+        changed_revision,
+        "rust",
+        &[],
+    )?;
+    let recipe_environment = ProcessEnvironment::new(
+        environment
+            .variables()
+            .iter()
+            .cloned()
+            .chain([("BACKEND_RECIPE_REVISION".to_owned(), "2".to_owned())])
+            .collect(),
+    )?;
+    let incompatible_toolchain_command = SupervisedCommand::for_authority(
+        python.clone(),
+        script.clone(),
+        environment.clone(),
+        workspace.clone(),
+        ProcessStdin::null(),
+        typed_of::<ToolchainSchema>(b"incompatible-toolchain"),
+        Some(changed_session_key),
+        ProtocolDescriptor::persistent(),
+        process_limits,
+    )?;
+    let incompatible_toolchain_runner = NativeAuthorityRunner::new(incompatible_toolchain_command);
+    let changed_command = SupervisedCommand::for_authority(
+        python.clone(),
+        script.clone(),
+        environment.clone(),
+        workspace.clone(),
+        ProcessStdin::null(),
+        authority.identity().toolchain,
+        Some(changed_session_key),
+        ProtocolDescriptor::persistent(),
+        process_limits,
+    )?;
+    let changed_runner = NativeAuthorityRunner::new(changed_command);
+    let recipe_command = SupervisedCommand::for_authority(
+        python,
+        script,
+        recipe_environment,
+        workspace.clone(),
+        ProcessStdin::null(),
+        authority.identity().toolchain,
+        Some(changed_session_key),
+        ProtocolDescriptor::persistent(),
+        process_limits,
+    )?;
+    let recipe_runner = NativeAuthorityRunner::new(recipe_command);
     let request = |cache: &PersistentSessionCache,
-                   runner: &NativeAuthorityRunner|
+                   runner: &NativeAuthorityRunner,
+                   key: PreparationKey,
+                   request_manifest: InputManifestId,
+                   request_revision: u64|
      -> Result<NativeObservation, SessionCacheError> {
         let (cancellation, _handle) = Cancellation::new();
         cache.request(PersistentRequest::new(
-            preparation_key,
+            key,
             runner,
-            manifest_id,
-            revision,
+            request_manifest,
+            request_revision,
             &[],
             &cancellation,
         ))
@@ -1626,7 +1740,7 @@ while True:
     // Keep one process alive through both request phases. Every result is
     // decoded and compared to the same semantic fixture payload.
     for _ in 0..20 {
-        let observation = request(&cache, &runner)?;
+        let observation = request(&cache, &runner, preparation_key, manifest_id, revision)?;
         assert_eq!(observation.payload(), Some(&expected));
         assert!(observation.stdout().len() <= process_limits.stdout());
         assert!(observation.stderr().len() <= process_limits.stderr());
@@ -1664,7 +1778,10 @@ while True:
         );
     }
     let stats = cache.stats();
-    assert_eq!(stats.starts, 1, "one process start per SessionKey");
+    assert_eq!(
+        stats.starts, 1,
+        "one process start per stable session lineage"
+    );
     assert_eq!(stats.hits, 39, "all remaining requests reuse the process");
     assert_eq!(stats.resident, 1);
     let mut rss_values = Vec::new();
@@ -1695,18 +1812,128 @@ while True:
         process_limits.stderr(),
         process_limits.output_bytes(),
     );
-    let pid = (0..100)
+    let changed_observation = request(
+        &cache,
+        &changed_runner,
+        changed_preparation_key,
+        changed_manifest_id,
+        changed_revision,
+    )?;
+    assert_eq!(changed_observation.payload(), Some(&expected));
+    assert_eq!(
+        cache.stats().starts,
+        1,
+        "manifest edits retain the live process"
+    );
+    assert_eq!(cache.stats().hits, 40);
+    let initial_pid = (0..100)
         .find_map(|_| {
             fs::read_to_string(&pid_path)
                 .ok()
                 .and_then(|value| value.trim().parse::<u32>().ok())
         })
         .ok_or("persistent fixture PID was not published")?;
-    assert!(cache.invalidate(preparation_key));
+    let recipe_observation = request(
+        &cache,
+        &recipe_runner,
+        changed_preparation_key,
+        changed_manifest_id,
+        changed_revision,
+    )?;
+    assert_eq!(recipe_observation.payload(), Some(&expected));
+    assert_eq!(
+        cache.stats().starts,
+        2,
+        "an environment recipe change starts a new process"
+    );
+    assert!(matches!(
+        request(
+            &cache,
+            &incompatible_toolchain_runner,
+            changed_preparation_key,
+            changed_manifest_id,
+            changed_revision,
+        ),
+        Err(SessionCacheError::KeyMismatch)
+    ));
+    assert_eq!(
+        cache.stats().starts,
+        2,
+        "an incompatible toolchain is rejected"
+    );
+    let pid = (0..100)
+        .find_map(|_| {
+            fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        })
+        .ok_or("recipe-specific persistent fixture PID was not published")?;
+    assert_ne!(
+        initial_pid, pid,
+        "the changed environment must not reuse the prior process"
+    );
+    let initial_alive = Command::new("/bin/kill")
+        .arg("-0")
+        .arg(initial_pid.to_string())
+        .status()
+        .is_ok_and(|status| status.success());
+    assert!(
+        !initial_alive,
+        "the incompatible process recipe must be retired"
+    );
+    assert!(
+        Command::new("/bin/kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .status()?
+            .success(),
+        "fixture process should accept the forced failure"
+    );
+    assert!(
+        request(
+            &cache,
+            &recipe_runner,
+            changed_preparation_key,
+            changed_manifest_id,
+            changed_revision,
+        )
+        .is_err()
+    );
+    let failed_stats = cache.stats();
+    assert_eq!(
+        failed_stats.failures, 1,
+        "a dead helper is retired on failure"
+    );
+    assert_eq!(failed_stats.resident, 0);
+    let recovered = request(
+        &cache,
+        &recipe_runner,
+        changed_preparation_key,
+        changed_manifest_id,
+        changed_revision,
+    )?;
+    assert_eq!(recovered.payload(), Some(&expected));
+    assert_eq!(
+        cache.stats().starts,
+        3,
+        "failure recovery starts a fresh helper"
+    );
+    let recovered_pid = (0..100)
+        .find_map(|_| {
+            fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        })
+        .ok_or("recovered persistent fixture PID was not published")?;
+    assert_ne!(
+        pid, recovered_pid,
+        "failure recovery must not reuse the dead PID"
+    );
+    assert!(cache.invalidate(changed_preparation_key));
     for _ in 0..100 {
         let alive = Command::new("/bin/kill")
             .arg("-0")
-            .arg(pid.to_string())
+            .arg(recovered_pid.to_string())
             .status()
             .is_ok_and(|status| status.success());
         if !alive {
@@ -1716,7 +1943,7 @@ while True:
     }
     let alive = Command::new("/bin/kill")
         .arg("-0")
-        .arg(pid.to_string())
+        .arg(recovered_pid.to_string())
         .status()
         .is_ok_and(|status| status.success());
     assert!(!alive, "retired persistent authority remained alive");

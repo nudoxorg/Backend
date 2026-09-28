@@ -1,8 +1,8 @@
 //! Defines need behavior for `backend-store`, whose purpose is to plan and verify borrowed object hydration without weakening generation authority.
 //! This module owns the need invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use backend_version::{Domain, GenerationId};
 use crate::root::{BorrowedGenerationView, EntryRange, GenerationView};
+use backend_version::{Domain, GenerationId};
 use thiserror::Error;
 
 /// Requested immutable generation projection.
@@ -104,7 +104,8 @@ impl Need {
     pub fn bind_borrowed<'view, 'root, 'locality, DomainTag: Domain>(
         self,
         view: &'view BorrowedGenerationView<'root, 'locality, DomainTag>,
-    ) -> Result<BoundBorrowedNeed<'view, 'root, 'locality, DomainTag>, crate::hydration::PlanError> {
+    ) -> Result<BoundBorrowedNeed<'view, 'root, 'locality, DomainTag>, crate::hydration::PlanError>
+    {
         if self.pinned_root != view.id {
             return Err(crate::hydration::PlanError::Demand(
                 DemandBindError::GenerationMismatch {

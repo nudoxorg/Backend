@@ -612,10 +612,7 @@ impl Library {
         target: &crate::ProductText,
         facts: &[ReferenceFact],
     ) -> Result<Box<[ReferenceRecord]>, LibraryError> {
-        let target_present = self
-            .view
-            .row_refs()
-            .any(|row| row.label == target.as_str());
+        let target_present = self.view.row_refs().any(|row| row.label == target.as_str());
         if !target_present {
             return Err(LibraryError::NotFound);
         }

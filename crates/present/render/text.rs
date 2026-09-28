@@ -501,10 +501,12 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
     }
     if let Some(note) = view.note() {
         lines.push(format!("  {note}"));
+        index_search_page_footer(view, &mut lines);
         return lines.finish();
     }
     if view.records().is_empty() {
         lines.push(theme.paint(Style::Dim, "  no row at this revision"));
+        index_search_page_footer(view, &mut lines);
         return lines.finish();
     }
     for record in view.records() {
@@ -518,5 +520,26 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
         }
     }
     lines.push(theme.paint(Style::Dim, &format!("{} row(s)", view.records().len())));
+    index_search_page_footer(view, &mut lines);
     lines.finish()
+}
+
+fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
+    let Some(page) = view.index_search_page() else {
+        return;
+    };
+    let snapshot = page
+        .snapshot()
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    lines.push(format!(
+        "  snapshot {snapshot} · freshness evaluated at {} · {:?}",
+        page.evaluated_at_millis(),
+        page.result_count()
+    ));
+    if let Some(cursor) = page.next_cursor() {
+        lines.push(format!("  next cursor (pass --cursor): {cursor}"));
+    }
 }

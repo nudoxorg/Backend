@@ -1,9 +1,7 @@
-use super::super::{empty_indexed_sources, read_package_sources};
 use super::super::view_build;
 use super::super::view_build::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
-    join_project_field,
-    join_project_mention, join_project_value, project_paths_for_package,
+    join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 use super::super::{
     BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
@@ -12,14 +10,14 @@ use super::super::{
     WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
     publish_builtin_view,
 };
+use super::super::{empty_indexed_sources, read_package_sources};
 use super::snapshot::{
     semantic_confidence, semantic_declaration_identity, semantic_link_evidence, semantic_link_kind,
 };
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
 use backend_semantic::ir::{
-    DeclarationIdentity, ExternalTarget, ForeignTargetOrigin, LinkKind, LinkTarget,
-    SemanticReader,
+    DeclarationIdentity, ExternalTarget, ForeignTargetOrigin, LinkKind, LinkTarget, SemanticReader,
 };
 use futures_util::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet};
@@ -208,9 +206,7 @@ pub(super) fn execute_semantic_graph(
     for (activation_index, image_index) in &image_slots {
         let image = activations[*activation_index].images()[*image_index]
             .reopen()
-            .map_err(|error| {
-                BuiltinModelError(format!("reopen semantic graph image: {error}"))
-            })?;
+            .map_err(|error| BuiltinModelError(format!("reopen semantic graph image: {error}")))?;
         if semantic_entity_for_symbol(&image, package, source_symbol)?.is_some() {
             source_binding = Some(publication_bindings[*activation_index]);
             break;
@@ -445,8 +441,8 @@ fn semantic_link_row_id(
             }
             let identity = backend_semantic::ir::ExternalTargetIdentity::capture(image, external)
                 .map_err(|error| {
-                    BuiltinModelError(format!("identify semantic graph target: {error}"))
-                })?;
+                BuiltinModelError(format!("identify semantic graph target: {error}"))
+            })?;
             backend_engine::RowId::Symbol(super::super::view_build::external_semantic_symbol(
                 package,
                 image_identity,
@@ -556,12 +552,11 @@ fn project_opened_semantic_graph(
                     if target != source_id {
                         continue;
                     }
-                    let from = backend_engine::RowId::Symbol(
-                        super::super::view_build::semantic_symbol(
+                    let from =
+                        backend_engine::RowId::Symbol(super::super::view_build::semantic_symbol(
                             package,
                             source.entity.version.identity(),
-                        ),
-                    );
+                        ));
                     if view.row_ref(from).is_none() {
                         continue;
                     }
@@ -676,7 +671,9 @@ fn project_opened_reference_facts(
         let session = DocumentationSession::new(image);
         for entity in session.canonical_entities() {
             let entity = entity.map_err(|error| {
-                BuiltinModelError(format!("read semantic references published entity: {error}"))
+                BuiltinModelError(format!(
+                    "read semantic references published entity: {error}"
+                ))
             })?;
             published.insert(entity.entity.version.identity());
         }
@@ -911,9 +908,7 @@ pub(super) fn execute_references(
             .row_refs()
             .find(|row| row.label == target.as_str())
             .ok_or_else(|| {
-                BuiltinModelError(
-                    "references target is absent from the selected view".to_owned(),
-                )
+                BuiltinModelError("references target is absent from the selected view".to_owned())
             })?;
         let target_symbol = match target_row.id {
             backend_engine::RowId::Symbol(symbol) => symbol,
@@ -940,30 +935,24 @@ pub(super) fn execute_references(
     let mut activations = Vec::new();
     let mut image_slots = Vec::<(usize, usize)>::new();
     let mut publication_found = false;
-    for_package_publications(
-        &relation,
-        package,
-        &sources,
-        "references",
-        |key, record| {
-            let ProductSemanticPublicationRecord::Published {
-                coverage: SemanticPublicationCoverage::Complete,
-                claim,
-            } = record
-            else {
-                return Ok(());
-            };
-            publication_found = true;
-            let activated =
-                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
-            let activation_index = activations.len();
-            activations.push(activated);
-            for image_index in 0..activations[activation_index].images().len() {
-                image_slots.push((activation_index, image_index));
-            }
-            Ok(())
-        },
-    )?;
+    for_package_publications(&relation, package, &sources, "references", |key, record| {
+        let ProductSemanticPublicationRecord::Published {
+            coverage: SemanticPublicationCoverage::Complete,
+            claim,
+        } = record
+        else {
+            return Ok(());
+        };
+        publication_found = true;
+        let activated =
+            activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
+        let activation_index = activations.len();
+        activations.push(activated);
+        for image_index in 0..activations[activation_index].images().len() {
+            image_slots.push((activation_index, image_index));
+        }
+        Ok(())
+    })?;
     if !publication_found {
         return execute_structural_references(daemon, target);
     }
@@ -1126,37 +1115,39 @@ fn append_reference_facts(
 }
 #[cfg(test)]
 mod project_call_tests {
+    use super::super::super::view_build::{
+        ProjectCallableIndex, compiled_source_path, foreign_display_name, join_project_call,
+        join_project_field, join_project_mention, join_project_value, query_semantic_id,
+        semantic_coordinate, semantic_symbol, structural_call_coordinate_pairs,
+        structural_call_graph_relations_mapped,
+    };
+    use super::super::super::{IndexedProject, IndexedSources, ProductSourceRecord, initial_view};
+    use super::super::snapshot::semantic_declaration_identity;
     use super::project_reference_facts_from_bytes;
     use super::project_semantic_graph_relations_from_bytes;
-    use super::super::snapshot::semantic_declaration_identity;
-    use super::super::super::view_build::{
-        compiled_source_path, foreign_display_name, join_project_call, join_project_field,
-        join_project_mention, join_project_value,
-        query_semantic_id, semantic_coordinate, semantic_symbol, ProjectCallableIndex,
-        structural_call_coordinate_pairs, structural_call_graph_relations_mapped,
+    use backend_engine::{
+        GraphRelation, Row, RowId, ViewRoot, package_key, product_source_file_key,
     };
     use backend_extension_trustfall::{
         CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation,
         SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact,
         SemanticQueryPresentation, SemanticQueryRequest, execute_semantic_query,
     };
-    use super::super::super::{IndexedProject, IndexedSources, ProductSourceRecord, initial_view};
-    use backend_engine::{GraphRelation, Row, RowId, ViewRoot, package_key, product_source_file_key};
     use backend_semantic::ir::{
         BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity,
         EntityAuthorityFacts, EntityVersion, ExternalDeclarationIdentity, ExternalId,
         ExternalTarget, FactAvailability, ForeignDeclarationId, ForeignExternalTarget,
-        ForeignTargetOrigin, IrBuilder, ItemKind, LinkKind, LinkTarget,
-        OccurrenceAuthorityFacts, ParentageAuthority, SemanticImageView, SourceIdentity,
+        ForeignTargetOrigin, IrBuilder, ItemKind, LinkKind, LinkTarget, OccurrenceAuthorityFacts,
+        ParentageAuthority, SemanticCoreReader, SemanticImageView, SemanticReader, SourceIdentity,
         SourceSpan, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
         VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
-        full_semantic_image_len, SemanticCoreReader, SemanticReader,
+        full_semantic_image_len,
     };
-    use futures_util::StreamExt as _;
     use backend_semantic::vocabulary::{
         CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
     };
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+    use futures_util::StreamExt as _;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
@@ -1686,9 +1677,7 @@ mod project_call_tests {
         Ok(rows)
     }
 
-    fn semantic_view(
-        rows: Vec<Row>,
-    ) -> Result<ViewRoot, String> {
+    fn semantic_view(rows: Vec<Row>) -> Result<ViewRoot, String> {
         let (initial, _) = initial_view().map_err(|error| error.to_string())?;
         let capability = super::super::super::test_builtin_view_capability()
             .map_err(|error| error.to_string())?;
@@ -1707,10 +1696,7 @@ mod project_call_tests {
         files.iter().map(|path| (*path).to_owned()).collect()
     }
 
-    fn relation_targets(
-        relations: &BTreeSet<GraphRelation>,
-        from: RowId,
-    ) -> Vec<RowId> {
+    fn relation_targets(relations: &BTreeSet<GraphRelation>, from: RowId) -> Vec<RowId> {
         relations
             .iter()
             .filter(|relation| relation.from == from)
@@ -1772,7 +1758,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Calls,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let entries_identity = fixture_version(1).identity();
@@ -1827,7 +1813,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Calls,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let entries_identity = fixture_version(1).identity();
@@ -1891,7 +1877,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Calls,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let sync_identity = fixture_version(2).identity();
@@ -1942,7 +1928,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 10,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Calls,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let sync_identity = fixture_version(2).identity();
@@ -2115,7 +2101,12 @@ mod project_call_tests {
         let rows = semantic_view_rows(
             package,
             &[
-                ("workout/service/__init__.py", 1, "set_note", fixture_version(1)),
+                (
+                    "workout/service/__init__.py",
+                    1,
+                    "set_note",
+                    fixture_version(1),
+                ),
                 ("weeks.py", 2, "sync_workout", fixture_version(2)),
             ],
         )?;
@@ -2194,13 +2185,8 @@ mod project_call_tests {
     #[test]
     fn project_call_dotted_package_head_stays_external() -> Result<(), String> {
         let package = package_key("fixture");
-        let workout_bytes = project_call_image(
-            "workout.py",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let workout_bytes =
+            project_call_image("workout.py", 1, b"set_note", TreeEntityId::new(0), None)?;
         let weeks_bytes = project_call_image(
             "weeks.py",
             2,
@@ -2338,14 +2324,20 @@ mod project_call_tests {
             2,
             b"sync_workout",
             TreeEntityId::new(0),
-            Some(dotted_foreign_call_fixture_with_path(b"workout..service", 37)),
+            Some(dotted_foreign_call_fixture_with_path(
+                b"workout..service",
+                37,
+            )),
         )?;
         let weeks_dot_bytes = project_call_image(
             "weeks.py",
             4,
             b"sync_workout",
             TreeEntityId::new(0),
-            Some(dotted_foreign_call_fixture_with_path(b".workout.service", 38)),
+            Some(dotted_foreign_call_fixture_with_path(
+                b".workout.service",
+                38,
+            )),
         )?;
         let sync_identity = fixture_version(2).identity();
         let rows = semantic_view_rows(
@@ -2603,7 +2595,9 @@ mod project_call_tests {
         )
         .map_err(|error| error.to_string())?;
         if relation_targets(&relations, sync_id).contains(&set_note_id) {
-            return Err("notworkout/service.go must not satisfy example.com/gymbro/workout".to_owned());
+            return Err(
+                "notworkout/service.go must not satisfy example.com/gymbro/workout".to_owned(),
+            );
         }
         Ok(())
     }
@@ -2718,7 +2712,10 @@ mod project_call_tests {
             2,
             b"syncWorkout",
             TreeEntityId::new(0),
-            Some(go_import_foreign_call_fixture_with_package(b"example.com//workout", 66)),
+            Some(go_import_foreign_call_fixture_with_package(
+                b"example.com//workout",
+                66,
+            )),
         )?;
         let sync_identity = fixture_version(2).identity();
         let rows = semantic_view_rows(
@@ -2900,7 +2897,6 @@ mod project_call_tests {
         ))
     }
 
-
     fn ts_method_value_read_foreign_fixture(foreign_key: u8) -> ForeignCallFixture {
         ForeignCallFixture {
             package_specifier: b"./workout.service",
@@ -3015,7 +3011,6 @@ mod project_call_tests {
         ))
     }
 
-
     fn rust_limit_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
@@ -3046,13 +3041,8 @@ mod project_call_tests {
     fn rust_set_note_value_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
-        let service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_item_image(
             "src/lib.rs",
             2,
@@ -3072,13 +3062,8 @@ mod project_call_tests {
     fn go_set_note_value_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
-        let service_bytes = project_call_image(
-            "demo/service.go",
-            1,
-            b"SetNote",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("demo/service.go", 1, b"SetNote", TreeEntityId::new(0), None)?;
         let caller_bytes = project_item_image(
             "demo/lib.go",
             2,
@@ -3130,13 +3115,8 @@ mod project_call_tests {
     fn rust_note_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
-        let service_bytes = project_field_image(
-            "src/service.rs",
-            1,
-            b"note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_field_image("src/service.rs", 1, b"note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_item_image(
             "src/lib.rs",
             2,
@@ -3295,11 +3275,15 @@ mod project_call_tests {
             extension: None,
         }];
         let mut links = Vec::new();
-        let ecosystem = builder.intern_atom(import.ecosystem).map_err(|e| e.to_string())?;
+        let ecosystem = builder
+            .intern_atom(import.ecosystem)
+            .map_err(|e| e.to_string())?;
         let package_atom = builder
             .intern_atom(import.package_specifier)
             .map_err(|e| e.to_string())?;
-        let display = builder.intern_atom(import.display).map_err(|e| e.to_string())?;
+        let display = builder
+            .intern_atom(import.display)
+            .map_err(|e| e.to_string())?;
         let path_atom = builder
             .intern_atom(import.path_specifier.unwrap_or(import.display))
             .map_err(|e| e.to_string())?;
@@ -3424,13 +3408,8 @@ mod project_call_tests {
     fn rust_set_note_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
-        let service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_call_image(
             "src/lib.rs",
             2,
@@ -3508,11 +3487,11 @@ mod project_call_tests {
     #[test]
     fn join_project_call_rust_function_retargets_set_note() -> Result<(), String> {
         let package = package_key("fixture");
-        let (service_bytes, caller_bytes, set_note_identity, _) =
-            rust_set_note_drive_fixture(79)?;
+        let (service_bytes, caller_bytes, set_note_identity, _) = rust_set_note_drive_fixture(79)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_call_from_caller(&caller_bytes)?;
         let caller_image =
@@ -3542,7 +3521,8 @@ mod project_call_tests {
             rust_set_note_drive_fixture(83)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, drive_identity]);
         let (external, link_kind, caller_path) = foreign_call_from_caller(&caller_bytes)?;
         let caller_image =
@@ -3909,10 +3889,14 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, set_note_identity, _) = go_set_note_drive_fixture(145)?;
         let paths = project_paths(&["demo/service.go", "demo/lib.go"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(144).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::MethodCall)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &caller_bytes,
+            TreeEntityId::new(0),
+            LinkKind::MethodCall,
+        )?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_call(
@@ -3940,10 +3924,14 @@ mod project_call_tests {
             go_set_note_drive_fixture(146)?;
         let paths = project_paths(&["demo/service.go", "demo/lib.go"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, drive_identity]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::MethodCall)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &caller_bytes,
+            TreeEntityId::new(0),
+            LinkKind::MethodCall,
+        )?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_call(
@@ -4038,20 +4026,23 @@ mod project_call_tests {
             150,
             151,
         )?;
-        let caller_bytes =
-            go_drive_namespace_method_call_image("demo/lib.go", 152, 153, 147)?;
+        let caller_bytes = go_drive_namespace_method_call_image("demo/lib.go", 152, 153, 147)?;
         let workout_set_note_identity = fixture_version(149).identity();
         let session_set_note_identity = fixture_version(151).identity();
         let paths = project_paths(&["demo/service.go", "demo/lib.go"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             workout_set_note_identity,
             session_set_note_identity,
             fixture_version(153).identity(),
         ]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::MethodCall)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &caller_bytes,
+            TreeEntityId::new(0),
+            LinkKind::MethodCall,
+        )?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_call(
@@ -4074,22 +4065,23 @@ mod project_call_tests {
 
     #[test]
     fn join_project_call_go_method_ambiguous_set_note_returns_none() -> Result<(), String> {
-        let first_service =
-            go_workout_set_note_service_image("demo/service_a.go", 154, 155, 156)?;
-        let second_service =
-            go_workout_set_note_service_image("demo/service_b.go", 157, 158, 159)?;
-        let caller_bytes =
-            go_drive_namespace_method_call_image("demo/lib.go", 160, 161, 154)?;
+        let first_service = go_workout_set_note_service_image("demo/service_a.go", 154, 155, 156)?;
+        let second_service = go_workout_set_note_service_image("demo/service_b.go", 157, 158, 159)?;
+        let caller_bytes = go_drive_namespace_method_call_image("demo/lib.go", 160, 161, 154)?;
         let paths = project_paths(&["demo/service_a.go", "demo/service_b.go", "demo/lib.go"]);
         let images = [&first_service[..], &second_service[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(156).identity(),
             fixture_version(159).identity(),
             fixture_version(161).identity(),
         ]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::MethodCall)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &caller_bytes,
+            TreeEntityId::new(0),
+            LinkKind::MethodCall,
+        )?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_call(
@@ -4111,7 +4103,8 @@ mod project_call_tests {
     }
 
     #[test]
-    fn join_project_call_extra_path_stays_unjoined_and_foreign_display_names_call() -> Result<(), String> {
+    fn join_project_call_extra_path_stays_unjoined_and_foreign_display_names_call()
+    -> Result<(), String> {
         let service_bytes = project_call_image(
             "src/service_extra.rs",
             1,
@@ -4128,11 +4121,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["src/service_extra.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([
-            fixture_version(1).identity(),
-            fixture_version(2).identity(),
-        ]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_call_from_caller(&caller_bytes)?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
@@ -4150,7 +4142,8 @@ mod project_call_tests {
         {
             return Err("src/service_extra.rs must not satisfy src/service".to_owned());
         }
-        let display = foreign_display_name(&caller_image, external).map_err(|error| error.to_string())?;
+        let display =
+            foreign_display_name(&caller_image, external).map_err(|error| error.to_string())?;
         if display.as_deref() != Some("set_note") {
             return Err(format!(
                 "foreign call display should be set_note, got {display:?}"
@@ -4161,13 +4154,8 @@ mod project_call_tests {
 
     #[test]
     fn join_project_call_ambiguous_rust_service_paths_returns_none() -> Result<(), String> {
-        let service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let duplicate_service_bytes = project_call_image(
             "src/service/mod.rs",
             3,
@@ -4188,7 +4176,8 @@ mod project_call_tests {
             &duplicate_service_bytes[..],
             &caller_bytes[..],
         ];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -4216,11 +4205,11 @@ mod project_call_tests {
 
     #[test]
     fn join_project_call_non_call_link_returns_none() -> Result<(), String> {
-        let (service_bytes, caller_bytes, set_note_identity, _) =
-            rust_set_note_drive_fixture(86)?;
+        let (service_bytes, caller_bytes, set_note_identity, _) = rust_set_note_drive_fixture(86)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
         let (external, _, caller_path) = foreign_call_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4247,7 +4236,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, workout_identity, _) = rust_workout_drive_fixture(87)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4277,7 +4267,8 @@ mod project_call_tests {
             rust_workout_drive_fixture(88)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, drive_identity]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4384,11 +4375,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["src/service_extra.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([
-            fixture_version(1).identity(),
-            fixture_version(2).identity(),
-        ]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
@@ -4441,7 +4431,8 @@ mod project_call_tests {
             &duplicate_service_bytes[..],
             &caller_bytes[..],
         ];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -4472,7 +4463,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, workout_identity, _) = rust_workout_drive_fixture(91)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, fixture_version(2).identity()]);
         let (external, _, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4490,7 +4482,9 @@ mod project_call_tests {
             .map_err(|error| error.to_string())?
             .is_some()
             {
-                return Err(format!("{link_kind:?} must not join through join_project_mention"));
+                return Err(format!(
+                    "{link_kind:?} must not join through join_project_mention"
+                ));
             }
         }
         Ok(())
@@ -4498,11 +4492,11 @@ mod project_call_tests {
 
     #[test]
     fn join_project_mention_does_not_find_functions() -> Result<(), String> {
-        let (service_bytes, caller_bytes, set_note_identity, _) =
-            rust_set_note_drive_fixture(92)?;
+        let (service_bytes, caller_bytes, set_note_identity, _) = rust_set_note_drive_fixture(92)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_call_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4530,7 +4524,8 @@ mod project_call_tests {
             java_universe_workout_drive_fixture(101)?;
         let paths = project_paths(&["WorkoutService.java", "Weeks.java"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4554,13 +4549,15 @@ mod project_call_tests {
     }
 
     #[test]
-    fn join_project_mention_universe_query_corpus_referenced_by_names_drive() -> Result<(), String> {
+    fn join_project_mention_universe_query_corpus_referenced_by_names_drive() -> Result<(), String>
+    {
         let package = package_key("fixture");
         let (service_bytes, caller_bytes, workout_identity, drive_identity) =
             java_universe_workout_drive_fixture(102)?;
         let paths = project_paths(&["WorkoutService.java", "Weeks.java"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, drive_identity]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4678,9 +4675,14 @@ mod project_call_tests {
                 entity_kind: ItemKind::Record,
             }),
         )?;
-        let paths = project_paths(&["WorkoutService.java", "OtherWorkoutService.java", "Weeks.java"]);
+        let paths = project_paths(&[
+            "WorkoutService.java",
+            "OtherWorkoutService.java",
+            "Weeks.java",
+        ]);
         let images = [&first_bytes[..], &duplicate_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -4731,11 +4733,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["WorkoutService.java", "Weeks.java"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([
-            fixture_version(1).identity(),
-            fixture_version(2).identity(),
-        ]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
@@ -4773,7 +4774,8 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["Weeks.java"]);
         let images = [&caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4807,11 +4809,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["WorkoutService.java", "Weeks.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([
-            fixture_version(1).identity(),
-            fixture_version(2).identity(),
-        ]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let field_caller = java_namespace_note_field_image(
             "Weeks.java",
             106,
@@ -4821,7 +4822,11 @@ mod project_call_tests {
             b"demo.WorkoutService",
         )?;
         let (field_external, field_link_kind, field_caller_path) =
-            foreign_namespace_link_from_caller(&field_caller, TreeEntityId::new(2), LinkKind::Reads)?;
+            foreign_namespace_link_from_caller(
+                &field_caller,
+                TreeEntityId::new(2),
+                LinkKind::Reads,
+            )?;
         let field_image =
             SemanticImageView::reopen(&field_caller).map_err(|error| error.to_string())?;
         if join_project_mention(
@@ -4858,8 +4863,11 @@ mod project_call_tests {
             ItemKind::Function,
             Some(ItemKind::Function),
         )?;
-        let (call_external, call_link_kind, call_caller_path) =
-            foreign_namespace_link_from_caller(&method_call_bytes, TreeEntityId::new(2), LinkKind::MethodCall)?;
+        let (call_external, call_link_kind, call_caller_path) = foreign_namespace_link_from_caller(
+            &method_call_bytes,
+            TreeEntityId::new(2),
+            LinkKind::MethodCall,
+        )?;
         let call_image =
             SemanticImageView::reopen(&method_call_bytes).map_err(|error| error.to_string())?;
         if join_project_mention(
@@ -4885,7 +4893,8 @@ mod project_call_tests {
             ts_workout_service_drive_fixture(120, LinkKind::Imports)?;
         let paths = project_paths(&["workout.service.ts", "drive.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -4915,7 +4924,8 @@ mod project_call_tests {
             ts_workout_service_drive_fixture(121, LinkKind::Imports)?;
         let paths = project_paths(&["workout.service.ts", "drive.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, drive_identity]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5008,7 +5018,8 @@ mod project_call_tests {
             ts_workout_service_drive_fixture(122, LinkKind::TypeReference)?;
         let paths = project_paths(&["workout.service.ts", "drive.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5036,7 +5047,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, workout_identity, _) = python_workout_drive_fixture(123)?;
         let paths = project_paths(&["workout/service.py", "weeks.py"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([workout_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5084,8 +5096,13 @@ mod project_call_tests {
             ts_workout_service_import_fixture(124, LinkKind::Imports),
         )?;
         let paths = project_paths(&["workout.service.ts", "drive.ts"]);
-        let images = [&service_bytes[..], &duplicate_function_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let images = [
+            &service_bytes[..],
+            &duplicate_function_bytes[..],
+            &caller_bytes[..],
+        ];
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -5113,13 +5130,8 @@ mod project_call_tests {
 
     #[test]
     fn join_project_mention_import_field_named_note_returns_none() -> Result<(), String> {
-        let service_bytes = project_field_image(
-            "workout.service.ts",
-            1,
-            b"note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_field_image("workout.service.ts", 1, b"note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_import_mention_image(
             "drive.ts",
             2,
@@ -5137,8 +5149,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["workout.service.ts", "drive.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
@@ -5219,8 +5233,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["workout.service.ts", "drive.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let image = SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
         let caller_path = compiled_source_path(&image).map_err(|error| error.to_string())?;
         let mut external = None;
@@ -5255,7 +5271,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, note_identity, _) = rust_note_drive_fixture(93)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_field_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5285,7 +5302,8 @@ mod project_call_tests {
             rust_note_drive_fixture(94)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, drive_identity]);
         let (external, link_kind, caller_path) = foreign_field_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5373,8 +5391,8 @@ mod project_call_tests {
     }
 
     #[test]
-    fn join_project_field_python_static_semantic_link_row_id_referenced_by_drive(
-    ) -> Result<(), String> {
+    fn join_project_field_python_static_semantic_link_row_id_referenced_by_drive()
+    -> Result<(), String> {
         let package = package_key("fixture");
         let (service_bytes, caller_bytes, note_identity, drive_identity) =
             python_note_static_drive_fixture(147)?;
@@ -5412,8 +5430,8 @@ mod project_call_tests {
     }
 
     #[test]
-    fn join_project_field_python_function_semantic_link_row_id_referenced_by_drive(
-    ) -> Result<(), String> {
+    fn join_project_field_python_function_semantic_link_row_id_referenced_by_drive()
+    -> Result<(), String> {
         let package = package_key("fixture");
         let (service_bytes, caller_bytes, set_note_identity, drive_identity) =
             python_set_note_function_drive_fixture(148)?;
@@ -5469,11 +5487,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["src/service_extra.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([
-            fixture_version(1).identity(),
-            fixture_version(2).identity(),
-        ]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_field_read_from_caller(&caller_bytes)?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
@@ -5496,20 +5513,10 @@ mod project_call_tests {
 
     #[test]
     fn join_project_field_ambiguous_rust_service_paths_returns_none() -> Result<(), String> {
-        let service_bytes = project_field_image(
-            "src/service.rs",
-            1,
-            b"note",
-            TreeEntityId::new(0),
-            None,
-        )?;
-        let duplicate_service_bytes = project_field_image(
-            "src/service/mod.rs",
-            3,
-            b"note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_field_image("src/service.rs", 1, b"note", TreeEntityId::new(0), None)?;
+        let duplicate_service_bytes =
+            project_field_image("src/service/mod.rs", 3, b"note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_item_image(
             "src/lib.rs",
             2,
@@ -5524,7 +5531,8 @@ mod project_call_tests {
             &duplicate_service_bytes[..],
             &caller_bytes[..],
         ];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -5555,7 +5563,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, note_identity, _) = rust_note_drive_fixture(97)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(2).identity()]);
         let (external, _, caller_path) = foreign_field_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5573,7 +5582,9 @@ mod project_call_tests {
             .map_err(|error| error.to_string())?
             .is_some()
             {
-                return Err(format!("{link_kind:?} must not join through join_project_field"));
+                return Err(format!(
+                    "{link_kind:?} must not join through join_project_field"
+                ));
             }
         }
         let image = SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
@@ -5625,7 +5636,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, note_identity, _) = rust_note_drive_fixture(98)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_field_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5652,7 +5664,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, limit_identity, _) = rust_limit_drive_fixture(99)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([limit_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5682,7 +5695,8 @@ mod project_call_tests {
             rust_limit_drive_fixture(100)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([limit_identity, drive_identity]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5801,7 +5815,8 @@ mod project_call_tests {
             &duplicate_service_bytes[..],
             &caller_bytes[..],
         ];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -5832,7 +5847,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, note_identity, _) = rust_note_drive_fixture(102)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_field_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5860,7 +5876,8 @@ mod project_call_tests {
             rust_set_note_value_drive_fixture(103)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5884,13 +5901,15 @@ mod project_call_tests {
     }
 
     #[test]
-    fn join_project_value_query_corpus_function_value_referenced_by_names_drive() -> Result<(), String> {
+    fn join_project_value_query_corpus_function_value_referenced_by_names_drive()
+    -> Result<(), String> {
         let package = package_key("fixture");
         let (service_bytes, caller_bytes, set_note_identity, drive_identity) =
             rust_set_note_value_drive_fixture(104)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, drive_identity]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -5979,13 +5998,8 @@ mod project_call_tests {
 
     #[test]
     fn join_project_value_ambiguous_rust_function_paths_returns_none() -> Result<(), String> {
-        let service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let duplicate_service_bytes = project_call_image(
             "src/service/mod.rs",
             3,
@@ -6007,7 +6021,8 @@ mod project_call_tests {
             &duplicate_service_bytes[..],
             &caller_bytes[..],
         ];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -6039,7 +6054,8 @@ mod project_call_tests {
             go_set_note_value_drive_fixture(109)?;
         let paths = project_paths(&["demo/service.go", "demo/lib.go"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6070,7 +6086,8 @@ mod project_call_tests {
             go_set_note_value_drive_fixture(110)?;
         let paths = project_paths(&["demo/service.go", "demo/lib.go"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, drive_identity]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6159,20 +6176,10 @@ mod project_call_tests {
 
     #[test]
     fn join_project_value_ambiguous_go_set_note_paths_returns_none() -> Result<(), String> {
-        let service_bytes = project_call_image(
-            "demo/service.go",
-            1,
-            b"SetNote",
-            TreeEntityId::new(0),
-            None,
-        )?;
-        let duplicate_service_bytes = project_call_image(
-            "demo/other.go",
-            3,
-            b"SetNote",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("demo/service.go", 1, b"SetNote", TreeEntityId::new(0), None)?;
+        let duplicate_service_bytes =
+            project_call_image("demo/other.go", 3, b"SetNote", TreeEntityId::new(0), None)?;
         let caller_bytes = project_item_image(
             "demo/lib.go",
             2,
@@ -6187,7 +6194,8 @@ mod project_call_tests {
             &duplicate_service_bytes[..],
             &caller_bytes[..],
         ];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -6213,14 +6221,14 @@ mod project_call_tests {
         Ok(())
     }
 
-
     #[test]
     fn join_project_value_ts_method_value_retargets_set_note() -> Result<(), String> {
         let (service_bytes, caller_bytes, set_note_identity, _) =
             ts_set_note_value_group_fixture(110)?;
         let paths = project_paths(&["workout.service.ts", "weeks.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6262,8 +6270,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["workout.service.ts", "weeks.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
@@ -6290,7 +6300,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, note_identity) = ts_demo_const_note_fixture(114)?;
         let paths = project_paths(&["demo.ts", "read.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6333,8 +6344,10 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["demo.ts", "read.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
-        let published = BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published =
+            BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
@@ -6361,7 +6374,8 @@ mod project_call_tests {
         let (service_bytes, caller_bytes, count_identity) = ts_demo_static_count_fixture(116)?;
         let paths = project_paths(&["demo.ts", "read.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([count_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6405,7 +6419,8 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["demo.ts", "read.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6435,7 +6450,8 @@ mod project_call_tests {
             ts_set_note_value_group_fixture(112)?;
         let paths = project_paths(&["workout.service.ts", "weeks.ts"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, group_identity]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6552,7 +6568,8 @@ mod project_call_tests {
             &duplicate_service_bytes[..],
             &caller_bytes[..],
         ];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(1).identity(),
             fixture_version(3).identity(),
@@ -6579,13 +6596,13 @@ mod project_call_tests {
         Ok(())
     }
 
-
     #[test]
     fn join_project_value_constant_stays_const_not_function_arm() -> Result<(), String> {
         let (service_bytes, caller_bytes, limit_identity, _) = rust_limit_drive_fixture(106)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([limit_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6610,11 +6627,11 @@ mod project_call_tests {
 
     #[test]
     fn join_project_call_still_joins_function_call_not_value_arm() -> Result<(), String> {
-        let (service_bytes, caller_bytes, set_note_identity, _) =
-            rust_set_note_drive_fixture(107)?;
+        let (service_bytes, caller_bytes, set_note_identity, _) = rust_set_note_drive_fixture(107)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
         let (external, link_kind, caller_path) = foreign_call_from_caller(&caller_bytes)?;
         let caller_image =
@@ -6637,8 +6654,8 @@ mod project_call_tests {
         let (value_service_bytes, value_caller_bytes, value_set_note_identity, _) =
             rust_set_note_value_drive_fixture(108)?;
         let value_images = [&value_service_bytes[..], &value_caller_bytes[..]];
-        let value_index =
-            ProjectCallableIndex::build_from_bytes(&value_images).map_err(|error| error.to_string())?;
+        let value_index = ProjectCallableIndex::build_from_bytes(&value_images)
+            .map_err(|error| error.to_string())?;
         let (value_external, value_link_kind, value_caller_path) =
             foreign_value_read_from_caller(&value_caller_bytes)?;
         let value_caller_image =
@@ -6667,7 +6684,7 @@ mod project_call_tests {
             &published,
         )
         .map_err(|error| error.to_string())?
-        != Some(value_set_note_identity)
+            != Some(value_set_note_identity)
         {
             return Err("function value read must join through join_project_value".to_owned());
         }
@@ -6737,15 +6754,18 @@ mod project_call_tests {
 
     #[test]
     fn join_project_value_namespace_variant_retargets_active() -> Result<(), String> {
-        let service_bytes =
-            java_namespace_active_variant_image("Status.java", 110, 111, 112, 110)?;
+        let service_bytes = java_namespace_active_variant_image("Status.java", 110, 111, 112, 110)?;
         let active_identity = fixture_version(111).identity();
         let paths = project_paths(&["Status.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([active_identity, fixture_version(112).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_value(
             &image,
@@ -6768,16 +6788,19 @@ mod project_call_tests {
     #[test]
     fn join_project_value_namespace_variant_referenced_by_names_drive() -> Result<(), String> {
         let package = package_key("fixture");
-        let service_bytes =
-            java_namespace_active_variant_image("Status.java", 113, 114, 115, 113)?;
+        let service_bytes = java_namespace_active_variant_image("Status.java", 113, 114, 115, 113)?;
         let active_identity = fixture_version(114).identity();
         let drive_identity = fixture_version(115).identity();
         let paths = project_paths(&["Status.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([active_identity, drive_identity]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_value(
             &image,
@@ -6863,20 +6886,23 @@ mod project_call_tests {
 
     #[test]
     fn join_project_value_namespace_variant_ambiguous_returns_none() -> Result<(), String> {
-        let first_bytes =
-            java_namespace_active_variant_image("Status.java", 116, 117, 118, 116)?;
+        let first_bytes = java_namespace_active_variant_image("Status.java", 116, 117, 118, 116)?;
         let duplicate_bytes =
             java_namespace_active_variant_image("Status.java", 119, 120, 121, 119)?;
         let paths = project_paths(&["Status.java"]);
         let images = [&first_bytes[..], &duplicate_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(117).identity(),
             fixture_version(120).identity(),
             fixture_version(118).identity(),
         ]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&first_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &first_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&first_bytes).map_err(|error| error.to_string())?;
         if join_project_value(
             &image,
@@ -6908,10 +6934,14 @@ mod project_call_tests {
         let note_identity = fixture_version(123).identity();
         let paths = project_paths(&["WorkoutService.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(124).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         if join_project_value(
             &image,
@@ -6969,13 +6999,17 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["Status.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(126).identity(),
             fixture_version(127).identity(),
         ]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         if join_project_value(
             &image,
@@ -7088,13 +7122,17 @@ mod project_call_tests {
         encode_full_semantic_image(&ir, &mut caller_bytes).map_err(|error| error.to_string())?;
         let paths = project_paths(&["Status.java", "Caller.java"]);
         let images = [&service_bytes[..], &caller_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(129).identity(),
             fixture_version(131).identity(),
         ]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &caller_bytes,
+            TreeEntityId::new(0),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
         if join_project_value(
             &image,
@@ -7138,10 +7176,14 @@ mod project_call_tests {
         let token_identity = fixture_version(133).identity();
         let paths = project_paths(&["Box.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([token_identity, fixture_version(134).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(3), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(3),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_value(
             &image,
@@ -7185,13 +7227,17 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["Box.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(136).identity(),
             fixture_version(137).identity(),
         ]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(3), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(3),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         if join_project_value(
             &image,
@@ -7273,10 +7319,14 @@ mod project_call_tests {
         let note_identity = fixture_version(61).identity();
         let paths = project_paths(&["WorkoutService.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(62).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_field(
             &image,
@@ -7311,10 +7361,14 @@ mod project_call_tests {
         let drive_identity = fixture_version(65).identity();
         let paths = project_paths(&["WorkoutService.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, drive_identity]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_field(
             &image,
@@ -7423,10 +7477,14 @@ mod project_call_tests {
         let note_identity = fixture_version(67).identity();
         let paths = project_paths(&["WorkoutService.cs"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(68).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(3), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(3),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_field(
             &image,
@@ -7466,14 +7524,18 @@ mod project_call_tests {
         )?;
         let paths = project_paths(&["WorkoutService.java"]);
         let images = [&first_bytes[..], &duplicate_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([
             fixture_version(70).identity(),
             fixture_version(73).identity(),
             fixture_version(71).identity(),
         ]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&first_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &first_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&first_bytes).map_err(|error| error.to_string())?;
         if join_project_field(
             &image,
@@ -7494,21 +7556,19 @@ mod project_call_tests {
 
     #[test]
     fn join_project_field_namespace_wrong_namespace_returns_none() -> Result<(), String> {
-        let service_bytes = java_namespace_note_field_image(
-            "WorkoutService.java",
-            75,
-            76,
-            77,
-            75,
-            b"demo.Other",
-        )?;
+        let service_bytes =
+            java_namespace_note_field_image("WorkoutService.java", 75, 76, 77, 75, b"demo.Other")?;
         let note_identity = fixture_version(76).identity();
         let paths = project_paths(&["WorkoutService.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(77).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         if join_project_field(
             &image,
@@ -7560,10 +7620,14 @@ mod project_call_tests {
         let note_identity = fixture_version(80).identity();
         let paths = project_paths(&["Box.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(81).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_field(
             &image,
@@ -7616,10 +7680,14 @@ mod project_call_tests {
         let note_identity = fixture_version(84).identity();
         let paths = project_paths(&["Box.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(85).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         if join_project_field(
             &image,
@@ -7663,10 +7731,14 @@ mod project_call_tests {
         let set_note_identity = fixture_version(87).identity();
         let paths = project_paths(&["WorkoutService.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(88).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Reads,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         if join_project_field(
             &image,
@@ -7680,7 +7752,9 @@ mod project_call_tests {
         .map_err(|error| error.to_string())?
         .is_some()
         {
-            return Err("Reads of Function kind must not join through join_project_field".to_owned());
+            return Err(
+                "Reads of Function kind must not join through join_project_field".to_owned(),
+            );
         }
         Ok(())
     }
@@ -7698,7 +7772,8 @@ mod project_call_tests {
         let note_identity = fixture_version(90).identity();
         let paths = project_paths(&["WorkoutService.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([note_identity, fixture_version(91).identity()]);
         let method_call_bytes = project_namespace_call_image(
             "WorkoutService.java",
@@ -7720,8 +7795,11 @@ mod project_call_tests {
             ItemKind::Field,
             Some(ItemKind::Field),
         )?;
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&method_call_bytes, TreeEntityId::new(2), LinkKind::MethodCall)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &method_call_bytes,
+            TreeEntityId::new(2),
+            LinkKind::MethodCall,
+        )?;
         let method_image =
             SemanticImageView::reopen(&method_call_bytes).map_err(|error| error.to_string())?;
         if join_project_field(
@@ -7766,10 +7844,14 @@ mod project_call_tests {
         let set_note_identity = fixture_version(96).identity();
         let paths = project_paths(&["WorkoutService.java"]);
         let images = [&service_bytes[..]];
-        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let published = BTreeSet::from([set_note_identity, fixture_version(97).identity()]);
-        let (external, link_kind, caller_path) =
-            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Calls)?;
+        let (external, link_kind, caller_path) = foreign_namespace_link_from_caller(
+            &service_bytes,
+            TreeEntityId::new(2),
+            LinkKind::Calls,
+        )?;
         let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
         let joined = join_project_call(
             &image,
@@ -7796,11 +7878,15 @@ mod project_call_tests {
         )?;
         let note_identity = fixture_version(99).identity();
         let field_images = [&note_field_bytes[..]];
-        let field_index =
-            ProjectCallableIndex::build_from_bytes(&field_images).map_err(|error| error.to_string())?;
+        let field_index = ProjectCallableIndex::build_from_bytes(&field_images)
+            .map_err(|error| error.to_string())?;
         let field_published = BTreeSet::from([note_identity, fixture_version(100).identity()]);
         let (field_external, field_link_kind, field_caller_path) =
-            foreign_namespace_link_from_caller(&note_field_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+            foreign_namespace_link_from_caller(
+                &note_field_bytes,
+                TreeEntityId::new(2),
+                LinkKind::Reads,
+            )?;
         let field_image =
             SemanticImageView::reopen(&note_field_bytes).map_err(|error| error.to_string())?;
         let field_joined = join_project_field(
@@ -7827,13 +7913,8 @@ mod project_call_tests {
     #[test]
     fn project_call_rust_function_retarget_links_callee_semantic_row() -> Result<(), String> {
         let package = package_key("fixture");
-        let service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_call_image(
             "src/lib.rs",
             2,
@@ -7873,7 +7954,8 @@ mod project_call_tests {
     }
 
     #[test]
-    fn project_call_rust_function_mod_rs_retarget_links_callee_semantic_row() -> Result<(), String> {
+    fn project_call_rust_function_mod_rs_retarget_links_callee_semantic_row() -> Result<(), String>
+    {
         let package = package_key("fixture");
         let service_bytes = project_call_image(
             "src/service/mod.rs",
@@ -7967,13 +8049,8 @@ mod project_call_tests {
     #[test]
     fn project_references_rust_function_retarget_names_the_caller() -> Result<(), String> {
         let package = package_key("fixture");
-        let service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_call_image(
             "src/lib.rs",
             2,
@@ -8008,7 +8085,10 @@ mod project_call_tests {
             return Err("rust function retarget site is not drive".to_owned());
         }
         if fact.relation != backend_engine::SemanticLinkKind::Calls {
-            return Err(format!("rust function retarget relation is {:?}", fact.relation));
+            return Err(format!(
+                "rust function retarget relation is {:?}",
+                fact.relation
+            ));
         }
         let expected_target = semantic_declaration_identity(set_note_identity);
         if !matches!(
@@ -8024,13 +8104,8 @@ mod project_call_tests {
     #[test]
     fn project_call_rust_module_retarget_links_callee_semantic_row() -> Result<(), String> {
         let package = package_key("fixture");
-        let service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_call_image(
             "src/lib.rs",
             2,
@@ -8070,7 +8145,8 @@ mod project_call_tests {
     }
 
     #[test]
-    fn project_call_rust_module_app_src_suffix_retarget_links_callee_semantic_row() -> Result<(), String> {
+    fn project_call_rust_module_app_src_suffix_retarget_links_callee_semantic_row()
+    -> Result<(), String> {
         let package = package_key("fixture");
         let service_bytes = project_call_image(
             "app/src/service.rs",
@@ -8212,13 +8288,8 @@ mod project_call_tests {
     #[test]
     fn project_call_rust_module_ambiguous_stays_external() -> Result<(), String> {
         let package = package_key("fixture");
-        let root_service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let root_service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let app_service_bytes = project_call_image(
             "app/src/service.rs",
             3,
@@ -8293,7 +8364,12 @@ mod project_call_tests {
         let rows = semantic_view_rows(
             package,
             &[
-                ("include/decl.h", 1, "declared_in_header", fixture_version(1)),
+                (
+                    "include/decl.h",
+                    1,
+                    "declared_in_header",
+                    fixture_version(1),
+                ),
                 ("src/main.c", 2, "use", fixture_version(2)),
             ],
         )?;
@@ -8320,7 +8396,8 @@ mod project_call_tests {
     }
 
     #[test]
-    fn project_call_c_header_src_include_suffix_retarget_links_callee_semantic_row() -> Result<(), String> {
+    fn project_call_c_header_src_include_suffix_retarget_links_callee_semantic_row()
+    -> Result<(), String> {
         let package = package_key("fixture");
         let header_bytes = project_call_image(
             "src/include/decl.h",
@@ -8341,7 +8418,12 @@ mod project_call_tests {
         let rows = semantic_view_rows(
             package,
             &[
-                ("src/include/decl.h", 1, "declared_in_header", fixture_version(1)),
+                (
+                    "src/include/decl.h",
+                    1,
+                    "declared_in_header",
+                    fixture_version(1),
+                ),
                 ("src/main.c", 2, "use", fixture_version(2)),
             ],
         )?;
@@ -8388,7 +8470,12 @@ mod project_call_tests {
         let rows = semantic_view_rows(
             package,
             &[
-                ("include/decl_extra.h", 1, "declared_in_header", fixture_version(1)),
+                (
+                    "include/decl_extra.h",
+                    1,
+                    "declared_in_header",
+                    fixture_version(1),
+                ),
                 ("src/main.c", 2, "use", fixture_version(2)),
             ],
         )?;
@@ -8439,7 +8526,12 @@ mod project_call_tests {
         let rows = semantic_view_rows(
             package,
             &[
-                ("include/decl.h", 1, "declared_in_header", fixture_version(1)),
+                (
+                    "include/decl.h",
+                    1,
+                    "declared_in_header",
+                    fixture_version(1),
+                ),
                 ("src/main.c", 2, "use", fixture_version(2)),
             ],
         )?;
@@ -8484,7 +8576,12 @@ mod project_call_tests {
         let rows = semantic_view_rows(
             package,
             &[
-                ("include/decl.h", 1, "declared_in_header", fixture_version(1)),
+                (
+                    "include/decl.h",
+                    1,
+                    "declared_in_header",
+                    fixture_version(1),
+                ),
                 ("src/main.c", 2, "use", fixture_version(2)),
             ],
         )?;
@@ -8519,15 +8616,16 @@ mod project_call_tests {
         Ok(())
     }
 
-    fn analyze_source(path: &str, source: &str) -> Result<Arc<[backend_compile::SourceDeclaration]>, String> {
-        Ok(
-            backend_frontend_typescript::syntax_frontend()
-                .map_err(|error| error.to_string())?
-                .analyze(std::path::Path::new(path), source.as_bytes())
-                .map_err(|error| error.to_string())?
-                .declarations()
-                .clone(),
-        )
+    fn analyze_source(
+        path: &str,
+        source: &str,
+    ) -> Result<Arc<[backend_compile::SourceDeclaration]>, String> {
+        Ok(backend_frontend_typescript::syntax_frontend()
+            .map_err(|error| error.to_string())?
+            .analyze(std::path::Path::new(path), source.as_bytes())
+            .map_err(|error| error.to_string())?
+            .declarations()
+            .clone())
     }
 
     fn indexed_sources(
@@ -8595,16 +8693,16 @@ mod project_call_tests {
         let view = semantic_view(rows)?;
         let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
         let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
-        let other_set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(6).identity()));
-        let pairs = structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
-        let relations = structural_call_graph_relations_mapped(
-            &view,
-            &pairs,
-            package,
-            sync_id,
-            false,
-        );
-        let targets = relations.iter().map(|relation| relation.to).collect::<Vec<_>>();
+        let other_set_note_id =
+            RowId::Symbol(semantic_symbol(package, fixture_version(6).identity()));
+        let pairs =
+            structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
+        let relations =
+            structural_call_graph_relations_mapped(&view, &pairs, package, sync_id, false);
+        let targets = relations
+            .iter()
+            .map(|relation| relation.to)
+            .collect::<Vec<_>>();
         if targets != vec![set_note_id] {
             return Err(format!(
                 "expected structural union onto workout setNote semantic row, got {targets:?}"
@@ -8726,7 +8824,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Calls,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let entries_identity = fixture_version(1).identity();
@@ -8797,7 +8895,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Calls,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let sync_identity = fixture_version(2).identity();
@@ -8850,7 +8948,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 10,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Calls,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let sync_identity = fixture_version(2).identity();
@@ -8926,7 +9024,10 @@ mod project_call_tests {
             return Err("dotted foreign retarget site is not sync_workout".to_owned());
         }
         if fact.relation != backend_engine::SemanticLinkKind::Calls {
-            return Err(format!("dotted foreign retarget relation is {:?}", fact.relation));
+            return Err(format!(
+                "dotted foreign retarget relation is {:?}",
+                fact.relation
+            ));
         }
         let expected_target = semantic_declaration_identity(set_note_identity);
         if !matches!(
@@ -9006,7 +9107,12 @@ mod project_call_tests {
         let rows = semantic_view_rows(
             package,
             &[
-                ("workout/service/__init__.py", 1, "set_note", fixture_version(1)),
+                (
+                    "workout/service/__init__.py",
+                    1,
+                    "set_note",
+                    fixture_version(1),
+                ),
                 ("weeks.py", 2, "sync_workout", fixture_version(2)),
             ],
         )?;
@@ -9032,13 +9138,8 @@ mod project_call_tests {
     #[test]
     fn project_references_dotted_package_head_emits_nothing() -> Result<(), String> {
         let package = package_key("fixture");
-        let workout_bytes = project_call_image(
-            "workout.py",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let workout_bytes =
+            project_call_image("workout.py", 1, b"set_note", TreeEntityId::new(0), None)?;
         let weeks_bytes = project_call_image(
             "weeks.py",
             2,
@@ -9177,26 +9278,27 @@ mod project_call_tests {
     #[test]
     fn project_references_dotted_invalid_path_emits_nothing() -> Result<(), String> {
         let package = package_key("fixture");
-        let other_bytes = project_call_image(
-            "other.py",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let other_bytes =
+            project_call_image("other.py", 1, b"set_note", TreeEntityId::new(0), None)?;
         let weeks_bytes = project_call_image(
             "weeks.py",
             2,
             b"sync_workout",
             TreeEntityId::new(0),
-            Some(dotted_foreign_call_fixture_with_path(b"workout..service", 46)),
+            Some(dotted_foreign_call_fixture_with_path(
+                b"workout..service",
+                46,
+            )),
         )?;
         let weeks_dot_bytes = project_call_image(
             "weeks.py",
             4,
             b"sync_workout",
             TreeEntityId::new(0),
-            Some(dotted_foreign_call_fixture_with_path(b".workout.service", 47)),
+            Some(dotted_foreign_call_fixture_with_path(
+                b".workout.service",
+                47,
+            )),
         )?;
         let sync_identity = fixture_version(2).identity();
         let set_note_identity = fixture_version(1).identity();
@@ -9273,7 +9375,10 @@ mod project_call_tests {
             return Err("go import retarget site is not syncWorkout".to_owned());
         }
         if fact.relation != backend_engine::SemanticLinkKind::Calls {
-            return Err(format!("go import retarget relation is {:?}", fact.relation));
+            return Err(format!(
+                "go import retarget relation is {:?}",
+                fact.relation
+            ));
         }
         let expected_target = semantic_declaration_identity(set_note_identity);
         if !matches!(
@@ -9289,13 +9394,8 @@ mod project_call_tests {
     #[test]
     fn project_references_rust_module_retarget_names_the_caller() -> Result<(), String> {
         let package = package_key("fixture");
-        let service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let caller_bytes = project_call_image(
             "src/lib.rs",
             2,
@@ -9330,7 +9430,10 @@ mod project_call_tests {
             return Err("rust module retarget site is not drive".to_owned());
         }
         if fact.relation != backend_engine::SemanticLinkKind::MethodCall {
-            return Err(format!("rust module retarget relation is {:?}", fact.relation));
+            return Err(format!(
+                "rust module retarget relation is {:?}",
+                fact.relation
+            ));
         }
         let expected_target = semantic_declaration_identity(set_note_identity);
         if !matches!(
@@ -9434,13 +9537,8 @@ mod project_call_tests {
     #[test]
     fn project_references_rust_module_ambiguous_emits_nothing() -> Result<(), String> {
         let package = package_key("fixture");
-        let root_service_bytes = project_call_image(
-            "src/service.rs",
-            1,
-            b"set_note",
-            TreeEntityId::new(0),
-            None,
-        )?;
+        let root_service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
         let app_service_bytes = project_call_image(
             "app/src/service.rs",
             3,
@@ -9502,7 +9600,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Reads,
+                link_kind: LinkKind::Reads,
             }),
         )?;
         let sync_identity = fixture_version(2).identity();
@@ -9576,7 +9674,8 @@ mod project_call_tests {
             ],
         )?;
         let view = semantic_view(rows)?;
-        let pairs = structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
+        let pairs =
+            structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
         let facts = project_reference_facts_from_bytes(
             &[],
             &view,
@@ -9587,7 +9686,10 @@ mod project_call_tests {
         )
         .map_err(|error| error.to_string())?;
         if facts.len() != 1 {
-            return Err(format!("expected one structural reference fact, got {}", facts.len()));
+            return Err(format!(
+                "expected one structural reference fact, got {}",
+                facts.len()
+            ));
         }
         let fact = &facts[0];
         if fact.site != semantic_symbol(package, sync_identity) {
@@ -9620,12 +9722,10 @@ mod project_call_tests {
             ],
         )?;
         let view = semantic_view(rows)?;
-        let pairs = vec![
-            (
-                "fixture::local.ts:1::caller".to_owned(),
-                "fixture::local.ts:2::callee".to_owned(),
-            ),
-        ];
+        let pairs = vec![(
+            "fixture::local.ts:1::caller".to_owned(),
+            "fixture::local.ts:2::callee".to_owned(),
+        )];
         let facts = project_reference_facts_from_bytes(
             &[&bytes],
             &view,
@@ -9692,7 +9792,8 @@ mod project_call_tests {
     }
 
     #[test]
-    fn project_call_namespace_csharp_chain_retarget_links_callee_semantic_row() -> Result<(), String> {
+    fn project_call_namespace_csharp_chain_retarget_links_callee_semantic_row() -> Result<(), String>
+    {
         let package = package_key("fixture");
         let service_bytes = project_namespace_call_image(
             "WorkoutService.cs",
@@ -9746,7 +9847,8 @@ mod project_call_tests {
     }
 
     #[test]
-    fn project_call_namespace_java_chain_retarget_links_callee_semantic_row() -> Result<(), String> {
+    fn project_call_namespace_java_chain_retarget_links_callee_semantic_row() -> Result<(), String>
+    {
         let package = package_key("fixture");
         let service_bytes = project_namespace_call_image(
             "WorkoutService.java",
@@ -10185,8 +10287,7 @@ mod project_call_tests {
         let ir = builder.finish().map_err(|error| error.to_string())?;
         let mut universe_bytes =
             vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
-        encode_full_semantic_image(&ir, &mut universe_bytes)
-            .map_err(|error| error.to_string())?;
+        encode_full_semantic_image(&ir, &mut universe_bytes).map_err(|error| error.to_string())?;
         let sync_identity = fixture_version(13).identity();
         let set_note_identity = fixture_version(12).identity();
         let rows = semantic_view_rows(
@@ -10260,7 +10361,10 @@ mod project_call_tests {
         let sync_identity = fixture_version(43).identity();
         let rows = semantic_view_rows(
             package,
-            &[("Box.cs", 1, "SetNote", fixture_version(42)), ("Weeks.cs", 2, "Sync", fixture_version(43))],
+            &[
+                ("Box.cs", 1, "SetNote", fixture_version(42)),
+                ("Weeks.cs", 2, "Sync", fixture_version(43)),
+            ],
         )?;
         let view = semantic_view(rows)?;
         let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
@@ -10329,7 +10433,10 @@ mod project_call_tests {
         let set_note_identity = fixture_version(52).identity();
         let rows = semantic_view_rows(
             package,
-            &[("Box.cs", 1, "SetNote", fixture_version(52)), ("Weeks.cs", 2, "Sync", fixture_version(53))],
+            &[
+                ("Box.cs", 1, "SetNote", fixture_version(52)),
+                ("Weeks.cs", 2, "Sync", fixture_version(53)),
+            ],
         )?;
         let view = semantic_view(rows)?;
         let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
@@ -10400,7 +10507,10 @@ mod project_call_tests {
             return Err("namespace retarget site is not Sync".to_owned());
         }
         if fact.relation != backend_engine::SemanticLinkKind::MethodCall {
-            return Err(format!("namespace retarget relation is {:?}", fact.relation));
+            return Err(format!(
+                "namespace retarget relation is {:?}",
+                fact.relation
+            ));
         }
         let expected_target = semantic_declaration_identity(set_note_identity);
         if !matches!(
@@ -10463,7 +10573,10 @@ mod project_call_tests {
             return Err("namespace retarget site is not sync".to_owned());
         }
         if fact.relation != backend_engine::SemanticLinkKind::Calls {
-            return Err(format!("namespace retarget relation is {:?}", fact.relation));
+            return Err(format!(
+                "namespace retarget relation is {:?}",
+                fact.relation
+            ));
         }
         Ok(())
     }
@@ -10561,7 +10674,7 @@ mod project_call_tests {
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 entity_kind: ItemKind::Function,
-            link_kind: LinkKind::Calls,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let entries_identity = fixture_version(1).identity();

@@ -1,0 +1,2170 @@
+//! Deterministic ordered Merkle pages for compiler workspace and read facts.
+//!
+//! Pages are a path-ordered Cartesian tree. A domain-separated digest of each
+//! stable path key chooses its split priority; page identity commits to the
+//! complete record and both child identities. This keeps path lookup and
+//! prefix traversal ordered while an edit rewrites only its search path.
+
+use crate::compiler_input_manifest_v2::validate_compiler_input_path_v2;
+use backend_store::TypedObject;
+use backend_version::{ObjectKey, Schema};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Weak};
+use thiserror::Error;
+
+const PAGE_MAGIC: &[u8; 8] = b"BKCIPG02";
+const PRIORITY_HASH_DOMAIN: &[u8] = b"backend.compiler.input.path-priority.v2\0";
+const EMPTY_ROOT_DOMAIN: &[u8] = b"backend.compiler.input.empty-tree.v2\0";
+const MAX_TREE_RECORDS: usize = 1_000_000;
+const MAX_TREE_HEIGHT: usize = 512;
+const MAX_PAGE_BYTES: usize = 4_224;
+const MAX_TREE_ENCODED_BYTES: usize = 256 * 1024 * 1024;
+// Admission accounting only; it does not claim to cap transient allocator or
+// process RSS while the full tree is built or verified.
+const MAX_TREE_RECORD_CHARGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PATH_BYTES: usize = 4_096;
+
+/// Schema for content-addressed compiler input Merkle pages.
+pub struct CompilerInputMerklePageSchema;
+
+impl Schema for CompilerInputMerklePageSchema {
+    const DOMAIN: u8 = 0xe7;
+    const TYPE: u16 = 2;
+    const VERSION: u8 = 2;
+    type Value = [u8];
+
+    fn encode(value: &Self::Value, out: &mut Vec<u8>) {
+        out.extend_from_slice(value);
+    }
+}
+
+/// Which ordered page tree a canonical record belongs to.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(u8)]
+pub enum CompilerInputTreeKindV2 {
+    /// Complete admitted workspace inventory.
+    Workspace = 1,
+    /// Positive, negative, and directory-listing read observations.
+    ReadFrontier = 2,
+}
+
+/// Semantic role recorded for an admitted regular file.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(u8)]
+pub enum CompilerWorkspaceFileRoleV2 {
+    /// Source file admitted by the source authority.
+    Source = 1,
+    /// Compiler configuration input.
+    Configuration = 2,
+    /// Dependency lock or resolution input.
+    Lock = 3,
+    /// Another file captured by the workspace policy.
+    Other = 4,
+}
+
+/// One workspace entry or exact compiler read observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompilerInputTreeRecordV2 {
+    /// A directory in the complete workspace inventory. The root is `""`.
+    Directory {
+        /// Slash-separated, normalized workspace-relative path.
+        path: Box<str>,
+    },
+    /// A regular file in the complete workspace inventory.
+    File {
+        /// Slash-separated, normalized workspace-relative path.
+        path: Box<str>,
+        /// Semantic role retained for exact recipe and diagnostics.
+        role: CompilerWorkspaceFileRoleV2,
+        /// CAS object identity of the actual captured file bytes.
+        object_id: [u8; 32],
+        /// Exact file byte length. Empty files are valid.
+        length: u64,
+    },
+    /// A compiler read this exact present regular file.
+    PresentFile {
+        /// Slash-separated, normalized workspace-relative path.
+        path: Box<str>,
+        /// CAS object identity of the bytes observed by the authority.
+        object_id: [u8; 32],
+        /// Exact file byte length observed by the authority.
+        length: u64,
+    },
+    /// A compiler lookup observed this exact path to be absent.
+    AbsentPath {
+        /// Slash-separated, normalized workspace-relative path.
+        path: Box<str>,
+    },
+    /// A compiler enumerated a directory and observed this exact direct-child set.
+    DirectoryListing {
+        /// Slash-separated directory path; `""` denotes the workspace root.
+        path: Box<str>,
+        /// Digest of canonical sorted child names and entry kinds.
+        listing_digest: [u8; 32],
+    },
+}
+
+impl CompilerInputTreeRecordV2 {
+    /// Returns this record's normalized path.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Directory { path }
+            | Self::File { path, .. }
+            | Self::PresentFile { path, .. }
+            | Self::AbsentPath { path }
+            | Self::DirectoryListing { path, .. } => path,
+        }
+    }
+
+    fn tag(&self) -> u8 {
+        match self {
+            Self::Directory { .. } => 1,
+            Self::File { .. } => 2,
+            Self::PresentFile { .. } => 3,
+            Self::AbsentPath { .. } => 4,
+            Self::DirectoryListing { .. } => 5,
+        }
+    }
+
+    fn key(&self) -> Vec<u8> {
+        let mut key = Vec::with_capacity(self.path().len() + 1);
+        key.extend_from_slice(self.path().as_bytes());
+        key.push(self.tag());
+        key
+    }
+
+    fn is_workspace_record(&self) -> bool {
+        matches!(self, Self::Directory { .. } | Self::File { .. })
+    }
+
+    fn is_read_record(&self) -> bool {
+        matches!(
+            self,
+            Self::PresentFile { .. } | Self::AbsentPath { .. } | Self::DirectoryListing { .. }
+        )
+    }
+}
+
+/// A checked, content-addressed binary page in one compiler input tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompilerInputMerklePageV2 {
+    /// Domain-separated identity of the canonical page preimage.
+    id: [u8; 32],
+    /// Workspace or read-frontier tree kind encoded in the page.
+    kind: CompilerInputTreeKindV2,
+    /// The exact workspace or read record committed by this page.
+    record: CompilerInputTreeRecordV2,
+    /// Identity of the immediately preceding path range, if any.
+    left: Option<[u8; 32]>,
+    /// Identity of the immediately following path range, if any.
+    right: Option<[u8; 32]>,
+    /// Canonical typed page payload stored as a separate CAS object.
+    bytes: Vec<u8>,
+}
+
+impl CompilerInputMerklePageV2 {
+    /// Domain-separated identity of this canonical page.
+    #[must_use]
+    pub const fn id(&self) -> [u8; 32] {
+        self.id
+    }
+
+    /// Workspace or read-frontier tree kind encoded in this page.
+    #[must_use]
+    pub const fn kind(&self) -> CompilerInputTreeKindV2 {
+        self.kind
+    }
+
+    /// The exact record committed by this page.
+    #[must_use]
+    pub const fn record(&self) -> &CompilerInputTreeRecordV2 {
+        &self.record
+    }
+
+    /// Identity of the immediately preceding path range, if any.
+    #[must_use]
+    pub const fn left(&self) -> Option<[u8; 32]> {
+        self.left
+    }
+
+    /// Identity of the immediately following path range, if any.
+    #[must_use]
+    pub const fn right(&self) -> Option<[u8; 32]> {
+        self.right
+    }
+
+    /// Canonical typed page payload committed by this page identity.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns this page as the exact typed object named by its child/root edges.
+    #[must_use]
+    pub fn typed_object(&self) -> TypedObject {
+        let key = ObjectKey::<CompilerInputMerklePageSchema>::from_value(self.bytes.as_slice());
+        TypedObject::from_value(&key, self.bytes.as_slice())
+    }
+
+    /// Reopens one typed page object, checking its schema, identity, and canonical bytes.
+    pub fn from_typed_object(object: &TypedObject) -> Result<Self, CompilerInputTreeV2Error> {
+        let schema = object.schema();
+        if schema.domain() != CompilerInputMerklePageSchema::DOMAIN
+            || schema.ty() != CompilerInputMerklePageSchema::TYPE
+            || schema.version() != CompilerInputMerklePageSchema::VERSION
+        {
+            return Err(CompilerInputTreeV2Error::PageEncoding);
+        }
+        let key = ObjectKey::<CompilerInputMerklePageSchema>::from_value(object.bytes());
+        if object.key() != &key.to_bytes() {
+            return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+        }
+        let (kind, record, left, right) = decode_page(object.bytes())?;
+        let id = page_id(object.bytes());
+        if id != *object.id().as_bytes()
+            || encode_page(kind, &record, left, right)?.as_slice() != object.bytes()
+        {
+            return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+        }
+        Ok(Self {
+            id,
+            kind,
+            record,
+            left,
+            right,
+            bytes: object.bytes().to_vec(),
+        })
+    }
+}
+
+/// Ordered immutable page tree with checked lookup and delta transfer support.
+#[derive(Clone, Debug)]
+struct CompilerInputMerkleNodeV2 {
+    page: CompilerInputMerklePageV2,
+    left: Option<Arc<Self>>,
+    right: Option<Arc<Self>>,
+    subtree_pages: usize,
+    subtree_encoded_bytes: usize,
+}
+
+impl CompilerInputMerkleNodeV2 {
+    fn new(
+        kind: CompilerInputTreeKindV2,
+        record: CompilerInputTreeRecordV2,
+        left: Option<Arc<Self>>,
+        right: Option<Arc<Self>>,
+    ) -> Result<Arc<Self>, CompilerInputTreeV2Error> {
+        let left_id = left.as_ref().map(|node| node.page.id);
+        let right_id = right.as_ref().map(|node| node.page.id);
+        let bytes = encode_page(kind, &record, left_id, right_id)?;
+        let id = page_id(&bytes);
+        let page = CompilerInputMerklePageV2 {
+            id,
+            kind,
+            record,
+            left: left_id,
+            right: right_id,
+            bytes,
+        };
+        Self::from_page(page, left, right)
+    }
+
+    fn from_page(
+        page: CompilerInputMerklePageV2,
+        left: Option<Arc<Self>>,
+        right: Option<Arc<Self>>,
+    ) -> Result<Arc<Self>, CompilerInputTreeV2Error> {
+        if page.left != left.as_ref().map(|node| node.page.id)
+            || page.right != right.as_ref().map(|node| node.page.id)
+        {
+            return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+        }
+        let subtree_pages = 1_usize
+            .checked_add(left.as_ref().map_or(0, |node| node.subtree_pages))
+            .and_then(|count| {
+                count.checked_add(right.as_ref().map_or(0, |node| node.subtree_pages))
+            })
+            .ok_or(CompilerInputTreeV2Error::Limit)?;
+        let subtree_encoded_bytes = page
+            .bytes
+            .len()
+            .checked_add(left.as_ref().map_or(0, |node| node.subtree_encoded_bytes))
+            .and_then(|count| {
+                count.checked_add(right.as_ref().map_or(0, |node| node.subtree_encoded_bytes))
+            })
+            .ok_or(CompilerInputTreeV2Error::Limit)?;
+        if subtree_pages > MAX_TREE_RECORDS || subtree_encoded_bytes > MAX_TREE_ENCODED_BYTES {
+            return Err(CompilerInputTreeV2Error::Limit);
+        }
+        Ok(Arc::new(Self {
+            subtree_pages,
+            subtree_encoded_bytes,
+            page,
+            left,
+            right,
+        }))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompilerInputMerkleTreeV2 {
+    kind: CompilerInputTreeKindV2,
+    root_id: [u8; 32],
+    root: Option<Arc<CompilerInputMerkleNodeV2>>,
+    origin_root: Option<Weak<CompilerInputMerkleNodeV2>>,
+}
+
+impl PartialEq for CompilerInputMerkleTreeV2 {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.root_id == other.root_id
+    }
+}
+
+impl Eq for CompilerInputMerkleTreeV2 {}
+
+/// One replacement of an existing record, preserving its ordered path key.
+///
+/// Replacements are deliberately narrower than workspace edits that add or
+/// remove paths: retaining the same key lets the immutable treap path-copy
+/// touched ancestors while the capture layer remains responsible for a fresh
+/// complete inventory when the path set changes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompilerInputTreeReplacementV2 {
+    record: CompilerInputTreeRecordV2,
+}
+
+impl CompilerInputTreeReplacementV2 {
+    /// Creates a replacement for an existing path and record variant.
+    #[must_use]
+    pub const fn new(record: CompilerInputTreeRecordV2) -> Self {
+        Self { record }
+    }
+}
+
+/// Bounded postorder traversal over the immutable page nodes.
+struct CompilerInputMerklePageIterV2<'a> {
+    pending: Vec<(&'a CompilerInputMerkleNodeV2, bool)>,
+    remaining: usize,
+}
+
+impl<'a> CompilerInputMerklePageIterV2<'a> {
+    fn new(root: Option<&'a CompilerInputMerkleNodeV2>, count: usize) -> Self {
+        let mut pending = Vec::with_capacity(MAX_TREE_HEIGHT.saturating_mul(2));
+        if let Some(root) = root {
+            pending.push((root, false));
+        }
+        Self {
+            pending,
+            remaining: count,
+        }
+    }
+}
+
+impl<'a> Iterator for CompilerInputMerklePageIterV2<'a> {
+    type Item = &'a CompilerInputMerklePageV2;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((node, visited)) = self.pending.pop() {
+            if visited {
+                self.remaining = self.remaining.saturating_sub(1);
+                return Some(&node.page);
+            }
+            self.pending.push((node, true));
+            if let Some(right) = node.right.as_deref() {
+                self.pending.push((right, false));
+            }
+            if let Some(left) = node.left.as_deref() {
+                self.pending.push((left, false));
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for CompilerInputMerklePageIterV2<'_> {}
+
+/// Bounded in-order traversal over the immutable path-keyed records.
+struct CompilerInputMerkleRecordIterV2<'a> {
+    current: Option<&'a CompilerInputMerkleNodeV2>,
+    pending: Vec<&'a CompilerInputMerkleNodeV2>,
+    remaining: usize,
+}
+
+impl<'a> CompilerInputMerkleRecordIterV2<'a> {
+    fn new(root: Option<&'a CompilerInputMerkleNodeV2>, count: usize) -> Self {
+        Self {
+            current: root,
+            pending: Vec::with_capacity(MAX_TREE_HEIGHT),
+            remaining: count,
+        }
+    }
+}
+
+impl<'a> Iterator for CompilerInputMerkleRecordIterV2<'a> {
+    type Item = &'a CompilerInputTreeRecordV2;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(node) = self.current.take() {
+            self.pending.push(node);
+            self.current = node.left.as_deref();
+        }
+        let node = self.pending.pop()?;
+        self.current = node.right.as_deref();
+        self.remaining = self.remaining.saturating_sub(1);
+        Some(&node.page.record)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for CompilerInputMerkleRecordIterV2<'_> {}
+
+/// Work accounted while path-copying an immutable tree update.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CompilerInputTreeUpdateStatsV2 {
+    /// Number of page nodes encoded for the updated search paths.
+    pub path_copied_pages: usize,
+    /// Number of replacement records in the submitted batch.
+    pub replacement_records: usize,
+}
+
+/// Rejection while constructing or reopening compiler input pages.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum CompilerInputTreeV2Error {
+    /// The record or encoded page exceeds a fixed limit.
+    #[error("compiler input tree exceeds a fixed bound")]
+    Limit,
+    /// Paths, records, ancestry, aliases, or page order are noncanonical.
+    #[error("compiler input tree is not canonical")]
+    NonCanonical,
+    /// A page does not match its supplied content identity.
+    #[error("compiler input page identity does not match its bytes")]
+    PageIdentityMismatch,
+    /// A required child page is absent, duplicated, or unreachable.
+    #[error("compiler input page graph is incomplete")]
+    IncompleteTree,
+    /// A stable path-priority collision was detected.
+    #[error("compiler input path priority collision")]
+    PriorityCollision,
+    /// The page is truncated or uses an unsupported version.
+    #[error("compiler input page encoding is invalid")]
+    PageEncoding,
+    /// A read observation does not agree with the captured workspace tree.
+    #[error("compiler read observation conflicts with the captured workspace")]
+    ReadObservationMismatch,
+}
+
+/// Delta result containing only page identities absent from the base tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompilerInputPageDeltaV2 {
+    /// New page identities in deterministic preorder.
+    pub page_ids: Vec<[u8; 32]>,
+    /// Number of encoded page bytes that must be transferred.
+    pub transfer_bytes: usize,
+    /// Number of candidate pages inspected before shared subtrees were skipped.
+    pub visited_pages: usize,
+}
+
+impl CompilerInputMerkleTreeV2 {
+    /// Builds a canonical tree from path-ordered records.
+    pub fn from_sorted_records(
+        kind: CompilerInputTreeKindV2,
+        records: Vec<CompilerInputTreeRecordV2>,
+    ) -> Result<Self, CompilerInputTreeV2Error> {
+        validate_records(kind, &records)?;
+        if records.len() > MAX_TREE_RECORDS {
+            return Err(CompilerInputTreeV2Error::Limit);
+        }
+        if records.is_empty() {
+            return Ok(Self {
+                kind,
+                root_id: empty_root(kind),
+                root: None,
+                origin_root: None,
+            });
+        }
+
+        let mut priorities = Vec::new();
+        priorities
+            .try_reserve_exact(records.len())
+            .map_err(|_| CompilerInputTreeV2Error::Limit)?;
+        let mut priority_records = HashMap::with_capacity(records.len());
+        for (index, record) in records.iter().enumerate() {
+            let priority = path_priority_record(kind, record);
+            if priority_records.insert(priority, index).is_some() {
+                return Err(CompilerInputTreeV2Error::PriorityCollision);
+            }
+            priorities.push(priority);
+        }
+
+        let mut left = vec![None; records.len()];
+        let mut right = vec![None; records.len()];
+        let mut stack = Vec::new();
+        stack
+            .try_reserve(records.len().min(MAX_TREE_HEIGHT * 4))
+            .map_err(|_| CompilerInputTreeV2Error::Limit)?;
+        for index in 0..records.len() {
+            let mut last = None;
+            while let Some(&parent) = stack.last() {
+                if priorities[parent] < priorities[index] {
+                    break;
+                }
+                last = stack.pop();
+            }
+            if let Some(&parent) = stack.last() {
+                right[parent] = Some(index);
+            }
+            left[index] = last;
+            stack.push(index);
+        }
+        let root_index = *stack
+            .first()
+            .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+
+        let mut traversal = Vec::new();
+        traversal
+            .try_reserve(records.len().saturating_mul(2))
+            .map_err(|_| CompilerInputTreeV2Error::Limit)?;
+        traversal.push((root_index, false, 1_usize));
+        let mut record_slots: Vec<_> = records.into_iter().map(Some).collect();
+        let mut built_nodes: Vec<Option<Arc<CompilerInputMerkleNodeV2>>> =
+            std::iter::repeat_with(|| None)
+                .take(record_slots.len())
+                .collect();
+        while let Some((index, visited, depth)) = traversal.pop() {
+            if depth > MAX_TREE_HEIGHT {
+                return Err(CompilerInputTreeV2Error::Limit);
+            }
+            if visited {
+                let left_node = left[index].and_then(|child| built_nodes[child].take());
+                let right_node = right[index].and_then(|child| built_nodes[child].take());
+                let record = record_slots[index]
+                    .take()
+                    .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+                built_nodes[index] = Some(CompilerInputMerkleNodeV2::new(
+                    kind, record, left_node, right_node,
+                )?);
+            } else {
+                traversal.push((index, true, depth));
+                if let Some(child) = right[index] {
+                    traversal.push((child, false, depth + 1));
+                }
+                if let Some(child) = left[index] {
+                    traversal.push((child, false, depth + 1));
+                }
+            }
+        }
+        let root = built_nodes[root_index]
+            .take()
+            .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+        let root_id = root.page.id;
+        Ok(Self {
+            kind,
+            root_id,
+            root: Some(root),
+            origin_root: None,
+        })
+    }
+
+    /// Reopens canonical page bytes from a cold store and verifies the full root graph.
+    pub fn reopen(
+        kind: CompilerInputTreeKindV2,
+        expected_root: [u8; 32],
+        page_payloads: Vec<Vec<u8>>,
+    ) -> Result<Self, CompilerInputTreeV2Error> {
+        if page_payloads.len() > MAX_TREE_RECORDS {
+            return Err(CompilerInputTreeV2Error::Limit);
+        }
+        if page_payloads.is_empty() {
+            return if expected_root == empty_root(kind) {
+                Ok(Self {
+                    kind,
+                    root_id: expected_root,
+                    root: None,
+                    origin_root: None,
+                })
+            } else {
+                Err(CompilerInputTreeV2Error::IncompleteTree)
+            };
+        }
+        let mut pages = Vec::new();
+        let mut encoded_bytes = 0_usize;
+        pages
+            .try_reserve_exact(page_payloads.len())
+            .map_err(|_| CompilerInputTreeV2Error::Limit)?;
+        let mut by_id = HashMap::with_capacity(page_payloads.len());
+        for bytes in page_payloads {
+            encoded_bytes = encoded_bytes
+                .checked_add(bytes.len())
+                .ok_or(CompilerInputTreeV2Error::Limit)?;
+            if encoded_bytes > MAX_TREE_ENCODED_BYTES {
+                return Err(CompilerInputTreeV2Error::Limit);
+            }
+            let (page_kind, record, left, right) = decode_page(&bytes)?;
+            if page_kind != kind {
+                return Err(CompilerInputTreeV2Error::PageEncoding);
+            }
+            let id = page_id(&bytes);
+            if by_id.insert(id, pages.len()).is_some() {
+                return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+            }
+            pages.push(CompilerInputMerklePageV2 {
+                id,
+                kind,
+                record,
+                left,
+                right,
+                bytes,
+            });
+        }
+        Self::from_page_index(kind, expected_root, pages, by_id)
+    }
+
+    /// Validates already-decoded pages without duplicating their encoded payloads.
+    pub(crate) fn from_pages(
+        kind: CompilerInputTreeKindV2,
+        expected_root: [u8; 32],
+        pages: Vec<CompilerInputMerklePageV2>,
+    ) -> Result<Self, CompilerInputTreeV2Error> {
+        if pages.len() > MAX_TREE_RECORDS {
+            return Err(CompilerInputTreeV2Error::Limit);
+        }
+        let mut encoded_bytes = 0_usize;
+        let mut by_id = HashMap::with_capacity(pages.len());
+        for (index, page) in pages.iter().enumerate() {
+            encoded_bytes = encoded_bytes
+                .checked_add(page.bytes.len())
+                .ok_or(CompilerInputTreeV2Error::Limit)?;
+            if encoded_bytes > MAX_TREE_ENCODED_BYTES {
+                return Err(CompilerInputTreeV2Error::Limit);
+            }
+            if page.kind != kind
+                || page.id != page_id(&page.bytes)
+                || by_id.insert(page.id, index).is_some()
+            {
+                return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+            }
+        }
+        Self::from_page_index(kind, expected_root, pages, by_id)
+    }
+
+    fn from_page_index(
+        kind: CompilerInputTreeKindV2,
+        expected_root: [u8; 32],
+        pages: Vec<CompilerInputMerklePageV2>,
+        by_id: HashMap<[u8; 32], usize>,
+    ) -> Result<Self, CompilerInputTreeV2Error> {
+        if pages.is_empty() {
+            return if expected_root == empty_root(kind) {
+                Ok(Self {
+                    kind,
+                    root_id: expected_root,
+                    root: None,
+                    origin_root: None,
+                })
+            } else {
+                Err(CompilerInputTreeV2Error::IncompleteTree)
+            };
+        }
+        let root_index = by_id
+            .get(&expected_root)
+            .copied()
+            .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+        let mut pages: Vec<_> = pages.into_iter().map(Some).collect();
+        let mut built_nodes: Vec<Option<Arc<CompilerInputMerkleNodeV2>>> =
+            std::iter::repeat_with(|| None).take(pages.len()).collect();
+        let mut seen = HashSet::with_capacity(pages.len());
+        let mut pending = vec![(root_index, false, 1_usize)];
+        while let Some((index, visited, depth)) = pending.pop() {
+            if depth > MAX_TREE_HEIGHT {
+                return Err(CompilerInputTreeV2Error::Limit);
+            }
+            if visited {
+                let page = pages[index]
+                    .as_ref()
+                    .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+                let left_id = page.left;
+                let right_id = page.right;
+                let left_index = left_id
+                    .map(|id| {
+                        by_id
+                            .get(&id)
+                            .copied()
+                            .ok_or(CompilerInputTreeV2Error::IncompleteTree)
+                    })
+                    .transpose()?;
+                let right_index = right_id
+                    .map(|id| {
+                        by_id
+                            .get(&id)
+                            .copied()
+                            .ok_or(CompilerInputTreeV2Error::IncompleteTree)
+                    })
+                    .transpose()?;
+                let left_node = left_index.and_then(|child| built_nodes[child].take());
+                let right_node = right_index.and_then(|child| built_nodes[child].take());
+                if left_index.is_some() && left_node.is_none()
+                    || right_index.is_some() && right_node.is_none()
+                {
+                    return Err(CompilerInputTreeV2Error::IncompleteTree);
+                }
+                let page = pages[index]
+                    .take()
+                    .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+                if page.kind != kind {
+                    return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+                }
+                built_nodes[index] = Some(CompilerInputMerkleNodeV2::from_page(
+                    page, left_node, right_node,
+                )?);
+            } else {
+                let page = pages[index]
+                    .as_ref()
+                    .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+                if !seen.insert(page.id) {
+                    return Err(CompilerInputTreeV2Error::IncompleteTree);
+                }
+                pending.push((index, true, depth));
+                for child_id in [page.right, page.left].into_iter().flatten() {
+                    let child = by_id
+                        .get(&child_id)
+                        .copied()
+                        .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+                    pending.push((child, false, depth + 1));
+                }
+            }
+        }
+        if seen.len() != pages.len() {
+            return Err(CompilerInputTreeV2Error::IncompleteTree);
+        }
+        let root = built_nodes[root_index]
+            .take()
+            .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+        let tree = Self {
+            kind,
+            root_id: expected_root,
+            root: Some(root),
+            origin_root: None,
+        };
+        tree.verify_graph()?;
+        Ok(tree)
+    }
+
+    /// Returns the domain-separated Merkle root of this tree.
+    #[must_use]
+    pub const fn root(&self) -> [u8; 32] {
+        self.root_id
+    }
+
+    /// Returns the tree kind.
+    #[must_use]
+    pub const fn kind(&self) -> CompilerInputTreeKindV2 {
+        self.kind
+    }
+
+    /// Returns the number of pages in this tree.
+    #[must_use]
+    pub fn page_count(&self) -> usize {
+        self.root.as_ref().map_or(0, |root| root.subtree_pages)
+    }
+
+    /// Borrows canonical pages in deterministic postorder without cloning payloads.
+    pub fn pages(&self) -> impl ExactSizeIterator<Item = &CompilerInputMerklePageV2> + '_ {
+        CompilerInputMerklePageIterV2::new(self.root.as_deref(), self.page_count())
+    }
+
+    /// Borrows records in canonical path-key order with bounded traversal memory.
+    pub fn records(&self) -> impl ExactSizeIterator<Item = &CompilerInputTreeRecordV2> + '_ {
+        CompilerInputMerkleRecordIterV2::new(self.root.as_deref(), self.page_count())
+    }
+
+    /// Returns the encoded page payload bytes in stable root-first order.
+    pub fn page_payloads(&self) -> Vec<Vec<u8>> {
+        // This bounded convenience is intended for tests and small callers.
+        // Production capture streams borrowed `pages()` entries one at a time.
+        let mut output = Vec::with_capacity(self.page_count());
+        let mut pending = Vec::with_capacity(MAX_TREE_HEIGHT.saturating_mul(2));
+        if let Some(root) = self.root.as_deref() {
+            pending.push((root, false));
+        }
+        while let Some((node, visited)) = pending.pop() {
+            if visited {
+                output.push(node.page.bytes.clone());
+            } else {
+                pending.push((node, true));
+                if let Some(right) = node.right.as_deref() {
+                    pending.push((right, false));
+                }
+                if let Some(left) = node.left.as_deref() {
+                    pending.push((left, false));
+                }
+            }
+        }
+        output
+    }
+
+    /// Returns encoded payload byte count for every page in this tree.
+    #[must_use]
+    pub fn encoded_bytes(&self) -> usize {
+        self.root
+            .as_ref()
+            .map_or(0, |root| root.subtree_encoded_bytes)
+    }
+
+    /// Returns an exact record by its path and variant tag.
+    #[must_use]
+    pub fn lookup(&self, path: &str, tag: u8) -> Option<&CompilerInputTreeRecordV2> {
+        let mut key = Vec::with_capacity(path.len() + 1);
+        key.extend_from_slice(path.as_bytes());
+        key.push(tag);
+        let mut current = self.root.as_deref();
+        while let Some(node) = current {
+            match compare_record_key(&node.page.record, &key) {
+                std::cmp::Ordering::Equal => return Some(&node.page.record),
+                std::cmp::Ordering::Greater => current = node.left.as_deref(),
+                std::cmp::Ordering::Less => current = node.right.as_deref(),
+            }
+        }
+        None
+    }
+
+    /// Computes the minimal new-page transfer using shared immutable subtrees.
+    pub fn delta_from(
+        &self,
+        base: &Self,
+    ) -> Result<CompilerInputPageDeltaV2, CompilerInputTreeV2Error> {
+        if self.kind != base.kind {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        let mut delta = CompilerInputPageDeltaV2 {
+            page_ids: Vec::new(),
+            transfer_bytes: 0,
+            visited_pages: 0,
+        };
+        if self
+            .root
+            .as_ref()
+            .zip(base.root.as_ref())
+            .is_some_and(|(current, previous)| Arc::ptr_eq(current, previous))
+        {
+            return Ok(delta);
+        }
+        let direct_base = self
+            .origin_root
+            .as_ref()
+            .zip(base.root.as_ref())
+            .is_some_and(|(origin, previous)| origin.ptr_eq(&Arc::downgrade(previous)));
+        if direct_base {
+            let (Some(current_root), Some(base_root)) =
+                (self.root.as_deref(), base.root.as_deref())
+            else {
+                return if self.root.is_none() && base.root.is_none() {
+                    Ok(delta)
+                } else {
+                    Err(CompilerInputTreeV2Error::IncompleteTree)
+                };
+            };
+            let mut paired = vec![(current_root, base_root)];
+            while let Some((current, previous)) = paired.pop() {
+                if std::ptr::eq(current, previous) || current.page.id == previous.page.id {
+                    continue;
+                }
+                if compare_records(&current.page.record, &previous.page.record)
+                    != std::cmp::Ordering::Equal
+                    || current.left.is_some() != previous.left.is_some()
+                    || current.right.is_some() != previous.right.is_some()
+                {
+                    return Err(CompilerInputTreeV2Error::NonCanonical);
+                }
+                delta.visited_pages = delta
+                    .visited_pages
+                    .checked_add(1)
+                    .ok_or(CompilerInputTreeV2Error::Limit)?;
+                delta.page_ids.push(current.page.id);
+                delta.transfer_bytes = delta
+                    .transfer_bytes
+                    .checked_add(current.page.bytes.len())
+                    .ok_or(CompilerInputTreeV2Error::Limit)?;
+                if let (Some(current), Some(previous)) =
+                    (current.right.as_deref(), previous.right.as_deref())
+                {
+                    paired.push((current, previous));
+                }
+                if let (Some(current), Some(previous)) =
+                    (current.left.as_deref(), previous.left.as_deref())
+                {
+                    paired.push((current, previous));
+                }
+            }
+            return Ok(delta);
+        }
+        let mut pending = Vec::with_capacity(MAX_TREE_HEIGHT.saturating_mul(2));
+        if let Some(root) = self.root.as_deref() {
+            pending.push(root);
+        }
+        while let Some(node) = pending.pop() {
+            let page = &node.page;
+            if !base
+                .find_record(page.record.path(), page.record.tag())
+                .is_some_and(|base_node| base_node.page.id == page.id)
+            {
+                delta.visited_pages = delta
+                    .visited_pages
+                    .checked_add(1)
+                    .ok_or(CompilerInputTreeV2Error::Limit)?;
+                delta.page_ids.push(page.id);
+                delta.transfer_bytes = delta
+                    .transfer_bytes
+                    .checked_add(page.bytes.len())
+                    .ok_or(CompilerInputTreeV2Error::Limit)?;
+                if let Some(right) = node.right.as_deref() {
+                    pending.push(right);
+                }
+                if let Some(left) = node.left.as_deref() {
+                    pending.push(left);
+                }
+            }
+        }
+        Ok(delta)
+    }
+
+    /// Replaces existing records with the same path and variant, path-copying
+    /// only the affected treap ancestors and sharing every untouched subtree.
+    ///
+    /// The batch is capped at 4,096 records and must name each key at most once.
+    /// Adding/removing paths still requires a full inventory capture so the
+    /// portable path, parent-directory, and alias rules are rechecked together.
+    pub fn apply_replacements(
+        &self,
+        replacements: Vec<CompilerInputTreeReplacementV2>,
+    ) -> Result<Self, CompilerInputTreeV2Error> {
+        self.apply_replacements_with_stats(replacements)
+            .map(|(tree, _stats)| tree)
+    }
+
+    /// Replaces records and returns exact path-copy construction counts.
+    pub fn apply_replacements_with_stats(
+        &self,
+        replacements: Vec<CompilerInputTreeReplacementV2>,
+    ) -> Result<(Self, CompilerInputTreeUpdateStatsV2), CompilerInputTreeV2Error> {
+        if replacements.is_empty() {
+            return Ok((self.clone(), CompilerInputTreeUpdateStatsV2::default()));
+        }
+        if replacements.len() > 4_096 || self.root.is_none() {
+            return Err(CompilerInputTreeV2Error::Limit);
+        }
+        let replacement_count = replacements.len();
+        let mut records: Vec<_> = replacements.into_iter().map(|edit| edit.record).collect();
+        for record in &records {
+            validate_replacement_record(self.kind, record)?;
+            let Some(existing) = self.find_record(record.path(), record.tag()) else {
+                return Err(CompilerInputTreeV2Error::ReadObservationMismatch);
+            };
+            if existing.page.record.path() != record.path() {
+                return Err(CompilerInputTreeV2Error::NonCanonical);
+            }
+        }
+        records.sort_by(|left, right| left.key().cmp(&right.key()));
+        if records
+            .windows(2)
+            .any(|pair| pair[0].key() >= pair[1].key())
+        {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        let root = self
+            .root
+            .as_ref()
+            .ok_or(CompilerInputTreeV2Error::IncompleteTree)?;
+        let mut path_copied_pages = 0_usize;
+        let updated = replace_nodes(self.kind, root, &records, 1, &mut path_copied_pages)?;
+        if updated.subtree_pages != self.page_count()
+            || updated.subtree_encoded_bytes > MAX_TREE_ENCODED_BYTES
+        {
+            return Err(CompilerInputTreeV2Error::Limit);
+        }
+        Ok((
+            Self {
+                kind: self.kind,
+                root_id: updated.page.id,
+                root: Some(updated),
+                origin_root: self.root.as_ref().map(Arc::downgrade),
+            },
+            CompilerInputTreeUpdateStatsV2 {
+                path_copied_pages,
+                replacement_records: replacement_count,
+            },
+        ))
+    }
+
+    fn find_record(&self, path: &str, tag: u8) -> Option<&CompilerInputMerkleNodeV2> {
+        let key = key_for_path(path, tag);
+        let mut current = self.root.as_deref();
+        while let Some(node) = current {
+            match compare_record_key(&node.page.record, &key) {
+                std::cmp::Ordering::Equal => return Some(node),
+                std::cmp::Ordering::Greater => current = node.left.as_deref(),
+                std::cmp::Ordering::Less => current = node.right.as_deref(),
+            }
+        }
+        None
+    }
+
+    /// Checks every positive, negative, and listing witness against a full workspace tree.
+    pub fn verify_read_frontier(&self, workspace: &Self) -> Result<(), CompilerInputTreeV2Error> {
+        self.verify_read_frontier_with_work(workspace).map(|_| ())
+    }
+
+    fn verify_read_frontier_with_work(
+        &self,
+        workspace: &Self,
+    ) -> Result<usize, CompilerInputTreeV2Error> {
+        if self.kind != CompilerInputTreeKindV2::ReadFrontier
+            || workspace.kind != CompilerInputTreeKindV2::Workspace
+        {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        let mut listing_children: HashMap<&str, Vec<(&str, u8)>> = HashMap::new();
+        let mut listing_expected: HashMap<&str, [u8; 32]> = HashMap::new();
+        for page in self.pages() {
+            if let CompilerInputTreeRecordV2::DirectoryListing {
+                path,
+                listing_digest,
+            } = &page.record
+            {
+                if workspace.lookup(path, 1).is_none()
+                    || listing_expected.insert(path, *listing_digest).is_some()
+                {
+                    return Err(CompilerInputTreeV2Error::ReadObservationMismatch);
+                }
+                listing_children.insert(path, Vec::new());
+            }
+        }
+        let mut workspace_pages_scanned = 0_usize;
+        if !listing_children.is_empty() {
+            for page in workspace.pages() {
+                workspace_pages_scanned += 1;
+                let (path, kind) = match &page.record {
+                    CompilerInputTreeRecordV2::Directory { path } => (path.as_ref(), 1),
+                    CompilerInputTreeRecordV2::File { path, .. } => (path.as_ref(), 2),
+                    _ => return Err(CompilerInputTreeV2Error::NonCanonical),
+                };
+                if path.is_empty() {
+                    continue;
+                }
+                let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+                if let Some(children) = listing_children.get_mut(parent) {
+                    children.push((name, kind));
+                }
+            }
+            for (directory, children) in &mut listing_children {
+                if listing_digest_from_children(children) != listing_expected[directory] {
+                    return Err(CompilerInputTreeV2Error::ReadObservationMismatch);
+                }
+            }
+        }
+        for page in self.pages() {
+            match &page.record {
+                CompilerInputTreeRecordV2::PresentFile {
+                    path,
+                    object_id,
+                    length,
+                } => match workspace.lookup(path, 2) {
+                    Some(CompilerInputTreeRecordV2::File {
+                        object_id: present,
+                        length: present_length,
+                        ..
+                    }) if present == object_id && present_length == length => {}
+                    _ => return Err(CompilerInputTreeV2Error::ReadObservationMismatch),
+                },
+                CompilerInputTreeRecordV2::AbsentPath { path } => {
+                    if workspace.lookup(path, 1).is_some() || workspace.lookup(path, 2).is_some() {
+                        return Err(CompilerInputTreeV2Error::ReadObservationMismatch);
+                    }
+                }
+                CompilerInputTreeRecordV2::DirectoryListing { .. } => {}
+                _ => return Err(CompilerInputTreeV2Error::NonCanonical),
+            }
+        }
+        Ok(workspace_pages_scanned)
+    }
+
+    /// Computes the canonical direct-child listing digest for one workspace directory.
+    pub fn directory_listing_digest(
+        &self,
+        directory: &str,
+    ) -> Result<[u8; 32], CompilerInputTreeV2Error> {
+        if self.kind != CompilerInputTreeKindV2::Workspace {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        match self.lookup(directory, 1) {
+            Some(CompilerInputTreeRecordV2::Directory { .. }) => {}
+            _ => return Err(CompilerInputTreeV2Error::ReadObservationMismatch),
+        }
+        let prefix = if directory.is_empty() {
+            String::new()
+        } else {
+            format!("{directory}/")
+        };
+        let mut children: Vec<(&str, u8)> = self
+            .pages()
+            .filter_map(|page| {
+                let path = page.record.path();
+                if path == directory || !path.starts_with(&prefix) {
+                    return None;
+                }
+                let tail = &path[prefix.len()..];
+                if tail.is_empty() || tail.contains('/') {
+                    return None;
+                }
+                let tag = match &page.record {
+                    CompilerInputTreeRecordV2::Directory { .. } => 1,
+                    CompilerInputTreeRecordV2::File { .. } => 2,
+                    _ => return None,
+                };
+                Some((tail, tag))
+            })
+            .collect();
+        children.sort_unstable();
+        Ok(listing_digest_from_children(&mut children))
+    }
+
+    fn verify_graph(&self) -> Result<(), CompilerInputTreeV2Error> {
+        let Some(root) = self.root.as_deref() else {
+            return (self.root_id == empty_root(self.kind))
+                .then_some(())
+                .ok_or(CompilerInputTreeV2Error::IncompleteTree);
+        };
+        if root.page.id != self.root_id {
+            return Err(CompilerInputTreeV2Error::IncompleteTree);
+        }
+        let mut seen = HashSet::with_capacity(self.page_count());
+        let mut records = Vec::with_capacity(self.page_count());
+        let mut pending = vec![(root, None, None, None, 1_usize)];
+        while let Some((node, lower, upper, parent_priority, depth)) = pending.pop() {
+            if depth > MAX_TREE_HEIGHT {
+                return Err(CompilerInputTreeV2Error::Limit);
+            }
+            let page = &node.page;
+            if !seen.insert(page.id) {
+                return Err(CompilerInputTreeV2Error::IncompleteTree);
+            }
+            if page.id != page_id(&page.bytes) {
+                return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+            }
+            if lower.is_some_and(|bound| compare_records(&page.record, bound).is_le())
+                || upper.is_some_and(|bound| compare_records(&page.record, bound).is_ge())
+            {
+                return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+            }
+            if encode_page(self.kind, &page.record, page.left, page.right)? != page.bytes {
+                return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+            }
+            if page.left != node.left.as_ref().map(|child| child.page.id)
+                || page.right != node.right.as_ref().map(|child| child.page.id)
+            {
+                return Err(CompilerInputTreeV2Error::PageIdentityMismatch);
+            }
+            let priority = path_priority_record(self.kind, &page.record);
+            if parent_priority.is_some_and(|parent| parent >= priority) {
+                return Err(CompilerInputTreeV2Error::NonCanonical);
+            }
+            records.push(page.record.clone());
+            if let Some(right) = node.right.as_deref() {
+                pending.push((right, Some(&page.record), upper, Some(priority), depth + 1));
+            }
+            if let Some(left) = node.left.as_deref() {
+                pending.push((left, lower, Some(&page.record), Some(priority), depth + 1));
+            }
+        }
+        if seen.len() != self.page_count() {
+            return Err(CompilerInputTreeV2Error::IncompleteTree);
+        }
+        records.sort_by(|left, right| left.key().cmp(&right.key()));
+        validate_records(self.kind, &records)
+    }
+}
+
+fn validate_records(
+    kind: CompilerInputTreeKindV2,
+    records: &[CompilerInputTreeRecordV2],
+) -> Result<(), CompilerInputTreeV2Error> {
+    if records.len() > MAX_TREE_RECORDS {
+        return Err(CompilerInputTreeV2Error::Limit);
+    }
+    let mut build_charge = 0_usize;
+    for record in records {
+        let entry_charge = record
+            .path()
+            .len()
+            .checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(256))
+            .ok_or(CompilerInputTreeV2Error::Limit)?;
+        build_charge = build_charge
+            .checked_add(entry_charge)
+            .ok_or(CompilerInputTreeV2Error::Limit)?;
+        if build_charge > MAX_TREE_RECORD_CHARGE_BYTES {
+            return Err(CompilerInputTreeV2Error::Limit);
+        }
+    }
+    let mut previous: Option<Vec<u8>> = None;
+    let mut portable_paths = BTreeSet::new();
+    let mut directories = HashSet::new();
+    let mut files = HashSet::new();
+    for record in records {
+        if (kind == CompilerInputTreeKindV2::Workspace && !record.is_workspace_record())
+            || (kind == CompilerInputTreeKindV2::ReadFrontier && !record.is_read_record())
+        {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        let path = record.path();
+        if path.len() > MAX_PATH_BYTES {
+            return Err(CompilerInputTreeV2Error::Limit);
+        }
+        if (path.is_empty()
+            && !matches!(
+                record,
+                CompilerInputTreeRecordV2::Directory { .. }
+                    | CompilerInputTreeRecordV2::DirectoryListing { .. }
+            ))
+        {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        if !path.is_empty() && validate_compiler_input_path_v2(path).is_err() {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        let key = record.key();
+        if previous.as_ref().is_some_and(|prior| prior >= &key) {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        previous = Some(key);
+        if !portable_paths.insert(path.to_lowercase()) {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        match record {
+            CompilerInputTreeRecordV2::Directory { path } => {
+                directories.insert(path.as_ref());
+            }
+            CompilerInputTreeRecordV2::File {
+                path, object_id, ..
+            } => {
+                if *object_id == [0; 32] {
+                    return Err(CompilerInputTreeV2Error::NonCanonical);
+                }
+                files.insert(path.as_ref());
+            }
+            CompilerInputTreeRecordV2::PresentFile { object_id, .. } if *object_id == [0; 32] => {
+                return Err(CompilerInputTreeV2Error::NonCanonical);
+            }
+            CompilerInputTreeRecordV2::DirectoryListing { listing_digest, .. }
+                if *listing_digest == [0; 32] =>
+            {
+                return Err(CompilerInputTreeV2Error::NonCanonical);
+            }
+            _ => {}
+        }
+    }
+    if kind == CompilerInputTreeKindV2::Workspace {
+        if !matches!(records.first(), Some(CompilerInputTreeRecordV2::Directory { path }) if path.is_empty())
+        {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        for record in records {
+            for ancestor in record
+                .path()
+                .match_indices('/')
+                .map(|(index, _)| &record.path()[..index])
+            {
+                if files.contains(ancestor) || !directories.contains(ancestor) {
+                    return Err(CompilerInputTreeV2Error::NonCanonical);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_replacement_record(
+    kind: CompilerInputTreeKindV2,
+    record: &CompilerInputTreeRecordV2,
+) -> Result<(), CompilerInputTreeV2Error> {
+    if (kind == CompilerInputTreeKindV2::Workspace && !record.is_workspace_record())
+        || (kind == CompilerInputTreeKindV2::ReadFrontier && !record.is_read_record())
+    {
+        return Err(CompilerInputTreeV2Error::NonCanonical);
+    }
+    if record.path().len() > MAX_PATH_BYTES {
+        return Err(CompilerInputTreeV2Error::Limit);
+    }
+    if record.path().is_empty()
+        && !matches!(
+            record,
+            CompilerInputTreeRecordV2::Directory { .. }
+                | CompilerInputTreeRecordV2::DirectoryListing { .. }
+        )
+    {
+        return Err(CompilerInputTreeV2Error::NonCanonical);
+    }
+    if !record.path().is_empty() && validate_compiler_input_path_v2(record.path()).is_err() {
+        return Err(CompilerInputTreeV2Error::NonCanonical);
+    }
+    match record {
+        CompilerInputTreeRecordV2::File { object_id, .. }
+        | CompilerInputTreeRecordV2::PresentFile { object_id, .. }
+            if *object_id == [0; 32] =>
+        {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        CompilerInputTreeRecordV2::DirectoryListing { listing_digest, .. }
+            if *listing_digest == [0; 32] =>
+        {
+            return Err(CompilerInputTreeV2Error::NonCanonical);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn replace_nodes(
+    kind: CompilerInputTreeKindV2,
+    node: &Arc<CompilerInputMerkleNodeV2>,
+    replacements: &[CompilerInputTreeRecordV2],
+    depth: usize,
+    path_copied_pages: &mut usize,
+) -> Result<Arc<CompilerInputMerkleNodeV2>, CompilerInputTreeV2Error> {
+    if replacements.is_empty() {
+        return Ok(Arc::clone(node));
+    }
+    if depth > MAX_TREE_HEIGHT {
+        return Err(CompilerInputTreeV2Error::Limit);
+    }
+    let split =
+        replacements.partition_point(|record| compare_records(record, &node.page.record).is_lt());
+    let replacement = replacements
+        .get(split)
+        .filter(|record| compare_records(record, &node.page.record).is_eq());
+    let left_records = &replacements[..split];
+    let right_start = split + if replacement.is_some() { 1 } else { 0 };
+    let right_records = &replacements[right_start..];
+    if !left_records.is_empty() && node.left.is_none()
+        || !right_records.is_empty() && node.right.is_none()
+    {
+        return Err(CompilerInputTreeV2Error::ReadObservationMismatch);
+    }
+    let left = match (node.left.as_ref(), left_records.is_empty()) {
+        (Some(left), true) => Some(Arc::clone(left)),
+        (Some(left), false) => Some(replace_nodes(
+            kind,
+            left,
+            left_records,
+            depth + 1,
+            path_copied_pages,
+        )?),
+        (None, true) => None,
+        (None, false) => return Err(CompilerInputTreeV2Error::IncompleteTree),
+    };
+    let right = match (node.right.as_ref(), right_records.is_empty()) {
+        (Some(right), true) => Some(Arc::clone(right)),
+        (Some(right), false) => Some(replace_nodes(
+            kind,
+            right,
+            right_records,
+            depth + 1,
+            path_copied_pages,
+        )?),
+        (None, true) => None,
+        (None, false) => return Err(CompilerInputTreeV2Error::IncompleteTree),
+    };
+    let record = replacement
+        .cloned()
+        .unwrap_or_else(|| node.page.record.clone());
+    if record == node.page.record
+        && optional_arc_ptr_eq(&left, &node.left)
+        && optional_arc_ptr_eq(&right, &node.right)
+    {
+        return Ok(Arc::clone(node));
+    }
+    *path_copied_pages = (*path_copied_pages)
+        .checked_add(1)
+        .ok_or(CompilerInputTreeV2Error::Limit)?;
+    CompilerInputMerkleNodeV2::new(kind, record, left, right)
+}
+
+fn optional_arc_ptr_eq<T>(left: &Option<Arc<T>>, right: &Option<Arc<T>>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn compare_records(
+    left: &CompilerInputTreeRecordV2,
+    right: &CompilerInputTreeRecordV2,
+) -> std::cmp::Ordering {
+    left.path()
+        .as_bytes()
+        .cmp(right.path().as_bytes())
+        .then_with(|| left.tag().cmp(&right.tag()))
+}
+
+fn compare_record_key(record: &CompilerInputTreeRecordV2, key: &[u8]) -> std::cmp::Ordering {
+    let Some((&tag, path)) = key.split_last() else {
+        return std::cmp::Ordering::Greater;
+    };
+    record
+        .path()
+        .as_bytes()
+        .cmp(path)
+        .then_with(|| record.tag().cmp(&tag))
+}
+
+fn key_for_path(path: &str, tag: u8) -> Vec<u8> {
+    let mut key = Vec::with_capacity(path.len().saturating_add(1));
+    key.extend_from_slice(path.as_bytes());
+    key.push(tag);
+    key
+}
+
+fn path_priority_record(
+    kind: CompilerInputTreeKindV2,
+    record: &CompilerInputTreeRecordV2,
+) -> [u8; 32] {
+    let path = record.path().as_bytes();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(PRIORITY_HASH_DOMAIN);
+    hasher.update(&[kind as u8]);
+    hasher.update(&(path.len() as u32 + 1).to_be_bytes());
+    hasher.update(path);
+    hasher.update(&[record.tag()]);
+    *hasher.finalize().as_bytes()
+}
+
+fn page_id(bytes: &[u8]) -> [u8; 32] {
+    let key = ObjectKey::<CompilerInputMerklePageSchema>::from_value(bytes);
+    *TypedObject::from_value(&key, bytes).id().as_bytes()
+}
+
+fn empty_root(kind: CompilerInputTreeKindV2) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(EMPTY_ROOT_DOMAIN);
+    hasher.update(&[kind as u8]);
+    *hasher.finalize().as_bytes()
+}
+
+fn listing_digest_from_children(children: &mut [(&str, u8)]) -> [u8; 32] {
+    children.sort_unstable();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.compiler.input.directory-listing.v2\0");
+    for (name, kind) in children {
+        hasher.update(&[*kind]);
+        hasher.update(&(name.len() as u32).to_be_bytes());
+        hasher.update(name.as_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn encode_page(
+    kind: CompilerInputTreeKindV2,
+    record: &CompilerInputTreeRecordV2,
+    left: Option<[u8; 32]>,
+    right: Option<[u8; 32]>,
+) -> Result<Vec<u8>, CompilerInputTreeV2Error> {
+    let path = record.path().as_bytes();
+    if path.len() > MAX_PATH_BYTES {
+        return Err(CompilerInputTreeV2Error::Limit);
+    }
+    let mut bytes = Vec::with_capacity(path.len() + 96);
+    bytes.extend_from_slice(PAGE_MAGIC);
+    bytes.push(kind as u8);
+    bytes.push(record.tag());
+    bytes.extend_from_slice(
+        &u32::try_from(path.len())
+            .map_err(|_| CompilerInputTreeV2Error::Limit)?
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(path);
+    match record {
+        CompilerInputTreeRecordV2::Directory { .. }
+        | CompilerInputTreeRecordV2::AbsentPath { .. } => {}
+        CompilerInputTreeRecordV2::File {
+            role,
+            object_id,
+            length,
+            ..
+        } => {
+            bytes.push(*role as u8);
+            bytes.extend_from_slice(object_id);
+            bytes.extend_from_slice(&length.to_be_bytes());
+        }
+        CompilerInputTreeRecordV2::PresentFile {
+            object_id, length, ..
+        } => {
+            bytes.extend_from_slice(object_id);
+            bytes.extend_from_slice(&length.to_be_bytes());
+        }
+        CompilerInputTreeRecordV2::DirectoryListing { listing_digest, .. } => {
+            bytes.extend_from_slice(listing_digest);
+        }
+    }
+    encode_child(&mut bytes, left);
+    encode_child(&mut bytes, right);
+    if bytes.len() > MAX_PAGE_BYTES {
+        return Err(CompilerInputTreeV2Error::Limit);
+    }
+    Ok(bytes)
+}
+
+fn encode_child(output: &mut Vec<u8>, child: Option<[u8; 32]>) {
+    match child {
+        Some(id) => {
+            output.push(1);
+            output.extend_from_slice(&id);
+        }
+        None => output.push(0),
+    }
+}
+
+fn decode_page(
+    bytes: &[u8],
+) -> Result<
+    (
+        CompilerInputTreeKindV2,
+        CompilerInputTreeRecordV2,
+        Option<[u8; 32]>,
+        Option<[u8; 32]>,
+    ),
+    CompilerInputTreeV2Error,
+> {
+    if bytes.len() > MAX_PAGE_BYTES || bytes.len() < PAGE_MAGIC.len() + 1 + 1 + 4 + 2 {
+        return Err(CompilerInputTreeV2Error::Limit);
+    }
+    let mut reader = PageReader { bytes, offset: 0 };
+    if reader.take(PAGE_MAGIC.len())? != PAGE_MAGIC {
+        return Err(CompilerInputTreeV2Error::PageEncoding);
+    }
+    let kind = match reader.byte()? {
+        1 => CompilerInputTreeKindV2::Workspace,
+        2 => CompilerInputTreeKindV2::ReadFrontier,
+        _ => return Err(CompilerInputTreeV2Error::PageEncoding),
+    };
+    let tag = reader.byte()?;
+    let path_length =
+        usize::try_from(reader.u32()?).map_err(|_| CompilerInputTreeV2Error::Limit)?;
+    if path_length > MAX_PATH_BYTES {
+        return Err(CompilerInputTreeV2Error::Limit);
+    }
+    let path = std::str::from_utf8(reader.take(path_length)?)
+        .map_err(|_| CompilerInputTreeV2Error::PageEncoding)?
+        .to_owned()
+        .into_boxed_str();
+    let record = match tag {
+        1 => CompilerInputTreeRecordV2::Directory { path },
+        2 => {
+            let role = match reader.byte()? {
+                1 => CompilerWorkspaceFileRoleV2::Source,
+                2 => CompilerWorkspaceFileRoleV2::Configuration,
+                3 => CompilerWorkspaceFileRoleV2::Lock,
+                4 => CompilerWorkspaceFileRoleV2::Other,
+                _ => return Err(CompilerInputTreeV2Error::PageEncoding),
+            };
+            CompilerInputTreeRecordV2::File {
+                path,
+                role,
+                object_id: reader.array32()?,
+                length: reader.u64()?,
+            }
+        }
+        3 => CompilerInputTreeRecordV2::PresentFile {
+            path,
+            object_id: reader.array32()?,
+            length: reader.u64()?,
+        },
+        4 => CompilerInputTreeRecordV2::AbsentPath { path },
+        5 => CompilerInputTreeRecordV2::DirectoryListing {
+            path,
+            listing_digest: reader.array32()?,
+        },
+        _ => return Err(CompilerInputTreeV2Error::PageEncoding),
+    };
+    let left = reader.child()?;
+    let right = reader.child()?;
+    if !reader.is_empty() {
+        return Err(CompilerInputTreeV2Error::PageEncoding);
+    }
+    Ok((kind, record, left, right))
+}
+
+struct PageReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl PageReader<'_> {
+    fn take(&mut self, count: usize) -> Result<&[u8], CompilerInputTreeV2Error> {
+        let end = self
+            .offset
+            .checked_add(count)
+            .ok_or(CompilerInputTreeV2Error::Limit)?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(CompilerInputTreeV2Error::PageEncoding)?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn byte(&mut self) -> Result<u8, CompilerInputTreeV2Error> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, CompilerInputTreeV2Error> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn u64(&mut self) -> Result<u64, CompilerInputTreeV2Error> {
+        let bytes = self.take(8)?;
+        Ok(u64::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
+    fn array32(&mut self) -> Result<[u8; 32], CompilerInputTreeV2Error> {
+        self.take(32)?
+            .try_into()
+            .map_err(|_| CompilerInputTreeV2Error::PageEncoding)
+    }
+
+    fn child(&mut self) -> Result<Option<[u8; 32]>, CompilerInputTreeV2Error> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.array32()?)),
+            _ => Err(CompilerInputTreeV2Error::PageEncoding),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.offset == self.bytes.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_getters_describe_the_same_canonical_typed_payload() {
+        let tree = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            vec![
+                CompilerInputTreeRecordV2::Directory { path: "".into() },
+                CompilerInputTreeRecordV2::Directory { path: "src".into() },
+                CompilerInputTreeRecordV2::File {
+                    path: "src/lib.rs".into(),
+                    role: CompilerWorkspaceFileRoleV2::Source,
+                    object_id: [0x31; 32],
+                    length: 12,
+                },
+            ],
+        )
+        .expect("canonical tree");
+
+        for page in tree.pages() {
+            let reopened = CompilerInputMerklePageV2::from_typed_object(&page.typed_object())
+                .expect("canonical page object");
+            assert_eq!(page.id(), reopened.id());
+            assert_eq!(page.kind(), reopened.kind());
+            assert_eq!(page.record(), reopened.record());
+            assert_eq!(page.left(), reopened.left());
+            assert_eq!(page.right(), reopened.right());
+            assert_eq!(page.bytes(), reopened.bytes());
+        }
+    }
+
+    fn workspace_entries(count: usize) -> Vec<CompilerInputTreeRecordV2> {
+        let mut entries = Vec::with_capacity(count + 2);
+        entries.push(CompilerInputTreeRecordV2::Directory { path: "".into() });
+        entries.push(CompilerInputTreeRecordV2::Directory { path: "src".into() });
+        for index in 0..count {
+            entries.push(CompilerInputTreeRecordV2::File {
+                path: format!("src/file-{index:06}.rs").into_boxed_str(),
+                role: CompilerWorkspaceFileRoleV2::Source,
+                object_id: [1; 32],
+                length: 64,
+            });
+        }
+        entries
+    }
+
+    #[test]
+    fn one_edit_in_one_hundred_thousand_paths_path_copies_only_ancestors() {
+        let old_records = workspace_entries(100_000);
+        let changed_path = "src/file-050000.rs";
+        let mut expected_records = old_records.clone();
+        let replacement = expected_records
+            .iter_mut()
+            .find(|record| record.path() == changed_path)
+            .expect("chosen file exists");
+        let CompilerInputTreeRecordV2::File { object_id, .. } = replacement else {
+            panic!("fixture path names a file");
+        };
+        *object_id = [2; 32];
+
+        let old = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            old_records,
+        )
+        .expect("old tree");
+        let (new, stats) = old
+            .apply_replacements_with_stats(vec![CompilerInputTreeReplacementV2::new(
+                (*replacement).clone(),
+            )])
+            .expect("persistent update");
+        let rebuilt = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            expected_records,
+        )
+        .expect("independent full rebuild");
+        let delta = new.delta_from(&old).expect("delta");
+        let rebuilt_delta = rebuilt.delta_from(&old).expect("reference delta");
+
+        assert_eq!(new.root(), rebuilt.root());
+        assert_eq!(
+            new.pages()
+                .map(CompilerInputMerklePageV2::id)
+                .collect::<Vec<_>>(),
+            rebuilt
+                .pages()
+                .map(CompilerInputMerklePageV2::id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(delta, rebuilt_delta);
+        assert_eq!(stats.path_copied_pages, delta.visited_pages);
+        assert_eq!(stats.replacement_records, 1);
+        assert!(
+            delta.visited_pages < 128,
+            "visited {} pages",
+            delta.visited_pages
+        );
+        assert!(
+            delta.page_ids.len() < 128,
+            "transferred {} pages",
+            delta.page_ids.len()
+        );
+        assert!(delta.transfer_bytes < 128 * 1024);
+        assert_eq!(new.page_count(), 100_002);
+        assert!(count_shared_nodes(&old.root, &new.root) > 99_800);
+    }
+
+    #[test]
+    fn no_op_replacement_reuses_the_root_and_new_path_is_rejected() {
+        let original = CompilerInputTreeRecordV2::File {
+            path: "src/lib.rs".into(),
+            role: CompilerWorkspaceFileRoleV2::Source,
+            object_id: [0x55; 32],
+            length: 7,
+        };
+        let tree = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            vec![
+                CompilerInputTreeRecordV2::Directory { path: "".into() },
+                CompilerInputTreeRecordV2::Directory { path: "src".into() },
+                original.clone(),
+            ],
+        )
+        .expect("workspace tree");
+        let (same, no_op) = tree
+            .apply_replacements_with_stats(vec![CompilerInputTreeReplacementV2::new(
+                original.clone(),
+            )])
+            .expect("no-op replacement");
+        assert_eq!(same.root(), tree.root());
+        assert_eq!(no_op.path_copied_pages, 0);
+
+        let absent = CompilerInputTreeRecordV2::File {
+            path: "src/new.rs".into(),
+            role: CompilerWorkspaceFileRoleV2::Source,
+            object_id: [0x56; 32],
+            length: 8,
+        };
+        assert_eq!(
+            tree.apply_replacements(vec![CompilerInputTreeReplacementV2::new(absent)]),
+            Err(CompilerInputTreeV2Error::ReadObservationMismatch)
+        );
+        assert_eq!(tree.root(), same.root());
+    }
+
+    #[test]
+    fn batched_replacements_rebuild_shared_ancestors_once() {
+        let records = workspace_entries(64);
+        let tree = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            records.clone(),
+        )
+        .expect("workspace tree");
+        let make_replacement = |path: &str, id: u8| {
+            let mut record = records
+                .iter()
+                .find(|record| record.path() == path)
+                .expect("fixture path exists")
+                .clone();
+            let CompilerInputTreeRecordV2::File { object_id, .. } = &mut record else {
+                panic!("fixture path names a file");
+            };
+            *object_id = [id; 32];
+            record
+        };
+        let left = make_replacement("src/file-000020.rs", 2);
+        let right = make_replacement("src/file-000021.rs", 3);
+        let left_stats = tree
+            .apply_replacements_with_stats(vec![CompilerInputTreeReplacementV2::new(left.clone())])
+            .expect("left replacement")
+            .1;
+        let right_stats = tree
+            .apply_replacements_with_stats(vec![CompilerInputTreeReplacementV2::new(right.clone())])
+            .expect("right replacement")
+            .1;
+        let (combined, stats) = tree
+            .apply_replacements_with_stats(vec![
+                CompilerInputTreeReplacementV2::new(left),
+                CompilerInputTreeReplacementV2::new(right),
+            ])
+            .expect("batch replacements");
+        let mut expected_records = records;
+        for expected in ["src/file-000020.rs", "src/file-000021.rs"] {
+            let replacement = combined
+                .lookup(expected, 2)
+                .expect("updated path remains present")
+                .to_owned();
+            let slot = expected_records
+                .iter_mut()
+                .find(|record| record.path() == expected)
+                .expect("reference path exists");
+            *slot = replacement;
+        }
+        let expected = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            expected_records,
+        )
+        .expect("reference rebuild");
+        assert_eq!(combined.root(), expected.root());
+        assert_eq!(stats.replacement_records, 2);
+        assert!(
+            stats.path_copied_pages < left_stats.path_copied_pages + right_stats.path_copied_pages
+        );
+    }
+
+    fn count_shared_nodes(
+        left: &Option<Arc<CompilerInputMerkleNodeV2>>,
+        right: &Option<Arc<CompilerInputMerkleNodeV2>>,
+    ) -> usize {
+        let (Some(left), Some(right)) = (left, right) else {
+            return 0;
+        };
+        if Arc::ptr_eq(left, right) {
+            return left.subtree_pages;
+        }
+        1 + count_shared_nodes(&left.left, &right.left)
+            + count_shared_nodes(&left.right, &right.right)
+    }
+
+    #[test]
+    fn oversized_aggregate_record_charge_is_rejected_before_page_construction() {
+        let prefix = "a".repeat(4_080);
+        let mut records = Vec::with_capacity(5_400);
+        records.push(CompilerInputTreeRecordV2::Directory { path: "".into() });
+        for index in 0..5_399 {
+            records.push(CompilerInputTreeRecordV2::File {
+                path: format!("{prefix}{index:06}.rs").into_boxed_str(),
+                role: CompilerWorkspaceFileRoleV2::Other,
+                object_id: [1; 32],
+                length: 0,
+            });
+        }
+        assert!(matches!(
+            CompilerInputMerkleTreeV2::from_sorted_records(
+                CompilerInputTreeKindV2::Workspace,
+                records,
+            ),
+            Err(CompilerInputTreeV2Error::Limit)
+        ));
+    }
+
+    #[test]
+    fn rename_and_negative_read_creation_have_small_deltas_and_exact_lookup() {
+        let mut old_records = workspace_entries(4_096);
+        let renamed = old_records.pop().expect("last file");
+        let CompilerInputTreeRecordV2::File {
+            role,
+            object_id,
+            length,
+            ..
+        } = renamed
+        else {
+            panic!("fixture ends with file");
+        };
+        old_records.push(CompilerInputTreeRecordV2::File {
+            path: "src/renamed.rs".into(),
+            role,
+            object_id,
+            length,
+        });
+        old_records.sort_by(|left, right| left.key().cmp(&right.key()));
+        let new_records = old_records
+            .iter()
+            .cloned()
+            .map(|record| match record {
+                CompilerInputTreeRecordV2::File {
+                    path,
+                    role,
+                    object_id,
+                    length,
+                } if path.as_ref() == "src/renamed.rs" => CompilerInputTreeRecordV2::File {
+                    path: "src/fresh-name.rs".into(),
+                    role,
+                    object_id,
+                    length,
+                },
+                other => other,
+            })
+            .collect::<Vec<_>>();
+        let old = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            old_records,
+        )
+        .expect("old");
+        let new = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            new_records,
+        )
+        .expect("new");
+        let delta = new.delta_from(&old).expect("rename delta");
+        assert!(delta.visited_pages < 128);
+        assert!(delta.page_ids.len() < 128);
+
+        let absent = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::ReadFrontier,
+            vec![CompilerInputTreeRecordV2::AbsentPath {
+                path: "src/new-module.rs".into(),
+            }],
+        )
+        .expect("negative witness");
+        let present = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::ReadFrontier,
+            vec![CompilerInputTreeRecordV2::PresentFile {
+                path: "src/new-module.rs".into(),
+                object_id: [7; 32],
+                length: 12,
+            }],
+        )
+        .expect("present witness");
+        let negative_delta = present.delta_from(&absent).expect("frontier delta");
+        assert!(!negative_delta.page_ids.is_empty());
+        assert_ne!(absent.root(), present.root());
+    }
+
+    #[test]
+    fn many_directory_listing_witnesses_scan_the_workspace_once() {
+        let mut workspace_records = Vec::with_capacity(100_001);
+        workspace_records.push(CompilerInputTreeRecordV2::Directory { path: "".into() });
+        let mut read_records = Vec::with_capacity(100_000);
+        let mut empty_children = [];
+        let empty_listing_digest = listing_digest_from_children(&mut empty_children);
+        for index in 0..100_000 {
+            let path = format!("dir-{index:06}").into_boxed_str();
+            workspace_records.push(CompilerInputTreeRecordV2::Directory { path: path.clone() });
+            read_records.push(CompilerInputTreeRecordV2::DirectoryListing {
+                path,
+                listing_digest: empty_listing_digest,
+            });
+        }
+        let workspace = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            workspace_records,
+        )
+        .expect("workspace tree");
+        let frontier = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::ReadFrontier,
+            read_records,
+        )
+        .expect("read frontier");
+        let scanned = frontier
+            .verify_read_frontier_with_work(&workspace)
+            .expect("frontier matches captured directories");
+        assert_eq!(scanned, workspace.page_count());
+    }
+
+    #[test]
+    fn path_aliases_truncated_pages_and_cold_reopen_fail_closed() {
+        let aliases = vec![
+            CompilerInputTreeRecordV2::Directory { path: "".into() },
+            CompilerInputTreeRecordV2::Directory { path: "Src".into() },
+            CompilerInputTreeRecordV2::File {
+                path: "Src/a.rs".into(),
+                role: CompilerWorkspaceFileRoleV2::Source,
+                object_id: [3; 32],
+                length: 1,
+            },
+            CompilerInputTreeRecordV2::Directory { path: "src".into() },
+        ];
+        assert_eq!(
+            CompilerInputMerkleTreeV2::from_sorted_records(
+                CompilerInputTreeKindV2::Workspace,
+                aliases
+            ),
+            Err(CompilerInputTreeV2Error::NonCanonical)
+        );
+
+        let tree = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            workspace_entries(32),
+        )
+        .expect("tree");
+        let mut pages = tree.page_payloads();
+        let truncated = pages.pop().expect("page");
+        assert_eq!(
+            CompilerInputMerkleTreeV2::reopen(
+                CompilerInputTreeKindV2::Workspace,
+                tree.root(),
+                vec![truncated[..truncated.len() - 1].to_vec()]
+            ),
+            Err(CompilerInputTreeV2Error::PageEncoding)
+        );
+        pages.push(truncated);
+        let reopened = CompilerInputMerkleTreeV2::reopen(
+            CompilerInputTreeKindV2::Workspace,
+            tree.root(),
+            pages,
+        )
+        .expect("cold reopen");
+        assert_eq!(reopened.root(), tree.root());
+        assert_eq!(reopened.page_count(), tree.page_count());
+        assert!(reopened.lookup("src/file-000031.rs", 2).is_some());
+    }
+
+    #[test]
+    fn read_frontier_detects_a_missing_file_that_appears() {
+        let absent_record = CompilerInputTreeRecordV2::AbsentPath {
+            path: "src/new.rs".into(),
+        };
+        let frontier = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::ReadFrontier,
+            vec![absent_record],
+        )
+        .expect("frontier");
+        let mut entries = workspace_entries(1);
+        let mut before = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            entries.clone(),
+        )
+        .expect("before");
+        assert_eq!(frontier.verify_read_frontier(&before), Ok(()));
+
+        entries.push(CompilerInputTreeRecordV2::File {
+            path: "src/new.rs".into(),
+            role: CompilerWorkspaceFileRoleV2::Source,
+            object_id: [9; 32],
+            length: 1,
+        });
+        entries.sort_by(|left, right| left.key().cmp(&right.key()));
+        before = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            entries,
+        )
+        .expect("after");
+        assert_eq!(
+            frontier.verify_read_frontier(&before),
+            Err(CompilerInputTreeV2Error::ReadObservationMismatch)
+        );
+    }
+
+    #[test]
+    fn empty_regular_file_and_positive_read_are_valid_exact_witnesses() {
+        let workspace = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            vec![
+                CompilerInputTreeRecordV2::Directory { path: "".into() },
+                CompilerInputTreeRecordV2::File {
+                    path: "empty.rs".into(),
+                    role: CompilerWorkspaceFileRoleV2::Source,
+                    object_id: [4; 32],
+                    length: 0,
+                },
+            ],
+        )
+        .expect("zero-byte file workspace");
+        let frontier = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::ReadFrontier,
+            vec![CompilerInputTreeRecordV2::PresentFile {
+                path: "empty.rs".into(),
+                object_id: [4; 32],
+                length: 0,
+            }],
+        )
+        .expect("zero-byte positive read");
+        assert_eq!(frontier.verify_read_frontier(&workspace), Ok(()));
+    }
+
+    #[test]
+    fn paths_match_the_scanner_utf8_nfc_policy_and_enforce_length_bound() {
+        let accepted = vec![
+            CompilerInputTreeRecordV2::Directory { path: "".into() },
+            CompilerInputTreeRecordV2::Directory { path: "src".into() },
+            CompilerInputTreeRecordV2::File {
+                path: "src/é.rs".into(),
+                role: CompilerWorkspaceFileRoleV2::Source,
+                object_id: [5; 32],
+                length: 1,
+            },
+        ];
+        assert!(
+            CompilerInputMerkleTreeV2::from_sorted_records(
+                CompilerInputTreeKindV2::Workspace,
+                accepted
+            )
+            .is_ok()
+        );
+
+        let decomposed = vec![
+            CompilerInputTreeRecordV2::Directory { path: "".into() },
+            CompilerInputTreeRecordV2::Directory { path: "src".into() },
+            CompilerInputTreeRecordV2::File {
+                path: "src/e\u{301}.rs".into(),
+                role: CompilerWorkspaceFileRoleV2::Source,
+                object_id: [5; 32],
+                length: 1,
+            },
+        ];
+        assert_eq!(
+            CompilerInputMerkleTreeV2::from_sorted_records(
+                CompilerInputTreeKindV2::Workspace,
+                decomposed
+            ),
+            Err(CompilerInputTreeV2Error::NonCanonical)
+        );
+
+        let overlong = vec![
+            CompilerInputTreeRecordV2::Directory { path: "".into() },
+            CompilerInputTreeRecordV2::File {
+                path: format!("{}x", "a".repeat(MAX_PATH_BYTES)).into_boxed_str(),
+                role: CompilerWorkspaceFileRoleV2::Other,
+                object_id: [5; 32],
+                length: 1,
+            },
+        ];
+        assert_eq!(
+            CompilerInputMerkleTreeV2::from_sorted_records(
+                CompilerInputTreeKindV2::Workspace,
+                overlong
+            ),
+            Err(CompilerInputTreeV2Error::Limit)
+        );
+    }
+}

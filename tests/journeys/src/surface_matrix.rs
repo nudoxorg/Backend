@@ -8,12 +8,15 @@
 #![allow(unreachable_pub)]
 
 use backend_client::Session;
+#[cfg(feature = "gui")]
 use backend_desktop::{
     core::{LocalProjectId, VersionedRoot},
     navigation::RequestId,
     runtime::{CancellationToken, EngineClient, EngineDto, EngineRequest, LocalEngineClient},
 };
-use backend_library::{CommandReply, Cursor, RowId, ViewStateRoot, view_state_root};
+#[cfg(feature = "gui")]
+use backend_library::Cursor;
+use backend_library::{CommandReply, RowId, ViewStateRoot, view_state_root};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -40,6 +43,23 @@ pub struct LanguageCase {
     pub name: &'static str,
     /// Source specimen that must be retained by the index.
     pub source: &'static str,
+    /// Independently authored facts that distinguish this specimen from the
+    /// other language cases. Surface answers are checked against these values;
+    /// the oracle never derives expected content from a live index result.
+    pub oracle: SemanticPayloadOracle,
+}
+
+/// Asymmetric fixture facts used to challenge one declaration end to end.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticPayloadOracle {
+    /// Expected declaration category when the frontend publishes one.
+    pub kind: &'static str,
+    /// A distinctive part of the declared signature.
+    pub signature_fragment: &'static str,
+    /// Unique documentation phrase authored in this fixture.
+    pub documentation_marker: &'static str,
+    /// Unique source token that must survive source capture.
+    pub payload_sentinel: &'static str,
 }
 
 /// Every source language claimed by the built-in frontend set.
@@ -48,55 +68,109 @@ pub const LANGUAGE_CASES: [LanguageCase; 9] = [
         language: "rust",
         path: "src/lib.rs",
         name: "RustBeaconEntry",
-        source: "pub struct RustBeacon { pub intensity: u64 }\n\nimpl RustBeacon {\n    pub fn illuminate(&self) -> u64 { self.intensity }\n}\n\npub fn RustBeaconEntry() -> u64 { RustBeacon { intensity: 8 }.illuminate() }\n",
+        source: "pub struct RustBeacon { pub intensity: u64 }\n\nimpl RustBeacon {\n    pub fn illuminate(&self) -> u64 { self.intensity }\n}\n\n/// ORACLE/RUST: signal level eight.\npub fn RustBeaconEntry() -> u64 { RustBeacon { intensity: 8 }.illuminate() }\n",
+        oracle: SemanticPayloadOracle {
+            kind: "function",
+            signature_fragment: "RustBeaconEntry() -> u64",
+            documentation_marker: "ORACLE/RUST: signal level eight.",
+            payload_sentinel: "intensity: 8",
+        },
     },
     LanguageCase {
         language: "csharp",
         path: "src/CSharpBeacon.cs",
-        name: "CSharpBeacon",
-        source: "public sealed class CSharpBeacon {\n    public ulong Intensity { get; }\n    public CSharpBeacon(ulong intensity) => Intensity = intensity;\n    public ulong Illuminate() => Intensity;\n}\n",
+        name: "CSharpBeacon14",
+        source: "/// ORACLE/CSHARP: signal level fourteen.\npublic sealed class CSharpBeacon14 {\n    public ulong Intensity { get; }\n    public CSharpBeacon14(ulong intensity) => Intensity = intensity;\n    public ulong Illuminate() => Intensity;\n}\n",
+        oracle: SemanticPayloadOracle {
+            kind: "class",
+            signature_fragment: "CSharpBeacon14",
+            documentation_marker: "ORACLE/CSHARP: signal level fourteen.",
+            payload_sentinel: "CSharpBeacon14",
+        },
     },
     LanguageCase {
         language: "java",
         path: "src/JavaBeacon.java",
         name: "JavaBeaconEntry",
-        source: "public final class JavaBeacon {\n    private final long intensity;\n    public JavaBeacon(long intensity) { this.intensity = intensity; }\n    public long illuminate() { return intensity; }\n    public static long JavaBeaconEntry() { return new JavaBeacon(4).illuminate(); }\n}\n",
+        source: "public final class JavaBeacon {\n    private final long intensity;\n    public JavaBeacon(long intensity) { this.intensity = intensity; }\n    public long illuminate() { return intensity; }\n    /** ORACLE/JAVA: signal level twenty-one. */\n    public static long JavaBeaconEntry() { return new JavaBeacon(21).illuminate(); }\n}\n",
+        oracle: SemanticPayloadOracle {
+            kind: "function",
+            signature_fragment: "JavaBeaconEntry()",
+            documentation_marker: "ORACLE/JAVA: signal level twenty-one.",
+            payload_sentinel: "JavaBeacon(21)",
+        },
     },
     LanguageCase {
         language: "typescript",
         path: "src/beacon.js",
         name: "JavaScriptBeaconEntry",
-        source: "export class JavaScriptBeacon {\n  constructor(intensity) { this.intensity = intensity; }\n  illuminate() { return this.intensity; }\n}\nexport function JavaScriptBeaconEntry() { return new JavaScriptBeacon(3).illuminate(); }\n",
+        source: "export class JavaScriptBeacon {\n  constructor(intensity) { this.intensity = intensity; }\n  illuminate() { return this.intensity; }\n}\n/** ORACLE/JAVASCRIPT: signal level thirty-four. */\nexport function JavaScriptBeaconEntry() { return new JavaScriptBeacon(34).illuminate(); }\n",
+        oracle: SemanticPayloadOracle {
+            kind: "function",
+            signature_fragment: "JavaScriptBeaconEntry()",
+            documentation_marker: "ORACLE/JAVASCRIPT: signal level thirty-four.",
+            payload_sentinel: "JavaScriptBeacon(34)",
+        },
     },
     LanguageCase {
         language: "typescript",
         path: "src/beacon.ts",
         name: "TypeScriptBeaconEntry",
-        source: "export class TypeScriptBeacon {\n  constructor(readonly intensity: number) {}\n  illuminate(): number { return this.intensity; }\n}\nexport function TypeScriptBeaconEntry(): number { return new TypeScriptBeacon(5).illuminate(); }\n",
+        source: "export class TypeScriptBeacon {\n  constructor(readonly intensity: number) {}\n  illuminate(): number { return this.intensity; }\n}\n/** ORACLE/TYPESCRIPT: signal level fifty-five. */\nexport function TypeScriptBeaconEntry(): number { return new TypeScriptBeacon(55).illuminate(); }\n",
+        oracle: SemanticPayloadOracle {
+            kind: "function",
+            signature_fragment: "TypeScriptBeaconEntry()",
+            documentation_marker: "ORACLE/TYPESCRIPT: signal level fifty-five.",
+            payload_sentinel: "TypeScriptBeacon(55)",
+        },
     },
     LanguageCase {
         language: "python",
         path: "src/beacon.py",
         name: "PythonBeaconEntry",
-        source: "class PythonBeacon:\n    def __init__(self, intensity: int):\n        self.intensity = intensity\n    def illuminate(self) -> int:\n        return self.intensity\n\ndef PythonBeaconEntry() -> int:\n    return PythonBeacon(6).illuminate()\n",
+        source: "class PythonBeacon:\n    def __init__(self, intensity: int):\n        self.intensity = intensity\n    def illuminate(self) -> int:\n        return self.intensity\n\ndef PythonBeaconEntry() -> int:\n    \"\"\"ORACLE/PYTHON: signal level sixty-two.\"\"\"\n    return PythonBeacon(62).illuminate()\n",
+        oracle: SemanticPayloadOracle {
+            kind: "function",
+            signature_fragment: "PythonBeaconEntry",
+            documentation_marker: "ORACLE/PYTHON: signal level sixty-two.",
+            payload_sentinel: "PythonBeacon(62)",
+        },
     },
     LanguageCase {
         language: "go",
         path: "src/beacon.go",
         name: "GoBeaconEntry",
-        source: "package beacon\n\ntype GoBeacon struct { Intensity uint64 }\n\nfunc (beacon GoBeacon) Illuminate() uint64 { return beacon.Intensity }\n\nfunc GoBeaconEntry() uint64 { return GoBeacon{Intensity: 7}.Illuminate() }\n",
+        source: "package beacon\n\ntype GoBeacon struct { Intensity uint64 }\n\nfunc (beacon GoBeacon) Illuminate() uint64 { return beacon.Intensity }\n\n// ORACLE/GO: signal level seventy-one.\nfunc GoBeaconEntry() uint64 { return GoBeacon{Intensity: 71}.Illuminate() }\n",
+        oracle: SemanticPayloadOracle {
+            kind: "function",
+            signature_fragment: "GoBeaconEntry() uint64",
+            documentation_marker: "ORACLE/GO: signal level seventy-one.",
+            payload_sentinel: "Intensity: 71",
+        },
     },
     LanguageCase {
         language: "c",
         path: "src/c_beacon.c",
         name: "c_beacon_entry",
-        source: "typedef struct CBeacon { unsigned long intensity; } CBeacon;\n\nunsigned long c_beacon_entry(CBeacon beacon) { return beacon.intensity; }\n",
+        source: "typedef struct CBeacon { unsigned long intensity; } CBeacon;\n\n/* ORACLE/C: signal level eighty-three. */\nunsigned long c_beacon_entry(CBeacon beacon) { return beacon.intensity + 83; }\n",
+        oracle: SemanticPayloadOracle {
+            kind: "function",
+            signature_fragment: "c_beacon_entry(CBeacon beacon)",
+            documentation_marker: "ORACLE/C: signal level eighty-three.",
+            payload_sentinel: "+ 83",
+        },
     },
     LanguageCase {
         language: "cpp",
         path: "src/cpp_beacon.cpp",
-        name: "CppBeacon",
-        source: "class CppBeacon {\npublic:\n    explicit CppBeacon(unsigned long intensity) : intensity_(intensity) {}\n    unsigned long illuminate() const { return intensity_; }\nprivate:\n    unsigned long intensity_;\n};\n\nunsigned long cpp_beacon_entry() { return CppBeacon(9).illuminate(); }\n",
+        name: "cpp_beacon_entry",
+        source: "class CppBeacon {\npublic:\n    explicit CppBeacon(unsigned long intensity) : intensity_(intensity) {}\n    unsigned long illuminate() const { return intensity_; }\nprivate:\n    unsigned long intensity_;\n};\n\n/** ORACLE/CXX: signal level ninety-seven. */\nunsigned long cpp_beacon_entry() { return CppBeacon(97).illuminate(); }\n",
+        oracle: SemanticPayloadOracle {
+            kind: "function",
+            signature_fragment: "cpp_beacon_entry()",
+            documentation_marker: "ORACLE/CXX: signal level ninety-seven.",
+            payload_sentinel: "CppBeacon(97)",
+        },
     },
 ];
 
@@ -381,6 +455,7 @@ pub fn fresh_ingest(endpoint: &Path, project: &Path) -> backend_library::HealthR
 }
 
 /// Exercises desktop semantic probes against the same admitted root.
+#[cfg(feature = "gui")]
 pub fn desktop_probe(
     endpoint: &Path,
     project: &Path,

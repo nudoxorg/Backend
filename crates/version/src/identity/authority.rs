@@ -67,7 +67,9 @@ impl<DomainTag: Domain> ContentAuthority<DomainTag> {
 
 #[cfg(test)]
 mod tests {
-    use crate::identity::{ContentAuthority, ContentAuthorityError, ContentId, DomainCode, ObjectDomain};
+    use crate::identity::{
+        ContentAuthority, ContentAuthorityError, ContentId, DomainCode, ObjectDomain,
+    };
 
     #[test]
     /// Proves compact payload bytes cannot bind under a mismatched domain authority.

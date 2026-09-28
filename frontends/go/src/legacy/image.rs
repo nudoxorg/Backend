@@ -733,12 +733,13 @@ impl<'image> GoImage<'image> {
                 actual: actual_body,
             }));
         }
-        let cgo_plane_bytes = unresolved_cgo_count
-            .checked_mul(CHILD_BYTES)
-            .ok_or(ImageError::Header(HeaderError::BodyLength {
-                declared: body_bytes,
-                actual: actual_body,
-            }))?;
+        let cgo_plane_bytes =
+            unresolved_cgo_count
+                .checked_mul(CHILD_BYTES)
+                .ok_or(ImageError::Header(HeaderError::BodyLength {
+                    declared: body_bytes,
+                    actual: actual_body,
+                }))?;
         let Some(atom_offset) = atoms_end.checked_sub(atom_bytes) else {
             return Err(ImageError::Header(HeaderError::BodyLength {
                 declared: body_bytes,
@@ -2847,8 +2848,7 @@ mod unresolved_cgo_tests {
     const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v6\x00";
     /// Atoms: import path, package name, files blob, declaration name, then
     /// the two unresolved-cgo spellings.
-    const ATOMS: &[u8] =
-        b"example.com/cgo\0cgo\0main.go\0Conn\0C.sqlite3\0example.com/cgo.Conn";
+    const ATOMS: &[u8] = b"example.com/cgo\0cgo\0main.go\0Conn\0C.sqlite3\0example.com/cgo.Conn";
 
     fn cells(values: &[u32]) -> Vec<u8> {
         values
@@ -2906,8 +2906,7 @@ mod unresolved_cgo_tests {
         let mut image = vec![0_u8; HEADER_BYTES + body];
         write_header(&mut image, body, 2);
         let mut cursor = HEADER_BYTES;
-        image[cursor..cursor + DECLARATION_BYTES_V6]
-            .copy_from_slice(declaration_row().as_slice());
+        image[cursor..cursor + DECLARATION_BYTES_V6].copy_from_slice(declaration_row().as_slice());
         cursor += DECLARATION_BYTES_V6;
         image[cursor..cursor + PACKAGE_BYTES].copy_from_slice(package_row().as_slice());
         cursor += PACKAGE_BYTES;
@@ -2937,8 +2936,7 @@ mod unresolved_cgo_tests {
         let mut image = vec![0_u8; HEADER_BYTES + body];
         write_header(&mut image, body, 0);
         let mut cursor = HEADER_BYTES;
-        image[cursor..cursor + DECLARATION_BYTES_V6]
-            .copy_from_slice(declaration_row().as_slice());
+        image[cursor..cursor + DECLARATION_BYTES_V6].copy_from_slice(declaration_row().as_slice());
         cursor += DECLARATION_BYTES_V6;
         image[cursor..cursor + PACKAGE_BYTES].copy_from_slice(package_row().as_slice());
         cursor += PACKAGE_BYTES;

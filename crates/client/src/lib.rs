@@ -5,10 +5,16 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+#[cfg(any(unix, windows))]
+mod semantic_range_local;
 mod subscription;
 #[cfg(any(unix, windows))]
 mod subscription_local;
 
+#[cfg(any(unix, windows))]
+pub use semantic_range_local::{
+    LocalSemanticIndexClient, LocalSemanticRangeTransport, SemanticCatalogSnapshot,
+};
 pub use subscription::{
     CertifiedSubscriptionTransport, SubscriptionRequest, SubscriptionTransport,
     snapshot_page_from_bytes, snapshot_page_from_value,
@@ -18,13 +24,15 @@ pub use subscription_local::LocalSubscriptionTransport;
 
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
-    CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage,
-    GraphQueryRequest, GraphValue, HealthReport, NameQuery, OutlineQuery, PackageReference,
-    PageContinuation, PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
-    RequestAdmissionError, SemanticGenerationId, SemanticLanguageProfile, SemanticVersionRecord,
-    SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey, ViewProjectionError, ViewStateRoot,
-    WireCertificate, WireClaim, WireSchema, encode_id, package_key, symbol_key,
+    CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
+    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, NameQuery, OutlineQuery,
+    PackageReference, PageContinuation, PageRequest, PageTerminal, Query, QueryLimit,
+    ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
+    SemanticLanguageProfile, SemanticVersionRecord, SurfaceCommand, SurfaceReply, SymbolAddress,
+    SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim, WireSchema,
+    encode_id, package_key, symbol_key,
 };
+pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
 };
@@ -84,6 +92,8 @@ pub enum ClientError {
     /// can discard the token and restart the same query against the current
     /// revision without treating the daemon as unhealthy.
     StaleCursor,
+    /// The exact selected semantic generation changed during a read or range admission.
+    StaleSelection,
 }
 
 impl fmt::Display for ClientError {
@@ -107,6 +117,9 @@ impl fmt::Display for ClientError {
             Self::CursorMismatch => formatter.write_str("daemon returned an invalid cursor"),
             Self::StaleCursor => {
                 formatter.write_str("continuation cursor belongs to an older revision")
+            }
+            Self::StaleSelection => {
+                formatter.write_str("selected semantic generation is no longer current")
             }
         }
     }
@@ -492,9 +505,26 @@ impl Session {
     /// # Errors
     /// Returns an error when the coordinate or daemon reply fails admission.
     pub fn index(&mut self, coordinate: &str) -> Result<ReplyDto, ClientError> {
+        self.index_with_execution_intent(coordinate, CompileExecutionIntent::Interactive)
+    }
+
+    /// Indexes or refreshes one project path with an explicit compile execution intent.
+    ///
+    /// Interactive is latency-protecting; Background permits bounded remote calibration.
+    ///
+    /// # Errors
+    /// Returns an error when the coordinate or daemon reply fails admission.
+    pub fn index_with_execution_intent(
+        &mut self,
+        coordinate: &str,
+        execution_intent: CompileExecutionIntent,
+    ) -> Result<ReplyDto, ClientError> {
         let package = package_key(coordinate);
         self.send_success(
-            Command::Add { package },
+            Command::Add {
+                package,
+                execution_intent,
+            },
             Some(key_certificate(
                 WireSchema::Package,
                 package.as_bytes(),
@@ -1448,6 +1478,7 @@ mod tests {
             2,
             Command::Add {
                 package: package_key("/tmp/project"),
+                execution_intent: CompileExecutionIntent::Interactive,
             },
         );
         configure_request(&transport.stream, &add).expect("mutation timeout");

@@ -60,9 +60,7 @@ pub(super) fn find_node<'a, R: Relation>(
         })
         .saturating_sub(1)
         .min(children.len().saturating_sub(1));
-    children
-        .get(index)
-        .and_then(|child| find_node(child, ord))
+    children.get(index).and_then(|child| find_node(child, ord))
 }
 pub(super) fn target_shape<R: Relation>(
     root: &Node<R>,

@@ -931,7 +931,41 @@ enum ExplicitCheckerInvocation {
     },
 }
 
+/// Path-independent mode of one explicit TypeScript checker invocation.
+///
+/// Executable and module-root bytes belong to typed toolchain/input identities; this value only
+/// records the command grammar selected by the adapter.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum TypeScriptInvocationModeV1 {
+    /// A selected report program directly implements the checker protocol.
+    ReportProgram,
+    /// A selected Node runtime loads the TypeScript API through the vendored driver.
+    Node,
+}
+
 impl ExplicitTypeScriptChecker {
+    /// Returns the path-independent invocation mode for portable recipe construction.
+    #[must_use]
+    pub const fn portable_invocation_mode(&self) -> TypeScriptInvocationModeV1 {
+        match &self.invocation {
+            ExplicitCheckerInvocation::ReportProgram(_) => {
+                TypeScriptInvocationModeV1::ReportProgram
+            }
+            ExplicitCheckerInvocation::Node { .. } => TypeScriptInvocationModeV1::Node,
+        }
+    }
+
+    /// Reports whether report-program mode runs the exact selected compiler executable.
+    /// Node mode depends on the TypeScript module tree as well as Node, so it cannot be
+    /// represented by the selected compiler-tool version alone.
+    #[must_use]
+    pub fn uses_toolchain_executable(&self, executable: &Path) -> bool {
+        matches!(
+            &self.invocation,
+            ExplicitCheckerInvocation::ReportProgram(program) if program.as_ref() == executable
+        )
+    }
+
     /// Returns a host-local fingerprint of the explicit checker command,
     /// package resolver root, bundled driver, and process bounds. Path bytes
     /// make this a drift detector rather than a cross-host closure identity.
@@ -1694,7 +1728,39 @@ fn tail(bytes: &[u8]) -> String {
 mod capability_tests {
     use std::path::PathBuf;
 
-    use super::{Checker, TypeScriptCheckerProgramError};
+    use super::{Checker, TypeScriptCheckerProgramError, TypeScriptInvocationModeV1};
+
+    #[test]
+    fn portable_invocation_mode_survives_path_relocation_and_changes_with_mode() {
+        let first = Checker::default()
+            .with_node(
+                PathBuf::from("/host-a/bin/node"),
+                PathBuf::from("/host-a/node_modules"),
+            )
+            .expect("first node authority");
+        let relocated = Checker::default()
+            .with_node(
+                PathBuf::from("/host-b/runtime/node"),
+                PathBuf::from("/host-b/modules"),
+            )
+            .expect("relocated node authority");
+        let report_program = Checker::default()
+            .with_program(PathBuf::from("/host-c/bin/ts-checker"))
+            .expect("report program authority");
+
+        assert_eq!(
+            first.portable_invocation_mode(),
+            relocated.portable_invocation_mode()
+        );
+        assert_ne!(
+            first.portable_invocation_mode(),
+            report_program.portable_invocation_mode()
+        );
+        assert_eq!(
+            first.portable_invocation_mode(),
+            TypeScriptInvocationModeV1::Node
+        );
+    }
 
     #[test]
     fn explicit_checker_rejects_relative_executable_before_child_work() {

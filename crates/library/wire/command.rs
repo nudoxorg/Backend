@@ -4,9 +4,9 @@ use super::{
 };
 use crate::canonical::{PackageSchema, SymbolSchema, decode_id, encode_id};
 use crate::{
-    Command, CommandReply, CompleteViewProjection, CoverageCapability, Cursor, DocumentQuery,
-    GraphNeighborhoodQuery, NameQuery, OutlineQuery, Query, QueryLimit, SymbolAddress,
-    ViewSnapshot, ViewStateRoot,
+    Command, CommandReply, CompileExecutionIntent, CompleteViewProjection, CoverageCapability,
+    Cursor, DocumentQuery, GraphNeighborhoodQuery, NameQuery, OutlineQuery, Query, QueryLimit,
+    SemanticSearchStatus, SymbolAddress, ViewSnapshot, ViewStateRoot,
 };
 use backend_version::ProducerObservationVerifier;
 use serde::{Deserialize, Serialize};
@@ -148,6 +148,8 @@ pub struct ReplyDto {
     /// producer. Clients must resume from this cursor rather than deriving
     /// stream progress from the visible view frontier.
     health_cursor: Option<Cursor>,
+    /// Result of the optional semantic lane for a Search reply.
+    semantic_search: Option<SemanticSearchStatus>,
 }
 
 impl ReplyDto {
@@ -159,6 +161,7 @@ impl ReplyDto {
             reply,
             certificate: None,
             health_cursor: None,
+            semantic_search: None,
         }
     }
 
@@ -173,6 +176,7 @@ impl ReplyDto {
             reply: CommandReply::Health(root),
             certificate: None,
             health_cursor: Some(cursor),
+            semantic_search: None,
         }
     }
 
@@ -195,6 +199,19 @@ impl ReplyDto {
         self.health_cursor
     }
 
+    /// Returns the semantic-lane result attached to this search reply.
+    #[must_use]
+    pub const fn semantic_search_status(&self) -> Option<SemanticSearchStatus> {
+        self.semantic_search
+    }
+
+    /// Attaches the per-query semantic-lane result to a Search reply.
+    #[must_use]
+    pub const fn with_semantic_search_status(mut self, status: SemanticSearchStatus) -> Self {
+        self.semantic_search = Some(status);
+        self
+    }
+
     /// Attaches the exact owner cursor to a health reply assembled by a
     /// compatibility caller.
     #[must_use]
@@ -211,6 +228,7 @@ impl ReplyDto {
             reply: CommandReply::Error(message.into()),
             certificate: None,
             health_cursor: None,
+            semantic_search: None,
         }
     }
 
@@ -231,6 +249,10 @@ impl ReplyDto {
         let envelope: ReplyEnvelope =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         ensure_version(envelope.version, "reply")?;
+        if envelope.semantic_search.is_some() && !matches!(&expected.reply, CommandReply::Search(_))
+        {
+            return Err("semantic search status attached to a non-search reply".to_owned());
+        }
         let observed = serde_json::to_value(&envelope).map_err(|error| error.to_string())?;
         let accepted = serde_json::to_value(expected).map_err(|error| error.to_string())?;
         if observed != accepted {
@@ -256,6 +278,9 @@ impl ReplyDto {
         ensure_version(envelope.version, "reply")?;
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let reply = reply_from_wire(envelope.reply, certificate, capability)?;
+        if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
+            return Err("semantic search status attached to a non-search reply".to_owned());
+        }
         let health_cursor = envelope
             .health_cursor
             .as_ref()
@@ -281,6 +306,7 @@ impl ReplyDto {
             reply,
             certificate: envelope.certificate,
             health_cursor,
+            semantic_search: envelope.semantic_search,
         })
     }
 
@@ -302,6 +328,9 @@ impl ReplyDto {
         ensure_version(envelope.version, "reply")?;
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let reply = reply_from_wire_with_verifier(envelope.reply, certificate, verifier)?;
+        if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
+            return Err("semantic search status attached to a non-search reply".to_owned());
+        }
         let health_cursor = envelope
             .health_cursor
             .as_ref()
@@ -327,6 +356,7 @@ impl ReplyDto {
             reply,
             certificate: envelope.certificate,
             health_cursor,
+            semantic_search: envelope.semantic_search,
         })
     }
 
@@ -515,7 +545,7 @@ struct CommandEnvelope {
 enum CommandWire {
     Packages(EmptyWire),
     PackagePage(PageRequestWire),
-    Add(PackageWire),
+    Add(AddWire),
     Remove(PackageWire),
     Document(DocumentQueryWire),
     Source(DocumentQueryWire),
@@ -542,6 +572,13 @@ pub(crate) struct EmptyWire {}
 #[serde(deny_unknown_fields)]
 struct PackageWire {
     package: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddWire {
+    package: String,
+    execution_intent: CompileExecutionIntent,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -705,8 +742,12 @@ fn command_to_wire(command: &Command) -> CommandWire {
     match command {
         Command::Packages => CommandWire::Packages(EmptyWire {}),
         Command::PackagePage(page) => CommandWire::PackagePage(page_request_to_wire(*page)),
-        Command::Add { package } => CommandWire::Add(PackageWire {
+        Command::Add {
+            package,
+            execution_intent,
+        } => CommandWire::Add(AddWire {
             package: encode_id(package.as_bytes()),
+            execution_intent: *execution_intent,
         }),
         Command::Remove { package } => CommandWire::Remove(PackageWire {
             package: encode_id(package.as_bytes()),
@@ -750,6 +791,7 @@ fn command_from_wire(
         CommandWire::Add(value) => Ok(Command::Add {
             package: required_certificate(certificate)?
                 .key_value::<PackageSchema>(WireSchema::Package, &value.package)?,
+            execution_intent: value.execution_intent,
         }),
         CommandWire::Remove(value) => Ok(Command::Remove {
             package: required_certificate(certificate)?

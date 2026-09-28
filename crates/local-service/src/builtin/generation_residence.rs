@@ -4,27 +4,40 @@
 //! manifest and copy every image on each publish and each query. The claim's
 //! manifest identity and binding identity already name that immutable closure.
 //! A hit shares those image bytes. A failed activation is not remembered, and
-//! the language profile stays out of the key because admission checks it later.
+//! each package, coordinate, and language profile keeps its own resident scope.
 
+use backend_engine::builtin::ProductSemanticPublicationKey;
 use backend_engine::builtin::SemanticPublicationClaim;
 use backend_library::interface::SemanticImageSnapshot;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Generations retained at once. One workspace walks every selected publication;
 /// the least recently used closure leaves first.
 const MAX_RESIDENT_GENERATIONS: usize = 4096;
+/// Aggregate encoded-image bytes owned by cache entries. Decoded views borrow
+/// these bytes and retain only fixed-size structural proofs.
+const MAX_RESIDENT_BYTES: usize = 512 * 1024 * 1024;
+/// Largest generation the selected loader may materialize. It checks selected
+/// metadata before reading payloads; larger selections fail before allocation.
+const MAX_RESIDENT_GENERATION_BYTES: usize = 128 * 1024 * 1024;
+/// Image snapshots are small owners in addition to their payload bytes. Bound
+/// both the count per generation and across the residence as well.
+const MAX_RESIDENT_GENERATION_IMAGES: usize = 4096;
+const MAX_RESIDENT_IMAGES: usize = 16 * 1024;
 
 /// Manifest and binding identities of one immutable semantic generation.
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct GenerationKey {
+    scope: [u8; 32],
     manifest: [u8; 32],
     binding: [u8; 32],
 }
 
 impl GenerationKey {
-    fn from_claim(claim: SemanticPublicationClaim) -> Self {
+    fn from_claim(claim: SemanticPublicationClaim, scope: [u8; 32]) -> Self {
         Self {
+            scope,
             manifest: *claim.manifest().identity.as_ref(),
             binding: *claim.binding().identity.as_ref(),
         }
@@ -32,17 +45,94 @@ impl GenerationKey {
 
     #[cfg(test)]
     fn from_parts(manifest: [u8; 32], binding: [u8; 32]) -> Self {
-        Self { manifest, binding }
+        Self {
+            scope: [0; 32],
+            manifest,
+            binding,
+        }
     }
 }
 
+/// Exact selected-closure loader installed by the local semantic authority.
+///
+/// The loader owns a snapshot of typed Turso selections and a CAS reader. It
+/// does not retain the mutable authority database handle, so concurrent
+/// semantic cache misses do not serialize on one authority mutex.
+pub(crate) trait SelectedSemanticImageLoader: Send + Sync {
+    fn load(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+        max_bytes: usize,
+        max_images: usize,
+    ) -> Result<Box<[SemanticImageSnapshot]>, super::BuiltinModelError>;
+}
+
 /// Shared semantic images for claims this process has already activated.
+///
+/// The byte charge covers each encoded image allocation held by this cache
+/// once. Reopened semantic views borrow those bytes and cache only fixed-size
+/// structural proofs. `Arc` clones returned to callers can keep bytes alive
+/// after eviction and are outside the cache's eviction control.
 pub(crate) struct SemanticGenerationResidence {
-    limit: usize,
-    images: BTreeMap<GenerationKey, Arc<[SemanticImageSnapshot]>>,
-    order: VecDeque<GenerationKey>,
+    budget: ResidenceBudget,
+    images: HashMap<GenerationKey, ResidentGeneration>,
+    access_epoch: u64,
+    resident_bytes: usize,
+    resident_images: usize,
+    high_water_bytes: usize,
+    uncached_oversized_generations: u64,
     owner_calls: u64,
     hits: u64,
+    selected_loader: Option<Arc<dyn SelectedSemanticImageLoader>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResidenceBudget {
+    max_generations: usize,
+    max_bytes: usize,
+    max_generation_bytes: usize,
+    max_images: usize,
+    max_generation_images: usize,
+}
+
+impl Default for ResidenceBudget {
+    fn default() -> Self {
+        Self {
+            max_generations: MAX_RESIDENT_GENERATIONS,
+            max_bytes: MAX_RESIDENT_BYTES,
+            max_generation_bytes: MAX_RESIDENT_GENERATION_BYTES,
+            max_images: MAX_RESIDENT_IMAGES,
+            max_generation_images: MAX_RESIDENT_GENERATION_IMAGES,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResidentImageWeight {
+    bytes: usize,
+    images: usize,
+}
+
+struct ResidentGeneration {
+    images: Arc<[SemanticImageSnapshot]>,
+    weight: ResidentImageWeight,
+    last_access: u64,
+}
+
+/// Result of deciding whether one selected image set can be retained.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResidentAdmission {
+    /// The exact immutable image set is held by the bounded residence.
+    Retained(ResidentImageWeight),
+    /// The generation remains usable for this call but exceeds its own byte cap.
+    GenerationBytesExceeded { bytes: usize, maximum: usize },
+    /// The generation remains usable for this call but has too many image owners.
+    GenerationImagesExceeded { images: usize, maximum: usize },
+    /// The metadata count overflowed while calculating the byte charge.
+    WeightOverflow,
+    /// Another activation for this exact key already installed a resident entry.
+    AlreadyResident,
 }
 
 impl Default for SemanticGenerationResidence {
@@ -53,13 +143,43 @@ impl Default for SemanticGenerationResidence {
 
 impl SemanticGenerationResidence {
     fn with_limit(limit: usize) -> Self {
+        let mut budget = ResidenceBudget::default();
+        budget.max_generations = limit.max(1);
+        Self::with_budget(budget)
+    }
+
+    fn with_budget(mut budget: ResidenceBudget) -> Self {
+        budget.max_generations = budget.max_generations.clamp(1, MAX_RESIDENT_GENERATIONS);
+        budget.max_bytes = budget.max_bytes.min(MAX_RESIDENT_BYTES);
+        budget.max_images = budget.max_images.min(MAX_RESIDENT_IMAGES);
+        budget.max_generation_bytes = budget
+            .max_generation_bytes
+            .min(budget.max_bytes)
+            .min(MAX_RESIDENT_GENERATION_BYTES);
+        budget.max_generation_images = budget
+            .max_generation_images
+            .min(budget.max_images)
+            .min(MAX_RESIDENT_GENERATION_IMAGES);
         Self {
-            limit: limit.max(1),
-            images: BTreeMap::new(),
-            order: VecDeque::new(),
+            budget,
+            images: HashMap::new(),
+            access_epoch: 0,
+            resident_bytes: 0,
+            resident_images: 0,
+            high_water_bytes: 0,
+            uncached_oversized_generations: 0,
             owner_calls: 0,
             hits: 0,
+            selected_loader: None,
         }
+    }
+
+    pub(crate) fn install_selected_loader(&mut self, loader: Arc<dyn SelectedSemanticImageLoader>) {
+        self.selected_loader = Some(loader);
+    }
+
+    pub(crate) fn has_selected_loader(&self) -> bool {
+        self.selected_loader.is_some()
     }
 
     /// Owner activations performed, including failures.
@@ -84,7 +204,37 @@ impl SemanticGenerationResidence {
         claim: SemanticPublicationClaim,
         activate: impl FnOnce() -> Result<Box<[SemanticImageSnapshot]>, E>,
     ) -> Result<Arc<[SemanticImageSnapshot]>, E> {
-        self.recall(GenerationKey::from_claim(claim), activate)
+        self.recall(GenerationKey::from_claim(claim, [0; 32]), activate)
+    }
+
+    /// Returns selected images from the authority identified closure on a
+    /// cache miss. A configured authority loader is mandatory for runtime
+    /// claims, including misses after LRU eviction.
+    pub(crate) fn load_selected(
+        &mut self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<Arc<[SemanticImageSnapshot]>, super::BuiltinModelError> {
+        let scope = publication_scope(key);
+        let cache_key = GenerationKey::from_claim(claim, scope);
+        if let Some(entry) = self.images.get(&cache_key) {
+            let hit = Arc::clone(&entry.images);
+            self.touch(cache_key);
+            self.hits += 1;
+            return Ok(hit);
+        }
+        self.owner_calls += 1;
+        let loader = self.selected_loader.as_ref().ok_or_else(|| {
+            super::BuiltinModelError("semantic authority image loader is unavailable".to_owned())
+        })?;
+        let images = Arc::from(loader.load(
+            key,
+            claim,
+            self.budget.max_generation_bytes,
+            self.budget.max_generation_images,
+        )?);
+        let _admission = self.remember(cache_key, Arc::clone(&images));
+        Ok(images)
     }
 
     fn recall<E>(
@@ -92,39 +242,131 @@ impl SemanticGenerationResidence {
         key: GenerationKey,
         activate: impl FnOnce() -> Result<Box<[SemanticImageSnapshot]>, E>,
     ) -> Result<Arc<[SemanticImageSnapshot]>, E> {
-        if let Some(hit) = self.images.get(&key) {
-            let hit = Arc::clone(hit);
+        if let Some(entry) = self.images.get(&key) {
+            let hit = Arc::clone(&entry.images);
             self.touch(key);
             self.hits += 1;
             return Ok(hit);
         }
         self.owner_calls += 1;
         let images = Arc::from(activate()?);
-        self.remember(key, Arc::clone(&images));
+        let _admission = self.remember(key, Arc::clone(&images));
         Ok(images)
     }
 
     fn touch(&mut self, key: GenerationKey) {
-        if let Some(position) = self.order.iter().position(|item| *item == key) {
-            self.order.remove(position);
-            self.order.push_back(key);
+        let epoch = self.next_access_epoch();
+        if let Some(entry) = self.images.get_mut(&key) {
+            entry.last_access = epoch;
         }
     }
 
-    fn remember(&mut self, key: GenerationKey, images: Arc<[SemanticImageSnapshot]>) {
+    fn next_access_epoch(&mut self) -> u64 {
+        if self.access_epoch == u64::MAX {
+            // This can happen only after an impractical number of cache hits.
+            // Rebase existing ranks once to keep the hot path O(1).
+            let mut by_age = self
+                .images
+                .iter()
+                .map(|(key, entry)| (entry.last_access, *key))
+                .collect::<Vec<_>>();
+            by_age.sort_unstable();
+            for (rank, (_, key)) in by_age.into_iter().enumerate() {
+                if let Some(entry) = self.images.get_mut(&key) {
+                    entry.last_access = u64::try_from(rank + 1).unwrap_or(u64::MAX);
+                }
+            }
+            self.access_epoch = u64::try_from(self.images.len()).unwrap_or(u64::MAX - 1);
+        }
+        self.access_epoch = self.access_epoch.saturating_add(1);
+        self.access_epoch
+    }
+
+    fn remember(
+        &mut self,
+        key: GenerationKey,
+        images: Arc<[SemanticImageSnapshot]>,
+    ) -> ResidentAdmission {
         if self.images.contains_key(&key) {
             self.touch(key);
-            return;
+            return ResidentAdmission::AlreadyResident;
         }
-        self.images.insert(key, images);
-        self.order.push_back(key);
-        while self.images.len() > self.limit {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
+        let Some(weight) = resident_weight(&images) else {
+            self.uncached_oversized_generations =
+                self.uncached_oversized_generations.saturating_add(1);
+            return ResidentAdmission::WeightOverflow;
+        };
+        if weight.bytes > self.budget.max_generation_bytes {
+            self.uncached_oversized_generations =
+                self.uncached_oversized_generations.saturating_add(1);
+            return ResidentAdmission::GenerationBytesExceeded {
+                bytes: weight.bytes,
+                maximum: self.budget.max_generation_bytes,
             };
-            self.images.remove(&oldest);
         }
+        if weight.images > self.budget.max_generation_images {
+            self.uncached_oversized_generations =
+                self.uncached_oversized_generations.saturating_add(1);
+            return ResidentAdmission::GenerationImagesExceeded {
+                images: weight.images,
+                maximum: self.budget.max_generation_images,
+            };
+        }
+        while self.images.len() >= self.budget.max_generations
+            || self.resident_bytes.saturating_add(weight.bytes) > self.budget.max_bytes
+            || self.resident_images.saturating_add(weight.images) > self.budget.max_images
+        {
+            let oldest = self
+                .images
+                .iter()
+                .min_by_key(|(key, entry)| (entry.last_access, **key))
+                .map(|(key, _)| *key);
+            let Some(oldest) = oldest else {
+                return ResidentAdmission::WeightOverflow;
+            };
+            if let Some(evicted) = self.images.remove(&oldest) {
+                self.resident_bytes -= evicted.weight.bytes;
+                self.resident_images -= evicted.weight.images;
+            }
+        }
+        self.resident_bytes += weight.bytes;
+        self.resident_images += weight.images;
+        self.high_water_bytes = self.high_water_bytes.max(self.resident_bytes);
+        let last_access = self.next_access_epoch();
+        self.images.insert(
+            key,
+            ResidentGeneration {
+                images,
+                weight,
+                last_access,
+            },
+        );
+        ResidentAdmission::Retained(weight)
     }
+}
+
+fn resident_weight(images: &[SemanticImageSnapshot]) -> Option<ResidentImageWeight> {
+    let bytes = images.iter().try_fold(0_usize, |total, image| {
+        total.checked_add(image.as_ref().len())
+    })?;
+    Some(ResidentImageWeight {
+        bytes,
+        images: images.len(),
+    })
+}
+
+fn publication_scope(key: &ProductSemanticPublicationKey) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.local-service.semantic-residence.v1\0");
+    for part in [
+        key.package().as_str().as_bytes(),
+        key.coordinate().as_str().as_bytes(),
+    ] {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.update(&<[u8; 2]>::from(key.profile()));
+    *hasher.finalize().as_bytes()
 }
 
 /// Times a real compiler reopen against a resident generation.
@@ -520,10 +762,72 @@ fn percentiles(samples: &[u128]) -> (u128, u128) {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{GenerationKey, SemanticGenerationResidence};
+    use super::{
+        GenerationKey, SelectedSemanticImageLoader, SemanticGenerationResidence, resident_weight,
+    };
+    use backend_engine::builtin::{ProductSemanticPublicationKey, SemanticPublicationClaim};
     use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
     use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+
+    struct SnapshotLoader {
+        // Backing data stands in for already durable selected CAS members;
+        // these copies are not produced by a cache-miss load.
+        images: Vec<SemanticImageSnapshot>,
+        checks: Arc<Mutex<usize>>,
+        materializations: Arc<Mutex<usize>>,
+    }
+
+    impl SelectedSemanticImageLoader for SnapshotLoader {
+        fn load(
+            &self,
+            _key: &ProductSemanticPublicationKey,
+            _claim: SemanticPublicationClaim,
+            max_bytes: usize,
+            max_images: usize,
+        ) -> Result<Box<[SemanticImageSnapshot]>, super::super::BuiltinModelError> {
+            *self.checks.lock().expect("checks") += 1;
+            let weight = resident_weight(&self.images).expect("fixture weight");
+            if weight.bytes > max_bytes || weight.images > max_images {
+                return Err(super::super::BuiltinModelError(
+                    "fixture exceeds residence limit".to_owned(),
+                ));
+            }
+            *self.materializations.lock().expect("materializations") += 1;
+            self.images
+                .iter()
+                .map(|image| {
+                    image.try_clone().map_err(|error| {
+                        super::super::BuiltinModelError(format!("clone fixture: {error:?}"))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Vec::into_boxed_slice)
+        }
+    }
+
+    fn copies(images: &[SemanticImageSnapshot]) -> Vec<SemanticImageSnapshot> {
+        images
+            .iter()
+            .map(|image| image.try_clone().expect("image clone"))
+            .collect()
+    }
+
+    fn loader(
+        images: &[SemanticImageSnapshot],
+    ) -> (Arc<SnapshotLoader>, Arc<Mutex<usize>>, Arc<Mutex<usize>>) {
+        let checks = Arc::new(Mutex::new(0));
+        let materializations = Arc::new(Mutex::new(0));
+        (
+            Arc::new(SnapshotLoader {
+                images: copies(images),
+                checks: Arc::clone(&checks),
+                materializations: Arc::clone(&materializations),
+            }),
+            checks,
+            materializations,
+        )
+    }
 
     fn snapshot(bytes: &[u8]) -> SemanticImageSnapshot {
         let authority = SemanticImageAuthority {
@@ -736,5 +1040,190 @@ mod tests {
         let still = super::load_fixture(&fixture, &fixture.claim, &mut generations).expect("still");
         assert_eq!(generations.owner_calls(), 3);
         assert!(Arc::ptr_eq(cold.image_set(), still.image_set()));
+    }
+
+    #[test]
+    fn byte_budget_evicts_asymmetric_valid_generations_and_reopens_them() {
+        let fixture = super::open_generation_fixture().expect("fixture");
+        let mut expected_residence = SemanticGenerationResidence::default();
+        let initial = super::load_fixture(&fixture, &fixture.claim, &mut expected_residence)
+            .expect("open two-image publication");
+        let replacement =
+            super::load_fixture(&fixture, &fixture.replacement, &mut expected_residence)
+                .expect("open one-image publication");
+        let initial_bytes = initial
+            .images()
+            .iter()
+            .map(|image| image.as_ref().to_vec())
+            .collect::<Vec<_>>();
+        let replacement_bytes = replacement
+            .images()
+            .iter()
+            .map(|image| image.as_ref().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(initial_bytes.len(), 2);
+        assert_eq!(replacement_bytes.len(), 1);
+        let initial_weight = super::resident_weight(initial.images()).expect("initial weight");
+        let replacement_weight =
+            super::resident_weight(replacement.images()).expect("replacement weight");
+        assert!(initial_weight.bytes > replacement_weight.bytes);
+        assert!(initial_bytes.iter().all(|bytes| !bytes.is_empty()));
+        assert!(!replacement_bytes[0].is_empty());
+        assert_ne!(initial_bytes[0], replacement_bytes[0]);
+
+        let max_bytes = initial_weight
+            .bytes
+            .checked_add(replacement_weight.bytes)
+            .expect("combined fixture size")
+            - 1;
+        let mut budget = super::ResidenceBudget::default();
+        budget.max_bytes = max_bytes;
+        budget.max_generation_bytes = initial_weight.bytes.max(replacement_weight.bytes);
+        budget.max_images = 8;
+        budget.max_generation_images = 4;
+        let mut bounded = SemanticGenerationResidence::with_budget(budget);
+
+        let resident_initial =
+            super::load_fixture(&fixture, &fixture.claim, &mut bounded).expect("initial");
+        assert_eq!(
+            bounded.resident_bytes, initial_weight.bytes,
+            "the first generation is charged by exact image payload bytes"
+        );
+        let resident_replacement =
+            super::load_fixture(&fixture, &fixture.replacement, &mut bounded).expect("replacement");
+        assert_eq!(resident_replacement.images().len(), 1);
+        assert_eq!(
+            bounded.images.len(),
+            1,
+            "the byte limit evicts the older set"
+        );
+        assert_eq!(bounded.resident_bytes, replacement_weight.bytes);
+        assert!(bounded.high_water_bytes <= max_bytes);
+        assert!(bounded.resident_bytes <= max_bytes);
+        drop(resident_initial);
+        drop(resident_replacement);
+
+        let reopened_initial =
+            super::load_fixture(&fixture, &fixture.claim, &mut bounded).expect("reload initial");
+        assert_eq!(
+            bounded.owner_calls(),
+            3,
+            "evicted data reopens from its exact claim"
+        );
+        assert_eq!(bounded.resident_bytes, initial_weight.bytes);
+        assert!(bounded.high_water_bytes <= max_bytes);
+        assert_eq!(reopened_initial.images().len(), initial_bytes.len());
+        for (expected, observed) in initial_bytes.iter().zip(reopened_initial.images()) {
+            assert_eq!(expected.as_slice(), observed.as_ref());
+        }
+
+        // A fresh residence models process restart: no in-memory entry is
+        // trusted, so the replacement is reopened from its durable claim.
+        let mut cold = SemanticGenerationResidence::with_budget(budget);
+        let cold_replacement =
+            super::load_fixture(&fixture, &fixture.replacement, &mut cold).expect("cold reopen");
+        assert_eq!(cold.owner_calls(), 1);
+        assert_eq!(cold.resident_bytes, replacement_weight.bytes);
+        assert!(cold.high_water_bytes <= max_bytes);
+        assert_eq!(cold_replacement.images().len(), replacement_bytes.len());
+        assert_eq!(
+            cold_replacement.images()[0].as_ref(),
+            replacement_bytes[0].as_slice()
+        );
+    }
+
+    #[test]
+    fn over_limit_generation_is_not_retained() {
+        let fixture = super::open_generation_fixture().expect("fixture");
+        let mut expected_residence = SemanticGenerationResidence::default();
+        let expected = super::load_fixture(&fixture, &fixture.claim, &mut expected_residence)
+            .expect("open valid generation");
+        let expected_bytes = expected
+            .images()
+            .iter()
+            .map(|image| image.as_ref().to_vec())
+            .collect::<Vec<_>>();
+        let total_bytes = super::resident_weight(expected.images())
+            .expect("generation weight")
+            .bytes;
+        assert!(total_bytes > 1);
+
+        let mut budget = super::ResidenceBudget::default();
+        budget.max_bytes = total_bytes;
+        budget.max_generation_bytes = total_bytes - 1;
+        let mut residence = SemanticGenerationResidence::with_budget(budget);
+        let first = super::load_fixture(&fixture, &fixture.claim, &mut residence)
+            .expect("valid over-limit generation remains usable");
+        assert_eq!(first.images().len(), expected_bytes.len());
+        for (expected, observed) in expected_bytes.iter().zip(first.images()) {
+            assert_eq!(expected.as_slice(), observed.as_ref());
+        }
+        assert!(residence.images.is_empty());
+        assert_eq!(residence.resident_bytes, 0);
+        assert_eq!(residence.uncached_oversized_generations, 1);
+
+        // This caller still holds the first Arc while the next activation is
+        // performed. Such outstanding clones are outside cache eviction
+        // control; the residence never adds either allocation to its budget.
+        let second = super::load_fixture(&fixture, &fixture.claim, &mut residence)
+            .expect("uncached generation reopens on the next call");
+        assert_eq!(residence.owner_calls(), 2);
+        assert!(!Arc::ptr_eq(first.image_set(), second.image_set()));
+        assert!(residence.images.is_empty());
+        assert_eq!(residence.resident_bytes, 0);
+    }
+
+    #[test]
+    fn selected_loader_checks_entry_cap_before_copying_payloads() {
+        let fixture = super::open_generation_fixture().expect("fixture");
+        let mut source_residence = SemanticGenerationResidence::default();
+        let source =
+            super::load_fixture(&fixture, &fixture.claim, &mut source_residence).expect("source");
+        let weight = resident_weight(source.images()).expect("source weight");
+        assert!(weight.bytes > 1);
+        assert_eq!(weight.images, 2);
+
+        let mut too_small = super::ResidenceBudget::default();
+        too_small.max_bytes = weight.bytes;
+        too_small.max_generation_bytes = weight.bytes - 1;
+        too_small.max_generation_images = weight.images;
+        let (bounded_loader, checks, materializations) = loader(source.images());
+        let mut residence = SemanticGenerationResidence::with_budget(too_small);
+        residence.install_selected_loader(bounded_loader);
+        assert!(
+            residence
+                .load_selected(fixture.key(), fixture.claim)
+                .is_err()
+        );
+        assert_eq!(*checks.lock().expect("checks"), 1);
+        assert_eq!(
+            *materializations.lock().expect("materializations"),
+            0,
+            "the loader rejects from the selected metadata inventory before materializing the result"
+        );
+        assert!(residence.images.is_empty());
+        assert_eq!(residence.resident_bytes, 0);
+
+        let mut exact = super::ResidenceBudget::default();
+        exact.max_bytes = weight.bytes;
+        exact.max_generation_bytes = weight.bytes;
+        exact.max_images = weight.images;
+        exact.max_generation_images = weight.images;
+        let (admitted_loader, admitted_checks, admitted_materializations) = loader(source.images());
+        let mut admitted = SemanticGenerationResidence::with_budget(exact);
+        admitted.install_selected_loader(admitted_loader);
+        let reopened = admitted
+            .load_selected(fixture.key(), fixture.claim)
+            .expect("entry at exact byte cap");
+        assert_eq!(*admitted_checks.lock().expect("checks"), 1);
+        assert_eq!(
+            *admitted_materializations.lock().expect("materializations"),
+            1
+        );
+        assert_eq!(admitted.resident_bytes, weight.bytes);
+        assert!(admitted.high_water_bytes <= weight.bytes);
+        for (expected, observed) in source.images().iter().zip(reopened.iter()) {
+            assert_eq!(expected.as_ref(), observed.as_ref());
+        }
     }
 }

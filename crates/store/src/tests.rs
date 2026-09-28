@@ -1276,9 +1276,8 @@ fn root_only_extension_durably_writes_every_registered_relation_root() {
     )
     .with_root_only();
     let authority = must(store.acquire_publication_authority());
-    let published =
-        must(must(store.prepare_checked_workspace_publication(publication)).durable())
-            .publish_with_authority(&authority);
+    let published = must(must(store.prepare_checked_workspace_publication(publication)).durable())
+        .publish_with_authority(&authority);
     drop(must(published));
 
     let reopened = must(FileStore::open_with_registry(

@@ -13,8 +13,9 @@ pub use open::{
     OpenedSemanticArtifactError, OpenedSemanticCompilation, OpenedSemanticGeneration,
     SemanticGenerationRequirements,
 };
+pub(crate) use publish::PreparedSemanticOutput;
 pub use publish::{
     PublicationScratch, PublishCompiledError, PublishControl, PublishSemanticError,
-    PublishedCompilation, SemanticPublicationScratch, UncommittedPublication,
-    UncommittedPublicationFacts,
+    PublishedCompilation, SemanticPublicationScratch, StagedSemanticObjectClaim,
+    UncommittedPublication, UncommittedPublicationFacts,
 };

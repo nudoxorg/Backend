@@ -25,6 +25,7 @@ pub const MAX_ENDPOINT_PATH: usize = backend_replication::MAX_UNIX_ENDPOINT_PATH
 pub const ENDPOINT_ENV: &str = "BACKEND_LOCALD_ENDPOINT";
 
 mod client;
+mod cluster;
 mod error;
 pub mod invoke;
 pub mod options;
@@ -32,17 +33,18 @@ mod process;
 mod protocol;
 pub mod render;
 pub mod run;
+mod semantic_hydrate;
 mod transport;
 
 #[cfg(test)]
 mod tests;
 
+pub use backend_present::{Request, lower, lower_surface_json};
 pub use client::{
     execute, execute_dto, execute_dto_with_transport, execute_dto_with_transport_with_certificate,
     execute_with_transport, run_json,
 };
 pub use error::ClientError;
-pub use backend_present::{Request, lower, lower_surface_json};
 pub use options::{Format, Options};
 pub use process::{answer_with_session, main_entry};
 pub use protocol::{

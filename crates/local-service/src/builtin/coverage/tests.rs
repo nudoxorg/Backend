@@ -9,9 +9,9 @@ use backend_engine::builtin::{
     ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
     SemanticPublicationCoverage, SemanticUnavailableReason,
 };
-use backend_engine::{Lane, Reason, ViewCoverage};
 use backend_engine::publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
 use backend_engine::publication::manifest::{CompilationManifestFacts, CompilationManifestFormat};
+use backend_engine::{Lane, Reason, ViewCoverage};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
 use backend_store::hydration::VerifiedGenerationFacts;
 use backend_version::{
@@ -66,7 +66,10 @@ fn published(seed: &[u8]) -> ProductSemanticPublicationRecord {
 
 /// Folds an owned row set into a tally, activating the named keys.
 fn tally(
-    rows: &[(ProductSemanticPublicationKey, ProductSemanticPublicationRecord)],
+    rows: &[(
+        ProductSemanticPublicationKey,
+        ProductSemanticPublicationRecord,
+    )],
     activated: &ActivatedProfiles,
 ) -> SemanticTally {
     let mut tally = SemanticTally::default();
@@ -90,9 +93,7 @@ fn terminal_rows_report_an_unconfigured_lane_and_never_a_fraction() {
         .map(|name| {
             (
                 selected_key(name),
-                ProductSemanticPublicationRecord::Unavailable(
-                    SemanticUnavailableReason::Toolchain,
-                ),
+                ProductSemanticPublicationRecord::Unavailable(SemanticUnavailableReason::Toolchain),
             )
         })
         .collect();
@@ -146,7 +147,10 @@ fn project_authority_terminals_outrank_later_rejected_terminals() {
         ],
         "disagreeing terminals did not resolve to the lowest declared ordinal"
     );
-    assert_eq!(forward, backward, "terminal precedence depended on row order");
+    assert_eq!(
+        forward, backward,
+        "terminal precedence depended on row order"
+    );
 }
 
 #[test]
@@ -212,7 +216,8 @@ fn a_workspace_finishing_its_publications_transitions_from_partial_to_complete()
         (second.clone(), published(b"coverage-transition-second")),
     ];
     let before = tally(&rows, &activated(&[&first])).coverage(SemanticDeployment::Configured);
-    let after = tally(&rows, &activated(&[&first, &second])).coverage(SemanticDeployment::Configured);
+    let after =
+        tally(&rows, &activated(&[&first, &second])).coverage(SemanticDeployment::Configured);
     assert_eq!(
         before,
         vec![

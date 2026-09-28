@@ -1094,37 +1094,29 @@ pub(super) fn measure_search_corpus() {
     const SAMPLES: usize = 32;
     const WARMUPS: usize = 4;
     let workspace = super::super::genesis().expect("genesis").root();
-    let facts = (0..FACTS)
-        .map(package_query_fact)
-        .collect::<Vec<_>>();
+    let facts = (0..FACTS).map(package_query_fact).collect::<Vec<_>>();
     let limits = backend_extension_trustfall::Limits {
         max_rows: FACTS,
         ..backend_extension_trustfall::Limits::default()
     };
     let cold = corpus_time(WARMUPS, SAMPLES, || {
-        SemanticQueryCorpus::admit_with_limits(
-            workspace,
-            facts.clone(),
-            limits,
-        )
-        .expect("admit")
+        SemanticQueryCorpus::admit_with_limits(workspace, facts.clone(), limits).expect("admit")
     });
     let mut owner = SearchSnapshotOwner::default();
     owner
         .shared_corpus(workspace, || {
-            SemanticQueryCorpus::admit_with_limits(
-                workspace,
-                facts.clone(),
-                limits,
-            )
+            SemanticQueryCorpus::admit_with_limits(workspace, facts.clone(), limits)
         })
         .expect("prime");
     let before = owner.corpus_builds();
     let warm = corpus_time(WARMUPS, SAMPLES, || {
         owner
-            .shared_corpus(workspace, || -> Result<SemanticQueryCorpus, &'static str> {
-                Err("warm path rebuilt the corpus")
-            })
+            .shared_corpus(
+                workspace,
+                || -> Result<SemanticQueryCorpus, &'static str> {
+                    Err("warm path rebuilt the corpus")
+                },
+            )
             .expect("reuse")
     });
     let (cold_median, cold_p95) = corpus_percentiles(&cold);

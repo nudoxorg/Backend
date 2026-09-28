@@ -6,48 +6,87 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["extended-journeys", "gui"]
+extended-journeys = [
+    "backend-locald/cluster-process-journey-hooks",
+    "dep:backend-semantic",
+    "dep:backend-store",
+    "dep:backend-version",
+    "dep:backend-present",
+    "dep:backend-engine",
+    "dep:backend-execution",
+    "dep:backend-replication",
+    "dep:backend-runtime",
+    "dep:backend-worker",
+    "dep:backend-extension-turso",
+    "dep:backend-store-s3",
+    "dep:backend-compile",
+    "dep:backend-frontend-clang",
+    "dep:backend-frontend-csharp",
+    "dep:backend-frontend-go",
+    "dep:backend-frontend-java",
+    "dep:backend-frontend-python",
+    "dep:backend-frontend-rust",
+    "dep:backend-frontend-typescript",
+    "dep:blake3",
+    "dep:flate2",
+    "dep:serde",
+    "dep:tokio",
+]
+gui = ["dep:backend-desktop", "dep:backend-gui-harness"]
+
 [dependencies]
 backend-library = { path = "../../crates/library" }
-backend-semantic = { path = "../../crates/semantic" }
-backend-store = { path = "../../crates/store" }
-backend-version = { path = "../../crates/version" }
+backend-semantic = { path = "../../crates/semantic", optional = true }
+backend-store = { path = "../../crates/store", optional = true }
+backend-version = { path = "../../crates/version", optional = true }
 backend-cli = { path = "../../apps/cli" }
 backend-mcp = { path = "../../apps/mcp" }
-backend-present = { path = "../../crates/present" }
-backend-engine = { path = "../../crates/engine" }
-backend-execution = { path = "../../crates/execution" }
-backend-replication = { path = "../../crates/replication" }
+backend-present = { path = "../../crates/present", optional = true }
+backend-engine = { path = "../../crates/engine", optional = true }
+backend-execution = { path = "../../crates/execution", optional = true }
+backend-replication = { path = "../../crates/replication", optional = true }
 backend-client = { path = "../../crates/client" }
 backend-locald = { package = "backend-local-service", path = "../../crates/local-service" }
-backend-runtime = { path = "../../crates/runtime" }
-backend-worker = { path = "../../apps/worker" }
-backend-desktop = { path = "../../apps/desktop", features = ["visual-harness"] }
-backend-gui-harness = { path = "../../tools/gui-harness" }
-backend-extension-turso = { path = "../../extensions/turso" }
-backend-compile = { path = "../../crates/compile" }
-backend-frontend-clang = { path = "../../frontends/clang" }
-backend-frontend-csharp = { path = "../../frontends/csharp" }
-backend-frontend-go = { path = "../../frontends/go" }
-backend-frontend-java = { path = "../../frontends/java" }
-backend-frontend-python = { path = "../../frontends/python" }
-backend-frontend-rust = { path = "../../frontends/rust" }
-backend-frontend-typescript = { path = "../../frontends/typescript" }
-blake3.workspace = true
-flate2.workspace = true
-serde.workspace = true
+backend-runtime = { path = "../../crates/runtime", optional = true }
+backend-worker = { path = "../../apps/worker", optional = true }
+backend-desktop = { path = "../../apps/desktop", features = ["visual-harness"], optional = true }
+backend-gui-harness = { path = "../../tools/gui-harness", optional = true }
+backend-extension-turso = { path = "../../extensions/turso", optional = true }
+backend-store-s3 = { path = "../../crates/store-s3", features = ["test-support"], optional = true }
+backend-compile = { path = "../../crates/compile", optional = true }
+backend-frontend-clang = { path = "../../frontends/clang", optional = true }
+backend-frontend-csharp = { path = "../../frontends/csharp", optional = true }
+backend-frontend-go = { path = "../../frontends/go", optional = true }
+backend-frontend-java = { path = "../../frontends/java", optional = true }
+backend-frontend-python = { path = "../../frontends/python", optional = true }
+backend-frontend-rust = { path = "../../frontends/rust", optional = true }
+backend-frontend-typescript = { path = "../../frontends/typescript", optional = true }
+blake3 = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 serde_json.workspace = true
+tokio = { workspace = true, optional = true }
 
 [[bin]]
 name = "backend-journey-cancel-worker"
 path = "src/bin/cancel_worker.rs"
+required-features = ["extended-journeys"]
 
 [[bin]]
 name = "backend-journey-locald"
 path = "src/bin/locald.rs"
 
 [[bin]]
+name = "backend-journey-cluster-probe"
+path = "src/bin/cluster_probe.rs"
+required-features = ["extended-journeys"]
+
+[[bin]]
 name = "backend-journey-worker"
 path = "src/bin/worker.rs"
+required-features = ["extended-journeys"]
 
 [[bin]]
 name = "backend-journey-cli"
@@ -60,6 +99,107 @@ path = "src/bin/mcp.rs"
 [[bin]]
 name = "backend-journey-gui"
 path = "src/bin/gui.rs"
+required-features = ["gui"]
+
+[[test]]
+name = "cutover_e2e"
+path = "tests/cutover_e2e.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "cluster_source_journey"
+path = "tests/cluster_source_journey.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "s3_cold_selected_journey"
+path = "tests/s3_cold_selected_journey.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "local_lifecycle"
+path = "tests/local_lifecycle.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "new_user_catalog"
+path = "tests/new_user_catalog.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "new_user_follow"
+path = "tests/new_user_follow.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "new_user_forge"
+path = "tests/new_user_forge.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "new_user_graph_journey"
+path = "tests/new_user_graph_journey.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "new_user_projects"
+path = "tests/new_user_projects.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "new_user_remaining_surfaces"
+path = "tests/new_user_remaining_surfaces.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "new_user_resolve_explore"
+path = "tests/new_user_resolve_explore.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "new_user_versions"
+path = "tests/new_user_versions.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "package_journeys"
+path = "tests/package_journeys.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "registry_discovery"
+path = "tests/registry_discovery.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "registry_process"
+path = "tests/registry_process.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "surface_interfaces"
+path = "tests/surface_interfaces.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "surface_parity"
+path = "tests/surface_parity.rs"
+required-features = ["extended-journeys"]
+
+[[test]]
+name = "live_registry"
+path = "tests/live_registry.rs"
+required-features = ["extended-journeys", "gui"]
+
+[[test]]
+name = "restart_persistence"
+path = "tests/restart_persistence.rs"
+required-features = ["extended-journeys", "gui"]
+
+[[test]]
+name = "surface_matrix"
+path = "tests/surface_matrix.rs"
+required-features = ["extended-journeys", "gui"]
 
 [lints]
 workspace = true

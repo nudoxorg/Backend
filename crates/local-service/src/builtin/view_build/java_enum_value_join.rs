@@ -6,18 +6,18 @@ use super::{
 };
 use backend_engine::{RowId, package_key};
 use backend_extension_trustfall::{
-    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation,
-    SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact,
-    SemanticQueryPresentation, SemanticQueryRequest, execute_semantic_query,
+    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation, SemanticQueryCorpus,
+    SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
+    SemanticQueryRequest, execute_semantic_query,
 };
 use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityFacts,
     EntityVersion, ExternalDeclarationIdentity, ExternalId, ExternalTarget, FactAvailability,
-    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind, LinkKind,
-    LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader, SemanticImageView,
-    SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
-    VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
-    full_semantic_image_len,
+    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind,
+    LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader,
+    SemanticImageView, SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput,
+    TreeLinkTarget, VariantAvailability, VariantFingerprint, Visibility,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
@@ -217,7 +217,9 @@ fn java_active_drive_fixture(
     ))
 }
 
-fn foreign_value_read_from_caller(caller_bytes: &[u8]) -> Result<(ExternalId, LinkKind, String), String> {
+fn foreign_value_read_from_caller(
+    caller_bytes: &[u8],
+) -> Result<(ExternalId, LinkKind, String), String> {
     let image = SemanticImageView::reopen(caller_bytes).map_err(|error| error.to_string())?;
     let caller_path = compiled_source_path(&image).map_err(|error| error.to_string())?;
     for (_, link) in image.links_from(backend_semantic::ir::EntityId::new(0)) {
@@ -280,7 +282,8 @@ fn join_project_value_java_enum_constant_retargets_active() -> Result<(), String
     let (status_bytes, caller_bytes, active_identity, _) = java_active_drive_fixture(91)?;
     let paths = project_paths(&["demo/Status.java", "demo/Drive.java"]);
     let images = [&status_bytes[..], &caller_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([active_identity, fixture_version(23).identity()]);
     let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
     let caller_image =
@@ -310,7 +313,8 @@ fn join_project_value_java_enum_constant_referenced_by_names_drive() -> Result<(
         java_active_drive_fixture(92)?;
     let paths = project_paths(&["demo/Status.java", "demo/Drive.java"]);
     let images = [&status_bytes[..], &caller_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([active_identity, drive_identity]);
     let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
     let caller_image =

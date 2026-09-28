@@ -21,10 +21,10 @@ pub use full::{
     TerminalPoolFault,
 };
 pub use full_wire::{
-    FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
-    AdmittedSemanticImage, FullSemanticImageIdentityField, SemanticImageView,
-    encode_full_semantic_image, reset_semantic_image_validations, semantic_image_validations,
-    full_semantic_image_len,
+    AdmittedSemanticImage, FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
+    FullSemanticImageIdentityField, PreparedFullSemanticImage, SemanticImageView,
+    encode_full_semantic_image, full_semantic_image_len, reset_semantic_image_validations,
+    semantic_image_validations,
 };
 /// Exact planning failures from [`encode_full_semantic_image`].
 pub type SemanticImageEncodeError = FullPlanError;

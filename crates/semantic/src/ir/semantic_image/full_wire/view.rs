@@ -11,11 +11,11 @@ use crate::ir::{
     AtomId, AtomListId, CSharpFacts, ClangFacts, CoreSemanticEntity, DeclarationIdentity,
     DocFragment, DocId, EntityId, EntityListId, ExternalId, ExternalTarget, FreePredicate,
     FreePredicateListId, GoFacts, JavaFacts, Link, LinkId, LinkOccurrence, LinkOccurrenceId,
-    ObjectMember, ObjectMemberListId,
-    OccurrenceAuthorityFacts, PythonFacts, RustFacts, SemanticCoreReader, SemanticEntity,
-    SemanticImageFacts, SemanticReader, TemplatePart, TemplatePartListId, TupleElement,
-    TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter, TypeParameterBound,
-    TypeParameterBoundListId, TypeParameterListId, TypeScriptFacts,
+    ObjectMember, ObjectMemberListId, OccurrenceAuthorityFacts, PythonFacts, RustFacts,
+    SemanticCoreReader, SemanticEntity, SemanticImageFacts, SemanticReader, TemplatePart,
+    TemplatePartListId, TupleElement, TupleElementListId, TypeExpr, TypeId, TypeListId,
+    TypeParameter, TypeParameterBound, TypeParameterBoundListId, TypeParameterListId,
+    TypeScriptFacts,
 };
 
 use super::{
@@ -181,10 +181,7 @@ pub struct FullGroupRows<'bytes, T> {
     edges: typed_decode::Edges<'bytes>,
     next: u32,
     end: u32,
-    decode: fn(
-        &mut typed_decode::Edges<'bytes>,
-        u32,
-    ) -> Result<T, super::FullSemanticImageFault>,
+    decode: fn(&mut typed_decode::Edges<'bytes>, u32) -> Result<T, super::FullSemanticImageFault>,
 }
 
 impl<T> Iterator for FullGroupRows<'_, T> {
@@ -753,19 +750,11 @@ fn rows<'view, 'bytes, T>(
     view: &'view SemanticImageView<'bytes>,
     domain: u8,
     coordinate: u32,
-    decode: fn(
-        &mut typed_decode::Edges<'bytes>,
-        u32,
-    ) -> Result<T, super::FullSemanticImageFault>,
+    decode: fn(&mut typed_decode::Edges<'bytes>, u32) -> Result<T, super::FullSemanticImageFault>,
 ) -> Option<FullGroupRows<'bytes, T>> {
-    let mut edges = typed_decode::Edges::for_node(
-        view.bytes,
-        view.layout(),
-        view.typed(),
-        domain,
-        coordinate,
-    )
-    .ok()?;
+    let mut edges =
+        typed_decode::Edges::for_node(view.bytes, view.layout(), view.typed(), domain, coordinate)
+            .ok()?;
     let end = typed_decode::logical_count(&mut edges, domain).ok()?;
     Some(FullGroupRows {
         edges,

@@ -5,6 +5,7 @@ use core::{
 };
 
 use super::{
+    CLASS_OBJECT_KEY, CLASS_OBJECT_VERSION, CLASS_STATE_ROOT, ID_BYTES,
     context::IdContext,
     hash::{
         admit_context_only, admit_exact, canonical_version_delta_id, digest, encoded,
@@ -12,7 +13,6 @@ use super::{
     },
     schema::{Relation, Schema},
     wire::{IdAdmissionError, UntrustedId},
-    CLASS_OBJECT_KEY, CLASS_OBJECT_VERSION, CLASS_STATE_ROOT, ID_BYTES,
 };
 
 /// Opaque stable key identity for one schema.
@@ -150,6 +150,13 @@ id_impl!(WorkspaceRoot);
 id_impl!(CommitId);
 
 impl<T: Schema> ObjectKey<T> {
+    pub(crate) const fn from_digest(bytes: [u8; ID_BYTES]) -> Self {
+        Self {
+            bytes,
+            _marker: PhantomData,
+        }
+    }
+
     /// Admits a fixed-width logical-key claim asserted by an already
     /// authenticated producer authority.
     /// # Errors

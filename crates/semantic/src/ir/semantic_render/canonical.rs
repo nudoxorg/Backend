@@ -669,7 +669,9 @@ fn emit_external<Reader: SemanticReader + ?Sized>(
                 crate::ir::VariantAvailability::Known(variant) => {
                     emit_bytes(root, variant.as_bytes(), output)?
                 }
-                crate::ir::VariantAvailability::Unavailable => write_text(root, output, "unavailable")?,
+                crate::ir::VariantAvailability::Unavailable => {
+                    write_text(root, output, "unavailable")?
+                }
             }
             write_text(root, output, ",origin=")?;
             emit_foreign_origin(reader, root, owner, target.origin, output)?;

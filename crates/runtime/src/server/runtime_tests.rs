@@ -497,7 +497,9 @@ fn run_producer(
                 Err(AdmissionError::Rejected { rejected }) => {
                     work = rejected.work;
                     match rejected.reason {
-                        crate::server::RejectionReason::WorkSlots => report.rejected_work_slots += 1,
+                        crate::server::RejectionReason::WorkSlots => {
+                            report.rejected_work_slots += 1
+                        }
                         crate::server::RejectionReason::ByteBudget => report.rejected_bytes += 1,
                     }
                     thread::yield_now();

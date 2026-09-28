@@ -222,7 +222,7 @@ pub(super) fn execute_search(
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     image_rows: &mut super::super::view_build::ImageRowResidence,
     query: &backend_engine::Query,
-) -> Result<CommandReply, BuiltinModelError> {
+) -> Result<(CommandReply, backend_library::SemanticSearchStatus), BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let coverage = super::super::admitted_coverage()?;
     let semantic_evidence = snapshots.admit_corpus(
@@ -252,8 +252,14 @@ pub(super) fn execute_search(
     let local = coordinator
         .search_local(local_query)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
-    let _ = remote_semantic.reconcile(coordinator, coverage);
-    let result = remote_semantic.search(coordinator, coverage, local, query.text());
+    let reconciliation_failed = remote_semantic.reconcile(coordinator, coverage).is_err();
+    let (result, semantic_status) = remote_semantic.search_with_status(
+        coordinator,
+        coverage,
+        local,
+        query.text(),
+        reconciliation_failed,
+    );
     let ranked_ids = result
         .rows
         .iter()
@@ -265,6 +271,7 @@ pub(super) fn execute_search(
         .library()
         .search_from_ranked_ids(query, &ranked_ids)
         .map(CommandReply::Search)
+        .map(|reply| (reply, semantic_status))
         .map_err(|error| BuiltinModelError(error.to_string()))
 }
 
@@ -278,8 +285,15 @@ pub(super) fn execute_certified_graph_query(
     base: Option<WireCertificate>,
 ) -> Result<(CommandReply, Option<WireCertificate>), BuiltinModelError> {
     let command = Command::GraphQuery(request.clone());
-    let reply = execute_graph_query(daemon, compiler, snapshots, generations, image_rows, request)
-        .map_or_else(
+    let reply = execute_graph_query(
+        daemon,
+        compiler,
+        snapshots,
+        generations,
+        image_rows,
+        request,
+    )
+    .map_or_else(
         |error| {
             CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
                 error.to_string(),

@@ -39,7 +39,10 @@ pub(crate) fn with_verified_semantic_generation<
     manifest: &CompilationManifestView<'manifest, 'facts>,
     semantic_bytes: &[u8],
     locality_output: &mut [u8],
-    visit: impl FnOnce(VerifiedGeneration<'_, ObjectDomain, &'_ [u8]>) -> Output,
+    visit: impl FnOnce(
+        &GenerationRoot<ObjectDomain>,
+        VerifiedGeneration<'_, ObjectDomain, &'_ [u8]>,
+    ) -> Output,
 ) -> Result<Output, GenerationBuildError> {
     let root = build_semantic_root(canonical, manifest, semantic_bytes)?;
     let capacity = store_capacity(manifest)?;
@@ -96,7 +99,7 @@ pub(crate) fn with_verified_semantic_generation<
         .stage()
         .verify_store(&store)
         .map_err(GenerationBuildError::Verification)?;
-    Ok(visit(verified))
+    Ok(visit(&root, verified))
 }
 
 /// Rebuilds and verifies a schema-2 generation from caller-owned compact and

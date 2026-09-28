@@ -5,7 +5,7 @@
 
 use core::{num::TryFromIntError, ops::Deref};
 
-use crate::driver::{CompiledFragment, CompiledSemantic};
+use crate::driver::CompiledFragment;
 use backend_semantic::ir::{
     FragmentRangeManifest, FragmentRangeManifestError, FragmentView, RecipeFact, SectionKind,
     SourceIdentity,
@@ -222,9 +222,14 @@ impl SemanticImageRegion {
     }
 }
 
-/// Canonically sorted fused compiler outputs and their full semantic images.
+/// Borrowed compact output and image region exposed to generation verification.
+pub(crate) struct CanonicalSemanticArtifact<'input, 'fragment> {
+    pub(crate) artifact: &'input CompiledFragment<'fragment>,
+}
+
+/// Canonically sorted validated compiler fragments and their full semantic images.
 pub(crate) struct CanonicalSemanticCompilation<'input, 'scratch, 'fragment, 'images> {
-    inputs: &'input [CompiledSemantic<'fragment>],
+    inputs: &'input [CompiledFragment<'fragment>],
     images: &'images [SemanticImageRegion],
     semantic_bytes: &'images [u8],
     ordinals: &'scratch [usize],
@@ -238,7 +243,7 @@ impl<'input, 'scratch, 'fragment, 'images>
         reason = "canonical semantic preparation retains exact fragment and image-region faults"
     )]
     pub(crate) fn prepare(
-        inputs: &'input [CompiledSemantic<'fragment>],
+        inputs: &'input [CompiledFragment<'fragment>],
         images: &'images [SemanticImageRegion],
         semantic_bytes: &'images [u8],
         scratch: &'scratch mut [usize],
@@ -267,14 +272,14 @@ impl<'input, 'scratch, 'fragment, 'images>
         }
         let ordinals = &mut scratch[..inputs.len()];
         for (ordinal, slot) in ordinals.iter_mut().enumerate() {
-            PublicationFragment::from_compiled(&inputs[ordinal].artifact)
+            PublicationFragment::from_compiled(&inputs[ordinal])
                 .map_err(|source| CompilationPrepareError::Fragment { ordinal, source })?;
             *slot = ordinal;
         }
-        ordinals.sort_unstable_by_key(|ordinal| fragment_identity(&inputs[*ordinal].artifact));
+        ordinals.sort_unstable_by_key(|ordinal| fragment_identity(&inputs[*ordinal]));
         for pair in ordinals.windows(2) {
-            let previous = fragment_identity(&inputs[pair[0]].artifact);
-            let observed = fragment_identity(&inputs[pair[1]].artifact);
+            let previous = fragment_identity(&inputs[pair[0]]);
+            let observed = fragment_identity(&inputs[pair[1]]);
             if previous == observed {
                 return Err(CompilationPrepareError::DuplicateFragment { identity: previous });
             }
@@ -332,7 +337,7 @@ impl<'input, 'scratch, 'fragment, 'images>
         written[10..12].copy_from_slice(&0_u16.to_le_bytes());
         written[12..16].copy_from_slice(&count.to_le_bytes());
         for (ordinal, input_ordinal) in self.ordinals.iter().copied().enumerate() {
-            let fragment = PublicationFragment::from_compiled(&self.inputs[input_ordinal].artifact)
+            let fragment = PublicationFragment::from_compiled(&self.inputs[input_ordinal])
                 .map_err(|source| CompilationWriteError::Fragment { ordinal, source })?;
             let offset = COMPILATION_MANIFEST_HEADER_BYTES
                 + ordinal * COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES;
@@ -355,11 +360,24 @@ impl<'input, 'scratch, 'fragment, 'images>
 
     pub(crate) fn artifacts(
         &self,
-    ) -> impl Iterator<Item = (&CompiledSemantic<'fragment>, SemanticImageRegion)> + '_ {
+    ) -> impl Iterator<
+        Item = (
+            CanonicalSemanticArtifact<'_, 'fragment>,
+            SemanticImageRegion,
+        ),
+    > + '_ {
+        self.ordinals.iter().copied().map(|ordinal| {
+            (
+                CanonicalSemanticArtifact {
+                    artifact: &self.inputs[ordinal],
+                },
+                self.images[ordinal],
+            )
+        })
+    }
+
+    pub(crate) fn canonical_ordinals(&self) -> &[usize] {
         self.ordinals
-            .iter()
-            .copied()
-            .map(|ordinal| (&self.inputs[ordinal], self.images[ordinal]))
     }
 }
 

@@ -55,7 +55,7 @@ fn encode_row<R: CanonicalRelation>(key: &R::Key, value: &R::Value) -> Vec<u8> {
 ///
 /// Callers should send the returned frames only after sending the associated
 /// root prelude.  A warm receiver can skip every frame by checking
-/// [`ProductReceivingCas::contains`] against the object version.
+/// the worker's durable input CAS against the object version.
 #[cfg(test)]
 pub(crate) fn product_closure_frames<R: CanonicalRelation>(
     workspace: WorkspaceRoot,

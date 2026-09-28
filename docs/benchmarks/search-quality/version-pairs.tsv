@@ -1,0 +1,7 @@
+query_id	lineage_id	newer_document_id	older_document_id	basis
+freshness.serde-current	cargo:serde	cargo:serde@1.0.229	cargo:serde@1.0.95	Highest unyanked version in the captured candidate set; old version has captured yanked=true
+freshness.attrs-pair	pypi:attrs	pypi:attrs@26.1.0	pypi:attrs@25.3.0	Semantic version ordering within the two frozen Nix pin rows
+freshness.x-sync-pair	golang:golang.org/x/sync	golang:golang.org/x/sync@v0.11.0	golang:golang.org/x/sync@v0.10.0	Semantic version ordering within the two frozen Nix pin rows
+freshness.servlet-pair	maven:jakarta.servlet:jakarta.servlet-api	maven:jakarta.servlet:jakarta.servlet-api@6.0.0	maven:jakarta.servlet:jakarta.servlet-api@5.0.0	Semantic version ordering within the two frozen Nix pin rows
+freshness.esp-net-pair	nuget:esp-net-source	nuget:esp-net-source@0.6.4	nuget:esp-net-source@0.2.3	Semantic version ordering within the two frozen Nix pin rows
+freshness.morelinq-pair	nuget:morelinq.source.moreenumerable.distinctby	nuget:morelinq.source.moreenumerable.distinctby@1.0.2	nuget:morelinq.source.moreenumerable.distinctby@1.0.0	Semantic version ordering within the two frozen Nix pin rows

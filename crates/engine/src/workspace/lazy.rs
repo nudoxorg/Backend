@@ -126,6 +126,13 @@ pub enum WorkspaceRelationRejection {
     MissingKey,
     /// An insertion targeted a key that is already present.
     DuplicateKey,
+    /// Bounded update metadata exceeded the explicit caller budget.
+    MetadataBudgetExceeded {
+        /// Conservative bytes required by the update.
+        required_bytes: usize,
+        /// Maximum bytes allowed by the update budget.
+        max_bytes: usize,
+    },
 }
 
 impl fmt::Display for WorkspaceRelationRejection {
@@ -141,6 +148,13 @@ impl fmt::Display for WorkspaceRelationRejection {
             Self::Node(error) => write!(formatter, "canonical node rejected: {error}"),
             Self::MissingKey => formatter.write_str("key is not present in the relation"),
             Self::DuplicateKey => formatter.write_str("key is already present in the relation"),
+            Self::MetadataBudgetExceeded {
+                required_bytes,
+                max_bytes,
+            } => write!(
+                formatter,
+                "relation update needs {required_bytes} metadata bytes, above the {max_bytes} byte budget"
+            ),
         }
     }
 }
@@ -252,6 +266,13 @@ fn map_tree_error<R: Relation>(
         LazyTreeError::Node(error) => WorkspaceRelationRejection::Node(error),
         LazyTreeError::MissingKey => WorkspaceRelationRejection::MissingKey,
         LazyTreeError::DuplicateKey => WorkspaceRelationRejection::DuplicateKey,
+        LazyTreeError::MetadataBudgetExceeded {
+            required_bytes,
+            max_bytes,
+        } => WorkspaceRelationRejection::MetadataBudgetExceeded {
+            required_bytes,
+            max_bytes,
+        },
     };
     WorkspaceRelationError::Tree(WorkspaceRelationFault {
         relation: RelationIdentity::of::<R>(),

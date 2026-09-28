@@ -191,6 +191,27 @@ fn result_choice(row: &SearchRow) -> Choice {
     }
 }
 
+fn semantic_search_label(status: backend_library::SemanticSearchStatus) -> String {
+    use backend_library::{SemanticSearchReason, SemanticSearchStatus};
+    let reason = |reason| match reason {
+        SemanticSearchReason::Unconfigured => "unconfigured",
+        SemanticSearchReason::InvalidConfiguration => "invalid configuration",
+        SemanticSearchReason::ProviderUnavailable => "provider unavailable",
+        SemanticSearchReason::NoActiveProjection => "no active projection",
+        SemanticSearchReason::StaleProjection => "stale projection",
+        SemanticSearchReason::ModelUnavailable => "embedding model unavailable",
+    };
+    match status {
+        SemanticSearchStatus::Available => "semantic search available".to_owned(),
+        SemanticSearchStatus::Unavailable { reason: why } => {
+            format!("semantic search unavailable · {}", reason(why))
+        }
+        SemanticSearchStatus::Stale { reason: why } => {
+            format!("semantic search stale · {}", reason(why))
+        }
+    }
+}
+
 impl Render for Ask {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders = self.renders.saturating_add(1);
@@ -252,32 +273,47 @@ impl Render for Ask {
             list = list.child(div().px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet(words, &measure, palette)));
         }
         let field = Input::new(&self.input).appearance(false).bordered(false);
+        let semantic_status = self.query.as_ref().and_then(|query| {
+            self.links
+                .store
+                .read(cx)
+                .search(query)
+                .loaded_value()
+                .and_then(|page| page.coverage.semantic_search_status())
+        });
+        let mut surface = cut()
+            .chamfer(Chamfer::Lg)
+            .bevel(Bevel::Peri)
+            .fill(palette.glass)
+            .floating()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(measure.space(Space::Roomy))
+                    .px(measure.space(Space::Gutter))
+                    .h(px(52.0 * facet.text_scale))
+                    .border_b_1()
+                    .border_color(palette.line1.hsla())
+                    .child(icons::ui(Icon::Search, IconSize::S16, palette.ink2).size(measure.icon(16.0)))
+                    .child(div().flex_1().min_w(px(0.0)).set_ui(&measure, palette).child(field))
+                    .child(text(ty::MONO_SMALL, &measure, palette.ink3).flex_none().child(count)),
+            );
+        if let Some(status) = semantic_status {
+            surface = surface.child(
+                div()
+                    .px(measure.space(Space::Gutter))
+                    .py(measure.space(Space::Snug))
+                    .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(semantic_search_label(status))),
+            );
+        }
+        surface = surface.child(div().max_h(px(420.0 * facet.text_scale)).overflow_hidden().child(list));
         div()
             .id("ask")
             .w(width)
-            .child(
-                cut()
-                    .chamfer(Chamfer::Lg)
-                    .bevel(Bevel::Peri)
-                    .fill(palette.glass)
-                    .floating()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(measure.space(Space::Roomy))
-                            .px(measure.space(Space::Gutter))
-                            .h(px(52.0 * facet.text_scale))
-                            .border_b_1()
-                            .border_color(palette.line1.hsla())
-                            .child(icons::ui(Icon::Search, IconSize::S16, palette.ink2).size(measure.icon(16.0)))
-                            .child(div().flex_1().min_w(px(0.0)).set_ui(&measure, palette).child(field))
-                            .child(text(ty::MONO_SMALL, &measure, palette.ink3).flex_none().child(count)),
-                    )
-                    .child(div().max_h(px(420.0 * facet.text_scale)).overflow_hidden().child(list)),
-            )
+            .child(surface)
     }
 }
 

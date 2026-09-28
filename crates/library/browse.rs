@@ -15,8 +15,8 @@ mod tests;
 pub use cargo::{CargoTreeError, lockfile_input, metadata_input};
 pub use roles::{RoleEvidence, RoleId};
 pub use tree::{
-    AdvisoryObserver, AdvisorySourceState, DirectDependency, Duplicate, DuplicateCopy, MAX_TREE_PACKAGES, MemberEdge,
-    PROJECT_TREE_SCHEMA, PackageOrigin, PackageRole, ProjectTree, TreeAdvisory, TreeEdge,
-    TreeHealth, TreeInput, TreeInputPackage, TreeMember, TreePackage, TreeSource, WhyHop,
-    build_tree,
+    AdvisoryObserver, AdvisorySourceState, DirectDependency, Duplicate, DuplicateCopy,
+    MAX_TREE_PACKAGES, MemberEdge, PROJECT_TREE_SCHEMA, PackageOrigin, PackageRole, ProjectTree,
+    TreeAdvisory, TreeEdge, TreeHealth, TreeInput, TreeInputPackage, TreeMember, TreePackage,
+    TreeSource, WhyHop, build_tree,
 };

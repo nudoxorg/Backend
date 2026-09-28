@@ -245,6 +245,7 @@ fn locald_args(endpoint: &Path, workspace: &Path, authority: &Path) -> Vec<OsStr
         OsString::from("131072"),
         OsString::from("--timeout-ms"),
         OsString::from("60000"),
+        OsString::from("--forge-offline"),
     ]
 }
 
@@ -331,13 +332,13 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
                 coordinate: forge.clone(),
             },
             expectation: SurfaceExpectation::TypedInvalidQuery(&[
-                "forge acquisition authority is not configured in this owner",
+                "forge source is not cached and acquisition is offline",
             ]),
         },
         SurfaceCase {
             command: SurfaceCommand::ForgeReference { coordinate: forge },
             expectation: SurfaceExpectation::TypedInvalidQuery(&[
-                "forge acquisition authority is not configured in this owner",
+                "forge source is not in the local cache",
             ]),
         },
         SurfaceCase {
@@ -362,6 +363,7 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
             command: SurfaceCommand::IndexSearch {
                 query: ProductText::new("example").expect("admit search query"),
                 limit: 1,
+                cursor: None,
             },
             expectation: SurfaceExpectation::Result("index-search"),
         },

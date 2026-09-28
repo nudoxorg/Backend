@@ -4,9 +4,9 @@
 //! interprets product payloads to guess reachability.
 
 use super::super::StoreError;
-use super::io_error;
 #[cfg(test)]
 use super::FileStore;
+use super::io_error;
 #[cfg(test)]
 use std::fs;
 #[cfg(test)]
@@ -50,9 +50,9 @@ mod roots;
 mod state;
 mod state_io;
 
-pub use roots::{GcRoot, GcRoots};
-pub use state::{GcLimits, GcReport};
+pub use roots::{GcRoot, GcRootResolver, GcRoots};
 use state::Phase;
+pub use state::{GcLimits, GcReport};
 
 mod sweep;
 

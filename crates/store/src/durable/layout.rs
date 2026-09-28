@@ -140,6 +140,44 @@ impl Drop for ProcessLock {
     }
 }
 
+/// Shared live-capture pin, separate from the store mutation lock so a long
+/// compiler stream does not block head reads or unrelated immutable writes.
+#[derive(Debug)]
+pub(super) struct GcPinLease {
+    file: File,
+}
+
+impl GcPinLease {
+    fn open(root: &Path) -> Result<File, super::StoreError> {
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join("GC-PINS.lock"))
+            .map_err(|error| super::io_error(&error))
+    }
+
+    pub(super) fn shared(root: &Path) -> Result<Self, super::StoreError> {
+        let file = Self::open(root)?;
+        file.lock_shared()
+            .map_err(|error| super::io_error(&error))?;
+        Ok(Self { file })
+    }
+
+    pub(super) fn exclusive(root: &Path) -> Result<Self, super::StoreError> {
+        let file = Self::open(root)?;
+        file.lock().map_err(|error| super::io_error(&error))?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for GcPinLease {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
 /// Opaque identity for one exact publication transaction.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TransactionId(pub(super) Hash);
@@ -386,6 +424,14 @@ pub struct FileStore {
 impl FileStore {
     pub(super) fn acquire_process_lock(&self) -> Result<Arc<ProcessLock>, super::StoreError> {
         ProcessLock::acquire(&self.root.join("LOCK"))
+    }
+
+    pub(super) fn acquire_gc_pin(&self) -> Result<GcPinLease, super::StoreError> {
+        GcPinLease::shared(&self.root)
+    }
+
+    pub(super) fn acquire_gc_exclusive(&self) -> Result<GcPinLease, super::StoreError> {
+        GcPinLease::exclusive(&self.root)
     }
 
     /// Acquires this store's canonical head-selection capability.

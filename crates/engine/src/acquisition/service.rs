@@ -192,6 +192,19 @@ impl AcquisitionService {
             .collect()
     }
 
+    /// Resolves the current advisory authority for one immutable publication.
+    /// This read does not rewrite the acquisition receipt or archive object.
+    #[must_use]
+    pub fn advisory_for_published(
+        &self,
+        package: &crate::registry::PublishedPackage,
+    ) -> backend_advisory::AdvisoryPackageDto {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .advisory_for_published(package)
+    }
+
     /// Joins the normalized forge lineage facts for one borrowed publication.
     /// The association table remains owned by the registry journal; this
     /// method only clones the bounded surface projection.

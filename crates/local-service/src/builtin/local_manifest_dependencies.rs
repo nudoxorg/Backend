@@ -7,8 +7,9 @@ use super::{
 use backend_engine::{PackageDependencyRecord, PackageReference};
 use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
-    PackageDependencySourceFacts, PackageDependencyTarget, ProductText, RegistryEcosystem,
-    admit_dependency_rows, collapse_dependency_rows, dependency_optional,
+    PackageDependencySourceFacts, PackageDependencyTarget, PackageGraphSourceAuthority,
+    PackageGraphSourceKey, ProductText, RegistryEcosystem, admit_dependency_rows,
+    collapse_dependency_rows, dependency_optional,
 };
 use std::path::Path;
 
@@ -33,11 +34,25 @@ pub(super) fn local_dependency_facts(
     } else {
         nuget_dependency_facts(project_root, &source)?
     };
-    Ok(Some((source, facts)))
+    let source_authority = PackageGraphSourceAuthority::Local(manifest_frontier(project_root));
+    Ok(Some((
+        PackageGraphSourceKey::new(source, source_authority),
+        facts,
+    )))
 }
 
 fn manifest_frontier(project_root: &Path) -> [u8; 32] {
     *blake3::hash(project_root.as_os_str().as_encoded_bytes()).as_bytes()
+}
+
+pub(super) fn source_key(
+    project_root: &Path,
+    coordinate: PackageReference,
+) -> PackageGraphSourceKey {
+    PackageGraphSourceKey::new(
+        coordinate,
+        PackageGraphSourceAuthority::Local(manifest_frontier(project_root)),
+    )
 }
 
 fn dependency_row(
@@ -52,8 +67,9 @@ fn dependency_row(
 ) -> Result<PackageDependencyRecord, String> {
     let target = PackageDependencyTarget::new(ecosystem, name, requirement, None)
         .map_err(|error| format!("admit local dependency {name}: {error}"))?;
-    Ok(PackageDependencyRecord::new(
+    Ok(PackageDependencyRecord::new_with_source_authority(
         source.clone(),
+        PackageGraphSourceAuthority::Local(frontier),
         target,
         scope,
         dependency_optional(scope, declared_optional),
@@ -830,11 +846,23 @@ mod tests {
         let rows = known(&facts);
         let left_pad = rows
             .iter()
-            .find(|row| row.target.name.as_str() == "left-pad")
-            .expect("left-pad");
+            .find(|row| {
+                row.target.name.as_str() == "left-pad"
+                    && row.target.requirement.as_str() == "^1.0.0"
+            })
+            .expect("runtime left-pad requirement");
         assert_eq!(left_pad.scope, DependencyScope::Runtime);
         assert_eq!(left_pad.target.requirement.as_str(), "^1.0.0");
         assert!(!left_pad.optional);
+        let optional_left_pad = rows
+            .iter()
+            .find(|row| {
+                row.target.name.as_str() == "left-pad"
+                    && row.target.requirement.as_str() == "^2.0.0"
+            })
+            .expect("optional left-pad requirement");
+        assert_eq!(optional_left_pad.scope, DependencyScope::Optional);
+        assert!(optional_left_pad.optional);
         assert_eq!(
             rows.iter()
                 .find(|row| row.target.name.as_str() == "fsevents")

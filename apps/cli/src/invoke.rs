@@ -7,7 +7,7 @@
 //! command can never exist without appearing in `--help` and a help line can
 //! never describe a grammar the parser does not accept.
 
-use backend_library::{CommandDomain, COMMANDS};
+use backend_library::{COMMANDS, CommandDomain};
 use backend_present::{
     ArgumentKind, ArgumentSpec, CommandGrammar, Fault, GRAMMARS, Invocation, domain_name, domains,
     grammar_for, grammars_in,
@@ -45,7 +45,10 @@ pub fn parse(args: &[String], default_limit: Option<&str>) -> Result<Invocation,
             continue;
         }
         let value = args.get(at).ok_or_else(|| {
-            Fault::usage(spec.name(), format!("--{} needs a value: {}", spec.name(), spec.help()))
+            Fault::usage(
+                spec.name(),
+                format!("--{} needs a value: {}", spec.name(), spec.help()),
+            )
         })?;
         at = at.saturating_add(1);
         invocation.set(spec.name(), value.clone());
@@ -73,7 +76,11 @@ fn unknown_command(spelling: &str) -> Fault {
     Fault::usage(
         spelling,
         nearest.map_or_else(
-            || format!("`{spelling}` is not a command; run `backend --help` for the whole vocabulary"),
+            || {
+                format!(
+                    "`{spelling}` is not a command; run `backend --help` for the whole vocabulary"
+                )
+            },
             |nearest| format!("`{spelling}` is not a command; did you mean `{nearest}`?"),
         ),
     )
@@ -208,7 +215,7 @@ options
   --limit COUNT                 Bound any command that pages.
   --detail LEVEL                JSON projection: summary, standard, or full.
   --project PATH                Select the project; defaults to the current directory.
-  --workspace PATH              Select durable state; defaults to <project>/.backend/v2.
+  --workspace PATH              Select durable state; defaults to this project's private app-data root.
   --endpoint PATH               Connect to a specific local daemon.
   -h, --help                    Show this help, or one command's help after its name.
   -V, --version                 Show the version.

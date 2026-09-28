@@ -833,17 +833,7 @@ fn identifier_at(body: &str, at: usize) -> Option<&str> {
 }
 
 const SOURCE_EXTENSIONS: &[&str] = &[
-    "",
-    ".ts",
-    ".tsx",
-    ".js",
-    ".jsx",
-    ".mts",
-    ".cts",
-    ".mjs",
-    ".cjs",
-    ".py",
-    ".rs",
+    "", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".py", ".rs",
 ];
 
 const INDEX_EXTENSIONS: &[&str] = &[
@@ -1056,11 +1046,7 @@ pub(crate) fn resolve_specifier_paths(
         }
     }
     for path in project_paths {
-        if Path::new(path)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            == Some(specifier)
-        {
+        if Path::new(path).file_stem().and_then(|stem| stem.to_str()) == Some(specifier) {
             resolved.insert(path.clone());
         }
     }
@@ -1139,7 +1125,10 @@ fn declares_a_nominal_type(kind: DeclarationKind) -> bool {
     )
 }
 
-fn declaration_matches_type_name(declaration: &backend_compile::SourceDeclaration, type_name: &str) -> bool {
+fn declaration_matches_type_name(
+    declaration: &backend_compile::SourceDeclaration,
+    type_name: &str,
+) -> bool {
     declares_a_nominal_type(declaration.kind()) && declaration.name() == type_name
 }
 
@@ -1179,12 +1168,7 @@ fn declaration_coordinate_in_file(
     project_key: [u8; 32],
     declaration: &backend_compile::SourceDeclaration,
 ) -> String {
-    let containment = FileContainment::new(
-        label,
-        &file.path,
-        project_key,
-        &file.declarations,
-    );
+    let containment = FileContainment::new(label, &file.path, project_key, &file.declarations);
     containment.coordinate(declaration)
 }
 
@@ -1204,8 +1188,7 @@ fn cross_file_callable_coordinates(
                 if call.qualifier.as_deref() != Some(import.local.as_str()) {
                     continue;
                 }
-                let resolved_paths =
-                    resolve_specifier_paths(specifier, caller_path, project_paths);
+                let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
                 for path in resolved_paths {
                     let Some(file) = files_by_path.get(&path) else {
                         continue;
@@ -1224,16 +1207,19 @@ fn cross_file_callable_coordinates(
                     }
                 }
             }
-            ImportBindingKind::Value { specifier, exported } => {
-                let resolved_paths =
-                    resolve_specifier_paths(specifier, caller_path, project_paths);
+            ImportBindingKind::Value {
+                specifier,
+                exported,
+            } => {
+                let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
                 for path in resolved_paths {
                     let Some(file) = files_by_path.get(&path) else {
                         continue;
                     };
-                    let exported_is_type = file.declarations.iter().any(|declaration| {
-                        declaration_matches_type_name(declaration, exported)
-                    });
+                    let exported_is_type = file
+                        .declarations
+                        .iter()
+                        .any(|declaration| declaration_matches_type_name(declaration, exported));
                     if exported_is_type {
                         for declaration in &file.declarations {
                             if declaration_matches_callable_on_type(
@@ -1285,11 +1271,8 @@ fn resolve_call_targets(
         project_key,
         &caller_file.declarations,
     );
-    let same_file = same_file_callable_coordinates(
-        &caller_file.declarations,
-        &caller_containment,
-        &call.name,
-    );
+    let same_file =
+        same_file_callable_coordinates(&caller_file.declarations, &caller_containment, &call.name);
     if !same_file.is_empty() {
         return same_file;
     }
@@ -1353,12 +1336,8 @@ pub(crate) fn structural_call_coordinate_pairs(
             let Some(excerpt) = caller.source_excerpt().text() else {
                 continue;
             };
-            let caller_containment = FileContainment::new(
-                &project.label,
-                &file.path,
-                project_key,
-                &file.declarations,
-            );
+            let caller_containment =
+                FileContainment::new(&project.label, &file.path, project_key, &file.declarations);
             let caller_coordinate = caller_containment.coordinate(caller);
             for call in structural_excerpt_call_sites(excerpt) {
                 let targets = resolve_call_targets(
@@ -1473,14 +1452,18 @@ pub(crate) fn structural_call_graph_relations_mapped(
     }
     let mut relations = BTreeSet::new();
     for (caller_coordinate, callee_coordinate) in pairs {
-        let Some(caller_id) = first_label.get(caller_coordinate).copied().or_else(|| {
-            view_row_for_structural_coordinate(view, package, caller_coordinate)
-        }) else {
+        let Some(caller_id) = first_label
+            .get(caller_coordinate)
+            .copied()
+            .or_else(|| view_row_for_structural_coordinate(view, package, caller_coordinate))
+        else {
             continue;
         };
-        let Some(callee_id) = first_label.get(callee_coordinate).copied().or_else(|| {
-            view_row_for_structural_coordinate(view, package, callee_coordinate)
-        }) else {
+        let Some(callee_id) = first_label
+            .get(callee_coordinate)
+            .copied()
+            .or_else(|| view_row_for_structural_coordinate(view, package, callee_coordinate))
+        else {
             continue;
         };
         relations.insert(backend_engine::GraphRelation::new(
@@ -1517,18 +1500,23 @@ pub(crate) fn structural_call_graph_relations(
         ));
     }
     let mut relations = BTreeSet::new();
-    for (caller_coordinate, callee_coordinate) in structural_call_coordinate_pairs(sources, package)?
+    for (caller_coordinate, callee_coordinate) in
+        structural_call_coordinate_pairs(sources, package)?
     {
-        let caller_id = view.last_package_label(package, &caller_coordinate).ok_or_else(|| {
-            BuiltinModelError(
-                "structural call graph caller is absent from the published view".to_owned(),
-            )
-        })?;
-        let callee_id = view.last_package_label(package, &callee_coordinate).ok_or_else(|| {
-            BuiltinModelError(
-                "structural call graph callee is absent from the published view".to_owned(),
-            )
-        })?;
+        let caller_id = view
+            .last_package_label(package, &caller_coordinate)
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "structural call graph caller is absent from the published view".to_owned(),
+                )
+            })?;
+        let callee_id = view
+            .last_package_label(package, &callee_coordinate)
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "structural call graph callee is absent from the published view".to_owned(),
+                )
+            })?;
         relations.insert(backend_engine::GraphRelation::new(
             caller_id,
             callee_id,
@@ -1592,8 +1580,7 @@ pub(crate) fn structural_reference_facts(
     let target_identity = structural_symbol_identity(target_symbol);
     let mut facts = Vec::new();
     for relation in relations {
-        if relation.to != target_id
-            || relation.relation != backend_library::SemanticLinkKind::Calls
+        if relation.to != target_id || relation.relation != backend_library::SemanticLinkKind::Calls
         {
             continue;
         }
@@ -1618,10 +1605,9 @@ pub(crate) fn structural_reference_facts(
             .unwrap_or((0, target_name.len().min(u32::MAX as usize) as u32));
         let source = match site_row.source.captured() {
             Some(location) => Some(backend_engine::SemanticSourceSpan {
-                file: backend_engine::ProductText::new(location.path())
-                    .map_err(|error| {
-                        BuiltinModelError(format!("structural references path: {error:?}"))
-                    })?,
+                file: backend_engine::ProductText::new(location.path()).map_err(|error| {
+                    BuiltinModelError(format!("structural references path: {error:?}"))
+                })?,
                 start,
                 end,
             }),

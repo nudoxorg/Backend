@@ -1,13 +1,14 @@
-//! Root-bound Turso projection for local query acceleration.
+//! Turso authority for selected index generations and their query projections.
 //!
-//! The versioned workspace remains the authority. This crate owns a disposable
-//! SQL projection whose sole mutable row set is bound to one immutable
-//! [`backend_library::ViewRoot`].
-//! Hot transitions update only changed rows in one transaction; cold recovery can
-//! rebuild the projection from a certified root.
+//! [`TursoAuthority`] owns mutable package/source/branch/environment selection,
+//! source observations, and projection watermarks. Immutable packs and complete
+//! closures remain in content-addressed storage; catalog, graph, and lexical
+//! tables are rebuildable projections bound to the selected logical root.
+//! [`TursoProjection`] remains the bounded SQL interface for derived query rows.
 
 #![deny(unsafe_code)]
 
+mod authority;
 mod connection;
 mod error;
 mod graph;
@@ -19,14 +20,32 @@ mod writer;
 #[path = "tests.rs"]
 mod tests;
 
+pub use authority::{
+    AttemptInvalidatedByObservationProof, AuthorityError, AuthorityHash, AuthorityNamespace,
+    AuthorityPlane, COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
+    COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
+    CandidateGeneration, ClosureClaim, ClosureReceipt, CompilerEnvelopeError, CompilerImageMember,
+    CompilerPublicationEnvelope, CompilerPublicationMetadata, ExistingGenerationSelection,
+    ProjectionKind, ProjectionWatermark, ReopenedCompilerImage, ReopenedCompilerMetadata,
+    ReopenedCompilerPublication, SelectedFrontier, SelectedGeneration, SelectionOrigin,
+    SourceObservation, SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
+    TursoAuthority, VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA,
+    VersionedPlaneArtifactMetadata, VersionedPlaneError, VersionedPlaneManifestSchema,
+    VersionedPlaneMember, VersionedPlaneMetadata, VersionedPlanePublication,
+    VersionedPlaneSegmentSchema, reopen_selected_compiler_metadata,
+    reopen_selected_compiler_publication,
+};
 pub use error::ProjectionError;
-pub use graph::{PackageGraphState, RootedPackageGraph};
+pub use graph::{PackageGraphSourceSelection, PackageGraphState, RootedPackageGraph};
 pub use read::RootedRows;
 
 use std::fmt;
 
 /// Durable path used by the product composition.
 pub const FILE_NAME: &str = "projection.turso";
+
+/// Durable selected-head authority path, kept separate from the rebuildable projection.
+pub const AUTHORITY_FILE_NAME: &str = "index-authority.turso";
 
 /// Result of aligning the projection to an immutable view root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -6,11 +6,12 @@ use super::super::lease::{
 use super::validation::validate_extent_metadata;
 use super::{ExtentId, StagedExtent, WireStagedExtent};
 use crate::{
-    AdmittedAuthority, AuthorityClaim, ImmutableObjectSchema, ObjectRequest, ReplicationError,
-    SparseCoverage, TransferId, TransportLimits, WireIdentity, claim_schema_object_key,
-    claim_schema_object_version,
+    AdmittedAuthority, AuthorityClaim, AuthorityEpoch, ByteRange, ImmutableObjectSchema,
+    ObjectRequest, ReplicationError, SparseCoverage, TransferId, TransportLimits, WireIdentity,
+    claim_schema_object_key, claim_schema_object_version, schema_object_key_claim,
+    schema_object_version_claim,
 };
-use backend_version::{ObjectKey, ObjectVersion, Schema};
+use backend_version::{IdContext, ObjectKey, ObjectVersion, Schema};
 use std::fmt;
 
 /// A bounded, byte-free checkpoint for an incremental sparse CAS transfer.
@@ -199,6 +200,45 @@ pub struct WireReceivingCheckpoint<T: Schema = ImmutableObjectSchema> {
     /// Extent metadata; no payload bytes are embedded.
     pub extents: Vec<WireStagedExtent>,
 }
+
+const WIRE_CHECKPOINT_MAGIC: &[u8; 4] = b"RCP1";
+const WIRE_CHECKPOINT_VERSION: u16 = 1;
+const WIRE_CHECKPOINT_FIXED_BYTES: usize = 4 + 2 + 8 + 32 + 32 + 8 + 45 + 4 + 4 + 32;
+const WIRE_EXTENT_BYTES: usize = 32 + 8 + 8 + 8 + 32 + 32;
+
+struct WireCheckpointCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl WireCheckpointCursor<'_> {
+    fn take(&mut self, length: usize) -> Result<&[u8], ReplicationError> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(ReplicationError::Overflow)?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(ReplicationError::CorruptFrame)?;
+        self.offset = end;
+        Ok(bytes)
+    }
+
+    fn byte(&mut self) -> Result<u8, ReplicationError> {
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or(ReplicationError::CorruptFrame)
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], ReplicationError> {
+        self.take(N)?
+            .try_into()
+            .map_err(|_| ReplicationError::CorruptFrame)
+    }
+}
+
 impl<T: Schema> Clone for WireReceivingCheckpoint<T> {
     fn clone(&self) -> Self {
         Self {
@@ -239,6 +279,37 @@ impl<T: Schema> PartialEq for WireReceivingCheckpoint<T> {
 }
 impl<T: Schema> Eq for WireReceivingCheckpoint<T> {}
 impl<T: Schema> WireReceivingCheckpoint<T> {
+    /// Builds a wire checkpoint from unverified identities and bounded
+    /// retained extent metadata.
+    ///
+    /// # Errors
+    /// Returns a size, context, range, identity, replay, or chain error when
+    /// the checkpoint metadata is malformed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        transfer: TransferId,
+        key: crate::SchemaWireObjectKey<T>,
+        version: crate::SchemaWireObjectVersion<T>,
+        len: u64,
+        authority: AuthorityClaim,
+        coverage: SparseCoverage,
+        extents: Vec<WireStagedExtent>,
+        limits: TransportLimits,
+        max_extents: usize,
+    ) -> Result<Self, ReplicationError> {
+        let checkpoint = Self {
+            transfer,
+            key,
+            version,
+            len,
+            authority,
+            coverage,
+            extents,
+        };
+        checkpoint.validate(limits, max_extents)?;
+        Ok(checkpoint)
+    }
+
     /// Validates bounded wire structure and schema contexts.
     ///
     /// # Errors
@@ -286,6 +357,198 @@ impl<T: Schema> WireReceivingCheckpoint<T> {
             limits,
             max_extents,
         )
+    }
+
+    /// Returns the maximum encoded byte length for the supplied metadata
+    /// budgets, including its fixed header and integrity digest.
+    #[must_use]
+    pub fn max_encoded_len(max_ranges: usize, max_extents: usize) -> Option<usize> {
+        WIRE_CHECKPOINT_FIXED_BYTES
+            .checked_add(max_ranges.checked_mul(16)?)
+            .and_then(|bytes| bytes.checked_add(max_extents.checked_mul(WIRE_EXTENT_BYTES)?))
+    }
+
+    /// Encodes this checkpoint in a bounded, versioned, checksummed format.
+    ///
+    /// # Errors
+    /// Returns `MessageTooLarge`, `Backpressure`, or a validation error when
+    /// the encoded record exceeds its byte budget or is malformed.
+    pub fn encode_bounded(
+        &self,
+        maximum: usize,
+        limits: TransportLimits,
+        max_extents: usize,
+    ) -> Result<Vec<u8>, ReplicationError> {
+        self.validate(limits, max_extents)?;
+        let length = WIRE_CHECKPOINT_FIXED_BYTES
+            .checked_add(
+                self.coverage
+                    .ranges()
+                    .len()
+                    .checked_mul(16)
+                    .ok_or(ReplicationError::Overflow)?,
+            )
+            .and_then(|bytes| {
+                self.extents
+                    .len()
+                    .checked_mul(WIRE_EXTENT_BYTES)
+                    .and_then(|extents| bytes.checked_add(extents))
+            })
+            .ok_or(ReplicationError::Overflow)?;
+        if length > maximum {
+            return Err(ReplicationError::MessageTooLarge);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| ReplicationError::Backpressure)?;
+        bytes.extend_from_slice(WIRE_CHECKPOINT_MAGIC);
+        bytes.extend_from_slice(&WIRE_CHECKPOINT_VERSION.to_be_bytes());
+        bytes.extend_from_slice(&self.transfer.get().to_be_bytes());
+        bytes.extend_from_slice(self.key.as_bytes());
+        bytes.extend_from_slice(self.version.as_bytes());
+        bytes.extend_from_slice(&self.len.to_be_bytes());
+        let context = self.authority.id.context();
+        bytes.extend_from_slice(&[context.class(), context.domain()]);
+        bytes.extend_from_slice(&context.ty().to_be_bytes());
+        bytes.push(context.version());
+        bytes.extend_from_slice(&self.authority.id.as_bytes());
+        bytes.extend_from_slice(&self.authority.epoch.0.to_be_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(self.coverage.ranges().len())
+                .map_err(|_| ReplicationError::CoverageLimit)?
+                .to_be_bytes(),
+        );
+        for range in self.coverage.ranges() {
+            bytes.extend_from_slice(&range.start.to_be_bytes());
+            bytes.extend_from_slice(&range.len.to_be_bytes());
+        }
+        bytes.extend_from_slice(
+            &u32::try_from(self.extents.len())
+                .map_err(|_| ReplicationError::CoverageLimit)?
+                .to_be_bytes(),
+        );
+        for extent in &self.extents {
+            bytes.extend_from_slice(&extent.id.as_bytes());
+            bytes.extend_from_slice(&extent.offset.to_be_bytes());
+            bytes.extend_from_slice(&extent.len.to_be_bytes());
+            bytes.extend_from_slice(&extent.sequence.to_be_bytes());
+            bytes.extend_from_slice(&extent.previous_chain.0);
+            bytes.extend_from_slice(&extent.chain.0);
+        }
+        let checksum = blake3::hash(&bytes);
+        bytes.extend_from_slice(checksum.as_bytes());
+        if bytes.len() != length {
+            return Err(ReplicationError::Overflow);
+        }
+        Ok(bytes)
+    }
+
+    /// Decodes and validates a bounded, versioned checkpoint record.
+    ///
+    /// # Errors
+    /// Returns `CorruptFrame`, `MessageTooLarge`, or a validation error when
+    /// the record is malformed, truncated, or exceeds its metadata budget.
+    pub fn decode_bounded(
+        bytes: &[u8],
+        maximum: usize,
+        limits: TransportLimits,
+        max_extents: usize,
+    ) -> Result<Self, ReplicationError> {
+        if bytes.len() > maximum {
+            return Err(ReplicationError::MessageTooLarge);
+        }
+        if bytes.len() < WIRE_CHECKPOINT_FIXED_BYTES {
+            return Err(ReplicationError::CorruptFrame);
+        }
+        let checksum_at = bytes.len() - 32;
+        if blake3::hash(&bytes[..checksum_at]).as_bytes() != &bytes[checksum_at..] {
+            return Err(ReplicationError::CorruptFrame);
+        }
+        let mut cursor = WireCheckpointCursor {
+            bytes: &bytes[..checksum_at],
+            offset: 0,
+        };
+        if cursor.take(4)? != WIRE_CHECKPOINT_MAGIC
+            || u16::from_be_bytes(cursor.array()?) != WIRE_CHECKPOINT_VERSION
+        {
+            return Err(ReplicationError::CorruptFrame);
+        }
+        let transfer = TransferId::new(u64::from_be_bytes(cursor.array()?))?;
+        let key_bytes: [u8; 32] = cursor.array()?;
+        let version_bytes: [u8; 32] = cursor.array()?;
+        let len = u64::from_be_bytes(cursor.array()?);
+        let class = cursor.byte()?;
+        let domain = cursor.byte()?;
+        let ty = u16::from_be_bytes(cursor.array()?);
+        let context_version = cursor.byte()?;
+        let authority_bytes: [u8; 32] = cursor.array()?;
+        let authority_epoch = u64::from_be_bytes(cursor.array()?);
+        if authority_epoch == 0 {
+            return Err(ReplicationError::CorruptFrame);
+        }
+        let authority = AuthorityClaim::new(
+            WireIdentity::from_wire(
+                &authority_bytes,
+                IdContext::new(class, domain, ty, context_version),
+            )
+            .map_err(|_| ReplicationError::CorruptFrame)?,
+            AuthorityEpoch(authority_epoch),
+        );
+        let range_count = usize::try_from(u32::from_be_bytes(cursor.array()?))
+            .map_err(|_| ReplicationError::Overflow)?;
+        if range_count > limits.max_ranges {
+            return Err(ReplicationError::CoverageLimit);
+        }
+        let mut ranges = Vec::new();
+        ranges
+            .try_reserve_exact(range_count)
+            .map_err(|_| ReplicationError::Backpressure)?;
+        for _ in 0..range_count {
+            ranges.push(ByteRange {
+                start: u64::from_be_bytes(cursor.array()?),
+                len: u64::from_be_bytes(cursor.array()?),
+            });
+        }
+        let coverage = SparseCoverage::from_ranges(ranges.iter().copied(), limits.max_ranges)?;
+        if coverage.ranges() != ranges {
+            return Err(ReplicationError::CorruptFrame);
+        }
+        let extent_count = usize::try_from(u32::from_be_bytes(cursor.array()?))
+            .map_err(|_| ReplicationError::Overflow)?;
+        if extent_count > max_extents {
+            return Err(ReplicationError::CoverageLimit);
+        }
+        let mut extents = Vec::new();
+        extents
+            .try_reserve_exact(extent_count)
+            .map_err(|_| ReplicationError::Backpressure)?;
+        for _ in 0..extent_count {
+            extents.push(WireStagedExtent {
+                id: ExtentId(cursor.array()?),
+                offset: u64::from_be_bytes(cursor.array()?),
+                len: u64::from_be_bytes(cursor.array()?),
+                sequence: u64::from_be_bytes(cursor.array()?),
+                previous_chain: crate::ChunkChain(cursor.array()?),
+                chain: crate::ChunkChain(cursor.array()?),
+            });
+        }
+        if cursor.offset != cursor.bytes.len() {
+            return Err(ReplicationError::CorruptFrame);
+        }
+        let checkpoint = Self {
+            transfer,
+            key: schema_object_key_claim::<T>(&key_bytes)
+                .map_err(|_| ReplicationError::CorruptFrame)?,
+            version: schema_object_version_claim::<T>(&version_bytes)
+                .map_err(|_| ReplicationError::CorruptFrame)?,
+            len,
+            authority,
+            coverage,
+            extents,
+        };
+        checkpoint.validate(limits, max_extents)?;
+        Ok(checkpoint)
     }
 
     /// Admits this wire claim against exact caller-owned request material.

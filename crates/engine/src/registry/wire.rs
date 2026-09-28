@@ -11,9 +11,9 @@ use crate::acquisition::RawArchiveObjectId;
 use crate::journal::{JournalCodec, JournalDomain, JournalError};
 use backend_advisory::AdvisoryPackageDto;
 use backend_library::{
-    MAX_REGISTRY_FORGE_ASSOCIATION_BYTES,
-    MAX_REGISTRY_FORGE_ASSOCIATIONS, MAX_REGISTRY_NATIVE_METADATA_BYTES, RegistryNativeMetadata,
-    PackageReference, RegistryForgeAssociation,
+    MAX_REGISTRY_FORGE_ASSOCIATION_BYTES, MAX_REGISTRY_FORGE_ASSOCIATIONS,
+    MAX_REGISTRY_NATIVE_METADATA_BYTES, PackageReference, RegistryForgeAssociation,
+    RegistryNativeMetadata,
 };
 
 pub(crate) enum RegistryLog {}
@@ -67,9 +67,11 @@ impl JournalCodec for RegistryLog {
                 associations,
                 facts_root,
             } => {
-                debug_assert!(associations
-                    .windows(2)
-                    .all(|pair| pair[0].facts_version < pair[1].facts_version));
+                debug_assert!(
+                    associations
+                        .windows(2)
+                        .all(|pair| pair[0].facts_version < pair[1].facts_version)
+                );
                 out.push(4);
                 put_text(out, coordinate.as_str());
                 out.extend_from_slice(facts_root);
@@ -138,10 +140,9 @@ impl RegistryLog {
                     if length > MAX_REGISTRY_FORGE_ASSOCIATION_BYTES {
                         return Err(AcquisitionError::Bounds);
                     }
-                    let association = RegistryForgeAssociation::decode_canonical(
-                        take(bytes, &mut at, length)?,
-                    )
-                    .map_err(|_| AcquisitionError::CorruptJournal)?;
+                    let association =
+                        RegistryForgeAssociation::decode_canonical(take(bytes, &mut at, length)?)
+                            .map_err(|_| AcquisitionError::CorruptJournal)?;
                     if association.admit_for_registry(&registry).is_err() {
                         return Err(AcquisitionError::CorruptJournal);
                     }
@@ -265,8 +266,8 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         .map_err(|_| AcquisitionError::CorruptJournal)?;
     let coordinate = coordinate_from_registry_parts(ecosystem, name.as_str(), version.as_str())?;
     let registry = admit_registry_coordinate(&coordinate)?;
-    let forge_count = usize::try_from(read_u32(bytes, at)?)
-        .map_err(|_| AcquisitionError::Bounds)?;
+    let forge_count =
+        usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
     if forge_count > MAX_REGISTRY_FORGE_ASSOCIATIONS {
         return Err(AcquisitionError::Bounds);
     }

@@ -358,7 +358,13 @@ fn borrowed_rich_graph_matches_cloned_rows_without_filling_the_cache() {
     let root = ViewRoot::new_incomplete(
         crate::view_key(b"rich-graph"),
         basis,
-        crate::Frontier::new(crate::branch_key("branch"), crate::log_key("log"), 1, source, 0),
+        crate::Frontier::new(
+            crate::branch_key("branch"),
+            crate::log_key("log"),
+            1,
+            source,
+            0,
+        ),
         built,
         vec![],
     )

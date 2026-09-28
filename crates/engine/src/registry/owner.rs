@@ -697,26 +697,55 @@ impl RegistryOwner {
     /// warnings without touching immutable archive bytes.
     #[must_use]
     pub fn cached_policy_allows(&self, package: &PublishedPackage) -> bool {
-        if matches!(&package.advisory.decision, AcquisitionDecision::Deny(_)) {
+        let Some(gate) = self.advisory_gate else {
+            return !matches!(&package.advisory.decision, AcquisitionDecision::Deny(_));
+        };
+        let advisory = self.advisory_for_published(package);
+        if matches!(&advisory.decision, AcquisitionDecision::Deny(_)) {
             return false;
         }
-        let Some(gate) = self.advisory_gate else {
-            return true;
-        };
-        if package.advisory.yanked || package.advisory.unlisted {
+        if advisory.yanked || advisory.unlisted {
             return false;
         }
         match gate.offline {
             backend_advisory::OfflinePolicy::FailClosed => {
-                package.advisory.coverage == AdvisoryCoverage::Complete
+                advisory.coverage == AdvisoryCoverage::Complete
                     && matches!(
-                        package.advisory.freshness,
+                        advisory.freshness,
                         FreshnessState::Fresh | FreshnessState::NotModified
                     )
             }
             backend_advisory::OfflinePolicy::AllowCached
             | backend_advisory::OfflinePolicy::Warn => true,
         }
+    }
+
+    /// Resolves the current mutable advisory authority for an already
+    /// published exact package/version. The immutable publication receipt
+    /// keeps its acquisition-time advisory DTO; reads and cache policy use
+    /// this projection instead.
+    #[must_use]
+    pub fn advisory_for_published(&self, package: &PublishedPackage) -> AdvisoryPackageDto {
+        let Some(gate) = self.advisory_gate else {
+            return package.advisory.clone();
+        };
+        let Some(observation) = self.advisory_resolver.as_ref().and_then(|resolver| {
+            let admitted = super::admit_registry_coordinate(&package.coordinate).ok()?;
+            let identity = normalize_package(
+                admitted.ecosystem().package_type().as_str(),
+                admitted.qualified_name().as_str(),
+            )
+            .ok()?;
+            Some(resolver.observe(
+                &identity,
+                admitted.version().as_str(),
+                matches!(package.facts.standing(), super::ReleaseStanding::Yanked),
+                matches!(package.facts.standing(), super::ReleaseStanding::Unlisted),
+            ))
+        }) else {
+            return package.advisory.clone();
+        };
+        AdvisoryPackageDto::from_observation(&observation, gate.decide(&observation))
     }
 
     /// Most recently committed protocol receipt, if one exists.

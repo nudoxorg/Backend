@@ -49,7 +49,9 @@ pub use contract::{
 };
 pub use embedding::{
     EmbeddingArtifact, EmbeddingArtifactId, EmbeddingCoordinates, EmbeddingExecutable,
-    EmbeddingExecutableError, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPurpose,
+    EmbeddingExecutableError, EmbeddingExecutionIdentity, EmbeddingInvocation,
+    EmbeddingNormalization, EmbeddingPayloadError, EmbeddingPurpose, EmbeddingRuntimeSpecError,
+    EmbeddingRuntimeSpecV1, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
 };
 pub use errors::{FrameError, PoolError, ProcessError, UnsupportedLimit};
 pub use facts::{

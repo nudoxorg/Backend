@@ -16,7 +16,7 @@ mod surface_matrix;
 use backend_client::{LocalSubscriptionTransport, Session, SubscriptionRequest};
 use backend_engine::capability::CapabilityArtifactId;
 use backend_engine::registry::{
-    storage_root, RegistryEcosystem, RegistryEndpoint, RegistrySource, REGISTRY_SOURCE_ROOT_VERSION,
+    REGISTRY_SOURCE_ROOT_VERSION, RegistryEcosystem, RegistryEndpoint, RegistrySource, storage_root,
 };
 use backend_library::{
     CursorRead, GraphValue, PackageReference, ProjectName, SurfaceCommand, SurfaceReply,
@@ -513,6 +513,12 @@ fn search_identity(
             path: "src/lib.rs",
             name: "RustBeaconEntry",
             source: "",
+            oracle: surface_matrix::SemanticPayloadOracle {
+                kind: "function",
+                signature_fragment: "RustBeaconEntry() -> u64",
+                documentation_marker: "ORACLE/RUST: signal level eight.",
+                payload_sentinel: "intensity: 8",
+            },
         },
     )
 }
@@ -704,6 +710,12 @@ fn surface_evidence(
             path: "src/lib.rs",
             name: "RustBeaconEntry",
             source: "",
+            oracle: surface_matrix::SemanticPayloadOracle {
+                kind: "function",
+                signature_fragment: "RustBeaconEntry() -> u64",
+                documentation_marker: "ORACLE/RUST: signal level eight.",
+                payload_sentinel: "intensity: 8",
+            },
         },
     );
     let outline_value = cli_json(

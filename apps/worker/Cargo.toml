@@ -6,8 +6,17 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 [dependencies]
+backend-compile = { path = "../../crates/compile" }
 backend-engine = { path = "../../crates/engine" }
+backend-semantic = { path = "../../crates/semantic" }
+backend-store = { path = "../../crates/store" }
 backend-platform = { path = "../../crates/platform" }
+blake3.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+backend-extension-turso = { path = "../../extensions/turso" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }

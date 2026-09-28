@@ -7,8 +7,8 @@ use std::{
 };
 
 use super::errors::PublicationLimitError;
-use crate::journal::{ReceiptFacts, format::CHECKSUM_BYTES};
 use crate::hydration::VerifiedGenerationFacts;
+use crate::journal::{ReceiptFacts, format::CHECKSUM_BYTES};
 
 /// The fixed paths owned by one local durable publication directory.
 #[derive(Clone, Debug)]

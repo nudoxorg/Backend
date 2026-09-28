@@ -6,18 +6,21 @@ use std::{
 };
 
 use backend_engine::application::{
-    DocumentationSession, LocalCompiler, LocalCompilerClient, LocalCompilerConfig,
-    LocalCompilerControl, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
-    LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
-    LocalRuntimeToolchain, LocalToolchainSet, OwnedPackageSource, OwnedPackageSourceSet,
-    PackageSource, PackageSourceSet,
+    CompilerPackageTargetV2, DocumentationSession, LocalCompiler, LocalCompilerClient,
+    LocalCompilerConfig, LocalCompilerControl, LocalCompilerRuntimeConfiguration,
+    LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout,
+    LocalRuntimePackageAuthority, LocalRuntimeToolchain, LocalToolchainSet, OwnedPackageSource,
+    OwnedPackageSourceSet, PackageSource, PackageSourceSet, StagedEmbeddingStatus,
 };
 use backend_engine::driver::{ResolvedToolchain, ToolchainSelection};
-use backend_semantic::ir::SemanticImageView;
-use backend_semantic::vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
 use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompilePhase, PackageCompileRequest, PackageUrl,
 };
+use backend_semantic::ir::{
+    MAX_SEMANTIC_SEGMENT_BYTES, SemanticImageView, SemanticIrPlane, SemanticPlaneKind,
+    SemanticPlaneManifest,
+};
+use backend_semantic::vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
 use backend_store::journal::PublicationLimits;
 
 #[test]
@@ -78,11 +81,58 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
         PackageSource::new("src/beta.c", second)?,
     ];
     let package = PackageSourceSet::new(&request, &package_root, &sources)?;
+    let mut staged_phases = Vec::new();
+    let staged =
+        compiler.compile_package_sources_staged(package, &mut |phase| staged_phases.push(phase))?;
+    assert_eq!(
+        staged.embedding_status(),
+        StagedEmbeddingStatus::NotConfigured
+    );
+
+    assert_eq!(staged.output_object_count(), 5);
+    assert_eq!(staged.generation_facts(), staged.binding_facts().generation);
+    assert_eq!(
+        staged.manifest_facts().identity,
+        staged.binding_facts().manifest
+    );
+    assert_eq!(
+        staged.output_object(0).unwrap().bytes(),
+        staged.manifest_bytes()
+    );
+    assert!(
+        !artifacts.exists(),
+        "staging must not create local immutable artifacts"
+    );
+    assert_eq!(
+        staged_phases,
+        [
+            PackageCompilePhase::Authority,
+            PackageCompilePhase::Lower,
+            PackageCompilePhase::Authority,
+            PackageCompilePhase::Lower,
+            PackageCompilePhase::Publish,
+        ]
+    );
+
     let mut phases = Vec::new();
     let published = compiler.compile_package_sources(package, &mut |phase| phases.push(phase))?;
 
     assert_eq!(published.publication.manifest.fragment_count, 2);
     assert_eq!(published.images.len(), 2);
+    assert_eq!(
+        staged.generation_facts(),
+        published.publication.binding.generation
+    );
+    assert_eq!(staged.manifest_facts(), published.publication.manifest);
+    assert_eq!(staged.binding_facts(), published.publication.binding);
+    assert_eq!(
+        staged.output_object(2).unwrap().bytes(),
+        published.images[0].as_ref()
+    );
+    assert_eq!(
+        staged.output_object(4).unwrap().bytes(),
+        published.images[1].as_ref()
+    );
     assert_eq!(
         phases,
         [
@@ -174,6 +224,74 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
         OwnedPackageSource::new("src/beta.c", beta)?,
     ]
     .into_boxed_slice();
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+        request.clone(),
+        package_root.clone(),
+        sources.clone(),
+    )?)?;
+    let package_target = CompilerPackageTargetV2::for_package(request.as_ref().clone());
+    let runtime_identity = client
+        .execution_identity_for_unit(
+            &package_target,
+            request.target.profile,
+            request.target.stage,
+        )
+        .ok_or("opened Clang capability must expose its exact runtime identity")?;
+    let planes = staged.versioned_planes()?;
+    assert_eq!(planes.artifacts().len(), 2);
+    for (ordinal, artifact_planes) in planes.artifacts().iter().enumerate() {
+        assert_eq!(artifact_planes.artifact_ordinal(), ordinal);
+        let manifest = SemanticPlaneManifest::decode(artifact_planes.manifest_bytes())?;
+        assert_eq!(
+            manifest.semantic_generation(),
+            staged
+                .semantic_vcs_generation(ordinal)
+                .ok_or("staged image generation is present")?
+        );
+        assert_eq!(
+            manifest.build().target(),
+            runtime_identity.target().as_ref()
+        );
+        assert_eq!(
+            manifest.build().environment(),
+            &runtime_identity.environment_identity()
+        );
+        assert_eq!(
+            manifest.input().coverage().state(),
+            backend_version::Coverage::Partial
+        );
+        let core = manifest
+            .plane(SemanticPlaneKind::Ir(SemanticIrPlane::Core))
+            .ok_or("one Core IR plane is present per semantic image")?;
+        assert_eq!(artifact_planes.segment_count(), core.segments().len());
+        let mut payload_bytes = 0_usize;
+        for segment_ordinal in 0..artifact_planes.segment_count() {
+            let staged_segment = artifact_planes
+                .segment(segment_ordinal)
+                .ok_or("each declared plane segment has a payload")?;
+            assert_eq!(
+                staged_segment.kind(),
+                SemanticPlaneKind::Ir(SemanticIrPlane::Core)
+            );
+            assert!(staged_segment.payload().len() <= MAX_SEMANTIC_SEGMENT_BYTES);
+            assert_eq!(
+                core.segments()[segment_ordinal]
+                    .admit(staged_segment.kind(), staged_segment.payload(),)?,
+                staged_segment.id()
+            );
+            payload_bytes = payload_bytes
+                .checked_add(staged_segment.payload().len())
+                .ok_or("plane payload byte count is representable")?;
+        }
+        assert_eq!(
+            payload_bytes,
+            staged
+                .semantic_output_object(ordinal)
+                .ok_or("image object exists")?
+                .bytes()
+                .len()
+        );
+    }
     let published = client.compile_package_sources(OwnedPackageSourceSet::new(
         request.clone(),
         package_root,
@@ -185,8 +303,7 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
     let replacement = client.compile_package_sources(OwnedPackageSourceSet::new(
         request,
         root.join("replacement"),
-        vec![OwnedPackageSource::new("src/gamma.c", gamma)?]
-        .into_boxed_slice(),
+        vec![OwnedPackageSource::new("src/gamma.c", gamma)?].into_boxed_slice(),
     )?)?;
     assert_ne!(
         replacement.publication.binding.generation,
@@ -201,6 +318,241 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
     assert_eq!(activated.binding, published.publication.binding);
     assert_eq!(activated.images.len(), 2);
     drop(client);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn staged_package_emits_a_typed_embedding_plane_with_borrowed_payloads()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::{
+        num::{NonZeroU16, NonZeroU32},
+        os::unix::fs::PermissionsExt,
+        sync::Arc,
+    };
+
+    use backend_compile::{
+        EmbeddingArtifact, EmbeddingExecutable, EmbeddingNormalization, EmbeddingRuntimeSpecV1,
+        ProcessEnvironment, ProcessLimits, ToolchainArtifact,
+    };
+
+    use backend_engine::application::{EmbeddingProvisioningFailure, EmbeddingRequirement};
+
+    let clang = find_clang().ok_or("clang is required for the embedding-plane journey")?;
+    let version = Command::new(&clang).arg("--version").output()?;
+    if !version.status.success() {
+        return Err("clang version probe failed".into());
+    }
+    let root = unique_directory()?;
+    let package_root = root.join("package");
+    let native_work = root.join("native-work");
+    let embedding_workspace = root.join("embedding-work");
+    fs::create_dir_all(package_root.join("src"))?;
+    fs::create_dir(&native_work)?;
+    fs::create_dir(&embedding_workspace)?;
+    fs::set_permissions(&embedding_workspace, fs::Permissions::from_mode(0o700))?;
+    let relative_path = "src/alpha.c";
+    let source = "int alpha(void) { return 1; }\n";
+    fs::write(package_root.join(relative_path), source)?;
+
+    let model_bytes = br#"{"<unk>":[1.0,0.0],"alpha":[1.0,0.0],"int":[0.0,1.0]}"#;
+    let tokenizer_bytes = br#"{"lowercase":true,"split":"whitespace"}"#;
+    let hex = |bytes: &[u8]| {
+        bytes.iter().fold(String::new(), |mut output, byte| {
+            output.push_str(&format!("{byte:02x}"));
+            output
+        })
+    };
+    let embedding_program = embedding_workspace.join("embedder.py");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+import json, math, os, struct, sys
+EXPECTED_MODEL = bytes.fromhex("{}")
+EXPECTED_TOKENIZER = bytes.fromhex("{}")
+EXPECTED_MODEL_ID = "{}"
+EXPECTED_TOKENIZER_ID = "{}"
+model_bytes = open(os.environ["BACKEND_EMBEDDING_MODEL_FILE"], "rb").read()
+tokenizer_bytes = open(os.environ["BACKEND_EMBEDDING_TOKENIZER_FILE"], "rb").read()
+if model_bytes != EXPECTED_MODEL or tokenizer_bytes != EXPECTED_TOKENIZER:
+    sys.exit(71)
+frame = sys.stdin.buffer.read()
+if len(frame) < 108 or frame[:4] != b"BEM1":
+    sys.exit(72)
+if frame[40:72].hex() != EXPECTED_MODEL_ID or frame[72:104].hex() != EXPECTED_TOKENIZER_ID:
+    sys.exit(73)
+text_length = struct.unpack(">I", frame[104:108])[0]
+text = frame[108:]
+if len(text) != text_length:
+    sys.exit(74)
+dimension = struct.unpack(">H", frame[6:8])[0]
+model = json.loads(model_bytes)
+tokenizer = json.loads(tokenizer_bytes)
+text = text.decode("utf-8")
+if tokenizer.get("lowercase"):
+    text = text.lower()
+tokens = text.split()
+if not tokens:
+    sys.exit(75)
+vectors = [model.get(token, model["<unk>"]) for token in tokens]
+if any(len(vector) != dimension for vector in vectors):
+    sys.exit(76)
+values = [sum(vector[index] for vector in vectors) / len(vectors) for index in range(dimension)]
+if frame[5] == 1:
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm == 0:
+        sys.exit(77)
+    values = [value / norm for value in values]
+sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<" + "f" * dimension, *values))
+"#,
+        hex(model_bytes),
+        hex(tokenizer_bytes),
+        blake3::hash(model_bytes).to_hex(),
+        blake3::hash(tokenizer_bytes).to_hex(),
+    );
+    fs::write(&embedding_program, script)?;
+    fs::set_permissions(&embedding_program, fs::Permissions::from_mode(0o700))?;
+    let embedding_tool = ToolchainArtifact::from_path(&embedding_program, Vec::new())?;
+    let model = EmbeddingArtifact::new(Arc::from(model_bytes));
+    let tokenizer = EmbeddingArtifact::new(Arc::from(tokenizer_bytes));
+    let embedding_spec = EmbeddingRuntimeSpecV1::new(
+        model.identity().as_bytes(),
+        model.identity().as_bytes(),
+        tokenizer.identity().as_bytes(),
+        embedding_tool.identity().to_bytes(),
+        NonZeroU16::new(2).ok_or("embedding dimension is zero")?,
+        EmbeddingNormalization::L2,
+        NonZeroU32::new(256).ok_or("text bound is zero")?,
+        [77; 32],
+    );
+    let embedding = EmbeddingExecutable::activate_with_spec(
+        embedding_spec,
+        embedding_program,
+        Vec::new(),
+        embedding_workspace.clone(),
+        ProcessEnvironment::new(vec![("PATH".into(), "/usr/bin:/bin".into())])?,
+        ProcessLimits::new(64, 64, Duration::from_secs(2), 128)?.with_input_bytes_limit(512)?,
+        embedding_tool,
+        model,
+        tokenizer,
+    )?;
+
+    let package_url = PackageUrl::try_from("pkg:generic/embedding@1.0.0".to_owned())
+        .map_err(|error| fixture_error(format!("package URL rejected: {error:?}")))?;
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(33),
+            profile: LanguageProfile::C(CStandard::C23),
+            stage: Stage::LowerIr,
+        },
+        package_url,
+    )
+    .map_err(|error| fixture_error(format!("package profile rejected: {error:?}")))?;
+    let configuration = LocalCompilerRuntimeConfiguration::new(
+        LocalCompilerRuntimePaths::new(root.join("artifacts"), root.join("journal"), native_work)?,
+        vec![LocalRuntimeToolchain::resolved(
+            NativeTool::Clang,
+            clang.clone(),
+            &version.stdout,
+        )?]
+        .into_boxed_slice(),
+        Box::new([]),
+        LocalRuntimePackageAuthority::default(),
+        LocalCompilerTimeout::new(Duration::from_secs(30))?,
+        PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
+        LocalCompilerScratch::with_fragment_capacity(
+            NonZeroUsize::new(16 * 1024 * 1024).ok_or("fragment capacity is zero")?,
+        )?,
+    )?
+    .with_embedding_runtime(Arc::new(embedding), EmbeddingRequirement::Required);
+    let client = LocalCompilerClient::start(configuration)?;
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+        request.clone(),
+        package_root.clone(),
+        vec![OwnedPackageSource::new(relative_path, source)?].into_boxed_slice(),
+    )?)?;
+    let planes = staged.versioned_planes()?;
+    let StagedEmbeddingStatus::Available { identity } = planes.embedding_status() else {
+        return Err("required embedding output did not report availability".into());
+    };
+    let artifact = planes
+        .artifacts()
+        .first()
+        .ok_or("one canonical output artifact is present")?;
+    let manifest = SemanticPlaneManifest::decode(artifact.manifest_bytes())?;
+    let embedding_kind = SemanticPlaneKind::Embeddings(identity);
+    let embedding_plane = manifest
+        .plane(embedding_kind)
+        .ok_or("embedding plane is in the exact staged manifest")?;
+    assert_eq!(embedding_plane.segments().len(), 1);
+    let segment = artifact
+        .segment(artifact.segment_count() - 1)
+        .ok_or("embedding segment is present")?;
+    assert_eq!(segment.kind(), embedding_kind);
+    assert_eq!(&segment.payload()[..6], b"BVE1\0\x02");
+    assert_eq!(segment.payload().len(), 14);
+    assert_eq!(
+        embedding_plane.segments()[0].admit(segment.kind(), segment.payload())?,
+        segment.id()
+    );
+    assert_eq!(
+        *identity.model(),
+        EmbeddingArtifact::new(Arc::from(&b"model-v1"[..]))
+            .identity()
+            .as_bytes()
+    );
+    assert_eq!(
+        *identity.tokenizer(),
+        EmbeddingArtifact::new(Arc::from(&b"tokenizer-v1"[..]))
+            .identity()
+            .as_bytes()
+    );
+    assert_eq!(identity.dimension(), 2);
+    assert_eq!(identity.recipe(), &embedding_spec.recipe_identity());
+
+    drop(client);
+
+    let unavailable_native_work = root.join("unavailable-native-work");
+    fs::create_dir(&unavailable_native_work)?;
+    let unavailable_configuration = LocalCompilerRuntimeConfiguration::new(
+        LocalCompilerRuntimePaths::new(
+            root.join("unavailable-artifacts"),
+            root.join("unavailable-journal"),
+            unavailable_native_work,
+        )?,
+        vec![LocalRuntimeToolchain::resolved(
+            NativeTool::Clang,
+            clang,
+            &version.stdout,
+        )?]
+        .into_boxed_slice(),
+        Box::new([]),
+        LocalRuntimePackageAuthority::default(),
+        LocalCompilerTimeout::new(Duration::from_secs(30))?,
+        PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
+        LocalCompilerScratch::with_fragment_capacity(
+            NonZeroUsize::new(16 * 1024 * 1024).ok_or("fragment capacity is zero")?,
+        )?,
+    )?
+    .with_embedding_provisioning_failure(
+        EmbeddingProvisioningFailure::ArtifactIdentityMismatch,
+        EmbeddingRequirement::Optional,
+    );
+    let unavailable_client = LocalCompilerClient::start(unavailable_configuration)?;
+    let unavailable_staged =
+        unavailable_client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+            request,
+            package_root,
+            vec![OwnedPackageSource::new(relative_path, source)?].into_boxed_slice(),
+        )?)?;
+    let unavailable_planes = unavailable_staged.versioned_planes()?;
+    assert_eq!(
+        unavailable_planes.embedding_status(),
+        StagedEmbeddingStatus::ProvisioningUnavailable {
+            cause: EmbeddingProvisioningFailure::ArtifactIdentityMismatch,
+        }
+    );
+    drop(unavailable_client);
     fs::remove_dir_all(root)?;
     Ok(())
 }

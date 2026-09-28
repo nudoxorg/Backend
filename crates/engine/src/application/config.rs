@@ -4,7 +4,8 @@
 //! Explicit local compiler configuration and caller-owned bounded scratch.
 
 use std::{
-    collections::TryReserveError, ops::Deref, path::Path, sync::atomic::AtomicBool, time::Duration,
+    collections::TryReserveError, num::NonZeroUsize, ops::Deref, path::Path,
+    sync::atomic::AtomicBool, time::Duration,
 };
 
 use crate::driver::ToolchainSelection;
@@ -397,6 +398,22 @@ impl FragmentOutput {
 }
 
 impl LocalCompilerScratch {
+    /// Creates isolated lane scratch with the same admitted native fragment capacity.
+    pub(crate) fn lane_scratch(&self) -> Result<Self, LocalCompilerScratchError> {
+        match &self.fragment_output {
+            FragmentOutput::Inline(_) => Ok(Self::default()),
+            FragmentOutput::Planned(bytes) => {
+                let Some(capacity) = NonZeroUsize::new(bytes.len()) else {
+                    return Err(LocalCompilerScratchError::CapacityWidth {
+                        requested: 0,
+                        maximum: u32::MAX as usize,
+                    });
+                };
+                Self::with_fragment_capacity(capacity)
+            }
+        }
+    }
+
     pub(crate) fn prepare_publication(
         &mut self,
         artifacts: usize,

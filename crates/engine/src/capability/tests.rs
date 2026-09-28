@@ -275,6 +275,7 @@ fn verified_model_and_tokenizer_drive_the_external_runtime_end_to_end()
         std::process::id()
     ));
     fs::create_dir(&root)?;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let program = root.join("fixture.sh");
     fs::write(
         &program,
@@ -320,8 +321,7 @@ fn verified_model_and_tokenizer_drive_the_external_runtime_end_to_end()
     };
     let mut active = installed
         .resident()
-        .activate::<ExternalEmbeddingCapability>(&loader)
-        .map_err(|_| "activation")?;
+        .activate::<ExternalEmbeddingCapability>(&loader)?;
     {
         let mut ready = active.execution_ready().map_err(|_| "readiness")?;
         let coordinates = ready

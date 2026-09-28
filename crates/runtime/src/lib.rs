@@ -6,13 +6,11 @@
 //! # Endpoint identity
 //!
 //! Workspace ownership is a kernel lock on an inode, while the endpoint is
-//! derived from a path. Those two facts must not be allowed to disagree: if
-//! `<project>/.backend/v2`, `<project>/./.backend/v2`, a trailing-slash
-//! spelling, and macOS `/tmp` versus `/private/tmp` hash to four sockets while
-//! locking one inode, a second surface binds a socket nobody is listening on
-//! and then dies on the lock it could have attached through. Every path is
-//! therefore reduced to its filesystem identity by [`normalize_identity`]
-//! before it is hashed, so one directory always derives one endpoint.
+//! derived from a path. Durable state lives in the user's application-state
+//! directory under a hash of the normalized project identity, so several
+//! projects stay isolated without writing into source checkouts. Every path is
+//! reduced to its filesystem identity by [`normalize_identity`] before it is
+//! hashed, so alternate spellings always resolve to one data root and endpoint.
 //!
 //! # Daemon lifecycle
 //!
@@ -59,7 +57,8 @@ pub const AUTHORITY_SECRET_ENV: &str = "BACKEND_LOCALD_AUTHORITY_SECRET_FILE";
 /// derived Unix endpoints.
 pub const RUNTIME_DIR_ENV: &str = "XDG_RUNTIME_DIR";
 
-const STATE_DIRECTORY: &str = ".backend/v2";
+const APPLICATION_DIRECTORY: &str = "Nudox";
+const PROJECTS_DIRECTORY: &str = "projects";
 const AUTHORITY_FILE: &str = "authority.secret";
 /// How long a daemon that is still running may take to publish its endpoint.
 ///
@@ -112,6 +111,7 @@ static SECRET_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct WorkspacePaths {
     project: PathBuf,
     data: PathBuf,
+    private_application_root: Option<PathBuf>,
     endpoint: PathBuf,
     authority_secret: PathBuf,
 }
@@ -138,9 +138,17 @@ impl WorkspacePaths {
             return Err(RuntimeError::InvalidPath("project path is empty"));
         }
         let project = normalize_identity(&project);
-        let data = data
-            .or_else(|| std::env::var_os(DATA_ENV).map(PathBuf::from))
-            .unwrap_or_else(|| project.join(STATE_DIRECTORY));
+        let configured_data = data.or_else(|| std::env::var_os(DATA_ENV).map(PathBuf::from));
+        let (data, private_application_root) = match configured_data {
+            Some(data) => (data, None),
+            None => {
+                let state_root = application_state_root()?;
+                (
+                    default_workspace_path(&project, &state_root),
+                    Some(state_root.join(APPLICATION_DIRECTORY)),
+                )
+            }
+        };
         if data.as_os_str().is_empty() {
             return Err(RuntimeError::InvalidPath("data path is empty"));
         }
@@ -176,6 +184,7 @@ impl WorkspacePaths {
         Ok(Self {
             project,
             data,
+            private_application_root,
             endpoint,
             authority_secret,
         })
@@ -214,9 +223,21 @@ impl WorkspacePaths {
     /// Returns an error for directory, randomness, permission, or credential
     /// admission failures.
     pub fn initialize(&self) -> Result<(), RuntimeError> {
-        fs::create_dir_all(&self.data).map_err(RuntimeError::Io)?;
+        if let Some(application_root) = self.private_application_root.as_deref() {
+            initialize_default_state(application_root, &self.data).map_err(RuntimeError::Io)?;
+        } else {
+            backend_platform::durable::ensure_private_directory(&self.data)
+                .map_err(RuntimeError::Io)?;
+        }
         ensure_authority_secret(&self.authority_secret)
     }
+}
+
+fn initialize_default_state(application_root: &Path, data: &Path) -> std::io::Result<()> {
+    backend_platform::durable::ensure_private_child_directory(application_root)?;
+    let projects = application_root.join(PROJECTS_DIRECTORY);
+    backend_platform::durable::ensure_private_directory(&projects)?;
+    backend_platform::durable::ensure_private_directory(data)
 }
 
 /// Selects the repository boundary from any descendant directory. A Git root
@@ -466,6 +487,87 @@ fn normalize_identity(path: &Path) -> PathBuf {
     }
 }
 
+/// Returns a stable per-project data path beneath the supplied application
+/// state root. The project path is hashed after normalization so the directory
+/// name does not disclose checkout paths and distinct projects do not share
+/// indexes or authority databases.
+fn default_workspace_path(project: &Path, state_root: &Path) -> PathBuf {
+    let project = normalize_identity(project);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.runtime.project-state.v1\0");
+    hasher.update(project.as_os_str().as_encoded_bytes());
+    let digest = hasher.finalize();
+    let mut key = String::with_capacity(64);
+    for byte in digest.as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(key, "{byte:02x}");
+    }
+    state_root
+        .join(APPLICATION_DIRECTORY)
+        .join(PROJECTS_DIRECTORY)
+        .join(key)
+}
+
+/// Selects the operating system's per-user durable state directory without
+/// creating it. Callers share this path across CLI, GUI, MCP, and locald.
+fn application_state_root() -> Result<PathBuf, RuntimeError> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+            RuntimeError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "the user's home directory is unavailable",
+            ))
+        })?;
+        return Ok(home.join("Library").join("Application Support"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let path = PathBuf::from(local_app_data);
+            if path.is_absolute() {
+                return Ok(path);
+            }
+        }
+        let profile = std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                RuntimeError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "the user's LocalAppData directory is unavailable",
+                ))
+            })?;
+        return Ok(profile.join("AppData").join("Local"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
+            let path = PathBuf::from(state);
+            if path.is_absolute() {
+                return Ok(path);
+            }
+        }
+        if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+            let path = PathBuf::from(data);
+            if path.is_absolute() {
+                return Ok(path.join("state"));
+            }
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+            RuntimeError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "the user's XDG state and home directories are unavailable",
+            ))
+        })?;
+        return Ok(home.join(".local").join("state"));
+    }
+
+    #[allow(unreachable_code)]
+    Err(RuntimeError::Unsupported)
+}
+
 /// Absolutizes and lexically reduces a path without touching the filesystem.
 fn lexically_absolute(path: &Path) -> PathBuf {
     let path = normalize_verbatim_prefix(path);
@@ -536,11 +638,11 @@ pub fn normalize_surface_path(path: impl AsRef<Path>) -> PathBuf {
     normalize_identity(path.as_ref())
 }
 
-/// Returns the checkout that owns the conventional `.backend/v2` state path.
+/// Returns the checkout that owns the legacy conventional `.backend/v2` path.
 ///
 /// A caller can intentionally choose a state directory elsewhere, so this
-/// check is limited to the layout this crate itself derives. That catches a
-/// stale MCP/CLI configuration pointing at another checkout while preserving
+/// check is limited to the old layout. That catches a stale MCP/CLI
+/// configuration pointing at another checkout while preserving
 /// explicit shared state locations for hosts that own their own identity
 /// policy.
 fn checkout_for_workspace(workspace: &Path) -> Option<PathBuf> {
@@ -833,10 +935,9 @@ impl fmt::Display for RuntimeError {
                 workspace_project,
             } => write!(
                 formatter,
-                "workspace {} belongs to checkout {}, but the configured project is {}; choose --workspace {}/.backend/v2 for that project or remove the workspace override",
+                "workspace {} belongs to checkout {}, but the configured project is {}; choose a workspace owned by that project or remove the workspace override",
                 workspace.display(),
                 workspace_project.display(),
-                project.display(),
                 project.display(),
             ),
             Self::InvalidCredential(path) => write!(
@@ -934,7 +1035,7 @@ mod tests {
         let first = test_directory("checkout-a");
         let second = test_directory("checkout-b");
         fs::create_dir_all(&first).expect("create first checkout");
-        let workspace = second.join(STATE_DIRECTORY);
+        let workspace = second.join(".backend").join("v2");
         fs::create_dir_all(&workspace).expect("create state fixture");
         let endpoint = PathBuf::from("/tmp/backend-v2-checkout-mismatch.sock");
 
@@ -955,7 +1056,7 @@ mod tests {
         }
         let message = error.to_string();
         assert!(message.contains("belongs to checkout"), "{message}");
-        assert!(message.contains("--workspace"), "{message}");
+        assert!(message.contains("choose a workspace owned"), "{message}");
         assert!(
             message.contains("remove the workspace override"),
             "{message}"
@@ -1061,6 +1162,40 @@ mod tests {
             "creating the workspace must not move its endpoint"
         );
         fs::remove_dir_all(root).expect("remove runtime fixture");
+    }
+
+    #[test]
+    fn default_project_state_is_stable_and_isolated_under_app_data() {
+        let root = test_directory("app-data-project-state");
+        let state = root.join("state");
+        let first = root.join("project-a");
+        let second = root.join("project-b");
+        fs::create_dir_all(&first).expect("create first project");
+        fs::create_dir_all(&second).expect("create second project");
+
+        let first_state = default_workspace_path(&first, &state);
+        let first_alias = default_workspace_path(&first.join("."), &state);
+        let second_state = default_workspace_path(&second, &state);
+        assert_eq!(first_state, first_alias);
+        assert_ne!(first_state, second_state);
+        assert!(first_state.starts_with(state.join(APPLICATION_DIRECTORY)));
+        assert!(second_state.starts_with(state.join(APPLICATION_DIRECTORY)));
+
+        fs::create_dir_all(&state).expect("create OS app-data parent");
+        initialize_default_state(&state.join(APPLICATION_DIRECTORY), &first_state)
+            .expect("initialize first project state");
+        initialize_default_state(&state.join(APPLICATION_DIRECTORY), &second_state)
+            .expect("initialize second project state");
+        initialize_default_state(&state.join(APPLICATION_DIRECTORY), &first_state)
+            .expect("cold reopen first project state");
+        assert!(first_state.is_dir());
+        assert!(second_state.is_dir());
+        assert_ne!(
+            default_endpoint(&first_state),
+            default_endpoint(&second_state)
+        );
+
+        fs::remove_dir_all(root).expect("remove app-data fixture");
     }
 
     #[test]

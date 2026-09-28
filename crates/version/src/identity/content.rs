@@ -235,6 +235,97 @@ pub struct ContentHasher<DomainTag: Domain> {
     domain: PhantomData<fn() -> DomainTag>,
 }
 
+/// A bounded arbitrary-byte payload stream for one declared logical identity.
+///
+/// This is separate from [`ContentHasher`], whose public streaming interface
+/// accepts only fixed canonical records. It prevents callers from mixing
+/// arbitrary payload chunks with typed record hashing.
+pub struct ContentPayloadHasher<DomainTag: Domain> {
+    hasher: ContentHasher<DomainTag>,
+    expected_bytes: u64,
+    written_bytes: u64,
+    failed: bool,
+}
+
+/// Failure while streaming a payload with an exact declared byte length.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ContentPayloadHasherError {
+    /// The stream length overflowed its fixed-width counter.
+    #[error("content payload byte count overflowed")]
+    LengthOverflow,
+    /// A chunk exceeded the exact length declared before streaming began.
+    #[error("content payload exceeded declared length: expected {expected}, observed {observed}")]
+    TooLong {
+        /// Exact declared byte length.
+        expected: u64,
+        /// Count that would result if the rejected chunk were accepted.
+        observed: u64,
+    },
+    /// The stream ended before the exact declared length was received.
+    #[error("content payload ended early: expected {expected}, observed {observed}")]
+    TooShort {
+        /// Exact declared byte length.
+        expected: u64,
+        /// Actual accepted byte count.
+        observed: u64,
+    },
+    /// A previous length error invalidated this stream.
+    #[error("content payload stream is invalid after a prior error")]
+    Invalidated,
+}
+
+impl<DomainTag: Domain> ContentPayloadHasher<DomainTag> {
+    /// Starts one typed payload stream with its exact byte count declared.
+    #[must_use]
+    pub fn new(expected_bytes: u64) -> Self {
+        Self {
+            hasher: ContentHasher::new(),
+            expected_bytes,
+            written_bytes: 0,
+            failed: false,
+        }
+    }
+
+    /// Adds one payload chunk, rejecting and invalidating any overrun.
+    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ContentPayloadHasherError> {
+        if self.failed {
+            return Err(ContentPayloadHasherError::Invalidated);
+        }
+        let chunk_bytes = u64::try_from(chunk.len()).map_err(|_| {
+            self.failed = true;
+            ContentPayloadHasherError::LengthOverflow
+        })?;
+        let Some(observed) = self.written_bytes.checked_add(chunk_bytes) else {
+            self.failed = true;
+            return Err(ContentPayloadHasherError::LengthOverflow);
+        };
+        if observed > self.expected_bytes {
+            self.failed = true;
+            return Err(ContentPayloadHasherError::TooLong {
+                expected: self.expected_bytes,
+                observed,
+            });
+        }
+        self.hasher.hasher.update(chunk);
+        self.written_bytes = observed;
+        Ok(())
+    }
+
+    /// Finishes only when the exact declared number of bytes was received.
+    pub fn finish(self) -> Result<ContentId<DomainTag>, ContentPayloadHasherError> {
+        if self.failed {
+            return Err(ContentPayloadHasherError::Invalidated);
+        }
+        if self.written_bytes != self.expected_bytes {
+            return Err(ContentPayloadHasherError::TooShort {
+                expected: self.expected_bytes,
+                observed: self.written_bytes,
+            });
+        }
+        Ok(self.hasher.finalize())
+    }
+}
+
 impl<DomainTag: Domain> ContentHasher<DomainTag> {
     /// Starts one canonical content stream in domain `DomainTag`.
     #[must_use]
@@ -371,7 +462,10 @@ mod tests {
         mem::{align_of, size_of},
     };
 
-    use crate::identity::{ContentHasher, ContentId, ContentRoutingWord, FixedCanonicalRecord, ObjectDomain};
+    use crate::identity::{
+        ContentHasher, ContentId, ContentPayloadHasher, ContentPayloadHasherError,
+        ContentRoutingWord, FixedCanonicalRecord, ObjectDomain, SourceFactDomain,
+    };
 
     struct FixedRecord([u8; 3]);
 
@@ -456,6 +550,76 @@ mod tests {
         hasher.write(b"logical ");
         hasher.write(b"bytes");
         assert_eq!(hasher.finalize(), expected);
+    }
+
+    #[test]
+    /// Proves exact-length arbitrary payload streaming matches the fixed v1 identity vector.
+    fn payload_streaming_matches_literal_id_across_asymmetric_chunks() {
+        let payload = b"logical bytes";
+        let expected = ContentId::<ObjectDomain>::from_digest([
+            149, 97, 208, 38, 211, 107, 93, 103, 121, 162, 207, 178, 11, 22, 102, 58, 174, 233, 69,
+            255, 245, 214, 252, 76, 129, 65, 132, 133, 73, 255, 25, 18,
+        ]);
+        for (first, second) in [(0, 0), (1, 4), (7, 0), (3, 9), (12, 13)] {
+            let mut stream = ContentPayloadHasher::<ObjectDomain>::new(
+                u64::try_from(payload.len()).expect("fixture length"),
+            );
+            stream.push_chunk(&payload[..first]).expect("first chunk");
+            stream.push_chunk(&[]).expect("empty chunk");
+            stream
+                .push_chunk(&payload[first..second.max(first)])
+                .expect("second chunk");
+            stream
+                .push_chunk(&payload[second.max(first)..])
+                .expect("final chunk");
+            assert_eq!(stream.finish(), Ok(expected));
+        }
+
+        let source_expected = ContentId::<SourceFactDomain>::from_canonical_bytes(payload);
+        let mut source_stream = ContentPayloadHasher::<SourceFactDomain>::new(
+            u64::try_from(payload.len()).expect("fixture length"),
+        );
+        source_stream
+            .push_chunk(&payload[..2])
+            .expect("source prefix");
+        source_stream
+            .push_chunk(&payload[2..8])
+            .expect("source middle");
+        source_stream
+            .push_chunk(&payload[8..])
+            .expect("source suffix");
+        assert_eq!(source_stream.finish(), Ok(source_expected));
+
+        let mut empty = ContentPayloadHasher::<SourceFactDomain>::new(0);
+        empty.push_chunk(&[]).expect("zero-byte chunk");
+        assert_eq!(
+            empty.finish(),
+            Ok(ContentId::<SourceFactDomain>::from_canonical_bytes(b""))
+        );
+    }
+
+    #[test]
+    /// Rejects one-byte overruns and underruns instead of emitting partial identities.
+    fn payload_streaming_requires_exact_declared_length() {
+        let mut under = ContentPayloadHasher::<ObjectDomain>::new(2);
+        under.push_chunk(b"a").expect("one accepted byte");
+        assert_eq!(
+            under.finish(),
+            Err(ContentPayloadHasherError::TooShort {
+                expected: 2,
+                observed: 1,
+            })
+        );
+
+        let mut over = ContentPayloadHasher::<ObjectDomain>::new(1);
+        assert_eq!(
+            over.push_chunk(b"ab"),
+            Err(ContentPayloadHasherError::TooLong {
+                expected: 1,
+                observed: 2,
+            })
+        );
+        assert_eq!(over.finish(), Err(ContentPayloadHasherError::Invalidated));
     }
 
     #[test]

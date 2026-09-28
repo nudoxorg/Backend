@@ -95,7 +95,7 @@ pub use coverage::{
 pub use drive::{Answer, Engine, Probe, answer, answer_paged};
 pub use dto::{
     CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, LanguageCountDto, MemberGroupDto,
-    OutlineDto, OutlineNodeDto, PageDto, ProductDto, ProductRecordDto, ReasonDto, RecordDto,
+    OutlineDto, OutlineNodeDto, PageDto, ProductDto, ProductIndexSearchPageDto, ProductRecordDto, ReasonDto, RecordDto,
     RecordListDto, RelationGroupDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
     StatusDto, answer_value, fault_value,
 };
@@ -115,7 +115,7 @@ pub use page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceLine, SourceSite,
     Truncation,
 };
-pub use product::{ProductRecord, ProductView, product_view};
+pub use product::{IndexSearchPageInfo, ProductRecord, ProductView, product_view};
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{Colour, Style, Theme, Width, display_width, markdown, text};
 pub use sections::{LineRole, SectionKind, SectionReader};

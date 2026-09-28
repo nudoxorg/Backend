@@ -149,11 +149,17 @@ impl<S: Read + Write> LocalControlClient<S> {
 fn response_size(response: &LocalControlResponse) -> usize {
     const HEADER: usize = super::LOCAL_CONTROL_HEADER_BYTES + 4;
     match response {
-        LocalControlResponse::Accepted { .. } | LocalControlResponse::Queued { .. } => HEADER,
+        LocalControlResponse::Accepted { .. }
+        | LocalControlResponse::Queued { .. }
+        | LocalControlResponse::SemanticStaleSelection { .. } => HEADER,
         LocalControlResponse::AcceptedPayload { payload, .. } => {
             HEADER.saturating_add(payload.len())
         }
         LocalControlResponse::Rejected { message, .. } => HEADER.saturating_add(message.len()),
+        LocalControlResponse::SemanticRangeChunk { payload, .. }
+        | LocalControlResponse::SemanticMetadataChunk { payload, .. } => {
+            HEADER.saturating_add(payload.len())
+        }
         LocalControlResponse::Subscription(response) => {
             HEADER.saturating_add(subscription_response_size(response))
         }

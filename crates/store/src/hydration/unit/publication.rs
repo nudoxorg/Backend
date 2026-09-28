@@ -5,8 +5,9 @@ use super::*;
 
 #[test]
 fn verified_generation_retains_facts_and_one_exact_evidence_reference() {
-    let witness_bytes =
-        size_of::<GenerationId>() + size_of::<backend_version::object::DepSetId>() + size_of::<&()>();
+    let witness_bytes = size_of::<GenerationId>()
+        + size_of::<backend_version::object::DepSetId>()
+        + size_of::<&()>();
     assert_eq!(
         size_of::<crate::hydration::VerifiedGeneration<'static, ObjectDomain, Box<[u8]>>>(),
         witness_bytes

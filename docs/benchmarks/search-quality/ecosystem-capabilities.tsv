@@ -1,0 +1,8 @@
+ecosystem	primary_documents	identity_and_version	archive_or_forge_hash	aliases	keywords	description	dependencies	advisories	yanked	forge_only
+cargo	7	known	known	unknown	unknown	unknown	known_for_cargo_lock_subset	known_for_bincode	known_for_serde_and_bincode	false
+npm	2	known	known	unknown	unknown	unknown	unknown	unknown	unknown	false
+pypi	3	known	known	unknown	unknown	unknown	unknown	unknown	unknown	false
+go	3	known	known	unknown	unknown	unknown	unknown	unknown	unknown	false
+maven	4	known	known	unknown	unknown	unknown	unknown	unknown	unknown	false
+nuget	4	known	known	unknown	unknown	unknown	unknown	unknown	unknown	false
+forge	2	known	known	unknown	unknown	unknown	unknown	unknown	unknown	true

@@ -14,9 +14,9 @@
 use crate::fault::{Fault, Operand};
 use crate::grammar::{ArgumentKind, ArgumentSpec, CommandGrammar, grammar_for};
 use backend_library::{
-    CommandId, PackageCoordinate, PackageReference, ProductText, ProjectName, ProjectSelector,
-    SemanticGenerationId, SemanticLanguageProfile, SurfaceCommand, TreeNodeId, TreeOpener,
-    OverrideEvidence, TreeSubject, decode_id,
+    CommandId, CompileExecutionIntent, IndexSearchCursor, OverrideEvidence, PackageCoordinate,
+    PackageReference, ProductText, ProjectName, ProjectSelector, SemanticGenerationId,
+    SemanticLanguageProfile, SurfaceCommand, TreeNodeId, TreeOpener, TreeSubject, decode_id,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
@@ -151,7 +151,7 @@ impl Invocation {
                 .positional()
                 .iter()
                 .chain(grammar.options())
-                .any(|spec| spec.name() == field)
+                .any(|spec| spec.json_name() == field)
             {
                 return Err(Fault::usage(
                     field.clone(),
@@ -176,7 +176,7 @@ fn take_json(
     arguments: &serde_json::Map<String, serde_json::Value>,
     positional: bool,
 ) -> Result<(), Fault> {
-    let Some(value) = arguments.get(spec.name()) else {
+    let Some(value) = arguments.get(spec.json_name()) else {
         return Ok(());
     };
     if spec.kind() == ArgumentKind::Flag {
@@ -192,8 +192,12 @@ fn take_json(
     for scalar in scalars {
         let text = scalar_text(&scalar).ok_or_else(|| {
             Fault::usage(
-                spec.name(),
-                format!("`{}` must be a {}", spec.name(), spec.kind().json_type()),
+                spec.json_name(),
+                format!(
+                    "`{}` must be a {}",
+                    spec.json_name(),
+                    spec.kind().json_type()
+                ),
             )
         })?;
         if positional {
@@ -230,8 +234,15 @@ pub enum Request {
     Shelf,
     /// The engine's whole state, rolled up.
     Status,
-    /// Submit an index intent for one project path.
+    /// Submit an index intent for one project path using the interactive default.
     Index(String),
+    /// Submit an Add request with a non-default compile execution class.
+    IndexWithExecutionIntent {
+        /// Project root to add.
+        path: String,
+        /// Requested compilation execution class.
+        execution_intent: CompileExecutionIntent,
+    },
     /// Submit a remove intent for one project path.
     Remove(String),
     /// One declaration page: document, members, relations, source.
@@ -273,12 +284,37 @@ pub enum Request {
 pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
     let grammar = invocation.grammar();
     let Some(spec) = grammar.spec() else {
-        return Err(Fault::usage(grammar.name(), "this command has no registry row"));
+        return Err(Fault::usage(
+            grammar.name(),
+            "this command has no registry row",
+        ));
     };
     match spec.id {
         CommandId::Packages => Ok(Request::Shelf),
         CommandId::Health | CommandId::Revision => Ok(Request::Status),
-        CommandId::Add => Ok(Request::Index(path_or(invocation, project))),
+        CommandId::Add => {
+            let execution_intent = match invocation.option("execution-intent") {
+                None | Some("interactive") => CompileExecutionIntent::Interactive,
+                Some("background") => CompileExecutionIntent::Background,
+                Some(value) => {
+                    return Err(Fault::usage(
+                        "execution-intent",
+                        format!(
+                            "`{value}` is not a compile execution intent; choose interactive or background"
+                        ),
+                    ));
+                }
+            };
+            let path = path_or(invocation, project);
+            if execution_intent == CompileExecutionIntent::Interactive {
+                Ok(Request::Index(path))
+            } else {
+                Ok(Request::IndexWithExecutionIntent {
+                    path,
+                    execution_intent,
+                })
+            }
+        }
         CommandId::Remove => Ok(Request::Remove(invocation.require(0)?.to_owned())),
         CommandId::Show | CommandId::Document => {
             Ok(Request::Page(invocation.require(0)?.to_owned()))
@@ -305,7 +341,8 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
             let root = path_or(invocation, project);
             let root = ProductText::new(root.as_str())
                 .map_err(|error| Fault::admission(error, Operand::Argument(root.clone())))?;
-            admit(&SurfaceCommand::ProjectTree { root }).map(|command| Request::Surface(Box::new(command)))
+            admit(&SurfaceCommand::ProjectTree { root })
+                .map(|command| Request::Surface(Box::new(command)))
         }
         _ => surface(invocation, spec.id).map(|command| Request::Surface(Box::new(command))),
     }
@@ -318,7 +355,10 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
 /// Returns a typed fault when the object is not an admitted surface command.
 pub fn lower_surface_json(encoded: &str) -> Result<Request, Fault> {
     let command = serde_json::from_str::<SurfaceCommand>(encoded).map_err(|error| {
-        Fault::usage(SURFACE_VERB, format!("that is not a surface command: {error}"))
+        Fault::usage(
+            SURFACE_VERB,
+            format!("that is not a surface command: {error}"),
+        )
     })?;
     command
         .admit()
@@ -374,6 +414,16 @@ fn optional_text(invocation: &Invocation, name: &str) -> Result<Option<ProductTe
     })
 }
 
+fn optional_index_search_cursor(
+    invocation: &Invocation,
+) -> Result<Option<IndexSearchCursor>, Fault> {
+    invocation.option("cursor").map_or(Ok(None), |value| {
+        IndexSearchCursor::new(value.to_owned())
+            .map(Some)
+            .map_err(|error| Fault::admission(error, Operand::Argument("cursor".to_owned())))
+    })
+}
+
 fn node(invocation: &Invocation, index: usize) -> Result<TreeNodeId, Fault> {
     let value = invocation.require(index)?;
     value
@@ -426,8 +476,9 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
             query: invocation
                 .at(0)
                 .map(|value| {
-                    ProductText::new(value)
-                        .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))
+                    ProductText::new(value).map_err(|error| {
+                        Fault::admission(error, Operand::Argument(value.to_owned()))
+                    })
                 })
                 .transpose()?,
             limit: limit(invocation)?,
@@ -453,6 +504,7 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::IndexSearch => SurfaceCommand::IndexSearch {
             query: text(invocation, 0)?,
             limit: limit(invocation)?,
+            cursor: optional_index_search_cursor(invocation)?,
         },
         CommandId::PackageVersions => SurfaceCommand::PackageVersions {
             package: package(invocation, 0)?,
@@ -500,9 +552,9 @@ fn override_evidence(invocation: &Invocation) -> Result<Option<OverrideEvidence>
         })?;
     let expires_at = expires_at
         .map(|value| {
-            value.parse::<u64>().map_err(|_| {
-                Fault::usage("override-expires-at", "expiry must be a Unix timestamp")
-            })
+            value
+                .parse::<u64>()
+                .map_err(|_| Fault::usage("override-expires-at", "expiry must be a Unix timestamp"))
         })
         .transpose()?;
     Ok(Some(OverrideEvidence {

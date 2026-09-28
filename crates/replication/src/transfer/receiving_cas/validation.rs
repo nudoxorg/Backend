@@ -60,7 +60,27 @@ pub(super) fn validate_extent_metadata(
     if recomputed.ranges() != claimed_coverage.ranges() {
         return Err(ReplicationError::IdentityMismatch);
     }
-    validate_chain_links(&by_sequence, object_len)
+    validate_partial_chain_links(&by_sequence)
+}
+
+fn validate_partial_chain_links(
+    extents: &BTreeMap<u64, StagedExtent>,
+) -> Result<(), ReplicationError> {
+    if let Some(first) = extents.get(&0)
+        && first.previous_chain != ChunkChain([0; 32])
+    {
+        return Err(ReplicationError::CorruptFrame);
+    }
+    for (sequence, extent) in extents {
+        if let Some(previous) = sequence
+            .checked_sub(1)
+            .and_then(|previous_sequence| extents.get(&previous_sequence))
+            && extent.previous_chain != previous.chain
+        {
+            return Err(ReplicationError::CorruptFrame);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_chain_links(

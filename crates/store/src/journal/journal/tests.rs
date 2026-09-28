@@ -463,7 +463,9 @@ fn grouped_append_reduces_before_one_write_and_one_sync() -> Result<(), Box<dyn 
         receipt.receipt_at(0),
         Some(crate::journal::StableReceipt::committed(
             FrameSequence::from(0),
-            crate::journal::JournalOffset::from((JOURNAL_HEADER_BYTES + JOURNAL_FRAME_BYTES) as u64),
+            crate::journal::JournalOffset::from(
+                (JOURNAL_HEADER_BYTES + JOURNAL_FRAME_BYTES) as u64
+            ),
         ))
     );
     assert!(receipt.receipt_at(2).is_none());

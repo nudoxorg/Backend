@@ -24,6 +24,7 @@ use crate::application::toolchain_probe::{ToolchainProbeLimits, probe_command};
 use crate::application::{
     LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
     LocalRuntimePackageRoot, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    PyreflyToolchainIdentity,
 };
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
@@ -91,6 +92,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::Pyrefly,
             self.auxiliary_candidates(home, "pyrefly"),
         )?;
+        let python_toolchain_identity = pyrefly.as_deref().and_then(|executable| {
+            probe_command(NativeTool::Python, executable, &["--version"], probe_limits)
+                .ok()
+                .map(|output| PyreflyToolchainIdentity::from_version_output(&output))
+        });
         let python = match (executables.python.as_ref(), pyrefly) {
             (Some(_), Some(executable)) => Some(Pyrefly::from_executable(executable)?),
             _ => None,
@@ -144,6 +150,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         Ok(LocalRuntimePackageAuthority {
             typescript,
             python,
+            python_toolchain_identity,
             rust,
             go,
             csharp,

@@ -41,6 +41,7 @@ pub struct LocaldOwner<
     F = (),
     C = NoCompletionAdmission,
     R = NoReplicationAdmission,
+    S = NoSemanticRangeAdmission,
 > where
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
     A: backend_engine::AttestationVerifier + Send + Sync + 'static,
@@ -49,6 +50,7 @@ pub struct LocaldOwner<
     command: F,
     completion: C,
     replication: R,
+    semantic_ranges: S,
     leases: BTreeMap<LocalSubscriptionId, DurableLease>,
     next_lease_nonce: u64,
 }
@@ -78,10 +80,11 @@ struct DurableSnapshot {
 #[path = "service/admission.rs"]
 mod admission;
 pub use admission::{
-    CompletionAdmission, NoCompletionAdmission, NoReplicationAdmission, ReplicationAdmission,
+    CompletionAdmission, NoCompletionAdmission, NoReplicationAdmission, NoSemanticRangeAdmission,
+    ReplicationAdmission, SemanticRangeAdmission,
 };
 
-impl<M, V, A, F, C, R> fmt::Debug for LocaldOwner<M, V, A, F, C, R>
+impl<M, V, A, F, C, R, S> fmt::Debug for LocaldOwner<M, V, A, F, C, R, S>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
@@ -89,6 +92,7 @@ where
     F: fmt::Debug,
     C: fmt::Debug,
     R: fmt::Debug,
+    S: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -97,19 +101,21 @@ where
             .field("command", &self.command)
             .field("completion", &self.completion)
             .field("replication", &self.replication)
+            .field("semantic_ranges", &self.semantic_ranges)
             .field("leases", &self.leases)
             .field("next_lease_nonce", &self.next_lease_nonce)
             .finish()
     }
 }
 
-impl<M, V, A, F, C, R> LocaldOwner<M, V, A, F, C, R>
+impl<M, V, A, F, C, R, S> LocaldOwner<M, V, A, F, C, R, S>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
     A: backend_engine::AttestationVerifier + Send + Sync + 'static,
     C: CompletionAdmission<M, V, A>,
     R: ReplicationAdmission<M, V, A>,
+    S: SemanticRangeAdmission,
 {
     fn allocate_lease(&mut self, request_id: u64, cursor: &[u8]) -> LocalSubscriptionId {
         loop {
@@ -177,7 +183,10 @@ where
             EngineStatus::Accepted
             | EngineStatus::Queued { .. }
             | EngineStatus::Rejected(_)
-            | EngineStatus::Subscription(_) => Err(ProtocolError::InvalidControl(
+            | EngineStatus::Subscription(_)
+            | EngineStatus::SemanticRangeChunk(_)
+            | EngineStatus::SemanticMetadataChunk(_)
+            | EngineStatus::SemanticStaleSelection => Err(ProtocolError::InvalidControl(
                 "subscription reply omitted its typed payload",
             )),
         }
@@ -706,7 +715,8 @@ fn subscription_error_text(error: &backend_engine::DaemonError) -> &'static str 
     }
 }
 
-impl<M, V, A, F> LocaldOwner<M, V, A, F, NoCompletionAdmission, NoReplicationAdmission>
+impl<M, V, A, F>
+    LocaldOwner<M, V, A, F, NoCompletionAdmission, NoReplicationAdmission, NoSemanticRangeAdmission>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
@@ -720,13 +730,14 @@ where
             command,
             completion: NoCompletionAdmission,
             replication: NoReplicationAdmission,
+            semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
         }
     }
 }
 
-impl<M, V, A, F, C> LocaldOwner<M, V, A, F, C, NoReplicationAdmission>
+impl<M, V, A, F, C> LocaldOwner<M, V, A, F, C, NoReplicationAdmission, NoSemanticRangeAdmission>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
@@ -741,6 +752,7 @@ where
             command,
             completion,
             replication: NoReplicationAdmission,
+            semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
         }
@@ -754,12 +766,36 @@ where
         command: F,
         completion: C,
         replication: R,
-    ) -> LocaldOwner<M, V, A, F, C, R> {
+    ) -> LocaldOwner<M, V, A, F, C, R, NoSemanticRangeAdmission> {
         LocaldOwner {
             daemon,
             command,
             completion,
             replication,
+            semantic_ranges: NoSemanticRangeAdmission,
+            leases: BTreeMap::new(),
+            next_lease_nonce: 0,
+        }
+    }
+
+    /// Creates an owner adapter with an explicit semantic range handler.
+    pub fn with_semantic_range_admission<R, S>(
+        daemon: crate::Locald<M, V, A>,
+        command: F,
+        completion: C,
+        replication: R,
+        semantic_ranges: S,
+    ) -> LocaldOwner<M, V, A, F, C, R, S>
+    where
+        R: ReplicationAdmission<M, V, A>,
+        S: SemanticRangeAdmission,
+    {
+        LocaldOwner {
+            daemon,
+            command,
+            completion,
+            replication,
+            semantic_ranges,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
         }
@@ -778,7 +814,7 @@ where
     }
 }
 
-impl<M, V, A, F, C, R, E> OwnerService for LocaldOwner<M, V, A, F, C, R>
+impl<M, V, A, F, C, R, S, E> OwnerService for LocaldOwner<M, V, A, F, C, R, S>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
@@ -787,6 +823,7 @@ where
     E: fmt::Display,
     C: CompletionAdmission<M, V, A>,
     R: ReplicationAdmission<M, V, A>,
+    S: SemanticRangeAdmission,
 {
     fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
         (self.command)(&mut self.daemon, body)
@@ -803,6 +840,8 @@ where
             EngineRequest::Replicate(_)
             | EngineRequest::Complete(_)
             | EngineRequest::Subscription(_)
+            | EngineRequest::SemanticRangeGet(_)
+            | EngineRequest::SemanticMetadataGet(_)
             | EngineRequest::Shutdown => None,
         };
         let request = match request {
@@ -819,6 +858,24 @@ where
             }
             EngineRequest::Subscription(subscription) => {
                 return self.durable_subscription(request_id, subscription);
+            }
+            EngineRequest::SemanticRangeGet(request) => {
+                return match self.semantic_ranges.serve(request_id, request) {
+                    Ok(chunk) => Ok(EngineStatus::SemanticRangeChunk(chunk)),
+                    Err(ProtocolError::SemanticStaleSelection) => {
+                        Ok(EngineStatus::SemanticStaleSelection)
+                    }
+                    Err(error) => Err(error),
+                };
+            }
+            EngineRequest::SemanticMetadataGet(request) => {
+                return match self.semantic_ranges.serve(request_id, request) {
+                    Ok(chunk) => Ok(EngineStatus::SemanticMetadataChunk(chunk)),
+                    Err(ProtocolError::SemanticStaleSelection) => {
+                        Ok(EngineStatus::SemanticStaleSelection)
+                    }
+                    Err(error) => Err(error),
+                };
             }
             // The listener answers a lifecycle request before it reaches any
             // owner. Reaching here means a host wired a service without one.

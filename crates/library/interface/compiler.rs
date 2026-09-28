@@ -3,13 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Lean, monomorphized compiler capability boundary for the application service.
 
-use std::{
-    collections::TryReserveError,
-    io::ErrorKind,
-    ops::Deref,
-    sync::Mutex,
-    time::Duration,
-};
+use std::{collections::TryReserveError, io::ErrorKind, ops::Deref, sync::Mutex, time::Duration};
 
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
@@ -95,6 +89,15 @@ pub struct SemanticImageSnapshot {
 }
 
 impl SemanticImageSnapshot {
+    /// Copies this already admitted immutable image into an independent transport owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact allocation failure without exposing partial bytes.
+    pub fn try_clone(&self) -> Result<Self, SemanticImageAccessError> {
+        Self::try_from_reopened(self.authority, &self.bytes)
+    }
+
     /// Copies bytes already grammar-validated by the compiler and rechecks their public authority.
     ///
     /// # Errors
@@ -150,12 +153,11 @@ impl SemanticImageSnapshot {
     /// Returns the image grammar error when the bytes have not yet been proved.
     pub fn reopen(
         &self,
-    ) -> Result<backend_semantic::ir::SemanticImageView<'_>, backend_semantic::ir::FullSemanticImageError>
-    {
-        let mut slot = self
-            .proof
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+    ) -> Result<
+        backend_semantic::ir::SemanticImageView<'_>,
+        backend_semantic::ir::FullSemanticImageError,
+    > {
+        let mut slot = self.proof.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(proof) = *slot {
             return Ok(backend_semantic::ir::SemanticImageView::reopen_proven(
                 self.bytes.as_ref(),
@@ -169,10 +171,7 @@ impl SemanticImageSnapshot {
 
     /// Drops the cached structural proof so the next [`Self::reopen`] validates again.
     pub fn clear_reopen_proof(&self) {
-        let mut slot = self
-            .proof
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut slot = self.proof.lock().unwrap_or_else(|error| error.into_inner());
         *slot = None;
     }
 }
@@ -348,8 +347,10 @@ pub trait CompilerCapability {
 /// Closed failure at the bounded client-to-compiler-owner boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompilerRuntimeCause {
-    /// Another clone already owns the single mutable compiler request lease.
+    /// The exact package/target lane is already occupied by an incompatible operation.
     RequestInFlight,
+    /// A bounded compiler request or lane queue has no available admission slot.
+    QueueFull,
     /// The compiler owner stopped before it could admit this request.
     RequestOwnerStopped,
     /// The compiler owner stopped after admission but before returning a terminal result.

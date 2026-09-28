@@ -15,8 +15,7 @@ pub(super) struct ConnectionContext {
     pub(super) stop: Arc<AtomicBool>,
     pub(super) active: Arc<AtomicUsize>,
     pub(super) inflight: Arc<AtomicUsize>,
-    pub(super) streams:
-        Arc<Mutex<std::collections::BTreeMap<usize, backend_engine::LocalStream>>>,
+    pub(super) streams: Arc<Mutex<std::collections::BTreeMap<usize, backend_engine::LocalStream>>>,
     pub(super) connection_id: usize,
     pub(super) limits: FrameLimits,
     pub(super) timeout: Duration,

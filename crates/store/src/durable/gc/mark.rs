@@ -79,6 +79,15 @@ impl FileStore {
                 self.enqueue_manifest_page(closure, None, limits, writer, credits)?;
                 *manifest_page_processed = true;
             }
+            QueueItem::RemoteHead { pack, closure } => {
+                self.process_pack(pack, limits, mark_index, writer, credits)?;
+                if !writer
+                    .index
+                    .contains(QueueItem::RemoteClosureIndex(closure))?
+                {
+                    return Err(StoreError::Corrupt);
+                }
+            }
             QueueItem::Pack(id) => self.process_pack(id, limits, mark_index, writer, credits)?,
             QueueItem::Closure(id) => {
                 self.mark_key(
@@ -97,8 +106,33 @@ impl FileStore {
                 self.enqueue_manifest_page(closure, Some(after), limits, writer, credits)?;
                 *manifest_page_processed = true;
             }
+            QueueItem::RemoteClosureIndex(id) => {
+                self.enqueue_remote_closure_index(id, limits, mark_index, writer, credits)?;
+                *manifest_page_processed = true;
+            }
+            QueueItem::RemoteMember { closure, .. } => {
+                if !writer
+                    .index
+                    .contains(QueueItem::RemoteClosureIndex(closure))?
+                {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+            QueueItem::RemoteManifestPage { closure, after } => {
+                if !mark_index.contains(MarkKey::Closure(*closure.as_bytes()))? {
+                    return Err(StoreError::Corrupt);
+                }
+                self.enqueue_remote_manifest_page(closure, Some(after), limits, writer, credits)?;
+                *manifest_page_processed = true;
+            }
             QueueItem::Object(id) => {
                 credits.charge_file(&self.object_path(id))?;
+                // A remote residency allowlist only suppresses the closure
+                // index's member edge. If an independently retained local
+                // object references this ID, keep following it through the
+                // local CAS. A missing object fails the mark phase before
+                // sweep; the owner receipt cannot silently turn a local
+                // relation edge into a product-specific remote read.
                 let object = self.read_object(id)?;
                 self.mark_key(
                     MarkKey::Object(*id.as_bytes()),
@@ -115,6 +149,76 @@ impl FileStore {
             }
         }
         Ok(*manifest_page_processed)
+    }
+
+    fn enqueue_remote_closure_index(
+        &self,
+        id: super::super::ClosureId,
+        limits: GcLimits,
+        mark_index: &mut MarkIndex,
+        writer: &mut QueueWriter<'_>,
+        credits: &mut MarkCredits,
+    ) -> Result<(), StoreError> {
+        self.mark_key(
+            MarkKey::Closure(*id.as_bytes()),
+            writer.state,
+            limits,
+            mark_index,
+        )?;
+        let descriptor_path = self.closure_path(id);
+        credits.charge_file(&descriptor_path)?;
+        let manifest = self.open_closure(id)?;
+        let root_node = manifest.root_node_object_id();
+        // Retain the complete structural index tree but do not assume that
+        // every logical member has a production remote-read path. The bounded
+        // ID walk below skips only the exact allowlist admitted by the scoped
+        // root resolver and queues every other member for ordinary local
+        // object validation and retention.
+        writer.push_structural(QueueItem::Object(root_node))?;
+        self.enqueue_remote_manifest_page(id, None, limits, writer, credits)
+    }
+
+    fn enqueue_remote_manifest_page(
+        &self,
+        id: super::super::ClosureId,
+        after: Option<super::super::ObjectId>,
+        limits: GcLimits,
+        writer: &mut QueueWriter<'_>,
+        credits: &mut MarkCredits,
+    ) -> Result<(), StoreError> {
+        let manifest = self.open_closure(id)?;
+        let page_limit = limits
+            .mark_page_items
+            .min(credits.rows)
+            .min(credits.refs)
+            .min(credits.enqueues.saturating_sub(1))
+            .max(1);
+        let page = manifest.page_ids(after, page_limit)?;
+        credits.charge_page(page.stats())?;
+        credits.charge_rows(page.object_ids().len())?;
+        credits.charge_refs(page.object_ids().len())?;
+        for object in page.object_ids() {
+            let remotely_resident = writer.index.contains(QueueItem::RemoteMember {
+                closure: id,
+                object: *object,
+            })?;
+            if !remotely_resident {
+                writer.push_credited(QueueItem::Object(*object), credits)?;
+            }
+        }
+        if let Some(next) = page.next() {
+            if after.is_some_and(|previous| next <= previous) {
+                return Err(StoreError::Corrupt);
+            }
+            writer.push_credited(
+                QueueItem::RemoteManifestPage {
+                    closure: id,
+                    after: next,
+                },
+                credits,
+            )?;
+        }
+        Ok(())
     }
 
     fn process_pack(
@@ -412,6 +516,10 @@ impl FileStore {
                 } else {
                     let value_reference =
                         references.value_references[index - references.children.len()];
+                    // Keep this as an ordinary local Object edge even when
+                    // the target is also in a remote closure allowlist. That
+                    // retains graph-reachable members locally and makes a
+                    // stale/missing local target fail closed during mark.
                     writer.push_credited(
                         QueueItem::Object(super::super::ObjectId::from_bytes(value_reference)),
                         credits,

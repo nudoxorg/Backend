@@ -122,7 +122,7 @@ pub use identity::{
 };
 pub use model::{
     ForgeAcquisitionOutcome, ForgeAcquisitionResult, ForgePackageManifest, ForgeReceipt,
-    ForgeRejectReason,
+    ForgeRejectReason, ForgeSearchRecord,
 };
 pub use policy::{ForgeAcquisitionLimits, ForgeAcquisitionPolicy};
 pub use protocol::{

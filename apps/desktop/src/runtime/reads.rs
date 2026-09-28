@@ -138,7 +138,11 @@ pub trait PageReader: Send + 'static {
     /// # Errors
     /// Returns the typed failure of the page's primary read; secondary reads
     /// that fail become gaps inside the returned model instead.
-    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure>;
+    fn read(
+        &mut self,
+        request: &ReadRequest,
+        context: &ReadContext<'_>,
+    ) -> Result<PageValue, ReadFailure>;
 }
 
 /// Worker-side context for one read.
@@ -572,9 +576,9 @@ impl Engine for SessionEngine {
             Probe::Names { text, limit } => session.names_page(text, limit, continuation),
             Probe::Outline(path) => session.outline(path),
             Probe::OutlinePage { path, limit } => session.outline_page(path, limit, continuation),
-            Probe::Index(_) | Probe::Remove(_) => Err(ClientError::Protocol(
-                "the read lane never mutates the owner".to_owned(),
-            )),
+            Probe::Index(_) | Probe::IndexWithExecutionIntent { .. } | Probe::Remove(_) => Err(
+                ClientError::Protocol("the read lane never mutates the owner".to_owned()),
+            ),
         })
     }
 
@@ -687,7 +691,10 @@ fn check(cancel: &CancellationToken) -> Result<(), ReadFailure> {
     }
 }
 
-fn document(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<backend_library::Document, ReadFailure> {
+fn document(
+    engine: &mut dyn Engine,
+    probe: Probe<'_>,
+) -> Result<backend_library::Document, ReadFailure> {
     match engine.probe(probe).map_err(|error| failure(&error))?.reply {
         CommandReply::Document(document) | CommandReply::Page(document) => Ok(document),
         _ => Err(shape("document")),
@@ -698,7 +705,10 @@ fn related(engine: &mut dyn Engine, symbol: &SymbolRef) -> Result<ViewSnapshot, 
     match engine.probe(Probe::Related(symbol.as_str())) {
         Ok(reply) => match reply.reply {
             CommandReply::Graph(snapshot) => Ok(snapshot),
-            _ => Err(Gap::new(GapReason::ReadFailed, "the related reply changed shape")),
+            _ => Err(Gap::new(
+                GapReason::ReadFailed,
+                "the related reply changed shape",
+            )),
         },
         Err(error) => Err(page_mapping::client_gap(&error)),
     }
@@ -716,7 +726,9 @@ fn outline(
     package: &PackageRef,
     context: &ReadContext<'_>,
 ) -> Result<Arc<OutlineIndex>, Gap> {
-    let root = engine.revision().map_err(|error| page_mapping::client_gap(&error))?;
+    let root = engine
+        .revision()
+        .map_err(|error| page_mapping::client_gap(&error))?;
     if let Some(cached) = context.outlines.get(package, root) {
         return Ok(cached);
     }
@@ -737,7 +749,10 @@ fn outline(
             )
             .map_err(|error| page_mapping::client_gap(&error))?;
         let CommandReply::ProjectionPage(page) = reply.reply else {
-            return Err(Gap::new(GapReason::ReadFailed, "the outline page reply changed shape"));
+            return Err(Gap::new(
+                GapReason::ReadFailed,
+                "the outline page reply changed shape",
+            ));
         };
         rows.extend(page.snapshot.root.rows().iter().cloned());
         match page.terminal {
@@ -750,7 +765,9 @@ fn outline(
         }
     }
     let index = Arc::new(OutlineIndex::new(rows, complete));
-    context.outlines.put(package.clone(), root, Arc::clone(&index));
+    context
+        .outlines
+        .put(package.clone(), root, Arc::clone(&index));
     Ok(index)
 }
 
@@ -773,10 +790,18 @@ fn neighbourhood(
     let snapshot = related(engine, symbol)?;
     let mut hood = Hood {
         rows: snapshot.root.rows().to_vec(),
-        relations: snapshot.graph_relations.as_ref().map(|edges| edges.to_vec()),
+        relations: snapshot
+            .graph_relations
+            .as_ref()
+            .map(|edges| edges.to_vec()),
         rich: snapshot.rich_graph.clone(),
     };
-    let Some(centre) = hood.rows.iter().find(|row| row.label == symbol.as_str()).cloned() else {
+    let Some(centre) = hood
+        .rows
+        .iter()
+        .find(|row| row.label == symbol.as_str())
+        .cloned()
+    else {
         return Ok(hood);
     };
     let nominal = matches!(
@@ -796,7 +821,10 @@ fn neighbourhood(
         .iter()
         .filter(|row| {
             row.kind == Some(backend_library::DeclarationKind::Type)
-                && row.signature.as_deref().is_some_and(|text| text.starts_with("nominal("))
+                && row
+                    .signature
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with("nominal("))
                 && edges.iter().any(|edge| {
                     edge.from == row.id
                         && edge.to == centre.id
@@ -818,7 +846,9 @@ fn neighbourhood(
                 hood.rows.push(row.clone());
             }
         }
-        if let (Some(relations), Some(more)) = (hood.relations.as_mut(), extra.graph_relations.as_ref()) {
+        if let (Some(relations), Some(more)) =
+            (hood.relations.as_mut(), extra.graph_relations.as_ref())
+        {
             for edge in more {
                 if !relations.contains(edge) {
                     relations.push(*edge);
@@ -850,20 +880,22 @@ fn compose_symbol(
         |package| outline(engine, &package, context),
     );
     check(context.cancel)?;
-    Ok(PageValue::Symbol(page_mapping::symbol_page(&SymbolInputs {
-        coordinate: symbol,
-        document: &document,
-        related: related
-            .as_ref()
-            .map(|hood| page_mapping::Neighbourhood {
-                rows: &hood.rows,
-                relations: hood.relations.as_deref(),
-                rich: hood.rich.as_ref(),
-            })
-            .map_err(Clone::clone),
-        references: references.as_ref(),
-        outline: outline.as_deref().map_err(Clone::clone),
-    })))
+    Ok(PageValue::Symbol(page_mapping::symbol_page(
+        &SymbolInputs {
+            coordinate: symbol,
+            document: &document,
+            related: related
+                .as_ref()
+                .map(|hood| page_mapping::Neighbourhood {
+                    rows: &hood.rows,
+                    relations: hood.relations.as_deref(),
+                    rich: hood.rich.as_ref(),
+                })
+                .map_err(Clone::clone),
+            references: references.as_ref(),
+            outline: outline.as_deref().map_err(Clone::clone),
+        },
+    )))
 }
 
 /// Reads a local project file for the source view. Only a local package's
@@ -898,10 +930,8 @@ fn compose_source(
     check(context.cancel)?;
     let references_reply = references(engine, symbol);
     let outline_index = outline.as_ref().and_then(|result| result.as_ref().ok());
-    let references = page_mapping::references(
-        references_reply.as_ref(),
-        outline_index.map(AsRef::as_ref),
-    );
+    let references =
+        page_mapping::references(references_reply.as_ref(), outline_index.map(AsRef::as_ref));
     let text = match (&package, document.location.captured()) {
         (Some(package), Some(location)) => local_file(package, location.path()),
         _ => None,
@@ -963,15 +993,17 @@ fn compose_package(
     {
         return Err(failure(error));
     }
-    Ok(PageValue::Package(page_mapping::package_dossier(&PackageInputs {
-        package,
-        records: records.as_ref(),
-        versions: versions.as_ref(),
-        dependencies: dependencies.as_ref(),
-        dependents: dependents.as_ref(),
-        outline: outline.as_deref().map_err(Clone::clone),
-        local: local.as_ref(),
-    })))
+    Ok(PageValue::Package(page_mapping::package_dossier(
+        &PackageInputs {
+            package,
+            records: records.as_ref(),
+            versions: versions.as_ref(),
+            dependencies: dependencies.as_ref(),
+            dependents: dependents.as_ref(),
+            outline: outline.as_deref().map_err(Clone::clone),
+            local: local.as_ref(),
+        },
+    )))
 }
 
 fn compose_search(
@@ -990,21 +1022,31 @@ fn compose_search(
         )
         .map_err(|error| failure(&error))?;
     check(context.cancel)?;
+    let semantic_search = reply.semantic_search_status();
     match reply.reply {
-        CommandReply::Search(snapshot) => Ok(page_mapping::search_page(
-            &query.text,
-            &snapshot,
-            context.worker,
-        )),
+        CommandReply::Search(snapshot) => {
+            let mut page = page_mapping::search_page(&query.text, &snapshot, context.worker);
+            if let Some(status) = semantic_search {
+                page.coverage = page.coverage.with_semantic_search_status(status);
+            }
+            Ok(page)
+        }
         _ => Err(shape("search")),
     }
 }
 
-fn compose_orbit(engine: &mut dyn Engine, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
-    let packages = engine.probe(Probe::Packages).and_then(|reply| match reply.reply {
-        CommandReply::Packages(snapshot) => Ok(snapshot),
-        _ => Err(ClientError::Protocol("the packages reply changed shape".to_owned())),
-    });
+fn compose_orbit(
+    engine: &mut dyn Engine,
+    context: &ReadContext<'_>,
+) -> Result<PageValue, ReadFailure> {
+    let packages = engine
+        .probe(Probe::Packages)
+        .and_then(|reply| match reply.reply {
+            CommandReply::Packages(snapshot) => Ok(snapshot),
+            _ => Err(ClientError::Protocol(
+                "the packages reply changed shape".to_owned(),
+            )),
+        });
     check(context.cancel)?;
     let projects = engine.surface(SurfaceCommand::Projects);
     check(context.cancel)?;
@@ -1062,7 +1104,11 @@ mod tests {
     }
 
     impl PageReader for GatedReader {
-        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        fn read(
+            &mut self,
+            request: &ReadRequest,
+            context: &ReadContext<'_>,
+        ) -> Result<PageValue, ReadFailure> {
             let name = match request {
                 ReadRequest::Symbol(symbol) => symbol.as_str().to_owned(),
                 other => format!("{other:?}"),
@@ -1100,7 +1146,11 @@ mod tests {
             started: sender.clone(),
         })
         .expect("pool");
-        Harness { pool, gate, started }
+        Harness {
+            pool,
+            gate,
+            started,
+        }
     }
 
     impl Harness {
@@ -1123,7 +1173,11 @@ mod tests {
             let mut outcomes = Vec::new();
             while outcomes.len() < count {
                 outcomes.extend(self.pool.drain());
-                assert!(Instant::now() < deadline, "only {} outcomes arrived", outcomes.len());
+                assert!(
+                    Instant::now() < deadline,
+                    "only {} outcomes arrived",
+                    outcomes.len()
+                );
                 thread::sleep(Duration::from_millis(1));
             }
             outcomes
@@ -1179,13 +1233,22 @@ mod tests {
         let queued_token = queued.cancel.clone();
         harness.pool.submit(queued);
         harness.pool.submit(job("slow-q", 3, Priority::Normal));
-        assert!(queued_token.is_cancelled(), "the replaced queued job was cancelled");
+        assert!(
+            queued_token.is_cancelled(),
+            "the replaced queued job was cancelled"
+        );
         assert_eq!(harness.pool.queued(), 1);
         // A newer generation for the running key cancels the running job.
         harness.pool.submit(job("slow-k", 4, Priority::Normal));
-        assert!(older_token.is_cancelled(), "the running job was told to stop");
+        assert!(
+            older_token.is_cancelled(),
+            "the running job was told to stop"
+        );
         let first = harness.outcomes(1);
-        assert_eq!((first[0].key.clone(), first[0].generation), (key("slow-k"), 1));
+        assert_eq!(
+            (first[0].key.clone(), first[0].generation),
+            (key("slow-k"), 1)
+        );
         assert_eq!(first[0].result, Err(ReadFailure::Cancelled));
         harness.release("slow-q");
         harness.release("slow-k");
@@ -1195,7 +1258,13 @@ mod tests {
             .map(|outcome| (outcome.key.to_string(), outcome.generation))
             .collect::<Vec<_>>();
         ran.sort();
-        assert_eq!(ran, [("symbol slow-k".to_owned(), 4), ("symbol slow-q".to_owned(), 3)]);
+        assert_eq!(
+            ran,
+            [
+                ("symbol slow-k".to_owned(), 4),
+                ("symbol slow-q".to_owned(), 3)
+            ]
+        );
     }
 
     #[test]
@@ -1203,8 +1272,12 @@ mod tests {
         let harness = harness(1);
         harness.pool.submit(job("slow-busy", 1, Priority::Normal));
         assert_eq!(harness.started().1, "slow-busy");
-        harness.pool.submit(job("fast-hover", 2, Priority::Prefetch));
-        harness.pool.submit(job("fast-dropped", 3, Priority::Prefetch));
+        harness
+            .pool
+            .submit(job("fast-hover", 2, Priority::Prefetch));
+        harness
+            .pool
+            .submit(job("fast-dropped", 3, Priority::Prefetch));
         harness.pool.submit(job("fast-click", 4, Priority::Normal));
         assert!(harness.pool.cancel(&key("fast-dropped")));
         assert_eq!(harness.pool.queued(), 2);
@@ -1212,7 +1285,10 @@ mod tests {
         assert_eq!(harness.started().1, "fast-click");
         assert_eq!(harness.started().1, "fast-hover");
         let done = harness.outcomes(3);
-        assert!(done.iter().all(|outcome| outcome.key != key("fast-dropped")));
+        assert!(
+            done.iter()
+                .all(|outcome| outcome.key != key("fast-dropped"))
+        );
     }
 
     #[test]
@@ -1220,7 +1296,9 @@ mod tests {
         let harness = harness(1);
         harness.pool.submit(job("slow-busy", 1, Priority::Normal));
         assert_eq!(harness.started().1, "slow-busy");
-        harness.pool.submit(job("fast-hover", 2, Priority::Prefetch));
+        harness
+            .pool
+            .submit(job("fast-hover", 2, Priority::Prefetch));
         harness.pool.submit(job("fast-other", 3, Priority::Normal));
         assert!(harness.pool.promote(&key("fast-hover")));
         harness.release("slow-busy");
@@ -1246,7 +1324,9 @@ mod tests {
         let mut harness = harness(2);
         let mut receiver = harness.pool.take_wake().expect("wake receiver");
         for round in 0..8 {
-            harness.pool.submit(job(&format!("fast-{round}"), round, Priority::Normal));
+            harness
+                .pool
+                .submit(job(&format!("fast-{round}"), round, Priority::Normal));
         }
         let done = harness.outcomes(8);
         assert_eq!(done.len(), 8);

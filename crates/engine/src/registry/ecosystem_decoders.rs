@@ -1276,8 +1276,10 @@ impl EcosystemAdapter {
             ));
         }
         Ok(DependencyFacts::Known(
-            admit_dependency_rows(collapse_dependency_rows(rows))
-                .map_err(|_| TransportFailure::Protocol)?,
+            admit_dependency_rows(
+                crate::registry::coalesce_runtime_development_dependency_rows(rows),
+            )
+            .map_err(|_| TransportFailure::Protocol)?,
         ))
     }
 
@@ -1690,7 +1692,7 @@ fn cargo_dependencies(
         )?);
     }
     Ok(DependencyFacts::Known(
-        admit_dependency_rows(collapse_dependency_rows(rows))
+        admit_dependency_rows(crate::registry::coalesce_runtime_development_dependency_rows(rows))
             .map_err(|_| TransportFailure::Protocol)?,
     ))
 }
@@ -1743,7 +1745,7 @@ fn npm_dependencies(
         ));
     }
     Ok(DependencyFacts::Known(
-        admit_dependency_rows(collapse_dependency_rows(rows))
+        admit_dependency_rows(crate::registry::coalesce_runtime_development_dependency_rows(rows))
             .map_err(|_| TransportFailure::Protocol)?,
     ))
 }

@@ -3,13 +3,14 @@
 use allocation_counter::{AllocationInfo, measure};
 use backend_semantic::ir::{
     AtomId, BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence,
-    CorePayloadHash, DeclarationFamilyId, Diff, DocInput, EntityAuthorityFacts, EntityChange,
-    EntityVersion, FactAvailability, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
-    LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, OccurrenceAuthorityFacts,
-    PackageLineage, ParentageAuthority, SemanticCoreReader, SemanticDiff, SemanticEntityChange,
-    SemanticImageView, SemanticLinkChangeKind, SemanticSnapshot, Snapshot, SourceIdentity,
-    SourceSpan, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr, TypeHeader,
-    TypePairPayload, TypeParameter, TypeParameterBound, TypeParameterInference, TypeParameterKind,
+    CorePayloadHash, DeclarationFamilyId, Delta, Diff, DocInput, EntityAuthorityFacts,
+    EntityChange, EntityVersion, FacetComparison, FactAvailability, FrontendTree, GuardedType, Ir,
+    IrBuilder, ItemKind, LanguageExtensionInput, LinkChangeKind, LinkKind,
+    MappedModifier, OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority,
+    SemanticCoreReader, SemanticDiff, SemanticEntityChange, SemanticImageView, SemanticReader,
+    SemanticLinkChangeKind, SemanticSnapshot, Snapshot, SourceIdentity, SourceSpan, TreeEntityId,
+    TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr, TypeHeader, TypePairPayload,
+    TypeParameter, TypeParameterBound, TypeParameterInference, TypeParameterKind,
     TypeParameterRequirements, TypeQuadPayload, TypeScriptFacts, TypeTriplePayload, UnknownState,
     UnknownType, UnrepresentedAuthorityOwner, Variance, VariantFingerprint, Visibility,
     encode_full_semantic_image, full_semantic_image_len,
@@ -1045,6 +1046,422 @@ fn vcs_diffs_the_same_ir_without_lowering_or_archiving() -> Result<(), backend_s
         vec![SemanticLinkChangeKind::Removed]
     );
     Ok(())
+}
+
+#[test]
+fn vcs_reports_documentation_only_edits_for_owned_and_reopened_readers()
+-> Result<(), backend_semantic::ir::BuildError> {
+    let before_docs = [DocInput::Text("before")];
+    let after_docs = [DocInput::Text("after")];
+    let before = facet_ir(9, Visibility::Public, &before_docs, &[], false)?;
+    let after = facet_ir(9, Visibility::Public, &after_docs, &[], false)?;
+
+    let owned = Diff::between(
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            ir: &before,
+        },
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([2; 32]),
+            ir: &after,
+        },
+    );
+    let owned_facets = match owned.entities.collect::<Vec<_>>().as_slice() {
+        [
+            EntityChange::Retained {
+                core_payload: Delta::Unchanged,
+                facets,
+                ..
+            },
+        ] => *facets,
+        other => panic!("expected one docs-only retained change, got {other:?}"),
+    };
+    assert_eq!(
+        owned_facets.documentation.comparison,
+        FacetComparison::Changed
+    );
+    assert_eq!(owned_facets.documentation.coverage, Delta::Unchanged);
+
+    let mut before_bytes = vec![0; full_semantic_image_len(&before).expect("before length")];
+    encode_full_semantic_image(&before, &mut before_bytes).expect("encode before");
+    let before_image = SemanticImageView::reopen(&before_bytes).expect("reopen before");
+    let mut after_bytes = vec![0; full_semantic_image_len(&after).expect("after length")];
+    encode_full_semantic_image(&after, &mut after_bytes).expect("encode after");
+    let after_image = SemanticImageView::reopen(&after_bytes).expect("reopen after");
+    let reopened = SemanticDiff::between(
+        SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            reader: &before_image,
+        },
+        SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([2; 32]),
+            reader: &after_image,
+        },
+    );
+    let reopened_facets = match reopened.entities.collect::<Vec<_>>().as_slice() {
+        [SemanticEntityChange::Retained { facets, .. }] => *facets,
+        other => panic!("expected one reopened docs-only retained change, got {other:?}"),
+    };
+    assert_eq!(reopened_facets, owned_facets);
+    Ok(())
+}
+
+#[test]
+fn vcs_reports_visibility_only_edits() -> Result<(), backend_semantic::ir::BuildError> {
+    let docs = [DocInput::Text("same docs")];
+    let before = facet_ir(9, Visibility::Public, &docs, &[], false)?;
+    let after = facet_ir(9, Visibility::Private, &docs, &[], false)?;
+    let changes = Diff::between(
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            ir: &before,
+        },
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([2; 32]),
+            ir: &after,
+        },
+    )
+    .entities
+    .collect::<Vec<_>>();
+    assert!(matches!(
+        changes.as_slice(),
+        [EntityChange::Retained {
+            core_payload: Delta::Unchanged,
+            facets,
+            ..
+        }] if facets.visibility.comparison == FacetComparison::Changed
+            && facets.documentation.comparison == FacetComparison::Unchanged
+    ));
+    Ok(())
+}
+
+#[test]
+fn vcs_compares_semantic_atoms_across_ordinal_reshuffles()
+-> Result<(), backend_semantic::ir::BuildError> {
+    let docs = [DocInput::Text("same docs")];
+    let attributes = [b"inline".as_slice(), b"cold"];
+    let before = facet_ir(9, Visibility::Public, &docs, &attributes, true)?;
+    let after = facet_ir(9, Visibility::Public, &docs, &attributes, false)?;
+    let before_item = before.canonical_items().next().expect("one declaration");
+    let after_item = after.canonical_items().next().expect("one declaration");
+    assert_ne!(
+        before.entity(before_item.id()).expect("before entity").name,
+        after.entity(after_item.id()).expect("after entity").name
+    );
+
+    let changes = Diff::between(
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            ir: &before,
+        },
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([2; 32]),
+            ir: &after,
+        },
+    )
+    .entities
+    .collect::<Vec<_>>();
+    assert!(
+        changes.is_empty(),
+        "equal semantic atoms must not diff by ordinal"
+    );
+
+    let semantic = SemanticDiff::between(
+        SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            reader: &before,
+        },
+        SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([2; 32]),
+            reader: &after,
+        },
+    );
+    assert_eq!(semantic.entities.count(), 0);
+
+    let mut image_bytes = vec![0; full_semantic_image_len(&before).expect("image length")];
+    encode_full_semantic_image(&before, &mut image_bytes).expect("encode image");
+    let copied_image_a = SemanticImageView::reopen(&image_bytes).expect("reopen copied image a");
+    let copied_image_b = SemanticImageView::reopen(&image_bytes).expect("reopen copied image b");
+    let copied_diff = SemanticDiff::between(
+        SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            reader: &copied_image_a,
+        },
+        SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            reader: &copied_image_b,
+        },
+    );
+    assert_eq!(copied_diff.entities.count(), 0);
+    Ok(())
+}
+
+#[test]
+fn vcs_keeps_core_payload_mutations_visible_without_other_facet_changes()
+-> Result<(), backend_semantic::ir::BuildError> {
+    let docs = [DocInput::Text("same docs")];
+    let before = facet_ir(9, Visibility::Public, &docs, &[], false)?;
+    let after = facet_ir(10, Visibility::Public, &docs, &[], false)?;
+    let changes = Diff::between(
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            ir: &before,
+        },
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([2; 32]),
+            ir: &after,
+        },
+    )
+    .entities
+    .collect::<Vec<_>>();
+    assert!(matches!(
+        changes.as_slice(),
+        [EntityChange::Retained {
+            core_payload: Delta::Changed { .. },
+            facets,
+            ..
+        }] if !facets.requires_change()
+    ));
+    Ok(())
+}
+
+#[test]
+fn vcs_reuses_semantically_equal_language_extensions_across_generations()
+-> Result<(), backend_semantic::ir::BuildError> {
+    let before = typescript_extension_ir(b"T", false)?;
+    let same_generation = Diff::between(
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([7; 32]),
+            ir: &before,
+        },
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([7; 32]),
+            ir: &before,
+        },
+    );
+    assert_eq!(same_generation.entities.count(), 0);
+
+    let reshuffled = typescript_extension_ir(b"T", true)?;
+    let equal_values = Diff::between(
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([7; 32]),
+            ir: &before,
+        },
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([7; 32]),
+            ir: &reshuffled,
+        },
+    );
+    assert_eq!(equal_values.entities.count(), 0);
+
+    let changed = typescript_extension_ir(b"U", true)?;
+    let changes = Diff::between(
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([7; 32]),
+            ir: &before,
+        },
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([8; 32]),
+            ir: &changed,
+        },
+    )
+    .entities
+    .collect::<Vec<_>>();
+    assert!(matches!(
+        changes.as_slice(),
+        [EntityChange::Retained { facets, .. }]
+            if facets.language_extension.comparison == FacetComparison::Changed
+    ));
+    Ok(())
+}
+
+#[test]
+fn vcs_reports_image_provenance_once_while_retaining_only_the_edited_entity()
+-> Result<(), backend_semantic::ir::BuildError> {
+    let before = provenance_pair_ir(b"source-revision-a", [9, 9])?;
+    let after = provenance_pair_ir(b"source-revision-b", [10, 9])?;
+
+    let owned = Diff::between(
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            ir: &before,
+        },
+        Snapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([2; 32]),
+            ir: &after,
+        },
+    );
+    assert_eq!(owned.entities.provenance.comparison, FacetComparison::Changed);
+    let owned_changes = owned.entities.collect::<Vec<_>>();
+    assert!(matches!(
+        owned_changes.as_slice(),
+        [EntityChange::Retained {
+            family,
+            core_payload: Delta::Changed { .. },
+            ..
+        }] if *family == DeclarationFamilyId::from_raw([1; 16])
+    ));
+
+    let semantic = SemanticDiff::between(
+        SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([1; 32]),
+            reader: &before,
+        },
+        SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_raw([2; 32]),
+            reader: &after,
+        },
+    );
+    assert_eq!(semantic.entities.provenance.comparison, FacetComparison::Changed);
+    assert!(matches!(
+        semantic.entities.collect::<Vec<_>>().as_slice(),
+        [SemanticEntityChange::Retained { identity, .. }]
+            if identity.family == DeclarationFamilyId::from_raw([1; 16])
+    ));
+    Ok(())
+}
+
+fn typescript_extension_ir(
+    parameter_name: &[u8],
+    pad_ordinals: bool,
+) -> Result<Ir, backend_semantic::ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    builder.set_language_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+    ))?;
+    if pad_ordinals {
+        builder.intern_atom(b"ordinal padding")?;
+        builder.intern_concrete(ConcreteType::Builtin(
+            backend_semantic::ir::BuiltinType::Bool,
+        ))?;
+    }
+    let parameter_name = builder.intern_atom(parameter_name)?;
+    let type_parameters = builder.intern_type_parameters(&[])?;
+    let observed_type = builder
+        .intern_concrete(ConcreteType::Parameter(parameter_name))?
+        .erase();
+    let extension = TypeScriptFacts {
+        type_parameters,
+        declared: Some(observed_type),
+        observed: Some(observed_type),
+    };
+    let versions = [version(1, 9)];
+    let items = [TreeItemInput {
+        name: b"typescript-extension",
+        kind: ItemKind::TypeAlias,
+        visibility: Visibility::Public,
+        authority: EntityAuthorityFacts {
+            language_extension: FactAvailability::Captured,
+            ..unavailable_authority()
+        },
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: None,
+        extension: Some(LanguageExtensionInput::TypeScript(&extension)),
+    }];
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    builder.finish()
+}
+
+fn provenance_pair_ir(
+    source_bytes: &[u8],
+    payloads: [u8; 2],
+) -> Result<Ir, backend_semantic::ir::BuildError> {
+    let source = SourceIdentity {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source_bytes),
+        byte_len: u32::try_from(source_bytes.len()).expect("short test source length"),
+    };
+    let recipe = CompileRecipeFact::derive(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        Stage::LowerIr,
+        NativeTool::Rustc,
+        source.identity,
+        ContentId::<ToolchainDomain>::from_canonical_bytes(b"vcs-provenance-toolchain"),
+    );
+    let lineage = PackageLineage::new("cargo", "vcs-provenance")
+        .expect("fixed provenance lineage is valid");
+    let mut builder = IrBuilder::new();
+    builder.set_image_provenance(source, recipe, lineage, "src/lib.rs")?;
+    let versions = [version(1, payloads[0]), version(2, payloads[1])];
+    let items = [
+        TreeItemInput {
+            name: b"edited",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: unavailable_authority(),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+        TreeItemInput {
+            name: b"unrelated",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: unavailable_authority(),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+    ];
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    builder.finish()
+}
+
+fn facet_ir(
+    core_payload: u8,
+    visibility: Visibility,
+    docs: &[DocInput<'_>],
+    attributes: &[&[u8]],
+    pad_atom_ordinals: bool,
+) -> Result<Ir, backend_semantic::ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    if pad_atom_ordinals {
+        builder.intern_atom(b"ordinal padding")?;
+    }
+    let versions = [version(1, core_payload)];
+    let items = [TreeItemInput {
+        name: b"facet-item",
+        kind: ItemKind::Function,
+        visibility,
+        authority: EntityAuthorityFacts {
+            documentation: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        },
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs,
+        attributes,
+        source: None,
+        extension: None,
+    }];
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    builder.finish()
 }
 
 fn simple_ir(

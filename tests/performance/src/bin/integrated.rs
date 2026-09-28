@@ -2034,11 +2034,11 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         })?;
     let graph_facts = vec![
         (
-            dependency_source.clone(),
+            backend_library::PackageGraphSourceKey::unattributed(dependency_source.clone()),
             DependencyFacts::Known(vec![dependency_edge.clone()].into_boxed_slice()),
         ),
         (
-            unavailable_source.clone(),
+            backend_library::PackageGraphSourceKey::unattributed(unavailable_source.clone()),
             DependencyFacts::Unavailable(
                 ProductText::new("registry fixture unavailable").map_err(|error| {
                     std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))

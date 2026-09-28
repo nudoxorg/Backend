@@ -8,6 +8,7 @@
 
 use std::{path::Path, sync::atomic::Ordering, time::Instant};
 
+use crate::compiler_input_manifest_v2::CompilationUnitKeyV2;
 use crate::driver::{
     CompileControl, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
 };
@@ -115,6 +116,8 @@ pub struct PackageAuthorityRequest<'request, 'config> {
     pub source_path: &'request Path,
     /// Exact source bytes read by the package resolver.
     pub source: &'request [u8],
+    /// Exact native compilation unit selected by the admitted package target.
+    pub unit_key: &'request CompilationUnitKeyV2,
     /// Closed language profile that determines the one allowed authority.
     pub profile: LanguageProfile,
     /// Native-tool selection already routed by the compiler application.
@@ -245,6 +248,21 @@ pub fn enter_package_authority<'request, 'config>(
         request.profile,
         PackageAuthorityStage::Admission,
     )?;
+    let unit_supported = match request.unit_key {
+        CompilationUnitKeyV2::PackageRoot => true,
+        CompilationUnitKeyV2::RustCrate { .. } => {
+            request.profile.language() == backend_semantic::vocabulary::Language::Rust
+        }
+        CompilationUnitKeyV2::CSharpProject { .. } => {
+            request.profile.language() == backend_semantic::vocabulary::Language::CSharp
+        }
+        _ => false,
+    };
+    if !unit_supported {
+        return Err(PackageAuthorityError::CompilationUnitMismatch {
+            profile: request.profile,
+        });
+    }
     let resolved = require_resolved_toolchain(request.toolchain, request.profile)?;
     let relative = request
         .source_path
@@ -324,9 +342,26 @@ pub fn enter_package_authority<'request, 'config>(
                         resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
                     });
                 }
+                let crate_root = match request.unit_key {
+                    CompilationUnitKeyV2::PackageRoot => request.source_path.to_path_buf(),
+                    CompilationUnitKeyV2::RustCrate { root, .. } => {
+                        let selected = request.package_root.join(root.as_ref());
+                        if selected != request.source_path {
+                            return Err(PackageAuthorityError::CompilationUnitSourceMismatch {
+                                profile: request.profile,
+                            });
+                        }
+                        selected
+                    }
+                    _ => {
+                        return Err(PackageAuthorityError::CompilationUnitMismatch {
+                            profile: request.profile,
+                        });
+                    }
+                };
                 let project = RustProject::open_with_source(
                     request.package_root,
-                    request.source_path,
+                    &crate_root,
                     configuration.toolchain,
                     profile,
                 )
@@ -434,11 +469,23 @@ pub fn enter_package_authority<'request, 'config>(
                         stage: PackageAuthorityStage::CSharpRoslyn,
                     },
                 )?;
+                let project_file = match request.unit_key {
+                    CompilationUnitKeyV2::PackageRoot => None,
+                    CompilationUnitKeyV2::CSharpProject { project_path } => {
+                        Some(request.package_root.join(project_path.as_ref()))
+                    }
+                    _ => {
+                        return Err(PackageAuthorityError::CompilationUnitMismatch {
+                            profile: request.profile,
+                        });
+                    }
+                };
                 let image = configuration
                     .producer
                     .produce(CSharpAuthorityRequest {
                         package_root: request.package_root,
                         source_path: request.source_path,
+                        project_file: project_file.as_deref(),
                         source: request.source,
                         profile,
                         native_tool: resolved.tool,
@@ -606,6 +653,18 @@ pub enum PackageAuthorityError {
         /// Explicit source path that failed containment.
         source_path: Box<Path>,
     },
+    /// The exact unit key is not implemented for this language authority.
+    #[error("compilation unit is incompatible with package authority for {profile:?}")]
+    CompilationUnitMismatch {
+        /// Requested profile.
+        profile: LanguageProfile,
+    },
+    /// A Rust crate key selected a source other than its exact crate root.
+    #[error("Rust source does not match the exact crate root for {profile:?}")]
+    CompilationUnitSourceMismatch {
+        /// Requested Rust profile.
+        profile: LanguageProfile,
+    },
     /// The current package-aware TypeScript adapter cannot preserve a source
     /// path other than its exact staged entry path.
     #[error(
@@ -754,6 +813,7 @@ mod tests {
             package_root: &root,
             source_path: &entry,
             source: b"int main(void) { return 0; }",
+            unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
             control: CompileControl {
@@ -785,6 +845,7 @@ mod tests {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/main.c"),
             source: b"int main(void) { return 0; }",
+            unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
             control: CompileControl {
@@ -813,6 +874,7 @@ mod tests {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/Library.cs"),
             source: b"public sealed class Library {}",
+            unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
             toolchain: ToolchainSelection::ResolvedNative(csharp_toolchain()),
             control: CompileControl {

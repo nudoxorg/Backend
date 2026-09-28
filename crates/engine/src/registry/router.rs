@@ -12,8 +12,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::{
-    admit_registry_coordinate, AcquisitionError, AcquisitionPolicy, AuthenticationToken,
-    PackageCoordinate, RegistryCoordinate, RegistryEcosystem, RegistryEndpoint, RegistryId,
+    AcquisitionError, AcquisitionPolicy, AuthenticationToken, PackageCoordinate,
+    RegistryCoordinate, RegistryEcosystem, RegistryEndpoint, RegistryId, admit_registry_coordinate,
 };
 
 /// The versioned root namespace reserved for composed registry sources.
@@ -638,25 +638,28 @@ mod tests {
             .expect("mirror source")
             .with_source(RegistrySource::new(other))
             .expect("other source");
-        assert!(set
-            .authenticate_authority(
+        assert!(
+            set.authenticate_authority(
                 "https://mirror.test/repository/maven-private",
                 AuthenticationToken::new("Bearer scoped").expect("token"),
             )
-            .expect("auth scope"));
-        assert!(set
-            .for_ecosystem(RegistryEcosystem::Maven)
-            .iter()
-            .find(|source| source
-                .endpoint()
-                .as_str()
-                .starts_with("https://mirror.test"))
-            .is_some_and(RegistrySource::has_authentication));
-        assert!(set
-            .for_ecosystem(RegistryEcosystem::Maven)
-            .iter()
-            .find(|source| source.endpoint().as_str().starts_with("https://other.test"))
-            .is_some_and(|source| !source.has_authentication()));
+            .expect("auth scope")
+        );
+        assert!(
+            set.for_ecosystem(RegistryEcosystem::Maven)
+                .iter()
+                .find(|source| source
+                    .endpoint()
+                    .as_str()
+                    .starts_with("https://mirror.test"))
+                .is_some_and(RegistrySource::has_authentication)
+        );
+        assert!(
+            set.for_ecosystem(RegistryEcosystem::Maven)
+                .iter()
+                .find(|source| source.endpoint().as_str().starts_with("https://other.test"))
+                .is_some_and(|source| !source.has_authentication())
+        );
     }
 
     #[test]

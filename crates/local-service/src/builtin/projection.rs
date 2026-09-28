@@ -291,7 +291,10 @@ impl ClaimBuilder {
         let mut index: std::collections::HashMap<u64, Vec<usize>> =
             std::collections::HashMap::new();
         for (slot, claim) in claims.iter().enumerate() {
-            index.entry(claim_fingerprint(claim)).or_default().push(slot);
+            index
+                .entry(claim_fingerprint(claim))
+                .or_default()
+                .push(slot);
         }
         Self { claims, index }
     }
@@ -299,9 +302,11 @@ impl ClaimBuilder {
     fn push_once(&mut self, claim: WireClaim) {
         let fingerprint = claim_fingerprint(&claim);
         if let Some(slots) = self.index.get(&fingerprint)
-            && slots
-                .iter()
-                .any(|&slot| self.claims.get(slot).is_some_and(|existing| existing == &claim))
+            && slots.iter().any(|&slot| {
+                self.claims
+                    .get(slot)
+                    .is_some_and(|existing| existing == &claim)
+            })
         {
             return;
         }
@@ -1046,17 +1051,14 @@ mod tests {
         ]);
 
         let borrowed = view_certificate(&root, b"library-view-v1", None, None).expect("borrowed");
-        let owned = view_certificate_with_rows(
-            &root,
-            b"library-view-v1",
-            None,
-            root.rows(),
-            false,
-            None,
-        )
-        .expect("owned");
+        let owned =
+            view_certificate_with_rows(&root, b"library-view-v1", None, root.rows(), false, None)
+                .expect("owned");
         assert_eq!(borrowed.claims, owned.claims);
-        assert_eq!(row_claims(&root, root.row_refs()), row_claims(&root, root.rows()));
+        assert_eq!(
+            row_claims(&root, root.row_refs()),
+            row_claims(&root, root.rows())
+        );
         assert!(claim_mentions(&borrowed.claims, package.as_bytes()));
         assert!(claim_mentions(&borrowed.claims, parent.as_bytes()));
         assert!(claim_mentions(&borrowed.claims, child.as_bytes()));
@@ -1101,9 +1103,7 @@ mod tests {
             linked(child, "child"),
             linked(peer, "peer"),
         ]);
-        let child_row = root
-            .row_ref(RowId::Symbol(child))
-            .expect("child row");
+        let child_row = root.row_ref(RowId::Symbol(child)).expect("child row");
         let peer_row = root.row_ref(RowId::Symbol(peer)).expect("peer row");
         let mut separate = WireCertificate {
             claims: row_claims(&root, std::slice::from_ref(child_row)).into_boxed_slice(),

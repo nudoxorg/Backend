@@ -367,6 +367,10 @@ impl QueueIndex {
     pub(super) fn insert(&mut self, item: QueueItem) -> Result<bool, StoreError> {
         self.disk.insert(&item.encode())
     }
+
+    pub(super) fn contains(&mut self, item: QueueItem) -> Result<bool, StoreError> {
+        self.disk.contains(&item.encode())
+    }
 }
 
 fn index_path(log_path: &Path, kind: IndexKind) -> PathBuf {

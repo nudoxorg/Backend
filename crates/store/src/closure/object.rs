@@ -234,7 +234,9 @@ impl TypedObject {
         registry: &RelationAdmissionRegistry,
     ) -> Result<(), StoreError> {
         if registry.contains_schema(self.schema) {
-            return registry.admit_relation(self.schema, &self.version, &self.bytes);
+            return registry
+                .admit_relation_object(self.schema, &self.key, &self.version, &self.bytes)
+                .map(|_| ());
         }
         admit_backend_object_version(self.schema, &self.bytes, &self.version)
     }

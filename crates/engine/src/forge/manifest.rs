@@ -37,6 +37,7 @@ enum ManifestKind {
     Cargo,
     Npm,
     Pypi,
+    SetupCfg,
     Golang,
     Maven,
 }
@@ -45,7 +46,8 @@ fn manifest_kind(path: &str) -> Option<ManifestKind> {
     match path.rsplit('/').next()? {
         "Cargo.toml" => Some(ManifestKind::Cargo),
         "package.json" => Some(ManifestKind::Npm),
-        "pyproject.toml" | "setup.cfg" => Some(ManifestKind::Pypi),
+        "pyproject.toml" => Some(ManifestKind::Pypi),
+        "setup.cfg" => Some(ManifestKind::SetupCfg),
         "go.mod" => Some(ManifestKind::Golang),
         "pom.xml" => Some(ManifestKind::Maven),
         _ => None,
@@ -61,6 +63,7 @@ fn parse_manifest(
         ManifestKind::Cargo => parse_cargo(bytes),
         ManifestKind::Npm => parse_npm(bytes),
         ManifestKind::Pypi => parse_pyproject(bytes),
+        ManifestKind::SetupCfg => parse_setup_cfg(bytes),
         ManifestKind::Golang => parse_go(bytes),
         ManifestKind::Maven => parse_pom(bytes),
     }?;
@@ -163,15 +166,17 @@ fn parse_toml_dependencies(
             }
         }
     }
-    backend_library::admit_dependency_rows(backend_library::collapse_dependency_rows(rows))
-        .map_or_else(
-            |_| {
-                DependencyFacts::Unavailable(ProductText::from_static(
-                    "manifest dependency rows exceed bounds",
-                ))
-            },
-            DependencyFacts::Known,
-        )
+    backend_library::admit_dependency_rows(
+        crate::registry::coalesce_runtime_development_dependency_rows(rows),
+    )
+    .map_or_else(
+        |_| {
+            DependencyFacts::Unavailable(ProductText::from_static(
+                "manifest dependency rows exceed bounds",
+            ))
+        },
+        DependencyFacts::Known,
+    )
 }
 
 fn parse_npm(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
@@ -226,15 +231,17 @@ fn parse_npm(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
             ))
         },
         |_| {
-            backend_library::admit_dependency_rows(backend_library::collapse_dependency_rows(rows))
-                .map_or_else(
-                    |_| {
-                        DependencyFacts::Unavailable(ProductText::from_static(
-                            "manifest dependency rows exceed bounds",
-                        ))
-                    },
-                    DependencyFacts::Known,
-                )
+            backend_library::admit_dependency_rows(
+                crate::registry::coalesce_runtime_development_dependency_rows(rows),
+            )
+            .map_or_else(
+                |_| {
+                    DependencyFacts::Unavailable(ProductText::from_static(
+                        "manifest dependency rows exceed bounds",
+                    ))
+                },
+                DependencyFacts::Known,
+            )
         },
     );
     Ok((
@@ -294,7 +301,10 @@ fn parse_pyproject(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
             ))
         },
         |_| {
-            backend_library::admit_dependency_rows(rows).map_or_else(
+            backend_library::admit_dependency_rows(
+                crate::registry::coalesce_runtime_development_dependency_rows(rows),
+            )
+            .map_or_else(
                 |_| {
                     DependencyFacts::Unavailable(ProductText::from_static(
                         "manifest dependency rows exceed bounds",
@@ -310,6 +320,168 @@ fn parse_pyproject(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
         product(version),
         facts,
     ))
+}
+
+fn parse_setup_cfg(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
+    let input = std::str::from_utf8(bytes).map_err(|_| ForgeRejectReason::Manifest)?;
+    let mut section = String::new();
+    let mut pending: Option<(String, String, String)> = None;
+    let mut name = None;
+    let mut version = None;
+    let mut install_requires = None;
+    let mut unsupported_dependency_declaration = false;
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            apply_setup_cfg_option(
+                pending.take(),
+                &mut name,
+                &mut version,
+                &mut install_requires,
+                &mut unsupported_dependency_declaration,
+            );
+            let next_section = trimmed[1..trimmed.len() - 1].trim();
+            if next_section.is_empty() || next_section.contains('[') || next_section.contains(']') {
+                return Err(ForgeRejectReason::Manifest);
+            }
+            section = next_section.to_ascii_lowercase();
+            continue;
+        }
+        if line.starts_with(' ') || line.starts_with('\t') {
+            let Some((_, _, value)) = pending.as_mut() else {
+                return Err(ForgeRejectReason::Manifest);
+            };
+            if !value.is_empty() {
+                value.push('\n');
+            }
+            value.push_str(trimmed);
+            continue;
+        }
+        apply_setup_cfg_option(
+            pending.take(),
+            &mut name,
+            &mut version,
+            &mut install_requires,
+            &mut unsupported_dependency_declaration,
+        );
+        if section.is_empty() {
+            return Err(ForgeRejectReason::Manifest);
+        }
+        let (key, value) = line
+            .split_once('=')
+            .or_else(|| line.split_once(':'))
+            .ok_or(ForgeRejectReason::Manifest)?;
+        let key = key.trim();
+        if key.is_empty() || key.chars().any(char::is_whitespace) {
+            return Err(ForgeRejectReason::Manifest);
+        }
+        pending = Some((
+            section.clone(),
+            key.replace('-', "_").to_ascii_lowercase(),
+            value.trim().to_owned(),
+        ));
+    }
+    apply_setup_cfg_option(
+        pending,
+        &mut name,
+        &mut version,
+        &mut install_requires,
+        &mut unsupported_dependency_declaration,
+    );
+
+    let source = name
+        .as_deref()
+        .zip(version.as_deref())
+        .and_then(|(name, version)| {
+            PackageReference::parse(format!("pkg:pypi/{name}@{version}")).ok()
+        });
+    let facts = match (source, install_requires) {
+        (None, _) => DependencyFacts::Unavailable(ProductText::from_static(
+            "manifest has no immutable package version",
+        )),
+        (Some(_), _) if unsupported_dependency_declaration => DependencyFacts::Unknown(
+            ProductText::from_static("setup.cfg contains dependency declarations not projected"),
+        ),
+        (Some(_), None) => DependencyFacts::Unknown(ProductText::from_static(
+            "setup.cfg does not declare install_requires",
+        )),
+        (Some(source), Some(requirements)) => {
+            let mut rows = Vec::new();
+            let mut unsupported_requirement = false;
+            for requirement in requirements
+                .split([',', '\n'])
+                .map(str::trim)
+                .filter(|requirement| !requirement.is_empty())
+            {
+                let name = requirement
+                    .split(['[', '=', '<', '>', '!', '~', ';', ' '])
+                    .next()
+                    .unwrap_or_default();
+                match PackageDependencyTarget::new(RegistryEcosystem::Pypi, name, requirement, None)
+                {
+                    Ok(target) => rows.push(PackageDependencyRecord::new(
+                        source.clone(),
+                        target,
+                        DependencyScope::Runtime,
+                        false,
+                        DependencyEvidence {
+                            authority: DependencyAuthority::ForgeManifest,
+                            frontier: [0; 32],
+                            provenance: *blake3::hash(bytes).as_bytes(),
+                        },
+                    )),
+                    Err(_) => unsupported_requirement = true,
+                }
+            }
+            if unsupported_requirement {
+                DependencyFacts::Unknown(ProductText::from_static(
+                    "setup.cfg contains an unsupported dependency requirement",
+                ))
+            } else {
+                backend_library::admit_dependency_rows(
+                    crate::registry::coalesce_runtime_development_dependency_rows(rows),
+                )
+                .map_or_else(
+                    |_| {
+                        DependencyFacts::Unavailable(ProductText::from_static(
+                            "manifest dependency rows exceed bounds",
+                        ))
+                    },
+                    DependencyFacts::Known,
+                )
+            }
+        }
+    };
+    Ok((
+        RegistryEcosystem::Pypi,
+        product(name.as_deref()),
+        product(version.as_deref()),
+        facts,
+    ))
+}
+
+fn apply_setup_cfg_option(
+    pending: Option<(String, String, String)>,
+    name: &mut Option<String>,
+    version: &mut Option<String>,
+    install_requires: &mut Option<String>,
+    unsupported_dependency_declaration: &mut bool,
+) {
+    let Some((section, key, value)) = pending else {
+        return;
+    };
+    match (section.as_str(), key.as_str()) {
+        ("metadata", "name") => *name = Some(value),
+        ("metadata", "version") => *version = Some(value),
+        ("options", "install_requires") => *install_requires = Some(value),
+        ("options", "extras_require" | "setup_requires" | "tests_require")
+        | ("options.extras_require", _) => *unsupported_dependency_declaration = true,
+        _ => {}
+    }
 }
 
 fn parse_go(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
@@ -368,8 +540,9 @@ fn parse_pom(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_cargo, parse_npm};
+    use super::{MAX_MANIFEST_BYTES, discover_manifests, parse_cargo, parse_npm};
     use backend_library::{DependencyFacts, DependencyScope};
+    use std::sync::Arc;
 
     #[test]
     fn forge_cargo_dev_and_normal_same_name_stays_runtime() {
@@ -446,5 +619,61 @@ mod tests {
         assert_eq!(rows[0].target.name.as_str(), "lodash");
         assert_eq!(rows[0].scope, DependencyScope::Runtime);
         assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn forge_setup_cfg_is_parsed_as_ini_and_retains_runtime_requirements() {
+        let manifest = br#"[metadata]
+name = legacy-demo
+version = 2.1.0
+
+[options]
+install_requires =
+    requests>=2.31
+"#;
+        let files = [super::super::archive::ArchiveFile {
+            path: Arc::from("setup.cfg"),
+            bytes: manifest.to_vec(),
+            bytes_len: manifest.len() as u64,
+            mode: 0,
+        }];
+        let manifests = discover_manifests(&files, None).expect("valid setup.cfg");
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(
+            manifests[0].ecosystem,
+            backend_library::RegistryEcosystem::Pypi
+        );
+        assert_eq!(
+            manifests[0].name,
+            super::ForgeFact::Recorded(
+                backend_library::ProductText::new("legacy-demo").expect("name")
+            )
+        );
+        assert_eq!(
+            manifests[0].version,
+            super::ForgeFact::Recorded(
+                backend_library::ProductText::new("2.1.0").expect("version")
+            )
+        );
+        let DependencyFacts::Known(rows) = &manifests[0].dependencies else {
+            panic!("expected known setup.cfg dependencies");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "requests");
+        assert_eq!(rows[0].scope, DependencyScope::Runtime);
+    }
+
+    #[test]
+    fn forge_setup_cfg_oversized_manifest_is_rejected_before_parsing() {
+        let files = [super::super::archive::ArchiveFile {
+            path: Arc::from("setup.cfg"),
+            bytes: Vec::new(),
+            bytes_len: MAX_MANIFEST_BYTES + 1,
+            mode: 0,
+        }];
+        assert_eq!(
+            discover_manifests(&files, None).expect_err("oversized setup.cfg"),
+            super::ForgeRejectReason::Bounds
+        );
     }
 }

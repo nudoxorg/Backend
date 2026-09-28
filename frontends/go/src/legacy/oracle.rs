@@ -833,6 +833,36 @@ pub enum GoOracleConfiguration {
     GoToolchain(GoOracleExecutable),
 }
 
+/// Path-independent mode of one explicit Go oracle invocation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum GoOracleInvocationModeV1 {
+    /// A selected binary directly implements the oracle protocol.
+    OracleBinary,
+    /// The selected Go compiler builds and runs the vendored oracle source.
+    GoToolchain,
+}
+
+/// Portable Go oracle options that omit host-local executable paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GoOracleInvocationOptionsV1 {
+    mode: GoOracleInvocationModeV1,
+    helper_source_identity: Option<[u8; 32]>,
+}
+
+impl GoOracleInvocationOptionsV1 {
+    /// Returns the exact closed command mode.
+    #[must_use]
+    pub const fn mode(self) -> GoOracleInvocationModeV1 {
+        self.mode
+    }
+
+    /// Returns the content identity of the vendored helper source in Go-toolchain mode.
+    #[must_use]
+    pub const fn helper_source_identity(self) -> Option<[u8; 32]> {
+        self.helper_source_identity
+    }
+}
+
 impl GoOracleConfiguration {
     /// Configures a direct oracle binary.
     pub fn oracle_binary(executable: PathBuf) -> Result<Self, GoOracleConfigurationError> {
@@ -1183,6 +1213,48 @@ impl GoOracle {
 }
 
 impl ConfiguredGoOracle {
+    /// Returns path-independent invocation mode and helper-source identity.
+    #[must_use]
+    pub fn portable_invocation_options(&self) -> GoOracleInvocationOptionsV1 {
+        let (mode, helper_source_identity) = match &self.configuration {
+            GoOracleConfiguration::OracleBinary(_) => {
+                (GoOracleInvocationModeV1::OracleBinary, None)
+            }
+            GoOracleConfiguration::GoToolchain(_) => {
+                let mut digest = Sha256::new();
+                for source in [
+                    include_bytes!("oracle/go.mod").as_slice(),
+                    include_bytes!("oracle/go.sum").as_slice(),
+                    include_bytes!("oracle/main.go").as_slice(),
+                    include_bytes!("oracle/docs.go").as_slice(),
+                    include_bytes!("oracle/image.go").as_slice(),
+                    include_bytes!("oracle/serialize.go").as_slice(),
+                ] {
+                    digest.update((source.len() as u64).to_be_bytes());
+                    digest.update(source);
+                }
+                (
+                    GoOracleInvocationModeV1::GoToolchain,
+                    Some(digest.finalize().into()),
+                )
+            }
+        };
+        GoOracleInvocationOptionsV1 {
+            mode,
+            helper_source_identity,
+        }
+    }
+
+    /// Reports whether Go-toolchain mode uses the exact executable selected as the native Go
+    /// toolchain. Oracle-binary mode has a separate, unversioned executable authority.
+    #[must_use]
+    pub fn uses_toolchain_executable(&self, executable: &Path) -> bool {
+        matches!(
+            &self.configuration,
+            GoOracleConfiguration::GoToolchain(configured) if configured.as_ref() == executable
+        )
+    }
+
     /// Returns a host-local fingerprint of the explicit oracle command,
     /// bundled Go producer closure, and process bounds. Path bytes make this
     /// a drift detector rather than a cross-host closure identity.
@@ -1325,9 +1397,12 @@ fn tail(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod read_tests {
-    use super::{GoOracleConfiguration, GoOracleConfigurationError, read_bounded};
+    use super::{
+        GoOracle, GoOracleConfiguration, GoOracleConfigurationError, GoOracleInvocationModeV1,
+        read_bounded,
+    };
     use std::io::{self, Read};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     struct FaultyReader {
         interrupted: bool,
@@ -1364,5 +1439,36 @@ mod read_tests {
             GoOracleConfigurationError::RelativeExecutable { executable }
                 if executable == PathBuf::from("go")
         ));
+    }
+
+    #[test]
+    fn portable_invocation_snapshot_ignores_tool_path_and_binds_mode() {
+        let first = GoOracle::default().with_configuration(
+            GoOracleConfiguration::go_toolchain(PathBuf::from("/host-a/bin/go"))
+                .expect("absolute Go executable"),
+        );
+        let relocated = GoOracle::default().with_configuration(
+            GoOracleConfiguration::go_toolchain(PathBuf::from("/host-b/sdk/go"))
+                .expect("absolute Go executable"),
+        );
+        let binary = GoOracle::default().with_configuration(
+            GoOracleConfiguration::oracle_binary(PathBuf::from("/host-c/bin/go-oracle"))
+                .expect("absolute oracle executable"),
+        );
+
+        let first_options = first.portable_invocation_options();
+        let relocated_options = relocated.portable_invocation_options();
+        let binary_options = binary.portable_invocation_options();
+        assert_eq!(first_options, relocated_options);
+        assert_eq!(first_options.mode(), GoOracleInvocationModeV1::GoToolchain);
+        assert!(first_options.helper_source_identity().is_some());
+        assert_ne!(first_options, binary_options);
+        assert_eq!(
+            binary_options.mode(),
+            GoOracleInvocationModeV1::OracleBinary
+        );
+        assert!(binary_options.helper_source_identity().is_none());
+        assert!(first.uses_toolchain_executable(Path::new("/host-a/bin/go")));
+        assert!(!first.uses_toolchain_executable(Path::new("/host-b/bin/go")));
     }
 }

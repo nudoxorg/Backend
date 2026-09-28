@@ -527,6 +527,37 @@ use super::state_io::{
 use super::*;
 
 impl FileStore {
+    /// Collects with authority roots resolved only after the GC exclusion
+    /// lease is acquired. A publication can hold a shared GC pin through its
+    /// database commit; a collector waiting on that pin must read the newly
+    /// selected root after the pin is released, not use an earlier snapshot.
+    ///
+    /// The resolver receives a scoped root capability only after the store's
+    /// exclusive GC lease is acquired and before its process mutex. It may
+    /// read an external authority such as Turso, and may admit remote member
+    /// roots only through the resolver's explicit receipt/fallback verifier.
+    /// It must not call a FileStore API that acquires a shared GC pin while
+    /// this exclusive pin is held.
+    pub fn collect_garbage_resolving_roots<F>(
+        &self,
+        resolve: F,
+        limits: GcLimits,
+    ) -> Result<GcReport, StoreError>
+    where
+        F: FnOnce(&mut super::roots::GcRootResolver<'_>) -> Result<(), StoreError>,
+    {
+        let _gc_exclusive = self.acquire_gc_exclusive()?;
+        let mut resolver = super::roots::GcRootResolver::new(self);
+        resolve(&mut resolver)?;
+        let mut roots = resolver.into_roots();
+        let _guard = self.lock.lock().map_err(|_| StoreError::Corrupt)?;
+        let _process_lock = self.acquire_process_lock()?;
+        if let Some(head) = self.read_state()?.selected {
+            roots.add_store_selected_head(head);
+        }
+        self.collect_garbage_locked(&roots, limits)
+    }
+
     /// Runs a bounded, durable mark-and-sweep using caller-supplied roots and
     /// the currently selected durable head.
     ///
@@ -535,6 +566,9 @@ impl FileStore {
     /// if the process exits during a rename, opening the store restores the
     /// quarantined source.  A complete mark with a missing child returns
     /// [`StoreError::Corrupt`] before any file is quarantined.
+    /// Callers whose roots come from an independently advancing authority must
+    /// use [`Self::collect_garbage_resolving_roots`] so the root read occurs
+    /// after any in-flight publication pin has released.
     ///
     /// # Errors
     ///
@@ -546,11 +580,15 @@ impl FileStore {
         roots: &GcRoots,
         limits: GcLimits,
     ) -> Result<GcReport, StoreError> {
+        let _gc_exclusive = self.acquire_gc_exclusive()?;
         let _guard = self.lock.lock().map_err(|_| StoreError::Corrupt)?;
         let _process_lock = self.acquire_process_lock()?;
         let mut roots = roots.clone();
+        if roots.has_remote_closure_indexes() {
+            return Err(StoreError::Corrupt);
+        }
         if let Some(head) = self.read_state()?.selected {
-            roots.add_selected_head(head);
+            roots.add_store_selected_head(head);
         }
         self.collect_garbage_locked(&roots, limits)
     }
@@ -568,10 +606,14 @@ impl FileStore {
         mut roots: GcRoots,
         limits: GcLimits,
     ) -> Result<GcReport, StoreError> {
+        let _gc_exclusive = self.acquire_gc_exclusive()?;
         let _guard = self.lock.lock().map_err(|_| StoreError::Corrupt)?;
         let _process_lock = self.acquire_process_lock()?;
+        if roots.has_remote_closure_indexes() {
+            return Err(StoreError::Corrupt);
+        }
         if let Some(head) = self.read_state()?.selected {
-            roots.add_selected_head(head);
+            roots.add_store_selected_head(head);
         }
         self.collect_garbage_locked(&roots, limits)
     }

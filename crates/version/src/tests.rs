@@ -557,7 +557,10 @@ fn lazy_page_seeks_to_the_cursor_without_rereading_the_left_tree()
     assert!(late_calls * 8 < full_calls);
     assert!(late_calls < node_count / 8);
 
-    let gap: Vec<_> = (0..ROWS).filter(|key| key % 2 == 0).map(|key| (key, key)).collect();
+    let gap: Vec<_> = (0..ROWS)
+        .filter(|key| key % 2 == 0)
+        .map(|key| (key, key))
+        .collect();
     let gap_tree = PersistentTree::<RelationFixture>::from_sorted_items(&gap)?;
     let gap_nodes: BTreeMap<_, _> = gap_tree
         .node_closure()
@@ -568,8 +571,7 @@ fn lazy_page_seeks_to_the_cursor_without_rereading_the_left_tree()
         calls: Cell::new(0),
     };
     let gap_root = admit_canonical_root::<RelationFixture>(gap_tree.root().as_bytes())?;
-    let gap_lazy =
-        LazyTree::from_admitted(&gap_loader, PersistedTreeRoot::from_checked(gap_root));
+    let gap_lazy = LazyTree::from_admitted(&gap_loader, PersistedTreeRoot::from_checked(gap_root));
     let missing = gap_lazy.page(Some(&5), 2)?;
     assert_eq!(missing.entries(), &[(6, 6), (8, 8)]);
     let tail = lazy.page(Some(&(ROWS - 1)), 4)?;
@@ -932,6 +934,34 @@ fn object_version_hasher_matches_typed_digest_across_chunk_partitions()
             actual: 0
         })
     );
+    Ok(())
+}
+
+#[test]
+fn object_key_hasher_matches_typed_digest_and_rejects_wrong_schema()
+-> Result<(), Box<dyn std::error::Error>> {
+    let schema = SchemaIdentity::new(
+        SchemaFixture::DOMAIN,
+        SchemaFixture::TYPE,
+        SchemaFixture::VERSION,
+    );
+    let value = 0x0102_0304_0506_0708u64;
+    let mut payload = Vec::new();
+    SchemaFixture::encode(&value, &mut payload);
+    let expected = ObjectKey::<SchemaFixture>::from_value(&value);
+    let mut hasher = ObjectKeyHasher::new(schema, payload.len())?;
+    hasher.update(&payload[..3])?;
+    hasher.update(&payload[3..])?;
+    assert_eq!(hasher.finish_key::<SchemaFixture>()?, expected);
+
+    let wrong_schema = ObjectKeyHasher::new(
+        SchemaIdentity::new(0xff, SchemaFixture::TYPE, SchemaFixture::VERSION),
+        payload.len(),
+    )?;
+    assert!(matches!(
+        wrong_schema.finish_key::<SchemaFixture>(),
+        Err(RuntimeIdentityError::SchemaMismatch { .. })
+    ));
     Ok(())
 }
 

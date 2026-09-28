@@ -106,7 +106,10 @@ fn latest_root_supersedes_older_refreshes_without_ui_waiting() {
         if wake.try_take() {
             runtime.poll();
         } else {
-            assert!(std::time::Instant::now() < deadline, "the root never landed");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the root never landed"
+            );
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
@@ -287,8 +290,7 @@ fn local_package_read_runs_off_the_producer_lane_and_survives_a_root_advance() -
 pub(super) fn registry_record(name: &str, version: &str) -> backend_library::RegistryPackageRecord {
     use backend_library::{
         AdvisoryPackageDto, PackageReference, ProductText, RegistryDownloadCount,
-        RegistryEcosystem, RegistryNativeMetadata, RegistryPackageRecord,
-        RegistryReleaseStanding,
+        RegistryEcosystem, RegistryNativeMetadata, RegistryPackageRecord, RegistryReleaseStanding,
     };
     let native_metadata = RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "fixture");
     RegistryPackageRecord {
@@ -301,6 +303,7 @@ pub(super) fn registry_record(name: &str, version: &str) -> backend_library::Reg
         standing: RegistryReleaseStanding::Available,
         downloads: RegistryDownloadCount::Exact(42),
         facts_version: [0; 32],
+        authority: None,
         native_metadata_version: native_metadata
             .identity()
             .expect("fixture metadata identity"),

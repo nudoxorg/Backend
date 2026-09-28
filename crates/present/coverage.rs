@@ -15,7 +15,9 @@
 //! failed, simply not observed. That distinction is the whole point — an empty
 //! complete result and an unavailable lane must never look the same.
 
-use backend_library::{Coverage, Lane, Reason};
+use backend_library::{
+    Coverage, Lane, Reason, SemanticSearchReason, SemanticSearchStatus,
+};
 use core::fmt;
 use core::fmt::Write as _;
 
@@ -113,6 +115,7 @@ impl LaneCoverage {
 pub struct CoverageLine {
     lanes: [LaneCoverage; 4],
     rows: Option<RowCount>,
+    semantic_search: Option<SemanticSearchStatus>,
 }
 
 /// The number of rows a complete lane stands behind.
@@ -146,7 +149,21 @@ impl CoverageLine {
         Self {
             lanes,
             rows: rows.map(RowCount::new),
+            semantic_search: None,
         }
+    }
+
+    /// Attaches the independent per-query status of the semantic search lane.
+    #[must_use]
+    pub const fn with_semantic_search_status(mut self, status: SemanticSearchStatus) -> Self {
+        self.semantic_search = Some(status);
+        self
+    }
+
+    /// Returns the semantic search status, when this is a search result line.
+    #[must_use]
+    pub const fn semantic_search_status(&self) -> Option<SemanticSearchStatus> {
+        self.semantic_search
     }
 
     /// Returns every lane in stable display order.
@@ -165,6 +182,9 @@ impl CoverageLine {
     #[must_use]
     pub fn has_unavailable(&self) -> bool {
         self.lanes.iter().any(|lane| lane.is_unavailable())
+            || self
+                .semantic_search
+                .is_some_and(|status| !matches!(status, SemanticSearchStatus::Available))
     }
 
     /// Returns whether any lane failed work it was asked to do.
@@ -178,6 +198,12 @@ impl CoverageLine {
         self.lanes.iter().any(|lane| match lane.state {
             LaneState::Unavailable { reason } => !reason.is_outside_declared_scope(),
             LaneState::Complete | LaneState::Partial { .. } | LaneState::Unobserved => false,
+        }) || self.semantic_search.is_some_and(|status| match status {
+            SemanticSearchStatus::Available => false,
+            SemanticSearchStatus::Unavailable { reason } => {
+                reason != SemanticSearchReason::Unconfigured
+            }
+            SemanticSearchStatus::Stale { .. } => true,
         })
     }
 
@@ -191,6 +217,12 @@ impl CoverageLine {
             LaneState::Complete => true,
             LaneState::Unavailable { reason } => reason.is_outside_declared_scope(),
             LaneState::Partial { .. } | LaneState::Unobserved => false,
+        }) && self.semantic_search.is_none_or(|status| match status {
+            SemanticSearchStatus::Available => true,
+            SemanticSearchStatus::Unavailable { reason } => {
+                reason == SemanticSearchReason::Unconfigured
+            }
+            SemanticSearchStatus::Stale { .. } => false,
         })
     }
 
@@ -220,7 +252,33 @@ impl CoverageLine {
         for lane in &self.lanes {
             let _ = write!(line, " {}{}", lane.name(), lane.mark(rows));
         }
+        if let Some(status) = self.semantic_search {
+            let _ = write!(line, " semantic-search {}", semantic_search_name(status));
+        }
         line
+    }
+}
+
+fn semantic_search_name(status: SemanticSearchStatus) -> String {
+    match status {
+        SemanticSearchStatus::Available => "available".to_owned(),
+        SemanticSearchStatus::Unavailable { reason } => {
+            format!("unavailable ({})", semantic_search_reason_name(reason))
+        }
+        SemanticSearchStatus::Stale { reason } => {
+            format!("stale ({})", semantic_search_reason_name(reason))
+        }
+    }
+}
+
+const fn semantic_search_reason_name(reason: SemanticSearchReason) -> &'static str {
+    match reason {
+        SemanticSearchReason::Unconfigured => "unconfigured",
+        SemanticSearchReason::InvalidConfiguration => "invalid-configuration",
+        SemanticSearchReason::ProviderUnavailable => "provider-unavailable",
+        SemanticSearchReason::NoActiveProjection => "no-active-projection",
+        SemanticSearchReason::StaleProjection => "stale-projection",
+        SemanticSearchReason::ModelUnavailable => "model-unavailable",
     }
 }
 

@@ -1,0 +1,173 @@
+{
+  "benchmark_snapshot_id": "search-quality-v1-2026-09-28",
+  "captured_at": "2026-09-28T06:58:07Z",
+  "schema_version": 1,
+  "source_snapshots": [
+    {
+      "path": ".config/nix/corpus-pins.json",
+      "sha256": "36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f",
+      "snapshot_id": "nix-corpus-pins:sha256:36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f"
+    },
+    {
+      "alias_of": "nix-corpus-pins:sha256:36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f",
+      "path": ".config/nix/corpus-pins.json",
+      "sha256": "36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f",
+      "snapshot_id": "workspace-file:sha256:36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "b22d6e01f7e1b40787086b24b31fc4d62cd6d0e20a305eea64c8882871e67d0b",
+      "snapshot_id": "workspace-file:sha256:b22d6e01f7e1b40787086b24b31fc4d62cd6d0e20a305eea64c8882871e67d0b"
+    },
+    {
+      "path": "crates/advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md",
+      "sha256": "a4afbe5559deb859865fc889a83f0dad78a89065d088e88ac97891c2c3691105",
+      "snapshot_id": "workspace-file:sha256:a4afbe5559deb859865fc889a83f0dad78a89065d088e88ac97891c2c3691105"
+    },
+    {
+      "path": "crates/engine/src/forge/mod.rs",
+      "sha256": "f9509170919e8908b9f50bfaf63f169c3ad3994a4d8336ccc9e762081aa2630b",
+      "snapshot_id": "workspace-file:sha256:f9509170919e8908b9f50bfaf63f169c3ad3994a4d8336ccc9e762081aa2630b"
+    },
+    {
+      "path": "crates/engine/src/registry/discovery.rs",
+      "sha256": "96e0eb22e5815cc1b02b8a5c565a8529b95e193f84bd7d4e297fa207db17bbcb",
+      "snapshot_id": "workspace-file:sha256:96e0eb22e5815cc1b02b8a5c565a8529b95e193f84bd7d4e297fa207db17bbcb"
+    },
+    {
+      "path": "crates/local-service/src/builtin/discovery_search.rs",
+      "sha256": "046cf7d6cc57adaa48f0caabc0dd3802f3479330afb23a5c4cd5167236ca29c7",
+      "snapshot_id": "workspace-file:sha256:046cf7d6cc57adaa48f0caabc0dd3802f3479330afb23a5c4cd5167236ca29c7"
+    },
+    {
+      "path": "crates/local-service/src/builtin/discovery_search/benchmark.rs",
+      "sha256": "f021f0b342aa11557f1c0369a2de64fa9accb75e0b19dbc698cc663bead485e3",
+      "snapshot_id": "workspace-file:sha256:f021f0b342aa11557f1c0369a2de64fa9accb75e0b19dbc698cc663bead485e3"
+    },
+    {
+      "path": "crates/local-service/src/discovery.rs",
+      "sha256": "eb397b30af02f3679e8ee27a788522e90d61839aea83c1a28da6c81075ade91e",
+      "snapshot_id": "workspace-file:sha256:eb397b30af02f3679e8ee27a788522e90d61839aea83c1a28da6c81075ade91e"
+    },
+    {
+      "path": "crates/local-service/Cargo.toml",
+      "sha256": "c1911d2c12cdf4c0b79d100bbeda0ce2554322a246e76b3de40723bdfb88aafe",
+      "snapshot_id": "workspace-file:sha256:c1911d2c12cdf4c0b79d100bbeda0ce2554322a246e76b3de40723bdfb88aafe"
+    },
+    {
+      "path": "crates/local-service/src/builtin.rs",
+      "sha256": "00627029fb355abb1669ec391a51cbdad0df6acc8de6e7b2ec6e82b35c969a80",
+      "snapshot_id": "workspace-file:sha256:00627029fb355abb1669ec391a51cbdad0df6acc8de6e7b2ec6e82b35c969a80"
+    },
+    {
+      "path": "crates/local-service/src/lib.rs",
+      "sha256": "dc9fa13e775084689f703c1e681ca2e85a20b63b769da4350a66fa6b554e806e",
+      "snapshot_id": "workspace-file:sha256:dc9fa13e775084689f703c1e681ca2e85a20b63b769da4350a66fa6b554e806e"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/adapter/Cargo.toml",
+      "sha256": "5d6d0cb9ad7ef616849b9646b79abc2a7aebec117ade2f72f283cd219de4d0f0",
+      "snapshot_id": "workspace-file:sha256:5d6d0cb9ad7ef616849b9646b79abc2a7aebec117ade2f72f283cd219de4d0f0"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/adapter/src/main.rs",
+      "sha256": "2762ca94763a832cafe2423eb87b29e8ec732b44ac6173471c3ff14febc3fdfd",
+      "snapshot_id": "workspace-file:sha256:2762ca94763a832cafe2423eb87b29e8ec732b44ac6173471c3ff14febc3fdfd"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/adapter/tests/production_ranker.rs",
+      "sha256": "3ef641f2319d381e19a404bc9c7f6ce19bacfff4010715ee6c55ecc6b335ad79",
+      "snapshot_id": "workspace-file:sha256:3ef641f2319d381e19a404bc9c7f6ce19bacfff4010715ee6c55ecc6b335ad79"
+    },
+    {
+      "path": "crates/semantic/src/vocabulary/package.rs",
+      "sha256": "e65378b64f13201ef8980357fe996ccf72017a90e89ffd5ebc6f69045508cf30",
+      "snapshot_id": "workspace-file:sha256:e65378b64f13201ef8980357fe996ccf72017a90e89ffd5ebc6f69045508cf30"
+    },
+    {
+      "path": "tests/journeys/tests/index_tentpole.rs",
+      "sha256": "b7cdf48a95419ff68c3746152f350d7617c100cb2ffd39e015f44c337a4d428e",
+      "snapshot_id": "workspace-file:sha256:b7cdf48a95419ff68c3746152f350d7617c100cb2ffd39e015f44c337a4d428e"
+    },
+    {
+      "path": "tests/journeys/tests/registry_discovery.rs",
+      "sha256": "6b7802f24392104b721acdac4fa0dba7e48075da1b2ace488203e8d31b44c346",
+      "snapshot_id": "workspace-file:sha256:6b7802f24392104b721acdac4fa0dba7e48075da1b2ace488203e8d31b44c346"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/adapter/Cargo.lock",
+      "sha256": "edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f",
+      "snapshot_id": "search-adapter-cargo-lock:sha256:edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f"
+    },
+    {
+      "alias_of": "search-adapter-cargo-lock:sha256:edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f",
+      "path": "docs/benchmarks/search-quality/adapter/Cargo.lock",
+      "sha256": "edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f",
+      "snapshot_id": "workspace-file:sha256:edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f"
+    },
+    {
+      "bytes": 54201,
+      "captured_at": "2026-09-28T06:58:07Z",
+      "local_file": "docs/benchmarks/search-quality/snapshots/crates-io-bincode.ndjson",
+      "sha256": "2aa3a1df035d3a11c305688dce78087e5f0db2b03f021dd9cf3f6f65f79895e9",
+      "snapshot_id": "crates-io-index:bincode:sha256:2aa3a1df035d3a11c305688dce78087e5f0db2b03f021dd9cf3f6f65f79895e9",
+      "source": "https://index.crates.io/bi/nc/bincode"
+    },
+    {
+      "bytes": 164874,
+      "captured_at": "2026-09-28T06:58:07Z",
+      "local_file": "docs/benchmarks/search-quality/snapshots/crates-io-serde.ndjson",
+      "sha256": "9eb6e78eab279f168b5787e4eb801765e1d5a2b40c50789e12166a616d73bbc5",
+      "snapshot_id": "crates-io-index:serde:sha256:9eb6e78eab279f168b5787e4eb801765e1d5a2b40c50789e12166a616d73bbc5",
+      "source": "https://index.crates.io/se/rd/serde"
+    },
+    {
+      "bytes": 73024,
+      "captured_at": "2026-09-28T06:58:07Z",
+      "local_file": "docs/benchmarks/search-quality/snapshots/crates-io-thiserror.ndjson",
+      "sha256": "320c3e915f0afe44092342b497ec2189a5c502fbc0e1bd816e8db3e8c6d82914",
+      "snapshot_id": "crates-io-index:thiserror:sha256:320c3e915f0afe44092342b497ec2189a5c502fbc0e1bd816e8db3e8c6d82914",
+      "source": "https://index.crates.io/th/is/thiserror"
+    },
+    {
+      "note": "Fixture source; fixture values are not claims about current live registry metadata.",
+      "path": "crates/local-service/src/builtin/discovery_search.rs",
+      "sha256": "046cf7d6cc57adaa48f0caabc0dd3802f3479330afb23a5c4cd5167236ca29c7",
+      "snapshot_id": "workspace-fixture:discovery-search-typed-facets"
+    },
+    {
+      "note": "Fixture source; fixture values are not claims about current live registry metadata.",
+      "path": "tests/journeys/tests/registry_discovery.rs",
+      "sha256": "6b7802f24392104b721acdac4fa0dba7e48075da1b2ace488203e8d31b44c346",
+      "snapshot_id": "workspace-fixture:registry-discovery-cargo-yank"
+    },
+    {
+      "note": "Fixture source; fixture values are not claims about current live registry metadata.",
+      "path": "tests/journeys/tests/index_tentpole.rs",
+      "sha256": "b7cdf48a95419ff68c3746152f350d7617c100cb2ffd39e015f44c337a4d428e",
+      "snapshot_id": "workspace-fixture:tentpole-manifest-dependencies"
+    },
+    {
+      "files": [
+        {
+          "path": "search_index/src/lib_search_index.rs",
+          "sha256": "24705598c93b49933013125e69e7cfdb39e7b4f47d4cdaa68ae4c47367f6e301"
+        },
+        {
+          "path": "ranking/src/lib_ranking.rs",
+          "sha256": "45e2b9fd0de65db22e6c3067f57be6e1c788c482571124992a162bd732fafcda"
+        }
+      ],
+      "snapshot_id": "lib-rs-mirror:git:4642a01664e14f4ae30a3804a55556b0770119d9",
+      "source": "https://github.com/Protryon/lib-rs-mirror/tree/4642a01664e14f4ae30a3804a55556b0770119d9"
+    },
+    {
+      "bytes": 358554,
+      "captured_at": "2026-09-28T08:51:28Z",
+      "local_file": "docs/benchmarks/search-quality/snapshots/workspace-cargo-lock-2026-09-28.lock",
+      "sha256": "d90d48b58d9f339fbc6c4bb3666127194e12c5727d0e30d334bab782e9038fe6",
+      "snapshot_id": "cargo-lock-snapshot:sha256:d90d48b58d9f339fbc6c4bb3666127194e12c5727d0e30d334bab782e9038fe6",
+      "source": "workspace Cargo.lock captured as immutable benchmark evidence; not a live build lock"
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 use super::{
     BuiltinAdmission, IdContext, ImmutableObjectSchema, ObjectKey, ObjectVersion, ProductRelation,
-    Relation, WorkerError, complete_coverage, schema_object_version_identity_claim,
+    WorkerError, complete_coverage, schema_object_version_identity_claim,
     semantic_publication_row_bytes,
 };
 use backend_engine::CanonicalRelation as _;

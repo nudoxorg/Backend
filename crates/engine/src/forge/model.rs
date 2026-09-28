@@ -76,6 +76,23 @@ pub struct ForgeAcquisitionResult {
     pub receipt: ForgeReceipt,
 }
 
+/// Lightweight searchable facts for a cached forge acquisition. This omits
+/// archive and tree bodies so the package index can refresh metadata without
+/// reopening every content-addressed source object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForgeSearchRecord {
+    /// Exact repository and requested revision that produced the claim.
+    pub coordinate: ForgeCoordinate,
+    /// Exact resolved commit and optional remote tree.
+    pub resolution: ForgeResolution,
+    /// Content identity of the acquired archive bytes.
+    pub archive: [u8; 32],
+    /// Repository metadata retained with typed availability.
+    pub metadata: ForgeRepositoryMetadata,
+    /// Package manifests discovered in the acquired source tree.
+    pub manifests: Box<[ForgePackageManifest]>,
+}
+
 impl ForgeAcquisitionResult {
     /// Projects an exact forge receipt into the normalized registry lineage
     /// association used by package/release joins.
@@ -194,18 +211,12 @@ impl ForgeAcquisitionResult {
                     (_, ForgeFact::Recorded(version)) => (None, Some(version.clone())),
                     _ => (None, None),
                 };
-                let dependency_count = match &manifest.dependencies {
-                    DependencyFacts::Known(rows) => {
-                        u16::try_from(rows.len()).map_err(|_| ForgeProtocolError::Malformed)?
-                    }
-                    DependencyFacts::Unknown(_) | DependencyFacts::Unavailable(_) => 0,
-                };
                 Ok(backend_library::ForgeManifestRecord {
                     path: text(manifest.path.as_ref())?,
                     ecosystem: text(manifest.ecosystem.as_str())?,
                     name,
                     version,
-                    dependency_count,
+                    dependencies: manifest.dependencies.clone(),
                 })
             })
             .collect::<Result<Vec<_>, ForgeProtocolError>>()?

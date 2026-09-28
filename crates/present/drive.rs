@@ -38,8 +38,8 @@ use crate::shelf::Shelf;
 use crate::status::Status;
 use backend_client::ClientError;
 use backend_library::{
-    CommandReply, GraphRelation, HealthReport, IntentId, PageContinuation, ReplyDto, Row,
-    SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
+    CommandReply, CompileExecutionIntent, GraphRelation, HealthReport, IntentId, PageContinuation,
+    ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
 
 /// Rows fetched for one page's members and relations.
@@ -53,8 +53,15 @@ const PROBE_ROWS: u16 = 200;
 pub enum Probe<'a> {
     /// Every project on the shelf.
     Packages,
-    /// Submit an index intent for one project path.
+    /// Submit an index intent for one project path using the normal interactive default.
     Index(&'a str),
+    /// Submit an index intent with a caller-selected execution class.
+    IndexWithExecutionIntent {
+        /// Project root to add.
+        path: &'a str,
+        /// Requested compilation execution class.
+        execution_intent: CompileExecutionIntent,
+    },
     /// Submit a remove intent for one project path.
     Remove(&'a str),
     /// One declaration's document.
@@ -97,6 +104,7 @@ impl Probe<'_> {
         match self {
             Self::Packages => Operand::Whole,
             Self::Index(path)
+            | Self::IndexWithExecutionIntent { path, .. }
             | Self::Remove(path)
             | Self::Outline(path)
             | Self::OutlinePage { path, .. } => Operand::Path(path.to_owned()),
@@ -212,8 +220,12 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
     match request {
         Request::Shelf => shelf(engine),
         Request::Status => status(engine),
-        Request::Index(path) => intent(engine, path, true),
-        Request::Remove(path) => intent(engine, path, false),
+        Request::Index(path) => intent(engine, path, Some(CompileExecutionIntent::Interactive)),
+        Request::IndexWithExecutionIntent {
+            path,
+            execution_intent,
+        } => intent(engine, path, Some(*execution_intent)),
+        Request::Remove(path) => intent(engine, path, None),
         Request::Page(at) => page(engine, at).map(Box::new).map(Answer::Page),
         Request::Source(at) => source(engine, at),
         Request::Neighbourhood {
@@ -221,8 +233,20 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             incoming,
         } => neighbourhood(engine, coordinate, *incoming),
         Request::Search { text, limit } => {
-            let snapshot = snapshot(engine, Probe::Search { text, limit: *limit }, "search")?;
+            let reply = read(
+                engine,
+                Probe::Search {
+                    text,
+                    limit: *limit,
+                },
+            )?;
+            let (snapshot, semantic_search) = search_snapshot(reply, "search")?;
             let list = record_list(text, &snapshot);
+            let list = if let Some(status) = semantic_search {
+                list.with_semantic_search_status(status)
+            } else {
+                list
+            };
             let list = if list.is_empty() {
                 list.with_empty_reason(
                     "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword",
@@ -233,7 +257,14 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             Ok(Answer::Records(Box::new(list)))
         }
         Request::Resolve { text, limit } => {
-            let snapshot = snapshot(engine, Probe::Names { text, limit: *limit }, "resolve")?;
+            let snapshot = snapshot(
+                engine,
+                Probe::Names {
+                    text,
+                    limit: *limit,
+                },
+                "resolve",
+            )?;
             Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
         }
         Request::Outline(path) => outline(engine, path),
@@ -250,16 +281,21 @@ pub fn answer_paged(
 ) -> Result<Answer, Fault> {
     match request {
         Request::Search { text, limit } => {
-            let snapshot = snapshot_page(
+            let reply = read_page(
                 engine,
                 Probe::Search {
                     text,
                     limit: *limit,
                 },
                 continuation,
-                "search",
             )?;
+            let (snapshot, semantic_search) = search_snapshot(reply, "search")?;
             let list = record_list(text, &snapshot);
+            let list = if let Some(status) = semantic_search {
+                list.with_semantic_search_status(status)
+            } else {
+                list
+            };
             let list = if list.is_empty() {
                 list.with_empty_reason(
                     "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword",
@@ -319,18 +355,25 @@ fn status(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     Ok(Answer::Status(Box::new(Status::from_report(&report, None))))
 }
 
-fn intent(engine: &mut dyn Engine, path: &str, add: bool) -> Result<Answer, Fault> {
+fn intent(
+    engine: &mut dyn Engine,
+    path: &str,
+    add: Option<CompileExecutionIntent>,
+) -> Result<Answer, Fault> {
     let reply = read(
         engine,
-        if add {
-            Probe::Index(path)
-        } else {
-            Probe::Remove(path)
+        match add {
+            Some(CompileExecutionIntent::Interactive) => Probe::Index(path),
+            Some(execution_intent) => Probe::IndexWithExecutionIntent {
+                path,
+                execution_intent,
+            },
+            None => Probe::Remove(path),
         },
     )?;
     let (heading, accepted) = match reply.reply {
-        CommandReply::Added(id) => ("index", id),
-        CommandReply::Removed(id) => ("remove", id),
+        CommandReply::Added(id) if add.is_some() => ("index", id),
+        CommandReply::Removed(id) if add.is_none() => ("remove", id),
         _ => return Err(shape("index")),
     };
     Ok(Answer::Product(Box::new(accepted_view(
@@ -399,9 +442,7 @@ fn neighbourhood(engine: &mut dyn Engine, at: &str, incoming: bool) -> Result<An
     };
     let list = record_list(at, &snapshot);
     let list = if list.is_empty() {
-        list.with_empty_reason(
-            "no graph edges at this coordinate; the authority recorded none",
-        )
+        list.with_empty_reason("no graph edges at this coordinate; the authority recorded none")
     } else {
         list
     };
@@ -413,9 +454,8 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
     let CommandReply::Outline(tree) = reply.reply else {
         return Err(shape("outline"));
     };
-    let rows = outline_rows(engine, path).map_err(|error| {
-        Fault::from_client_error(&error, Operand::Path(path.to_owned()))
-    })?;
+    let rows = outline_rows(engine, path)
+        .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.to_owned())))?;
     Ok(Answer::Outline(Box::new(outline_tree(path, &tree, &rows))))
 }
 
@@ -426,14 +466,21 @@ fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, 
     Ok(Answer::Product(Box::new(product_view(&reply))))
 }
 
-fn snapshot(
-    engine: &mut dyn Engine,
-    probe: Probe<'_>,
-    what: &str,
-) -> Result<ViewSnapshot, Fault> {
+fn snapshot(engine: &mut dyn Engine, probe: Probe<'_>, what: &str) -> Result<ViewSnapshot, Fault> {
     let reply = read(engine, probe)?;
     match reply.reply {
         CommandReply::Search(snapshot) | CommandReply::Names(snapshot) => Ok(snapshot),
+        _ => Err(shape(what)),
+    }
+}
+
+fn search_snapshot(
+    reply: ReplyDto,
+    what: &str,
+) -> Result<(ViewSnapshot, Option<backend_library::SemanticSearchStatus>), Fault> {
+    let semantic_search = reply.semantic_search_status();
+    match reply.reply {
+        CommandReply::Search(snapshot) => Ok((snapshot, semantic_search)),
         _ => Err(shape(what)),
     }
 }
@@ -504,7 +551,10 @@ struct RelationRows {
 /// Fetches graph rows and keeps the compiler-selected typed edge sidecar
 /// attached to the same response revision.
 fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>) -> RelationRows {
-    match engine.probe(Probe::Related(coordinate)).map(|reply| reply.reply) {
+    match engine
+        .probe(Probe::Related(coordinate))
+        .map(|reply| reply.reply)
+    {
         Ok(CommandReply::Graph(snapshot)) => RelationRows {
             rows: snapshot.root.rows().to_vec(),
             graph_relations: snapshot.graph_relations,
@@ -518,14 +568,11 @@ fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>)
         }
         Err(error) => {
             notes.push(
-                Fault::from_client_error(
-                    &error,
-                    Operand::Coordinate(Coordinate::new(coordinate)),
-                )
-                .with_affordance(Affordance::UseCommand {
-                    name: "related",
-                    args: vec![coordinate.to_owned()].into_boxed_slice(),
-                }),
+                Fault::from_client_error(&error, Operand::Coordinate(Coordinate::new(coordinate)))
+                    .with_affordance(Affordance::UseCommand {
+                        name: "related",
+                        args: vec![coordinate.to_owned()].into_boxed_slice(),
+                    }),
             );
             RelationRows {
                 rows: Vec::new(),

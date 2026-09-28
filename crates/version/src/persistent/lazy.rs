@@ -6,7 +6,7 @@ use crate::{
     DEFAULT_CUT_POLICY, IdContext, MapChange, NodeError, PersistentTree, TreeChange, TreeError,
     UntrustedId, canonical_branch_from_commitments, canonical_empty, canonical_leaf,
 };
-use std::{borrow::Borrow, cell::Cell};
+use std::{borrow::Borrow, cell::Cell, mem::size_of};
 
 use super::TreeNodeLoader;
 
@@ -19,6 +19,11 @@ use helpers::{
 };
 pub use types::{LazyPreparedUpdate, LazyTreePage, LazyTreeWork, PersistedTreeRoot};
 
+const NODE_HEADER_AND_BODY_FRAME_BYTES: usize = 32;
+const LENGTH_FRAME_BYTES: usize = 8;
+const BRANCH_COMMITMENT_BYTES: usize = 40;
+const MAP_NODE_LINK_BYTES: usize = 4 * size_of::<usize>();
+
 /// Error while opening or path copying a lazily loaded canonical tree.
 #[derive(Debug, Eq, PartialEq)]
 pub enum LazyTreeError<E> {
@@ -30,6 +35,13 @@ pub enum LazyTreeError<E> {
     MissingKey,
     /// An insertion targeted a key already present in the tree.
     DuplicateKey,
+    /// The bounded update could not fit its conservative metadata envelope.
+    MetadataBudgetExceeded {
+        /// The conservative charge required before preparation.
+        required_bytes: usize,
+        /// The caller's maximum metadata budget.
+        max_bytes: usize,
+    },
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for LazyTreeError<E> {
@@ -39,10 +51,355 @@ impl<E: std::fmt::Display> std::fmt::Display for LazyTreeError<E> {
             Self::Node(error) => write!(f, "lazy tree node rejected: {error}"),
             Self::MissingKey => f.write_str("lazy tree change targeted an absent key"),
             Self::DuplicateKey => f.write_str("lazy tree insertion targeted an existing key"),
+            Self::MetadataBudgetExceeded {
+                required_bytes,
+                max_bytes,
+            } => write!(
+                f,
+                "lazy tree metadata budget exceeded: {required_bytes} bytes required, {max_bytes} allowed"
+            ),
         }
     }
 }
 impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for LazyTreeError<E> {}
+
+/// Caller-verified encoded-width and canonical fanout bounds for one relation.
+///
+/// Bounded preparation re-encodes every edit key/value and rejects values
+/// outside this shape before path-copy work begins. The store composer uses
+/// the fixed-width manifest relation shape; general `LazyTree` callers can
+/// continue using the existing unbounded API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LazyTreeMetadataShape {
+    /// Maximum canonical encoded key bytes.
+    pub max_key_bytes: usize,
+    /// Maximum canonical encoded value bytes.
+    pub max_value_bytes: usize,
+    /// Minimum entries in a cut before an anchored boundary may be selected.
+    pub min_entries_per_node: usize,
+    /// Hard maximum entries in a canonical leaf or branch.
+    pub max_entries_per_node: usize,
+    /// Maximum adjacent sibling nodes that can be included in one spill region.
+    pub max_spill_nodes_per_level: usize,
+    /// Conservative maximum number of levels in the target tree.
+    pub max_tree_levels: usize,
+}
+
+impl LazyTreeMetadataShape {
+    /// Creates an explicit encoded-width and canonical-tree shape bound.
+    #[must_use]
+    pub const fn new(
+        max_key_bytes: usize,
+        max_value_bytes: usize,
+        min_entries_per_node: usize,
+        max_entries_per_node: usize,
+        max_spill_nodes_per_level: usize,
+        max_tree_levels: usize,
+    ) -> Self {
+        Self {
+            max_key_bytes,
+            max_value_bytes,
+            min_entries_per_node,
+            max_entries_per_node,
+            max_spill_nodes_per_level,
+            max_tree_levels,
+        }
+    }
+
+    fn valid(self) -> bool {
+        let valid_counts = self.min_entries_per_node > 0
+            && self.min_entries_per_node <= self.max_entries_per_node
+            && self.max_entries_per_node > 0
+            && self.max_tree_levels > 0
+            && self.max_node_bytes().is_some_and(|bytes| {
+                bytes <= DEFAULT_CUT_POLICY.max_encoded_bytes()
+                    && self.max_entries_per_node <= usize::from(DEFAULT_CUT_POLICY.max_entries)
+            });
+        let Some(leaf_min) = entries_before_anchor_limit(
+            self.min_entries_per_node,
+            LENGTH_FRAME_BYTES
+                .checked_add(self.max_key_bytes)
+                .and_then(|bytes| bytes.checked_add(LENGTH_FRAME_BYTES))
+                .and_then(|bytes| bytes.checked_add(self.max_value_bytes))
+                .unwrap_or(usize::MAX),
+        ) else {
+            return false;
+        };
+        let Some(branch_min) = entries_before_anchor_limit(
+            self.min_entries_per_node,
+            LENGTH_FRAME_BYTES
+                .checked_add(self.max_key_bytes)
+                .and_then(|bytes| bytes.checked_add(BRANCH_COMMITMENT_BYTES))
+                .and_then(|bytes| bytes.checked_add(size_of::<u64>()))
+                .unwrap_or(usize::MAX),
+        ) else {
+            return false;
+        };
+        let required_spill = self
+            .max_entries_per_node
+            .checked_div(leaf_min.min(branch_min))
+            .and_then(|count| count.checked_add(2));
+        valid_counts
+            && required_spill.is_some_and(|required| self.max_spill_nodes_per_level >= required)
+    }
+
+    fn max_node_bytes(self) -> Option<usize> {
+        let leaf_entry = LENGTH_FRAME_BYTES
+            .checked_add(self.max_key_bytes)?
+            .checked_add(LENGTH_FRAME_BYTES)?
+            .checked_add(self.max_value_bytes)?;
+        let branch_entry = LENGTH_FRAME_BYTES
+            .checked_add(self.max_key_bytes)?
+            .checked_add(BRANCH_COMMITMENT_BYTES)?
+            .checked_add(size_of::<u64>())?;
+        let entry = leaf_entry.max(branch_entry);
+        let by_entry_count = NODE_HEADER_AND_BODY_FRAME_BYTES
+            .checked_add(self.max_entries_per_node.checked_mul(entry)?)?;
+        // The cut policy has an independent hard encoded-byte ceiling. A
+        // shape may declare the policy's full entry-count maximum even when
+        // that many maximum-width branch entries cannot fit in one node; the
+        // actual encoded node is still bounded by this canonical ABI ceiling.
+        Some(by_entry_count.min(DEFAULT_CUT_POLICY.max_encoded_bytes()))
+    }
+
+    fn minimum_fanout(self) -> Option<usize> {
+        let leaf = LENGTH_FRAME_BYTES
+            .checked_add(self.max_key_bytes)?
+            .checked_add(LENGTH_FRAME_BYTES)?
+            .checked_add(self.max_value_bytes)?;
+        let branch = LENGTH_FRAME_BYTES
+            .checked_add(self.max_key_bytes)?
+            .checked_add(BRANCH_COMMITMENT_BYTES)?
+            .checked_add(size_of::<u64>())?;
+        Some(
+            entries_before_anchor_limit(self.min_entries_per_node, leaf)?.min(
+                entries_before_anchor_limit(self.min_entries_per_node, branch)?,
+            ),
+        )
+    }
+
+    fn update_metadata_bytes<R: CanonicalRelation>(self, change_count: usize) -> Option<usize> {
+        let node_bytes = self.max_node_bytes()?;
+        // Charge the caller's edit structs plus the before/after records that
+        // can be returned. Accumulated path copies are measured from their
+        // actual encoded sizes before each node is retained; charging every
+        // possible maximum-sized node for every edit rejects small realistic
+        // updates by several orders of magnitude.
+        let per_change = size_of::<TreeChange<R>>()
+            .checked_add(size_of::<MapChange<R>>())?
+            .checked_add(size_of::<R::Key>())?
+            .checked_mul(2)?
+            .checked_add(size_of::<R::Value>().checked_mul(2)?)?
+            .checked_add(self.max_key_bytes.checked_mul(2)?)?
+            .checked_add(self.max_value_bytes.checked_mul(3)?)?;
+        let changes = change_count.checked_mul(per_change)?;
+
+        // A single edit can spill across several sibling nodes at any tree
+        // level. Bound recursive working sets by the declared spill factor,
+        // canonical fanout and encoded widths. The prior-step frontier and
+        // overlay are added dynamically as each step is admitted.
+        let spill_entries = self
+            .max_entries_per_node
+            .checked_mul(self.max_spill_nodes_per_level)?;
+        let row_scratch = size_of::<R::Key>()
+            .checked_mul(2)?
+            .checked_add(size_of::<R::Value>())?
+            .checked_add(self.max_key_bytes.checked_mul(2)?)?
+            .checked_add(self.max_value_bytes)?;
+        let branch_scratch = size_of::<CommittedChild<R>>()
+            .checked_add(size_of::<R::Key>())?
+            .checked_add(self.max_key_bytes)?;
+        let scratch_per_level = spill_entries
+            .checked_mul(row_scratch.max(branch_scratch))?
+            .checked_add(self.max_spill_nodes_per_level.checked_mul(node_bytes)?)?
+            .checked_add(node_bytes)?;
+        let scratch = self.max_tree_levels.checked_mul(scratch_per_level)?;
+        changes.checked_add(scratch)
+    }
+
+    fn bulk_metadata_bytes<R: CanonicalRelation>(self, member_count: usize) -> Option<usize> {
+        let node_bytes = self.max_node_bytes()?;
+        let key_and_value = size_of::<R::Key>()
+            .checked_add(size_of::<R::Value>())?
+            .checked_add(self.max_key_bytes)?
+            .checked_add(self.max_value_bytes)?;
+        let leaf_entry = LENGTH_FRAME_BYTES
+            .checked_add(self.max_key_bytes)?
+            .checked_add(LENGTH_FRAME_BYTES)?
+            .checked_add(self.max_value_bytes)?;
+        let branch_entry = LENGTH_FRAME_BYTES
+            .checked_add(self.max_key_bytes)?
+            .checked_add(BRANCH_COMMITMENT_BYTES)?
+            .checked_add(size_of::<u64>())?;
+        let leaf_min = entries_before_anchor_limit(self.min_entries_per_node, leaf_entry)?;
+        let branch_min = entries_before_anchor_limit(self.min_entries_per_node, branch_entry)?;
+        let (node_count, encoded_bytes, branch_entries, levels) =
+            bulk_tree_bound(member_count, leaf_min, branch_min, leaf_entry, branch_entry)?;
+        if levels > self.max_tree_levels {
+            return None;
+        }
+
+        let rows = member_count.checked_mul(key_and_value)?;
+        let map_changes = member_count.checked_mul(
+            size_of::<MapChange<R>>()
+                .checked_add(self.max_key_bytes)?
+                .checked_add(self.max_value_bytes)?,
+        )?;
+        let nodes = node_count
+            .checked_mul(size_of::<CanonicalNode<R>>().checked_mul(2)?)?
+            .checked_add(encoded_bytes.checked_mul(2)?)?
+            .checked_add(
+                branch_entries.checked_mul(
+                    size_of::<CommittedChild<R>>()
+                        .checked_add(size_of::<R::Key>())?
+                        .checked_add(self.max_key_bytes)?,
+                )?,
+            )?;
+        let scratch = self.max_tree_levels.checked_mul(
+            self.max_entries_per_node
+                .checked_mul(key_and_value)?
+                .checked_add(node_bytes)?,
+        )?;
+        rows.checked_add(map_changes)?
+            .checked_add(nodes)?
+            .checked_add(scratch)
+    }
+}
+
+/// Conservative memory envelope for one bounded multi-key lazy update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LazyTreeUpdateBudget {
+    /// Maximum number of changes admitted by this update.
+    pub max_changes: usize,
+    /// Maximum conservative metadata charge for the whole update.
+    pub max_metadata_bytes: usize,
+    /// Relation-specific encoded width and tree-shape limits.
+    pub shape: LazyTreeMetadataShape,
+}
+
+impl LazyTreeUpdateBudget {
+    /// Creates one explicit bounded lazy-update policy.
+    #[must_use]
+    pub const fn new(
+        max_changes: usize,
+        max_metadata_bytes: usize,
+        shape: LazyTreeMetadataShape,
+    ) -> Self {
+        Self {
+            max_changes,
+            max_metadata_bytes,
+            shape,
+        }
+    }
+
+    /// Returns the conservative path-copy charge for a relation and change count.
+    #[must_use]
+    pub fn update_charge<R: CanonicalRelation>(self, change_count: usize) -> Option<usize> {
+        self.shape.update_metadata_bytes::<R>(change_count)
+    }
+
+    /// Returns the conservative genesis bulk-build charge for a relation and member count.
+    #[must_use]
+    pub fn bulk_charge<R: CanonicalRelation>(self, member_count: usize) -> Option<usize> {
+        self.shape.bulk_metadata_bytes::<R>(member_count)
+    }
+}
+
+fn entries_before_anchor_limit(
+    configured_minimum: usize,
+    encoded_entry_bytes: usize,
+) -> Option<usize> {
+    // The cut policy may select byte anchors once one quarter of the node's
+    // maximum body is populated, even before its entry-count minimum.
+    let minimum_body = DEFAULT_CUT_POLICY
+        .max_encoded_bytes()
+        .checked_div(4)?
+        .checked_sub(NODE_HEADER_AND_BODY_FRAME_BYTES)?;
+    let available = minimum_body;
+    let byte_limited = available.checked_div(encoded_entry_bytes)?;
+    Some(configured_minimum.min(byte_limited.max(1)))
+}
+
+fn tree_height(member_count: usize, minimum_fanout: usize) -> Option<usize> {
+    if minimum_fanout == 0 {
+        return None;
+    }
+    let mut nodes = member_count.max(1).div_ceil(minimum_fanout);
+    let mut height = 1usize;
+    while nodes > 1 {
+        nodes = nodes.div_ceil(minimum_fanout);
+        height = height.checked_add(1)?;
+    }
+    Some(height)
+}
+
+fn bulk_tree_bound(
+    member_count: usize,
+    leaf_minimum: usize,
+    branch_minimum: usize,
+    leaf_entry_bytes: usize,
+    branch_entry_bytes: usize,
+) -> Option<(usize, usize, usize, usize)> {
+    if member_count == 0 {
+        return Some((1, NODE_HEADER_AND_BODY_FRAME_BYTES, 0, 1));
+    }
+    let mut level_nodes = member_count.div_ceil(leaf_minimum);
+    let mut node_count = level_nodes;
+    let mut encoded_bytes = member_count
+        .checked_mul(leaf_entry_bytes)?
+        .checked_add(level_nodes.checked_mul(NODE_HEADER_AND_BODY_FRAME_BYTES)?)?;
+    let mut branch_entries = 0usize;
+    let mut levels = 1usize;
+    while level_nodes > 1 {
+        let parent_nodes = level_nodes
+            .div_ceil(branch_minimum)
+            .min(level_nodes.saturating_sub(1));
+        branch_entries = branch_entries.checked_add(level_nodes)?;
+        encoded_bytes = encoded_bytes
+            .checked_add(level_nodes.checked_mul(branch_entry_bytes)?)?
+            .checked_add(parent_nodes.checked_mul(NODE_HEADER_AND_BODY_FRAME_BYTES)?)?;
+        node_count = node_count.checked_add(parent_nodes)?;
+        level_nodes = parent_nodes;
+        levels = levels.checked_add(1)?;
+    }
+    Some((node_count, encoded_bytes, branch_entries, levels))
+}
+
+fn validate_node_shape<R: CanonicalRelation>(
+    node: &CheckedCanonicalRoot<R>,
+    shape: LazyTreeMetadataShape,
+) -> Result<(), NodeError> {
+    if usize::from(node.node().level()).saturating_add(1) > shape.max_tree_levels {
+        return Err(NodeError::OversizedNode);
+    }
+    if node.node().as_bytes().len() > shape.max_node_bytes().ok_or(NodeError::OversizedNode)? {
+        return Err(NodeError::OversizedNode);
+    }
+    let mut encoded = Vec::new();
+    if node.node().level() == 0 {
+        for (key, value) in node.leaf_entries()? {
+            encoded.clear();
+            R::encode_key(&key, &mut encoded);
+            if encoded.len() > shape.max_key_bytes {
+                return Err(NodeError::OversizedNode);
+            }
+            encoded.clear();
+            R::encode_value(&value, &mut encoded);
+            if encoded.len() > shape.max_value_bytes {
+                return Err(NodeError::OversizedNode);
+            }
+        }
+    } else {
+        for child in node.child_summaries()? {
+            encoded.clear();
+            R::encode_key(&child.first_key, &mut encoded);
+            if encoded.len() > shape.max_key_bytes {
+                return Err(NodeError::OversizedNode);
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Where a lazy page begins.
 #[derive(Clone, Copy)]
@@ -63,11 +420,43 @@ struct RewriteResult<R: CanonicalRelation> {
     change: MapChange<R>,
 }
 
+struct BoundedUpdateCharge {
+    budget_bytes: usize,
+    base_bytes: usize,
+    peak_bytes: usize,
+    retained_frontier_bytes: usize,
+    retained_overlay_bytes: usize,
+    retained_root_bytes: usize,
+}
+
+fn step_metadata_bytes<R: CanonicalRelation>(
+    nodes: &[CanonicalNode<R>],
+) -> Option<(usize, usize, usize)> {
+    let mut in_flight = size_of::<CanonicalNode<R>>().checked_mul(nodes.len())?;
+    let mut frontier = in_flight.checked_mul(2)?;
+    let mut overlay = size_of::<CheckedCanonicalRoot<R>>()
+        .checked_add(size_of::<[u8; crate::ID_BYTES]>())?
+        .checked_add(MAP_NODE_LINK_BYTES)?
+        .checked_mul(nodes.len())?;
+    for node in nodes {
+        let capacity_bound = node.as_bytes().len().checked_mul(2)?;
+        in_flight = in_flight.checked_add(capacity_bound)?;
+        frontier = frontier.checked_add(capacity_bound)?;
+        overlay = overlay.checked_add(capacity_bound)?;
+    }
+    Some((in_flight, frontier, overlay))
+}
+
+fn root_metadata_bytes<R: CanonicalRelation>(root: &CheckedCanonicalRoot<R>) -> Option<usize> {
+    size_of::<CheckedCanonicalRoot<R>>().checked_add(root.node().as_bytes().len().checked_mul(2)?)
+}
+
 /// A lazily opened canonical root with a store supplied node loader.
 pub struct LazyTree<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> {
     root: CheckedCanonicalRoot<R>,
     loader: &'a L,
     loaded_nodes: Cell<usize>,
+    bounded_shape: Cell<Option<LazyTreeMetadataShape>>,
 }
 impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
     /// Opens a root through the loader after preserving its typed claim.
@@ -91,6 +480,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             root,
             loader,
             loaded_nodes: Cell::new(1),
+            bounded_shape: Cell::new(None),
         })
     }
 
@@ -104,6 +494,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             root: root.evidence,
             loader,
             loaded_nodes: Cell::new(0),
+            bounded_shape: Cell::new(None),
         }
     }
 
@@ -346,6 +737,121 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         self.prepare_change(key, None)
     }
 
+    /// Preflights and prepares an ordered batch under a conservative typed
+    /// metadata envelope. The existing [`Self::prepare_update`] remains
+    /// unbounded for callers whose memory policy is managed elsewhere.
+    ///
+    /// Every edit key/value is encoded before path-copy work and checked
+    /// against `budget.shape`. The preflight covers the edit records and a
+    /// conservative single-step spill/scratch envelope. The cumulative
+    /// frontier, overlay and in-flight copies are then charged using their
+    /// encoded node sizes before any step is retained. Genesis bulk building
+    /// is preflighted across all rows and branch levels before construction.
+    ///
+    /// # Errors
+    /// Returns [`LazyTreeError::MetadataBudgetExceeded`] when the preflight
+    /// charge exceeds the budget or a loaded/output node violates its declared
+    /// relation shape. Other load and canonical errors are forwarded.
+    pub fn prepare_update_bounded(
+        &self,
+        changes: &[TreeChange<R>],
+        budget: LazyTreeUpdateBudget,
+    ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
+        if changes
+            .windows(2)
+            .any(|window| window[0].key >= window[1].key)
+        {
+            return Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate));
+        }
+        let root_levels = usize::from(self.root.node().level()).saturating_add(1);
+        let shape = budget.shape;
+        if shape.valid() {
+            validate_node_shape(&self.root, shape).map_err(LazyTreeError::Node)?;
+        }
+        let additions = changes
+            .iter()
+            .filter(|change| change.after.is_some())
+            .count();
+        let target_rows = usize::try_from(self.root.row_count())
+            .ok()
+            .and_then(|rows| rows.checked_add(additions));
+        let required_levels = shape
+            .minimum_fanout()
+            .and_then(|fanout| tree_height(target_rows?, fanout));
+        let charge = if changes.len() > budget.max_changes
+            || !shape.valid()
+            || shape.max_tree_levels < root_levels
+            || required_levels.is_none_or(|levels| shape.max_tree_levels < levels)
+        {
+            None
+        } else {
+            for change in changes {
+                let mut encoded = Vec::new();
+                R::encode_key(&change.key, &mut encoded);
+                if encoded.len() > shape.max_key_bytes {
+                    return Err(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: encoded.len(),
+                        max_bytes: shape.max_key_bytes,
+                    });
+                }
+                encoded.clear();
+                if let Some(value) = &change.after {
+                    R::encode_value(value, &mut encoded);
+                }
+                if encoded.len() > shape.max_value_bytes {
+                    return Err(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: encoded.len(),
+                        max_bytes: shape.max_value_bytes,
+                    });
+                }
+            }
+            if self.root.row_count() == 0 && changes.iter().all(|change| change.after.is_some()) {
+                shape.bulk_metadata_bytes::<R>(changes.len())
+            } else {
+                shape.update_metadata_bytes::<R>(changes.len())
+            }
+        }
+        .ok_or(LazyTreeError::MetadataBudgetExceeded {
+            required_bytes: usize::MAX,
+            max_bytes: budget.max_metadata_bytes,
+        })?;
+        if charge > budget.max_metadata_bytes {
+            return Err(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: charge,
+                max_bytes: budget.max_metadata_bytes,
+            });
+        }
+        let retained_root_bytes =
+            root_metadata_bytes(&self.root).ok_or(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: usize::MAX,
+                max_bytes: budget.max_metadata_bytes,
+            })?;
+        let initial_peak = charge.checked_add(retained_root_bytes).ok_or(
+            LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: usize::MAX,
+                max_bytes: budget.max_metadata_bytes,
+            },
+        )?;
+        if initial_peak > budget.max_metadata_bytes {
+            return Err(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: initial_peak,
+                max_bytes: budget.max_metadata_bytes,
+            });
+        }
+        let previous_shape = self.bounded_shape.replace(Some(shape));
+        let bounded = BoundedUpdateCharge {
+            budget_bytes: budget.max_metadata_bytes,
+            base_bytes: charge,
+            peak_bytes: initial_peak,
+            retained_frontier_bytes: 0,
+            retained_overlay_bytes: 0,
+            retained_root_bytes,
+        };
+        let prepared = self.prepare_update_inner(changes, Some(bounded));
+        self.bounded_shape.set(previous_shape);
+        prepared
+    }
+
     /// Prepares an ordered set of independent key changes against one exact
     /// persisted root.
     ///
@@ -364,6 +870,14 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         &self,
         changes: &[TreeChange<R>],
     ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
+        self.prepare_update_inner(changes, None)
+    }
+
+    fn prepare_update_inner(
+        &self,
+        changes: &[TreeChange<R>],
+        mut bounded: Option<BoundedUpdateCharge>,
+    ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
         if changes
             .windows(2)
             .any(|window| window[0].key >= window[1].key)
@@ -377,7 +891,20 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         // removing O(n log n) hashing and admission, this emits every immutable
         // node exactly once in child-to-root storage order.
         if self.root.row_count() == 0 && changes.iter().all(|change| change.after.is_some()) {
-            return self.prepare_empty_bulk(changes);
+            let mut prepared = self.prepare_empty_bulk(changes)?;
+            if let Some(bounded) = &mut bounded {
+                // The bulk charge already includes the input rows, builder
+                // levels, node closure and cloned output frontier.
+                bounded.peak_bytes = bounded.base_bytes;
+                if bounded.peak_bytes > bounded.budget_bytes {
+                    return Err(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: bounded.peak_bytes,
+                        max_bytes: bounded.budget_bytes,
+                    });
+                }
+                prepared.work.peak_metadata_bytes = bounded.peak_bytes;
+            }
+            return Ok(prepared);
         }
 
         let mut overlay = OverlayLoader::<R, L>::new(self.loader);
@@ -388,6 +915,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
 
         for change in changes {
             let tree = LazyTree::from_admitted(&overlay, root);
+            tree.bounded_shape.set(self.bounded_shape.get());
             let before = tree.lookup(&change.key)?;
             if before == change.after {
                 work.loaded_nodes = work.loaded_nodes.saturating_add(tree.loaded_nodes.get());
@@ -408,6 +936,76 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             work.split_nodes = work.split_nodes.saturating_add(step.split_nodes);
             work.removed_entries = work.removed_entries.saturating_add(step.removed_entries);
             work.emitted_bytes = work.emitted_bytes.saturating_add(step.emitted_bytes);
+            if let Some(bounded) = &mut bounded {
+                let max_node_bytes = self
+                    .bounded_shape
+                    .get()
+                    .and_then(LazyTreeMetadataShape::max_node_bytes)
+                    .ok_or(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: usize::MAX,
+                        max_bytes: bounded.budget_bytes,
+                    })?;
+                if update
+                    .changed_nodes()
+                    .iter()
+                    .any(|node| node.as_bytes().len() > max_node_bytes)
+                {
+                    return Err(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: usize::MAX,
+                        max_bytes: bounded.budget_bytes,
+                    });
+                }
+                let (step_nodes, frontier_copy, overlay_copy) = step_metadata_bytes::<R>(
+                    update.changed_nodes(),
+                )
+                .ok_or(LazyTreeError::MetadataBudgetExceeded {
+                    required_bytes: usize::MAX,
+                    max_bytes: bounded.budget_bytes,
+                })?;
+                let next_frontier = bounded
+                    .retained_frontier_bytes
+                    .checked_add(frontier_copy)
+                    .ok_or(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: usize::MAX,
+                        max_bytes: bounded.budget_bytes,
+                    })?;
+                let next_overlay = bounded
+                    .retained_overlay_bytes
+                    .checked_add(overlay_copy)
+                    .ok_or(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: usize::MAX,
+                        max_bytes: bounded.budget_bytes,
+                    })?;
+                let root_copy = root_metadata_bytes(update.target()).ok_or(
+                    LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: usize::MAX,
+                        max_bytes: bounded.budget_bytes,
+                    },
+                )?;
+                let required = bounded
+                    .base_bytes
+                    .checked_add(bounded.retained_frontier_bytes)
+                    .and_then(|bytes| bytes.checked_add(bounded.retained_overlay_bytes))
+                    .and_then(|bytes| bytes.checked_add(bounded.retained_root_bytes))
+                    .and_then(|bytes| bytes.checked_add(step_nodes))
+                    .and_then(|bytes| bytes.checked_add(frontier_copy))
+                    .and_then(|bytes| bytes.checked_add(overlay_copy))
+                    .and_then(|bytes| bytes.checked_add(root_copy.checked_mul(2)?))
+                    .ok_or(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: usize::MAX,
+                        max_bytes: bounded.budget_bytes,
+                    })?;
+                if required > bounded.budget_bytes {
+                    return Err(LazyTreeError::MetadataBudgetExceeded {
+                        required_bytes: required,
+                        max_bytes: bounded.budget_bytes,
+                    });
+                }
+                bounded.peak_bytes = bounded.peak_bytes.max(required);
+                bounded.retained_frontier_bytes = next_frontier;
+                bounded.retained_overlay_bytes = next_overlay;
+                bounded.retained_root_bytes = root_copy;
+            }
             effective.extend(update.changes.iter().cloned());
             for node in update.changed_nodes() {
                 overlay.insert(node)?;
@@ -416,6 +1014,10 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             root = update.target_root();
         }
 
+        let mut work = work;
+        if let Some(bounded) = bounded {
+            work.peak_metadata_bytes = bounded.peak_bytes;
+        }
         Ok(LazyPreparedUpdate {
             base: self.root.root(),
             target: root.evidence,
@@ -465,6 +1067,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 split_nodes: 0,
                 removed_entries: 0,
                 emitted_bytes: tree_work.encoded_bytes,
+                peak_metadata_bytes: 0,
             },
             changes,
         })
@@ -482,6 +1085,9 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             .set(self.loaded_nodes.get().saturating_add(1));
         if node.root().as_bytes() != claim.as_bytes() {
             return Err(LazyTreeError::Node(NodeError::AnchorMismatch));
+        }
+        if let Some(shape) = self.bounded_shape.get() {
+            validate_node_shape(&node, shape).map_err(LazyTreeError::Node)?;
         }
         Ok(node)
     }
@@ -549,6 +1155,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             split_nodes: result.split_nodes,
             removed_entries: result.removed_entries,
             emitted_bytes,
+            peak_metadata_bytes: 0,
         };
         Ok(LazyPreparedUpdate {
             base: self.root.root(),
@@ -883,5 +1490,21 @@ fn map_eager_tree_error(error: TreeError) -> NodeError {
         TreeError::UnsortedOrDuplicate => NodeError::UnsortedOrDuplicate,
         TreeError::Canonical(error) => error,
         TreeError::InvalidRoot | TreeError::Overflow => NodeError::InvalidBranch,
+    }
+}
+
+#[cfg(test)]
+mod metadata_shape_tests {
+    use super::LazyTreeMetadataShape;
+    use crate::DEFAULT_CUT_POLICY;
+
+    #[test]
+    fn full_entry_count_shape_uses_the_canonical_encoded_byte_ceiling() {
+        let shape = LazyTreeMetadataShape::new(32, 0, 64, 1024, 18, 4);
+        assert!(shape.valid());
+        assert_eq!(
+            shape.max_node_bytes(),
+            Some(DEFAULT_CUT_POLICY.max_encoded_bytes())
+        );
     }
 }

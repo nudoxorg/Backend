@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::mem::size_of;
 
-use blake3::Hasher;
 use crate::workflow::{WORKFLOW_RECORD_BYTES, WorkflowRecord};
+use blake3::Hasher;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
     byteorder::{LittleEndian, U16, U64},

@@ -2,11 +2,11 @@ use super::super::{BuiltinModelError, IndexedSources};
 use super::structural::resolve_specifier_paths;
 use super::{compiled_source_path, semantic_symbol};
 use backend_engine::PackageKey;
+use backend_engine::application::DocumentationSession;
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalId, ExternalTarget, ForeignTargetOrigin, ItemKind,
     SemanticCoreReader, SemanticImageView, SemanticReader,
 };
-use backend_engine::application::DocumentationSession;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn semantic_callable(kind: ItemKind) -> bool {
@@ -28,11 +28,7 @@ pub(crate) fn semantic_mentionable(kind: ItemKind) -> bool {
 pub(crate) fn semantic_qualified_mentionable(kind: ItemKind) -> bool {
     matches!(
         kind,
-        ItemKind::Record
-            | ItemKind::Enum
-            | ItemKind::Trait
-            | ItemKind::Alias
-            | ItemKind::Module
+        ItemKind::Record | ItemKind::Enum | ItemKind::Trait | ItemKind::Alias | ItemKind::Module
     )
 }
 
@@ -64,8 +60,7 @@ impl ProjectCallableIndex {
         let mut by_owner_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
         let mut mention_by_path_name_kind =
             BTreeMap::<(String, String, ItemKind), Vec<DeclarationIdentity>>::new();
-        let mut field_by_owner_name =
-            BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
+        let mut field_by_owner_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
         let mut value_by_owner_name_kind =
             BTreeMap::<(String, String, ItemKind), Vec<DeclarationIdentity>>::new();
         for image in images {
@@ -189,9 +184,9 @@ impl ProjectCallableIndex {
     ) -> Option<DeclarationIdentity> {
         let mut matches = Vec::new();
         for path in resolved_paths {
-            if let Some(identities) = self
-                .mention_by_path_name_kind
-                .get(&(path.clone(), display.to_owned(), kind))
+            if let Some(identities) =
+                self.mention_by_path_name_kind
+                    .get(&(path.clone(), display.to_owned(), kind))
             {
                 matches.extend(identities);
             }
@@ -222,9 +217,9 @@ impl ProjectCallableIndex {
                 ItemKind::Alias,
                 ItemKind::Module,
             ] {
-                if let Some(identities) = self
-                    .mention_by_path_name_kind
-                    .get(&(path.clone(), display.to_owned(), kind))
+                if let Some(identities) =
+                    self.mention_by_path_name_kind
+                        .get(&(path.clone(), display.to_owned(), kind))
                 {
                     matches.extend(identities);
                 }
@@ -265,7 +260,11 @@ impl ProjectCallableIndex {
         }
     }
 
-    pub(crate) fn resolve_owner(&self, namespace: &str, display: &str) -> Option<DeclarationIdentity> {
+    pub(crate) fn resolve_owner(
+        &self,
+        namespace: &str,
+        display: &str,
+    ) -> Option<DeclarationIdentity> {
         if namespace.is_empty() || display.is_empty() {
             return None;
         }
@@ -337,11 +336,7 @@ impl ProjectCallableIndex {
         }
     }
 
-    fn owner_matches(
-        &self,
-        namespace: &str,
-        display: &str,
-    ) -> Option<Vec<DeclarationIdentity>> {
+    fn owner_matches(&self, namespace: &str, display: &str) -> Option<Vec<DeclarationIdentity>> {
         let mut matches = self
             .by_owner_name
             .get(&(namespace.to_owned(), display.to_owned()))?
@@ -402,7 +397,9 @@ pub(crate) fn owner_chain_keys(
     let mut seen = BTreeSet::new();
     let mut current = session
         .entity(function)
-        .map_err(|error| BuiltinModelError(format!("read semantic graph callable parent: {error}")))?
+        .map_err(|error| {
+            BuiltinModelError(format!("read semantic graph callable parent: {error}"))
+        })?
         .entity
         .parent;
     let mut steps = 0usize;
@@ -413,16 +410,12 @@ pub(crate) fn owner_chain_keys(
         if !seen.insert(parent_id) {
             return Ok(None);
         }
-        let parent = session
-            .entity(parent_id)
-            .map_err(|error| {
-                BuiltinModelError(format!("read semantic graph callable ancestor: {error}"))
-            })?;
-        let name_atom = image
-            .atom(parent.entity.name)
-            .ok_or_else(|| {
-                BuiltinModelError("semantic graph ancestor name atom is missing".to_owned())
-            })?;
+        let parent = session.entity(parent_id).map_err(|error| {
+            BuiltinModelError(format!("read semantic graph callable ancestor: {error}"))
+        })?;
+        let name_atom = image.atom(parent.entity.name).ok_or_else(|| {
+            BuiltinModelError("semantic graph ancestor name atom is missing".to_owned())
+        })?;
         let name = std::str::from_utf8(name_atom).map_err(|_| {
             BuiltinModelError("semantic graph ancestor name is not UTF-8".to_owned())
         })?;
@@ -473,7 +466,10 @@ pub(crate) fn strip_type_arguments(namespace: &str) -> Option<String> {
     Some(out)
 }
 
-pub(crate) fn foreign_dotted_module_specifier<'a>(path: &'a str, display: &'a str) -> Option<&'a str> {
+pub(crate) fn foreign_dotted_module_specifier<'a>(
+    path: &'a str,
+    display: &'a str,
+) -> Option<&'a str> {
     if path == display {
         return None;
     }
@@ -517,12 +513,10 @@ pub(crate) fn foreign_package_call_retarget(
     let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
     })?;
-    let path = std::str::from_utf8(path_atom).map_err(|_| {
-        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let path = std::str::from_utf8(path_atom)
+        .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     Ok(callable_index.resolve(&resolved_paths, display))
@@ -545,12 +539,10 @@ pub(crate) fn foreign_namespace_call_retarget(
     let display_atom = image
         .atom(foreign.display)
         .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
-    let namespace = std::str::from_utf8(namespace_atom).map_err(|_| {
-        BuiltinModelError("semantic graph namespace is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let namespace = std::str::from_utf8(namespace_atom)
+        .map_err(|_| BuiltinModelError("semantic graph namespace is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     Ok(callable_index.resolve_owner(namespace, display))
 }
 
@@ -574,12 +566,10 @@ pub(crate) fn foreign_namespace_field_retarget(
     let display_atom = image
         .atom(foreign.display)
         .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
-    let namespace = std::str::from_utf8(namespace_atom).map_err(|_| {
-        BuiltinModelError("semantic graph namespace is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let namespace = std::str::from_utf8(namespace_atom)
+        .map_err(|_| BuiltinModelError("semantic graph namespace is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     Ok(index.resolve_field_owner(namespace, display))
 }
 
@@ -635,12 +625,10 @@ pub(crate) fn foreign_package_mention_retarget(
     let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
     })?;
-    let path = std::str::from_utf8(path_atom).map_err(|_| {
-        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let path = std::str::from_utf8(path_atom)
+        .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     Ok(index.resolve_mention(&resolved_paths, display, kind))
@@ -674,12 +662,10 @@ pub(crate) fn foreign_package_import_mention_retarget(
     let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
     })?;
-    let path = std::str::from_utf8(path_atom).map_err(|_| {
-        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let path = std::str::from_utf8(path_atom)
+        .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     Ok(index.resolve_import_mention(&resolved_paths, display))
@@ -708,9 +694,8 @@ pub(crate) fn foreign_qualified_type_mention_retarget(
     let display_atom = image
         .atom(foreign.display)
         .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     if display.is_empty() {
         return Ok(None);
     }
@@ -728,26 +713,17 @@ pub(crate) fn join_project_mention(
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
     if !matches!(
         link_kind,
-        backend_semantic::ir::LinkKind::TypeReference
-            | backend_semantic::ir::LinkKind::Imports
+        backend_semantic::ir::LinkKind::TypeReference | backend_semantic::ir::LinkKind::Imports
     ) {
         return Ok(None);
     }
-    let identity = if let Some(identity) = foreign_package_mention_retarget(
-        image,
-        external,
-        caller_path,
-        project_paths,
-        index,
-    )? {
+    let identity = if let Some(identity) =
+        foreign_package_mention_retarget(image, external, caller_path, project_paths, index)?
+    {
         Some(identity)
-    } else if let Some(identity) = foreign_package_import_mention_retarget(
-        image,
-        external,
-        caller_path,
-        project_paths,
-        index,
-    )? {
+    } else if let Some(identity) =
+        foreign_package_import_mention_retarget(image, external, caller_path, project_paths, index)?
+    {
         Some(identity)
     } else if matches!(link_kind, backend_semantic::ir::LinkKind::TypeReference) {
         foreign_qualified_type_mention_retarget(image, external, index)?
@@ -785,12 +761,10 @@ pub(crate) fn foreign_package_field_static_constant_retarget(
     let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
     })?;
-    let path = std::str::from_utf8(path_atom).map_err(|_| {
-        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let path = std::str::from_utf8(path_atom)
+        .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     let static_match = index.resolve_mention(&resolved_paths, display, ItemKind::Static);
@@ -829,12 +803,10 @@ pub(crate) fn foreign_package_field_function_retarget(
     let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
     })?;
-    let path = std::str::from_utf8(path_atom).map_err(|_| {
-        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let path = std::str::from_utf8(path_atom)
+        .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     let static_match = index.resolve_mention(&resolved_paths, display, ItemKind::Static);
@@ -873,12 +845,10 @@ pub(crate) fn foreign_package_field_retarget(
     let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
     })?;
-    let path = std::str::from_utf8(path_atom).map_err(|_| {
-        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let path = std::str::from_utf8(path_atom)
+        .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     Ok(index.resolve_mention(&resolved_paths, display, ItemKind::Field))
@@ -896,13 +866,9 @@ pub(crate) fn join_project_field(
     if !matches!(link_kind, backend_semantic::ir::LinkKind::Reads) {
         return Ok(None);
     }
-    let identity = if let Some(identity) = foreign_package_field_retarget(
-        image,
-        external,
-        caller_path,
-        project_paths,
-        index,
-    )? {
+    let identity = if let Some(identity) =
+        foreign_package_field_retarget(image, external, caller_path, project_paths, index)?
+    {
         Some(identity)
     } else if let Some(identity) = foreign_package_field_static_constant_retarget(
         image,
@@ -912,13 +878,9 @@ pub(crate) fn join_project_field(
         index,
     )? {
         Some(identity)
-    } else if let Some(identity) = foreign_package_field_function_retarget(
-        image,
-        external,
-        caller_path,
-        project_paths,
-        index,
-    )? {
+    } else if let Some(identity) =
+        foreign_package_field_function_retarget(image, external, caller_path, project_paths, index)?
+    {
         Some(identity)
     } else {
         foreign_namespace_field_retarget(image, external, index)?
@@ -940,7 +902,10 @@ pub(crate) fn foreign_namespace_value_retarget(
     let Some(kind) = foreign.kind else {
         return Ok(None);
     };
-    if !matches!(kind, ItemKind::Constant | ItemKind::Static | ItemKind::Variant) {
+    if !matches!(
+        kind,
+        ItemKind::Constant | ItemKind::Static | ItemKind::Variant
+    ) {
         return Ok(None);
     }
     let namespace_atom = image
@@ -949,12 +914,10 @@ pub(crate) fn foreign_namespace_value_retarget(
     let display_atom = image
         .atom(foreign.display)
         .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
-    let namespace = std::str::from_utf8(namespace_atom).map_err(|_| {
-        BuiltinModelError("semantic graph namespace is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let namespace = std::str::from_utf8(namespace_atom)
+        .map_err(|_| BuiltinModelError("semantic graph namespace is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     Ok(index.resolve_value_owner(namespace, display, kind))
 }
 
@@ -974,7 +937,10 @@ pub(crate) fn foreign_package_value_retarget(
     let Some(kind) = foreign.kind else {
         return Ok(None);
     };
-    if !matches!(kind, ItemKind::Constant | ItemKind::Static | ItemKind::Variant) {
+    if !matches!(
+        kind,
+        ItemKind::Constant | ItemKind::Static | ItemKind::Variant
+    ) {
         return Ok(None);
     }
     let package_atom = image
@@ -989,12 +955,10 @@ pub(crate) fn foreign_package_value_retarget(
     let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
     })?;
-    let path = std::str::from_utf8(path_atom).map_err(|_| {
-        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let path = std::str::from_utf8(path_atom)
+        .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     Ok(index.resolve_mention(&resolved_paths, display, kind))
@@ -1028,12 +992,10 @@ pub(crate) fn foreign_package_function_value_retarget(
     let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
     })?;
-    let path = std::str::from_utf8(path_atom).map_err(|_| {
-        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
-    })?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let path = std::str::from_utf8(path_atom)
+        .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     Ok(index.resolve(&resolved_paths, display))
@@ -1051,13 +1013,9 @@ pub(crate) fn join_project_value(
     if !matches!(link_kind, backend_semantic::ir::LinkKind::Reads) {
         return Ok(None);
     }
-    let identity = if let Some(identity) = foreign_package_value_retarget(
-        image,
-        external,
-        caller_path,
-        project_paths,
-        index,
-    )? {
+    let identity = if let Some(identity) =
+        foreign_package_value_retarget(image, external, caller_path, project_paths, index)?
+    {
         Some(identity)
     } else if let Some(identity) = foreign_namespace_value_retarget(image, external, index)? {
         Some(identity)
@@ -1082,13 +1040,9 @@ pub(crate) fn join_project_call(
     ) {
         return Ok(None);
     }
-    let identity = if let Some(identity) = foreign_package_call_retarget(
-        image,
-        external,
-        caller_path,
-        project_paths,
-        index,
-    )? {
+    let identity = if let Some(identity) =
+        foreign_package_call_retarget(image, external, caller_path, project_paths, index)?
+    {
         Some(identity)
     } else {
         foreign_namespace_call_retarget(image, external, index)?
@@ -1106,9 +1060,8 @@ pub(crate) fn foreign_display_name(
     let display_atom = image
         .atom(foreign.display)
         .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
-    let display = std::str::from_utf8(display_atom).map_err(|_| {
-        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
-    })?;
+    let display = std::str::from_utf8(display_atom)
+        .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     if display.is_empty() {
         return Ok(None);
     }
