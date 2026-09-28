@@ -82,6 +82,13 @@ pub enum Intent {
         /// Latest admitted query.
         query: Option<crate::model::pages::SearchQuery>,
     },
+    /// The query walks its results: show this place provisionally. The
+    /// first preview remembers where you were; none of them is history.
+    Preview(Route),
+    /// Keep the place the query is showing: where you were becomes Back.
+    CommitPreview,
+    /// Put the place you were on back (Esc, or the query emptied).
+    EndPreview,
     /// Show the current declaration another way. Replaces the current
     /// history entry's view: not navigation, so Back leaves the declaration.
     SetView(super::route::View),
