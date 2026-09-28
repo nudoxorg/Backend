@@ -1113,6 +1113,8 @@ pub struct Window {
     /// NUDOX: the product of the group opacities in effect (prepaint and paint), so a draw
     /// deferred inside a faded layer fades with it.
     pub(crate) group_opacity: f32,
+    /// NUDOX: every text line painted in the current frame, while [`TextTrace`] is set.
+    pub(crate) painted_texts: Vec<PaintedText>,
     /// NUDOX: content masks, in window space (already transformed).
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
@@ -1867,6 +1869,7 @@ impl Window {
             layer_transform: LayerTransform::IDENTITY,
             isolation_depth: 0,
             group_opacity: 1.0,
+            painted_texts: Vec::new(),
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
@@ -2850,6 +2853,7 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        self.painted_texts.clear();
         // Drain unconditionally so a stale first-invalidation timestamp can't
         // leak into a later frame across enable/disable of frame tracing.
         let frame_dirty = self.invalidator.take_frame_dirty();
@@ -3778,6 +3782,31 @@ impl Window {
     pub(crate) fn element_opacity(&self) -> f32 {
         self.invalidator.debug_assert_paint_or_prepaint();
         self.element_opacity
+    }
+
+    /// NUDOX: the text lines painted in the last drawn frame, in paint order, while the
+    /// [`TextTrace`] global is set (empty otherwise).
+    pub fn painted_texts(&self) -> &[PaintedText] {
+        &self.painted_texts
+    }
+
+    /// NUDOX: records one painted text line (element coordinates) with the alpha of its ink,
+    /// when [`TextTrace`] is set: placed through the layer transform, cut by the content mask,
+    /// and faded by the element and group opacity in effect.
+    pub(crate) fn trace_text(&mut self, cx: &App, text: &SharedString, bounds: Bounds<Pixels>, alpha: f32) {
+        if !cx.has_global::<TextTrace>() {
+            return;
+        }
+        let placed = self.layer_transform.apply_bounds(bounds);
+        let visible = placed.intersect(&self.window_content_mask().bounds);
+        if visible.size.width <= Pixels::ZERO || visible.size.height <= Pixels::ZERO {
+            return;
+        }
+        self.painted_texts.push(PaintedText {
+            text: text.clone(),
+            bounds: visible,
+            alpha: alpha * self.element_opacity * self.group_opacity,
+        });
     }
 
     /// Obtain the current content mask. This method should only be called during element drawing.
@@ -7766,4 +7795,24 @@ fn stretch_about(
             bounds.size.height * stretch.height,
         ),
     }
+}
+
+/// NUDOX: set this global to have every window record the text lines it paints each frame
+/// ([`Window::painted_texts`]): the harness's legibility law reads them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TextTrace;
+
+impl Global for TextTrace {}
+
+/// NUDOX: one text line as painted: its content, its box in window space (after the layer
+/// transform, cut by the content mask) and the alpha its ink was painted at (the run colour's
+/// alpha times the element and group opacity in effect).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaintedText {
+    /// The line's text (a wrapped paragraph is one entry).
+    pub text: SharedString,
+    /// Where it was painted, window space.
+    pub bounds: Bounds<Pixels>,
+    /// The ink's effective alpha, 0..=1.
+    pub alpha: f32,
 }

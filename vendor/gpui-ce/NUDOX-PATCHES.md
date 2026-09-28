@@ -93,6 +93,24 @@ measurements in `apps/facet/src/motion/compositing/headless.rs`:
 | `src/platform/test/window.rs` `TestWindow::compositing` | asks its headless renderer | headless captures report Metal's capabilities |
 | `src/view.rs` `ViewElementCacheKey` | + layer transform + element opacity | a cached view replays primitives with the transform and opacity they were painted under |
 
+## Text trace (W-Motion, 2026-09-28)
+
+The harness's legibility law (DIRECTION v5 law 2: at every frame each text is legible
+and unoverlapped, or not drawn) must see every text, not only texts a component wrapped
+in a probe (34 call sites covered almost none of the overlays or pages). With the
+`gpui::TextTrace` global set, every window records each text line it paints in the
+frame: its content, its box in window space (through the layer transform, cut by the
+content mask) and its ink's effective alpha (run colour alpha x element opacity x group
+opacity). Off by default: one `has_global` check per painted line.
+
+| Site | Change | Why |
+|---|---|---|
+| `src/window.rs` `Window::painted_texts` field, `painted_texts()`, `trace_text()`; `TextTrace` global and `PaintedText` | new; the list is cleared at the start of every `draw` | per-frame record of painted text |
+| `src/text_system/line.rs` `ShapedLine::paint`, `WrappedLine::paint`, `trace_line` | after `paint_line`, record the line's aligned box (a wrapped paragraph as one block) and the highest run alpha | every text path (div text, `StyledText`, `InteractiveText`, direct `ShapedLine`s) goes through these |
+
+Known gap: a cached view (`AnyView::cached`) that replays last frame's primitives does not
+repaint its lines, so they are not traced in the replayed frame.
+
 ## gpui_ce_macos 0.1.0 (vendored 2026-09-25, `vendor/gpui_ce_macos`)
 
 Copied verbatim from crates.io, wired through `[patch.crates-io]`. Patched
