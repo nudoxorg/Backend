@@ -625,7 +625,7 @@ pub(crate) fn view_root_from_wire(
     view_root_from_wire_with_admission(value, certificate, &CapabilityAdmission(capability), false)
 }
 
-fn view_root_from_wire_with_admission<A: CoverageAdmission>(
+pub(super) fn view_root_from_wire_with_admission<A: CoverageAdmission>(
     value: &ViewRootWire,
     certificate: &WireCertificate,
     admission: &A,
