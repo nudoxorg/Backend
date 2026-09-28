@@ -12,9 +12,9 @@ use crate::measure::{Measure, Set};
 use crate::probe::{self, TextOverflow};
 use crate::tokens::{Palette, Tone, rhythm, scale, stroke};
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement,
-    LayoutId, ParentElement, PathBuilder, Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
-    point, px,
+    AnyElement, App, Bounds, ColorExt, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
+    IntoElement, LayoutId, ParentElement, PathBuilder, Pixels, Point, SharedString, StatefulInteractiveElement, Styled,
+    Window, canvas, div, point, px,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
