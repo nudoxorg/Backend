@@ -164,33 +164,50 @@ let
     mingwWindres
   ];
   # Compile-checks every shipped platform: `cargo check --workspace
-  # --all-targets --target <triple>` for each of `toolchains.crossTargets`.
-  cross = pkgs.mkShell (
-    common
-    // {
-      packages = [ toolchains.cross ] ++ crossCompilers ++ [ pkgs.zig ];
-      # `common` pins RUSTC to the host-only toolchain; the cross check must use
-      # the rustc that carries the target standard libraries.
-      RUSTC = "${toolchains.cross}/bin/rustc";
-      NUDOX_CROSS_TARGETS = builtins.concatStringsSep " " toolchains.crossTargets;
-      # Compile checks have no Linux sysroot for pkg-config to search; the
-      # dlopen configuration of fontconfig-sys compiles without one.
-      RUST_FONTCONFIG_DLOPEN = "on";
-      CC_x86_64_pc_windows_gnu = "cc-x86_64-windows-gnu";
-      CC_x86_64_unknown_linux_gnu = "cc-x86_64-linux-gnu";
-      CC_aarch64_unknown_linux_gnu = "cc-aarch64-linux-gnu";
-      AR_x86_64_pc_windows_gnu = "ar-zig";
-      # `embed_resource` (gpui) identifies its compiler by probing it; llvm-rc
-      # is a variant it recognises and preprocesses through the target CC.
-      RC_x86_64_pc_windows_gnu = "${llvmRc}/bin/llvm-rc";
-      AR_x86_64_unknown_linux_gnu = "ar-zig";
-      AR_aarch64_unknown_linux_gnu = "ar-zig";
-      shellHook = common.shellHook + ''
-        export ZIG_GLOBAL_CACHE_DIR="$PWD/.local/zig-cache"
-        export ZIG_LOCAL_CACHE_DIR="$PWD/.local/zig-cache"
-      '';
-    }
-  );
+  # --all-targets --target <triple>` for each of `toolchains.crossCheckTargets`.
+  # Deliberately does NOT spread `common`: a compile-only lane needs neither the
+  # seven-language corpus, the native compiler authorities, nor the GUI capture
+  # closure, and importing them would drag `tools.complete` (Qdrant included)
+  # into every cross run. `nushell` runs the standalone lane runner at
+  # `.config/ci/cross-check.nu`; nothing here closes over the `backend` command.
+  cross = pkgs.mkShell {
+    packages = [
+      toolchains.cross
+      pkgs.nushell
+    ]
+    ++ crossCompilers
+    ++ [ pkgs.zig ];
+    # The cross rustc carries every target's standard library; the host-only
+    # stable toolchain cannot `--target` a foreign triple.
+    RUSTC = "${toolchains.cross}/bin/rustc";
+    NUDOX_CROSS_TARGETS = builtins.concatStringsSep " " toolchains.crossTargets;
+    # The subset this lane compiles on a Linux host; the rest are gated on their
+    # own native/emulated lanes (see `toolchains.crossCheckTargets`).
+    NUDOX_CROSS_CHECK_TARGETS = builtins.concatStringsSep " " toolchains.crossCheckTargets;
+    # Compile checks have no Linux sysroot for pkg-config to search; the
+    # dlopen configuration of fontconfig-sys compiles without one.
+    RUST_FONTCONFIG_DLOPEN = "on";
+    CC_x86_64_pc_windows_gnu = "cc-x86_64-windows-gnu";
+    CC_x86_64_unknown_linux_gnu = "cc-x86_64-linux-gnu";
+    CC_aarch64_unknown_linux_gnu = "cc-aarch64-linux-gnu";
+    AR_x86_64_pc_windows_gnu = "ar-zig";
+    # `embed_resource` (gpui) identifies its compiler by probing it; llvm-rc
+    # is a variant it recognises and preprocesses through the target CC.
+    RC_x86_64_pc_windows_gnu = "${llvmRc}/bin/llvm-rc";
+    AR_x86_64_unknown_linux_gnu = "ar-zig";
+    AR_aarch64_unknown_linux_gnu = "ar-zig";
+    # Host build scripts (blake3, ring) link libiconv/zlib through LIBRARY_PATH,
+    # which `common` used to provide.
+    LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+      pkgs.libiconv
+      pkgs.zlib
+    ];
+    shellHook = ''
+      export CARGO_TARGET_DIR="$PWD/.local/target"
+      export ZIG_GLOBAL_CACHE_DIR="$PWD/.local/zig-cache"
+      export ZIG_LOCAL_CACHE_DIR="$PWD/.local/zig-cache"
+    '';
+  };
 in
 {
   default = development;
