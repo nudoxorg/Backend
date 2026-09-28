@@ -55,6 +55,7 @@ pub(in crate::builtin) struct CommandAdapter {
     remote_semantic: super::super::query::RemoteSemantic,
     published: Option<super::super::view_publish::PublishedRoots>,
     manifests: super::super::local_manifest::LocalManifestResidence,
+    project_roots: super::super::project_root_residence::ProjectRootResidence,
     image_rows: super::super::view_build::ImageRowResidence,
     generations: super::super::generation_residence::SemanticGenerationResidence,
     dependencies: Option<ResidentDependencies>,
@@ -93,6 +94,7 @@ impl CommandAdapter {
             remote_semantic,
             published,
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
+            project_roots: super::super::project_root_residence::ProjectRootResidence::default(),
             image_rows,
             generations,
             dependencies: None,
@@ -598,7 +600,9 @@ impl CommandAdapter {
                     },
                 ),
             surface => {
-                let roots = local_project_roots(daemon)?;
+                let roots = self
+                    .project_roots
+                    .roots(&daemon.engine().daemon().owner().snapshot())?;
                 self.manifests
                     .refresh(roots.iter().map(std::path::PathBuf::as_path))
                     .map_err(BuiltinModelError)?;
@@ -1021,22 +1025,6 @@ fn admitted_project_source_root(
         return None;
     }
     Some(canonical)
-}
-
-fn local_project_roots(daemon: &ProductDaemon) -> Result<Vec<std::path::PathBuf>, BuiltinModelError> {
-    let indexed =
-        super::super::read_indexed_sources(&daemon.engine().daemon().owner().snapshot())?;
-    let mut roots = Vec::new();
-    for project in indexed.projects.values() {
-        if project.label.starts_with("pkg:") {
-            continue;
-        }
-        let project_root = Path::new(&project.label);
-        if project_root.is_dir() {
-            roots.push(project_root.to_path_buf());
-        }
-    }
-    Ok(roots)
 }
 
 #[cfg(test)]
