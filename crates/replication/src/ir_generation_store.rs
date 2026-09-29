@@ -1421,8 +1421,16 @@ mod tests {
         generation_hasher.update(&input.as_claimed_witness().generation_root_commitment_v2());
         let generation_root = *generation_hasher.finalize().as_bytes();
         let descriptors = kinds.map(|family| {
-            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(family, 0, Vec::new())
-                .expect("empty typed family descriptor")
+            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
+                family,
+                0,
+                backend_semantic::ir::SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+                    20, 4096, 1_048_576,
+                )
+                .expect("fixture boundary policy"),
+                Vec::new(),
+            )
+            .expect("empty typed family descriptor")
         });
         SemanticTypedPlaneManifestV2::from_untrusted_claims(
             build,

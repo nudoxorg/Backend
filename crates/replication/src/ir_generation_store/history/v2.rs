@@ -689,8 +689,9 @@ mod tests {
     use backend_semantic::ir::{
         ImageProvenance, LanguageProfile, RustEdition, SemanticBuildIdentity,
         SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
-        SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
-        UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2,
+        SemanticPlaneSegmentBoundaryPolicy, SemanticTypedPlaneFamilyDescriptorV2,
+        SemanticTypedPlaneManifestV2, UntrustedSemanticContentRootV2,
+        UntrustedSemanticGenerationRootV2,
     };
     use backend_semantic::vocabulary::Stage;
     use backend_version::{Coverage, ScopeRoot};
@@ -750,8 +751,14 @@ mod tests {
             SemanticIrPlane::LanguageExtensions(profile),
         ]
         .map(|family| {
-            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(family, 0, Vec::new())
-                .expect("empty family is canonical")
+            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
+                family,
+                0,
+                SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(20, 4096, 1_048_576)
+                    .expect("fixture boundary policy"),
+                Vec::new(),
+            )
+            .expect("empty family is canonical")
         });
         SemanticTypedPlaneManifestV2::from_untrusted_claims(
             build,
