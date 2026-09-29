@@ -31,17 +31,22 @@ sudo -v
 sh -c 'kill -STOP "$$"; exec "$@"' ra-read-frontier-observer "$@" \
     >"$command_log" 2>&1 &
 authority_pid=$!
+observer_sudo_pid=
 observer_pid=
+observer_pid_file=$(mktemp "${TMPDIR:-/tmp}/rust-ra-fs-usage.XXXXXX")
 
 cleanup() {
     if [ -n "$observer_pid" ]; then
         sudo -n kill -INT "$observer_pid" >/dev/null 2>&1 || true
-        wait "$observer_pid" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$observer_sudo_pid" ]; then
+        wait "$observer_sudo_pid" >/dev/null 2>&1 || true
     fi
     if kill -0 "$authority_pid" >/dev/null 2>&1; then
         kill -CONT "$authority_pid" >/dev/null 2>&1 || true
         kill -TERM "$authority_pid" >/dev/null 2>&1 || true
     fi
+    rm -f "$observer_pid_file"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -57,16 +62,22 @@ trap cleanup EXIT HUP INT TERM
 
 # Process-name filters include Cargo's metadata/locate-project subprocesses and
 # rustc toolchain queries. The test process itself is selected by its exact PID.
-sudo -n /usr/bin/fs_usage -w -f filesys -f pathname \
-    "$authority_pid" cargo rustc >"$trace_log" 2>&1 &
-observer_pid=$!
+sudo -n /bin/sh -c '
+    printf "%s\\n" "$$" > "$1"
+    shift
+    exec /usr/bin/fs_usage -w -f filesys -f pathname -t 300 "$@"
+' rust-ra-fs-usage "$observer_pid_file" "$authority_pid" cargo rustc \
+    >"$trace_log" 2>&1 &
+observer_sudo_pid=$!
 
 # Allow fs_usage to install its kernel trace before the stopped authority resumes.
 sleep 1
-if ! kill -0 "$observer_pid" >/dev/null 2>&1; then
+observer_pid=$(cat "$observer_pid_file" 2>/dev/null || true)
+if [ -z "$observer_pid" ] || ! sudo -n kill -0 "$observer_pid" >/dev/null 2>&1; then
     printf '%s\n' 'fs_usage exited before the authority test could start; inspect the trace log.' >&2
     exit 70
 fi
+printf 'fs_usage_pid=%s\n' "$observer_pid" >>"$metadata_log"
 kill -CONT "$authority_pid"
 
 set +e
@@ -75,9 +86,11 @@ authority_status=$?
 set -e
 
 sudo -n kill -INT "$observer_pid" >/dev/null 2>&1 || true
-wait "$observer_pid" >/dev/null 2>&1 || true
+wait "$observer_sudo_pid" >/dev/null 2>&1 || true
+observer_sudo_pid=
 observer_pid=
 trap - EXIT HUP INT TERM
+rm -f "$observer_pid_file"
 
 printf 'authority exit status: %s\n' "$authority_status"
 printf 'authority output: %s\n' "$command_log"
