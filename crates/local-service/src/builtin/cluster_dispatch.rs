@@ -34,7 +34,7 @@ use backend_engine::cluster_transport::{
     MAX_RESPONSE_BYTES, OwnerClusterAdmissionRegistry, ProbeCapability, ProbeInventoryDescriptor,
     ProbeInventoryHasher, ProbeObjectClaim, ProbeResourceCredits, ResultAckDisposition,
     ResultRejectReason, ResumeState, ServerState, StoreBlobCatalog, TransferScope, TransportError,
-    bind_direct, connect_probe, verify_admission,
+    VerifiedCoverage, bind_direct, connect_probe, verify_admission,
 };
 use backend_extension_turso::CandidateAttempt;
 use backend_platform::durable::{
@@ -4846,27 +4846,52 @@ impl OwnerCompilerClusterRuntime {
             }
             let checkpoint =
                 self.result_checkpoint_path(assignment, receipt.closure_id, object.object_id);
+            let first_capability =
+                object
+                    .grants
+                    .first()
+                    .ok_or(ClusterDispatchError::ResultRejected(
+                        "result object has no Bao range grant".into(),
+                    ))?;
+            let prior_state = match ResumeState::load(&checkpoint, &first_capability.claims) {
+                Ok(state) => Some(state),
+                Err(TransportError::Io(error)) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(ClusterDispatchError::Transport(error.to_string()));
+                }
+            };
             let mut final_resume = None;
             let mut object_downloaded_bytes = 0_u64;
-            for capability in &object.grants {
-                let already_covered = resume_covers_capability(&checkpoint, capability).await?;
-                if already_covered {
-                    final_resume = Some(
-                        ResumeState::load(&checkpoint, &capability.claims)
-                            .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?,
-                    );
-                    continue;
-                }
-                scheduler
-                    .validate_assignment(assignment)
-                    .map_err(|_| ClusterDispatchError::AssignmentRejected)?;
-                let resume = tokio::time::timeout(
+            if let Some(state) = prior_state.as_ref()
+                && state.is_complete()
+            {
+                tokio::time::timeout(
                     remaining_duration(deadline_unix_ms)?,
-                    backend_engine::cluster_transport::fetch_range(
+                    state.verify_complete_payload(&checkpoint),
+                )
+                .await
+                .map_err(|_| ClusterDispatchError::DeadlineExpired)?
+                .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?;
+                final_resume = Some(state.clone());
+            }
+            if final_resume.is_none() {
+                let first_missing = prior_state.as_ref().map(first_missing_chunk).unwrap_or(0);
+                let first_missing_capability = object
+                    .grants
+                    .iter()
+                    .find(|capability| capability.claims.range.start == first_missing)
+                    .ok_or_else(|| {
+                        ClusterDispatchError::Transport(
+                            "checkpoint coverage does not align with admitted result grants".into(),
+                        )
+                    })?;
+                let mut coverage = tokio::time::timeout(
+                    remaining_duration(deadline_unix_ms)?,
+                    VerifiedCoverage::open(
                         &self.endpoint,
-                        worker_address.clone(),
+                        &worker_address,
                         peer,
-                        capability.clone(),
+                        first_missing_capability,
                         transfer_scope,
                         &checkpoint,
                     ),
@@ -4874,16 +4899,35 @@ impl OwnerCompilerClusterRuntime {
                 .await
                 .map_err(|_| ClusterDispatchError::DeadlineExpired)?
                 .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?;
-                let range_bytes = capability
-                    .claims
-                    .range
-                    .end
-                    .saturating_sub(capability.claims.range.start)
-                    .saturating_mul(1_024);
-                object_downloaded_bytes = object_downloaded_bytes
-                    .saturating_add(range_bytes)
-                    .min(object.claim.length());
-                final_resume = Some(resume);
+                for capability in &object.grants {
+                    if resume_covers_range(&coverage, capability.claims.range) {
+                        continue;
+                    }
+                    scheduler
+                        .validate_assignment(assignment)
+                        .map_err(|_| ClusterDispatchError::AssignmentRejected)?;
+                    tokio::time::timeout(
+                        remaining_duration(deadline_unix_ms)?,
+                        coverage.fetch_range(
+                            &self.endpoint,
+                            worker_address.clone(),
+                            capability.clone(),
+                        ),
+                    )
+                    .await
+                    .map_err(|_| ClusterDispatchError::DeadlineExpired)?
+                    .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?;
+                    let range_bytes = capability
+                        .claims
+                        .range
+                        .end
+                        .saturating_sub(capability.claims.range.start)
+                        .saturating_mul(1_024);
+                    object_downloaded_bytes = object_downloaded_bytes
+                        .saturating_add(range_bytes)
+                        .min(object.claim.length());
+                }
+                final_resume = Some(coverage.finish());
             }
             let resume = final_resume.ok_or(ClusterDispatchError::ResultRejected(
                 "result object has no Bao range grant".into(),
@@ -5665,26 +5709,23 @@ fn validate_result_grants(
     Ok(ordered)
 }
 
-async fn resume_covers_capability(
-    path: &Path,
-    capability: &Capability,
-) -> Result<bool, ClusterDispatchError> {
-    let state = match ResumeState::load(path, &capability.claims) {
-        Ok(state) => state,
-        Err(TransportError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(false);
+fn first_missing_chunk(state: &ResumeState) -> u64 {
+    let mut cursor = 0_u64;
+    for range in &state.covered {
+        if range.start > cursor {
+            break;
         }
-        Err(error) => return Err(ClusterDispatchError::Transport(error.to_string())),
-    };
-    state
-        .verify_covered_ranges(path)
-        .await
-        .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?;
-    let range = capability.claims.range;
-    Ok(state
+        cursor = cursor.max(range.end);
+    }
+    cursor
+}
+
+fn resume_covers_range(coverage: &VerifiedCoverage, range: ChunkRange) -> bool {
+    coverage
+        .state()
         .covered
         .iter()
-        .any(|covered| covered.start <= range.start && covered.end >= range.end))
+        .any(|covered| covered.start <= range.start && covered.end >= range.end)
 }
 
 fn capability_nonce(

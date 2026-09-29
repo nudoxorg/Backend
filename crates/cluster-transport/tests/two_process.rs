@@ -87,6 +87,29 @@ async fn run_child_batch(
     scope: TransferScope,
     checkpoint: &Path,
 ) -> std::process::Output {
+    run_child_batch_mode(
+        server_addr,
+        issuer,
+        client_key,
+        capabilities,
+        scope,
+        checkpoint,
+        false,
+        None,
+    )
+    .await
+}
+
+async fn run_child_batch_mode(
+    server_addr: EndpointAddr,
+    issuer: &CapabilityIssuer,
+    client_key: &SecretKey,
+    capabilities: Vec<Capability>,
+    scope: TransferScope,
+    checkpoint: &Path,
+    stateless: bool,
+    fail_after_ranges: Option<usize>,
+) -> std::process::Output {
     let input = serde_json::json!({
         "server_addr": server_addr,
         "bind_addr": "127.0.0.1:0",
@@ -95,6 +118,8 @@ async fn run_child_batch(
         "capabilities": capabilities,
         "expected_scope": scope,
         "checkpoint": checkpoint,
+        "stateless": stateless,
+        "fail_after_ranges": fail_after_ranges,
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_cluster-peer"))
         .stdin(Stdio::piped())
@@ -142,6 +167,27 @@ fn child_checkpoint_open_sample(
         .strip_prefix("elapsed_us=")?
         .parse()
         .ok()
+}
+
+fn child_validation_sample(output: &std::process::Output) -> Option<[u64; 6]> {
+    let fields = String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .find_map(|line| line.strip_prefix("cluster-peer-validation "))?;
+    let parse = |name: &str| {
+        fields
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))?
+            .parse()
+            .ok()
+    };
+    Some([
+        parse("cold_opens")?,
+        parse("ranges")?,
+        parse("chunks")?,
+        parse("payload_bytes")?,
+        parse("bao_bytes")?,
+        parse("whole_hash_bytes")?,
+    ])
 }
 
 fn report_latency_distribution(size_mib: usize, mode: &str, samples: &[u128]) {
@@ -383,7 +429,7 @@ fn measured_capabilities(
 }
 
 #[tokio::test]
-async fn two_process_bao_transfer_cold_resumes_after_server_restart_and_enters_artifact_sink() {
+async fn two_process_bao_transfer_reopens_after_mid_batch_failure_and_enters_artifact_sink() {
     let directory = temp_dir("two-process");
     let payload = (0..40_000_usize)
         .map(|index| (index.wrapping_mul(17) % 251) as u8)
@@ -528,22 +574,39 @@ async fn two_process_bao_transfer_cold_resumes_after_server_restart_and_enters_a
         .expect("first server request timeout")
         .expect("serve first Bao range");
     });
-    let first = run_child(
+    let first = run_child_batch_mode(
         first_addr,
         &issuer,
         &client_key,
-        issuer.issue(first_claims).expect("first range grant"),
+        vec![
+            issuer
+                .issue(first_claims.clone())
+                .expect("first range grant"),
+            issuer
+                .issue(second_claims.clone())
+                .expect("second range grant"),
+        ],
         scope,
         &checkpoint,
+        false,
+        Some(1),
     )
     .await;
     assert!(
-        first.status.success(),
-        "first client process failed: {}",
+        !first.status.success(),
+        "the injected process failure should stop this transfer after one durable range"
+    );
+    assert!(
+        String::from_utf8_lossy(&first.stderr)
+            .contains("injected failure after durable range checkpoint"),
+        "first client failure should occur after the range checkpoint is durable: {}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert!(String::from_utf8_lossy(&first.stdout).contains("complete=false"));
     first_serve.await.expect("first server task");
+    let interrupted = ResumeState::load(&checkpoint, &first_claims)
+        .expect("first range checkpoint survives client failure");
+    assert!(!interrupted.is_complete());
+    assert_eq!(interrupted.covered, vec![first_claims.range]);
     timeout(Duration::from_secs(10), first_endpoint.close())
         .await
         .expect("first server shutdown timeout");
@@ -1352,9 +1415,109 @@ async fn reports_two_process_cold_and_interrupted_resume_costs_for_one_and_sixte
             .verify_complete_payload(&cold_checkpoint)
             .await
             .expect("cold complete payload hash");
+        let cold_validation = child_validation_sample(&cold_output)
+            .expect("cold transfer reports validation counters");
+        assert_eq!(
+            cold_validation[0], 1,
+            "one live grant batch has one cold open"
+        );
+        assert_eq!(cold_validation[1..5], [0, 0, 0, 0]);
+        assert_eq!(cold_validation[5], payload_length as u64);
         timeout(Duration::from_secs(10), cold_endpoint.close())
             .await
             .expect("cold server close timeout");
+
+        if cold_capabilities.len() > 1 {
+            let stateless_checkpoint = case_root.join("stateless.chk");
+            let stateless_started = Instant::now();
+            let (stateless_endpoint, stateless_address, stateless_server) = start_measured_server(
+                server_key.clone(),
+                issuer.public_key(),
+                client_key.public(),
+                scope,
+                source_sink.clone(),
+                outboard_root.clone(),
+                cold_capabilities.len(),
+            )
+            .await;
+            let stateless_output = run_child_batch_mode(
+                stateless_address,
+                &issuer,
+                &client_key,
+                cold_capabilities.clone(),
+                scope,
+                &stateless_checkpoint,
+                true,
+                None,
+            )
+            .await;
+            assert!(
+                stateless_output.status.success(),
+                "stateless client failed: {}",
+                String::from_utf8_lossy(&stateless_output.stderr)
+            );
+            let stateless_server_bytes = stateless_server.await.expect("stateless server");
+            let stateless_elapsed = stateless_started.elapsed();
+            let stateless_state = ResumeState::load(
+                &stateless_checkpoint,
+                &cold_capabilities
+                    .last()
+                    .expect("stateless capabilities")
+                    .claims,
+            )
+            .expect("stateless checkpoint");
+            assert!(stateless_state.is_complete());
+            stateless_state
+                .verify_complete_payload(&stateless_checkpoint)
+                .await
+                .expect("stateless complete payload hash");
+            timeout(Duration::from_secs(10), stateless_endpoint.close())
+                .await
+                .expect("stateless server close timeout");
+            let stateless_validation = child_validation_sample(&stateless_output)
+                .expect("stateless transfer reports validation counters");
+            let expected_chunks_revalidated = cold_ranges
+                .iter()
+                .scan(0_u64, |covered_chunks, range| {
+                    let current = *covered_chunks;
+                    *covered_chunks = covered_chunks.saturating_add(range.end - range.start);
+                    Some(current)
+                })
+                .sum::<u64>();
+            let expected_payload_bytes_revalidated = cold_ranges
+                .iter()
+                .scan(0_u64, |covered_chunks, range| {
+                    let current = *covered_chunks;
+                    *covered_chunks = covered_chunks.saturating_add(range.end - range.start);
+                    Some(current.saturating_mul(1_024).min(payload_length as u64))
+                })
+                .sum::<u64>();
+            assert_eq!(stateless_validation[0], cold_capabilities.len() as u64);
+            assert_eq!(stateless_validation[1], cold_capabilities.len() as u64 - 1);
+            assert_eq!(stateless_validation[2], expected_chunks_revalidated);
+            assert_eq!(stateless_validation[3], expected_payload_bytes_revalidated);
+            assert!(stateless_validation[4] > payload_length as u64);
+            assert_eq!(stateless_validation[5], payload_length as u64);
+            report_latency_distribution(
+                payload_length / (1024 * 1024),
+                "stateless-cold-full",
+                &child_range_samples(&stateless_output),
+            );
+            eprintln!(
+                "cluster-transport validation comparison: size_mib={} batch_cold_opens={} batch_prior_chunks={} batch_prior_bao_bytes={} stateless_cold_opens={} stateless_prior_chunks={} stateless_prior_payload_bytes={} stateless_prior_bao_bytes={} stateless_whole_hash_bytes={} elapsed_ms={} bao_stream_bytes={}",
+                payload_length / (1024 * 1024),
+                cold_validation[0],
+                cold_validation[2],
+                cold_validation[4],
+                stateless_validation[0],
+                stateless_validation[2],
+                stateless_validation[3],
+                stateless_validation[4],
+                stateless_validation[5],
+                stateless_elapsed.as_millis(),
+                stateless_server_bytes,
+            );
+        }
 
         let resume_checkpoint = case_root.join("resume.chk");
         let interrupted_at = total_chunks / 2;

@@ -1943,6 +1943,76 @@ pub struct ResumeState {
     pub checksum: [u8; 32],
 }
 
+/// Work performed to revalidate a sparse checkpoint during one cold open.
+///
+/// The Bao byte count is the exact encoded range proof regenerated from the
+/// durable data and outboard files. It excludes ranges fetched by the current
+/// live session, so callers can distinguish restart validation from network
+/// transfer work.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoverageVerificationMetrics {
+    cold_opens: u64,
+    ranges: u64,
+    chunks: u64,
+    payload_bytes: u64,
+    bao_bytes: u64,
+    whole_hash_bytes: u64,
+}
+
+impl CoverageVerificationMetrics {
+    /// Number of cold checkpoint validations represented by this session.
+    #[must_use]
+    pub const fn cold_opens(self) -> u64 {
+        self.cold_opens
+    }
+
+    /// Number of previously covered intervals revalidated at open.
+    #[must_use]
+    pub const fn ranges(self) -> u64 {
+        self.ranges
+    }
+
+    /// Number of BLAKE3 chunks revalidated at open.
+    #[must_use]
+    pub const fn chunks(self) -> u64 {
+        self.chunks
+    }
+
+    /// Number of application payload bytes revalidated at open.
+    #[must_use]
+    pub const fn payload_bytes(self) -> u64 {
+        self.payload_bytes
+    }
+
+    /// Exact Bao payload-plus-proof bytes regenerated while validating coverage.
+    #[must_use]
+    pub const fn bao_bytes(self) -> u64 {
+        self.bao_bytes
+    }
+
+    /// Number of complete payload bytes hashed after this session completed an object.
+    ///
+    /// This is separate from Bao range revalidation because the final raw digest
+    /// pass is required even when no earlier coverage needs cold validation.
+    #[must_use]
+    pub const fn whole_hash_bytes(self) -> u64 {
+        self.whole_hash_bytes
+    }
+
+    /// Adds two counters with saturation for diagnostic aggregation.
+    #[must_use]
+    pub const fn saturating_add(self, other: Self) -> Self {
+        Self {
+            cold_opens: self.cold_opens.saturating_add(other.cold_opens),
+            ranges: self.ranges.saturating_add(other.ranges),
+            chunks: self.chunks.saturating_add(other.chunks),
+            payload_bytes: self.payload_bytes.saturating_add(other.payload_bytes),
+            bao_bytes: self.bao_bytes.saturating_add(other.bao_bytes),
+            whole_hash_bytes: self.whole_hash_bytes.saturating_add(other.whole_hash_bytes),
+        }
+    }
+}
+
 /// One live receive session whose existing checkpoint coverage was verified on open.
 ///
 /// A cold session revalidates every previously covered Bao range once. Subsequent range fetches
@@ -1953,6 +2023,7 @@ pub struct ResumeState {
 pub struct VerifiedCoverage {
     checkpoint: PathBuf,
     state: ResumeState,
+    verification_metrics: CoverageVerificationMetrics,
     issuer: EndpointId,
     client: EndpointId,
     server: EndpointId,
@@ -1986,11 +2057,12 @@ impl VerifiedCoverage {
             }
             Err(error) => return Err(TransportError::Io(error)),
         };
-        state.verify_covered_ranges(&checkpoint).await?;
+        let verification_metrics = state.verify_covered_ranges_measured(&checkpoint).await?;
         validate_next_range(&state, claims.range)?;
         Ok(Self {
             checkpoint,
             state,
+            verification_metrics,
             issuer: trusted_issuer,
             client,
             server: server_addr.id,
@@ -2002,6 +2074,16 @@ impl VerifiedCoverage {
     #[must_use]
     pub fn state(&self) -> &ResumeState {
         &self.state
+    }
+
+    /// Returns the cold validation work performed while opening this session.
+    ///
+    /// Keep one `VerifiedCoverage` alive while consuming an object's sorted
+    /// grant batch. Opening once revalidates old coverage once; reopening for
+    /// each grant repeats the Bao proof work for every earlier range.
+    #[must_use]
+    pub const fn verification_metrics(&self) -> CoverageVerificationMetrics {
+        self.verification_metrics
     }
 
     /// Fetch one next contiguous capability range into this verified session.
@@ -2130,6 +2212,9 @@ impl VerifiedCoverage {
         {
             return Err(TransportError::Rejected(RejectCode::ScopeMismatch));
         }
+        if self.state.is_complete() {
+            self.verification_metrics.whole_hash_bytes = self.state.object.payload_length;
+        }
         Ok(())
     }
 
@@ -2216,8 +2301,20 @@ impl ResumeState {
         &self,
         checkpoint: impl AsRef<Path>,
     ) -> Result<(), TransportError> {
+        self.verify_covered_ranges_measured(checkpoint)
+            .await
+            .map(|_| ())
+    }
+
+    async fn verify_covered_ranges_measured(
+        &self,
+        checkpoint: impl AsRef<Path>,
+    ) -> Result<CoverageVerificationMetrics, TransportError> {
         if self.covered.is_empty() {
-            return Ok(());
+            return Ok(CoverageVerificationMetrics {
+                cold_opens: 1,
+                ..CoverageVerificationMetrics::default()
+            });
         }
         let checkpoint = checkpoint.as_ref();
         let data = FileRangeSource::open_readonly(Self::data_path(checkpoint))?;
@@ -2233,7 +2330,12 @@ impl ResumeState {
             {
                 return Err(TransportError::BlobHashMismatch);
             }
-            return Ok(());
+            return Ok(CoverageVerificationMetrics {
+                cold_opens: 1,
+                ranges: u64::try_from(self.covered.len())
+                    .map_err(|_| TransportError::CheckpointInvalid)?,
+                ..CoverageVerificationMetrics::default()
+            });
         }
         let source = SourceReader(Arc::new(data));
         let outboard = SourceOutboard {
@@ -2241,14 +2343,48 @@ impl ResumeState {
             tree,
             data: SourceReader(Arc::new(outboard_file)),
         };
+        let mut metrics = CoverageVerificationMetrics {
+            cold_opens: 1,
+            ranges: u64::try_from(self.covered.len())
+                .map_err(|_| TransportError::CheckpointInvalid)?,
+            ..CoverageVerificationMetrics::default()
+        };
         for range in &self.covered {
             let ranges = ChunkRanges::from(ChunkNum(range.start)..ChunkNum(range.end));
-            let writer = TokioStreamWriter(tokio::io::sink());
-            encode_ranges_validated(source.clone(), outboard.clone(), &ranges, writer)
+            let mut writer = CountingStreamWriter {
+                inner: TokioStreamWriter(tokio::io::sink()),
+                written: 0,
+            };
+            encode_ranges_validated(source.clone(), outboard.clone(), &ranges, &mut writer)
                 .await
                 .map_err(|error| TransportError::Bao(error.to_string()))?;
+            let chunks = range
+                .end
+                .checked_sub(range.start)
+                .ok_or(TransportError::CheckpointInvalid)?;
+            metrics.chunks = metrics
+                .chunks
+                .checked_add(chunks)
+                .ok_or(TransportError::CheckpointInvalid)?;
+            let start = range
+                .start
+                .checked_mul(1_024)
+                .ok_or(TransportError::CheckpointInvalid)?;
+            let end = range
+                .end
+                .checked_mul(1_024)
+                .ok_or(TransportError::CheckpointInvalid)?
+                .min(self.object.payload_length);
+            metrics.payload_bytes = metrics
+                .payload_bytes
+                .checked_add(end.saturating_sub(start))
+                .ok_or(TransportError::CheckpointInvalid)?;
+            metrics.bao_bytes = metrics
+                .bao_bytes
+                .checked_add(writer.written)
+                .ok_or(TransportError::CheckpointInvalid)?;
         }
-        Ok(())
+        Ok(metrics)
     }
 
     /// Feed a fully Bao-verified payload through backend-store's bounded typed admission.
@@ -3223,6 +3359,40 @@ struct BudgetWriter<W> {
     inner: W,
     remaining: usize,
     written: usize,
+}
+
+#[derive(Debug)]
+struct CountingStreamWriter<W> {
+    inner: W,
+    written: u64,
+}
+
+impl<W: AsyncStreamWriter> AsyncStreamWriter for CountingStreamWriter<W> {
+    async fn write(&mut self, data: &[u8]) -> io::Result<()> {
+        let next_count = self.next_count(data.len())?;
+        self.inner.write(data).await?;
+        self.written = next_count;
+        Ok(())
+    }
+
+    async fn write_bytes(&mut self, data: Bytes) -> io::Result<()> {
+        let next_count = self.next_count(data.len())?;
+        self.inner.write_bytes(data).await?;
+        self.written = next_count;
+        Ok(())
+    }
+
+    async fn sync(&mut self) -> io::Result<()> {
+        self.inner.sync().await
+    }
+}
+
+impl<W> CountingStreamWriter<W> {
+    fn next_count(&self, amount: usize) -> io::Result<u64> {
+        self.written
+            .checked_add(u64::try_from(amount).map_err(io::Error::other)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Bao byte count overflow"))
+    }
 }
 
 impl<W: AsyncStreamWriter> AsyncStreamWriter for BudgetWriter<W> {
