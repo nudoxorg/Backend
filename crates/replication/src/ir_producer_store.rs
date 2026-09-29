@@ -3618,19 +3618,17 @@ mod tests {
             .expect("cold reopen V3 FileStore for consumer proof");
         let (base_cold, base_cold_io) = cold_reverify_v3(&cold_store, &base);
         assert_eq!(&base_cold, base.verified_content());
-        let expected_segment_reads = (base.segment_admissions().len() as u64) * 2;
+        let expected_segment_reads = base.segment_admissions().len() as u64;
         let expected_segment_payload_bytes = base
             .segment_admissions()
             .iter()
             .map(|receipt| receipt.payload_bytes())
-            .sum::<u64>()
-            * 2;
+            .sum::<u64>();
         let expected_segment_envelope_bytes = base
             .segment_admissions()
             .iter()
             .map(|receipt| receipt.envelope_bytes())
-            .sum::<u64>()
-            * 2;
+            .sum::<u64>();
         assert_eq!(base_cold_io.segment_object_reads(), expected_segment_reads);
         assert_eq!(
             base_cold_io.segment_payload_bytes(),
