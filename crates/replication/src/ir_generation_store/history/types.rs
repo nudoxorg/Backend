@@ -10,6 +10,7 @@ const HISTORY_PAYLOAD_ROOT_TAG: u8 = 6;
 const HISTORY_SEGMENT_MAP_TAG: u8 = 7;
 const HISTORY_INDEX_INTENT_TAG: u8 = 8;
 const HISTORY_SEGMENT_MAP_COUNT_TAG: u8 = 9;
+const HISTORY_TYPED_V2_LOCATOR_TAG: u8 = 14;
 pub(super) const HISTORY_SEGMENT_MAP_EPOCH_TAG: u8 = 12;
 pub(super) const HISTORY_COMMIT_EPOCH_TAG: u8 = 13;
 const MAX_HISTORY_PARENTS: usize = 2;
@@ -27,6 +28,8 @@ const MAX_HISTORY_SEGMENT_MAP_BYTES: usize = 256;
 const MAX_HISTORY_INDEX_INTENT_BYTES: usize = 128;
 const MAX_HISTORY_SEGMENT_MAPPINGS: u32 = 65_536;
 const MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES: usize = 64;
+const MAX_HISTORY_TYPED_V2_LOCATOR_BYTES: usize = 24 * 1024 * 1024;
+const MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS: usize = 200_000;
 
 /// Rejection from proposing history whose advertised payload closure cannot
 /// be made complete by the current V1 publisher.
@@ -100,21 +103,183 @@ impl HistoryCommitId {
 
 /// Versioned semantic-generation authority bound into a history commit ID.
 ///
-/// V1 commits use the existing full-NXFI `GenerationId`. The V2 variant is
-/// intentionally added only alongside the semantic crate's typed
-/// `SemanticGenerationRootV2` verifier API; raw wire bytes cannot construct
-/// that authority. The local generation-record ID remains a separate
+/// V1 commits use the existing full-NXFI `GenerationId`. V2 commits store
+/// only untrusted root claims; cold typed replay checks them against the
+/// canonical manifest and complete immutable object closure before returning
+/// semantic content proof. The local generation-record ID remains a separate
 /// materialization locator and is not this semantic root.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HistoryGenerationRoot {
     /// Existing NXFI-byte identity used by the V1 local history format.
     NxfiV1(backend_semantic::ir::GenerationId),
+    /// Claim-only V2 roots, the exact immutable object closure, and the
+    /// content-addressed locator carrying the canonical manifest and physical
+    /// object bridge. Cold typed replay must verify all of them before it
+    /// yields semantic content evidence.
+    TypedV2(HistoryTypedV2RootClaim),
+}
+
+/// Untrusted V2 claims committed by a history record. This metadata wrapper
+/// cannot confer typed semantic identity or owner selection authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoryTypedV2RootClaim {
+    content_root: backend_semantic::ir::UntrustedSemanticContentRootV2,
+    generation_root: backend_semantic::ir::UntrustedSemanticGenerationRootV2,
+    closure: ArtifactClosureClaim,
+    locator: HistoryTypedV2LocatorId,
+}
+
+impl std::hash::Hash for HistoryTypedV2RootClaim {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.content_root, state);
+        std::hash::Hash::hash(&self.generation_root, state);
+        std::hash::Hash::hash(self.closure.as_bytes(), state);
+        std::hash::Hash::hash(&self.locator, state);
+    }
+}
+
+impl HistoryTypedV2RootClaim {
+    /// Returns the V2 content-root claim for cold verification.
+    #[must_use]
+    pub const fn content_root_claim(self) -> backend_semantic::ir::UntrustedSemanticContentRootV2 {
+        self.content_root
+    }
+
+    /// Returns the V2 generation-root claim for cold verification.
+    #[must_use]
+    pub const fn generation_root_claim(
+        self,
+    ) -> backend_semantic::ir::UntrustedSemanticGenerationRootV2 {
+        self.generation_root
+    }
+
+    /// Returns the exact FileStore closure claim committed by this record.
+    #[must_use]
+    pub const fn closure(self) -> ArtifactClosureClaim {
+        self.closure
+    }
+
+    /// Returns the manifest and object-bridge locator ID.
+    #[must_use]
+    pub const fn locator(self) -> HistoryTypedV2LocatorId {
+        self.locator
+    }
+}
+
+/// Identity of immutable V2 manifest and semantic-ID to FileStore-ID bridge
+/// metadata. The claim is checked against its complete canonical side record
+/// before cold replay uses it.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct HistoryTypedV2LocatorId([u8; 32]);
+
+impl HistoryTypedV2LocatorId {
+    /// Returns the fixed-width locator identity bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// One c004 semantic segment claim paired with its physical FileStore object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoryTypedV2SegmentObject {
+    segment: backend_semantic::ir::UntrustedSemanticSegmentId,
+    object: UntrustedObjectId,
+    byte_length: u64,
+}
+
+impl HistoryTypedV2SegmentObject {
+    /// Creates a claim-only bridge entry. Cold replay verifies closure
+    /// membership, object schema, exact length, and the semantic segment ID.
+    #[must_use]
+    pub const fn new(
+        segment: backend_semantic::ir::UntrustedSemanticSegmentId,
+        object: UntrustedObjectId,
+        byte_length: u64,
+    ) -> Self {
+        Self {
+            segment,
+            object,
+            byte_length,
+        }
+    }
+
+    /// Returns the semantic segment claim.
+    #[must_use]
+    pub const fn segment(self) -> backend_semantic::ir::UntrustedSemanticSegmentId {
+        self.segment
+    }
+
+    /// Returns the untrusted FileStore object ID claim.
+    #[must_use]
+    pub const fn object(self) -> UntrustedObjectId {
+        self.object
+    }
+
+    /// Returns the claimed exact payload length.
+    #[must_use]
+    pub const fn byte_length(self) -> u64 {
+        self.byte_length
+    }
+}
+
+/// One jumbo rope object identity paired with its physical FileStore object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoryTypedV2JumboObject {
+    id: [u8; 32],
+    kind: backend_semantic::ir::JumboRopeObjectKind,
+    object: UntrustedObjectId,
+    byte_length: u64,
+}
+
+impl HistoryTypedV2JumboObject {
+    /// Creates a claim-only bridge entry for one rope object.
+    #[must_use]
+    pub const fn new(
+        id: backend_semantic::ir::JumboRopeObjectId,
+        kind: backend_semantic::ir::JumboRopeObjectKind,
+        object: UntrustedObjectId,
+        byte_length: u64,
+    ) -> Self {
+        Self {
+            id: *id.as_bytes(),
+            kind,
+            object,
+            byte_length,
+        }
+    }
+
+    /// Returns the opaque semantic rope-object identity.
+    #[must_use]
+    pub const fn id(self) -> [u8; 32] {
+        self.id
+    }
+
+    /// Returns whether this map entry names a leaf or an interior node.
+    #[must_use]
+    pub const fn kind(self) -> backend_semantic::ir::JumboRopeObjectKind {
+        self.kind
+    }
+
+    /// Returns the untrusted FileStore object ID claim.
+    #[must_use]
+    pub const fn object(self) -> UntrustedObjectId {
+        self.object
+    }
+
+    /// Returns the claimed exact payload length.
+    #[must_use]
+    pub const fn byte_length(self) -> u64 {
+        self.byte_length
+    }
 }
 
 impl HistoryGenerationRoot {
     const fn wire_discriminator(self) -> u8 {
         match self {
             Self::NxfiV1(_) => 1,
+            Self::TypedV2(_) => 2,
         }
     }
 
@@ -124,6 +289,13 @@ impl HistoryGenerationRoot {
                 writer.u8(self.wire_discriminator())?;
                 writer.fixed(root.as_bytes())
             }
+            Self::TypedV2(root) => {
+                writer.u8(self.wire_discriminator())?;
+                writer.fixed(root.content_root.as_bytes())?;
+                writer.fixed(root.generation_root.as_bytes())?;
+                writer.fixed(root.closure.as_bytes())?;
+                writer.fixed(root.locator.as_bytes())
+            }
         }
     }
 
@@ -132,10 +304,46 @@ impl HistoryGenerationRoot {
             1 => Ok(Self::NxfiV1(backend_semantic::ir::GenerationId::from_raw(
                 reader.fixed()?,
             ))),
-            2 => Err(
-                "V2 history root requires the verified typed semantic-generation API".to_owned(),
-            ),
+            2 => Ok(Self::TypedV2(HistoryTypedV2RootClaim {
+                content_root: backend_semantic::ir::UntrustedSemanticContentRootV2::from_wire_claim(
+                    reader.fixed()?,
+                ),
+                generation_root:
+                    backend_semantic::ir::UntrustedSemanticGenerationRootV2::from_wire_claim(
+                        reader.fixed()?,
+                    ),
+                closure: ArtifactClosureClaim::from_bytes(reader.fixed()?),
+                locator: HistoryTypedV2LocatorId(reader.fixed()?),
+            })),
             _ => Err("semantic history generation-root discriminator is invalid".to_owned()),
+        }
+    }
+
+    fn typed_v2(
+        content: &backend_semantic::ir::VerifiedTypedPlaneContentV2,
+        closure: ArtifactClosureClaim,
+        locator: HistoryTypedV2LocatorId,
+    ) -> Self {
+        Self::TypedV2(HistoryTypedV2RootClaim {
+            content_root: backend_semantic::ir::UntrustedSemanticContentRootV2::from_wire_claim(
+                *content.content_root().as_bytes(),
+            ),
+            generation_root:
+                backend_semantic::ir::UntrustedSemanticGenerationRootV2::from_wire_claim(
+                    *content.generation_root().as_bytes(),
+                ),
+            closure,
+            locator,
+        })
+    }
+
+    /// Returns the claim-only typed V2 binding, when this commit uses the V2
+    /// materialization layout.
+    #[must_use]
+    pub const fn typed_v2_claim(&self) -> Option<HistoryTypedV2RootClaim> {
+        match self {
+            Self::NxfiV1(_) => None,
+            Self::TypedV2(claim) => Some(*claim),
         }
     }
 }
@@ -219,14 +427,16 @@ impl UnpublishedHistoryProposal {
         self.record.generation
     }
 
-    /// Returns the versioned semantic-generation authority bound by this
-    /// history identity, separate from its local materialization record.
+    /// Returns the V1 root or claim-only V2 root bound by this history
+    /// identity, separate from its local materialization record.
     #[must_use]
     pub const fn generation_root(&self) -> HistoryGenerationRoot {
         self.record.generation_root
     }
 
-    /// Returns the exact canonical semantic-plane manifest root.
+    /// Returns the manifest root of the referenced local materialization
+    /// record. For V2 semantic replay, use the manifest in the proof-bearing
+    /// [`TypedV2HistoryReplay`] token.
     #[must_use]
     pub const fn manifest_root(&self) -> backend_semantic::ir::SemanticManifestRoot {
         self.record.manifest_root
@@ -259,14 +469,16 @@ impl AdmittedHistoryCommit {
         self.record.generation
     }
 
-    /// Returns the versioned semantic-generation authority bound by this
-    /// history identity, separate from its local materialization record.
+    /// Returns the V1 root or claim-only V2 root bound by this history
+    /// identity, separate from its local materialization record.
     #[must_use]
     pub const fn generation_root(&self) -> HistoryGenerationRoot {
         self.record.generation_root
     }
 
-    /// Returns the exact canonical semantic-plane manifest root.
+    /// Returns the manifest root of the referenced local materialization
+    /// record. For V2 semantic replay, use the manifest in the proof-bearing
+    /// [`TypedV2HistoryReplay`] token.
     #[must_use]
     pub const fn manifest_root(&self) -> backend_semantic::ir::SemanticManifestRoot {
         self.record.manifest_root
@@ -568,6 +780,62 @@ impl HistoryRefUpdateReceipt {
 pub struct HistoryReplayEntry {
     commit: AdmittedHistoryCommit,
     generation: LocalSemanticGeneration,
+}
+
+/// Proof-bearing cold replay result for one typed V2 history commit.
+///
+/// The typed proof verifies content and deterministic generation claims, but
+/// does not recreate owner read-frontier authority or select a production
+/// generation. The shared FileStore GC pin remains held for this token's
+/// lifetime so the exact committed closure stays readable.
+#[derive(Debug)]
+pub struct TypedV2HistoryReplay {
+    commit: AdmittedHistoryCommit,
+    manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
+    content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+    _gc_pin: Option<std::sync::Arc<backend_store::GcPinGuard>>,
+}
+
+impl TypedV2HistoryReplay {
+    pub(crate) fn new(
+        commit: AdmittedHistoryCommit,
+        manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
+        content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+    ) -> Self {
+        Self {
+            commit,
+            manifest,
+            content,
+            _gc_pin: None,
+        }
+    }
+
+    /// Returns the immutable history commit whose exact V2 payload closure was
+    /// verified.
+    #[must_use]
+    pub const fn commit(&self) -> &AdmittedHistoryCommit {
+        &self.commit
+    }
+
+    /// Returns the canonical typed V2 manifest decoded from its content-
+    /// addressed locator.
+    #[must_use]
+    pub const fn manifest(&self) -> &backend_semantic::ir::SemanticTypedPlaneManifestV2 {
+        &self.manifest
+    }
+
+    /// Returns the opaque semantic proof minted only after all seven families,
+    /// their cross-family references, segment lengths, and jumbo ropes pass
+    /// cold verification.
+    #[must_use]
+    pub const fn content(&self) -> &backend_semantic::ir::VerifiedTypedPlaneContentV2 {
+        &self.content
+    }
+
+    pub(crate) fn with_gc_pin(mut self, gc_pin: std::sync::Arc<backend_store::GcPinGuard>) -> Self {
+        self._gc_pin = Some(gc_pin);
+        self
+    }
 }
 
 impl HistoryReplayEntry {

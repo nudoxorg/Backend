@@ -39,8 +39,10 @@ pub use ir_generation_store::{
     HistoryCommitId, HistoryGcProgress, HistoryGcStats, HistoryGenerationRoot,
     HistoryMaterialization, HistoryProposalError, HistoryRefAncestryProof, HistoryRefKind,
     HistoryRefName, HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor,
-    HistoryReplayEntry, HistorySegmentDeltas, LocalSemanticGeneration, LocalSemanticGenerationId,
-    MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef, UnpublishedHistoryProposal,
+    HistoryReplayEntry, HistorySegmentDeltas, HistoryTypedV2JumboObject, HistoryTypedV2LocatorId,
+    HistoryTypedV2RootClaim, HistoryTypedV2SegmentObject, LocalSemanticGeneration,
+    LocalSemanticGenerationId, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
+    TypedV2HistoryReplay, UnpublishedHistoryProposal,
 };
 pub use ir_hydration::*;
 pub use ir_hydration_store::*;

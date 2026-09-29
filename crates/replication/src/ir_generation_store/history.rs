@@ -35,6 +35,7 @@ mod gc;
 mod provenance;
 mod replay;
 mod retention;
+mod v2;
 
 pub(super) use catalog::{
     may_prune_generation_records, read_history_catalog_snapshot, validate_commit_generation,
@@ -55,6 +56,7 @@ pub(super) use gc::{
     read_history_gc_state,
 };
 pub(super) use provenance::decode_hex_digest;
+pub(crate) use v2::TypedV2HistoryLocator;
 
 pub(super) fn compact_history_tombstones(target_root: &Path) -> Result<(), String> {
     let history_root = target_root.join("history");

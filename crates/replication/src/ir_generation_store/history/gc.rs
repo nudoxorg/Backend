@@ -405,6 +405,7 @@ pub(super) fn advance_history_gc(
                             identity,
                         ))?;
                         remove_file(&history_payload_root_path(target_root, identity))?;
+                        super::v2::remove_typed_v2_locator_for_commit(target_root, identity)?;
                     }
                     state.sweep_offset = state
                         .sweep_offset

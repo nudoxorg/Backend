@@ -5,7 +5,7 @@ pub(super) fn identify_history_record(
     mut record: HistoryCommitRecord,
 ) -> Result<(HistoryCommitRecord, HistoryCommitId), String> {
     let body = encode_history_body(&record)?;
-    let identity = history_commit_identity(&body);
+    let identity = super::v2::history_commit_identity(record.generation_root, &body);
     record.identity = identity;
     Ok((record, identity))
 }
@@ -34,7 +34,9 @@ pub(super) fn encode_history_commit(
     identity: HistoryCommitId,
 ) -> Result<Vec<u8>, String> {
     let body = encode_history_body(record)?;
-    if history_commit_identity(&body) != identity || record.identity != identity {
+    if super::v2::history_commit_identity(record.generation_root, &body) != identity
+        || record.identity != identity
+    {
         return Err("semantic history proposal identity is inconsistent".to_owned());
     }
     let mut output = Vec::with_capacity(32 + body.len() + 32);
@@ -59,9 +61,6 @@ pub(super) fn decode_history_commit(bytes: &[u8]) -> Result<HistoryCommitRecord,
             .map_err(|_| "semantic history commit identity is truncated".to_owned())?,
     );
     let content = &body[32..];
-    if history_commit_identity(content) != identity {
-        return Err("semantic history commit identity does not match its record".to_owned());
-    }
     let mut reader = Reader::new(content);
     reader.header(HISTORY_COMMIT_TAG)?;
     let target = reader.target()?;
@@ -104,18 +103,13 @@ pub(super) fn decode_history_commit(bytes: &[u8]) -> Result<HistoryCommitRecord,
         first_parent_depth,
         checkpoint,
     };
+    if super::v2::history_commit_identity(record.generation_root, content) != identity {
+        return Err("semantic history commit identity does not match its record".to_owned());
+    }
     if encode_history_body(&record)? != content {
         return Err("semantic history commit is not canonically encoded".to_owned());
     }
     Ok(record)
-}
-
-pub(super) fn history_commit_identity(body: &[u8]) -> HistoryCommitId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(HISTORY_COMMIT_DOMAIN);
-    hasher.update(&(body.len() as u64).to_be_bytes());
-    hasher.update(body);
-    HistoryCommitId(*hasher.finalize().as_bytes())
 }
 
 pub(super) fn prepare_history_layout(target_root: &Path) -> Result<PathBuf, String> {

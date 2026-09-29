@@ -1,0 +1,540 @@
+//! Durable locators for typed V2 history commits.
+//!
+//! V1 history continues to name its local NXFI generation records. Typed V2
+//! commits use the same commit DAG, ref catalog, and payload-root GC path, but
+//! bind claim-only typed roots, an exact FileStore closure, and an immutable
+//! locator containing the canonical V2 manifest plus semantic-to-physical
+//! object bridges. A cold reader must verify that entire binding before it
+//! receives a proof-bearing replay token.
+
+use super::*;
+
+const TYPED_V2_LOCATOR_DOMAIN: &[u8] = b"backend.semantic.history-typed-v2-locator.v1\0";
+const TYPED_V2_COMMIT_DOMAIN: &[u8] = b"backend.semantic.history-commit.typed-v2.v1\0";
+const MAX_TYPED_V2_MANIFEST_BYTES: usize = backend_semantic::ir::MAX_TYPED_PLANE_MANIFEST_V2_BYTES;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TypedV2HistoryLocator {
+    pub(crate) manifest: Vec<u8>,
+    pub(crate) segments: Vec<HistoryTypedV2SegmentObject>,
+    pub(crate) jumbo: Vec<HistoryTypedV2JumboObject>,
+}
+
+impl TypedV2HistoryLocator {
+    pub(crate) fn validate(
+        &self,
+    ) -> Result<backend_semantic::ir::SemanticTypedPlaneManifestV2, String> {
+        if self.manifest.len() > MAX_TYPED_V2_MANIFEST_BYTES {
+            return Err("typed V2 history manifest exceeds its byte bound".to_owned());
+        }
+        let manifest = backend_semantic::ir::SemanticTypedPlaneManifestV2::decode(&self.manifest)
+            .map_err(|error| format!("decode typed V2 history manifest: {error}"))?;
+        if manifest
+            .canonical_bytes()
+            .map_err(|error| format!("encode typed V2 history manifest: {error}"))?
+            != self.manifest
+        {
+            return Err("typed V2 history manifest is not canonical".to_owned());
+        }
+        let usage = manifest
+            .resource_usage()
+            .map_err(|error| format!("measure typed V2 history manifest: {error}"))?;
+        let expected_segments = usage.segment_descriptors();
+        if self.segments.len() != expected_segments
+            || self.segments.len() > backend_semantic::ir::MAX_TYPED_PLANE_SEGMENTS_V2
+            || self.segments.len().saturating_add(self.jumbo.len())
+                > MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS
+        {
+            return Err("typed V2 history locator object count differs from its bounds".to_owned());
+        }
+        if self.segments.iter().any(|segment| segment.byte_length == 0)
+            || self
+                .segments
+                .windows(2)
+                .any(|pair| pair[0].segment.as_bytes() >= pair[1].segment.as_bytes())
+        {
+            return Err("typed V2 history segment map is not strictly canonical".to_owned());
+        }
+        if self.jumbo.iter().any(|object| object.byte_length == 0)
+            || self
+                .jumbo
+                .windows(2)
+                .any(|pair| jumbo_order(pair[0]) >= jumbo_order(pair[1]))
+        {
+            return Err("typed V2 history rope map is not strictly canonical".to_owned());
+        }
+        let mut manifest_segments = Vec::new();
+        manifest_segments
+            .try_reserve_exact(expected_segments)
+            .map_err(|_| "typed V2 history manifest allocation failed".to_owned())?;
+        for family in manifest.families() {
+            for segment in family.segments() {
+                manifest_segments.push((*segment.id_claim().as_bytes(), segment.byte_length()));
+            }
+        }
+        manifest_segments.sort_unstable_by_key(|(id, _)| *id);
+        for (mapped, (expected_id, expected_length)) in self.segments.iter().zip(&manifest_segments)
+        {
+            if mapped.segment.as_bytes() != expected_id || mapped.byte_length != *expected_length {
+                return Err("typed V2 history segment map differs from its manifest".to_owned());
+            }
+        }
+        if self.jumbo.iter().any(|object| match object.kind {
+            backend_semantic::ir::JumboRopeObjectKind::Leaf => {
+                object.byte_length > backend_semantic::ir::JUMBO_ROPE_MAX_LEAF_BYTES as u64
+            }
+            backend_semantic::ir::JumboRopeObjectKind::Interior => {
+                object.byte_length != backend_semantic::ir::ROPE_NODE_WIRE_BYTES as u64
+            }
+        }) {
+            return Err(
+                "typed V2 history rope object exceeds its kind-specific length bound".to_owned(),
+            );
+        }
+        Ok(manifest)
+    }
+
+    fn encode_body(&self) -> Result<Vec<u8>, String> {
+        let mut writer = Writer::new(MAX_HISTORY_TYPED_V2_LOCATOR_BYTES);
+        writer.header(HISTORY_TYPED_V2_LOCATOR_TAG)?;
+        writer.sized_bytes(&self.manifest, MAX_TYPED_V2_MANIFEST_BYTES)?;
+        writer.u32(u32::try_from(self.segments.len()).map_err(display_error)?)?;
+        for segment in &self.segments {
+            writer.fixed(segment.segment.as_bytes())?;
+            writer.fixed(segment.object.as_bytes())?;
+            writer.u64(segment.byte_length)?;
+        }
+        writer.u32(u32::try_from(self.jumbo.len()).map_err(display_error)?)?;
+        for object in &self.jumbo {
+            writer.u8(match object.kind {
+                backend_semantic::ir::JumboRopeObjectKind::Leaf => 0,
+                backend_semantic::ir::JumboRopeObjectKind::Interior => 1,
+            })?;
+            writer.fixed(&object.id)?;
+            writer.fixed(object.object.as_bytes())?;
+            writer.u64(object.byte_length)?;
+        }
+        let bytes = writer.finish();
+        if bytes.len() > MAX_HISTORY_TYPED_V2_LOCATOR_BYTES {
+            return Err("typed V2 history locator exceeds its byte bound".to_owned());
+        }
+        Ok(bytes)
+    }
+}
+
+fn jumbo_order(object: HistoryTypedV2JumboObject) -> (u8, [u8; 32]) {
+    (
+        match object.kind {
+            backend_semantic::ir::JumboRopeObjectKind::Leaf => 0,
+            backend_semantic::ir::JumboRopeObjectKind::Interior => 1,
+        },
+        object.id,
+    )
+}
+
+pub(super) fn typed_v2_locator_identity(body: &[u8]) -> HistoryTypedV2LocatorId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(TYPED_V2_LOCATOR_DOMAIN);
+    hasher.update(&u64::try_from(body.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hasher.update(body);
+    HistoryTypedV2LocatorId(*hasher.finalize().as_bytes())
+}
+
+fn locator_path(target_root: &Path, commit: HistoryCommitId) -> PathBuf {
+    target_root
+        .join("history")
+        .join("typed-v2-locators")
+        .join(format!("{}.locator", hex(commit.as_bytes())))
+}
+
+pub(super) fn remove_typed_v2_locator_for_commit(
+    target_root: &Path,
+    commit: HistoryCommitId,
+) -> Result<(), String> {
+    remove_file(&locator_path(target_root, commit))
+}
+
+pub(super) fn validate_typed_v2_locator_binding(
+    target_root: &Path,
+    record: &HistoryCommitRecord,
+) -> Result<(), String> {
+    let HistoryGenerationRoot::TypedV2(claim) = record.generation_root else {
+        return Ok(());
+    };
+    let locator = load_typed_v2_history_locator(target_root, record.identity, claim.locator)?;
+    let manifest = locator.validate()?;
+    if !manifest.content_root_claim().matches(claim.content_root)
+        || !manifest
+            .generation_root_claim()
+            .matches(claim.generation_root)
+    {
+        return Err("typed V2 history commit roots differ from its locator manifest".to_owned());
+    }
+    Ok(())
+}
+
+pub(super) fn history_commit_identity(root: HistoryGenerationRoot, body: &[u8]) -> HistoryCommitId {
+    let domain = match root {
+        HistoryGenerationRoot::NxfiV1(_) => HISTORY_COMMIT_DOMAIN,
+        HistoryGenerationRoot::TypedV2(_) => TYPED_V2_COMMIT_DOMAIN,
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain);
+    hasher.update(&u64::try_from(body.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hasher.update(body);
+    HistoryCommitId(*hasher.finalize().as_bytes())
+}
+
+pub(super) fn create_typed_v2_locator(
+    locator: TypedV2HistoryLocator,
+) -> Result<(HistoryTypedV2LocatorId, Vec<u8>), String> {
+    let _ = locator.validate()?;
+    let body = locator.encode_body()?;
+    let identity = typed_v2_locator_identity(&body);
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(body.len().saturating_add(64))
+        .map_err(|_| "typed V2 history locator allocation failed".to_owned())?;
+    bytes.extend_from_slice(identity.as_bytes());
+    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(blake3::hash(&bytes).as_bytes());
+    Ok((identity, bytes))
+}
+
+pub(super) fn decode_typed_v2_locator(
+    bytes: &[u8],
+    expected: HistoryTypedV2LocatorId,
+) -> Result<TypedV2HistoryLocator, String> {
+    let body = checked_body(bytes, MAX_HISTORY_TYPED_V2_LOCATOR_BYTES + 64)?;
+    if body.len() < 32 || body[..32] != *expected.as_bytes() {
+        return Err("typed V2 history locator identity differs from its filename".to_owned());
+    }
+    let content = &body[32..];
+    if typed_v2_locator_identity(content) != expected {
+        return Err("typed V2 history locator identity does not match its bytes".to_owned());
+    }
+    let mut reader = Reader::new(content);
+    reader.header(HISTORY_TYPED_V2_LOCATOR_TAG)?;
+    let manifest = reader.sized_bytes(MAX_TYPED_V2_MANIFEST_BYTES)?.to_vec();
+    let segment_count = usize::try_from(reader.u32()?).map_err(display_error)?;
+    if segment_count > backend_semantic::ir::MAX_TYPED_PLANE_SEGMENTS_V2
+        || segment_count > MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS
+    {
+        return Err("typed V2 history segment map exceeds its count bound".to_owned());
+    }
+    let mut segments = Vec::new();
+    segments
+        .try_reserve_exact(segment_count)
+        .map_err(|_| "typed V2 history segment map allocation failed".to_owned())?;
+    for _ in 0..segment_count {
+        segments.push(HistoryTypedV2SegmentObject {
+            segment: backend_semantic::ir::UntrustedSemanticSegmentId::from_raw(reader.fixed()?),
+            object: UntrustedObjectId::from_bytes(reader.fixed()?),
+            byte_length: reader.u64()?,
+        });
+    }
+    let jumbo_count = usize::try_from(reader.u32()?).map_err(display_error)?;
+    if segment_count.saturating_add(jumbo_count) > MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS {
+        return Err("typed V2 history rope map exceeds its count bound".to_owned());
+    }
+    let mut jumbo = Vec::new();
+    jumbo
+        .try_reserve_exact(jumbo_count)
+        .map_err(|_| "typed V2 history rope map allocation failed".to_owned())?;
+    for _ in 0..jumbo_count {
+        let kind = match reader.u8()? {
+            0 => backend_semantic::ir::JumboRopeObjectKind::Leaf,
+            1 => backend_semantic::ir::JumboRopeObjectKind::Interior,
+            _ => return Err("typed V2 history rope kind is invalid".to_owned()),
+        };
+        let id = reader.fixed()?;
+        let object = UntrustedObjectId::from_bytes(reader.fixed()?);
+        let byte_length = reader.u64()?;
+        jumbo.push(HistoryTypedV2JumboObject {
+            id,
+            kind,
+            object,
+            byte_length,
+        });
+    }
+    reader.finish()?;
+    let locator = TypedV2HistoryLocator {
+        manifest,
+        segments,
+        jumbo,
+    };
+    let _ = locator.validate()?;
+    if locator.encode_body()?.as_slice() != content {
+        return Err("typed V2 history locator is not canonically encoded".to_owned());
+    }
+    Ok(locator)
+}
+
+impl LocalSemanticGenerationFiles {
+    pub(crate) fn typed_v2_locator_identity(
+        &self,
+        locator: &TypedV2HistoryLocator,
+    ) -> Result<HistoryTypedV2LocatorId, String> {
+        let (identity, _) = create_typed_v2_locator(locator.clone())?;
+        Ok(identity)
+    }
+
+    pub(crate) fn persist_typed_v2_locator(
+        &self,
+        target: &SemanticTargetKey,
+        commit: HistoryCommitId,
+        locator: TypedV2HistoryLocator,
+    ) -> Result<HistoryTypedV2LocatorId, String> {
+        let (identity, bytes) = create_typed_v2_locator(locator)?;
+        let target_root = self.target_root(target);
+        prepare_history_layout(&target_root)?;
+        let directory = target_root.join("history").join("typed-v2-locators");
+        create_private_directory(&directory)?;
+        set_private_directory(&directory)?;
+        let path = locator_path(&target_root, commit);
+        match fs::read(&path) {
+            Ok(existing) if existing == bytes => Ok(identity),
+            Ok(_) => Err("typed V2 history commit locator changed".to_owned()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                backend_platform::durable::write_private_atomic(&path, &bytes)
+                    .map_err(display_io)?;
+                Ok(identity)
+            }
+            Err(error) => Err(display_io(error)),
+        }
+    }
+
+    pub(crate) fn typed_v2_locator(
+        &self,
+        target: &SemanticTargetKey,
+        commit: HistoryCommitId,
+        identity: HistoryTypedV2LocatorId,
+    ) -> Result<TypedV2HistoryLocator, String> {
+        load_typed_v2_history_locator(&self.target_root(target), commit, identity)
+    }
+
+    pub(crate) fn propose_typed_v2_history_commit(
+        &self,
+        target: &SemanticTargetKey,
+        parents: &[HistoryCommitId],
+        provenance: [u8; 32],
+        content: &backend_semantic::ir::VerifiedTypedPlaneContentV2,
+        closure: ArtifactClosureClaim,
+        locator: HistoryTypedV2LocatorId,
+    ) -> Result<UnpublishedHistoryProposal, HistoryProposalError> {
+        if parents.len() > MAX_HISTORY_PARENTS {
+            return Err(HistoryProposalError::Storage(
+                "semantic history commit exceeds its parent bound".to_owned(),
+            ));
+        }
+        if parents.len() == 2 {
+            return Err(HistoryProposalError::UnsupportedMergePayloadClosure);
+        }
+        let generation = self
+            .current(target)
+            .map_err(HistoryProposalError::Storage)?
+            .ok_or_else(|| {
+                HistoryProposalError::Storage(
+                    "no admitted current generation is available for typed V2 history".to_owned(),
+                )
+            })?;
+        let target_root = self.target_root(target);
+        let commits_root =
+            prepare_history_layout(&target_root).map_err(HistoryProposalError::Storage)?;
+        let mut depth = 0_u32;
+        for (index, parent) in parents.iter().enumerate() {
+            let record = validate_history_commit_node(&target_root, target, &commits_root, *parent)
+                .map_err(HistoryProposalError::Storage)?;
+            if index == 0 {
+                depth = record.first_parent_depth.checked_add(1).ok_or_else(|| {
+                    HistoryProposalError::Storage("semantic history depth overflows".to_owned())
+                })?;
+            }
+        }
+        let record = HistoryCommitRecord {
+            identity: HistoryCommitId([0; 32]),
+            target: target.clone(),
+            parents: parents.to_vec(),
+            generation: generation.identity,
+            generation_root: HistoryGenerationRoot::typed_v2(content, closure, locator),
+            manifest_root: generation.manifest.root(),
+            stamp: generation.selected_stamp,
+            provenance,
+            first_parent_depth: depth,
+            checkpoint: parents.is_empty() || depth % HISTORY_CHECKPOINT_INTERVAL == 0,
+        };
+        let (record, identity) =
+            identify_history_record(record).map_err(HistoryProposalError::Storage)?;
+        Ok(UnpublishedHistoryProposal { record, identity })
+    }
+
+    pub(crate) fn admit_typed_v2_history_proposal<S: SelectedGenerationSource>(
+        &self,
+        proposal: UnpublishedHistoryProposal,
+        payload_root: AdmittedHistoryPayloadRoot,
+        source: &mut S,
+    ) -> Result<HistoryAdmissionReceipt, String> {
+        let HistoryGenerationRoot::TypedV2(claim) = proposal.record.generation_root else {
+            return Err("typed V2 history proposal carries a V1 generation root".to_owned());
+        };
+        if claim.closure.as_bytes() != payload_root.closure.as_bytes() {
+            return Err("typed V2 commit and payload closure roots differ".to_owned());
+        }
+        let target_root = self.target_root(&proposal.record.target);
+        let _ = load_typed_v2_history_locator(&target_root, proposal.identity, claim.locator)?;
+        let admission = self.admit_history_proposal(proposal, source)?;
+        write_history_payload_root(&target_root, admission.commit.identity(), payload_root)?;
+        Ok(admission)
+    }
+}
+
+fn load_typed_v2_history_locator(
+    target_root: &Path,
+    commit: HistoryCommitId,
+    identity: HistoryTypedV2LocatorId,
+) -> Result<TypedV2HistoryLocator, String> {
+    let path = locator_path(target_root, commit);
+    let Some(bytes) = read_optional_bounded(&path, MAX_HISTORY_TYPED_V2_LOCATOR_BYTES + 64)? else {
+        return Err("typed V2 history locator is missing".to_owned());
+    };
+    decode_typed_v2_locator(&bytes, identity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_semantic::ir::{
+        ImageProvenance, LanguageProfile, RustEdition, SemanticBuildIdentity,
+        SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
+        SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
+        UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2,
+    };
+    use backend_version::{Coverage, ScopeRoot, Stage};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn create() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "backend-typed-v2-history-locator-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create locator fixture directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn target() -> SemanticTargetKey {
+        SemanticTargetKey::new(
+            "pkg:history/typed-v2@1.0.0",
+            "pkg:history/typed-v2@1.0.0",
+            LanguageProfile::Rust(RustEdition::Rust2024),
+        )
+        .expect("fixture target")
+    }
+
+    fn empty_manifest() -> SemanticTypedPlaneManifestV2 {
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let build = SemanticBuildIdentity::new(
+            [1; 32],
+            [2; 32],
+            profile,
+            Stage::LowerIr,
+            [3; 32],
+            [4; 32],
+            [5; 32],
+            [6; 32],
+        );
+        let families = [
+            SemanticIrPlane::Core,
+            SemanticIrPlane::Types,
+            SemanticIrPlane::Relations,
+            SemanticIrPlane::Occurrences,
+            SemanticIrPlane::Documentation,
+            SemanticIrPlane::SourceProvenance,
+            SemanticIrPlane::LanguageExtensions(profile),
+        ]
+        .map(|family| {
+            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(family, 0, Vec::new())
+                .expect("empty family is canonical")
+        });
+        SemanticTypedPlaneManifestV2::from_untrusted_claims(
+            build,
+            SemanticImageFacts {
+                authority: SemanticImageAuthority::Shared,
+                provenance: ImageProvenance::Unavailable,
+            },
+            SemanticInputClaimV2::from_untrusted_claims(
+                [7; 32],
+                ScopeRoot::from_bytes([8; 32]),
+                Coverage::Complete,
+            ),
+            UntrustedSemanticContentRootV2::from_wire_claim([9; 32]),
+            UntrustedSemanticGenerationRootV2::from_wire_claim([10; 32]),
+            families,
+        )
+        .expect("claim-only V2 manifest is structurally canonical")
+    }
+
+    #[test]
+    fn typed_locator_survives_cold_reopen_and_gc_cleanup_is_idempotent() {
+        let directory = TestDirectory::create();
+        let target = target();
+        let commit = HistoryCommitId::from_bytes([0x44; 32]);
+        let files =
+            LocalSemanticGenerationFiles::open(&directory.0).expect("open generation files");
+        let manifest = empty_manifest();
+        let locator = TypedV2HistoryLocator {
+            manifest: manifest.canonical_bytes().expect("encode manifest"),
+            segments: Vec::new(),
+            jumbo: Vec::new(),
+        };
+        let identity = files
+            .typed_v2_locator_identity(&locator)
+            .expect("identify canonical locator");
+        assert_eq!(
+            files
+                .persist_typed_v2_locator(&target, commit, locator.clone())
+                .expect("persist locator"),
+            identity
+        );
+        // A retry after interruption between locator persistence and commit
+        // admission is safe and does not replace immutable bytes.
+        assert_eq!(
+            files
+                .persist_typed_v2_locator(&target, commit, locator.clone())
+                .expect("retry locator persistence"),
+            identity
+        );
+        drop(files);
+
+        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("cold reopen");
+        assert_eq!(
+            reopened
+                .typed_v2_locator(&target, commit, identity)
+                .expect("reopen typed locator"),
+            locator
+        );
+        let target_root = reopened.target_root(&target);
+        remove_typed_v2_locator_for_commit(&target_root, commit).expect("sweep locator");
+        remove_typed_v2_locator_for_commit(&target_root, commit)
+            .expect("recover interrupted locator sweep");
+        assert!(
+            reopened
+                .typed_v2_locator(&target, commit, identity)
+                .expect_err("swept locator is unavailable")
+                .contains("missing")
+        );
+    }
+}

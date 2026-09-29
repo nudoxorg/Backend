@@ -43,6 +43,8 @@ use super::ir_hydration_wire::{
     MAX_CAS_CHECKPOINT_BYTES, MAX_RANGE_BYTES, SelectedSemanticImageChunk, WireReader, WireWriter,
 };
 
+mod history_v2;
+
 const RECORD_TAG: u8 = 4;
 const MAP_TAG: u8 = 5;
 const CONTENT_MAP_TAG: u8 = 6;

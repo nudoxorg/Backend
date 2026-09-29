@@ -110,12 +110,15 @@ pub(super) fn trip_history_test_fault(point: HistoryTestFault) -> Result<(), Str
 }
 
 mod history;
+pub(crate) use history::TypedV2HistoryLocator;
 pub use history::{
     AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
     HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError,
     HistoryRefAncestryProof, HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt,
     HistoryReplay, HistoryReplayCursor, HistoryReplayEntry, HistorySegmentDeltas,
-    MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef, UnpublishedHistoryProposal,
+    HistoryTypedV2JumboObject, HistoryTypedV2LocatorId, HistoryTypedV2RootClaim,
+    HistoryTypedV2SegmentObject, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
+    TypedV2HistoryReplay, UnpublishedHistoryProposal,
 };
 pub(super) use history::{AdmittedHistoryPayloadRoot, HistoryPayloadRoot};
 
@@ -1205,15 +1208,19 @@ mod tests {
     use backend_semantic::ir::DocInput;
     use backend_semantic::ir::{
         BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
-        FactAvailability, GenerationId, IrBuilder, ItemKind, LanguageProfile,
+        FactAvailability, GenerationId, ImageProvenance, IrBuilder, ItemKind, LanguageProfile,
         MAX_SEMANTIC_SEGMENT_BYTES, ParentageAuthority, RustEdition, SemanticBuildIdentity,
-        SemanticInputWitness, SemanticIrPlane, SemanticPlane, SemanticPlaneCatalogEntry,
-        SemanticPlaneKind, SemanticPlaneSegment, SemanticRangeRequest, SemanticReader,
-        TreeItemInput, VariantFingerprint, Visibility, encode_full_semantic_image,
-        full_semantic_image_len,
+        SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticInputWitness,
+        SemanticIrPlane, SemanticPlane, SemanticPlaneCatalogEntry, SemanticPlaneKind,
+        SemanticPlaneSegment, SemanticRangeRequest, SemanticReader,
+        SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
+        SemanticTypedPlaneVerificationTierV2, TreeItemInput, UntrustedSemanticContentRootV2,
+        UntrustedSemanticGenerationRootV2, VariantFingerprint, Visibility,
+        encode_full_semantic_image, full_semantic_image_len,
+        verify_typed_plane_content_v2_with_tier,
     };
     use backend_semantic::vocabulary::Stage;
-    use backend_store::{FileStore, TypedObject};
+    use backend_store::{ArtifactClosureClaim, FileStore, StreamingClosureBudget, TypedObject};
     use backend_version::{Coverage, ObjectKey, ScopeRoot};
 
     use crate::{
@@ -1327,6 +1334,102 @@ mod tests {
             manifest,
             stamp,
         }
+    }
+
+    fn empty_typed_v2_manifest(input_root: u8) -> SemanticTypedPlaneManifestV2 {
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let build = SemanticBuildIdentity::new(
+            [1; 32],
+            [2; 32],
+            profile,
+            Stage::LowerIr,
+            [3; 32],
+            [4; 32],
+            [5; 32],
+            [6; 32],
+        );
+        let facts = SemanticImageFacts {
+            authority: SemanticImageAuthority::Shared,
+            provenance: ImageProvenance::Unavailable,
+        };
+        let input = SemanticInputClaimV2::from_untrusted_claims(
+            [input_root; 32],
+            ScopeRoot::from_bytes([8; 32]),
+            Coverage::Complete,
+        );
+        let kinds = [
+            SemanticIrPlane::Core,
+            SemanticIrPlane::Types,
+            SemanticIrPlane::Relations,
+            SemanticIrPlane::Occurrences,
+            SemanticIrPlane::Documentation,
+            SemanticIrPlane::SourceProvenance,
+            SemanticIrPlane::LanguageExtensions(profile),
+        ];
+        let row_index_root = backend_semantic::ir::row_index::StableRowIndex::builder()
+            .finish()
+            .expect("empty row index")
+            .root()
+            .as_bytes();
+        let family_roots = kinds.map(|family| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"backend.semantic.ir.family-row-index-root.v2\0");
+            let family_tag = match family {
+                SemanticIrPlane::Core => 1,
+                SemanticIrPlane::Types => 2,
+                SemanticIrPlane::Relations => 3,
+                SemanticIrPlane::Occurrences => 4,
+                SemanticIrPlane::Documentation => 5,
+                SemanticIrPlane::SourceProvenance => 6,
+                SemanticIrPlane::LanguageExtensions(_) => 7,
+            };
+            hasher.update(&[2, family_tag]);
+            if let SemanticIrPlane::LanguageExtensions(profile) = family {
+                hasher.update(&<[u8; 2]>::from(profile));
+            }
+            hasher.update(&0_u64.to_be_bytes());
+            hasher.update(&row_index_root);
+            *hasher.finalize().as_bytes()
+        });
+        let mut content_hasher = blake3::Hasher::new_derive_key("backend.semantic.ir.content.v2");
+        content_hasher.update(&[2, 0]); // root format and shared-image authority
+        content_hasher.update(&7_u16.to_be_bytes());
+        for (index, (family, family_root)) in kinds.iter().zip(family_roots).enumerate() {
+            content_hasher.update(&[u8::try_from(index).expect("seven family tags")]);
+            if let SemanticIrPlane::LanguageExtensions(profile) = family {
+                content_hasher.update(&<[u8; 2]>::from(*profile));
+            }
+            content_hasher.update(&family_root);
+            content_hasher.update(&0_u64.to_be_bytes());
+        }
+        let content_root = *content_hasher.finalize().as_bytes();
+        let mut generation_hasher =
+            blake3::Hasher::new_derive_key("backend.semantic.ir.generation.v2");
+        generation_hasher.update(&[2]);
+        generation_hasher.update(&content_root);
+        generation_hasher.update(build.package());
+        generation_hasher.update(build.target());
+        generation_hasher.update(&<[u8; 2]>::from(build.profile()));
+        generation_hasher.update(&[u8::from(build.stage())]);
+        generation_hasher.update(build.recipe());
+        generation_hasher.update(build.toolchain());
+        generation_hasher.update(build.environment());
+        generation_hasher.update(build.target_platform());
+        generation_hasher.update(&input.as_claimed_witness().generation_root_commitment_v2());
+        let generation_root = *generation_hasher.finalize().as_bytes();
+        let descriptors = kinds.map(|family| {
+            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(family, 0, Vec::new())
+                .expect("empty typed family descriptor")
+        });
+        SemanticTypedPlaneManifestV2::from_untrusted_claims(
+            build,
+            facts,
+            input,
+            UntrustedSemanticContentRootV2::from_wire_claim(content_root),
+            UntrustedSemanticGenerationRootV2::from_wire_claim(generation_root),
+            descriptors,
+        )
+        .expect("canonical empty V2 manifest")
     }
 
     fn valid_nxfi_fixture(documentation: &str, revision: u64, root: u8) -> (Fixture, Vec<u8>) {
@@ -3337,6 +3440,184 @@ mod tests {
                 .expect("GC resumes after historical reader drops")
                 .complete()
         );
+    }
+
+    #[test]
+    fn typed_v2_history_recovers_commit_and_replays_third_old_after_gc_reopen() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let file_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open semantic FileStore");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
+            .expect("open semantic history adapter");
+        let generations = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
+            .expect("open generation records");
+        let generation = fixture(b"typed V2 history selected materialization", 1, 101);
+        let _ = commit(
+            &generations,
+            &generation,
+            [generation.stamp, generation.stamp],
+        )
+        .expect("commit local V1 materialization");
+        let closure_receipt = file_store
+            .begin_streaming_closure(StreamingClosureBudget::new(1, 1, 1, 16 * 1024, 1, 4 * 1024))
+            .expect("begin empty V2 payload closure")
+            .seal()
+            .expect("seal empty V2 payload closure");
+        let closure_claim = ArtifactClosureClaim::from_id(closure_receipt.closure());
+        let branch = HistoryRefName::new("typed-v2-history").expect("V2 branch name");
+        let mut previous = None;
+        let mut commits = Vec::new();
+
+        for index in 0..3_u8 {
+            let manifest = empty_typed_v2_manifest(70 + index);
+            let parents = previous.into_iter().collect::<Vec<_>>();
+            if index == 0 {
+                arm_history_test_fault(HistoryTestFault::AfterHistoryCommit);
+                assert!(
+                    range_store
+                        .admit_typed_v2_history_commit(
+                            &generation.target,
+                            &parents,
+                            [0x70; 32],
+                            &manifest,
+                            closure_claim,
+                            &[],
+                            &[],
+                            SemanticTypedPlaneVerificationTierV2::Standard,
+                            backend_semantic::ir::JumboRopeLimits::default(),
+                            &mut TestAuthority::new(
+                                [generation.stamp, generation.stamp],
+                                [generation.image],
+                            ),
+                        )
+                        .expect_err("interrupt after V2 immutable commit persistence")
+                        .contains("AfterHistoryCommit")
+                );
+            }
+            let admission = range_store
+                .admit_typed_v2_history_commit(
+                    &generation.target,
+                    &parents,
+                    [0x70 + index; 32],
+                    &manifest,
+                    closure_claim,
+                    &[],
+                    &[],
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    backend_semantic::ir::JumboRopeLimits::default(),
+                    &mut TestAuthority::new(
+                        [generation.stamp, generation.stamp],
+                        [generation.image],
+                    ),
+                )
+                .expect("admit or recover V2 history commit");
+            let identity = admission.commit().identity();
+            range_store
+                .compare_and_swap_history_ref(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    branch.clone(),
+                    previous,
+                    Some(identity),
+                )
+                .expect("publish V2 commit under navigation ref CAS");
+            drop(admission);
+            commits.push(identity);
+            previous = Some(identity);
+        }
+
+        assert_ne!(commits[0], commits[2]);
+        assert!(
+            generations
+                .history_generation(&generation.target, commits[2])
+                .expect_err("V2 cannot be materialized through a V1 generation read")
+                .contains("typed V2 history requires proof-bearing cold replay")
+        );
+        assert!(
+            range_store
+                .replay_history(&generation.target, commits[2])
+                .expect_err("generic V1 replay cannot relabel a V2 commit")
+                .contains("typed V2 history requires typed replay")
+        );
+        let mut history_gc = range_store
+            .advance_history_gc(&generation.target)
+            .expect("start history mark/sweep with V2 tip");
+        while !history_gc.complete() {
+            history_gc = range_store
+                .advance_history_gc(&generation.target)
+                .expect("finish history mark/sweep");
+        }
+        assert!(
+            range_store
+                .history_commit(&generation.target, commits[0])
+                .is_ok()
+        );
+
+        let ancestry = range_store
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commits[0],
+            )
+            .expect("prove third-old V2 commit remains reachable");
+        let replay = range_store
+            .replay_typed_v2_history(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commits[0],
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("cold-verify third-old V2 commit");
+        assert_eq!(replay.commit().identity(), commits[0]);
+        assert!(
+            replay
+                .manifest()
+                .content_root_claim()
+                .matches(replay.content().content_root())
+        );
+        drop(replay);
+
+        let _ = range_store
+            .collect_garbage_with_history(&generation.target, backend_store::GcLimits::default())
+            .expect("collect FileStore with all V2 ancestry closures rooted");
+        drop(range_store);
+        drop(generations);
+        drop(closure_receipt);
+
+        let reopened = FileSemanticRangeStore::open(
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("cold reopen FileStore"),
+            limits,
+        )
+        .expect("cold reopen semantic history adapter");
+        let cold_ancestry = reopened
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commits[0],
+            )
+            .expect("reprove third-old V2 reachability after cold reopen");
+        let cold_replay = reopened
+            .replay_typed_v2_history(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commits[0],
+                &cold_ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("replay third-old V2 commit after FileStore GC and restart");
+        assert_eq!(cold_replay.commit().identity(), commits[0]);
     }
 
     #[test]
