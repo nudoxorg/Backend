@@ -147,16 +147,24 @@ impl LineageKindV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LineageStatusV1 {
     /// Only an independent authority attestation can justify this status.
-    Confirmed { attestation: LineageAttestationId },
+    Confirmed {
+        /// Content ID of the independently verified attestation.
+        attestation: LineageAttestationId,
+    },
     /// One member of a complete, explicitly bounded candidate group.
     Ambiguous {
+        /// Identity shared by the complete candidate group.
         group: LineageCandidateGroupIdV1,
+        /// Zero-based position of this candidate in the group.
         index: u16,
+        /// Total candidates required for the group to be complete.
         count: u16,
     },
     /// A candidate or missing edge whose relationship remains unresolved.
     Unresolved {
+        /// Why continuity could not be established.
         reason: UnresolvedLineageReasonV1,
+        /// Optional nonzero digest of retained diagnostic evidence.
         evidence: Option<[u8; 32]>,
     },
 }
@@ -610,16 +618,24 @@ impl<'wire> LineageEdgeViewV1<'wire> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LineageStatusViewV1<'wire> {
     /// Requires an external authority verifier to accept the exact row.
-    Confirmed { attestation: &'wire [u8; 32] },
+    Confirmed {
+        /// Claimed attestation object ID; verification has not run.
+        attestation: &'wire [u8; 32],
+    },
     /// Candidate group membership; all declared alternatives must be present.
     Ambiguous {
+        /// Claimed candidate-group identity.
         group: &'wire [u8; 32],
+        /// Claimed zero-based position in that group.
         index: u16,
+        /// Claimed total group size.
         count: u16,
     },
     /// Non-authoritative unresolved evidence.
     Unresolved {
+        /// Claimed reason the relation remains unresolved.
         reason: UnresolvedLineageReasonV1,
+        /// Optional borrowed nonzero diagnostic digest.
         evidence: Option<&'wire [u8; 32]>,
     },
 }
@@ -839,17 +855,25 @@ impl ExactSizeIterator for VerifiedLineageEdgeIterV1<'_> {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VerifiedLineageStatusV1<'wire> {
     /// An external authority accepted the exact edge and transition proof.
-    Confirmed { attestation: &'wire [u8; 32] },
+    Confirmed {
+        /// Attestation ID accepted by the configured authority verifier.
+        attestation: &'wire [u8; 32],
+    },
     /// Complete alternatives; no member was selected as the winner.
     Ambiguous {
+        /// Identity of the verified complete candidate group.
         group: &'wire [u8; 32],
+        /// Zero-based position in that group.
         index: u16,
+        /// Verified total number of candidates in the group.
         count: u16,
     },
     /// The candidate remains unresolved after all known contradictions were
     /// rejected and unavailable facts were recorded.
     Unresolved {
+        /// Reason this verified candidate remains unresolved.
         reason: UnresolvedLineageReasonV1,
+        /// Optional borrowed nonzero diagnostic digest.
         evidence: Option<&'wire [u8; 32]>,
     },
 }
