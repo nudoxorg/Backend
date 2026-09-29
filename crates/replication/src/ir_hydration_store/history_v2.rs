@@ -414,7 +414,7 @@ impl FileSemanticRangeStore {
             self.validate_history_ref_proof(target, kind, name, commit_id, ancestry)?;
         }
         Ok(crate::TypedV2HistoryReplay::new(commit, manifest, verified)
-            .with_lineage_edge_set(locator.lineage_edge_set.clone())
+            .with_lineage_edge_set(locator.lineage_edge_set)
             .with_gc_pin(std::sync::Arc::new(gc_pin)))
     }
 }

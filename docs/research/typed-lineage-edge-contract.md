@@ -53,6 +53,10 @@ content-addressed proof self-reference. The child history commit ID is
 excluded because it commits to the lineage object and including it would form
 a hash cycle. The reject-all policy is the default. No
 heuristic matcher or structural similarity score can mint confirmation.
+An attestation producer can derive the exact digest with
+`BorrowedTypedLineageEdgeSetV1::confirmation_statement` from a confirmed row
+using a nonzero placeholder proof ID, then encode the resulting content ID;
+the proof ID itself does not alter the signed statement.
 
 The verifier context also names the exact child history commit and proves
 that the header's parent is its direct first parent. A set cannot claim a

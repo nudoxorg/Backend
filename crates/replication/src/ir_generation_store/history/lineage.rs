@@ -406,6 +406,36 @@ impl<'wire> BorrowedTypedLineageEdgeSetV1<'wire> {
         self.child_generation
     }
 
+    /// Computes the digest an authority must sign for one confirmed row.
+    /// This accepts only a view borrowed from this exact edge set. The
+    /// attestation ID is excluded, so a producer can first encode a
+    /// nonzero placeholder, derive the statement, then replace it with the
+    /// content-addressed proof ID without creating a cycle.
+    pub fn confirmation_statement(
+        self,
+        edge: LineageEdgeViewV1<'wire>,
+    ) -> Result<LineageConfirmationStatementV1, LineageEdgeSetErrorV1> {
+        if !matches!(edge.status, LineageStatusViewV1::Confirmed { .. }) {
+            return Err(LineageEdgeSetErrorV1::NotConfirmed);
+        }
+        let expected_offset = edge.offset;
+        if expected_offset < HEADER_BYTES
+            || (expected_offset - HEADER_BYTES) % EDGE_BYTES != 0
+            || expected_offset
+                .checked_add(EDGE_BYTES)
+                .is_none_or(|end| end > self.bytes.len())
+            || edge.canonical_record.as_ptr() != self.bytes[expected_offset..].as_ptr()
+        {
+            return Err(LineageEdgeSetErrorV1::EdgeSetMismatch);
+        }
+        Ok(confirmation_statement_digest(
+            self.parent_commit,
+            self.parent_generation,
+            self.child_generation,
+            edge,
+        ))
+    }
+
     /// Validates canonical ordering, duplicate endpoints, reserved fields,
     /// and complete ambiguity groups without asserting semantic membership.
     pub(crate) fn validate_structure(self) -> Result<(), LineageEdgeSetErrorV1> {
@@ -905,6 +935,12 @@ pub enum LineageEdgeSetErrorV1 {
     /// The claimed parent is not the exact child's direct first parent.
     #[error("typed lineage edge set does not describe the direct history transition")]
     NotDirectTransition,
+    /// A statement was requested for a decoded row from another edge set.
+    #[error("typed lineage statement row does not belong to this edge set")]
+    EdgeSetMismatch,
+    /// A confirmation statement was requested for a non-confirmed row.
+    #[error("typed lineage statement requires a confirmed edge")]
+    NotConfirmed,
     /// A known history fact contradicts the edge's endpoint claim.
     #[error("typed lineage endpoint contradicts verified semantic contents")]
     EndpointMismatch,
@@ -1633,8 +1669,15 @@ mod tests {
             LineageSourceV1::new(commit(1), root(2), old), new,
             LineageStatusV1::Confirmed { attestation: LineageAttestationId::from_bytes([0x33; 32]) });
         let wire = make_wire(&[edge]);
-        let first_row = wire.borrow().expect("parse").edges().next().expect("edge");
-        let statement = confirmation_statement_digest(commit(1), &[2; 32], &[3; 32], first_row);
+        let borrowed = wire.borrow().expect("parse");
+        let first_row = borrowed.edges().next().expect("edge");
+        let statement = borrowed
+            .confirmation_statement(first_row)
+            .expect("derive statement before proof ID is known");
+        assert_eq!(
+            statement,
+            confirmation_statement_digest(commit(1), &[2; 32], &[3; 32], first_row)
+        );
         let authority = TestAuthority {
             attestation: Some([0x33; 32]),
             statement: Some(statement),
@@ -1673,8 +1716,19 @@ mod tests {
             .next()
             .expect("edge");
         assert_eq!(
-            confirmation_statement_digest(commit(1), &[2; 32], &[3; 32], first_row),
-            confirmation_statement_digest(commit(1), &[2; 32], &[3; 32], second_row)
+            other_id_wire
+                .borrow()
+                .expect("parse other attestation id")
+                .confirmation_statement(second_row)
+                .expect("same statement with a different proof ID"),
+            statement
+        );
+        assert_eq!(
+            other_id_wire
+                .borrow()
+                .expect("parse other attestation id")
+                .confirmation_statement(first_row),
+            Err(LineageEdgeSetErrorV1::EdgeSetMismatch)
         );
 
         // The same row proof is not portable across a different transition
@@ -1730,6 +1784,23 @@ mod tests {
                 )],
             ),
             Err(LineageEdgeSetErrorV1::InvalidEdge)
+        );
+
+        let unresolved = make_wire(&[LineageEdgeV1::new(
+            LineageKindV1::Rename,
+            LineageSourceV1::new(commit(1), root(2), old),
+            new,
+            LineageStatusV1::Unresolved {
+                reason: UnresolvedLineageReasonV1::InsufficientEvidence,
+                evidence: None,
+            },
+        )]);
+        let unresolved_view = unresolved.borrow().expect("parse unresolved row");
+        assert_eq!(
+            unresolved_view.confirmation_statement(
+                unresolved_view.edges().next().expect("unresolved edge")
+            ),
+            Err(LineageEdgeSetErrorV1::NotConfirmed)
         );
     }
 }
