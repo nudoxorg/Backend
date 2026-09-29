@@ -25,6 +25,7 @@ pub use self::result_wire::{
     reopen_compiler_result_envelope,
 };
 pub use self::runtime::{
-    CompilerClusterCoordinator, CompilerInputAdmissionError, CompilerInputAdmissionEvidence,
-    CompilerInputAdmissionVerifier, CompilerTrustedExecutionGrant, VerifiedCompilerInputAdmission,
+    AdmittedSemanticInputWitnessV2, CompilerClusterCoordinator, CompilerInputAdmissionError,
+    CompilerInputAdmissionEvidence, CompilerInputAdmissionVerifier, CompilerTrustedExecutionGrant,
+    VerifiedCompilerInputAdmission,
 };

@@ -18,8 +18,8 @@ mod toolchain_probe;
 mod unit_authority_v2;
 
 pub use self::cluster_coordinator::{
-    AdmittedRemoteCompilerCandidate, CheckedRemoteCompilerArtifact, CheckedRemoteCompilerOutput,
-    CheckedRemoteCompilerPlane, CheckedRemoteCompilerPlaneArtifact,
+    AdmittedRemoteCompilerCandidate, AdmittedSemanticInputWitnessV2, CheckedRemoteCompilerArtifact,
+    CheckedRemoteCompilerOutput, CheckedRemoteCompilerPlane, CheckedRemoteCompilerPlaneArtifact,
     CheckedRemoteCompilerPlaneDescriptor, CheckedRemoteCompilerPlaneSegment,
     CompilerClusterCoordinator, CompilerInputAdmissionError, CompilerInputAdmissionEvidence,
     CompilerInputAdmissionVerifier, CompilerResultClosureIndex, CompilerResultEnvelopeSchema,

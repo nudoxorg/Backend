@@ -362,6 +362,16 @@ impl CapturedFullWorkspaceV2 {
         self.workspace_tree.encoded_bytes()
     }
 
+    /// Exact admitted full-workspace inventory used to verify a post-execution read frontier.
+    ///
+    /// The tree is immutable and can only be obtained from a captured workspace whose typed
+    /// closure was checked in the local store. It does not itself prove that a compiler observed
+    /// every positive or negative read.
+    #[must_use]
+    pub const fn workspace_tree(&self) -> &CompilerInputMerkleTreeV2 {
+        &self.workspace_tree
+    }
+
     /// Exact compiler-authority cache key for looking up a prior workspace tree.
     #[must_use]
     pub fn cache_key(&self) -> CompilerInputCaptureCacheKeyV2 {

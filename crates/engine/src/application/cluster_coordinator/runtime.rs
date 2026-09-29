@@ -2,12 +2,15 @@
 
 use crate::compiler_input_capture_v2::CapturedFullWorkspaceV2;
 use crate::compiler_input_manifest_v2::CompilerInputManifestV2;
+use crate::compiler_unit_read_closure_v2::VerifiedUnitReadClosure;
 use backend_execution::{
     CompilerAssignment, CompilerAssignmentError, CompilerAssignmentOutcome, CompilerAttemptToken,
     CompilerBalancedRemote, CompilerBalancingRequest, CompilerClusterScheduler, CompilerPeerId,
     CompilerPlacementPolicy, VerifiedCompilerInput,
 };
+use backend_semantic::ir::SemanticInputWitness;
 use backend_store::ClosureId;
+use backend_version::{CoverageWitness, ScopeRoot};
 
 /// Facts handed to the source authority when it verifies the current owner fence.
 ///
@@ -132,6 +135,19 @@ pub trait CompilerInputAdmissionVerifier {
         namespace_id: [u8; 16],
         manifest: &CompilerInputManifestV2,
     ) -> bool;
+
+    /// Reopens non-workspace read facts and mints complete authority only for this exact closed
+    /// trace. Implementations must validate environment, generated, toolchain, and external
+    /// inputs against the execution grant, recheck the current source observation, and reject
+    /// unregistered adapter protocols, trace loss, or unsupported reads. A source-fence digest or
+    /// full-workspace snapshot is not enough to return `CoverageWitness::Complete`.
+    fn admit_complete_read_frontier(
+        &self,
+        _evidence: &CompilerInputAdmissionEvidence,
+        _read_closure: &VerifiedUnitReadClosure,
+    ) -> Result<CoverageWitness, CompilerInputAdmissionError> {
+        Err(CompilerInputAdmissionError::ReadFrontierAdmissionUnavailable)
+    }
 }
 
 /// Explicit owner grant for one worker and one exact host-execution identity.
@@ -179,6 +195,37 @@ impl CompilerTrustedExecutionGrant {
 pub struct VerifiedCompilerInputAdmission {
     evidence: CompilerInputAdmissionEvidence,
     execution_grant: CompilerTrustedExecutionGrant,
+}
+
+/// Owner-admitted compiler input/read frontier for one exact semantic build.
+///
+/// This type can only be created after a [`VerifiedUnitReadClosure`] is rebound to the captured
+/// workspace and a source authority returns a live complete coverage capability scoped to that
+/// closure root. The workspace snapshot ID alone cannot construct this value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdmittedSemanticInputWitnessV2 {
+    read_closure: VerifiedUnitReadClosure,
+    input_witness: SemanticInputWitness,
+}
+
+impl AdmittedSemanticInputWitnessV2 {
+    /// Complete owner-admitted semantic input witness consumed by V2 plane validation.
+    #[must_use]
+    pub const fn input_witness(&self) -> SemanticInputWitness {
+        self.input_witness
+    }
+
+    /// Exact opaque read-frontier preimage retained for result-closure admission.
+    #[must_use]
+    pub const fn read_closure(&self) -> &VerifiedUnitReadClosure {
+        &self.read_closure
+    }
+
+    /// Root of the canonical positive/negative read-frontier preimage.
+    #[must_use]
+    pub const fn read_frontier_root(&self) -> [u8; 32] {
+        self.read_closure.closure_root()
+    }
 }
 
 impl VerifiedCompilerInputAdmission {
@@ -270,6 +317,53 @@ impl VerifiedCompilerInputAdmission {
                 backend_execution::CompilerAssignmentRoute::Local => false,
             }
     }
+
+    /// Rebinds an opaque post-execution read trace to this exact owner input and obtains a live
+    /// complete witness from the source authority.
+    ///
+    /// The returned type is the only engine bridge from compiler input evidence to a semantic
+    /// input witness. It verifies the trace's package/unit, recipe, captured workspace, and all
+    /// workspace-relative positive, negative, and directory-listing facts before asking the
+    /// owner authority to admit environment, generated, toolchain, and external read facts. The
+    /// authority must return a complete capability scoped to the exact trace root. Current
+    /// `CompilerInputManifestV2` records only a workspace snapshot in its compatibility
+    /// `read_manifest` field; without a separate `VerifiedUnitReadClosure`, this path cannot mint
+    /// semantic input coverage.
+    pub fn admit_semantic_input_witness_v2(
+        &self,
+        read_closure: VerifiedUnitReadClosure,
+        verifier: &impl CompilerInputAdmissionVerifier,
+    ) -> Result<AdmittedSemanticInputWitnessV2, CompilerInputAdmissionError> {
+        let manifest = self.manifest();
+        let capture_identity = read_closure.capture_identity();
+        if read_closure.package_target() != manifest.package_target()
+            || read_closure.invocation_recipe() != manifest.invocation_recipe()
+            || capture_identity.workspace_snapshot_id() != manifest.workspace_snapshot_id()
+            || capture_identity.workspace_root() != manifest.workspace_root()
+            || self.execution_grant.package_lineage != manifest.package_lineage()
+            || self.execution_grant.target != *manifest.package_target().target().as_ref()
+            || self.execution_grant.recipe != manifest.recipe()
+            || self.execution_grant.toolchain != manifest.toolchain()
+            || self.execution_grant.environment != manifest.environment()
+            || self.execution_grant.target_platform != manifest.target_platform()
+        {
+            return Err(CompilerInputAdmissionError::ReadFrontierScopeMismatch);
+        }
+        read_closure
+            .fact_tree()
+            .verify_read_frontier(self.evidence.capture.workspace_tree())
+            .map_err(|_| CompilerInputAdmissionError::ReadFrontierMismatch)?;
+        verifier.verify_source_observation(&self.evidence)?;
+        let coverage = verifier.admit_complete_read_frontier(&self.evidence, &read_closure)?;
+        let read_manifest_root = ScopeRoot::from_bytes(read_closure.closure_root());
+        let input_witness =
+            SemanticInputWitness::admitted(manifest.input_root(), read_manifest_root, coverage)
+                .map_err(|_| CompilerInputAdmissionError::ReadFrontierAuthorityRejected)?;
+        Ok(AdmittedSemanticInputWitnessV2 {
+            read_closure,
+            input_witness,
+        })
+    }
 }
 
 /// Constructs measured local-first placement for one owner-fenced compiler invocation.
@@ -333,4 +427,12 @@ pub enum CompilerInputAdmissionError {
     WorkerNotTrusted,
     /// Only a remote assignment can carry a trusted-worker execution grant.
     RemoteAssignmentRequired,
+    /// The read trace does not match the exact input target, recipe, or captured workspace.
+    ReadFrontierScopeMismatch,
+    /// A positive, negative, or directory-listing read fact disagrees with the captured tree.
+    ReadFrontierMismatch,
+    /// No owner verifier has admitted a complete read frontier for this invocation.
+    ReadFrontierAdmissionUnavailable,
+    /// The owner did not return complete coverage scoped to the exact read-frontier root.
+    ReadFrontierAuthorityRejected,
 }
