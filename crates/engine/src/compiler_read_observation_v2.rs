@@ -14,15 +14,15 @@ static NEXT_READ_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 /// Independent observation channels required before a future Rust adapter
 /// could attempt to establish a complete compiler read frontier.
 ///
-/// These channels are intentionally more granular than the current RA VFS
-/// callback. Sealing them proves only that registered producers closed their
+/// These channels are intentionally more granular than the current RA
+/// observations. Sealing them proves only that registered producers closed their
 /// event streams; it does not prove that a producer observed every read.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
 pub(crate) enum CompilerReadObservationChannelV2 {
     /// Exact selected editor buffers installed in RA's database.
     EditorOverlay = 0,
-    /// Positive file buffers delivered through the RA VFS loader.
+    /// Positive file buffers resident in the RA VFS after workspace loading.
     RaVfsLoader = 1,
     /// Positive and negative Rust module-resolution candidates.
     RustModuleResolver = 2,
@@ -86,7 +86,7 @@ impl CompilerReadObservationChannelV2 {
 pub(crate) enum CompilerReadObservationEventClassV2 {
     /// Exact selected editor-overlay bytes.
     EditorBuffer = 1,
-    /// A positive filesystem or VFS read.
+    /// A positive filesystem or VFS file input observation.
     PresentFile = 2,
     /// A failed lookup whose absence can affect compilation.
     AbsentPath = 3,
@@ -377,6 +377,47 @@ impl CompilerReadObservationRecorderV2 {
         identity.update(&[class as u8]);
         identity.update(&(path.len() as u32).to_be_bytes());
         identity.update(path.as_bytes());
+        identity.update(&evidence_digest);
+        self.observe_digest(
+            producer,
+            sequence,
+            class,
+            *identity.finalize().as_bytes(),
+            byte_charge,
+        )
+    }
+
+    /// Records a path-bearing event when the source is a native absolute path
+    /// that must not be retained or passed through the portable manifest path
+    /// validator. Both path identity and evidence are reduced to digests by
+    /// the caller; this remains diagnostic and does not prove path coverage.
+    pub(crate) fn observe_opaque_path_event(
+        &mut self,
+        producer: &CompilerReadObservationProducerV2,
+        sequence: u64,
+        class: CompilerReadObservationEventClassV2,
+        path_identity_digest: [u8; 32],
+        evidence_digest: [u8; 32],
+        byte_charge: u64,
+    ) -> Result<(), CompilerReadObservationFailureV2> {
+        self.check_healthy()?;
+        if !matches!(
+            class,
+            CompilerReadObservationEventClassV2::PresentFile
+                | CompilerReadObservationEventClassV2::AbsentPath
+                | CompilerReadObservationEventClassV2::ModuleResolution
+                | CompilerReadObservationEventClassV2::ToolchainInput
+                | CompilerReadObservationEventClassV2::GeneratedOutput
+                | CompilerReadObservationEventClassV2::ExternalInput
+        ) || path_identity_digest == [0; 32]
+            || evidence_digest == [0; 32]
+        {
+            return self.poison(CompilerReadObservationFailureV2::UnsupportedReadClass);
+        }
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"backend.compiler.opaque-path-observation.v2\0");
+        identity.update(&[class as u8]);
+        identity.update(&path_identity_digest);
         identity.update(&evidence_digest);
         self.observe_digest(
             producer,
@@ -723,6 +764,46 @@ mod tests {
             recorder.channel_event_count(CompilerReadObservationChannelV2::RustModuleResolver),
             u64::try_from(independently_expected.len()).expect("small fixture count")
         );
+    }
+
+    #[test]
+    fn opaque_ra_vfs_and_hir_module_events_remain_diagnostic_and_sequenced() {
+        let mut recorder = CompilerReadObservationRecorderV2::new().expect("attempt id");
+        let vfs = recorder
+            .register(CompilerReadObservationChannelV2::RaVfsLoader)
+            .expect("RA VFS producer");
+        let module = recorder
+            .register(CompilerReadObservationChannelV2::RustModuleResolver)
+            .expect("module resolver producer");
+        recorder
+            .observe_opaque_path_event(
+                &vfs,
+                0,
+                CompilerReadObservationEventClassV2::PresentFile,
+                *blake3::hash(b"absolute RA path").as_bytes(),
+                *blake3::hash(b"VFS bytes").as_bytes(),
+                8,
+            )
+            .expect("loaded VFS file");
+        recorder
+            .observe_opaque_path_event(
+                &module,
+                0,
+                CompilerReadObservationEventClassV2::ModuleResolution,
+                *blake3::hash(b"declaring file identity").as_bytes(),
+                *blake3::hash(b"absent.rs").as_bytes(),
+                9,
+            )
+            .expect("HIR-reported unresolved candidate");
+        recorder.seal(&vfs, 1).expect("VFS source count");
+        recorder.seal(&module, 1).expect("HIR source count");
+
+        let report = recorder.report();
+        assert_eq!(report.events(), 2);
+        assert_eq!(report.sealed_channels(), 2);
+        assert_eq!(report.required_channels(), 11);
+        assert!(!report.all_required_producers_sealed());
+        assert_eq!(report.failure(), None);
     }
 
     #[test]

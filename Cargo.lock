@@ -1185,6 +1185,7 @@ dependencies = [
  "anyhow",
  "backend-compile",
  "backend-semantic",
+ "blake3",
  "ra_ap_base_db",
  "ra_ap_hir",
  "ra_ap_hir_ty",

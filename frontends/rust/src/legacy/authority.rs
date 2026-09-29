@@ -100,6 +100,108 @@ pub trait RustWorkspaceEditorBufferObserver {
     fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]);
 }
 
+/// Borrow-scoped observer for selected buffers plus two concrete rust-analyzer
+/// read surfaces: loaded VFS file contents and rejected `mod` candidates from
+/// HIR's unresolved-module diagnostics.
+///
+/// This is diagnostic evidence only. The VFS scan does not see failed VFS
+/// loader probes, and HIR candidate diagnostics do not cover arbitrary
+/// filesystem calls, Cargo/project-model reads, environment values, child
+/// processes, sysroot discovery, or generated outputs. It cannot authorize
+/// workspace reuse.
+pub trait RustWorkspaceReadFrontierObserver {
+    /// Receives one selected editor buffer after RA has applied the overlay.
+    fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]);
+
+    /// Receives the exact source text held by RA for one loaded VFS file.
+    /// Return `true` only after the event has been accepted by the sink.
+    fn observe_ra_vfs_file(&mut self, absolute_path: &str, contents: &[u8]) -> bool;
+
+    /// Receives one exact byte buffer successfully read by the Rustdoc
+    /// `include_str!` preloader before it is admitted into RA's VFS.
+    fn observe_rustdoc_input(&mut self, absolute_path: &str, contents: &[u8]) -> bool;
+
+    /// Receives the crate root, declaration file, and candidate path string
+    /// RA reports after module resolution rejected all candidates.
+    /// Return `true` only after the event has been accepted by the sink.
+    fn observe_unresolved_module_candidate(
+        &mut self,
+        crate_root_file: &str,
+        declaring_file: &str,
+        candidate: &str,
+    ) -> bool;
+}
+
+/// Independent source-side totals from one opt-in RA read-frontier scan.
+///
+/// `visited` counts are advanced from the RA iterators/diagnostic payloads;
+/// `delivered` counts advance only when the observer acknowledges an event.
+/// A mismatch detects an omitted or rejected callback but does not establish
+/// global compiler-read completeness.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RustWorkspaceReadFrontierSummary {
+    /// RA VFS entries with a representable filesystem path encountered.
+    pub vfs_files_visited: u64,
+    /// RA VFS callbacks acknowledged by the observer.
+    pub vfs_events_delivered: u64,
+    /// Unique crate/declaration/candidate identities in HIR diagnostics.
+    pub module_candidates_visited: u64,
+    /// Module-candidate callbacks acknowledged by the observer.
+    pub module_candidate_events_delivered: u64,
+    /// Successful Rustdoc include-file reads encountered by the preloader.
+    pub rustdoc_inputs_visited: u64,
+    /// Rustdoc include-file callbacks acknowledged by the observer.
+    pub rustdoc_input_events_delivered: u64,
+    /// RA VFS or diagnostic declaration paths that could not be represented as UTF-8.
+    pub unsupported_paths: u64,
+    /// The scan stopped at a fixed event/byte budget.
+    pub truncated: bool,
+}
+
+const MAX_RUST_READ_FRONTIER_EVENTS: u64 = 250_000;
+const MAX_RUST_READ_FRONTIER_BYTES: u64 = 512 * 1024 * 1024;
+
+enum RustWorkspaceSessionObserver<'a> {
+    Editor(&'a mut dyn RustWorkspaceEditorBufferObserver),
+    ReadFrontier(&'a mut dyn RustWorkspaceReadFrontierObserver),
+}
+
+impl RustWorkspaceSessionObserver<'_> {
+    fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]) {
+        match self {
+            Self::Editor(observer) => {
+                observer.observe_editor_buffer(relative_path, contents);
+            }
+            Self::ReadFrontier(observer) => {
+                observer.observe_editor_buffer(relative_path, contents);
+            }
+        }
+    }
+
+    fn read_frontier(&mut self) -> Option<&mut dyn RustWorkspaceReadFrontierObserver> {
+        match self {
+            Self::Editor(_) => None,
+            Self::ReadFrontier(frontier) => Some(&mut **frontier),
+        }
+    }
+
+    fn observe_rustdoc_input(
+        &mut self,
+        summary: &mut RustWorkspaceReadFrontierSummary,
+        absolute_path: &str,
+        contents: &[u8],
+    ) {
+        let Self::ReadFrontier(observer) = self else {
+            return;
+        };
+        summary.rustdoc_inputs_visited = summary.rustdoc_inputs_visited.saturating_add(1);
+        if observer.observe_rustdoc_input(absolute_path, contents) {
+            summary.rustdoc_input_events_delivered =
+                summary.rustdoc_input_events_delivered.saturating_add(1);
+        }
+    }
+}
+
 /// Stable identity for one rust-analyzer workspace operation.
 ///
 /// The key carries the full compiler authority identity even though cross-call
@@ -377,6 +479,7 @@ impl RustWorkspaceSessionLane {
         control: RustAnalysisControl<'_>,
     ) -> Result<RustWorkspaceSessionLease<'cache>, RustAuthorityError> {
         self.begin_inner(key, files, control, None)
+            .map(|(lease, _)| lease)
     }
 
     /// Opens a fresh workspace and reports exact selected editor buffers to a
@@ -392,7 +495,42 @@ impl RustWorkspaceSessionLane {
         control: RustAnalysisControl<'_>,
         observer: &mut dyn RustWorkspaceEditorBufferObserver,
     ) -> Result<RustWorkspaceSessionLease<'cache>, RustAuthorityError> {
-        self.begin_inner(key, files, control, Some(observer))
+        self.begin_inner(
+            key,
+            files,
+            control,
+            Some(RustWorkspaceSessionObserver::Editor(observer)),
+        )
+        .map(|(lease, _)| lease)
+    }
+
+    /// Opens a fresh workspace and synchronously reports selected buffers,
+    /// loaded RA VFS files, and HIR-reported unresolved module candidates.
+    ///
+    /// The returned source-side totals let a diagnostic consumer detect
+    /// omitted or rejected callbacks. They do not certify complete compiler
+    /// reads and cannot authorize workspace reuse.
+    pub fn begin_with_read_frontier_observer<'cache>(
+        &'cache mut self,
+        key: RustWorkspaceSessionKey,
+        files: &[RustWorkspaceFile<'_>],
+        control: RustAnalysisControl<'_>,
+        frontier_observer: &mut dyn RustWorkspaceReadFrontierObserver,
+    ) -> Result<
+        (
+            RustWorkspaceSessionLease<'cache>,
+            RustWorkspaceReadFrontierSummary,
+        ),
+        RustAuthorityError,
+    > {
+        self.begin_inner(
+            key,
+            files,
+            control,
+            Some(RustWorkspaceSessionObserver::ReadFrontier(
+                frontier_observer,
+            )),
+        )
     }
 
     fn begin_inner<'cache>(
@@ -400,8 +538,14 @@ impl RustWorkspaceSessionLane {
         key: RustWorkspaceSessionKey,
         files: &[RustWorkspaceFile<'_>],
         control: RustAnalysisControl<'_>,
-        observer: Option<&mut dyn RustWorkspaceEditorBufferObserver>,
-    ) -> Result<RustWorkspaceSessionLease<'cache>, RustAuthorityError> {
+        mut observer: Option<RustWorkspaceSessionObserver<'_>>,
+    ) -> Result<
+        (
+            RustWorkspaceSessionLease<'cache>,
+            RustWorkspaceReadFrontierSummary,
+        ),
+        RustAuthorityError,
+    > {
         control.check()?;
         if files.len() != key.source_paths.len()
             || files
@@ -444,7 +588,14 @@ impl RustWorkspaceSessionLane {
         })?;
         self.stats.workspace_loads = self.stats.workspace_loads.saturating_add(1);
         let update_started = Instant::now();
-        let result = workspace.apply_selected_sources(files, &key, control, observer);
+        let mut read_frontier_summary = RustWorkspaceReadFrontierSummary::default();
+        let result = workspace.apply_selected_sources(
+            files,
+            &key,
+            control,
+            observer.as_mut(),
+            &mut read_frontier_summary,
+        );
         self.stats.source_update_nanos = self
             .stats
             .source_update_nanos
@@ -454,6 +605,11 @@ impl RustWorkspaceSessionLane {
                 self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
                 error
             })?;
+        if let Some(observer) = observer.as_mut() {
+            if let Some(frontier) = observer.read_frontier() {
+                workspace.observe_read_frontier(frontier, control, &mut read_frontier_summary);
+            }
+        }
         self.stats.source_updates = self.stats.source_updates.saturating_add(updated as u64);
         self.stats.overlay_sources_added = self
             .stats
@@ -475,11 +631,14 @@ impl RustWorkspaceSessionLane {
             self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
             error
         })?;
-        Ok(RustWorkspaceSessionLease {
-            lane: self,
-            session: Some(RustWorkspaceSession { workspace }),
-            committed: false,
-        })
+        Ok((
+            RustWorkspaceSessionLease {
+                lane: self,
+                session: Some(RustWorkspaceSession { workspace }),
+                committed: false,
+            },
+            read_frontier_summary,
+        ))
     }
 
     /// Returns cumulative workspace work counts for this compiler lane.
@@ -966,7 +1125,8 @@ impl RustWorkspace {
         files: &[RustWorkspaceFile<'_>],
         key: &RustWorkspaceSessionKey,
         control: RustAnalysisControl<'_>,
-        mut observer: Option<&mut dyn RustWorkspaceEditorBufferObserver>,
+        mut observer: Option<&mut RustWorkspaceSessionObserver<'_>>,
+        read_frontier_summary: &mut RustWorkspaceReadFrontierSummary,
     ) -> Result<(usize, usize, usize, usize, usize), RustAuthorityError> {
         if files.len() != key.source_paths.len() {
             return Err(RustAuthorityError::SessionFrontierMismatch);
@@ -1189,6 +1349,188 @@ impl RustWorkspace {
             root_entries_rebuilt,
             selected_source_roots.len(),
         ))
+    }
+
+    fn observe_read_frontier(
+        &self,
+        observer: &mut dyn RustWorkspaceReadFrontierObserver,
+        control: RustAnalysisControl<'_>,
+        summary: &mut RustWorkspaceReadFrontierSummary,
+    ) {
+        ra_ap_hir_ty::next_solver::interner::attach_db(&self.database, || {
+            let mut observed_bytes = 0_u64;
+            let mut vfs_entries_visited = 0_u64;
+
+            // This is a positive-file snapshot of RA's actual VFS, not an OS
+            // loader interception. Every path-bearing entry is sent synchronously
+            // without allocating an event row or retaining source bytes.
+            for (file_id, vfs_path) in self.vfs.iter() {
+                if control.check().is_err() || vfs_entries_visited >= MAX_RUST_READ_FRONTIER_EVENTS
+                {
+                    summary.truncated = true;
+                    break;
+                }
+                vfs_entries_visited = vfs_entries_visited.saturating_add(1);
+                let Some(path) = vfs_path.as_path() else {
+                    summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
+                    continue;
+                };
+                let observed = SourceDatabase::file_text(&self.database, file_id);
+                let contents = observed.text(&self.database);
+                let byte_charge = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+                if observed_bytes
+                    .checked_add(byte_charge)
+                    .is_none_or(|total| total > MAX_RUST_READ_FRONTIER_BYTES)
+                {
+                    summary.truncated = true;
+                    break;
+                }
+                observed_bytes += byte_charge;
+                summary.vfs_files_visited = summary.vfs_files_visited.saturating_add(1);
+                if observer.observe_ra_vfs_file(path.as_str(), contents.as_bytes()) {
+                    summary.vfs_events_delivered = summary.vfs_events_delivered.saturating_add(1);
+                }
+            }
+
+            // HIR exposes the candidate set retained by its real module resolver
+            // only when all candidates failed. Multiple module traversals can
+            // surface the same inline-module diagnostic, so collapse exact
+            // (crate root, declaring file, candidate) duplicates in a bounded set.
+            let mut seen_candidates = HashSet::<[u8; 32]>::new();
+            let mut modules_visited = 0_u64;
+            for krate in all_crates(&self.database)
+                .iter()
+                .copied()
+                .map(ra_ap_hir::Crate::from)
+            {
+                if summary.truncated || control.check().is_err() {
+                    summary.truncated = true;
+                    break;
+                }
+                let crate_root_file_id = krate.root_file(&self.database);
+                let Some(crate_root_file) = self.vfs.file_path(crate_root_file_id).as_path() else {
+                    summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
+                    continue;
+                };
+                let crate_root_file = crate_root_file.as_str();
+                let mut pending_modules = Vec::new();
+                if pending_modules.try_reserve(1).is_err() {
+                    summary.truncated = true;
+                    break;
+                }
+                pending_modules.push(krate.root_module(&self.database));
+                while let Some(module) = pending_modules.pop() {
+                    if modules_visited >= MAX_RUST_READ_FRONTIER_EVENTS || control.check().is_err()
+                    {
+                        summary.truncated = true;
+                        break;
+                    }
+                    modules_visited = modules_visited.saturating_add(1);
+                    for child in module.children(&self.database) {
+                        if modules_visited.saturating_add(
+                            u64::try_from(pending_modules.len()).unwrap_or(u64::MAX),
+                        ) >= MAX_RUST_READ_FRONTIER_EVENTS
+                            || pending_modules.try_reserve(1).is_err()
+                        {
+                            summary.truncated = true;
+                            break;
+                        }
+                        pending_modules.push(child);
+                    }
+                    if summary.truncated {
+                        break;
+                    }
+                    let mut diagnostics = Vec::new();
+                    module.diagnostics(&self.database, &mut diagnostics, false);
+                    for diagnostic in diagnostics {
+                        let ra_ap_hir::diagnostics::AnyDiagnostic::UnresolvedModule(diagnostic) =
+                            diagnostic
+                        else {
+                            continue;
+                        };
+                        let file_id = diagnostic
+                            .decl
+                            .file_id
+                            .original_file_respecting_includes(&self.database)
+                            .file_id(&self.database);
+                        let Some(declaring_file) = self.vfs.file_path(file_id).as_path() else {
+                            summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
+                            continue;
+                        };
+                        for candidate in diagnostic.candidates.iter() {
+                            if summary.module_candidates_visited >= MAX_RUST_READ_FRONTIER_EVENTS {
+                                summary.truncated = true;
+                                break;
+                            }
+                            let byte_charge = u64::try_from(
+                                crate_root_file
+                                    .len()
+                                    .saturating_add(declaring_file.as_str().len())
+                                    .saturating_add(candidate.len()),
+                            )
+                            .unwrap_or(u64::MAX);
+                            if observed_bytes
+                                .checked_add(byte_charge)
+                                .is_none_or(|total| total > MAX_RUST_READ_FRONTIER_BYTES)
+                            {
+                                summary.truncated = true;
+                                break;
+                            }
+                            let mut candidate_hasher = blake3::Hasher::new();
+                            candidate_hasher.update(b"backend.ra.unresolved-module-candidate.v1\0");
+                            candidate_hasher.update(
+                                &u64::try_from(crate_root_file.len())
+                                    .unwrap_or(u64::MAX)
+                                    .to_be_bytes(),
+                            );
+                            candidate_hasher.update(crate_root_file.as_bytes());
+                            candidate_hasher.update(
+                                &u64::try_from(declaring_file.as_str().len())
+                                    .unwrap_or(u64::MAX)
+                                    .to_be_bytes(),
+                            );
+                            candidate_hasher.update(declaring_file.as_str().as_bytes());
+                            candidate_hasher.update(
+                                &u64::try_from(candidate.len())
+                                    .unwrap_or(u64::MAX)
+                                    .to_be_bytes(),
+                            );
+                            candidate_hasher.update(candidate.as_bytes());
+                            let candidate_identity = *candidate_hasher.finalize().as_bytes();
+                            if seen_candidates.contains(&candidate_identity) {
+                                continue;
+                            }
+                            if seen_candidates.try_reserve(1).is_err() {
+                                summary.truncated = true;
+                                break;
+                            }
+                            seen_candidates.insert(candidate_identity);
+                            observed_bytes += byte_charge;
+                            summary.module_candidates_visited =
+                                summary.module_candidates_visited.saturating_add(1);
+                            if observer.observe_unresolved_module_candidate(
+                                crate_root_file,
+                                declaring_file.as_str(),
+                                candidate,
+                            ) {
+                                summary.module_candidate_events_delivered =
+                                    summary.module_candidate_events_delivered.saturating_add(1);
+                            }
+                        }
+                        if summary.truncated {
+                            break;
+                        }
+                    }
+                    if summary.truncated {
+                        break;
+                    }
+                }
+                if summary.truncated {
+                    break;
+                }
+            }
+            ()
+        })
     }
 
     fn local_source_roots_by_directory(

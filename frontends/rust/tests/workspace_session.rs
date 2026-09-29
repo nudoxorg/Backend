@@ -8,9 +8,9 @@ use std::{
 };
 
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustFeatureControl, RustToolchain, RustWorkspace,
-    RustWorkspaceEditorBufferObserver, RustWorkspaceFile, RustWorkspaceSessionKey,
-    RustWorkspaceSessionLane, SourceByteLimit,
+    RustAnalysisControl, RustFeatureControl, RustToolchain, RustWorkspace, RustWorkspaceFile,
+    RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
+    SourceByteLimit,
 };
 use backend_semantic::vocabulary::{RustEdition, Stage};
 use ra_ap_syntax::AstNode;
@@ -18,15 +18,80 @@ use ra_ap_syntax::AstNode;
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
-struct RecordingEditorBuffers {
-    observed: std::collections::HashMap<PathBuf, Vec<u8>>,
+struct RecordingReadFrontier {
+    editor_buffers: std::collections::HashMap<PathBuf, Vec<u8>>,
+    vfs_events: u64,
+    rustdoc_input_events: u64,
+    saw_root_source: bool,
+    saw_disk_sibling: bool,
+    unresolved_candidates: Vec<(String, String, String)>,
+    reject_candidate: Option<String>,
 }
 
-impl RustWorkspaceEditorBufferObserver for RecordingEditorBuffers {
+impl RustWorkspaceReadFrontierObserver for RecordingReadFrontier {
     fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]) {
-        self.observed
+        self.editor_buffers
             .insert(relative_path.to_path_buf(), contents.to_vec());
     }
+
+    fn observe_ra_vfs_file(&mut self, absolute_path: &str, contents: &[u8]) -> bool {
+        self.vfs_events = self.vfs_events.saturating_add(1);
+        if absolute_path.ends_with("/src/lib.rs") {
+            self.saw_root_source = contents
+                .windows(b"mod absent;".len())
+                .any(|window| window == b"mod absent;");
+        }
+        if absolute_path.ends_with("/src/sibling.rs") {
+            self.saw_disk_sibling = contents == b"pub fn value() -> u8 { 1 }\n";
+        }
+        true
+    }
+
+    fn observe_rustdoc_input(&mut self, _absolute_path: &str, _contents: &[u8]) -> bool {
+        self.rustdoc_input_events = self.rustdoc_input_events.saturating_add(1);
+        true
+    }
+
+    fn observe_unresolved_module_candidate(
+        &mut self,
+        crate_root_file: &str,
+        declaring_file: &str,
+        candidate: &str,
+    ) -> bool {
+        if self.reject_candidate.as_deref() == Some(candidate) {
+            self.reject_candidate = None;
+            return false;
+        }
+        self.unresolved_candidates.push((
+            crate_root_file.to_owned(),
+            declaring_file.to_owned(),
+            candidate.to_owned(),
+        ));
+        true
+    }
+}
+
+fn package_frontier<'source>(
+    root_source: &'source str,
+    sibling: &'source str,
+    extra: Option<(&'source Path, &'source str)>,
+) -> Vec<RustWorkspaceFile<'source>> {
+    let mut files = Vec::new();
+    if let Some((relative_path, source)) = extra {
+        files.push(RustWorkspaceFile {
+            relative_path,
+            source,
+        });
+    }
+    files.push(RustWorkspaceFile {
+        relative_path: Path::new("src/lib.rs"),
+        source: root_source,
+    });
+    files.push(RustWorkspaceFile {
+        relative_path: Path::new("src/sibling.rs"),
+        source: sibling,
+    });
+    files
 }
 
 #[test]
@@ -51,6 +116,7 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
         "[package]\nname = \"session_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )?;
     let root_source = concat!(
+        "mod absent;\n",
         "#[path = \"generated.rs\"] mod generated;\n",
         "mod sibling;\n",
         "mod foo { mod bar; pub fn value() -> u8 { bar::value() } }\n",
@@ -99,24 +165,6 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
             maximum_source_bytes: SourceByteLimit::from(8_192),
             deadline: Instant::now() + Duration::from_secs(180),
         };
-        let package_frontier = |root_source: &str, sibling: &str, extra: Option<(&Path, &str)>| {
-            let mut files = Vec::new();
-            if let Some((relative_path, source)) = extra {
-                files.push(RustWorkspaceFile {
-                    relative_path,
-                    source,
-                });
-            }
-            files.push(RustWorkspaceFile {
-                relative_path: Path::new("src/lib.rs"),
-                source: root_source,
-            });
-            files.push(RustWorkspaceFile {
-                relative_path: Path::new("src/sibling.rs"),
-                source: sibling,
-            });
-            files
-        };
         let key_for = |files: &[RustWorkspaceFile<'_>]| {
             let paths = files
                 .iter()
@@ -128,8 +176,11 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
         let mut lane = RustWorkspaceSessionLane::default();
         let initial = package_frontier(root_source, disk_sibling, None);
         {
-            let mut observed_buffers = RecordingEditorBuffers::default();
-            let lease = lane.begin_with_editor_buffer_observer(
+            let mut observed_buffers = RecordingReadFrontier {
+                reject_candidate: Some(String::from("absent.rs")),
+                ..RecordingReadFrontier::default()
+            };
+            let (lease, read_summary) = lane.begin_with_read_frontier_observer(
                 key_for(&initial)?,
                 &initial,
                 control(),
@@ -137,7 +188,7 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
             )?;
             assert_eq!(
                 observed_buffers
-                    .observed
+                    .editor_buffers
                     .get(Path::new("src/lib.rs"))
                     .map(Vec::as_slice),
                 Some(root_source.as_bytes()),
@@ -145,11 +196,31 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
             );
             assert_eq!(
                 observed_buffers
-                    .observed
+                    .editor_buffers
                     .get(Path::new("src/sibling.rs"))
                     .map(Vec::as_slice),
                 Some(disk_sibling.as_bytes()),
                 "each selected buffer must be reported once from the RA database"
+            );
+            assert!(observed_buffers.vfs_events > 0);
+            assert!(observed_buffers.saw_root_source);
+            assert!(observed_buffers.saw_disk_sibling);
+            assert!(read_summary.vfs_files_visited >= 3);
+            assert_eq!(
+                read_summary.vfs_events_delivered, read_summary.vfs_files_visited,
+                "every representable loaded VFS file must be acknowledged"
+            );
+            assert!(read_summary.module_candidates_visited >= 2);
+            assert_eq!(
+                read_summary.module_candidate_events_delivered + 1,
+                read_summary.module_candidates_visited,
+                "the independent HIR candidate count must expose the injected dropped event"
+            );
+            assert!(
+                observed_buffers
+                    .unresolved_candidates
+                    .iter()
+                    .any(|(_, _, candidate)| candidate == "absent/mod.rs")
             );
             let unresolved =
                 nested_module_resolves(lease.workspace(), &root, root_source, control())?;

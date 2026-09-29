@@ -53,44 +53,61 @@ whose contents reached the VFS. Its own module documentation says VFS does not
 perform I/O; a separate `loader::Handle` does. The public VFS state has no
 event for a failed read, a directory enumeration, or an environment lookup.
 `RootDatabase` can expose the text associated with a `FileId` through
-`SourceDatabase::file_text`, so a caller can hash positive buffers after load;
-that still says nothing about missed candidates or inputs that bypassed VFS.
+`SourceDatabase::file_text`, so an opt-in caller can hash the positive VFS
+snapshot after load; that still says nothing about failed loader probes or
+inputs that bypassed VFS.
 There is also a concrete negative-lookup seam in
 `ra_ap_hir_def/src/nameres/mod_resolution.rs`: `ModDir::resolve_declaration`
 constructs up to two candidates (`name.rs` and `name/mod.rs`, or the explicit
 `#[path]`) and calls `DefDatabase::resolve_path` for each. That call reaches
 `ra_ap_base_db::RootDatabase::resolve_path`, which asks the anchored
 `SourceRoot`/`FileSet` for membership and returns `None` when a candidate is
-absent. No public callback reports those candidate strings or misses. The
-crate graph can also be created from Cargo and project-model data before VFS
-source loading begins. Project-model code directly uses filesystem
+absent. The resolver itself has no callback, but `ra_ap_hir::Module::diagnostics`
+exposes an `UnresolvedModule` diagnostic with candidate strings when every
+candidate fails; the diagnostic-only observer now uses that real HIR result.
+This captures rejected module candidates, not every internal `resolve_path`
+call or unrelated failed lookup. The crate graph can also be created from
+Cargo and project-model data before VFS source loading begins. Project-model code directly uses filesystem
 metadata/read calls and child processes for manifest discovery, Cargo queries,
 and sysroot selection. A VFS walk is therefore a useful positive file
 inventory, but it is neither the process read frontier nor a negative lookup
 proof.
 
-The compiler now has one real, borrow-scoped observation seam in
-`RustWorkspaceSessionLane::begin_with_editor_buffer_observer`: after applying
-the selected editor overlay, it reads each selected `FileId` back through
-`SourceDatabase::file_text` and passes the relative path and exact bytes to the
-caller-owned callback. When the `compiler.read_frontier` debug target is
-enabled, the production Rust package compiler feeds those events to a bounded,
-attempt-fenced diagnostic recorder and emits a debug summary. With that target
-disabled (the default), the compiler takes the original `begin` path without
-the selected-buffer walk or hashing.
-The callback is synchronous and uses no per-read `Arc<Mutex<_>>`. It observes
-only selected editor buffers; it does not walk the workspace VFS and therefore
-does not claim disk-loaded dependency or sibling coverage. Its 512 MiB aggregate
-hashing budget and fixed event limit poison the diagnostic recorder on overflow
-without changing compile admission or results.
+The compiler has an opt-in, borrow-scoped observation seam in
+`RustWorkspaceSessionLane::begin_with_read_frontier_observer`. It observes the
+selected editor overlay, synchronously walks `Vfs.iter()` and reads each
+representable loaded file through `SourceDatabase::file_text`, then asks each
+loaded crate module for HIR diagnostics and emits unique
+crate-root/declaration/candidate identities from `UnresolvedModule.candidates`.
+The frontend reports independent
+visited-versus-acknowledged totals for the VFS and module-candidate scans; the
+engine seals those producer streams against the source-side visited counts, so
+a rejected callback, recorder failure, unsupported path, or truncated scan
+cannot appear sealed. Under the `compiler.read_frontier` debug target, the
+production Rust package compiler feeds these events to the bounded,
+attempt-fenced diagnostic recorder. With that target disabled (the default),
+the compiler takes the original `begin` path without the VFS walk, HIR
+diagnostics, or hashing.
+
+The callbacks are synchronous and use no per-read `Arc<Mutex<_>>` or retained
+event row. File contents are hashed as RA holds them; module-candidate
+deduplication retains fixed-size digests. Event and byte limits are
+512 MiB/250,000 observations, and overflow leaves the affected producer
+unsealed. This is diagnostic evidence only: a VFS snapshot is not a loader
+event stream, unresolved-module diagnostics do not expose all successful or
+failed resolver attempts, and later semantic queries can still discover other
+reads. No work or validation scan is skipped.
 
 The recorder has a fixed required channel set. A channel token is tied to one
 monotone operation attempt; accepted events are sequenced into a rolling
 per-channel transcript, and a producer seal must match the observed sequence
 count. Wrong-attempt tokens, channel/class mismatches, unsupported paths,
 sequence gaps, byte/event limits, and terminal-count mismatches poison the
-report. The production path registers and seals only `editor_overlay`, so its
-report remains partial. Seals establish administrative producer closure only:
+report. The diagnostic production path registers `editor_overlay`,
+`ra_vfs_loader`, and `rust_module_resolver`; the latter two are sealed only
+when the scans are untruncated and all paths are representable. Every other
+required channel remains missing, so its report remains partial. Seals
+establish administrative producer closure only:
 the same adapter can still omit an event and report a self-consistent count.
 The recorder has no method that mints `VerifiedUnitReadClosure`, and the V2
 trust registry remains empty.
@@ -100,8 +117,8 @@ trust registry remains empty.
 | Required channel | Current evidence | Remaining blocker |
 | --- | --- | --- |
 | Selected editor overlay | Captured bytes read back from RA `SourceDatabase` after overlay application | Does not cover disk-loaded source files or filesystem reads |
-| RA VFS loader | None from the new recorder | Pinned loader is constructed inside `load_workspace_into_db`; no event receiver or injectable handle |
-| Rust module resolver | None | Positive and negative `ModDir::resolve_declaration` candidates are not exposed |
+| RA VFS loader | Diagnostic post-load snapshot of VFS paths and exact `SourceDatabase` text | No loader event receiver; failed reads, directory results, and later changes are invisible |
+| Rust module resolver | HIR `UnresolvedModule` candidate pairs for declarations whose candidates all failed | No hook for successful resolution or every individual `resolve_path` attempt; HIR diagnostics are a post-load scan |
 | Authority filesystem | None | Frontend `canonicalize`, `metadata`, `symlink_metadata`, and open attempts bypass RA VFS |
 | Directory enumeration | None | No complete child-set/error callback for RA loader or project model |
 | Cargo project model | None | Manifest discovery and metadata/config reads use direct filesystem calls and Cargo |
@@ -115,16 +132,17 @@ This is not a complete self-contained compile recipe: there is no existing
 Rust authority path that proves its dependency, sysroot, environment, Cargo,
 and process inputs are preadmitted as one immutable owner-controlled tree. No
 VFS validation scan, manifest scan, source-root rebuild, or fresh RA load is
-skipped on the strength of this observation. The practical precursor is
-positive evidence for exact selected buffers and a recorder contract that a
-future adapter can extend channel by channel without introducing per-read
-locking.
+skipped on the strength of this observation. The precursor provides actual RA
+positive-file snapshots and actual HIR-reported negative module candidates,
+with independent callback-loss checks, and a recorder contract that a future
+adapter can extend channel by channel without introducing per-read locking.
 
 The API-level integration points are the `ra_ap_load_cargo` load boundary and
 the RA module resolver, not only the semantic callback in `RustAuthority`. A
-future adapter needs an event hook around
-`ModDir::resolve_declaration`/`RootDatabase::resolve_path` to retain the exact
-positive and negative module candidates. It also needs the `loader::Handle`
+future adapter still needs an event hook around
+`ModDir::resolve_declaration`/`RootDatabase::resolve_path` to retain every
+successful and failed module attempt; the HIR diagnostic scan only recovers
+the failed candidate sets. It also needs the `loader::Handle`
 boundary to retain successful file buffers and complete directory enumeration
 results. In one scope it must cover manifest/project discovery, Cargo and
 rustc subprocesses, sysroot resolution, project-folder enumerations, and every
@@ -227,14 +245,15 @@ experiment is evidence for designing an observer, not a production proof.
 
 ## Adversarial admission gates
 
-The engine's read-closure tests include a diagnostic independent-oracle fault
-injection. The fixture oracle requires a present root file, an absent Rust
-module candidate, and a toolchain fact emitted by a compiler child. Omitting
-the negative fact yields a structurally valid trace but fails the oracle;
-dropping the final child event while retaining the child's independently
-sealed event count makes trace closure fail. This tests the failure behavior
-needed from a future broker. The fixture is deliberately not an observer of the
-real rust-analyzer process and grants no frontier completeness to production.
+The frontend's workspace-session fixture now drives the real pinned RA
+workspace and introduces `mod absent;`; it receives the VFS root/sibling
+buffers and HIR-reported `absent.rs`/`absent/mod.rs` candidate pair. Its
+observer deliberately rejects one candidate callback and asserts that the
+independent RA-side visited total exceeds acknowledged deliveries. The engine's
+read-closure tests separately include an independent-oracle fault injection
+for omitted negative facts and a lost child terminal event. These tests check
+the real RA surface and broker failure behavior separately; neither proves
+global frontier completeness or authorizes production reuse.
 
 Before a Rust adapter protocol is registered, its tests must show that changing
 each of these changes the captured closure or rejects admission:

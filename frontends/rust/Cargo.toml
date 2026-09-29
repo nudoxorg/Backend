@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 backend-compile = { path = "../../crates/compile" }
 backend-semantic = { path = "../../crates/semantic" }
+blake3 = { workspace = true }
 anyhow = "1.0.100"
 ra_ap_base_db = "=0.0.341"
 ra_ap_hir = "=0.0.341"

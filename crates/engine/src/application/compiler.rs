@@ -5,8 +5,8 @@
 
 use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
 use crate::compiler_read_observation_v2::{
-    CompilerReadObservationChannelV2, CompilerReadObservationProducerV2,
-    CompilerReadObservationRecorderV2,
+    CompilerReadObservationChannelV2, CompilerReadObservationEventClassV2,
+    CompilerReadObservationProducerV2, CompilerReadObservationRecorderV2,
 };
 use crate::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment,
@@ -26,7 +26,8 @@ use backend_compile::{
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
-    RustWorkspaceSessionKey, RustWorkspaceSessionLane, RustWorkspaceSessionLease,
+    RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
+    RustWorkspaceSessionLease,
 };
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
@@ -78,21 +79,133 @@ pub const MAX_PACKAGE_EMBEDDING_BYTES: usize = 64 * 1024 * 1024;
 
 struct RustEditorBufferObservation<'observer> {
     recorder: &'observer mut CompilerReadObservationRecorderV2,
-    producer: CompilerReadObservationProducerV2,
-    next_sequence: u64,
+    editor_producer: CompilerReadObservationProducerV2,
+    vfs_producer: CompilerReadObservationProducerV2,
+    module_producer: CompilerReadObservationProducerV2,
+    authority_fs_producer: CompilerReadObservationProducerV2,
+    editor_next_sequence: u64,
+    vfs_next_sequence: u64,
+    module_next_sequence: u64,
+    authority_fs_next_sequence: u64,
 }
 
 impl RustWorkspaceEditorBufferObserver for RustEditorBufferObservation<'_> {
     fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]) {
         let relative_path = relative_path.to_str().unwrap_or_default();
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.saturating_add(1);
+        let sequence = self.editor_next_sequence;
+        self.editor_next_sequence = self.editor_next_sequence.saturating_add(1);
         // Observation failure is diagnostic-only. The compiler transaction
         // continues, while the recorder remains poisoned and cannot seal.
-        let _ =
-            self.recorder
-                .observe_editor_buffer(&self.producer, sequence, relative_path, contents);
+        let _ = self.recorder.observe_editor_buffer(
+            &self.editor_producer,
+            sequence,
+            relative_path,
+            contents,
+        );
     }
+}
+
+impl RustWorkspaceReadFrontierObserver for RustEditorBufferObservation<'_> {
+    fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]) {
+        RustWorkspaceEditorBufferObserver::observe_editor_buffer(self, relative_path, contents);
+    }
+
+    fn observe_ra_vfs_file(&mut self, absolute_path: &str, contents: &[u8]) -> bool {
+        let sequence = self.vfs_next_sequence;
+        self.vfs_next_sequence = self.vfs_next_sequence.saturating_add(1);
+        let path_identity_digest = hash_read_observation_identity(
+            b"backend.compiler.ra-vfs-path.v2\0",
+            absolute_path.as_bytes(),
+        );
+        let evidence_digest = *blake3::hash(contents).as_bytes();
+        self.recorder
+            .observe_opaque_path_event(
+                &self.vfs_producer,
+                sequence,
+                CompilerReadObservationEventClassV2::PresentFile,
+                path_identity_digest,
+                evidence_digest,
+                u64::try_from(contents.len()).unwrap_or(u64::MAX),
+            )
+            .is_ok()
+    }
+
+    fn observe_rustdoc_input(&mut self, absolute_path: &str, contents: &[u8]) -> bool {
+        let sequence = self.authority_fs_next_sequence;
+        self.authority_fs_next_sequence = self.authority_fs_next_sequence.saturating_add(1);
+        let path_identity_digest = hash_read_observation_identity(
+            b"backend.compiler.rustdoc-include-path.v2\0",
+            absolute_path.as_bytes(),
+        );
+        let evidence_digest = *blake3::hash(contents).as_bytes();
+        self.recorder
+            .observe_opaque_path_event(
+                &self.authority_fs_producer,
+                sequence,
+                CompilerReadObservationEventClassV2::PresentFile,
+                path_identity_digest,
+                evidence_digest,
+                u64::try_from(contents.len()).unwrap_or(u64::MAX),
+            )
+            .is_ok()
+    }
+
+    fn observe_unresolved_module_candidate(
+        &mut self,
+        crate_root_file: &str,
+        declaring_file: &str,
+        candidate: &str,
+    ) -> bool {
+        let sequence = self.module_next_sequence;
+        self.module_next_sequence = self.module_next_sequence.saturating_add(1);
+        let path_identity_digest = hash_read_observation_pair(
+            b"backend.compiler.module-declaring-file.v2\0",
+            crate_root_file.as_bytes(),
+            declaring_file.as_bytes(),
+        );
+        let evidence_digest = hash_read_observation_identity(
+            b"backend.compiler.module-candidate.v2\0",
+            candidate.as_bytes(),
+        );
+        self.recorder
+            .observe_opaque_path_event(
+                &self.module_producer,
+                sequence,
+                CompilerReadObservationEventClassV2::ModuleResolution,
+                path_identity_digest,
+                evidence_digest,
+                u64::try_from(
+                    crate_root_file
+                        .len()
+                        .saturating_add(declaring_file.len())
+                        .saturating_add(candidate.len()),
+                )
+                .unwrap_or(u64::MAX),
+            )
+            .is_ok()
+    }
+}
+
+fn hash_read_observation_identity(domain: &[u8], value: &[u8]) -> [u8; 32] {
+    let mut digest = blake3::Hasher::new();
+    digest.update(domain);
+    digest.update(&u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+    digest.update(value);
+    *digest.finalize().as_bytes()
+}
+
+fn hash_read_observation_pair(domain: &[u8], first: &[u8], second: &[u8]) -> [u8; 32] {
+    let mut digest = blake3::Hasher::new();
+    digest.update(domain);
+    digest.update(&u64::try_from(first.len()).unwrap_or(u64::MAX).to_be_bytes());
+    digest.update(first);
+    digest.update(
+        &u64::try_from(second.len())
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    digest.update(second);
+    *digest.finalize().as_bytes()
 }
 
 fn begin_rust_workspace_with_observation<'lane>(
@@ -110,22 +223,59 @@ fn begin_rust_workspace_with_observation<'lane>(
     let Ok(producer) = recorder.register(CompilerReadObservationChannelV2::EditorOverlay) else {
         return lane.begin(key, files, control);
     };
-    let seal_producer = producer;
+    let Ok(vfs_producer) = recorder.register(CompilerReadObservationChannelV2::RaVfsLoader) else {
+        return lane.begin(key, files, control);
+    };
+    let Ok(module_producer) =
+        recorder.register(CompilerReadObservationChannelV2::RustModuleResolver)
+    else {
+        return lane.begin(key, files, control);
+    };
+    let Ok(authority_fs_producer) =
+        recorder.register(CompilerReadObservationChannelV2::AuthorityFilesystem)
+    else {
+        return lane.begin(key, files, control);
+    };
+    let editor_seal_producer = producer;
+    let vfs_seal_producer = vfs_producer;
+    let module_seal_producer = module_producer;
     let mut observer = RustEditorBufferObservation {
         recorder: &mut recorder,
-        producer,
-        next_sequence: 0,
+        editor_producer: producer,
+        vfs_producer,
+        module_producer,
+        authority_fs_producer,
+        editor_next_sequence: 0,
+        vfs_next_sequence: 0,
+        module_next_sequence: 0,
+        authority_fs_next_sequence: 0,
     };
-    let lease = lane.begin_with_editor_buffer_observer(key, files, control, &mut observer)?;
-    let final_event_count = u64::try_from(files.len()).unwrap_or(u64::MAX);
+    let (lease, source_summary) =
+        lane.begin_with_read_frontier_observer(key, files, control, &mut observer)?;
+    let editor_final_count = u64::try_from(files.len()).unwrap_or(u64::MAX);
     drop(observer);
-    let _ = recorder.seal(&seal_producer, final_event_count);
+    let _ = recorder.seal(&editor_seal_producer, editor_final_count);
+    if !source_summary.truncated && source_summary.unsupported_paths == 0 {
+        let _ = recorder.seal(&vfs_seal_producer, source_summary.vfs_files_visited);
+        let _ = recorder.seal(
+            &module_seal_producer,
+            source_summary.module_candidates_visited,
+        );
+    }
     let report = recorder.report();
     tracing::debug!(
         target: "compiler.read_frontier",
         attempt_id = report.attempt_id(),
         observed_events = report.events(),
         observed_bytes = report.bytes(),
+        source_vfs_files_visited = source_summary.vfs_files_visited,
+        source_vfs_events_delivered = source_summary.vfs_events_delivered,
+        source_module_candidates_visited = source_summary.module_candidates_visited,
+        source_module_candidate_events_delivered = source_summary.module_candidate_events_delivered,
+        source_rustdoc_inputs_visited = source_summary.rustdoc_inputs_visited,
+        source_rustdoc_input_events_delivered = source_summary.rustdoc_input_events_delivered,
+        unsupported_paths = source_summary.unsupported_paths,
+        source_scan_truncated = source_summary.truncated,
         registered_channels = report.registered_channels(),
         sealed_channels = report.sealed_channels(),
         required_channels = report.required_channels(),
