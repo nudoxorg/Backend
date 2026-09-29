@@ -178,6 +178,15 @@ impl Drop for GcPinLease {
     }
 }
 
+/// Shared lease that prevents garbage collection while an external product
+/// reference is being published or read for a collection root snapshot.
+/// Product stores acquire this before their own mutation lock and hold it
+/// until the reference or root snapshot is durable.
+#[derive(Debug)]
+pub struct GcPinGuard {
+    _lease: GcPinLease,
+}
+
 /// Opaque identity for one exact publication transaction.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TransactionId(pub(super) Hash);
@@ -432,6 +441,16 @@ impl FileStore {
 
     pub(super) fn acquire_gc_exclusive(&self) -> Result<GcPinLease, super::StoreError> {
         GcPinLease::exclusive(&self.root)
+    }
+
+    /// Acquires the shared collection lease for an external product mutation.
+    /// A collector waits for this guard before resolving external roots.
+    /// Product writers should acquire it before their owner lock, persist the
+    /// product ref, then drop it to preserve lock ordering with root resolvers.
+    pub fn pin_garbage_collection(&self) -> Result<GcPinGuard, super::StoreError> {
+        Ok(GcPinGuard {
+            _lease: self.acquire_gc_pin()?,
+        })
     }
 
     /// Acquires this store's canonical head-selection capability.

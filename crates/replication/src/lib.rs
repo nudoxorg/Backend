@@ -34,7 +34,11 @@ pub use coverage::*;
 pub use execution::*;
 pub use identities::*;
 pub use ir_generation_store::{
-    HistoricalSemanticPlaneBinding, LocalSemanticGeneration, LocalSemanticGenerationId,
+    AdmittedHistoryCommit, HistoricalSemanticPlaneBinding, HistoryAdmissionReceipt,
+    HistoryCommitId, HistoryGcProgress, HistoryGenerationRoot, HistoryMaterialization,
+    HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor,
+    HistoryReplayEntry, HistorySegmentDeltas, LocalSemanticGeneration, LocalSemanticGenerationId,
+    MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef, UnpublishedHistoryProposal,
 };
 pub use ir_hydration::*;
 pub use ir_hydration_store::*;

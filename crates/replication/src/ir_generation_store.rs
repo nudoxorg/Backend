@@ -4,6 +4,9 @@
 //! small per-target head is the only mutable pointer and carries the authority
 //! stamp separately from the content-derived generation identity.
 
+#[cfg(test)]
+use std::cell::Cell;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +28,52 @@ const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GENERATION_RECORD_BYTES: usize = 72 * 1024 * 1024;
 const MAX_HEAD_BYTES: usize = 320;
+const MAX_GENERATION_SCAN_MEMBERS: usize = 4_096;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HistoryTestFault {
+    AfterGenerationRecord,
+    AfterHistoryCommit,
+    AfterHistoryIndex,
+    AfterPayloadRoot,
+    AfterRefsCatalog,
+    AfterHead,
+}
+
+#[cfg(test)]
+thread_local! {
+    static HISTORY_TEST_FAULT: Cell<Option<HistoryTestFault>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn arm_history_test_fault(point: HistoryTestFault) {
+    HISTORY_TEST_FAULT.with(|fault| fault.set(Some(point)));
+}
+
+#[cfg(test)]
+pub(super) fn trip_history_test_fault(point: HistoryTestFault) -> Result<(), String> {
+    HISTORY_TEST_FAULT.with(|fault| {
+        if fault.get() == Some(point) {
+            fault.set(None);
+            Err(format!(
+                "injected semantic history interruption at {point:?}"
+            ))
+        } else {
+            Ok(())
+        }
+    })
+}
+
+mod history;
+pub(super) use history::HistoryPayloadRoot;
+pub use history::{
+    AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
+    HistoryGenerationRoot, HistoryMaterialization, HistoryRefKind, HistoryRefName,
+    HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor, HistoryReplayEntry,
+    HistorySegmentDeltas, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
+    UnpublishedHistoryProposal,
+};
 
 /// Content identity of one admitted target/catalog/image-manifest tuple.
 ///
@@ -288,12 +337,16 @@ impl LocalSemanticGenerationFiles {
         if !ensure_optional_directory(&target_root)? {
             return Ok(None);
         }
+        // Validate ref catalog and its immediate commit/generation bindings
+        // before pruning. Once history exists, retain all metadata records
+        // until the indexed mark/sweep contract can prove they are unreachable.
+        let may_prune = history::may_prune_generation_records(&target_root, target)?;
         let records_root = target_root.join("records");
         let records_exist = ensure_optional_directory(&records_root)?;
         let head_path = target_root.join("HEAD");
         let Some(head_bytes) = read_optional_bounded(&head_path, MAX_HEAD_BYTES)? else {
-            if records_exist {
-                prune_records(&target_root, None, None)?;
+            if records_exist && may_prune {
+                prune_records(&target_root, None, None, &HashSet::new())?;
             }
             return Ok(None);
         };
@@ -311,7 +364,14 @@ impl LocalSemanticGenerationFiles {
         let previous_image_identity = previous_record
             .as_ref()
             .map(|previous| previous.image_identity);
-        prune_records(&target_root, Some(head.current), head.previous)?;
+        if may_prune {
+            prune_records(
+                &target_root,
+                Some(head.current),
+                head.previous,
+                &HashSet::new(),
+            )?;
+        }
         Ok(Some(LocalSemanticGeneration {
             identity: record.identity,
             previous_identity: head.previous,
@@ -334,6 +394,29 @@ impl LocalSemanticGenerationFiles {
         image: SemanticPlaneImageKey,
         image_identity: SemanticImageIdentity,
         manifest: &SemanticPlaneManifest,
+        source: &mut S,
+    ) -> Result<LocalSemanticGeneration, String> {
+        self.commit_with_payload_root(
+            target,
+            stamp,
+            catalog,
+            image,
+            image_identity,
+            manifest,
+            None,
+            source,
+        )
+    }
+
+    pub(super) fn commit_with_payload_root<S: SelectedGenerationSource>(
+        &self,
+        target: &SemanticTargetKey,
+        stamp: SelectedGenerationStamp,
+        catalog: &SemanticPlaneCatalog,
+        image: SemanticPlaneImageKey,
+        image_identity: SemanticImageIdentity,
+        manifest: &SemanticPlaneManifest,
+        payload_root: Option<HistoryPayloadRoot>,
         source: &mut S,
     ) -> Result<LocalSemanticGeneration, String> {
         let record_bytes =
@@ -360,7 +443,15 @@ impl LocalSemanticGenerationFiles {
                 let _previous_record = load_record(&target_root, previous, target)?;
             }
         }
+        self.require_local_cache_head_alignment(
+            target,
+            prior,
+            record.identity,
+            stamp,
+            record.manifest.root(),
+        )?;
         let next = advance_head(prior, record.identity, stamp)?;
+        let may_prune = history::may_prune_generation_records(&target_root, target)?;
 
         // Persist the immutable record first. If the process stops here, HEAD
         // still identifies the prior generation and the orphan is reclaimed
@@ -375,18 +466,32 @@ impl LocalSemanticGenerationFiles {
             }
             Err(error) => return Err(display_io(error)),
         }
+        #[cfg(test)]
+        trip_history_test_fault(HistoryTestFault::AfterGenerationRecord)?;
 
-        // Recheck immediately before the atomic pointer change. A stale
-        // candidate can leave an immutable orphan, but it cannot move HEAD.
-        if let Err(error) = require_current(source, stamp, image) {
-            let keep_current = prior.map(|head| head.current);
-            let keep_previous = prior.and_then(|head| head.previous);
-            prune_records(&target_root, keep_current, keep_previous)?;
-            return Err(error);
-        }
+        let staged_generation = LocalSemanticGeneration {
+            identity: record.identity,
+            previous_identity: next.previous,
+            previous_image: None,
+            previous_image_identity: None,
+            target: record.target.clone(),
+            selected_stamp: stamp,
+            catalog: record.catalog.clone(),
+            image: record.image,
+            image_identity: record.image_identity,
+            manifest: record.manifest.clone(),
+        };
+        // The `local-cache` navigation branch is independent of the external
+        // selected index authority and may lead the cache HEAD after a crash.
+        // It only names immutable history records; no selection path consults
+        // it for authority.
+        self.record_selected_history(&staged_generation, source, payload_root)?;
+
         let head_bytes = encode_head(next)?;
         backend_platform::durable::write_private_atomic(&head_path, &head_bytes)
             .map_err(display_io)?;
+        #[cfg(test)]
+        trip_history_test_fault(HistoryTestFault::AfterHead)?;
         let previous_record = next
             .previous
             .map(|previous| load_record(&target_root, previous, target))
@@ -395,7 +500,14 @@ impl LocalSemanticGenerationFiles {
         let previous_image_identity = previous_record
             .as_ref()
             .map(|previous| previous.image_identity);
-        prune_records(&target_root, Some(next.current), next.previous)?;
+        if history::may_prune_generation_records(&target_root, target)? {
+            prune_records(
+                &target_root,
+                Some(next.current),
+                next.previous,
+                &HashSet::new(),
+            )?;
+        }
 
         Ok(LocalSemanticGeneration {
             identity: record.identity,
@@ -645,8 +757,13 @@ fn prune_records(
     target_root: &Path,
     current: Option<LocalSemanticGenerationId>,
     previous: Option<LocalSemanticGenerationId>,
+    history: &HashSet<LocalSemanticGenerationId>,
 ) -> Result<(), String> {
     let records = target_root.join("records");
+    let history_names = history
+        .iter()
+        .map(|identity| hex(&identity.0))
+        .collect::<HashSet<_>>();
     let mut entries = Vec::new();
     for entry in fs::read_dir(&records).map_err(display_io)? {
         let entry = entry.map_err(display_io)?;
@@ -659,7 +776,7 @@ fn prune_records(
             if name.ends_with(".tmp") {
                 ensure_regular_file(&path)?;
                 entries.push((path, None));
-                if entries.len() > 64 {
+                if entries.len() > MAX_GENERATION_SCAN_MEMBERS {
                     return Err("semantic generation recovery scan exceeds its bound".to_owned());
                 }
                 continue;
@@ -671,7 +788,7 @@ fn prune_records(
         }
         ensure_regular_file(&path)?;
         entries.push((path, Some(stem.to_owned())));
-        if entries.len() > 64 {
+        if entries.len() > MAX_GENERATION_SCAN_MEMBERS {
             return Err("semantic generation recovery scan exceeds its bound".to_owned());
         }
     }
@@ -681,7 +798,8 @@ fn prune_records(
             continue;
         };
         let keep = current.is_some_and(|id| stem == hex(&id.0))
-            || previous.is_some_and(|id| stem == hex(&id.0));
+            || previous.is_some_and(|id| stem == hex(&id.0))
+            || history_names.contains(&stem);
         if !keep {
             remove_file(&path)?;
         }
@@ -1007,8 +1125,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::fs;
     use std::path::PathBuf;
+    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use backend_semantic::ir::{
         GenerationId, LanguageProfile, RustEdition, SemanticBuildIdentity, SemanticInputWitness,
@@ -1016,8 +1135,8 @@ mod tests {
         SemanticPlaneSegment, SemanticRangeRequest,
     };
     use backend_semantic::vocabulary::Stage;
-    use backend_store::FileStore;
-    use backend_version::{Coverage, ScopeRoot};
+    use backend_store::{FileStore, TypedObject};
+    use backend_version::{Coverage, ObjectKey, ScopeRoot};
 
     use crate::{
         AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, DurableSemanticSegmentStore,
@@ -1324,6 +1443,217 @@ mod tests {
     }
 
     #[test]
+    fn commit_durability_boundaries_reopen_old_or_new_and_retry_idempotently() {
+        let directory = TestDirectory::create();
+        let first = fixture(b"durable history first", 1, 91);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let first_commit =
+            commit(&files, &first, [first.stamp, first.stamp]).expect("commit baseline generation");
+        let head_before = first_commit.identity();
+
+        let second = fixture(b"durable history second", 2, 92);
+        arm_history_test_fault(HistoryTestFault::AfterHistoryIndex);
+        assert!(
+            commit(&files, &second, [second.stamp, second.stamp])
+                .expect_err("interrupt after durable history index append")
+                .contains("AfterHistoryIndex")
+        );
+        assert_eq!(
+            files
+                .current(&second.target)
+                .expect("read old HEAD")
+                .expect("old HEAD remains")
+                .identity(),
+            head_before
+        );
+        let target_root = files.target_root(&second.target);
+        let index_path = target_root.join("history").join("commit.index");
+        let index_length_after_crash = fs::metadata(&index_path)
+            .expect("history index after interruption")
+            .len();
+        assert!(
+            target_root
+                .join("history")
+                .join("commit.index.intent")
+                .exists()
+        );
+        let second_commit = commit(&files, &second, [second.stamp, second.stamp])
+            .expect("recover and retry index append");
+        assert_eq!(
+            fs::metadata(&index_path)
+                .expect("history index after retry")
+                .len(),
+            index_length_after_crash,
+            "retry must not append the same commit index entry twice"
+        );
+        assert!(
+            !target_root
+                .join("history")
+                .join("commit.index.intent")
+                .exists()
+        );
+
+        let third = fixture(b"durable history third", 3, 93);
+        arm_history_test_fault(HistoryTestFault::AfterHistoryCommit);
+        assert!(
+            commit(&files, &third, [third.stamp, third.stamp])
+                .expect_err("interrupt after immutable history commit")
+                .contains("AfterHistoryCommit")
+        );
+        assert_eq!(
+            files
+                .current(&third.target)
+                .expect("read HEAD after commit-object interruption")
+                .expect("second HEAD remains")
+                .identity(),
+            second_commit.identity()
+        );
+        let third_commit = commit(&files, &third, [third.stamp, third.stamp])
+            .expect("retry immutable history commit and index admission");
+
+        let fourth = fixture(b"durable history fourth", 4, 94);
+        arm_history_test_fault(HistoryTestFault::AfterGenerationRecord);
+        assert!(
+            commit(&files, &fourth, [fourth.stamp, fourth.stamp])
+                .expect_err("interrupt after immutable generation record")
+                .contains("AfterGenerationRecord")
+        );
+        assert_eq!(
+            files
+                .current(&fourth.target)
+                .expect("read HEAD after generation-record interruption")
+                .expect("third HEAD remains")
+                .identity(),
+            third_commit.identity()
+        );
+        let fourth_commit = commit(&files, &fourth, [fourth.stamp, fourth.stamp])
+            .expect("retry immutable generation record");
+
+        let fifth = fixture(b"durable history fifth", 5, 95);
+        arm_history_test_fault(HistoryTestFault::AfterRefsCatalog);
+        assert!(
+            commit(&files, &fifth, [fifth.stamp, fifth.stamp])
+                .expect_err("interrupt after durable navigation-ref replacement")
+                .contains("AfterRefsCatalog")
+        );
+        let local_cache = HistoryRefName::new("local-cache").expect("local cache ref");
+        let ref_ahead = files
+            .history_ref(&fifth.target, HistoryRefKind::Branch, &local_cache)
+            .expect("read navigation ref after interruption")
+            .expect("navigation ref is durable")
+            .commit();
+        assert_eq!(
+            files
+                .current(&fifth.target)
+                .expect("read cache HEAD before retry")
+                .expect("fourth cache HEAD remains")
+                .identity(),
+            fourth_commit.identity()
+        );
+
+        let moved = fixture(b"authority moved after ref write", 6, 96);
+        let mut moved_source = TestAuthority::new([moved.stamp], [moved.image]);
+        assert!(
+            files
+                .commit(
+                    &fifth.target,
+                    fifth.stamp,
+                    &fifth.catalog,
+                    fifth.image,
+                    fifth.image_identity,
+                    &fifth.manifest,
+                    &mut moved_source,
+                )
+                .expect_err("a moved source stamp must not adopt the ahead history ref")
+                .contains("became stale")
+        );
+        assert_eq!(
+            files
+                .current(&fifth.target)
+                .expect("read cache HEAD after stale retry")
+                .expect("fourth cache HEAD remains")
+                .identity(),
+            fourth_commit.identity()
+        );
+        assert_eq!(
+            files
+                .history_ref(&fifth.target, HistoryRefKind::Branch, &local_cache)
+                .expect("ref remains independently navigable")
+                .expect("ahead ref remains")
+                .commit(),
+            ref_ahead
+        );
+        assert!(
+            files
+                .commit(
+                    &moved.target,
+                    moved.stamp,
+                    &moved.catalog,
+                    moved.image,
+                    moved.image_identity,
+                    &moved.manifest,
+                    &mut TestAuthority::new([moved.stamp, moved.stamp], [moved.image]),
+                )
+                .expect_err("a different authority generation cannot inherit a ref-ahead crash")
+                .contains("ahead of or detached from cache HEAD")
+        );
+        assert_eq!(
+            files
+                .current(&fifth.target)
+                .expect("cache head remains after lineage divergence")
+                .expect("fourth cache head remains")
+                .identity(),
+            fourth_commit.identity()
+        );
+        let fifth_commit = commit(&files, &fifth, [fifth.stamp, fifth.stamp])
+            .expect("same admitted source deterministically reconciles cache HEAD");
+        assert_eq!(
+            files
+                .history_commit(&fifth.target, ref_ahead)
+                .expect("read ref-ahead commit")
+                .generation(),
+            fifth_commit.identity()
+        );
+
+        let sixth = fixture(b"durable history sixth", 7, 97);
+        arm_history_test_fault(HistoryTestFault::AfterHead);
+        assert!(
+            commit(&files, &sixth, [sixth.stamp, sixth.stamp])
+                .expect_err("interrupt after durable cache HEAD replacement")
+                .contains("AfterHead")
+        );
+        drop(files);
+
+        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("cold reopen");
+        assert_eq!(
+            reopened
+                .current(&sixth.target)
+                .expect("read durable new HEAD")
+                .expect("new HEAD survived crash boundary")
+                .manifest()
+                .root(),
+            sixth.manifest.root()
+        );
+        let reopened_tip = reopened
+            .history_ref(&sixth.target, HistoryRefKind::Branch, &local_cache)
+            .expect("read cold local-cache ref")
+            .expect("cold local-cache ref exists")
+            .commit();
+        let replay = reopened
+            .replay_history(&sixth.target, reopened_tip)
+            .expect("cold replay after HEAD write");
+        assert_eq!(
+            replay
+                .entries()
+                .last()
+                .expect("replay has tip")
+                .commit()
+                .identity(),
+            reopened_tip
+        );
+    }
+
+    #[test]
     fn orphaned_immutable_record_from_interrupted_commit_is_reclaimed() {
         let directory = TestDirectory::create();
         let fixture = fixture(b"generation interrupted before HEAD", 1, 13);
@@ -1623,13 +1953,13 @@ mod tests {
         let target_root = files.target_root(&fixture.target);
         let records_root = target_root.join("records");
         fs::create_dir_all(&records_root).expect("create record directory");
-        for index in 0..=64 {
+        for index in 0..=MAX_GENERATION_SCAN_MEMBERS {
             let path = records_root.join(format!("{:064x}.record", index));
             fs::write(path, b"orphan").expect("write synthetic orphan");
         }
 
         assert!(
-            prune_records(&target_root, None, None)
+            prune_records(&target_root, None, None, &HashSet::new())
                 .expect_err("recovery scan exceeds its bound")
                 .contains("exceeds its bound")
         );
@@ -1637,7 +1967,770 @@ mod tests {
             fs::read_dir(records_root)
                 .expect("enumerate records")
                 .count(),
-            65
+            MAX_GENERATION_SCAN_MEMBERS + 1
         );
+    }
+
+    fn admit_history(
+        files: &LocalSemanticGenerationFiles,
+        fixture: &Fixture,
+        parents: &[HistoryCommitId],
+        provenance: [u8; 32],
+    ) -> AdmittedHistoryCommit {
+        let proposal = files
+            .propose_history_commit(&fixture.target, parents, provenance)
+            .expect("create unpublished history proposal");
+        let mut source = TestAuthority::new([fixture.stamp, fixture.stamp], [fixture.image]);
+        files
+            .admit_history_proposal(proposal, &mut source)
+            .expect("admit immutable history commit")
+            .commit()
+            .clone()
+    }
+
+    fn set_history_ref(
+        files: &LocalSemanticGenerationFiles,
+        target: &SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: &str,
+        expected: Option<HistoryCommitId>,
+        next: Option<HistoryCommitId>,
+    ) -> Result<HistoryRefUpdateReceipt, String> {
+        files.compare_and_swap_history_ref(target, kind, HistoryRefName::new(name)?, expected, next)
+    }
+
+    #[test]
+    fn equal_semantic_roots_keep_fork_and_convergence_history_distinct() {
+        let directory = TestDirectory::create();
+        let base = fixture(b"same semantic root", 1, 40);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let _ = commit(&files, &base, [base.stamp, base.stamp]).expect("commit selected base");
+        let selected_name = HistoryRefName::new("local-cache").expect("local cache ref name");
+        let base_commit = files
+            .history_ref(&base.target, HistoryRefKind::Branch, &selected_name)
+            .expect("read selected ref")
+            .expect("selected ref exists")
+            .commit();
+
+        let fork = admit_history(&files, &base, &[], [0x71; 32]);
+        assert_ne!(fork.identity(), base_commit);
+        assert_eq!(fork.manifest_root(), base.manifest.root());
+        set_history_ref(
+            &files,
+            &base.target,
+            HistoryRefKind::Branch,
+            "other-root",
+            None,
+            Some(fork.identity()),
+        )
+        .expect("publish independent root branch");
+
+        let left = admit_history(&files, &base, &[base_commit], [0x99; 32]);
+        set_history_ref(
+            &files,
+            &base.target,
+            HistoryRefKind::Branch,
+            "left",
+            None,
+            Some(left.identity()),
+        )
+        .expect("publish left branch");
+        let right = admit_history(&files, &base, &[fork.identity()], [0x99; 32]);
+        set_history_ref(
+            &files,
+            &base.target,
+            HistoryRefKind::Branch,
+            "right",
+            None,
+            Some(right.identity()),
+        )
+        .expect("publish right branch");
+        assert_eq!(left.manifest_root(), right.manifest_root());
+        assert_ne!(left.identity(), right.identity());
+
+        let merge = admit_history(
+            &files,
+            &base,
+            &[left.identity(), right.identity()],
+            [0xaa; 32],
+        );
+        assert_eq!(merge.parents(), &[left.identity(), right.identity()]);
+        set_history_ref(
+            &files,
+            &base.target,
+            HistoryRefKind::Branch,
+            "converged",
+            None,
+            Some(merge.identity()),
+        )
+        .expect("publish converged branch");
+        assert_eq!(
+            files
+                .history_commit(&base.target, merge.identity())
+                .expect("reload converged commit")
+                .manifest_root(),
+            base.manifest.root()
+        );
+    }
+
+    #[test]
+    fn ref_cas_and_rename_are_atomic_and_check_the_expected_value() {
+        let directory = TestDirectory::create();
+        let base = fixture(b"ref selection", 1, 41);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let committed = commit(&files, &base, [base.stamp, base.stamp]).expect("commit base");
+        let local_generation = committed.identity();
+        let selected = files
+            .history_ref(
+                &base.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local cache name"),
+            )
+            .expect("read selected")
+            .expect("selected exists")
+            .commit();
+        set_history_ref(
+            &files,
+            &base.target,
+            HistoryRefKind::Tag,
+            "release/candidate",
+            None,
+            Some(selected),
+        )
+        .expect("create tag");
+        assert!(
+            set_history_ref(
+                &files,
+                &base.target,
+                HistoryRefKind::Tag,
+                "release/candidate",
+                None,
+                None,
+            )
+            .expect_err("stale expected ref must fail")
+            .contains("compare-and-swap")
+        );
+
+        files
+            .rename_history_ref(
+                &base.target,
+                HistoryRefKind::Tag,
+                &HistoryRefName::new("release/candidate").expect("old name"),
+                HistoryRefName::new("release/v1").expect("new name"),
+                selected,
+            )
+            .expect("atomically rename tag");
+        assert!(
+            files
+                .history_ref(
+                    &base.target,
+                    HistoryRefKind::Tag,
+                    &HistoryRefName::new("release/candidate").expect("old name"),
+                )
+                .expect("read old tag")
+                .is_none()
+        );
+        assert_eq!(
+            files
+                .history_ref(
+                    &base.target,
+                    HistoryRefKind::Tag,
+                    &HistoryRefName::new("release/v1").expect("new name"),
+                )
+                .expect("read renamed tag")
+                .expect("renamed tag exists")
+                .commit(),
+            selected
+        );
+        assert_eq!(
+            files
+                .current(&base.target)
+                .expect("index selection remains independent")
+                .expect("local head exists")
+                .identity(),
+            local_generation
+        );
+    }
+
+    #[test]
+    fn history_ref_cas_child_process() {
+        let Ok(root) = std::env::var("BACKEND_TEST_HISTORY_CAS_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let barrier = root.join("start-cas-race");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !barrier.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "parent did not release CAS barrier"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let expected = decode_history_test_id(
+            &std::env::var("BACKEND_TEST_HISTORY_CAS_EXPECTED").expect("expected commit ID"),
+        );
+        let next = decode_history_test_id(
+            &std::env::var("BACKEND_TEST_HISTORY_CAS_NEXT").expect("next commit ID"),
+        );
+        let worker = std::env::var("BACKEND_TEST_HISTORY_CAS_WORKER").expect("worker name");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let file_store = FileStore::open(&root, 16 * 1024 * 1024).expect("open child FileStore");
+        let sparse =
+            FileSemanticRangeStore::open(file_store, limits).expect("open child semantic adapter");
+        let target = fixture(b"process CAS base", 1, 111).target;
+        let outcome = sparse.compare_and_swap_history_ref(
+            &target,
+            HistoryRefKind::Branch,
+            HistoryRefName::new("race").expect("race ref name"),
+            Some(expected),
+            Some(next),
+        );
+        let result = if outcome.is_ok() { "won" } else { "lost" };
+        fs::write(root.join(format!("{worker}.result")), result)
+            .expect("persist child CAS outcome");
+    }
+
+    fn decode_history_test_id(value: &str) -> HistoryCommitId {
+        assert_eq!(value.len(), 64, "history commit ID must be 32-byte hex");
+        let mut bytes = [0_u8; 32];
+        for (slot, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let pair = std::str::from_utf8(pair).expect("history commit ID is ASCII");
+            bytes[slot] = u8::from_str_radix(pair, 16).expect("history commit ID is hexadecimal");
+        }
+        HistoryCommitId::from_bytes(bytes)
+    }
+
+    #[test]
+    fn two_processes_cannot_both_win_the_same_history_ref_cas() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let file_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open FileStore for process CAS");
+        let state_root = cas_root.join("semantic-hydration");
+        let files = LocalSemanticGenerationFiles::open(&state_root)
+            .expect("open generation store for process CAS");
+        let base = fixture(b"process CAS base", 1, 111);
+        let _ = commit(&files, &base, [base.stamp, base.stamp]).expect("commit CAS base");
+        let local_cache = files
+            .history_ref(
+                &base.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local cache ref"),
+            )
+            .expect("read local-cache ref")
+            .expect("local-cache ref exists")
+            .commit();
+        let left = admit_history(&files, &base, &[local_cache], [0x31; 32]);
+        let right = admit_history(&files, &base, &[local_cache], [0x32; 32]);
+        let name = HistoryRefName::new("race").expect("race ref name");
+        files
+            .compare_and_swap_history_ref(
+                &base.target,
+                HistoryRefKind::Branch,
+                name,
+                None,
+                Some(local_cache),
+            )
+            .expect("create race ref");
+        drop(files);
+        drop(file_store);
+
+        let executable = std::env::current_exe().expect("test executable path");
+        let child_test = "ir_generation_store::tests::history_ref_cas_child_process";
+        let spawn = |worker: &str, next: HistoryCommitId| {
+            Command::new(&executable)
+                .arg("--exact")
+                .arg(child_test)
+                .env("BACKEND_TEST_HISTORY_CAS_ROOT", &cas_root)
+                .env(
+                    "BACKEND_TEST_HISTORY_CAS_EXPECTED",
+                    hex(local_cache.as_bytes()),
+                )
+                .env("BACKEND_TEST_HISTORY_CAS_NEXT", hex(next.as_bytes()))
+                .env("BACKEND_TEST_HISTORY_CAS_WORKER", worker)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn competing CAS process")
+        };
+        let mut left_process = spawn("left", left.identity());
+        let mut right_process = spawn("right", right.identity());
+        fs::write(cas_root.join("start-cas-race"), b"go").expect("release process CAS barrier");
+        assert!(
+            left_process
+                .wait()
+                .expect("wait for left process")
+                .success()
+        );
+        assert!(
+            right_process
+                .wait()
+                .expect("wait for right process")
+                .success()
+        );
+        let left_result =
+            fs::read_to_string(cas_root.join("left.result")).expect("read left process result");
+        let right_result =
+            fs::read_to_string(cas_root.join("right.result")).expect("read right process result");
+        assert_ne!(
+            left_result, right_result,
+            "exactly one process wins the CAS"
+        );
+
+        let winner = if left_result == "won" {
+            left.identity()
+        } else {
+            right.identity()
+        };
+        let reopened = FileSemanticRangeStore::open(
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("reopen FileStore"),
+            TransportLimits {
+                max_chunk: 16 * 1024,
+                ..TransportLimits::default()
+            },
+        )
+        .expect("reopen semantic adapter");
+        assert_eq!(
+            reopened
+                .history_ref(
+                    &base.target,
+                    HistoryRefKind::Branch,
+                    &HistoryRefName::new("race").expect("race ref"),
+                )
+                .expect("read winner after reopen")
+                .expect("race ref remains")
+                .commit(),
+            winner
+        );
+    }
+
+    #[test]
+    fn cold_reopen_replays_admitted_snapshots_and_borrowed_segment_deltas() {
+        let directory = TestDirectory::create();
+        let base = fixture(b"history replay base", 1, 51);
+        let second = fixture(b"history replay second", 2, 52);
+        let third = fixture(b"history replay third", 3, 53);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let _ = commit(&files, &base, [base.stamp, base.stamp]).expect("commit base");
+        let _ = commit(&files, &second, [second.stamp, second.stamp]).expect("commit second");
+        let _ = commit(&files, &third, [third.stamp, third.stamp]).expect("commit third");
+        let tip = files
+            .history_ref(
+                &third.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local cache ref"),
+            )
+            .expect("read selected ref")
+            .expect("selected ref exists")
+            .commit();
+        drop(files);
+
+        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
+        let current = reopened
+            .current(&third.target)
+            .expect("recover selected generation")
+            .expect("selected generation remains");
+        assert_eq!(current.manifest().root(), third.manifest.root());
+        let replay = reopened
+            .replay_history(&third.target, tip)
+            .expect("read cold ancestry page");
+        let roots = replay
+            .entries()
+            .iter()
+            .map(|entry| entry.generation().manifest().root())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roots,
+            vec![
+                base.manifest.root(),
+                second.manifest.root(),
+                third.manifest.root()
+            ]
+        );
+        assert_eq!(replay.segment_deltas().count(), 2);
+        assert!(replay.segment_deltas().all(|delta| delta.is_ok()));
+        assert_eq!(replay.next_cursor(), None);
+    }
+
+    #[test]
+    fn third_old_segment_replays_after_forced_file_store_gc_and_cold_reopen() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let file_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open semantic FileStore");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let mut range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
+            .expect("open semantic history adapter");
+        let generations = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
+            .expect("open generation records");
+
+        let versions = [
+            (b"historical segment one".as_slice(), 1_u64, 81_u8),
+            (b"historical segment two".as_slice(), 2, 82),
+            (b"historical segment three".as_slice(), 3, 83),
+        ];
+        let mut commits = Vec::new();
+        let mut historical_claim = None;
+        for (payload, revision, root) in versions {
+            let generation = fixture(payload, revision, root);
+            let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+            let segment = generation
+                .manifest
+                .plane(kind)
+                .expect("core semantic plane")
+                .segments()
+                .first()
+                .expect("one semantic segment");
+            let key =
+                ObjectKey::<super::super::ir_hydration_store::SemanticSegmentPayload>::from_value(
+                    payload,
+                );
+            let object = TypedObject::from_value(&key, payload);
+            let object_id = file_store
+                .write_object(&object)
+                .expect("persist immutable semantic segment");
+            generations
+                .persist_history_segment_mapping(
+                    &generation.target,
+                    segment.id_claim(),
+                    object_id,
+                    segment.byte_length(),
+                )
+                .expect("persist semantic-segment bridge");
+            let payload_root = range_store
+                .compose_history_payload_root(
+                    &generation.target,
+                    &[(segment.id_claim(), object_id, segment.byte_length())],
+                )
+                .expect("compose cumulative history closure");
+            if revision == 2 {
+                arm_history_test_fault(HistoryTestFault::AfterPayloadRoot);
+                assert!(
+                    generations
+                        .commit_with_payload_root(
+                            &generation.target,
+                            generation.stamp,
+                            &generation.catalog,
+                            generation.image,
+                            generation.image_identity,
+                            &generation.manifest,
+                            payload_root,
+                            &mut TestAuthority::new(
+                                [generation.stamp, generation.stamp],
+                                [generation.image],
+                            ),
+                        )
+                        .expect_err("interrupt after durable payload-root publication")
+                        .contains("AfterPayloadRoot")
+                );
+            }
+            let committed = generations
+                .commit_with_payload_root(
+                    &generation.target,
+                    generation.stamp,
+                    &generation.catalog,
+                    generation.image,
+                    generation.image_identity,
+                    &generation.manifest,
+                    payload_root,
+                    &mut TestAuthority::new(
+                        [generation.stamp, generation.stamp],
+                        [generation.image],
+                    ),
+                )
+                .expect("admit selected generation and local-cache ref");
+            if commits.is_empty() {
+                historical_claim = Some((committed.identity(), segment.id_claim(), payload));
+            }
+            commits.push(committed.identity());
+        }
+        assert_eq!(commits.len(), 3);
+        drop(generations);
+        drop(range_store);
+        drop(file_store);
+
+        let reopened_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("cold-open semantic FileStore");
+        let reopened = FileSemanticRangeStore::open(reopened_store, limits)
+            .expect("cold-open semantic history adapter");
+        let generation = fixture(b"historical segment one", 1, 81);
+        let local_cache = HistoryRefName::new("local-cache").expect("local cache ref");
+        assert!(matches!(
+            reopened
+                .history_materialization(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    &local_cache,
+                    historical_claim.expect("first history claim").0,
+                )
+                .expect("verify old manifest segment closure"),
+            HistoryMaterialization::ResidentSegments {
+                segment_count: 1,
+                ..
+            }
+        ));
+        reopened
+            .collect_garbage_with_history(&generation.target, backend_store::GcLimits::default())
+            .expect("force FileStore collection with history closure roots");
+
+        let reopened_store = FileStore::open(&cas_root, 16 * 1024 * 1024)
+            .expect("reopen FileStore after collection");
+        let reopened = FileSemanticRangeStore::open(reopened_store, limits)
+            .expect("reopen semantic history adapter after collection");
+        let (old_commit, old_segment, expected_bytes) =
+            historical_claim.expect("first history claim remains available");
+        let mut reader = reopened
+            .read_history_segment(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &local_cache,
+                old_commit,
+                SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                old_segment,
+            )
+            .expect("read third-old segment after GC and restart");
+        let mut actual = vec![0; expected_bytes.len()];
+        assert_eq!(
+            reader
+                .read_range(0, &mut actual)
+                .expect("read verified historical bytes"),
+            expected_bytes.len()
+        );
+        assert_eq!(actual, expected_bytes);
+    }
+
+    #[test]
+    fn ancestry_pages_continue_past_checkpoints_with_snapshot_oracle_parity() {
+        let directory = TestDirectory::create();
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let mut oracle = Vec::new();
+        let mut latest_target = None;
+        for revision in 1..=35_u64 {
+            let payload = format!("sparse-history-generation-{revision}");
+            let generation = fixture(
+                payload.as_bytes(),
+                revision,
+                u8::try_from(revision).expect("small history revision"),
+            );
+            oracle.push(generation.manifest.root());
+            latest_target = Some(generation.target.clone());
+            let _ = commit(&files, &generation, [generation.stamp, generation.stamp])
+                .expect("append selected history snapshot");
+        }
+        let target = latest_target.expect("history target exists");
+        let tip = files
+            .history_ref(
+                &target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local cache ref"),
+            )
+            .expect("read selected ref")
+            .expect("selected ref exists")
+            .commit();
+        drop(files);
+
+        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
+        let mut page = reopened
+            .replay_history(&target, tip)
+            .expect("read first bounded history page");
+        assert_eq!(page.entries().len(), MAX_HISTORY_REPLAY_COMMITS);
+        assert!(page.includes_checkpoint());
+        let mut reverse_pages = vec![
+            page.entries()
+                .iter()
+                .map(|entry| entry.generation().manifest().root())
+                .collect::<Vec<_>>(),
+        ];
+        while let Some(cursor) = page.next_cursor() {
+            page = reopened
+                .continue_history_replay(&target, cursor)
+                .expect("continue bounded history page");
+            reverse_pages.push(
+                page.entries()
+                    .iter()
+                    .map(|entry| entry.generation().manifest().root())
+                    .collect(),
+            );
+        }
+        reverse_pages.reverse();
+        let replayed = reverse_pages.into_iter().flatten().collect::<Vec<_>>();
+        assert_eq!(replayed, oracle);
+    }
+
+    #[test]
+    fn history_pages_have_no_lifetime_commit_limit() {
+        const HISTORY_LENGTH: u64 = 2_050;
+
+        let directory = TestDirectory::create();
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let mut latest_target = None;
+        for revision in 1..=HISTORY_LENGTH {
+            let payload = format!("history-beyond-old-scan-cap-{revision}");
+            let generation = fixture(
+                payload.as_bytes(),
+                revision,
+                u8::try_from(revision % 251 + 1).expect("bounded fixture discriminator"),
+            );
+            latest_target = Some(generation.target.clone());
+            let _ = commit(&files, &generation, [generation.stamp, generation.stamp])
+                .expect("append long-lived history commit");
+        }
+        let target = latest_target.expect("history target exists");
+        let tip = files
+            .history_ref(
+                &target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local cache ref"),
+            )
+            .expect("read local cache ref")
+            .expect("local cache ref exists")
+            .commit();
+        drop(files);
+
+        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
+        let mut page = reopened
+            .replay_history(&target, tip)
+            .expect("read long history page");
+        let mut replayed = page.entries().len();
+        while let Some(cursor) = page.next_cursor() {
+            page = reopened
+                .continue_history_replay(&target, cursor)
+                .expect("continue long history page");
+            replayed += page.entries().len();
+        }
+        assert_eq!(
+            replayed,
+            usize::try_from(HISTORY_LENGTH).expect("history length fits")
+        );
+    }
+
+    #[test]
+    fn torn_refs_missing_parent_or_generation_fail_before_recovery_prunes_records() {
+        let directory = TestDirectory::create();
+        let base = fixture(b"corruption base", 1, 61);
+        let next = fixture(b"corruption next", 2, 62);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let base_head = commit(&files, &base, [base.stamp, base.stamp]).expect("commit base");
+        let selected_name = HistoryRefName::new("local-cache").expect("local cache ref");
+        let base_history_id = files
+            .history_ref(&base.target, HistoryRefKind::Branch, &selected_name)
+            .expect("read base history ref")
+            .expect("base history ref exists")
+            .commit();
+        let next_head = commit(&files, &next, [next.stamp, next.stamp]).expect("commit next");
+        let target_root = files.target_root(&next.target);
+        let next_record = record_path(&target_root, next_head.identity());
+        let base_record = record_path(&target_root, base_head.identity());
+        let next_commit_path = target_root
+            .join("history")
+            .join("commits")
+            .join(format!("{}.commit", hex(next_head.identity().as_bytes())));
+        let base_commit_path = target_root
+            .join("history")
+            .join("commits")
+            .join(format!("{}.commit", hex(base_history_id.as_bytes())));
+
+        let refs_path = target_root.join("history").join("refs.catalog");
+        let refs = fs::read(&refs_path).expect("read refs catalog");
+        fs::write(&refs_path, b"torn refs catalog").expect("truncate refs catalog");
+        assert!(
+            files
+                .current(&next.target)
+                .expect_err("torn refs fail closed")
+                .contains("length is invalid")
+        );
+        assert!(
+            next_record.exists(),
+            "no generation was pruned after torn refs"
+        );
+        fs::write(&refs_path, refs).expect("restore exact refs catalog");
+
+        fs::remove_file(&base_commit_path).expect("remove a referenced parent commit");
+        assert!(
+            files
+                .current(&next.target)
+                .expect_err("missing parent fails closed")
+                .contains("missing commit object")
+        );
+        assert!(
+            next_commit_path.exists(),
+            "child commit is retained on failure"
+        );
+        assert!(base_record.exists(), "generation records remain on failure");
+
+        // Recreate the parent from the committed selected branch in a fresh
+        // fixture store, then remove its generation snapshot independently.
+        let recovered = TestDirectory::create();
+        let recovered_files =
+            LocalSemanticGenerationFiles::open(&recovered.0).expect("open second store");
+        let base_head =
+            commit(&recovered_files, &base, [base.stamp, base.stamp]).expect("commit base again");
+        let next_head =
+            commit(&recovered_files, &next, [next.stamp, next.stamp]).expect("commit next again");
+        let target_root = recovered_files.target_root(&next.target);
+        let missing_generation = record_path(&target_root, base_head.identity());
+        fs::remove_file(missing_generation).expect("remove a referenced generation snapshot");
+        assert!(
+            recovered_files
+                .current(&next.target)
+                .expect_err("missing generation fails closed")
+                .contains("missing record")
+        );
+        assert!(record_path(&target_root, next_head.identity()).exists());
+    }
+
+    #[test]
+    fn deleting_last_branch_ref_reclaims_its_unreachable_commit_after_reopen() {
+        let directory = TestDirectory::create();
+        let base = fixture(b"branch retention base", 1, 71);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let _ = commit(&files, &base, [base.stamp, base.stamp]).expect("commit selected base");
+        let scratch = admit_history(&files, &base, &[], [0x44; 32]);
+        set_history_ref(
+            &files,
+            &base.target,
+            HistoryRefKind::Branch,
+            "scratch",
+            None,
+            Some(scratch.identity()),
+        )
+        .expect("create scratch branch");
+        let scratch_path = files
+            .target_root(&base.target)
+            .join("history")
+            .join("commits")
+            .join(format!("{}.commit", hex(scratch.identity().as_bytes())));
+        set_history_ref(
+            &files,
+            &base.target,
+            HistoryRefKind::Branch,
+            "scratch",
+            Some(scratch.identity()),
+            None,
+        )
+        .expect("delete scratch branch by CAS");
+        drop(files);
+
+        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
+        let _ = reopened
+            .current(&base.target)
+            .expect("recover retained selected branch")
+            .expect("selected local head remains");
+        let mut progress = reopened
+            .advance_history_gc(&base.target)
+            .expect("begin history mark and sweep");
+        while !progress.complete() {
+            progress = reopened
+                .advance_history_gc(&base.target)
+                .expect("continue bounded history mark and sweep");
+        }
+        assert!(!scratch_path.exists());
     }
 }

@@ -21,7 +21,9 @@ use backend_semantic::ir::{
     UntrustedSemanticSegmentId,
 };
 use backend_store::{
-    ArtifactBudget, ArtifactObjectReader, FileStore, ObjectId, TypedObject, UntrustedObjectId,
+    ArtifactBudget, ArtifactClosureClaim, ArtifactObjectReader, ClosureCompositionBudget,
+    ClosureId, ClosureMembershipChange, DurableManifest, FileStore, GcLimits, GcPinGuard, GcReport,
+    GcRoot, GcRootResolver, ObjectId, PinnedStoredClosureReceipt, TypedObject, UntrustedObjectId,
 };
 use backend_version::{
     ObjectKey, ObjectKeyHasher, ObjectVersion, ObjectVersionHasher, Schema, SchemaIdentity,
@@ -83,7 +85,7 @@ pub struct LocalSemanticDiffSummary {
 }
 
 /// Raw canonical bytes for one semantic segment in the local immutable CAS.
-struct SemanticSegmentPayload;
+pub(super) struct SemanticSegmentPayload;
 
 impl Schema for SemanticSegmentPayload {
     const DOMAIN: u8 = SEGMENT_SCHEMA_DOMAIN;
@@ -103,6 +105,44 @@ struct VerifiedMappedSemanticSegment {
     object_id: ObjectId,
     byte_length: u64,
     reader: ArtifactObjectReader,
+}
+
+/// A historical segment whose manifest claim, bridge mapping, FileStore
+/// envelope, payload bytes, and cumulative branch/tag closure membership were
+/// verified. The shared GC pin remains held until the borrowed reader drops.
+pub struct HistorySegmentReader {
+    segment: SemanticSegmentId,
+    byte_length: u64,
+    reader: VerifiedMappedSemanticSegment,
+    _gc_pin: GcPinGuard,
+}
+
+fn needs_hydration(
+    generation: &super::ir_generation_store::LocalSemanticGeneration,
+) -> crate::HistoryMaterialization {
+    crate::HistoryMaterialization::NeedsHydration {
+        image: generation.image(),
+        image_identity: generation.image_identity(),
+    }
+}
+
+impl HistorySegmentReader {
+    /// Returns the admitted canonical segment identity.
+    #[must_use]
+    pub const fn segment(&self) -> SemanticSegmentId {
+        self.segment
+    }
+
+    /// Returns the exact manifest payload length.
+    #[must_use]
+    pub const fn byte_length(&self) -> u64 {
+        self.byte_length
+    }
+
+    /// Reads a bounded range from the verified immutable payload.
+    pub fn read_range(&mut self, offset: u64, output: &mut [u8]) -> Result<usize, String> {
+        self.reader.read_range(offset, output)
+    }
 }
 
 impl VerifiedMappedSemanticSegment {
@@ -641,6 +681,282 @@ impl FileSemanticRangeStore {
         self.generations.current(target)
     }
 
+    /// Creates an unpublished history proposal for the current admitted
+    /// generation. Parents are ordered first-parent then optional merge
+    /// parent. The proposal has no authority to move the selected index head.
+    pub fn propose_history_commit(
+        &self,
+        target: &crate::SemanticTargetKey,
+        parents: &[crate::HistoryCommitId],
+        provenance: [u8; 32],
+    ) -> Result<crate::UnpublishedHistoryProposal, String> {
+        let _state_lock = self.acquire_state_lock()?;
+        self.generations
+            .propose_history_commit(target, parents, provenance)
+    }
+
+    /// Admits a history proposal only while its exact selected authority
+    /// stamp still names the same semantic image. The durable commit remains
+    /// immutable; a separate ref CAS is required to make it navigable.
+    pub fn admit_history_proposal<S: crate::SelectedGenerationSource>(
+        &self,
+        proposal: crate::UnpublishedHistoryProposal,
+        source: &mut S,
+    ) -> Result<crate::HistoryAdmissionReceipt, String> {
+        let _state_lock = self.acquire_state_lock()?;
+        self.generations.admit_history_proposal(proposal, source)
+    }
+
+    /// Reads a validated branch or tag pointer. Named refs are navigation
+    /// metadata and never select an index root.
+    pub fn history_ref(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+    ) -> Result<Option<crate::SelectedHistoryRef>, String> {
+        self.generations.history_ref(target, kind, name)
+    }
+
+    /// Atomically compares and replaces or deletes one branch/tag ref.
+    /// `expected == None` means the ref must be absent. This only changes the
+    /// history navigation catalog, never the selected index generation.
+    pub fn compare_and_swap_history_ref(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: crate::HistoryRefName,
+        expected: Option<crate::HistoryCommitId>,
+        next: Option<crate::HistoryCommitId>,
+    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+        let _gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin semantic history ref update: {error:?}"))?;
+        let _state_lock = self.acquire_state_lock()?;
+        let receipt = self
+            .generations
+            .compare_and_swap_history_ref(target, kind, name, expected, next)?;
+        // Recompute retention only after the atomic ref catalog is durable.
+        // Current authority head remains the independent retention root.
+        let _ = self.generations.current(target)?;
+        Ok(receipt)
+    }
+
+    /// Renames one branch/tag with a single atomic refs-catalog replacement.
+    pub fn rename_history_ref(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        old_name: &crate::HistoryRefName,
+        new_name: crate::HistoryRefName,
+        expected: crate::HistoryCommitId,
+    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+        let _gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin semantic history ref rename: {error:?}"))?;
+        let _state_lock = self.acquire_state_lock()?;
+        let receipt = self
+            .generations
+            .rename_history_ref(target, kind, old_name, new_name, expected)?;
+        let _ = self.generations.current(target)?;
+        Ok(receipt)
+    }
+
+    /// Retrieves one admitted immutable commit and its canonical generation
+    /// binding by history ID.
+    pub fn history_commit(
+        &self,
+        target: &crate::SemanticTargetKey,
+        identity: crate::HistoryCommitId,
+    ) -> Result<crate::AdmittedHistoryCommit, String> {
+        self.generations.history_commit(target, identity)
+    }
+
+    /// Checks whether every segment in one immutable history snapshot can be
+    /// read offline from the payload closure retained by a named branch or
+    /// tag. Full images may be pruned independently; callers receive
+    /// `NeedsHydration` unless every exact manifest segment is still covered.
+    pub fn history_materialization(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        commit: crate::HistoryCommitId,
+    ) -> Result<crate::HistoryMaterialization, String> {
+        let _gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin historical semantic payloads: {error:?}"))?;
+        let _state_lock = self.acquire_state_lock()?;
+        let generation = self.generations.history_generation(target, commit)?;
+        let Some(reference) = self.generations.history_ref(target, kind, name)? else {
+            return Ok(needs_hydration(&generation));
+        };
+        let payload = self
+            .generations
+            .history_payload_root(target, reference.commit())?;
+        let manifest_segments = generation
+            .manifest()
+            .planes()
+            .iter()
+            .map(|plane| plane.segments().len())
+            .sum::<usize>();
+        let Some(payload) = payload else {
+            return if manifest_segments == 0 {
+                Ok(crate::HistoryMaterialization::ResidentSegments {
+                    closure: None,
+                    segment_count: 0,
+                    byte_length: 0,
+                })
+            } else {
+                Ok(needs_hydration(&generation))
+            };
+        };
+        let closure = self
+            .store
+            .open_closure(payload.closure)
+            .map_err(|error| format!("open historical semantic payload closure: {error:?}"))?;
+        let mut segment_count = 0_usize;
+        let mut byte_length = 0_u64;
+        for plane in generation.manifest().planes() {
+            for segment in plane.segments() {
+                let Some((mapped, admitted)) = self.open_history_segment_from_closure(
+                    target,
+                    &generation,
+                    &closure,
+                    plane.kind(),
+                    segment.id_claim(),
+                )?
+                else {
+                    return Ok(needs_hydration(&generation));
+                };
+                if admitted.as_bytes() != segment.id_claim().as_bytes() {
+                    return Err("historical semantic segment differs from its manifest".to_owned());
+                }
+                drop(mapped);
+                segment_count = segment_count
+                    .checked_add(1)
+                    .ok_or_else(|| "history segment count overflows".to_owned())?;
+                byte_length = byte_length
+                    .checked_add(segment.byte_length())
+                    .ok_or_else(|| "history segment byte count overflows".to_owned())?;
+            }
+        }
+        Ok(crate::HistoryMaterialization::ResidentSegments {
+            closure: Some(payload.closure),
+            segment_count,
+            byte_length,
+        })
+    }
+
+    /// Opens one exact historical segment through a named branch or tag's
+    /// cumulative payload closure. The returned reader keeps a shared FileStore
+    /// GC pin until dropped, and rechecks the canonical segment claim before
+    /// exposing bounded range reads.
+    pub fn read_history_segment(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        commit: crate::HistoryCommitId,
+        plane: SemanticPlaneKind,
+        segment: UntrustedSemanticSegmentId,
+    ) -> Result<HistorySegmentReader, String> {
+        let gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin historical semantic segment: {error:?}"))?;
+        let _state_lock = self.acquire_state_lock()?;
+        let generation = self.generations.history_generation(target, commit)?;
+        let Some(reference) = self.generations.history_ref(target, kind, name)? else {
+            return Err("historical semantic reference is missing".to_owned());
+        };
+        let Some(payload) = self
+            .generations
+            .history_payload_root(target, reference.commit())?
+        else {
+            return Err("historical semantic snapshot needs hydration".to_owned());
+        };
+        let closure = self
+            .store
+            .open_closure(payload.closure)
+            .map_err(|error| format!("open historical semantic payload closure: {error:?}"))?;
+        let Some((reader, admitted)) =
+            self.open_history_segment_from_closure(target, &generation, &closure, plane, segment)?
+        else {
+            return Err("historical semantic segment needs hydration".to_owned());
+        };
+        Ok(HistorySegmentReader {
+            segment: admitted,
+            byte_length: reader.byte_length(),
+            reader,
+            _gc_pin: gc_pin,
+        })
+    }
+
+    /// Reads one bounded page of first-parent snapshots. `next_cursor` pages
+    /// through arbitrarily deep ancestry; checkpoints identify useful resume
+    /// points but never truncate history navigation.
+    pub fn replay_history(
+        &self,
+        target: &crate::SemanticTargetKey,
+        tip: crate::HistoryCommitId,
+    ) -> Result<crate::HistoryReplay, String> {
+        self.generations.replay_history(target, tip)
+    }
+
+    /// Continues an ancestry page produced by [`Self::replay_history`].
+    pub fn continue_history_replay(
+        &self,
+        target: &crate::SemanticTargetKey,
+        cursor: crate::HistoryReplayCursor,
+    ) -> Result<crate::HistoryReplay, String> {
+        self.generations.continue_history_replay(target, cursor)
+    }
+
+    /// Advances a durable bounded history mark/sweep batch. Ref mutations,
+    /// commits, and this method share `state.lock`, so no batch can delete
+    /// from a stale catalog epoch. Call again while `complete()` is false.
+    pub fn advance_history_gc(
+        &self,
+        target: &crate::SemanticTargetKey,
+    ) -> Result<crate::HistoryGcProgress, String> {
+        let _state_lock = self.acquire_state_lock()?;
+        self.generations.advance_history_gc(target)
+    }
+
+    /// Collects FileStore garbage while retaining every payload closure named
+    /// by this target's current history refs. The roots are read only after
+    /// FileStore has acquired its exclusive GC lease; history ref writers take
+    /// the matching shared lease before `state.lock`, so a newly published tip
+    /// cannot be omitted from this collection's root snapshot.
+    pub fn collect_garbage_with_history(
+        &self,
+        target: &crate::SemanticTargetKey,
+        limits: GcLimits,
+    ) -> Result<GcReport, String> {
+        self.store
+            .collect_garbage_resolving_roots(
+                |resolver: &mut GcRootResolver<'_>| {
+                    let _state_lock = self
+                        .acquire_state_lock()
+                        .map_err(backend_store::StoreError::Io)?;
+                    let roots = self
+                        .generations
+                        .history_payload_roots(target)
+                        .map_err(backend_store::StoreError::Io)?;
+                    for closure in roots {
+                        resolver.add(GcRoot::Closure(closure));
+                    }
+                    Ok(())
+                },
+                limits,
+            )
+            .map_err(|error| format!("collect semantic FileStore garbage: {error:?}"))
+    }
+
     /// Streams a selected segment already present in immutable local CAS and
     /// returns its admitted ID without materializing the payload.
     ///
@@ -1068,6 +1384,13 @@ impl FileSemanticRangeStore {
         selection: SelectedSemanticPlane,
         source: &mut S,
     ) -> Result<super::ir_generation_store::LocalSemanticGeneration, String> {
+        // Shared FileStore GC exclusion is always acquired before the
+        // product-owner lock. It protects objects while a cumulative history
+        // closure is composed and until its branch ref becomes durable.
+        let _gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin semantic history objects: {error:?}"))?;
         if selection.image() != image
             || selection.image().manifest_root() != manifest.root()
             || target.profile() != selection.stamp().profile()
@@ -1089,6 +1412,7 @@ impl FileSemanticRangeStore {
         let plane_manifest = manifest
             .plane(plane)
             .ok_or_else(|| "selected semantic plane is absent from its manifest".to_owned())?;
+        let mut segment_objects = Vec::with_capacity(plane_manifest.segments().len());
         for segment in plane_manifest.segments() {
             let claim = segment.id_claim();
             let mapped = {
@@ -1114,10 +1438,56 @@ impl FileSemanticRangeStore {
                 return Err("local semantic segment identity changed during head commit".to_owned());
             }
             let _state_lock = self.acquire_state_lock()?;
+            self.generations.persist_history_segment_mapping(
+                target,
+                claim,
+                mapped.object_id(),
+                segment.byte_length(),
+            )?;
             self.publish_selected_mapping(selection, request, mapped.object_id())?;
+            segment_objects.push((claim, mapped.object_id(), segment.byte_length()));
+        }
+        // Retain any other complete family segments already resident in CAS.
+        // This does not make a partial closure look complete: historical
+        // readers check every manifest member against the tip closure before
+        // returning a `Resident` materialization receipt.
+        for candidate_plane in manifest.planes() {
+            for segment in candidate_plane.segments() {
+                let claim = segment.id_claim();
+                if segment_objects
+                    .iter()
+                    .any(|(present, _, _)| present.as_bytes() == claim.as_bytes())
+                {
+                    continue;
+                }
+                let mapped = {
+                    let _state_lock = self.acquire_state_lock()?;
+                    self.open_mapped_object_for(stamp, image, candidate_plane.kind(), claim)?
+                };
+                let Some(mut mapped) = mapped else {
+                    continue;
+                };
+                let mut scratch = [0_u8; IO_BUFFER_BYTES];
+                let admitted =
+                    mapped.verify_segment(candidate_plane.kind(), segment, &mut scratch)?;
+                if admitted.as_bytes() != claim.as_bytes() {
+                    return Err(
+                        "resident history segment differs from its manifest claim".to_owned()
+                    );
+                }
+                let _state_lock = self.acquire_state_lock()?;
+                self.generations.persist_history_segment_mapping(
+                    target,
+                    claim,
+                    mapped.object_id(),
+                    segment.byte_length(),
+                )?;
+                segment_objects.push((claim, mapped.object_id(), segment.byte_length()));
+            }
         }
         let committed = {
             let _state_lock = self.acquire_state_lock()?;
+            let payload_root = self.compose_history_payload_root(target, &segment_objects)?;
             let current_image = self
                 .images
                 .find_generation(target, image)
@@ -1128,13 +1498,14 @@ impl FileSemanticRangeStore {
             if current_image.identity() != image_identity {
                 return Err("canonical NXFI identity changed during local commit".to_owned());
             }
-            let committed = self.generations.commit(
+            let committed = self.generations.commit_with_payload_root(
                 target,
                 stamp,
                 catalog,
                 image,
                 image_identity,
                 manifest,
+                payload_root,
                 source,
             )?;
             let mut retained = vec![(committed.image(), committed.image_identity())];
@@ -1148,6 +1519,160 @@ impl FileSemanticRangeStore {
             committed
         };
         Ok(committed)
+    }
+
+    pub(super) fn compose_history_payload_root(
+        &self,
+        target: &crate::SemanticTargetKey,
+        segments: &[(UntrustedSemanticSegmentId, ObjectId, u64)],
+    ) -> Result<Option<super::ir_generation_store::HistoryPayloadRoot>, String> {
+        let ref_name = crate::HistoryRefName::new("local-cache")?;
+        let existing_ref =
+            self.generations
+                .history_ref(target, crate::HistoryRefKind::Branch, &ref_name)?;
+        let prior = self.generations.selected_history_payload_root(target)?;
+        if existing_ref.is_some() && prior.is_none() {
+            return Err(
+                "local history tip has no resident payload closure; materialize it before extending offline history"
+                    .to_owned(),
+            );
+        }
+        let base_id = prior.map(|root| root.closure);
+        let base = base_id
+            .map(|identity| {
+                self.store
+                    .open_closure(identity)
+                    .map_err(|error| format!("open semantic history payload closure: {error:?}"))
+            })
+            .transpose()?;
+
+        let mut object_lengths = std::collections::BTreeMap::<ObjectId, u64>::new();
+        for (_, object, byte_length) in segments {
+            match object_lengths.insert(*object, *byte_length) {
+                Some(prior) if prior != *byte_length => {
+                    return Err(
+                        "semantic history object has conflicting payload lengths".to_owned()
+                    );
+                }
+                _ => {}
+            }
+        }
+        let mut changes = Vec::with_capacity(object_lengths.len());
+        let mut added_payload_bytes = 0_u64;
+        for (object, byte_length) in object_lengths {
+            let already_present = match base.as_ref() {
+                Some(closure) => closure.contains_object_id(object).map_err(|error| {
+                    format!("check semantic history closure membership: {error:?}")
+                })?,
+                None => false,
+            };
+            if !already_present {
+                changes.push(ClosureMembershipChange::add(object));
+                added_payload_bytes = added_payload_bytes
+                    .checked_add(byte_length)
+                    .ok_or_else(|| "semantic history payload byte count overflows".to_owned())?;
+            }
+        }
+        if changes.is_empty() {
+            return Ok(
+                base_id.map(|closure| super::ir_generation_store::HistoryPayloadRoot { closure })
+            );
+        }
+        let base_members = base
+            .as_ref()
+            .map_or(0, backend_store::DurableManifest::object_count);
+        let max_members = usize::try_from(base_members)
+            .ok()
+            .and_then(|count| count.checked_add(changes.len()))
+            .ok_or_else(|| "semantic history closure member count overflows".to_owned())?;
+        let metadata_bytes = ClosureCompositionBudget::metadata_bytes_for(changes.len())
+            .map_err(|error| format!("size semantic history closure update: {error:?}"))?;
+        let budget = ClosureCompositionBudget::new(
+            max_members.max(1),
+            changes.len(),
+            added_payload_bytes.max(1),
+            metadata_bytes,
+        );
+        let receipt = self
+            .store
+            .compose_closure_index(base_id.map(ArtifactClosureClaim::from_id), &changes, budget)
+            .map_err(|error| format!("compose semantic history payload closure: {error:?}"))?;
+        Ok(Some(super::ir_generation_store::HistoryPayloadRoot {
+            closure: receipt.receipt().closure(),
+        }))
+    }
+
+    fn open_history_segment_from_closure(
+        &self,
+        target: &crate::SemanticTargetKey,
+        generation: &super::ir_generation_store::LocalSemanticGeneration,
+        closure: &DurableManifest,
+        plane: SemanticPlaneKind,
+        claim: UntrustedSemanticSegmentId,
+    ) -> Result<Option<(VerifiedMappedSemanticSegment, SemanticSegmentId)>, String> {
+        let manifest_plane = generation
+            .manifest()
+            .plane(plane)
+            .ok_or_else(|| "historical semantic plane is absent from its manifest".to_owned())?;
+        let segment = manifest_plane
+            .segments()
+            .iter()
+            .find(|segment| segment.id_claim().as_bytes() == claim.as_bytes())
+            .ok_or_else(|| "historical semantic segment is absent from its manifest".to_owned())?;
+        let Some((object_id, byte_length)) =
+            self.generations.history_segment_mapping(target, claim)?
+        else {
+            return Ok(None);
+        };
+        if byte_length != segment.byte_length() {
+            return Err("historical semantic segment mapping has the wrong length".to_owned());
+        }
+        if !closure
+            .contains_object_id(object_id)
+            .map_err(|error| format!("check historical semantic closure membership: {error:?}"))?
+        {
+            return Ok(None);
+        }
+        let sink = self.store.artifact_sink(ArtifactBudget::new(
+            1,
+            1,
+            MAX_SEMANTIC_OBJECT_BYTES,
+            IO_BUFFER_BYTES,
+            1,
+        ));
+        let Some(reader) = sink
+            .open_object_limited(
+                UntrustedObjectId::from_bytes(*object_id.as_bytes()),
+                MAX_SEMANTIC_OBJECT_BYTES,
+            )
+            .map_err(|error| format!("open historical semantic FileStore object: {error:?}"))?
+        else {
+            return Ok(None);
+        };
+        if reader.id() != object_id
+            || reader.schema()
+                != SchemaIdentity::new(
+                    SemanticSegmentPayload::DOMAIN,
+                    SemanticSegmentPayload::TYPE,
+                    SemanticSegmentPayload::VERSION,
+                )
+            || reader.payload_len() != byte_length
+        {
+            return Err("historical semantic FileStore object differs from its bridge".to_owned());
+        }
+        let mut mapped = VerifiedMappedSemanticSegment {
+            object_id,
+            byte_length,
+            reader,
+        };
+        let mut scratch = [0_u8; IO_BUFFER_BYTES];
+        let admitted = mapped.verify_segment(plane, segment, &mut scratch)?;
+        if admitted.as_bytes() != claim.as_bytes() {
+            return Err(
+                "historical semantic segment identity changed during verification".to_owned(),
+            );
+        }
+        Ok(Some((mapped, admitted)))
     }
 
     fn publish_selected_mapping(

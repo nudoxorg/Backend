@@ -50,8 +50,8 @@ pub use closure_composer::{
 };
 pub use gc::{GcLimits, GcReport, GcRoot, GcRootResolver, GcRoots};
 pub use layout::{
-    FileStore, PublicationAuthorityError, PublicationBase, PublicationDescriptor, SelectedHead,
-    StorePublicationAuthority, TransactionId,
+    FileStore, GcPinGuard, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
+    SelectedHead, StorePublicationAuthority, TransactionId,
 };
 pub use nodes::{
     DurableManifest, DurableManifestIdPage, DurableManifestPage, DurableTree, ManifestReadStats,
