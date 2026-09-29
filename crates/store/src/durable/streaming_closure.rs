@@ -895,6 +895,57 @@ mod tests {
     }
 
     #[test]
+    fn tentative_payload_visitor_borrows_bounded_chunks_and_mints_envelope_last() {
+        let test = TestStore::new();
+        let item = object(23, 40 * 1024 + 7);
+        let mut builder = test
+            .store
+            .begin_streaming_closure(budget(1))
+            .expect("begin object closure");
+        let admitted = stream_object(&mut builder, &item);
+        builder.seal().expect("seal object closure");
+
+        let mut staged = Vec::new();
+        let mut calls = 0_usize;
+        let envelope = test
+            .store
+            .stream_tentative_object_payload(
+                UntrustedObjectId::from_bytes(*admitted.as_bytes()),
+                u64::try_from(item.bytes().len()).expect("test payload length fits u64"),
+                |chunk| {
+                    assert!(chunk.len() <= super::super::artifact::VERIFY_BUFFER_BYTES);
+                    calls = calls.checked_add(1).expect("bounded visitor call count");
+                    staged.extend_from_slice(chunk);
+                    Ok(())
+                },
+            )
+            .expect("verify streamed object")
+            .expect("object exists");
+        assert_eq!(envelope.id(), admitted);
+        assert_eq!(
+            envelope.payload_len(),
+            u64::try_from(item.bytes().len()).expect("test payload length fits u64")
+        );
+        assert_eq!(staged, item.bytes());
+        assert!(calls > 1, "larger payload is delivered in bounded chunks");
+
+        let mut saw_tentative_chunk = false;
+        let rejected = test.store.stream_tentative_object_payload(
+            UntrustedObjectId::from_bytes(*admitted.as_bytes()),
+            u64::try_from(item.bytes().len()).expect("test payload length fits u64"),
+            |chunk| {
+                saw_tentative_chunk |= !chunk.is_empty();
+                Err(StoreError::Corrupt)
+            },
+        );
+        assert!(matches!(rejected, Err(StoreError::Corrupt)));
+        assert!(
+            saw_tentative_chunk,
+            "a failing callback receives no proof token"
+        );
+    }
+
+    #[test]
     fn one_and_two_object_streams_seal_and_reopen_cold() {
         let test = TestStore::new();
         for items in [vec![object(1, 37)], vec![object(9, 51), object(4, 29)]] {

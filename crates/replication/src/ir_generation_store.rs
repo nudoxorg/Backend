@@ -4030,6 +4030,207 @@ mod tests {
     }
 
     #[test]
+    fn typed_v2_nonempty_cold_publish_replay_and_gc_after_restart() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let file_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open semantic FileStore");
+        let range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
+            .expect("open semantic history adapter");
+        let generation = fixture(b"typed V2 positive cold publication", 1, 121);
+        let generations = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
+            .expect("open local generation records");
+        let _ = commit(
+            &generations,
+            &generation,
+            [generation.stamp, generation.stamp],
+        )
+        .expect("commit selected semantic generation");
+
+        let positive = crate::ir_hydration_store::positive_v2_history_fixture_for_test();
+        assert_eq!(positive.locator.segments.len(), 4);
+        let payload_bytes = positive
+            .objects
+            .iter()
+            .try_fold(0_u64, |total, object| {
+                total.checked_add(u64::try_from(object.bytes().len()).ok()?)
+            })
+            .expect("positive closure payload size fits u64");
+        let maximum_object_bytes = positive
+            .objects
+            .iter()
+            .map(|object| object.bytes().len())
+            .max()
+            .expect("positive closure has segment and rope objects");
+        let chunk_bytes = 16 * 1024;
+        let chunk_calls = positive
+            .objects
+            .iter()
+            .try_fold(0_usize, |calls, object| {
+                let object_calls = object
+                    .bytes()
+                    .len()
+                    .checked_add(chunk_bytes - 1)?
+                    .checked_div(chunk_bytes)?;
+                calls.checked_add(object_calls)
+            })
+            .expect("positive closure chunk count fits usize");
+        let object_count = positive.objects.len();
+        let metadata_bytes = StreamingClosureBudget::metadata_input_bytes_for(object_count)
+            .expect("positive closure metadata fits usize");
+        let mut builder = file_store
+            .begin_streaming_closure(StreamingClosureBudget::new(
+                object_count,
+                payload_bytes,
+                maximum_object_bytes,
+                chunk_bytes,
+                chunk_calls,
+                metadata_bytes,
+            ))
+            .expect("begin positive typed V2 closure");
+        for object in &positive.objects {
+            let claim = backend_store::ArtifactObjectClaim::new(
+                object.schema(),
+                *object.key(),
+                *object.version(),
+                u64::try_from(object.bytes().len()).expect("fixture object length fits u64"),
+            )
+            .with_object_id(backend_store::UntrustedObjectId::from_bytes(
+                *object.id().as_bytes(),
+            ));
+            let mut stream = builder
+                .begin_object(claim)
+                .expect("begin positive closure member");
+            for chunk in object.bytes().chunks(chunk_bytes) {
+                stream.write(chunk).expect("write positive closure member");
+            }
+            assert_eq!(
+                stream.finish().expect("admit positive closure member"),
+                object.id()
+            );
+        }
+        let closure = builder.seal().expect("seal positive typed V2 closure");
+        let closure_claim = ArtifactClosureClaim::from_id(closure.closure());
+        let admission = range_store
+            .admit_typed_v2_history_commit(
+                &generation.target,
+                &[],
+                [0x71; 32],
+                &positive.manifest,
+                closure_claim,
+                &positive.locator.segments,
+                &positive.locator.jumbo,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+                &mut TestAuthority::new([generation.stamp, generation.stamp], [generation.image]),
+            )
+            .expect("admit nonempty seven-family semantic proof");
+        let commit_id = admission.commit().identity();
+        drop(admission);
+        drop(generations);
+        drop(range_store);
+        drop(file_store);
+
+        // A new FileStore and range-store instance cold-verifies the durable
+        // locator and exact object closure before the ref compare-and-swap.
+        let cold_file_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("reopen FileStore after restart");
+        let cold_range_store = FileSemanticRangeStore::open(cold_file_store.clone(), limits)
+            .expect("reopen semantic history adapter after restart");
+        let branch = HistoryRefName::new("positive-typed-v2").expect("positive V2 branch name");
+        cold_range_store
+            .publish_typed_v2_history_ref_cold(
+                &generation.target,
+                HistoryRefKind::Branch,
+                branch.clone(),
+                None,
+                commit_id,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("cold publish nonempty typed V2 commit");
+        assert_eq!(
+            cold_range_store
+                .history_ref(&generation.target, HistoryRefKind::Branch, &branch)
+                .expect("read cold-published branch")
+                .expect("branch was published")
+                .commit(),
+            commit_id
+        );
+
+        let ancestry = cold_range_store
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+            )
+            .expect("prove positive V2 commit is reachable");
+        let replay = cold_range_store
+            .replay_typed_v2_history(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("cold replay published nonempty V2 history");
+        assert_eq!(
+            replay.content().content_root().as_bytes(),
+            &positive.expected_content_root
+        );
+        assert_eq!(
+            replay.content().generation_root().as_bytes(),
+            &positive.expected_generation_root
+        );
+        drop(replay);
+
+        cold_range_store
+            .collect_garbage_with_history(&generation.target, backend_store::GcLimits::default())
+            .expect("collect with the positive V2 branch as a closure root");
+        drop(cold_range_store);
+        drop(cold_file_store);
+
+        let reopened_file_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("reopen FileStore after GC");
+        let reopened_range_store = FileSemanticRangeStore::open(reopened_file_store, limits)
+            .expect("reopen semantic store after GC");
+        let reopened_ancestry = reopened_range_store
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+            )
+            .expect("reprove positive V2 reachability after GC and restart");
+        let reopened_replay = reopened_range_store
+            .replay_typed_v2_history(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &reopened_ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("replay positive typed V2 history after GC and restart");
+        assert_eq!(
+            reopened_replay.content().content_root().as_bytes(),
+            &positive.expected_content_root
+        );
+        assert_eq!(
+            reopened_replay.content().generation_root().as_bytes(),
+            &positive.expected_generation_root
+        );
+    }
+
+    #[test]
     fn third_old_nxfi_checkout_survives_image_prune_file_store_gc_and_cold_reopen() {
         let directory = TestDirectory::create();
         let cas_root = directory.0.join("cas");

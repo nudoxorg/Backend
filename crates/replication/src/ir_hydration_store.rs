@@ -44,6 +44,8 @@ use super::ir_hydration_wire::{
 };
 
 mod history_v2;
+#[cfg(test)]
+pub(crate) use history_v2::{PositiveV2HistoryFixture, positive_v2_history_fixture_for_test};
 
 #[cfg(test)]
 pub(crate) fn reset_typed_v2_closure_reopen_count() {

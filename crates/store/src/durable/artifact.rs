@@ -969,6 +969,40 @@ impl FileStore {
         })
     }
 
+    /// Streams borrowed payload chunks while the complete object is being
+    /// authenticated, and returns checked envelope metadata only after the
+    /// payload version, physical ID, registered relation, and exact length
+    /// all pass.
+    ///
+    /// The callback sees *tentative* bytes: a later read, hash, or relation
+    /// failure can still make this method return an error after the callback
+    /// received earlier chunks. The slice is borrowed from one fixed-size
+    /// verifier buffer and cannot outlive the callback invocation. Callers
+    /// that stage chunks in an output must keep that output provisional and
+    /// discard or roll it back unless this method returns `Ok(Some(_))` and
+    /// the returned metadata matches their independently admitted claim.
+    ///
+    /// This operation reads the immutable CAS payload once. Missing objects
+    /// return `Ok(None)`; malformed or oversized objects return an error.
+    pub fn stream_tentative_object_payload(
+        &self,
+        claim: UntrustedObjectId,
+        maximum_payload_bytes: u64,
+        mut consume_chunk: impl FnMut(&[u8]) -> Result<(), StoreError>,
+    ) -> Result<Option<VerifiedObjectEnvelope>, StoreError> {
+        let Some((verified, _file)) = verify_object_file_reader_limited_with_payload(
+            &self.store,
+            claim,
+            None,
+            Some(maximum_payload_bytes),
+            &mut consume_chunk,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(VerifiedObjectEnvelope::from(&verified)))
+    }
+
     /// Reopens a stored closure and proves every member's envelope, typed
     /// identities, relation children, and CAS path under the supplied budget.
     ///
@@ -1832,6 +1866,22 @@ fn verify_object_file_reader_limited(
     expected: Option<ArtifactObjectClaim>,
     maximum_payload_bytes: Option<u64>,
 ) -> Result<Option<(VerifiedObject, File)>, StoreError> {
+    verify_object_file_reader_limited_with_payload(
+        store,
+        claim,
+        expected,
+        maximum_payload_bytes,
+        &mut |_| Ok(()),
+    )
+}
+
+fn verify_object_file_reader_limited_with_payload(
+    store: &FileStore,
+    claim: UntrustedObjectId,
+    expected: Option<ArtifactObjectClaim>,
+    maximum_payload_bytes: Option<u64>,
+    consume_chunk: &mut impl FnMut(&[u8]) -> Result<(), StoreError>,
+) -> Result<Option<(VerifiedObject, File)>, StoreError> {
     let mut file = match artifact_fs::open_object(store, ObjectId::from_bytes(*claim.as_bytes()))? {
         Some(file) => file,
         None => return Ok(None),
@@ -1933,6 +1983,7 @@ fn verify_object_file_reader_limited(
         if let Some(relation_bytes) = &mut relation_bytes {
             relation_bytes.extend_from_slice(chunk);
         }
+        consume_chunk(chunk)?;
         remaining = remaining
             .checked_sub(u64::try_from(take).map_err(|_| StoreError::Bounds)?)
             .ok_or(StoreError::Bounds)?;
