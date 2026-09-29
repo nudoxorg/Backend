@@ -56,6 +56,8 @@ pub struct TypesReferenceV2 {
 pub struct CheckedTypesFamilyV2 {
     row_keys: alloc::boxed::Box<[[u8; 32]]>,
     row_domains: alloc::boxed::Box<[TypesRowDomainV2]>,
+    edge_offsets: alloc::boxed::Box<[usize]>,
+    row_edges: alloc::boxed::Box<[TypesReferenceV2]>,
     root_identities: alloc::boxed::Box<[[u8; 32]]>,
     root_type_presence: alloc::boxed::Box<[([u8; 32], bool)]>,
     declaration_references: alloc::boxed::Box<[[u8; 32]]>,
@@ -75,7 +77,12 @@ impl CheckedTypesFamilyV2 {
     ) -> Result<Self, SemanticPlaneRecordError> {
         let mut row_keys = Vec::new();
         let mut row_domains = Vec::new();
-        let mut local_references = Vec::new();
+        let mut edge_offsets = Vec::new();
+        edge_offsets
+            .try_reserve_exact(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        edge_offsets.push(0);
+        let mut row_edges = Vec::new();
         let mut root_identities = Vec::new();
         let mut root_type_presence = Vec::new();
         let mut declaration_references = Vec::new();
@@ -99,13 +106,25 @@ impl CheckedTypesFamilyV2 {
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             match (parsed.root_identity, parsed.root_type_present) {
                 (Some(identity), Some(present)) => {
+                    root_identities
+                        .try_reserve(1)
+                        .map_err(SemanticPlaneRecordError::Allocation)?;
+                    root_type_presence
+                        .try_reserve(1)
+                        .map_err(SemanticPlaneRecordError::Allocation)?;
                     root_identities.push(identity);
                     root_type_presence.push((identity, present));
                 }
                 (None, None) => {}
                 _ => return Err(SemanticPlaneRecordError::RowGrammar),
             }
-            local_references.extend(parsed.references);
+            row_edges
+                .try_reserve(parsed.references.len())
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            row_edges.extend(parsed.references.iter().copied());
+            declaration_references
+                .try_reserve(parsed.declaration_references.len())
+                .map_err(SemanticPlaneRecordError::Allocation)?;
             declaration_references.extend(parsed.declaration_references);
             row_keys
                 .try_reserve(1)
@@ -115,10 +134,12 @@ impl CheckedTypesFamilyV2 {
                 .map_err(SemanticPlaneRecordError::Allocation)?;
             row_keys.push(key);
             row_domains.push(parsed.domain);
+            edge_offsets
+                .try_reserve(1)
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            edge_offsets.push(row_edges.len());
             previous = Some(key);
         }
-        local_references.sort_unstable();
-        local_references.dedup();
         root_identities.sort_unstable();
         if root_identities.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(SemanticPlaneRecordError::StableKeyCollision);
@@ -132,7 +153,7 @@ impl CheckedTypesFamilyV2 {
         }
         declaration_references.sort_unstable();
         declaration_references.dedup();
-        for reference in &local_references {
+        for reference in &row_edges {
             let observed = row_keys
                 .binary_search(&reference.key)
                 .ok()
@@ -147,23 +168,30 @@ impl CheckedTypesFamilyV2 {
                 return Err(SemanticPlaneRecordError::ReaderReference);
             }
         }
-        let external_target_keys = row_keys
+        let external_target_count = row_domains
             .iter()
-            .zip(row_domains.iter())
-            .filter_map(|(key, domain)| {
-                (*domain == TypesRowDomainV2::ExternalTarget).then_some(*key)
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+            .filter(|domain| **domain == TypesRowDomainV2::ExternalTarget)
+            .count();
+        let mut external_target_keys = Vec::new();
+        external_target_keys
+            .try_reserve_exact(external_target_count)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        for (key, domain) in row_keys.iter().zip(row_domains.iter()) {
+            if *domain == TypesRowDomainV2::ExternalTarget {
+                external_target_keys.push(*key);
+            }
+        }
         family_hasher.update(&row_count.to_be_bytes());
         let local_root = *family_hasher.finalize().as_bytes();
         Ok(Self {
             row_keys: row_keys.into_boxed_slice(),
             row_domains: row_domains.into_boxed_slice(),
+            edge_offsets: edge_offsets.into_boxed_slice(),
+            row_edges: row_edges.into_boxed_slice(),
             root_identities: root_identities.into_boxed_slice(),
             root_type_presence: root_type_presence.into_boxed_slice(),
             declaration_references: declaration_references.into_boxed_slice(),
-            external_target_keys,
+            external_target_keys: external_target_keys.into_boxed_slice(),
             local_root,
             row_count,
         })
@@ -228,24 +256,110 @@ impl CheckedTypesFamilyV2 {
         &self,
         reference: TypesReferenceV2,
     ) -> Result<(), SemanticPlaneRecordError> {
+        self.row_index_for_reference(reference).map(|_| ())
+    }
+
+    /// Proves every Types row is reachable from mandatory roots and extension references.
+    ///
+    /// The bounded traversal stores one visited byte and at most one pending row index per
+    /// admitted row. Adjacency was independently parsed from every record during admission.
+    /// The seeds are all entity-root rows, every row in the complete external-target catalog,
+    /// and each typed-family reference collected from language-extension rows.
+    pub fn verify_reachable_closure(
+        &self,
+        extension_references: &[TypesReferenceV2],
+    ) -> Result<(), SemanticPlaneRecordError> {
+        let mut visited = Vec::new();
+        visited
+            .try_reserve_exact(self.row_keys.len())
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        visited.resize(self.row_keys.len(), 0_u8);
+        let mut pending = Vec::new();
+        pending
+            .try_reserve_exact(self.row_keys.len())
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+
+        for identity in self.root_identities.iter().copied() {
+            let index = self
+                .row_keys
+                .binary_search(&identity)
+                .map_err(|_| SemanticPlaneRecordError::ReaderReference)?;
+            if self.row_domains.get(index) != Some(&TypesRowDomainV2::EntityRoot) {
+                return Err(SemanticPlaneRecordError::ReaderReference);
+            }
+            enqueue_reachable(index, &mut visited, &mut pending);
+        }
+        for key in self.external_target_keys.iter().copied() {
+            let index = self
+                .row_keys
+                .binary_search(&key)
+                .map_err(|_| SemanticPlaneRecordError::ReaderReference)?;
+            if self.row_domains.get(index) != Some(&TypesRowDomainV2::ExternalTarget) {
+                return Err(SemanticPlaneRecordError::ReaderReference);
+            }
+            enqueue_reachable(index, &mut visited, &mut pending);
+        }
+        for reference in extension_references.iter().copied() {
+            let index = self.row_index_for_reference(reference)?;
+            enqueue_reachable(index, &mut visited, &mut pending);
+        }
+
+        while let Some(index) = pending.pop() {
+            let start = *self
+                .edge_offsets
+                .get(index)
+                .ok_or(SemanticPlaneRecordError::RowGrammar)?;
+            let next_index = index
+                .checked_add(1)
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            let end = *self
+                .edge_offsets
+                .get(next_index)
+                .ok_or(SemanticPlaneRecordError::RowGrammar)?;
+            let edges = self
+                .row_edges
+                .get(start..end)
+                .ok_or(SemanticPlaneRecordError::RowGrammar)?;
+            for reference in edges.iter().copied() {
+                let target = self.row_index_for_reference(reference)?;
+                enqueue_reachable(target, &mut visited, &mut pending);
+            }
+        }
+        if visited.iter().any(|seen| *seen == 0) {
+            return Err(SemanticPlaneRecordError::ReaderReference);
+        }
+        Ok(())
+    }
+
+    fn row_index_for_reference(
+        &self,
+        reference: TypesReferenceV2,
+    ) -> Result<usize, SemanticPlaneRecordError> {
+        let index = self
+            .row_keys
+            .binary_search(&reference.key)
+            .map_err(|_| SemanticPlaneRecordError::ReaderReference)?;
+        let domain = self
+            .row_domains
+            .get(index)
+            .copied()
+            .ok_or(SemanticPlaneRecordError::ReaderReference)?;
         let matches = match reference.domain {
-            TypesRowDomainV2::TypedNode => self
-                .domain_for(reference.key)
-                .is_some_and(TypesRowDomainV2::is_typed_node),
-            domain => self.domain_for(reference.key) == Some(domain),
+            TypesRowDomainV2::TypedNode => domain.is_typed_node(),
+            expected => domain == expected,
         };
         if matches {
-            Ok(())
+            Ok(index)
         } else {
             Err(SemanticPlaneRecordError::ReaderReference)
         }
     }
+}
 
-    fn domain_for(&self, key: [u8; 32]) -> Option<TypesRowDomainV2> {
-        self.row_keys
-            .binary_search(&key)
-            .ok()
-            .and_then(|index| self.row_domains.get(index).copied())
+fn enqueue_reachable(index: usize, visited: &mut [u8], pending: &mut Vec<usize>) {
+    if visited[index] == 0 {
+        visited[index] = 1;
+        pending.push(index);
     }
 }
 

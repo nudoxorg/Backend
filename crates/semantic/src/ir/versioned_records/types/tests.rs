@@ -14,6 +14,7 @@ fn empty_types_catalog_rejects_missing_extension_roots() {
         domain: TypesRowDomainV2::FreePredicates,
         key: [0x42; 32],
     };
+    assert!(catalog.verify_reachable_closure(&[]).is_ok());
 
     assert!(matches!(
         catalog.require_reference(missing_parameters),
@@ -58,6 +59,33 @@ fn catalog_exposes_each_entity_root_type_presence_bit() {
         .expect("both root associations and the referenced type are complete");
     let expected = [(missing_identity, false), (present_identity, true)];
     assert_eq!(catalog.root_type_presence(), expected.as_slice());
+    assert!(catalog.verify_reachable_closure(&[]).is_ok());
+}
+
+#[test]
+fn reachable_closure_rejects_orphan_rows_and_accepts_extension_seeds() {
+    let mut type_payload = Vec::new();
+    type_payload.extend_from_slice(&2_u32.to_be_bytes());
+    for (role, value) in [(0_u8, 1_u64), (1, 0)] {
+        type_payload.push(role);
+        type_payload.extend_from_slice(&0_u32.to_be_bytes());
+        type_payload.push(4); // scalar
+        type_payload.extend_from_slice(&[0; 24]);
+        type_payload.extend_from_slice(&value.to_be_bytes());
+    }
+    let type_key = typed_row_key(TYPE_TAG, &type_payload);
+    let catalog = CheckedTypesFamilyV2::from_records([(type_key, TYPE_TAG, &type_payload[..])])
+        .expect("the row is locally valid");
+
+    assert!(matches!(
+        catalog.verify_reachable_closure(&[]),
+        Err(SemanticPlaneRecordError::ReaderReference)
+    ));
+    let extension_roots = [TypesReferenceV2 {
+        domain: TypesRowDomainV2::Type,
+        key: type_key,
+    }];
+    assert!(catalog.verify_reachable_closure(&extension_roots).is_ok());
 }
 
 #[test]
@@ -144,6 +172,7 @@ fn fragment_external_identity_commits_its_kind_and_atom_rows() {
     let catalog = CheckedTypesFamilyV2::from_records(records)
         .expect("external endpoint atom must be present in the closure");
     assert_eq!(catalog.external_target_keys(), &[expected_key]);
+    assert!(catalog.verify_reachable_closure(&[]).is_ok());
 }
 
 #[test]
