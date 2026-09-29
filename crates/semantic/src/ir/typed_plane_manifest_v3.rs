@@ -18,8 +18,8 @@
 use std::{borrow::Bound, vec::Vec};
 
 use backend_version::{
-    CanonicalRelation, CanonicalRootAdmissionError, DEFAULT_CUT_POLICY, IdContext,
-    LazyPreparedUpdate, LazyTree, LazyTreePage, LazyTreeUpdateBudget, LazyTreeWork, NodeError,
+    CanonicalRelation, CanonicalRootAdmissionError, CheckedCanonicalRoot, DEFAULT_CUT_POLICY,
+    IdContext, LazyPreparedUpdate, LazyTree, LazyTreeUpdateBudget, LazyTreeWork, NodeError,
     PersistedTreeRoot, PersistentTree, Relation, RelationDecodeError, Schema, SchemaIdentity,
     TreeChange, TreeNodeLoader, TreeRangeIter, UntrustedId,
 };
@@ -31,16 +31,18 @@ use crate::vocabulary::LanguageProfile;
 use super::row_index::{RowFamily, StableRowIndexError, StableRowKey, UntrustedRowPayloadIdentity};
 
 const MAGIC: [u8; 4] = *b"STPI";
-/// V3 row-index catalog wire revision.
-pub const SEMANTIC_TYPED_PLANE_MANIFEST_V3_WIRE_REVISION: u16 = 1;
+/// V3 structural index-catalog wire revision.
+pub const SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_WIRE_REVISION: u16 = 1;
 const FAMILY_COUNT: usize = 7;
 const HEADER_BYTES: usize = 4 + 2 + 32 + 1;
 const FAMILY_DESCRIPTOR_BYTES: usize = 1 + 1 + 2 + 8 + 32 + 32;
 /// The V3 catalog has fixed size; row and descriptor metadata live in pages.
-pub const MAX_TYPED_PLANE_MANIFEST_V3_BYTES: usize =
+pub const MAX_SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_BYTES: usize =
     HEADER_BYTES + FAMILY_COUNT * FAMILY_DESCRIPTOR_BYTES;
 /// Maximum cold range page returned by the typed V3 index API.
 pub const MAX_TYPED_PLANE_V3_PAGE_ROWS: usize = 256;
+/// Maximum descriptor nodes one cold range page may admit.
+pub const MAX_TYPED_PLANE_V3_PAGE_NODES: usize = 8_192;
 /// Maximum canonical relation-node size accepted at a cold root boundary.
 pub const MAX_TYPED_PLANE_V3_NODE_BYTES: usize = DEFAULT_CUT_POLICY.max_encoded_bytes();
 /// Maximum descriptor nodes admitted during one cold closure walk.
@@ -56,35 +58,35 @@ const CATALOG_ROOT_DOMAIN: &[u8] = b"backend.semantic.typed-plane-index-catalog.
 /// The ID remains a storage claim until the row's payload bytes are fetched
 /// from the immutable closure and checked against its semantic payload claim.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SemanticRowObjectIdV3([u8; 32]);
+pub struct UntrustedSemanticRowObjectIdV3([u8; 32]);
 
-impl SemanticRowObjectIdV3 {
+impl UntrustedSemanticRowObjectIdV3 {
     /// Retains the exact 32-byte object identity from the row-index wire.
     #[must_use]
     pub const fn from_raw(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    /// Returns the stored object identity bytes.
+    /// Returns the untrusted claimed object-identity bytes.
     #[must_use]
     pub const fn as_bytes(self) -> [u8; 32] {
         self.0
     }
 }
 
-/// Semantic payload claim and its physical immutable-object reference.
+/// Semantic payload identity claim and its untrusted physical-object claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SemanticRowPayloadReferenceV3 {
+pub struct SemanticRowPayloadClaimV3 {
     payload: UntrustedRowPayloadIdentity,
-    object: SemanticRowObjectIdV3,
+    object: UntrustedSemanticRowObjectIdV3,
 }
 
-impl SemanticRowPayloadReferenceV3 {
+impl SemanticRowPayloadClaimV3 {
     /// Constructs one row reference from untrusted wire/storage claims.
     #[must_use]
     pub const fn from_untrusted_claims(
         payload: UntrustedRowPayloadIdentity,
-        object: SemanticRowObjectIdV3,
+        object: UntrustedSemanticRowObjectIdV3,
     ) -> Self {
         Self { payload, object }
     }
@@ -97,7 +99,7 @@ impl SemanticRowPayloadReferenceV3 {
 
     /// Returns the physical immutable-object claim.
     #[must_use]
-    pub const fn object(self) -> SemanticRowObjectIdV3 {
+    pub const fn object(self) -> UntrustedSemanticRowObjectIdV3 {
         self.object
     }
 }
@@ -116,7 +118,7 @@ impl Relation for SemanticTypedPlaneRowRelationV3 {
     const VERSION: u8 = 1;
 
     type Key = StableRowKey;
-    type Value = SemanticRowPayloadReferenceV3;
+    type Value = SemanticRowPayloadClaimV3;
 
     fn encode_key(key: &Self::Key, output: &mut Vec<u8>) {
         output.push(key.family().code());
@@ -147,12 +149,12 @@ impl CanonicalRelation for SemanticTypedPlaneRowRelationV3 {
         }
         let payload = UntrustedRowPayloadIdentity::from_fixed_wire(&bytes[..42])
             .map_err(|_| RelationDecodeError::Malformed)?;
-        let object = SemanticRowObjectIdV3(
+        let object = UntrustedSemanticRowObjectIdV3(
             bytes[42..]
                 .try_into()
                 .map_err(|_| RelationDecodeError::Malformed)?,
         );
-        Ok(SemanticRowPayloadReferenceV3 { payload, object })
+        Ok(SemanticRowPayloadClaimV3 { payload, object })
     }
 }
 
@@ -162,7 +164,7 @@ pub struct SemanticTypedPlaneIndexCatalogV3Schema;
 impl Schema for SemanticTypedPlaneIndexCatalogV3Schema {
     const DOMAIN: u8 = 0x7a;
     const TYPE: u16 = 0xc008;
-    const VERSION: u8 = SEMANTIC_TYPED_PLANE_MANIFEST_V3_WIRE_REVISION as u8;
+    const VERSION: u8 = SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_WIRE_REVISION as u8;
     type Value = [u8];
 
     fn encode(value: &Self::Value, output: &mut Vec<u8>) {
@@ -210,7 +212,7 @@ pub struct SemanticTypedPlaneRowTreeBuilderV3 {
     family: RowFamily,
     profile: Option<LanguageProfile>,
     limits: SemanticTypedPlaneRowTreeLimitsV3,
-    rows: Vec<(StableRowKey, SemanticRowPayloadReferenceV3)>,
+    rows: Vec<(StableRowKey, SemanticRowPayloadClaimV3)>,
     payload_bytes: u64,
 }
 
@@ -239,7 +241,7 @@ impl SemanticTypedPlaneRowTreeBuilderV3 {
     pub fn push(
         &mut self,
         key: StableRowKey,
-        payload: SemanticRowPayloadReferenceV3,
+        payload: SemanticRowPayloadClaimV3,
     ) -> Result<(), SemanticTypedPlaneIndexV3Error> {
         if key.family() != self.family {
             return Err(SemanticTypedPlaneIndexV3Error::RowFamilyMismatch);
@@ -284,8 +286,8 @@ impl SemanticTypedPlaneRowTreeBuilderV3 {
     }
 }
 
-/// Immutable family row tree that can lend range entries and canonical node
-/// pages to a persistence adapter.
+/// Immutable structural family index that lends range entries and canonical
+/// node pages to a persistence adapter. Its rows are not payload-admitted.
 pub struct SemanticTypedPlaneFamilyIndexV3 {
     family: RowFamily,
     profile: Option<LanguageProfile>,
@@ -381,7 +383,7 @@ pub struct SemanticTypedPlaneIndexEntryV3<'entry> {
     /// Stable family and row key.
     pub key: &'entry StableRowKey,
     /// Semantic payload and physical-object claims.
-    pub reference: &'entry SemanticRowPayloadReferenceV3,
+    pub reference: &'entry SemanticRowPayloadClaimV3,
 }
 
 /// Borrowed half-open range cursor over one retained family index.
@@ -477,10 +479,12 @@ impl SemanticTypedPlaneFamilyRootV3 {
     }
 }
 
-/// Bounded fixed-size V3 catalog of exactly seven persistent family roots.
+/// Bounded fixed-size V3 structural index catalog of exactly seven family roots.
 ///
-/// The catalog contains no per-row or per-segment vector. It is claim-only:
-/// callers must admit its exact tree closure and all payloads independently.
+/// It contains no per-row or per-segment vector. This c008 value is not a
+/// generation root, compiler-completeness certificate, or publication
+/// authority. Its enclosing generation contract must authenticate the catalog;
+/// callers then admit each tree closure and every row payload independently.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticTypedPlaneIndexCatalogV3 {
     families: [SemanticTypedPlaneFamilyRootV3; FAMILY_COUNT],
@@ -499,14 +503,14 @@ impl SemanticTypedPlaneIndexCatalogV3 {
 
     /// Decodes exactly one bounded canonical V3 root catalog.
     pub fn decode(bytes: &[u8]) -> Result<Self, SemanticTypedPlaneIndexV3Error> {
-        if bytes.len() > MAX_TYPED_PLANE_MANIFEST_V3_BYTES {
-            return Err(SemanticTypedPlaneIndexV3Error::ManifestTooLarge);
+        if bytes.len() > MAX_SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_BYTES {
+            return Err(SemanticTypedPlaneIndexV3Error::CatalogTooLarge);
         }
         let mut reader = V3Reader::new(bytes);
         if reader.take(4)? != MAGIC {
             return Err(SemanticTypedPlaneIndexV3Error::Magic);
         }
-        if reader.u16()? != SEMANTIC_TYPED_PLANE_MANIFEST_V3_WIRE_REVISION {
+        if reader.u16()? != SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_WIRE_REVISION {
             return Err(SemanticTypedPlaneIndexV3Error::Version);
         }
         let claimed_root = reader.array32()?;
@@ -560,9 +564,10 @@ impl SemanticTypedPlaneIndexCatalogV3 {
 
     /// Returns canonical fixed-size catalog bytes.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut output = Vec::with_capacity(MAX_TYPED_PLANE_MANIFEST_V3_BYTES);
+        let mut output = Vec::with_capacity(MAX_SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_BYTES);
         output.extend_from_slice(&MAGIC);
-        output.extend_from_slice(&SEMANTIC_TYPED_PLANE_MANIFEST_V3_WIRE_REVISION.to_be_bytes());
+        output
+            .extend_from_slice(&SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_WIRE_REVISION.to_be_bytes());
         output.extend_from_slice(&self.root);
         output.push(FAMILY_COUNT as u8);
         for family in self.families {
@@ -616,6 +621,23 @@ impl SemanticTypedPlaneIndexCatalogV3 {
         Ok(())
     }
 
+    /// Opens one family tree selected from this exact seven-family catalog.
+    ///
+    /// The catalog remains an untrusted structural claim until authenticated
+    /// by its enclosing generation contract. This API binds family selection
+    /// to one of its seven ordered descriptors.
+    pub fn open_family<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>(
+        &self,
+        loader: &'loader L,
+        family: RowFamily,
+        root_bytes: &[u8],
+    ) -> Result<LazySemanticTypedPlaneFamilyIndexV3<'loader, L>, SemanticTypedPlaneIndexV3Error>
+    where
+        L::Error: std::fmt::Display,
+    {
+        LazySemanticTypedPlaneFamilyIndexV3::open(loader, self.family(family), root_bytes)
+    }
+
     fn from_indexes(
         indexes: &[SemanticTypedPlaneFamilyIndexV3; FAMILY_COUNT],
     ) -> Result<Self, SemanticTypedPlaneIndexV3Error> {
@@ -635,7 +657,9 @@ impl SemanticTypedPlaneIndexCatalogV3 {
     }
 }
 
-/// Seven immutable family trees and their bounded V3 root catalog.
+/// Seven immutable structural family indexes and their bounded V3 catalog.
+///
+/// This value contains no generation or compiler-authority proof.
 pub struct SemanticTypedPlaneIndexV3 {
     families: [SemanticTypedPlaneFamilyIndexV3; FAMILY_COUNT],
     catalog: SemanticTypedPlaneIndexCatalogV3,
@@ -686,7 +710,7 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
     LazySemanticTypedPlaneFamilyIndexV3<'loader, L>
 {
     /// Admits exact root-node bytes against the catalog's typed root/count.
-    pub fn open(
+    pub(crate) fn open(
         loader: &'loader L,
         descriptor: SemanticTypedPlaneFamilyRootV3,
         root_bytes: &[u8],
@@ -724,9 +748,8 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
     }
 
     /// Reads at most `limit` row references from an inclusive start key and
-    /// exclusive end key. The loader authenticates only the root-to-range path
-    /// and pages touched; callers should retain the root catalog while this
-    /// read is in flight.
+    /// exclusive end key. Authenticated child anchors prune subtrees outside
+    /// either bound, so a narrow end does not load following pages.
     pub fn page(
         &self,
         start: Option<StableRowKey>,
@@ -745,13 +768,15 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
         {
             return Err(SemanticTypedPlaneIndexV3Error::InvalidRange);
         }
-        let family_floor = StableRowKey::new(self.family, [0; 32]);
-        let start = start.unwrap_or(family_floor);
-        let page = self
-            .tree
-            .page_from(&start, limit)
-            .map_err(|error| SemanticTypedPlaneIndexV3Error::LazyTree(error.to_string()))?;
-        SemanticTypedPlaneIndexPageV3::from_lazy_page(self.family, page, end)
+        if limit == 0 || start.zip(end).is_some_and(|(start, end)| start == end) {
+            return Ok(SemanticTypedPlaneIndexPageV3::empty());
+        }
+        self.range_page(
+            start.unwrap_or_else(|| StableRowKey::new(self.family, [0; 32])),
+            false,
+            end,
+            limit,
+        )
     }
 
     /// Reads the next bounded page after a previously returned continuation
@@ -775,18 +800,147 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
             return Err(SemanticTypedPlaneIndexV3Error::InvalidRange);
         }
         if after.zip(end).is_some_and(|(after, end)| after >= end) || limit == 0 {
-            return Ok(SemanticTypedPlaneIndexPageV3 {
-                entries: Vec::new(),
-                next: None,
-            });
+            return Ok(SemanticTypedPlaneIndexPageV3::empty());
         }
-        let family_floor = StableRowKey::new(self.family, [0; 32]);
-        let page = match after.as_ref() {
-            Some(after) => self.tree.page(Some(after), limit),
-            None => self.tree.page_from(&family_floor, limit),
+        self.range_page(
+            after.unwrap_or_else(|| StableRowKey::new(self.family, [0; 32])),
+            after.is_some(),
+            end,
+            limit,
+        )
+    }
+
+    fn range_page(
+        &self,
+        start: StableRowKey,
+        start_exclusive: bool,
+        end: Option<StableRowKey>,
+        limit: usize,
+    ) -> Result<SemanticTypedPlaneIndexPageV3, SemanticTypedPlaneIndexV3Error>
+    where
+        L::Error: std::fmt::Display,
+    {
+        let mut pending = Vec::new();
+        pending
+            .try_reserve(1)
+            .map_err(|_| SemanticTypedPlaneIndexV3Error::Allocation)?;
+        pending.push(PendingDescriptorNodeV3::Root(self.tree.root().clone()));
+        let mut entries = Vec::new();
+        entries
+            .try_reserve(limit.min(MAX_TYPED_PLANE_V3_PAGE_ROWS))
+            .map_err(|_| SemanticTypedPlaneIndexV3Error::Allocation)?;
+        let mut loaded_nodes = 0_usize;
+        let mut visited_nodes = 0_usize;
+        let mut examined_rows = 0_usize;
+
+        while let Some(pending_node) = pending.pop() {
+            visited_nodes = visited_nodes
+                .checked_add(1)
+                .ok_or(SemanticTypedPlaneIndexV3Error::Overflow)?;
+            if visited_nodes > MAX_TYPED_PLANE_V3_PAGE_NODES {
+                return Err(SemanticTypedPlaneIndexV3Error::PageNodeLimit);
+            }
+            let node = match pending_node {
+                PendingDescriptorNodeV3::Root(root) => root,
+                PendingDescriptorNodeV3::Child {
+                    claim,
+                    first_key,
+                    row_count,
+                    level,
+                } => {
+                    loaded_nodes = loaded_nodes
+                        .checked_add(1)
+                        .ok_or(SemanticTypedPlaneIndexV3Error::Overflow)?;
+                    let loaded = self.loader.load(claim).map_err(|error| {
+                        SemanticTypedPlaneIndexV3Error::LazyTree(error.to_string())
+                    })?;
+                    if loaded.root().as_bytes() != claim.as_bytes()
+                        || loaded.row_count() != row_count
+                        || loaded.node().level() != level
+                        || loaded.node().first_key() != Some(&first_key)
+                    {
+                        return Err(SemanticTypedPlaneIndexV3Error::Node(
+                            NodeError::AnchorMismatch,
+                        ));
+                    }
+                    loaded
+                }
+            };
+
+            if node.node().level() == 0 {
+                let rows = node
+                    .leaf_entries()
+                    .map_err(SemanticTypedPlaneIndexV3Error::Node)?;
+                examined_rows = examined_rows
+                    .checked_add(rows.len())
+                    .ok_or(SemanticTypedPlaneIndexV3Error::Overflow)?;
+                for (key, value) in rows {
+                    if key < start || (start_exclusive && key == start) {
+                        continue;
+                    }
+                    if end.is_some_and(|end| key >= end) {
+                        break;
+                    }
+                    if key.family() != self.family {
+                        return Err(SemanticTypedPlaneIndexV3Error::RowFamilyMismatch);
+                    }
+                    entries.push((key, value));
+                    if entries.len() == limit {
+                        let next = entries.last().map(|(key, _)| *key);
+                        return Ok(SemanticTypedPlaneIndexPageV3 {
+                            entries,
+                            next,
+                            work: SemanticTypedPlanePageWorkV3 {
+                                loaded_nodes,
+                                visited_nodes,
+                                examined_rows,
+                            },
+                        });
+                    }
+                }
+            } else {
+                let children = node
+                    .child_summaries()
+                    .map_err(SemanticTypedPlaneIndexV3Error::Node)?;
+                for index in (0..children.len()).rev() {
+                    let child = &children[index];
+                    let before_end = end.is_none_or(|end| child.first_key < end);
+                    let after_start = children
+                        .get(index + 1)
+                        .is_none_or(|next| start < next.first_key);
+                    if !before_end || !after_start {
+                        continue;
+                    }
+                    if pending.len() >= MAX_TYPED_PLANE_V3_PAGE_NODES {
+                        return Err(SemanticTypedPlaneIndexV3Error::PageNodeLimit);
+                    }
+                    let bytes = child.commitment.to_bytes();
+                    let claim = UntrustedId::from_wire(
+                        &bytes,
+                        IdContext::relation::<SemanticTypedPlaneRowRelationV3>(),
+                    )
+                    .map_err(|_| SemanticTypedPlaneIndexV3Error::RootMismatch)?;
+                    pending
+                        .try_reserve(1)
+                        .map_err(|_| SemanticTypedPlaneIndexV3Error::Allocation)?;
+                    pending.push(PendingDescriptorNodeV3::Child {
+                        claim,
+                        first_key: child.first_key,
+                        row_count: child.row_count,
+                        level: child.level,
+                    });
+                }
+            }
         }
-        .map_err(|error| SemanticTypedPlaneIndexV3Error::LazyTree(error.to_string()))?;
-        SemanticTypedPlaneIndexPageV3::from_lazy_page(self.family, page, end)
+        Ok(SemanticTypedPlaneIndexPageV3 {
+            entries,
+            next: None,
+            work: SemanticTypedPlanePageWorkV3 {
+                loaded_nodes,
+                visited_nodes,
+                examined_rows,
+            },
+        })
     }
 
     /// Prepares a bounded sorted multi-key path-copy edit. The returned
@@ -829,7 +983,7 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
         &self,
         limits: SemanticTypedPlaneClosureLimitsV3,
         mut visit_node: impl FnMut([u8; 32], &[u8]),
-        mut visit_row: impl FnMut(StableRowKey, SemanticRowPayloadReferenceV3),
+        mut visit_row: impl FnMut(StableRowKey, SemanticRowPayloadClaimV3),
     ) -> Result<SemanticTypedPlaneIndexClosureV3, SemanticTypedPlaneIndexV3Error>
     where
         L::Error: std::fmt::Display,
@@ -840,14 +994,37 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
         pending
             .try_reserve(1)
             .map_err(|_| SemanticTypedPlaneIndexV3Error::Allocation)?;
-        pending.push(root);
+        pending.push(PendingDescriptorNodeV3::Root(root));
         let mut node_count = 0_u64;
         let mut row_count = 0_u64;
         let mut node_bytes = 0_u64;
-        while let Some(node) = pending.pop() {
+        while let Some(pending_node) = pending.pop() {
             node_count = node_count
                 .checked_add(1)
                 .ok_or(SemanticTypedPlaneIndexV3Error::Overflow)?;
+            let node = match pending_node {
+                PendingDescriptorNodeV3::Root(root) => root,
+                PendingDescriptorNodeV3::Child {
+                    claim,
+                    first_key,
+                    row_count,
+                    level,
+                } => {
+                    let loaded = self.loader.load(claim).map_err(|error| {
+                        SemanticTypedPlaneIndexV3Error::LazyTree(error.to_string())
+                    })?;
+                    if loaded.root().as_bytes() != claim.as_bytes()
+                        || loaded.row_count() != row_count
+                        || loaded.node().level() != level
+                        || loaded.node().first_key() != Some(&first_key)
+                    {
+                        return Err(SemanticTypedPlaneIndexV3Error::Node(
+                            NodeError::AnchorMismatch,
+                        ));
+                    }
+                    loaded
+                }
+            };
             let bytes = node.bytes();
             let byte_len =
                 u64::try_from(bytes.len()).map_err(|_| SemanticTypedPlaneIndexV3Error::Overflow)?;
@@ -892,22 +1069,15 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                         IdContext::relation::<SemanticTypedPlaneRowRelationV3>(),
                     )
                     .map_err(|_| SemanticTypedPlaneIndexV3Error::RootMismatch)?;
-                    let loaded = self.loader.load(claim).map_err(|error| {
-                        SemanticTypedPlaneIndexV3Error::LazyTree(error.to_string())
-                    })?;
-                    if loaded.root().as_bytes() != claim.as_bytes()
-                        || loaded.row_count() != child.row_count
-                        || loaded.node().level() != child.level
-                        || loaded.node().first_key() != Some(&child.first_key)
-                    {
-                        return Err(SemanticTypedPlaneIndexV3Error::Node(
-                            NodeError::AnchorMismatch,
-                        ));
-                    }
                     pending
                         .try_reserve(1)
                         .map_err(|_| SemanticTypedPlaneIndexV3Error::Allocation)?;
-                    pending.push(loaded);
+                    pending.push(PendingDescriptorNodeV3::Child {
+                        claim,
+                        first_key: child.first_key,
+                        row_count: child.row_count,
+                        level: child.level,
+                    });
                 }
             }
         }
@@ -981,42 +1151,23 @@ impl SemanticTypedPlanePreparedUpdateV3 {
 /// One bounded cold row page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticTypedPlaneIndexPageV3 {
-    entries: Vec<(StableRowKey, SemanticRowPayloadReferenceV3)>,
+    entries: Vec<(StableRowKey, SemanticRowPayloadClaimV3)>,
     next: Option<StableRowKey>,
+    work: SemanticTypedPlanePageWorkV3,
 }
 
 impl SemanticTypedPlaneIndexPageV3 {
-    fn from_lazy_page(
-        family: RowFamily,
-        page: LazyTreePage<SemanticTypedPlaneRowRelationV3>,
-        end: Option<StableRowKey>,
-    ) -> Result<Self, SemanticTypedPlaneIndexV3Error> {
-        let mut entries = Vec::new();
-        for (key, value) in page.entries() {
-            if end.is_some_and(|end| *key >= end) {
-                break;
-            }
-            if key.family() != family {
-                return Err(SemanticTypedPlaneIndexV3Error::RowFamilyMismatch);
-            }
-            entries.push((*key, *value));
+    fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+            next: None,
+            work: SemanticTypedPlanePageWorkV3::default(),
         }
-        let next = if page.next().is_some()
-            && entries.len() == page.entries().len()
-            && entries
-                .last()
-                .is_some_and(|(key, _)| end.is_none_or(|end| *key < end))
-        {
-            entries.last().map(|(key, _)| *key)
-        } else {
-            None
-        };
-        Ok(Self { entries, next })
     }
 
     /// Rows in ascending stable-key order.
     #[must_use]
-    pub fn entries(&self) -> &[(StableRowKey, SemanticRowPayloadReferenceV3)] {
+    pub fn entries(&self) -> &[(StableRowKey, SemanticRowPayloadClaimV3)] {
         &self.entries
     }
 
@@ -1025,6 +1176,33 @@ impl SemanticTypedPlaneIndexPageV3 {
     pub const fn next(&self) -> Option<StableRowKey> {
         self.next
     }
+
+    /// Exact descriptor-node and leaf-row work for this cold range page.
+    #[must_use]
+    pub const fn work(&self) -> SemanticTypedPlanePageWorkV3 {
+        self.work
+    }
+}
+
+/// Measured bounded work for one cold range page.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SemanticTypedPlanePageWorkV3 {
+    /// Child descriptor nodes fetched through the loader; the admitted root is excluded.
+    pub loaded_nodes: usize,
+    /// Total nodes examined, including the already admitted root.
+    pub visited_nodes: usize,
+    /// Rows decoded from touched leaves, including keys outside the exact range.
+    pub examined_rows: usize,
+}
+
+enum PendingDescriptorNodeV3 {
+    Root(CheckedCanonicalRoot<SemanticTypedPlaneRowRelationV3>),
+    Child {
+        claim: UntrustedId<SemanticTypedPlaneRowRelationV3>,
+        first_key: StableRowKey,
+        row_count: u64,
+        level: u16,
+    },
 }
 
 /// Structural tree and catalog admission failures for V3.
@@ -1038,7 +1216,7 @@ pub enum SemanticTypedPlaneIndexV3Error {
     Version,
     /// Catalog size exceeds its fixed bound.
     #[error("V3 typed-plane index catalog exceeds its byte bound")]
-    ManifestTooLarge,
+    CatalogTooLarge,
     /// Catalog has a missing or unexpected family entry.
     #[error("V3 typed-plane index catalog must contain seven family roots")]
     FamilyCount,
@@ -1069,6 +1247,9 @@ pub enum SemanticTypedPlaneIndexV3Error {
     /// The requested cold row page exceeds the bounded page limit.
     #[error("V3 typed-plane row page exceeds its maximum")]
     PageTooLarge,
+    /// A cold bounded range would exceed its explicit descriptor-page work cap.
+    #[error("V3 typed-plane row range exceeds its descriptor-page bound")]
+    PageNodeLimit,
     /// A canonical node exceeds the bounded root-node size.
     #[error("V3 typed-plane root node exceeds its maximum size")]
     NodeTooLarge,
@@ -1214,7 +1395,7 @@ fn family_root(
 ) -> [u8; 32] {
     let mut hasher = Hasher::new();
     hasher.update(FAMILY_ROOT_DOMAIN);
-    hasher.update(&SEMANTIC_TYPED_PLANE_MANIFEST_V3_WIRE_REVISION.to_be_bytes());
+    hasher.update(&SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_WIRE_REVISION.to_be_bytes());
     hasher.update(&[family.code()]);
     match profile {
         Some(profile) => {
@@ -1233,7 +1414,7 @@ fn family_root(
 fn catalog_root(families: &[SemanticTypedPlaneFamilyRootV3; FAMILY_COUNT]) -> [u8; 32] {
     let mut hasher = Hasher::new();
     hasher.update(CATALOG_ROOT_DOMAIN);
-    hasher.update(&SEMANTIC_TYPED_PLANE_MANIFEST_V3_WIRE_REVISION.to_be_bytes());
+    hasher.update(&SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_WIRE_REVISION.to_be_bytes());
     for family in families {
         hasher.update(&family.family_root);
     }

@@ -12,20 +12,20 @@ use crate::{
         row_index::{RowFamily, RowPayload, StableRowKey, UntrustedRowPayloadIdentity},
         typed_plane_manifest_v3::{
             FAMILY_COUNT, FAMILY_DESCRIPTOR_BYTES, LazySemanticTypedPlaneFamilyIndexV3,
-            MAX_TYPED_PLANE_MANIFEST_V3_BYTES, SemanticRowObjectIdV3,
-            SemanticRowPayloadReferenceV3, SemanticTypedPlaneClosureLimitsV3,
-            SemanticTypedPlaneIndexCatalogV3, SemanticTypedPlaneIndexV3Error,
-            SemanticTypedPlaneRowRelationV3, SemanticTypedPlaneRowTreeBuilderV3,
-            SemanticTypedPlaneRowTreeLimitsV3,
+            MAX_SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_BYTES, SemanticRowPayloadClaimV3,
+            SemanticTypedPlaneClosureLimitsV3, SemanticTypedPlaneIndexCatalogV3,
+            SemanticTypedPlaneIndexV3Error, SemanticTypedPlaneRowRelationV3,
+            SemanticTypedPlaneRowTreeBuilderV3, SemanticTypedPlaneRowTreeLimitsV3,
+            UntrustedSemanticRowObjectIdV3,
         },
     },
     vocabulary::{LanguageProfile, RustEdition},
 };
 
-fn reference(payload_byte: u8, byte_len: u64, object_byte: u8) -> SemanticRowPayloadReferenceV3 {
-    SemanticRowPayloadReferenceV3::from_untrusted_claims(
+fn reference(payload_byte: u8, byte_len: u64, object_byte: u8) -> SemanticRowPayloadClaimV3 {
+    SemanticRowPayloadClaimV3::from_untrusted_claims(
         UntrustedRowPayloadIdentity::from_raw([payload_byte; 32], byte_len),
-        SemanticRowObjectIdV3::from_raw([object_byte; 32]),
+        UntrustedSemanticRowObjectIdV3::from_raw([object_byte; 32]),
     )
 }
 
@@ -44,7 +44,7 @@ fn append_field(output: &mut Vec<u8>, bytes: &[u8]) {
 fn build_family(
     family: RowFamily,
     profile: Option<LanguageProfile>,
-    rows: &[(StableRowKey, SemanticRowPayloadReferenceV3)],
+    rows: &[(StableRowKey, SemanticRowPayloadClaimV3)],
 ) -> super::SemanticTypedPlaneFamilyIndexV3 {
     let mut builder = SemanticTypedPlaneRowTreeBuilderV3::new(
         family,
@@ -98,7 +98,7 @@ fn independent_catalog_wire(
     root: [u8; 32],
     claims: &[(RowFamily, Option<LanguageProfile>, u64, [u8; 32], [u8; 32]); FAMILY_COUNT],
 ) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(MAX_TYPED_PLANE_MANIFEST_V3_BYTES);
+    let mut bytes = Vec::with_capacity(MAX_SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_BYTES);
     bytes.extend_from_slice(b"STPI");
     bytes.extend_from_slice(&1_u16.to_be_bytes());
     bytes.extend_from_slice(&root);
@@ -195,7 +195,10 @@ fn catalog_wire_and_root_match_independent_asymmetric_oracle() {
     assert_eq!(catalog.root(), expected_root);
     assert_eq!(catalog.canonical_bytes(), expected_wire);
     assert!(SemanticTypedPlaneIndexCatalogV3::decode(&expected_wire).is_ok());
-    assert_eq!(expected_wire.len(), MAX_TYPED_PLANE_MANIFEST_V3_BYTES);
+    assert_eq!(
+        expected_wire.len(),
+        MAX_SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_BYTES
+    );
     assert_eq!(FAMILY_DESCRIPTOR_BYTES, 76);
 
     // Dropping a complete family descriptor and swapping two family slots
@@ -265,7 +268,7 @@ fn index_with_core_rows(count: u32) -> super::SemanticTypedPlaneIndexV3 {
         .expect("fixture family roots are ordered")
 }
 
-fn fixture_reference(ordinal: u32) -> SemanticRowPayloadReferenceV3 {
+fn fixture_reference(ordinal: u32) -> SemanticRowPayloadClaimV3 {
     reference(
         (ordinal.wrapping_mul(29) & 0xff) as u8,
         u64::from(ordinal % 37),
@@ -291,8 +294,9 @@ fn open_core<'a>(
     let family = index.family(RowFamily::Core);
     let root_id = family.tree_root();
     let root_bytes = loader.bytes.get(&root_id).expect("root page stored");
-    let descriptor = index.catalog().family(RowFamily::Core);
-    LazySemanticTypedPlaneFamilyIndexV3::open(loader, descriptor, root_bytes)
+    index
+        .catalog()
+        .open_family(loader, RowFamily::Core, root_bytes)
         .expect("retained page closure root admits")
 }
 
@@ -315,6 +319,32 @@ fn cold_seek_is_path_bounded_and_closure_counts_exact_pages_and_rows() {
         page.entries()
             .iter()
             .all(|(key, _)| *key >= start && *key < end)
+    );
+    assert!(page.work().loaded_nodes < family.node_closure().count());
+    let mut paginated = page
+        .entries()
+        .iter()
+        .map(|(key, _)| *key)
+        .collect::<Vec<_>>();
+    let mut continuation = page.next();
+    while let Some(after) = continuation {
+        let next = cold
+            .page_after(Some(after), Some(end), 13)
+            .expect("exclusive continuation resumes without overlap");
+        assert!(
+            next.entries()
+                .iter()
+                .all(|(key, _)| *key > after && *key < end)
+        );
+        paginated.extend(next.entries().iter().map(|(key, _)| *key));
+        continuation = next.next();
+    }
+    let expected = (1_500..1_700)
+        .map(|ordinal| ordinal_key(RowFamily::Core, ordinal))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paginated, expected,
+        "range pages have exact, gap-free coverage"
     );
     let touched_for_seek = loader.loads.get();
     assert!(touched_for_seek < family.node_closure().count());
@@ -428,12 +458,19 @@ fn cold_batched_edit_emits_a_checked_new_root_and_changed_pages() {
         .bytes
         .get(&target_root)
         .expect("target root page is in emitted pages");
-    let reopened = LazySemanticTypedPlaneFamilyIndexV3::open(
-        &target_loader,
-        target_descriptor,
-        target_root_bytes,
-    )
-    .expect("target changed-page closure root admits");
+    let target_families = std::array::from_fn(|slot| {
+        let family = RowFamily::ALL[slot];
+        if family == RowFamily::Core {
+            target_descriptor
+        } else {
+            index.catalog().family(family)
+        }
+    });
+    let target_catalog = SemanticTypedPlaneIndexCatalogV3::from_untrusted_claims(target_families)
+        .expect("target catalog has a complete ordered family census");
+    let reopened = target_catalog
+        .open_family(&target_loader, RowFamily::Core, target_root_bytes)
+        .expect("target changed-page closure root admits");
     let target_page = reopened
         .page(None, None, 64)
         .expect("target range can be read");
@@ -556,6 +593,60 @@ fn payload_claim_fixed_wire_round_trips_distinct_encodings() {
         UntrustedRowPayloadIdentity::from_fixed_wire(&claim.to_fixed_wire()),
         Ok(claim)
     );
+}
+
+#[test]
+fn grammar_valid_row_claim_stays_untrusted_until_payload_bytes_are_checked() {
+    let payload_bytes = b"asymmetric semantic row payload";
+    let verified = RowPayload::from_bytes(payload_bytes).expect("payload is hashable");
+    let mut forged_wire = verified.claim().to_fixed_wire();
+    forged_wire[13] ^= 0x80;
+    let forged_payload = UntrustedRowPayloadIdentity::from_fixed_wire(&forged_wire)
+        .expect("digest mutation preserves the fixed canonical claim grammar");
+    let forged_reference = SemanticRowPayloadClaimV3::from_untrusted_claims(
+        forged_payload,
+        UntrustedSemanticRowObjectIdV3::from_raw([0x5d; 32]),
+    );
+    let core = build_family(
+        RowFamily::Core,
+        None,
+        &[(ordinal_key(RowFamily::Core, 7), forged_reference)],
+    );
+    let mut families = Vec::with_capacity(FAMILY_COUNT);
+    for family in RowFamily::ALL {
+        if family == RowFamily::Core {
+            families.push(core);
+        } else {
+            let profile = (family == RowFamily::LanguageExtensions)
+                .then_some(LanguageProfile::Rust(RustEdition::Rust2021));
+            families.push(build_family(family, profile, &[]));
+        }
+    }
+    let index = super::SemanticTypedPlaneIndexV3::from_families(
+        families
+            .try_into()
+            .unwrap_or_else(|_| panic!("exactly seven family trees")),
+    )
+    .expect("grammar-valid altered claims can still form a structural catalog");
+    let family = index.family(RowFamily::Core);
+    let loader = memory_nodes(family);
+    let cold = open_core(&loader, &index);
+    let mut observed = None;
+    let closure = cold
+        .visit_closure(
+            SemanticTypedPlaneClosureLimitsV3::new(100, 100, 100_000, 100),
+            |_, _| {},
+            |_, row| observed = Some(row.payload()),
+        )
+        .expect("canonical pages and exact row census pass structural admission");
+    assert_eq!(closure.row_count(), 1);
+    let admitted = observed
+        .expect("one row reference visited")
+        .admit(payload_bytes);
+    assert!(matches!(
+        admitted,
+        Err(crate::ir::row_index::StableRowIndexError::PayloadDigestMismatch)
+    ));
 }
 
 #[test]
