@@ -48,5 +48,10 @@ name = "ir-delta"
 path = "benches/ir_delta.rs"
 harness = false
 
+[[bench]]
+name = "stable-row-index"
+path = "benches/stable_row_index.rs"
+harness = false
+
 [lints]
 workspace = true

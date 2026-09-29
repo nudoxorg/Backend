@@ -1,0 +1,412 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::*;
+
+fn key(family: RowFamily, ordinal: u64) -> StableRowKey {
+    let mut bytes = [0_u8; 32];
+    bytes[24..].copy_from_slice(&ordinal.to_be_bytes());
+    StableRowKey::new(family, bytes)
+}
+
+fn payload(bytes: &[u8]) -> RowPayload {
+    RowPayload::from_bytes(bytes).expect("small fixture payload")
+}
+
+fn fixture_rows(count: usize) -> Vec<(StableRowKey, RowPayload)> {
+    (0..count)
+        .map(|ordinal| {
+            let ordinal = u64::try_from(ordinal).expect("fixture ordinal fits");
+            let row = ordinal.to_be_bytes();
+            (key(RowFamily::Core, ordinal), payload(&row))
+        })
+        .collect()
+}
+
+#[test]
+fn payload_claim_binds_exact_length_and_preimage() {
+    let admitted = payload(b"semantic row A");
+    assert_eq!(admitted.verify_bytes(b"semantic row A"), Ok(()));
+    assert_eq!(
+        admitted.verify_bytes(b"semantic row B"),
+        Err(StableRowIndexError::PayloadDigestMismatch)
+    );
+
+    let wrong_length =
+        UntrustedRowPayloadIdentity::from_raw(*admitted.id().as_bytes(), admitted.byte_len() + 1);
+    assert_eq!(
+        wrong_length.admit(b"semantic row A"),
+        Err(StableRowIndexError::PayloadLengthMismatch)
+    );
+
+    assert_ne!(
+        payload(b"semantic row A").id(),
+        payload(b"semantic row B").id()
+    );
+}
+
+#[test]
+fn builder_and_bulk_admission_reject_unsorted_and_duplicate_keys() {
+    let rows = [
+        (key(RowFamily::Core, 2), payload(b"two")),
+        (key(RowFamily::Core, 1), payload(b"one")),
+    ];
+    assert_eq!(
+        StableRowIndex::from_sorted_rows(&rows).err(),
+        Some(StableRowIndexError::Tree(TreeError::UnsortedOrDuplicate))
+    );
+
+    let duplicate = [
+        (key(RowFamily::Core, 1), payload(b"first")),
+        (key(RowFamily::Core, 1), payload(b"second")),
+    ];
+    assert_eq!(
+        StableRowIndex::from_sorted_rows(&duplicate).err(),
+        Some(StableRowIndexError::Tree(TreeError::UnsortedOrDuplicate))
+    );
+
+    let mut builder = StableRowIndex::builder();
+    builder
+        .push(key(RowFamily::Core, 2), payload(b"two"))
+        .expect("first key is accepted");
+    assert_eq!(
+        builder.push(key(RowFamily::Core, 1), payload(b"one")),
+        Err(StableRowIndexError::UnsortedOrDuplicate)
+    );
+}
+
+#[test]
+fn batch_update_handles_insert_replace_delete_and_reuses_unchanged_nodes() {
+    let initial = vec![
+        (key(RowFamily::Core, 1), payload(b"one")),
+        (key(RowFamily::Core, 3), payload(b"old three")),
+        (key(RowFamily::Core, 5), payload(b"five")),
+    ];
+    let base = StableRowIndex::from_sorted_rows(&initial).expect("valid index");
+    let changes = [
+        StableRowPayloadChange::new(key(RowFamily::Core, 2), Some(b"two")),
+        StableRowPayloadChange::new(key(RowFamily::Core, 3), Some(b"new three")),
+        StableRowPayloadChange::new(key(RowFamily::Core, 5), None),
+    ];
+    let prepared = base
+        .prepare_payload_update(&changes)
+        .expect("valid sorted changes");
+    assert_eq!(prepared.work().changed_keys, 3);
+    assert_eq!(prepared.work().row_payload_hash_bytes, 3 + 9);
+    let next = prepared.commit();
+
+    assert_eq!(next.get(&key(RowFamily::Core, 1)), Some(payload(b"one")));
+    assert_eq!(next.get(&key(RowFamily::Core, 2)), Some(payload(b"two")));
+    assert_eq!(
+        next.get(&key(RowFamily::Core, 3)),
+        Some(payload(b"new three"))
+    );
+    assert_eq!(next.get(&key(RowFamily::Core, 5)), None);
+    assert_eq!(next.row_count(), 3);
+    assert_ne!(base.root(), next.root());
+
+    let many_rows = fixture_rows(1_024);
+    let wide_base = StableRowIndex::from_sorted_rows(&many_rows).expect("valid wide index");
+    let edit = [StableRowIndexChange::new(
+        key(RowFamily::Core, 511),
+        Some(payload(b"changed")),
+    )];
+    let wide_next = wide_base
+        .prepare_update(&edit)
+        .expect("one ordered replacement")
+        .commit();
+    let old_nodes: BTreeSet<_> = wide_base
+        .tree
+        .node_closure()
+        .map(|node| node.id().to_bytes())
+        .collect();
+    let retained_nodes = wide_next
+        .tree
+        .node_closure()
+        .filter(|node| old_nodes.contains(&node.id().to_bytes()))
+        .count();
+    assert!(retained_nodes > 0);
+
+    let sparse_edits = [
+        StableRowIndexChange::new(
+            key(RowFamily::Core, 10),
+            Some(payload(b"first distant replacement")),
+        ),
+        StableRowIndexChange::new(
+            key(RowFamily::Core, 900),
+            Some(payload(b"second distant replacement")),
+        ),
+    ];
+    let sparse = wide_base
+        .prepare_update(&sparse_edits)
+        .expect("distant changes stay independently path-copied");
+    assert_eq!(sparse.work().changed_keys, 2);
+    assert!(sparse.work().tree.rows < many_rows.len());
+}
+
+#[test]
+fn no_op_frontier_reuses_the_root_and_hashes_zero_payload_bytes() {
+    let index = StableRowIndex::from_sorted_rows(&fixture_rows(16)).expect("valid index");
+    let prepared = index
+        .prepare_update(&[StableRowIndexChange::unchanged(key(RowFamily::Core, 4))])
+        .expect("unchanged frontier entry");
+    assert_eq!(prepared.index().root(), index.root());
+    assert_eq!(prepared.work().changed_keys, 0);
+    assert_eq!(prepared.work().row_payload_hash_bytes, 0);
+    assert_eq!(prepared.work().tree, TreeWork::default());
+
+    let empty = index
+        .prepare_payload_update(&[])
+        .expect("empty producer frontier");
+    assert_eq!(empty.index().root(), index.root());
+    assert_eq!(empty.work().row_payload_hash_bytes, 0);
+    assert_eq!(empty.work().tree, TreeWork::default());
+
+    let unchanged = index
+        .prepare_payload_update(&[StableRowPayloadChange::unchanged(key(RowFamily::Core, 4))])
+        .expect("explicit unchanged producer frontier");
+    assert_eq!(unchanged.index().root(), index.root());
+    assert_eq!(unchanged.work().changed_keys, 0);
+    assert_eq!(unchanged.work().row_payload_hash_bytes, 0);
+    assert_eq!(unchanged.work().tree, TreeWork::default());
+}
+
+#[test]
+fn borrowed_two_root_diff_skips_no_op_and_sparse_equal_subtrees() {
+    let before_rows = fixture_rows(4_096);
+    let before = StableRowIndex::from_sorted_rows(&before_rows).expect("valid base index");
+    let no_op = before.diff(&before).expect("same-root diff");
+    assert!(no_op.entries().is_empty());
+    assert_eq!(no_op.work().skipped_equal_subtrees, 1);
+    assert_eq!(no_op.work().row_records_examined, 0);
+    assert_eq!(no_op.work().decoded_rows, 0);
+
+    let changes = [
+        StableRowIndexChange::new(
+            key(RowFamily::Core, 4),
+            Some(payload(b"sparse low replacement")),
+        ),
+        StableRowIndexChange::new(
+            key(RowFamily::Core, 4_090),
+            Some(payload(b"sparse high replacement")),
+        ),
+    ];
+    let after = before
+        .prepare_update(&changes)
+        .expect("two ordered sparse changes")
+        .commit();
+    let diff = before.diff(&after).expect("borrowed two-root diff");
+    assert_eq!(diff.before_root(), before.root());
+    assert_eq!(diff.after_root(), after.root());
+    assert_eq!(diff.entries().len(), 2);
+    assert!(matches!(
+        diff.entries()[0],
+        StableRowIndexDiffEntry::Replace { key: found, .. }
+            if found == key(RowFamily::Core, 4)
+    ));
+    assert!(matches!(
+        diff.entries()[1],
+        StableRowIndexDiffEntry::Replace { key: found, .. }
+            if found == key(RowFamily::Core, 4_090)
+    ));
+    let tree_nodes = before.tree.node_closure().count() + after.tree.node_closure().count();
+    assert!(usize::try_from(diff.work().visited_nodes).expect("counter fits") < tree_nodes * 2);
+    assert!(diff.work().skipped_equal_subtrees > 0);
+    assert!(diff.work().row_records_examined < 4_096);
+    assert_eq!(diff.work().decoded_rows, 0);
+}
+
+#[test]
+fn two_root_diff_matches_btree_map_oracle_for_insert_delete_replace() {
+    let before_rows = fixture_rows(4_096);
+    let before = StableRowIndex::from_sorted_rows(&before_rows).expect("valid base index");
+    let mut oracle: BTreeMap<_, _> = before_rows.iter().copied().collect();
+    let changes = [
+        StableRowIndexChange::new(key(RowFamily::Core, 0), None),
+        StableRowIndexChange::new(key(RowFamily::Core, 7), Some(payload(b"replacement"))),
+        StableRowIndexChange::new(key(RowFamily::Core, 4_096), Some(payload(b"inserted"))),
+    ];
+    let after = before
+        .prepare_update(&changes)
+        .expect("ordered insert delete and replacement")
+        .commit();
+    oracle.remove(&key(RowFamily::Core, 0));
+    oracle.insert(key(RowFamily::Core, 7), payload(b"replacement"));
+    oracle.insert(key(RowFamily::Core, 4_096), payload(b"inserted"));
+
+    let before_map: BTreeMap<_, _> = before
+        .range(StableRowRange::new(None, None).expect("unbounded range"))
+        .map(|entry| (*entry.key, *entry.payload))
+        .collect();
+    let mut expected = Vec::new();
+    for (key, before_value) in &before_map {
+        match oracle.get(key) {
+            Some(after_value) if after_value != before_value => {
+                expected.push((*key, Some(*before_value), Some(*after_value)));
+            }
+            Some(_) => {}
+            None => expected.push((*key, Some(*before_value), None)),
+        }
+    }
+    for (key, after_value) in &oracle {
+        if !before_map.contains_key(key) {
+            expected.push((*key, None, Some(*after_value)));
+        }
+    }
+    expected.sort_by_key(|(key, _, _)| *key);
+
+    let after_map: BTreeMap<_, _> = after
+        .range(StableRowRange::new(None, None).expect("unbounded range"))
+        .map(|entry| (*entry.key, *entry.payload))
+        .collect();
+    assert_eq!(after_map, oracle);
+
+    let diff = before.diff(&after).expect("admitted roots diff");
+    let actual: Vec<_> = diff
+        .entries()
+        .iter()
+        .map(|change| match change {
+            StableRowIndexDiffEntry::Insert { key, after } => (*key, None, Some(**after)),
+            StableRowIndexDiffEntry::Replace { key, before, after } => {
+                (*key, Some(**before), Some(**after))
+            }
+            StableRowIndexDiffEntry::Delete { key, before } => (*key, Some(**before), None),
+        })
+        .collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn two_root_diff_handles_empty_and_different_height_roots() {
+    let empty = StableRowIndex::from_sorted_rows(&[]).expect("canonical empty root");
+    let short = StableRowIndex::from_sorted_rows(&fixture_rows(16)).expect("short leaf root");
+    let tall = StableRowIndex::from_sorted_rows(&fixture_rows(1_024)).expect("branch root");
+
+    let inserted = empty.diff(&short).expect("empty to populated root");
+    assert_eq!(inserted.entries().len(), 16);
+    assert!(
+        inserted
+            .entries()
+            .iter()
+            .all(|entry| matches!(entry, StableRowIndexDiffEntry::Insert { .. }))
+    );
+
+    let height_change = short.diff(&tall).expect("leaf to branch root");
+    assert_eq!(height_change.entries().len(), 1_008);
+    assert!(
+        height_change
+            .entries()
+            .iter()
+            .all(|entry| matches!(entry, StableRowIndexDiffEntry::Insert { .. }))
+    );
+    assert_eq!(height_change.work().decoded_rows, 0);
+}
+
+#[test]
+fn family_census_is_exact_and_rejects_omitted_rows() {
+    let mut rows = Vec::new();
+    for family in RowFamily::ALL {
+        rows.push((key(family, 1), payload(&[family.code(), 1])));
+        rows.push((key(family, 2), payload(&[family.code(), 2])));
+    }
+    let index = StableRowIndex::from_sorted_rows(&rows).expect("family order is canonical");
+    let census = index.census().expect("exact seven-family census");
+    assert_eq!(census.counts(), [2; 7]);
+    assert_eq!(census.root(), index.root());
+    assert_eq!(index.row_count(), 14);
+
+    let mut omitted = index.census_proof().expect("proof emitted");
+    omitted.counts[RowFamily::Types.index()] -= 1;
+    assert_eq!(
+        index.admit_census(omitted),
+        Err(StableRowIndexError::CensusMismatch)
+    );
+
+    let wrong_root = UntrustedStableRowIndexCensus::from_raw([0; 32], [2; 7]);
+    assert_eq!(
+        index.admit_census(wrong_root),
+        Err(StableRowIndexError::RootMismatch)
+    );
+}
+
+#[test]
+fn ordered_range_cursor_and_root_bound_proof_reject_omissions() {
+    let index = StableRowIndex::from_sorted_rows(&fixture_rows(12)).expect("valid index");
+    let range = StableRowRange::new(Some(key(RowFamily::Core, 3)), Some(key(RowFamily::Core, 9)))
+        .expect("valid half-open range");
+    let cursor = index.range(range).expect("range seeks successfully");
+    assert_eq!(cursor.len(), 6);
+    assert_eq!(cursor.root(), index.root());
+    assert_eq!(
+        cursor.map(|entry| entry.key.key()[31]).collect::<Vec<_>>(),
+        vec![3, 4, 5, 6, 7, 8]
+    );
+
+    let mut proof = index.range_proof(range).expect("range proof emitted");
+    proof.entries = proof.entries[1..].to_vec().into_boxed_slice();
+    assert_eq!(
+        index.admit_range_proof(&proof).err(),
+        Some(StableRowIndexError::RangeProofMismatch)
+    );
+
+    let wrong_root = StableRowRangeProof::from_raw([0; 32], range, Vec::new());
+    assert_eq!(
+        index.admit_range_proof(&wrong_root).err(),
+        Some(StableRowIndexError::RootMismatch)
+    );
+
+    let mut unsorted = index.range_proof(range).expect("range proof emitted");
+    unsorted.entries.swap(0, 1);
+    assert_eq!(
+        index.admit_range_proof(&unsorted).err(),
+        Some(StableRowIndexError::UnsortedOrDuplicate)
+    );
+
+    let out_of_range = StableRowRangeProof::from_raw(
+        index.root().as_bytes(),
+        range,
+        vec![StableRowRangeProofEntry::from_raw(
+            key(RowFamily::Core, 10),
+            payload(&10_u64.to_be_bytes()).claim(),
+        )],
+    );
+    assert_eq!(
+        index.admit_range_proof(&out_of_range).err(),
+        Some(StableRowIndexError::RangeProofMismatch)
+    );
+}
+
+#[test]
+fn untrusted_root_requires_exact_complete_records() {
+    let rows = fixture_rows(32);
+    let index = StableRowIndex::from_sorted_rows(&rows).expect("valid index");
+    let admitted = UntrustedStableRowIndexRoot::from_raw(index.root().as_bytes())
+        .admit_records(&rows)
+        .expect("matching complete record set");
+    assert_eq!(admitted.root(), index.root());
+
+    assert_eq!(
+        UntrustedStableRowIndexRoot::from_raw([0; 32])
+            .admit_records(&rows)
+            .err(),
+        Some(StableRowIndexError::RootMismatch)
+    );
+
+    assert_eq!(
+        UntrustedStableRowIndexRoot::from_raw(index.root().as_bytes())
+            .admit_records(&rows[..rows.len() - 1])
+            .err(),
+        Some(StableRowIndexError::RootMismatch)
+    );
+}
+
+#[test]
+fn memory_accounting_separates_referenced_payloads_from_resident_index() {
+    let index = StableRowIndex::from_sorted_rows(&fixture_rows(20)).expect("valid index");
+    let memory = index.memory_usage().expect("representable accounting");
+    assert_eq!(memory.rows, 20);
+    assert!(memory.nodes > 0);
+    assert!(memory.canonical_node_bytes > 0);
+    assert!(memory.row_slot_storage_bytes >= 20 * size_of::<(StableRowKey, RowPayload)>() as u64);
+    assert_eq!(memory.referenced_payload_bytes, 20 * 8);
+    assert!(memory.estimated_resident_bytes >= memory.canonical_node_bytes);
+}

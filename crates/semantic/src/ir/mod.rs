@@ -22,6 +22,8 @@ mod model;
 mod prepared;
 mod range;
 mod reader;
+/// Immutable persistent index for stable-key semantic rows.
+pub mod row_index;
 mod semantic;
 mod semantic_data_view;
 mod semantic_discovery;
