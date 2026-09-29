@@ -43,5 +43,10 @@ name = "lexical-manifest"
 path = "benches/lexical_manifest.rs"
 harness = false
 
+[[bench]]
+name = "ir-delta"
+path = "benches/ir_delta.rs"
+harness = false
+
 [lints]
 workspace = true
