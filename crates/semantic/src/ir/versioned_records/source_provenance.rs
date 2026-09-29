@@ -20,7 +20,7 @@ use crate::ir::{
     SemanticPlaneKind, SemanticPlaneRecordError, SemanticReader,
 };
 
-const DECLARATION_SOURCE_TAG: u8 = 1;
+pub(super) const DECLARATION_SOURCE_TAG: u8 = 1;
 const RELATION_SOURCE_TAG: u8 = 2;
 pub(super) const DECLARATION_SOURCE_JUMBO_TAG: u8 = 3;
 pub(super) const RELATION_SOURCE_JUMBO_TAG: u8 = 4;

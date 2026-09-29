@@ -16,7 +16,7 @@ use crate::ir::{
 };
 
 const CORE_TAG: u8 = 1;
-const DOCS_TAG: u8 = 2;
+pub(super) const DOCS_TAG: u8 = 2;
 pub(super) const DOCS_JUMBO_TAG: u8 = 3;
 
 enum DocsTextAfter {
