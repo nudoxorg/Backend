@@ -1849,7 +1849,7 @@ mod tests {
         let row_count = u32::try_from(rows.len()).expect("fixture row count");
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"SPIR");
-        bytes.extend_from_slice(&1_u16.to_be_bytes());
+        bytes.extend_from_slice(&super::super::VERSION.to_be_bytes());
         bytes.push(plane_code(family));
         bytes.extend_from_slice(&row_count.to_be_bytes());
         for (key, tag, payload) in rows {
