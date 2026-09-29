@@ -1288,10 +1288,16 @@ mod tests {
         )
     }
 
-    fn positive_v2_identity() -> [u8; 32] {
+    fn positive_v2_identity(seed: u8) -> [u8; 32] {
+        let family: [u8; 16] = core::array::from_fn(|index| {
+            seed.wrapping_add(u8::try_from(index).expect("family index fits u8") * 3)
+        });
+        let variant: [u8; 16] = core::array::from_fn(|index| {
+            seed.wrapping_add(0x41 + u8::try_from(index).expect("variant index fits u8") * 5)
+        });
         let mut identity = [0_u8; 32];
-        identity[..16].fill(0x13);
-        identity[16..].fill(0x41);
+        identity[..16].copy_from_slice(&family);
+        identity[16..].copy_from_slice(&variant);
         identity
     }
 
@@ -1304,46 +1310,52 @@ mod tests {
         output.extend_from_slice(bytes);
     }
 
-    fn positive_v2_types_rows(identity: [u8; 32]) -> Vec<PositiveV2Row> {
-        const TYPES_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.types-row-key.v1\0";
+    fn positive_v2_types_rows(identities: &[[u8; 32]]) -> Vec<PositiveV2Row> {
         let mut rows = Vec::new();
-        let mut entity_payload = Vec::new();
-        entity_payload.extend_from_slice(&identity);
-        entity_payload.push(0); // no semantic type
-        entity_payload.extend_from_slice(&[0; 32]);
-        rows.push((identity, 1, entity_payload)); // entity-root row
-
-        let type_parameters = [0_u8; 4];
-        let mut key_hasher = blake3::Hasher::new();
-        key_hasher.update(TYPES_KEY_DOMAIN);
-        key_hasher.update(&[2, 8]); // Types plane, TypeParameters tag
-        key_hasher.update(&type_parameters);
-        rows.push((
-            *key_hasher.finalize().as_bytes(),
-            8,
-            type_parameters.to_vec(),
-        ));
+        for identity in identities {
+            let mut entity_payload = Vec::new();
+            entity_payload.extend_from_slice(identity);
+            entity_payload.push(0); // no semantic type
+            entity_payload.extend_from_slice(&[0; 32]);
+            rows.push((*identity, 1, entity_payload)); // entity-root row
+        }
+        // Shared-authority fixtures have no extension rows, so omit unreferenced
+        // type pools that would fail the exact Types reachability closure.
         rows
     }
 
     fn positive_v2_rows(jumbo: &mut PositiveJumboObjects) -> [Vec<PositiveV2Row>; 7] {
         const CORE_DECLARATION_TAG: u8 = 1;
+        const DOCUMENTATION_TAG: u8 = 2;
         const DOCUMENTATION_JUMBO_TAG: u8 = 3;
+        const RELATION_TAG: u8 = 3;
+        const OCCURRENCE_TAG: u8 = 4;
         const SOURCE_DECLARATION_TAG: u8 = 1;
-        let identity = positive_v2_identity();
-        let mut core_payload = Vec::new();
-        core_payload.extend_from_slice(&identity);
-        positive_v2_append_cell(b"fixture-name", &mut core_payload);
-        core_payload.extend_from_slice(&0_u16.to_be_bytes()); // Function
-        core_payload.push(0); // visibility
-        core_payload.push(0); // no local parent
-        core_payload.push(1); // authority root
-        core_payload.extend_from_slice(&[
-            0, 0, 0, 0, 1, // documentation captured
-            0, 0, 0, // no language-extension owner
-        ]);
-        core_payload.extend_from_slice(&0_u32.to_be_bytes()); // members
-        core_payload.extend_from_slice(&0_u32.to_be_bytes()); // attributes
+        const SOURCE_RELATION_TAG: u8 = 2;
+        const RELATION_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.relation-key.v1\0";
+        const OCCURRENCE_BASE_DOMAIN: &[u8] = b"backend.semantic.ir.occurrence-base.v1\0";
+        const OCCURRENCE_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.occurrence-row.v1\0";
+        const RELATION_SOURCE_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.relation-source-key.v1\0";
+        let first = positive_v2_identity(0x13);
+        let second = positive_v2_identity(0x72);
+        let identities = [first, second];
+        let mut core_rows = Vec::new();
+        for identity in identities {
+            let mut core_payload = Vec::new();
+            core_payload.extend_from_slice(&identity);
+            positive_v2_append_cell(b"fixture-name", &mut core_payload);
+            core_payload.extend_from_slice(&0_u16.to_be_bytes()); // Function
+            core_payload.push(0); // visibility
+            core_payload.push(0); // no local parent
+            core_payload.push(1); // authority root
+            core_payload.extend_from_slice(&[
+                0, 0, 0, 0, 1, // documentation captured
+                0, 0, 0, // no source/type/extension owner
+            ]);
+            core_payload.extend_from_slice(&0_u32.to_be_bytes()); // members
+            core_payload.extend_from_slice(&0_u32.to_be_bytes()); // attributes
+            core_rows.push((identity, CORE_DECLARATION_TAG, core_payload));
+        }
 
         let mut docs_wire = Vec::new();
         docs_wire.extend_from_slice(&1_u32.to_be_bytes()); // one fragment
@@ -1356,25 +1368,76 @@ mod tests {
         );
         docs_wire.extend_from_slice(&text);
         let context = JumboValueContext::new(
-            identity,
+            first,
             JumboValueFamily::Documentation,
             0,
             JumboValueEncoding::Bytes,
         );
         let receipt = write_jumbo_value(context, &docs_wire, JumboRopeLimits::default(), jumbo)
             .expect("create nonempty documentation rope fixture");
-        let mut documentation_payload = identity.to_vec();
+        let mut documentation_payload = first.to_vec();
         documentation_payload.push(1); // documentation captured
         documentation_payload.extend_from_slice(&receipt.verified().descriptor().encode_wire());
 
-        let mut source_payload = identity.to_vec();
-        source_payload.push(0); // source unavailable
+        let mut empty_documentation_payload = second.to_vec();
+        empty_documentation_payload.push(1); // documentation captured
+        empty_documentation_payload.extend_from_slice(&0_u32.to_be_bytes()); // no fragments
+
+        let mut source_rows = Vec::new();
+        for identity in identities {
+            let mut source_payload = identity.to_vec();
+            source_payload.push(0); // source unavailable
+            source_rows.push((identity, SOURCE_DECLARATION_TAG, source_payload));
+        }
+
+        let mut relation_hasher = blake3::Hasher::new();
+        relation_hasher.update(RELATION_KEY_DOMAIN);
+        relation_hasher.update(&first);
+        relation_hasher.update(&[0]); // local target
+        relation_hasher.update(&second);
+        relation_hasher.update(&[0]); // Calls
+        let relation_key = *relation_hasher.finalize().as_bytes();
+        let mut relation_payload = first.to_vec();
+        relation_payload.push(0); // local target
+        relation_payload.extend_from_slice(&second);
+        relation_payload.push(0); // Calls
+        relation_payload.push(4); // compiler confidence
+
+        let mut occurrence_base = relation_key.to_vec();
+        occurrence_base.push(0); // syntactic confidence
+        occurrence_base.push(0); // source unavailable
+        occurrence_base.push(0); // no source span
+        let mut occurrence_base_hasher = blake3::Hasher::new();
+        occurrence_base_hasher.update(OCCURRENCE_BASE_DOMAIN);
+        occurrence_base_hasher.update(&occurrence_base);
+        let occurrence_digest = *occurrence_base_hasher.finalize().as_bytes();
+        let mut occurrence_key_hasher = blake3::Hasher::new();
+        occurrence_key_hasher.update(OCCURRENCE_KEY_DOMAIN);
+        occurrence_key_hasher.update(&occurrence_digest);
+        occurrence_key_hasher.update(&0_u32.to_be_bytes());
+        let occurrence_key = *occurrence_key_hasher.finalize().as_bytes();
+        occurrence_base.extend_from_slice(&0_u32.to_be_bytes()); // duplicate rank
+
+        let mut relation_source_key_hasher = blake3::Hasher::new();
+        relation_source_key_hasher.update(RELATION_SOURCE_KEY_DOMAIN);
+        relation_source_key_hasher.update(&relation_key);
+        let relation_source_key = *relation_source_key_hasher.finalize().as_bytes();
+        let mut relation_source_payload = relation_key.to_vec();
+        relation_source_payload.push(0); // relation source unavailable
 
         let mut rows: [Vec<PositiveV2Row>; 7] = core::array::from_fn(|_| Vec::new());
-        rows[0].push((identity, CORE_DECLARATION_TAG, core_payload));
-        rows[1] = positive_v2_types_rows(identity);
-        rows[4].push((identity, DOCUMENTATION_JUMBO_TAG, documentation_payload));
-        rows[5].push((identity, SOURCE_DECLARATION_TAG, source_payload));
+        rows[0] = core_rows;
+        rows[1] = positive_v2_types_rows(&identities);
+        rows[2].push((relation_key, RELATION_TAG, relation_payload));
+        rows[3].push((occurrence_key, OCCURRENCE_TAG, occurrence_base));
+        rows[4].push((first, DOCUMENTATION_JUMBO_TAG, documentation_payload));
+        rows[4].push((second, DOCUMENTATION_TAG, empty_documentation_payload));
+        rows[5] = source_rows;
+        rows[5].push((
+            relation_source_key,
+            SOURCE_RELATION_TAG,
+            relation_source_payload,
+        ));
         rows
     }
 
@@ -1806,7 +1869,7 @@ mod tests {
         .expect("verify seven-family rows and complete documentation rope");
         assert_eq!(verified.content_root().as_bytes(), &expected_content);
         assert_eq!(verified.generation_root().as_bytes(), &expected_generation);
-        let expected_rows = [1_u64, 2, 0, 0, 1, 1, 0];
+        let expected_rows = [2_u64, 2, 1, 1, 2, 3, 0];
         for (family, expected) in verified.family_commitments().iter().zip(expected_rows) {
             assert_eq!(family.row_count(), expected);
         }

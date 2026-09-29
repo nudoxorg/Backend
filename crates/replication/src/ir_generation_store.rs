@@ -4061,7 +4061,7 @@ mod tests {
         .expect("commit selected semantic generation");
 
         let positive = crate::ir_hydration_store::positive_v2_history_fixture_for_test();
-        assert_eq!(positive.locator.segments.len(), 4);
+        assert_eq!(positive.locator.segments.len(), 6);
         let payload_bytes = positive
             .objects
             .iter()
