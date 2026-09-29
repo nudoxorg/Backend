@@ -575,6 +575,7 @@ pub struct HistoryAdmissionReceipt {
     commit: AdmittedHistoryCommit,
     created: bool,
     _gc_pin: Option<std::sync::Arc<backend_store::GcPinGuard>>,
+    typed_v2_proof: Option<TypedV2HistoryPublicationProof>,
 }
 
 impl HistoryAdmissionReceipt {
@@ -590,10 +591,114 @@ impl HistoryAdmissionReceipt {
         self.created
     }
 
+    /// Borrows the live FileStore retention pin and the exact typed V2
+    /// closure claim required by the proof-bearing ref publication path.
+    pub(crate) fn typed_v2_publication_admission(
+        &self,
+        store_root: &std::path::Path,
+    ) -> Option<TypedV2HistoryPublicationAdmission<'_>> {
+        let gc_pin = self._gc_pin.as_ref()?;
+        let proof = self.typed_v2_proof.as_ref()?;
+        if proof.store_root.as_path() != store_root || proof.identity != self.commit.identity() {
+            return None;
+        }
+        Some(TypedV2HistoryPublicationAdmission {
+            identity: proof.identity,
+            content: proof.content,
+            closure: proof.closure,
+            locator: proof.locator,
+            _gc_pin: gc_pin.as_ref(),
+        })
+    }
+
+    pub(crate) fn with_typed_v2_proof(
+        mut self,
+        content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+        closure: ArtifactClosureClaim,
+        locator: HistoryTypedV2LocatorId,
+        store_root: std::path::PathBuf,
+    ) -> Result<Self, String> {
+        let HistoryGenerationRoot::TypedV2(claim) = self.commit.generation_root() else {
+            return Err("typed V2 publication proof was attached to a V1 commit".to_owned());
+        };
+        if !claim.content_root_claim().matches(content.content_root())
+            || !claim
+                .generation_root_claim()
+                .matches(content.generation_root())
+            || claim.closure().as_bytes() != closure.as_bytes()
+            || claim.locator() != locator
+            || self._gc_pin.is_none()
+        {
+            return Err("typed V2 publication proof differs from its admitted commit".to_owned());
+        }
+        self.typed_v2_proof = Some(TypedV2HistoryPublicationProof {
+            identity: self.commit.identity(),
+            content,
+            closure,
+            locator,
+            store_root,
+        });
+        Ok(self)
+    }
+
     pub(crate) fn with_gc_pin(mut self, gc_pin: std::sync::Arc<backend_store::GcPinGuard>) -> Self {
         self._gc_pin = Some(gc_pin);
         self
     }
+}
+
+/// Capability that binds a typed V2 commit and exact closure to the live
+/// admission receipt pin held by its caller. This value cannot be constructed
+/// by a caller or outlive that receipt borrow.
+pub(crate) struct TypedV2HistoryPublicationAdmission<'pin> {
+    identity: HistoryCommitId,
+    content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+    closure: ArtifactClosureClaim,
+    locator: HistoryTypedV2LocatorId,
+    _gc_pin: &'pin backend_store::GcPinGuard,
+}
+
+impl TypedV2HistoryPublicationAdmission<'_> {
+    pub(crate) const fn identity(&self) -> HistoryCommitId {
+        self.identity
+    }
+
+    pub(crate) const fn closure(&self) -> ArtifactClosureClaim {
+        self.closure
+    }
+
+    pub(crate) const fn content(&self) -> backend_semantic::ir::VerifiedTypedPlaneContentV2 {
+        self.content
+    }
+
+    pub(crate) const fn locator(&self) -> HistoryTypedV2LocatorId {
+        self.locator
+    }
+
+    pub(crate) fn from_cold_verification(
+        identity: HistoryCommitId,
+        content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+        closure: ArtifactClosureClaim,
+        locator: HistoryTypedV2LocatorId,
+        gc_pin: &backend_store::GcPinGuard,
+    ) -> Self {
+        Self {
+            identity,
+            content,
+            closure,
+            locator,
+            _gc_pin: gc_pin,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TypedV2HistoryPublicationProof {
+    identity: HistoryCommitId,
+    content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+    closure: ArtifactClosureClaim,
+    locator: HistoryTypedV2LocatorId,
+    store_root: std::path::PathBuf,
 }
 
 /// One validated reference selected from the durable named-ref catalog.

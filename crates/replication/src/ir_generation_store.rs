@@ -36,6 +36,7 @@ const MAX_GENERATION_SCAN_MEMBERS: usize = 4_096;
 pub(super) enum HistoryTestFault {
     AfterGenerationRecord,
     AfterHistoryCommit,
+    AfterTypedV2Locator,
     AfterHistoryIndex,
     AfterPayloadRoot,
     AfterRefsCatalog,
@@ -111,6 +112,7 @@ pub(super) fn trip_history_test_fault(point: HistoryTestFault) -> Result<(), Str
 
 mod history;
 pub(crate) use history::TypedV2HistoryLocator;
+pub(crate) use history::TypedV2HistoryPublicationAdmission;
 pub use history::{
     AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
     HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError,
@@ -3470,6 +3472,149 @@ mod tests {
             .expect("seal empty V2 payload closure");
         let closure_claim = ArtifactClosureClaim::from_id(closure_receipt.closure());
         let branch = HistoryRefName::new("typed-v2-history").expect("V2 branch name");
+
+        let stale_stamp = SelectedGenerationStamp::checked(
+            *generation.stamp.namespace(),
+            generation.stamp.profile(),
+            *generation.stamp.source_coordinate(),
+            generation
+                .stamp
+                .selection_revision()
+                .checked_add(1)
+                .expect("stale test revision does not overflow"),
+            *generation.stamp.selected_root(),
+            *generation.stamp.closure_id(),
+            generation.stamp.catalog_root(),
+        )
+        .expect("construct a different valid authority stamp");
+        let stale_manifest = empty_typed_v2_manifest(70);
+        assert!(
+            range_store
+                .admit_typed_v2_history_commit(
+                    &generation.target,
+                    &[],
+                    [0x70; 32],
+                    &stale_manifest,
+                    closure_claim,
+                    &[],
+                    &[],
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    backend_semantic::ir::JumboRopeLimits::default(),
+                    &mut TestAuthority::new([stale_stamp], [generation.image]),
+                )
+                .expect_err("reject a stale selected semantic generation")
+                .contains("became stale")
+        );
+        let target_root = generations.target_root(&generation.target);
+        let locator_root = target_root.join("history").join("typed-v2-locators");
+        let pending_root = locator_root.join("pending");
+        assert_eq!(
+            fs::read_dir(&pending_root)
+                .expect("read pending locators after stale source")
+                .count(),
+            0,
+            "stale-source rejection clears its pending marker"
+        );
+        assert_eq!(
+            fs::read_dir(&locator_root)
+                .expect("read locators after stale source")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| ext == "locator")
+                })
+                .count(),
+            0,
+            "stale-source rejection removes its uncommitted locator"
+        );
+
+        // Leave the durable pending marker and locator exactly where a process
+        // crash after sidecar persistence would. Reopening and GC must remove
+        // this orphan before ordinary history collection proceeds.
+        arm_history_test_fault(HistoryTestFault::AfterTypedV2Locator);
+        assert!(
+            range_store
+                .admit_typed_v2_history_commit(
+                    &generation.target,
+                    &[],
+                    [0x70; 32],
+                    &stale_manifest,
+                    closure_claim,
+                    &[],
+                    &[],
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    backend_semantic::ir::JumboRopeLimits::default(),
+                    &mut TestAuthority::new(
+                        [generation.stamp, generation.stamp],
+                        [generation.image],
+                    ),
+                )
+                .expect_err("interrupt after typed V2 locator persistence")
+                .contains("AfterTypedV2Locator")
+        );
+        assert_eq!(
+            fs::read_dir(&pending_root)
+                .expect("read staged locator marker")
+                .count(),
+            1
+        );
+        assert_eq!(
+            fs::read_dir(&locator_root)
+                .expect("read staged locator")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| ext == "locator")
+                })
+                .count(),
+            1
+        );
+        drop(closure_receipt);
+        drop(range_store);
+        drop(file_store);
+        drop(generations);
+
+        let file_store = FileStore::open(&cas_root, 16 * 1024 * 1024)
+            .expect("reopen FileStore after staged locator interruption");
+        let range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
+            .expect("reopen semantic adapter after staged locator interruption");
+        let generations = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
+            .expect("reopen generation records after staged locator interruption");
+        let mut orphan_gc = range_store
+            .advance_history_gc(&generation.target)
+            .expect("reconcile orphan typed V2 locator after restart");
+        while !orphan_gc.complete() {
+            orphan_gc = range_store
+                .advance_history_gc(&generation.target)
+                .expect("finish GC after orphan locator reconciliation");
+        }
+        assert_eq!(
+            fs::read_dir(&pending_root)
+                .expect("read pending locators after recovery GC")
+                .count(),
+            0
+        );
+        assert_eq!(
+            fs::read_dir(&locator_root)
+                .expect("read locators after recovery GC")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| ext == "locator")
+                })
+                .count(),
+            0
+        );
+
         let mut previous = None;
         let mut commits = Vec::new();
 
@@ -3517,19 +3662,91 @@ mod tests {
                 )
                 .expect("admit or recover V2 history commit");
             let identity = admission.commit().identity();
+            if index == 0 {
+                crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
+                assert!(
+                    range_store
+                        .compare_and_swap_history_ref(
+                            &generation.target,
+                            HistoryRefKind::Branch,
+                            branch.clone(),
+                            previous,
+                            Some(identity),
+                        )
+                        .expect_err("bare commit ID cannot publish typed V2")
+                        .contains("proof-bearing admission receipt")
+                );
+                assert_eq!(
+                    crate::ir_hydration_store::typed_v2_closure_reopen_count(),
+                    0,
+                    "bare-ID rejection does not reopen the semantic closure"
+                );
+                arm_history_test_fault(HistoryTestFault::AfterRefsCatalog);
+                assert!(
+                    range_store
+                        .publish_typed_v2_history_ref(
+                            &generation.target,
+                            HistoryRefKind::Branch,
+                            branch.clone(),
+                            previous,
+                            &admission,
+                        )
+                        .expect_err("interrupt after durable typed ref CAS")
+                        .contains("AfterRefsCatalog")
+                );
+                assert_eq!(
+                    crate::ir_hydration_store::typed_v2_closure_reopen_count(),
+                    0,
+                    "live receipt retry does not re-read the semantic closure"
+                );
+            }
             range_store
-                .compare_and_swap_history_ref(
+                .publish_typed_v2_history_ref(
                     &generation.target,
                     HistoryRefKind::Branch,
                     branch.clone(),
                     previous,
-                    Some(identity),
+                    &admission,
                 )
                 .expect("publish V2 commit under navigation ref CAS");
+            if index == 0 {
+                assert_eq!(
+                    crate::ir_hydration_store::typed_v2_closure_reopen_count(),
+                    0,
+                    "idempotent live typed ref retry stays metadata-only"
+                );
+            }
             drop(admission);
             commits.push(identity);
             previous = Some(identity);
         }
+
+        let cold_tip = commits[2];
+        drop(range_store);
+        drop(file_store);
+        drop(generations);
+        let file_store = FileStore::open(&cas_root, 16 * 1024 * 1024)
+            .expect("reopen FileStore before cold typed V2 publication retry");
+        let range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
+            .expect("reopen semantic adapter before cold typed V2 publication retry");
+        let generations = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
+            .expect("reopen generation records before cold typed V2 publication retry");
+        crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
+        range_store
+            .publish_typed_v2_history_ref_cold(
+                &generation.target,
+                HistoryRefKind::Branch,
+                branch.clone(),
+                Some(cold_tip),
+                cold_tip,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("cold retry revalidates the durable closure and commits idempotently");
+        assert!(
+            crate::ir_hydration_store::typed_v2_closure_reopen_count() > 0,
+            "cold publication reopens the durable FileStore closure"
+        );
 
         assert_ne!(commits[0], commits[2]);
         assert!(

@@ -45,6 +45,16 @@ use super::ir_hydration_wire::{
 
 mod history_v2;
 
+#[cfg(test)]
+pub(crate) fn reset_typed_v2_closure_reopen_count() {
+    history_v2::reset_typed_v2_closure_reopen_count();
+}
+
+#[cfg(test)]
+pub(crate) fn typed_v2_closure_reopen_count() -> usize {
+    history_v2::typed_v2_closure_reopen_count()
+}
+
 const RECORD_TAG: u8 = 4;
 const MAP_TAG: u8 = 5;
 const CONTENT_MAP_TAG: u8 = 6;

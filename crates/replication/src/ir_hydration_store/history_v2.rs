@@ -20,12 +20,28 @@ const MAX_TYPED_V2_STANDARD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TYPED_V2_LARGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_JUMBO_INTERIOR_BYTES: u64 = ROPE_NODE_WIRE_BYTES as u64;
 
+#[cfg(test)]
+thread_local! {
+    static TYPED_V2_CLOSURE_REOPEN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn reset_typed_v2_closure_reopen_count() {
+    TYPED_V2_CLOSURE_REOPEN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn typed_v2_closure_reopen_count() -> usize {
+    TYPED_V2_CLOSURE_REOPEN_COUNT.with(std::cell::Cell::get)
+}
+
 impl FileSemanticRangeStore {
     /// Admits a durable typed V2 history commit after reopening and verifying
     /// the exact FileStore closure and all semantic rows. This only persists a
-    /// history commit; callers must use the existing named-ref CAS explicitly.
-    /// The semantic input claim remains non-authorizing, so this method does
-    /// not select V2 for production compilation or query routing.
+    /// history commit; callers must publish it with the live proof-bearing
+    /// receipt path or the cold re-admission path. The semantic input claim
+    /// remains non-authorizing, so this method does not select V2 for
+    /// production compilation or query routing.
     #[allow(clippy::too_many_arguments)]
     pub fn admit_typed_v2_history_commit<S: crate::SelectedGenerationSource>(
         &self,
@@ -44,20 +60,24 @@ impl FileSemanticRangeStore {
             .store
             .pin_garbage_collection()
             .map_err(|error| format!("pin typed V2 history admission: {error:?}"))?;
+        let expected_segments = manifest
+            .resource_usage()
+            .map_err(|error| format!("measure typed V2 history manifest: {error}"))?
+            .segment_descriptors();
+        crate::ir_generation_store::TypedV2HistoryLocator::preflight_admission_counts(
+            expected_segments,
+            segment_objects.len(),
+            jumbo_objects.len(),
+        )?;
         let manifest_bytes = manifest
             .canonical_bytes()
             .map_err(|error| format!("encode typed V2 history manifest: {error}"))?;
-        let mut locator = crate::ir_generation_store::TypedV2HistoryLocator {
-            manifest: manifest_bytes,
-            segments: segment_objects.to_vec(),
-            jumbo: jumbo_objects.to_vec(),
-        };
-        locator.segments.sort_unstable_by(|left, right| {
-            left.segment().as_bytes().cmp(right.segment().as_bytes())
-        });
-        locator
-            .jumbo
-            .sort_unstable_by(|left, right| jumbo_map_order(*left).cmp(&jumbo_map_order(*right)));
+        let locator = crate::ir_generation_store::TypedV2HistoryLocator::from_admission_parts(
+            manifest_bytes,
+            expected_segments,
+            segment_objects,
+            jumbo_objects,
+        )?;
         let decoded_manifest = locator.validate()?;
         if decoded_manifest != *manifest {
             return Err("typed V2 history manifest changed during canonical encoding".to_owned());
@@ -82,6 +102,13 @@ impl FileSemanticRangeStore {
             tier,
             jumbo_limits,
         )?;
+        let _state_lock = self.acquire_state_lock()?;
+        let (_, pending_locators_remain) = self
+            .generations
+            .reconcile_pending_typed_v2_locators(target)?;
+        if pending_locators_remain {
+            return Err("typed V2 locator recovery remains bounded and must be retried".to_owned());
+        }
         let locator_id = self.generations.typed_v2_locator_identity(&locator)?;
         let proposal = self
             .generations
@@ -94,17 +121,148 @@ impl FileSemanticRangeStore {
                 locator_id,
             )
             .map_err(|error| error.to_string())?;
+        let commit = proposal.identity();
         self.generations
-            .persist_typed_v2_locator(target, proposal.identity(), locator)?;
-        let _state_lock = self.acquire_state_lock()?;
-        let receipt = self.generations.admit_typed_v2_history_proposal(
+            .stage_typed_v2_locator(target, commit, locator)?;
+        #[cfg(test)]
+        crate::ir_generation_store::trip_history_test_fault(
+            crate::ir_generation_store::HistoryTestFault::AfterTypedV2Locator,
+        )?;
+        let receipt = match self.generations.admit_typed_v2_history_proposal(
             proposal,
             crate::ir_generation_store::AdmittedHistoryPayloadRoot {
                 closure: closure.id(),
             },
             source,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.generations
+                    .reconcile_typed_v2_locator_admission(target, commit)
+                    .map_err(|recovery| {
+                        format!("{error}; typed V2 locator recovery failed: {recovery}")
+                    })?;
+                return Err(error);
+            }
+        };
+        self.generations
+            .finish_typed_v2_locator_admission(target, commit)?;
+        receipt
+            .with_gc_pin(std::sync::Arc::new(gc_pin))
+            .with_typed_v2_proof(
+                verified,
+                closure_claim,
+                locator_id,
+                self.store.root().to_path_buf(),
+            )
+    }
+
+    /// Publishes an already admitted typed V2 commit while borrowing the live
+    /// receipt that owns its exact verifier proof and FileStore GC pin. This
+    /// path only rechecks immutable history metadata under the state lock; the
+    /// expensive semantic closure scan has already completed during admission.
+    pub fn publish_typed_v2_history_ref(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: crate::HistoryRefName,
+        expected: Option<crate::HistoryCommitId>,
+        admission: &crate::HistoryAdmissionReceipt,
+    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+        let proof = admission
+            .typed_v2_publication_admission(self.store.root())
+            .ok_or_else(|| {
+                "typed V2 publication requires a live same-store verifier receipt".to_owned()
+            })?;
+        let _state_lock = self.acquire_state_lock()?;
+        let receipt = self.generations.compare_and_swap_typed_v2_history_ref(
+            target,
+            kind,
+            name,
+            expected,
+            proof.identity(),
+            &proof,
         )?;
-        Ok(receipt.with_gc_pin(std::sync::Arc::new(gc_pin)))
+        let _ = self.generations.current(target)?;
+        Ok(receipt)
+    }
+
+    /// Cold-revalidates and publishes a typed V2 commit after process restart,
+    /// when no live admission receipt can carry the original GC pin. This
+    /// acquires a fresh pin before reading the closure and keeps it through the
+    /// durable ref CAS.
+    pub fn publish_typed_v2_history_ref_cold(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: crate::HistoryRefName,
+        expected: Option<crate::HistoryCommitId>,
+        commit_id: crate::HistoryCommitId,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+        let gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin cold typed V2 publication: {error:?}"))?;
+        let _state_lock = self.acquire_state_lock()?;
+        let commit = self.generations.history_commit(target, commit_id)?;
+        let claim = commit
+            .generation_root()
+            .typed_v2_claim()
+            .ok_or_else(|| "history commit does not name a typed V2 generation".to_owned())?;
+        let locator = self
+            .generations
+            .typed_v2_locator(target, commit_id, claim.locator())?;
+        let manifest = locator.validate()?;
+        if manifest.content_root_claim().as_bytes() != claim.content_root_claim().as_bytes()
+            || manifest.generation_root_claim().as_bytes()
+                != claim.generation_root_claim().as_bytes()
+        {
+            return Err("typed V2 commit roots differ from its cold manifest".to_owned());
+        }
+        let closure = self
+            .store
+            .open_closure_claim(claim.closure())
+            .map_err(|error| format!("open cold typed V2 publication closure: {error:?}"))?;
+        reopen_typed_v2_history_closure(
+            &self.store,
+            claim.closure(),
+            &closure,
+            &locator,
+            &manifest,
+            tier,
+        )?;
+        let verified = verify_typed_v2_history_content(
+            &self.store,
+            &closure,
+            &locator,
+            &manifest,
+            tier,
+            jumbo_limits,
+        )?;
+        if !claim.content_root_claim().matches(verified.content_root())
+            || !claim
+                .generation_root_claim()
+                .matches(verified.generation_root())
+        {
+            return Err(
+                "typed V2 history commit root failed cold publication verification".to_owned(),
+            );
+        }
+        let proof =
+            crate::ir_generation_store::TypedV2HistoryPublicationAdmission::from_cold_verification(
+                commit_id,
+                verified,
+                claim.closure(),
+                claim.locator(),
+                &gc_pin,
+            );
+        let receipt = self.generations.compare_and_swap_typed_v2_history_ref(
+            target, kind, name, expected, commit_id, &proof,
+        )?;
+        let _ = self.generations.current(target)?;
+        Ok(receipt)
     }
 
     /// Cold-replays one typed V2 commit that is reachable from the exact
@@ -276,6 +434,8 @@ fn reopen_typed_v2_history_closure(
             return Err("typed V2 history closure member differs from its locator map".to_owned());
         }
     }
+    #[cfg(test)]
+    TYPED_V2_CLOSURE_REOPEN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     store
         .reopen_stored_closure(
             claim,

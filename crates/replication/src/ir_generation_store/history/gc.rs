@@ -256,6 +256,18 @@ pub(super) fn advance_history_gc(
             stats: HistoryGcStats::default(),
         });
     }
+    // Typed V2 admission stages each locator behind a durable marker while
+    // holding the history state lock. Reconcile only a bounded prefix here so
+    // a crash before commit admission cannot leave untracked sidecars behind.
+    let (mut processed, pending_locators_remain) =
+        super::v2::reconcile_pending_typed_v2_locators(target_root, target)?;
+    if pending_locators_remain {
+        return Ok(HistoryGcProgress {
+            processed_records: processed,
+            complete: false,
+            stats: HistoryGcStats::default(),
+        });
+    }
     let (catalog, digest) = read_history_catalog_snapshot(target_root)?;
     validate_catalog_tips(target_root, target, &catalog)?;
     let state_path = history_gc_state_path(target_root);
@@ -264,7 +276,6 @@ pub(super) fn advance_history_gc(
         _ => initialize_history_gc(target_root, &catalog, digest)?,
     };
     let epoch_root = ensure_history_gc_epoch(target_root, &digest)?;
-    let mut processed = 0;
     loop {
         match state.phase {
             HistoryGcPhase::Mark => {

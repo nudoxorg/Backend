@@ -374,6 +374,7 @@ impl LocalSemanticGenerationFiles {
             commit: AdmittedHistoryCommit { record: admitted },
             created,
             _gc_pin: None,
+            typed_v2_proof: None,
         })
     }
 
@@ -449,15 +450,46 @@ impl LocalSemanticGenerationFiles {
         expected: Option<HistoryCommitId>,
         next: Option<HistoryCommitId>,
     ) -> Result<HistoryRefUpdateReceipt, String> {
+        self.compare_and_swap_history_ref_inner(target, kind, name, expected, next, None)
+    }
+
+    pub(crate) fn compare_and_swap_typed_v2_history_ref(
+        &self,
+        target: &SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: HistoryRefName,
+        expected: Option<HistoryCommitId>,
+        next: HistoryCommitId,
+        admission: &TypedV2HistoryPublicationAdmission<'_>,
+    ) -> Result<HistoryRefUpdateReceipt, String> {
+        if admission.identity() != next {
+            return Err("typed V2 publication receipt names another commit".to_owned());
+        }
+        self.compare_and_swap_history_ref_inner(
+            target,
+            kind,
+            name,
+            expected,
+            Some(next),
+            Some(admission),
+        )
+    }
+
+    fn compare_and_swap_history_ref_inner(
+        &self,
+        target: &SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: HistoryRefName,
+        expected: Option<HistoryCommitId>,
+        next: Option<HistoryCommitId>,
+        typed_admission: Option<&TypedV2HistoryPublicationAdmission<'_>>,
+    ) -> Result<HistoryRefUpdateReceipt, String> {
         let target_root = self.target_root(target);
         super::retention::recover_pending_delete(&target_root)?;
         let commits_root = prepare_history_layout(&target_root)?;
         let (mut catalog, _) = read_history_catalog_snapshot(&target_root)?;
         validate_catalog_tips(&target_root, target, &catalog)?;
         let actual = catalog.get(kind, &name);
-        if actual != expected {
-            return Err("semantic history reference compare-and-swap failed".to_owned());
-        }
         if let Some(identity) = next {
             let record =
                 validate_history_commit_node(&target_root, target, &commits_root, identity)?;
@@ -470,17 +502,55 @@ impl LocalSemanticGenerationFiles {
                         .to_owned(),
                 );
             }
-            if let HistoryGenerationRoot::TypedV2(claim) = record.generation_root {
-                let payload =
-                    read_history_payload_root(&target_root, identity)?.ok_or_else(|| {
-                        "typed V2 history commit payload closure is missing".to_owned()
+            match record.generation_root {
+                HistoryGenerationRoot::TypedV2(claim) => {
+                    let admission = typed_admission.ok_or_else(|| {
+                        "typed V2 ref publication requires its live proof-bearing admission receipt"
+                            .to_owned()
                     })?;
-                if payload.closure.as_bytes() != claim.closure.as_bytes() {
-                    return Err(
-                        "typed V2 history payload closure differs from its commit root".to_owned(),
-                    );
+                    let content = admission.content();
+                    if admission.identity() != identity
+                        || admission.closure().as_bytes() != claim.closure().as_bytes()
+                        || admission.locator() != claim.locator()
+                        || !claim.content_root_claim().matches(content.content_root())
+                        || !claim
+                            .generation_root_claim()
+                            .matches(content.generation_root())
+                    {
+                        return Err(
+                            "typed V2 ref publication receipt differs from the immutable commit"
+                                .to_owned(),
+                        );
+                    }
+                    let payload =
+                        read_history_payload_root(&target_root, identity)?.ok_or_else(|| {
+                            "typed V2 history commit payload closure is missing".to_owned()
+                        })?;
+                    if payload.closure.as_bytes() != claim.closure().as_bytes() {
+                        return Err(
+                            "typed V2 history payload closure differs from its commit root"
+                                .to_owned(),
+                        );
+                    }
+                }
+                HistoryGenerationRoot::NxfiV1(_) => {
+                    if typed_admission.is_some() {
+                        return Err(
+                            "typed V2 publication receipt cannot publish a V1 history commit"
+                                .to_owned(),
+                        );
+                    }
                 }
             }
+        }
+        if typed_admission.is_some() && actual == next {
+            return Ok(HistoryRefUpdateReceipt {
+                previous: actual,
+                current: next,
+            });
+        }
+        if actual != expected {
+            return Err("semantic history reference compare-and-swap failed".to_owned());
         }
         if let Some(previous) = actual {
             if Some(previous) != next {
@@ -573,6 +643,7 @@ impl LocalSemanticGenerationFiles {
                     commit: selected,
                     created: false,
                     _gc_pin: None,
+                    typed_v2_proof: None,
                 });
             }
         }

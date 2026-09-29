@@ -14,6 +14,7 @@ use super::*;
 const TYPED_V2_LOCATOR_DOMAIN: &[u8] = b"backend.semantic.history-typed-v2-locator.v1\0";
 const TYPED_V2_COMMIT_DOMAIN: &[u8] = b"backend.semantic.history-commit.typed-v2.v1\0";
 const MAX_TYPED_V2_MANIFEST_BYTES: usize = backend_semantic::ir::MAX_TYPED_PLANE_MANIFEST_V2_BYTES;
+const MAX_TYPED_V2_PENDING_RECONCILE: usize = super::MAX_HISTORY_GC_BATCH_RECORDS / 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TypedV2HistoryLocator {
@@ -23,6 +24,58 @@ pub(crate) struct TypedV2HistoryLocator {
 }
 
 impl TypedV2HistoryLocator {
+    pub(crate) fn preflight_admission_counts(
+        expected_segments: usize,
+        segment_count: usize,
+        jumbo_count: usize,
+    ) -> Result<(), String> {
+        let object_count = segment_count
+            .checked_add(jumbo_count)
+            .ok_or_else(|| "typed V2 history locator object count overflows".to_owned())?;
+        if expected_segments != segment_count
+            || segment_count > backend_semantic::ir::MAX_TYPED_PLANE_SEGMENTS_V2
+            || object_count > super::MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS
+        {
+            return Err("typed V2 history locator object count exceeds its bounds".to_owned());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn from_admission_parts(
+        manifest: Vec<u8>,
+        expected_segments: usize,
+        segments: &[HistoryTypedV2SegmentObject],
+        jumbo: &[HistoryTypedV2JumboObject],
+    ) -> Result<Self, String> {
+        Self::preflight_admission_counts(expected_segments, segments.len(), jumbo.len())?;
+        if manifest.len() > MAX_TYPED_V2_MANIFEST_BYTES {
+            return Err("typed V2 history manifest exceeds its byte bound".to_owned());
+        }
+        let mut segment_map = Vec::new();
+        segment_map
+            .try_reserve_exact(segments.len())
+            .map_err(|_| "typed V2 history segment map allocation failed".to_owned())?;
+        segment_map.extend_from_slice(segments);
+        segment_map.sort_unstable_by(|left, right| {
+            left.segment().as_bytes().cmp(right.segment().as_bytes())
+        });
+
+        let mut jumbo_map = Vec::new();
+        jumbo_map
+            .try_reserve_exact(jumbo.len())
+            .map_err(|_| "typed V2 history rope map allocation failed".to_owned())?;
+        jumbo_map.extend_from_slice(jumbo);
+        jumbo_map.sort_unstable_by(|left, right| jumbo_order(*left).cmp(&jumbo_order(*right)));
+
+        let locator = Self {
+            manifest,
+            segments: segment_map,
+            jumbo: jumbo_map,
+        };
+        let _ = locator.validate()?;
+        Ok(locator)
+    }
+
     pub(crate) fn validate(
         &self,
     ) -> Result<backend_semantic::ir::SemanticTypedPlaneManifestV2, String> {
@@ -149,11 +202,153 @@ fn locator_path(target_root: &Path, commit: HistoryCommitId) -> PathBuf {
         .join(format!("{}.locator", hex(commit.as_bytes())))
 }
 
+fn pending_locator_directory(target_root: &Path) -> PathBuf {
+    target_root
+        .join("history")
+        .join("typed-v2-locators")
+        .join("pending")
+}
+
+fn pending_locator_path(target_root: &Path, commit: HistoryCommitId) -> PathBuf {
+    pending_locator_directory(target_root).join(format!("{}.pending", hex(commit.as_bytes())))
+}
+
 pub(super) fn remove_typed_v2_locator_for_commit(
     target_root: &Path,
     commit: HistoryCommitId,
 ) -> Result<(), String> {
-    remove_file(&locator_path(target_root, commit))
+    remove_file(&locator_path(target_root, commit))?;
+    remove_file(&pending_locator_path(target_root, commit))
+}
+
+fn ensure_typed_v2_locator_directories(target_root: &Path) -> Result<(), String> {
+    prepare_history_layout(target_root)?;
+    let directory = target_root.join("history").join("typed-v2-locators");
+    create_private_directory(&directory)?;
+    set_private_directory(&directory)?;
+    let pending = pending_locator_directory(target_root);
+    create_private_directory(&pending)?;
+    set_private_directory(&pending)?;
+    Ok(())
+}
+
+fn stage_typed_v2_locator_bytes(
+    target_root: &Path,
+    commit: HistoryCommitId,
+    bytes: &[u8],
+) -> Result<(), String> {
+    ensure_typed_v2_locator_directories(target_root)?;
+    let pending = pending_locator_path(target_root, commit);
+    match fs::symlink_metadata(&pending) {
+        Ok(_) => {
+            ensure_regular_file(&pending)?;
+            if fs::metadata(&pending).map_err(display_io)?.len() != 0 {
+                return Err("typed V2 pending locator marker is not empty".to_owned());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            backend_platform::durable::write_private_atomic(&pending, &[]).map_err(display_io)?;
+        }
+        Err(error) => return Err(display_io(error)),
+    }
+    let path = locator_path(target_root, commit);
+    match read_optional_bounded(&path, MAX_HISTORY_TYPED_V2_LOCATOR_BYTES + 64)? {
+        Some(existing) if existing == bytes => Ok(()),
+        Some(_) => Err("typed V2 history commit locator changed".to_owned()),
+        None => backend_platform::durable::write_private_atomic(&path, bytes).map_err(display_io),
+    }
+}
+
+fn decode_pending_typed_v2_locator_name(path: &Path) -> Result<HistoryCommitId, String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "typed V2 pending locator name is not UTF-8".to_owned())?;
+    let encoded = name
+        .strip_suffix(".pending")
+        .ok_or_else(|| "typed V2 pending locator has an unexpected file name".to_owned())?;
+    if encoded.len() != 64 {
+        return Err("typed V2 pending locator name has the wrong length".to_owned());
+    }
+    let mut identity = [0_u8; 32];
+    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        let digit = |byte| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        let high = digit(pair[0])
+            .ok_or_else(|| "typed V2 pending locator name is not lowercase hex".to_owned())?;
+        let low = digit(pair[1])
+            .ok_or_else(|| "typed V2 pending locator name is not lowercase hex".to_owned())?;
+        identity[index] = (high << 4) | low;
+    }
+    let commit = HistoryCommitId(identity);
+    if encoded != hex(commit.as_bytes()) {
+        return Err("typed V2 pending locator name is not canonical".to_owned());
+    }
+    Ok(commit)
+}
+
+fn reconcile_one_pending_typed_v2_locator(
+    target_root: &Path,
+    target: &SemanticTargetKey,
+    pending_path: &Path,
+) -> Result<(), String> {
+    ensure_regular_file(pending_path)?;
+    if fs::metadata(pending_path).map_err(display_io)?.len() != 0 {
+        return Err("typed V2 pending locator marker is not empty".to_owned());
+    }
+    let commit = decode_pending_typed_v2_locator_name(pending_path)?;
+    let commit_path = history_commit_path(&target_root.join("history").join("commits"), commit);
+    match fs::symlink_metadata(&commit_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            remove_file(&locator_path(target_root, commit))?;
+            remove_file(pending_path)
+        }
+        Err(error) => Err(display_io(error)),
+        Ok(_) => {
+            ensure_regular_file(&commit_path)?;
+            let record = validate_history_commit_node(
+                target_root,
+                target,
+                &target_root.join("history").join("commits"),
+                commit,
+            )?;
+            if record.identity != commit
+                || !matches!(record.generation_root, HistoryGenerationRoot::TypedV2(_))
+            {
+                return Err("typed V2 pending locator names a different commit body".to_owned());
+            }
+            append_commit_index(target_root, commit)?;
+            remove_file(pending_path)
+        }
+    }
+}
+
+pub(super) fn reconcile_pending_typed_v2_locators(
+    target_root: &Path,
+    target: &SemanticTargetKey,
+) -> Result<(usize, bool), String> {
+    let pending_root = pending_locator_directory(target_root);
+    if !ensure_optional_directory(&pending_root)? {
+        return Ok((0, false));
+    }
+    let mut entries = fs::read_dir(&pending_root).map_err(display_io)?;
+    let mut processed = 0_usize;
+    loop {
+        if processed == MAX_TYPED_V2_PENDING_RECONCILE {
+            let more = entries.next().transpose().map_err(display_io)?.is_some();
+            return Ok((processed, more));
+        }
+        let Some(entry) = entries.next() else {
+            return Ok((processed, false));
+        };
+        let entry = entry.map_err(display_io)?;
+        let path = entry.path();
+        reconcile_one_pending_typed_v2_locator(target_root, target, &path)?;
+        processed += 1;
+    }
 }
 
 pub(super) fn validate_typed_v2_locator_binding(
@@ -279,29 +474,43 @@ impl LocalSemanticGenerationFiles {
         Ok(identity)
     }
 
-    pub(crate) fn persist_typed_v2_locator(
+    pub(crate) fn stage_typed_v2_locator(
         &self,
         target: &SemanticTargetKey,
         commit: HistoryCommitId,
         locator: TypedV2HistoryLocator,
     ) -> Result<HistoryTypedV2LocatorId, String> {
         let (identity, bytes) = create_typed_v2_locator(locator)?;
+        stage_typed_v2_locator_bytes(&self.target_root(target), commit, &bytes)?;
+        Ok(identity)
+    }
+
+    pub(crate) fn finish_typed_v2_locator_admission(
+        &self,
+        target: &SemanticTargetKey,
+        commit: HistoryCommitId,
+    ) -> Result<(), String> {
+        remove_file(&pending_locator_path(&self.target_root(target), commit))
+    }
+
+    pub(crate) fn reconcile_pending_typed_v2_locators(
+        &self,
+        target: &SemanticTargetKey,
+    ) -> Result<(usize, bool), String> {
+        reconcile_pending_typed_v2_locators(&self.target_root(target), target)
+    }
+
+    pub(crate) fn reconcile_typed_v2_locator_admission(
+        &self,
+        target: &SemanticTargetKey,
+        commit: HistoryCommitId,
+    ) -> Result<(), String> {
         let target_root = self.target_root(target);
-        prepare_history_layout(&target_root)?;
-        let directory = target_root.join("history").join("typed-v2-locators");
-        create_private_directory(&directory)?;
-        set_private_directory(&directory)?;
-        let path = locator_path(&target_root, commit);
-        match fs::read(&path) {
-            Ok(existing) if existing == bytes => Ok(identity),
-            Ok(_) => Err("typed V2 history commit locator changed".to_owned()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                backend_platform::durable::write_private_atomic(&path, &bytes)
-                    .map_err(display_io)?;
-                Ok(identity)
-            }
-            Err(error) => Err(display_io(error)),
-        }
+        reconcile_one_pending_typed_v2_locator(
+            &target_root,
+            target,
+            &pending_locator_path(&target_root, commit),
+        )
     }
 
     pub(crate) fn typed_v2_locator(
@@ -505,16 +714,14 @@ mod tests {
             .expect("identify canonical locator");
         assert_eq!(
             files
-                .persist_typed_v2_locator(&target, commit, locator.clone())
-                .expect("persist locator"),
+                .stage_typed_v2_locator(&target, commit, locator.clone())
+                .expect("stage locator"),
             identity
         );
-        // A retry after interruption between locator persistence and commit
-        // admission is safe and does not replace immutable bytes.
         assert_eq!(
             files
-                .persist_typed_v2_locator(&target, commit, locator.clone())
-                .expect("retry locator persistence"),
+                .stage_typed_v2_locator(&target, commit, locator.clone())
+                .expect("retry locator staging"),
             identity
         );
         drop(files);
@@ -526,15 +733,36 @@ mod tests {
                 .expect("reopen typed locator"),
             locator
         );
-        let target_root = reopened.target_root(&target);
-        remove_typed_v2_locator_for_commit(&target_root, commit).expect("sweep locator");
-        remove_typed_v2_locator_for_commit(&target_root, commit)
-            .expect("recover interrupted locator sweep");
+        assert_eq!(
+            reopened
+                .reconcile_pending_typed_v2_locators(&target)
+                .expect("reconcile orphan locator after reopen"),
+            (1, false)
+        );
         assert!(
             reopened
                 .typed_v2_locator(&target, commit, identity)
-                .expect_err("swept locator is unavailable")
+                .expect_err("orphan locator is unavailable after recovery")
                 .contains("missing")
         );
+    }
+
+    #[test]
+    fn typed_locator_admission_preflights_exact_and_checked_object_counts() {
+        assert!(TypedV2HistoryLocator::preflight_admission_counts(1, 0, 0).is_err());
+        assert!(
+            TypedV2HistoryLocator::preflight_admission_counts(0, usize::MAX, 1)
+                .expect_err("overflow must reject before copying")
+                .contains("overflows")
+        );
+        assert!(
+            TypedV2HistoryLocator::preflight_admission_counts(
+                0,
+                0,
+                MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS + 1,
+            )
+            .is_err()
+        );
+        assert!(TypedV2HistoryLocator::preflight_admission_counts(0, 0, 0).is_ok());
     }
 }
