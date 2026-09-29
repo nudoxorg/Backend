@@ -449,7 +449,6 @@ fn verify_manifest_claims(
     let mut expected_payloads = 0_usize;
     let mut total_bytes = 0_u64;
     let mut total_rows = 0_u64;
-    let mut reference_budget = 0_u64;
     for (index, family) in families.iter().enumerate() {
         let expected = expected_families[index];
         if family.family != expected {
@@ -529,16 +528,6 @@ fn verify_manifest_claims(
                 .ok_or(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
                     budget: "row-count",
                 })?;
-            // Every reference represented in Core, Types, Relations,
-            // Occurrences, Documentation, SourceProvenance, and language
-            // extension grammars consumes at least one fixed 32-byte key or
-            // identity. Thus bytes / 32 is a conservative upper bound; it may
-            // overcount row identities and non-reference payload fields.
-            reference_budget = reference_budget
-                .checked_add(segment.byte_length / 32)
-                .ok_or(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
-                    budget: "reference-count",
-                })?;
         }
         if family_rows != family.row_count {
             return Err(SemanticTypedPlaneInventoryV2Error::FamilyRowCount {
@@ -567,11 +556,6 @@ fn verify_manifest_claims(
     if total_rows > limits.max_total_rows {
         return Err(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
             budget: "row-count",
-        });
-    }
-    if reference_budget > limits.max_references {
-        return Err(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
-            budget: "reference-count",
         });
     }
     if input_witness.coverage().state() != backend_version::Coverage::Complete {
@@ -681,6 +665,7 @@ struct RelationFamilyFacts {
     keys: Vec<[u8; 32]>,
     references: Vec<[u8; 32]>,
     external_references: Vec<[u8; 32]>,
+    reference_count: u64,
 }
 
 #[derive(Default)]
@@ -688,13 +673,20 @@ struct DocumentationFamilyFacts {
     declarations: Vec<([u8; 32], bool)>,
     local_references: Vec<[u8; 32]>,
     external_references: Vec<[u8; 32]>,
+    reference_count: u64,
+}
+
+#[derive(Default)]
+struct OccurrenceFamilyFacts {
+    relation_references: Vec<[u8; 32]>,
+    reference_count: u64,
 }
 
 fn validate_cross_family_closure(
     profile: LanguageProfile,
     families: &[Vec<CanonicalSemanticPlaneSegmentView<'_>>; 7],
     limits: SemanticTypedPlaneVerificationLimitsV2,
-) -> Result<(), SemanticTypedPlaneInventoryV2Error> {
+) -> Result<u64, SemanticTypedPlaneInventoryV2Error> {
     let mut core = decode_core(&families[0])?;
     core.declarations.sort_unstable_by_key(|row| row.identity);
     if core
@@ -704,6 +696,7 @@ fn validate_cross_family_closure(
     {
         return Err(SemanticPlaneRecordError::StableKeyCollision.into());
     }
+    let core_reference_count = reference_count_for_items(core.local_references.len())?;
     core.local_references.sort_unstable();
     core.local_references.dedup();
     core.captured_extension_owners.sort_unstable();
@@ -829,7 +822,7 @@ fn validate_cross_family_closure(
     )?;
 
     require_local_refs(
-        &occurrences,
+        &occurrences.relation_references,
         &relations.keys,
         "occurrence relation reference",
     )?;
@@ -839,7 +832,35 @@ fn validate_cross_family_closure(
             fact: "language extension profile",
         });
     }
-    Ok(())
+    let source_reference_count = reference_count_for_items(
+        source
+            .declaration_keys
+            .len()
+            .checked_add(source.relation_keys.len())
+            .ok_or(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                budget: "reference-count",
+            })?,
+    )?;
+    let reference_count = [
+        core_reference_count,
+        relations.reference_count,
+        occurrences.reference_count,
+        docs.reference_count,
+        source_reference_count,
+        types.reference_count(),
+        extensions.reference_count(),
+    ]
+    .into_iter()
+    .try_fold(0_u64, |total, family_count| total.checked_add(family_count))
+    .ok_or(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+        budget: "reference-count",
+    })?;
+    if reference_count > limits.max_references {
+        return Err(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+            budget: "reference-count",
+        });
+    }
+    Ok(reference_count)
 }
 
 fn decode_core(
@@ -963,6 +984,16 @@ fn decode_documentation(
             try_push(&mut facts.declarations, (identity, available))?;
         }
     }
+    facts.reference_count = reference_count_for_items(
+        facts
+            .declarations
+            .len()
+            .checked_add(facts.local_references.len())
+            .and_then(|count| count.checked_add(facts.external_references.len()))
+            .ok_or(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                budget: "reference-count",
+            })?,
+    )?;
     facts
         .declarations
         .sort_unstable_by_key(|(identity, _)| *identity);
@@ -1055,6 +1086,15 @@ fn decode_relations(
             try_push(&mut facts.keys, record.key())?;
         }
     }
+    facts.reference_count = reference_count_for_items(
+        facts
+            .references
+            .len()
+            .checked_add(facts.external_references.len())
+            .ok_or(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                budget: "reference-count",
+            })?,
+    )?;
     facts.keys.sort_unstable();
     facts.references.sort_unstable();
     facts.references.dedup();
@@ -1066,7 +1106,7 @@ fn decode_relations(
 
 fn decode_occurrences(
     segments: &[CanonicalSemanticPlaneSegmentView<'_>],
-) -> Result<Vec<[u8; 32]>, SemanticTypedPlaneInventoryV2Error> {
+) -> Result<OccurrenceFamilyFacts, SemanticTypedPlaneInventoryV2Error> {
     let mut references = Vec::new();
     for segment in segments {
         for record in segment.records() {
@@ -1082,9 +1122,19 @@ fn decode_occurrences(
             try_push(&mut references, relation)?;
         }
     }
+    let reference_count = reference_count_for_items(references.len())?;
     references.sort_unstable();
     references.dedup();
-    Ok(references)
+    Ok(OccurrenceFamilyFacts {
+        relation_references: references,
+        reference_count,
+    })
+}
+
+fn reference_count_for_items(count: usize) -> Result<u64, SemanticTypedPlaneInventoryV2Error> {
+    u64::try_from(count).map_err(|_| SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+        budget: "reference-count",
+    })
 }
 
 fn find_availability(rows: &[([u8; 32], bool)], key: [u8; 32]) -> Option<bool> {
@@ -1538,6 +1588,18 @@ mod tests {
         rows: [Vec<Row>; 7],
         split: Option<(usize, usize)>,
     ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error> {
+        verify_rows_with_policy(
+            rows,
+            split,
+            SemanticTypedPlaneVerificationLimitsV2::standard(),
+        )
+    }
+
+    fn verify_rows_with_policy(
+        rows: [Vec<Row>; 7],
+        split: Option<(usize, usize)>,
+        limits: SemanticTypedPlaneVerificationLimitsV2,
+    ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error> {
         let kinds = family_kinds();
         let row_counts = rows
             .each_ref()
@@ -1591,7 +1653,7 @@ mod tests {
             input_claim(),
             &families,
             &payloads,
-            SemanticTypedPlaneVerificationLimitsV2::standard(),
+            limits,
         )
     }
 
@@ -1606,6 +1668,24 @@ mod tests {
             assert_eq!(family.segments().len(), 1);
             assert!(family.segments()[0].admitted_id().as_bytes() != &[0; 32]);
         }
+    }
+
+    #[test]
+    fn exact_reference_budget_does_not_scale_with_payload_bytes() {
+        let first = identity(0x13);
+        let rows = valid_rows(first, None, None, false, true);
+        let inventory = verify_rows_with_policy(
+            rows,
+            None,
+            SemanticTypedPlaneVerificationLimitsV2 {
+                max_segments: 8_192,
+                max_total_bytes: 64 * 1024 * 1024,
+                max_total_rows: 250_000,
+                max_references: 12,
+            },
+        )
+        .expect("twelve explicit references fit despite larger payload framing");
+        assert_eq!(inventory.families()[2].row_count(), 1);
     }
 
     #[test]

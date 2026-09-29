@@ -66,6 +66,7 @@ pub struct CheckedLanguageExtensionFamilyV2 {
     owner_identities: Box<[[u8; 32]]>,
     declaration_references: Box<[[u8; 32]]>,
     types_references: Box<[TypesReferenceV2]>,
+    reference_count: u64,
     local_root: [u8; 32],
     row_count: u64,
 }
@@ -100,6 +101,13 @@ impl CheckedLanguageExtensionFamilyV2 {
     #[must_use]
     pub fn types_references(&self) -> &[TypesReferenceV2] {
         &self.types_references
+    }
+
+    /// Number of exact Types and declaration references parsed from these
+    /// extension rows, before any cross-family set deduplication.
+    #[must_use]
+    pub const fn reference_count(&self) -> u64 {
+        self.reference_count
     }
 
     /// Canonical local commitment over rows in stable-key order.
@@ -205,17 +213,17 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
                 record.payload(),
                 &mut declaration_references,
             )?;
+            let added_declaration_references = declaration_references
+                .len()
+                .checked_sub(declaration_reference_count)
+                .ok_or(SemanticPlaneRecordError::RowGrammar)?;
             let row_reference_count = parsed
                 .references
                 .iter()
                 .flatten()
                 .count()
-                .checked_add(
-                    declaration_references
-                        .len()
-                        .checked_sub(declaration_reference_count)
-                        .ok_or(SemanticPlaneRecordError::RowGrammar)?,
-                )
+                .checked_add(added_declaration_references)
+                .and_then(|count| count.checked_add(1)) // Owner identity resolves against Core.
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             types_references
                 .try_reserve(parsed.references.len())
@@ -263,6 +271,7 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
         owner_identities: owners.into_boxed_slice(),
         declaration_references: declaration_references.into_boxed_slice(),
         types_references: types_references.into_boxed_slice(),
+        reference_count,
         local_root: *root.finalize().as_bytes(),
         row_count,
     })

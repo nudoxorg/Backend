@@ -106,6 +106,7 @@ pub struct CheckedTypesFamilyV2 {
     external_target_keys: alloc::boxed::Box<[[u8; 32]]>,
     local_root: [u8; 32],
     row_count: u64,
+    reference_count: u64,
 }
 
 impl CheckedTypesFamilyV2 {
@@ -169,6 +170,9 @@ impl CheckedTypesFamilyV2 {
                 .references
                 .len()
                 .checked_add(parsed.declaration_references.len())
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            let row_references = row_references
+                .checked_add(if parsed.root_identity.is_some() { 1 } else { 0 })
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             reference_count = reference_count
                 .checked_add(
@@ -269,6 +273,7 @@ impl CheckedTypesFamilyV2 {
             external_target_keys: external_target_keys.into_boxed_slice(),
             local_root,
             row_count,
+            reference_count,
         })
     }
 
@@ -324,6 +329,13 @@ impl CheckedTypesFamilyV2 {
     #[must_use]
     pub const fn row_count(&self) -> u64 {
         self.row_count
+    }
+
+    /// Number of exact typed/list/atom/external/declaration references parsed
+    /// from the admitted Types rows, before any cross-family set deduplication.
+    #[must_use]
+    pub const fn reference_count(&self) -> u64 {
+        self.reference_count
     }
 
     /// Resolves one typed/list/atom/external root emitted by another family.
