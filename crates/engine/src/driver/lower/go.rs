@@ -6404,7 +6404,10 @@ mod tests {
         let iface_row = fix.start_row(ROW_INTERFACE);
         fix.interface_method(iface_row, b"Read", None);
         fix.declarations[greeter].type_root = Some(iface_row);
-        let _ = (set_name, state);
+        let _ = state;
+        // Since image version 6 an unbound method row lives in another file
+        // and resolves to a namespace key; SetName is declared here.
+        fix.methods[set_name].bound = true;
         // Facts: 0 Lang, 1 Greeter, 2 Name (field), 3 SetName (method),
         // 4 Read (interface method), 5 state, 6 Use.
 
