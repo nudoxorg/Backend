@@ -9,6 +9,28 @@ use super::wire::parse_types_row_with_reference_limit;
 
 const TYPES_FAMILY_ROOT_DOMAIN: &[u8] = b"backend.semantic.ir.types-family-root.v2\0";
 
+/// Typed failure used by the aggregate verifier to preserve reference-budget errors.
+#[derive(Debug)]
+pub(super) enum TypesFamilyValidationError {
+    Record(SemanticPlaneRecordError),
+    ReferenceLimitExceeded,
+}
+
+impl From<SemanticPlaneRecordError> for TypesFamilyValidationError {
+    fn from(error: SemanticPlaneRecordError) -> Self {
+        Self::Record(error)
+    }
+}
+
+impl From<TypesFamilyValidationError> for SemanticPlaneRecordError {
+    fn from(error: TypesFamilyValidationError) -> Self {
+        match error {
+            TypesFamilyValidationError::Record(error) => error,
+            TypesFamilyValidationError::ReferenceLimitExceeded => Self::RowTooLarge,
+        }
+    }
+}
+
 /// Explicit resource ceiling for one standalone Types-family verification.
 /// Aggregate verification derives this from its standard or large-package
 /// policy and also enforces its stricter complete-inventory budgets.
@@ -127,6 +149,14 @@ impl CheckedTypesFamilyV2 {
         records: impl IntoIterator<Item = ([u8; 32], u8, &'bytes [u8])>,
         limits: TypesFamilyVerificationLimitsV2,
     ) -> Result<Self, SemanticPlaneRecordError> {
+        Self::from_records_with_limits_detailed(records, limits).map_err(Into::into)
+    }
+
+    /// Validates while keeping the reference-limit outcome distinct for aggregate policy.
+    pub(super) fn from_records_with_limits_detailed<'bytes>(
+        records: impl IntoIterator<Item = ([u8; 32], u8, &'bytes [u8])>,
+        limits: TypesFamilyVerificationLimitsV2,
+    ) -> Result<Self, TypesFamilyValidationError> {
         let mut row_keys = Vec::new();
         let mut row_domains = Vec::new();
         let mut edge_offsets = Vec::new();
@@ -146,27 +176,47 @@ impl CheckedTypesFamilyV2 {
         let mut reference_count = 0_u64;
         for (key, tag, payload) in records {
             if previous.is_some_and(|prior| prior >= key) {
-                return Err(SemanticPlaneRecordError::RecordOrder);
+                return Err(SemanticPlaneRecordError::RecordOrder.into());
             }
             let remaining_references = limits
                 .max_references
                 .checked_sub(reference_count)
-                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+                .ok_or(TypesFamilyValidationError::ReferenceLimitExceeded)?;
             let row_owner_reference = if tag == ROOT_TAG { 1 } else { 0 };
             let row_reference_limit = remaining_references
                 .checked_sub(row_owner_reference)
-                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+                .ok_or(TypesFamilyValidationError::ReferenceLimitExceeded)?;
             let row_reference_limit = usize::try_from(row_reference_limit)
-                .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
-            let parsed =
-                parse_types_row_with_reference_limit(key, tag, payload, row_reference_limit)?;
+                .map_err(|_| TypesFamilyValidationError::ReferenceLimitExceeded)?;
+            let parsed = match parse_types_row_with_reference_limit(
+                key,
+                tag,
+                payload,
+                row_reference_limit,
+            ) {
+                Ok(parsed) => parsed,
+                Err(SemanticPlaneRecordError::RowTooLarge) => {
+                    match super::wire::validate_record(
+                        SemanticPlaneKind::Ir(SemanticIrPlane::Types),
+                        key,
+                        tag,
+                        payload,
+                    ) {
+                        Ok(()) => {
+                            return Err(TypesFamilyValidationError::ReferenceLimitExceeded);
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            };
             let payload_length =
                 u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
             payload_bytes = payload_bytes
                 .checked_add(payload_length)
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             if payload_bytes > limits.max_payload_bytes {
-                return Err(SemanticPlaneRecordError::RowTooLarge);
+                return Err(SemanticPlaneRecordError::RowTooLarge.into());
             }
             family_hasher.update(&key);
             family_hasher.update(&[tag]);
@@ -176,7 +226,7 @@ impl CheckedTypesFamilyV2 {
                 .checked_add(1)
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             if row_count > limits.max_rows {
-                return Err(SemanticPlaneRecordError::RowTooLarge);
+                return Err(SemanticPlaneRecordError::RowTooLarge.into());
             }
             let row_references = parsed
                 .references
@@ -193,7 +243,7 @@ impl CheckedTypesFamilyV2 {
                 )
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             if reference_count > limits.max_references {
-                return Err(SemanticPlaneRecordError::RowTooLarge);
+                return Err(TypesFamilyValidationError::ReferenceLimitExceeded);
             }
             match (parsed.root_identity, parsed.root_type_present) {
                 (Some(identity), Some(present)) => {
@@ -207,7 +257,7 @@ impl CheckedTypesFamilyV2 {
                     root_type_presence.push((identity, present));
                 }
                 (None, None) => {}
-                _ => return Err(SemanticPlaneRecordError::RowGrammar),
+                _ => return Err(SemanticPlaneRecordError::RowGrammar.into()),
             }
             row_edges
                 .try_reserve(parsed.references.len())
@@ -233,14 +283,14 @@ impl CheckedTypesFamilyV2 {
         }
         root_identities.sort_unstable();
         if root_identities.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(SemanticPlaneRecordError::StableKeyCollision);
+            return Err(SemanticPlaneRecordError::StableKeyCollision.into());
         }
         root_type_presence.sort_unstable_by_key(|(identity, _)| *identity);
         if root_type_presence
             .windows(2)
             .any(|pair| pair[0].0 == pair[1].0)
         {
-            return Err(SemanticPlaneRecordError::StableKeyCollision);
+            return Err(SemanticPlaneRecordError::StableKeyCollision.into());
         }
         declaration_references.sort_unstable();
         declaration_references.dedup();
@@ -256,7 +306,7 @@ impl CheckedTypesFamilyV2 {
                 domain => observed == Some(&domain),
             };
             if !resolved {
-                return Err(SemanticPlaneRecordError::ReaderReference);
+                return Err(SemanticPlaneRecordError::ReaderReference.into());
             }
         }
         let external_target_count = row_domains
@@ -474,17 +524,25 @@ pub fn validate_types_family_v2_with_limits<'bytes>(
     segments: impl IntoIterator<Item = crate::ir::CanonicalSemanticPlaneSegmentView<'bytes>>,
     limits: TypesFamilyVerificationLimitsV2,
 ) -> Result<CheckedTypesFamilyV2, SemanticPlaneRecordError> {
+    validate_types_family_v2_with_limits_detailed(segments, limits).map_err(Into::into)
+}
+
+/// Validates a family while preserving the typed reference-limit failure.
+pub(super) fn validate_types_family_v2_with_limits_detailed<'bytes>(
+    segments: impl IntoIterator<Item = crate::ir::CanonicalSemanticPlaneSegmentView<'bytes>>,
+    limits: TypesFamilyVerificationLimitsV2,
+) -> Result<CheckedTypesFamilyV2, TypesFamilyValidationError> {
     let mut records = Vec::new();
     let mut previous = None;
     let mut row_count = 0_u64;
     let mut payload_bytes = 0_u64;
     for segment in segments {
         if segment.kind() != SemanticPlaneKind::Ir(SemanticIrPlane::Types) {
-            return Err(SemanticPlaneRecordError::PlaneKind);
+            return Err(SemanticPlaneRecordError::PlaneKind.into());
         }
         for record in segment.records() {
             if previous.is_some_and(|prior| prior >= record.key()) {
-                return Err(SemanticPlaneRecordError::RecordOrder);
+                return Err(SemanticPlaneRecordError::RecordOrder.into());
             }
             previous = Some(record.key());
             row_count = row_count
@@ -496,7 +554,7 @@ pub fn validate_types_family_v2_with_limits<'bytes>(
                 .checked_add(payload_length)
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             if row_count > limits.max_rows || payload_bytes > limits.max_payload_bytes {
-                return Err(SemanticPlaneRecordError::RowTooLarge);
+                return Err(SemanticPlaneRecordError::RowTooLarge.into());
             }
             records
                 .try_reserve(1)
@@ -504,5 +562,5 @@ pub fn validate_types_family_v2_with_limits<'bytes>(
             records.push((record.key(), record.tag(), record.payload()));
         }
     }
-    CheckedTypesFamilyV2::from_records_with_limits(records, limits)
+    CheckedTypesFamilyV2::from_records_with_limits_detailed(records, limits)
 }

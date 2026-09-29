@@ -22,8 +22,10 @@ use thiserror::Error;
 
 use super::wire::{Cursor, read_identity};
 use super::{
-    LanguageExtensionVerificationLimitsV2, TypesFamilyVerificationLimitsV2,
-    validate_language_extension_family_v2_with_limits, validate_types_family_v2_with_limits,
+    LanguageExtensionFamilyValidationError, LanguageExtensionVerificationLimitsV2,
+    TypesFamilyValidationError, TypesFamilyVerificationLimitsV2,
+    validate_language_extension_family_v2_with_limits_detailed,
+    validate_types_family_v2_with_limits_detailed,
 };
 
 /// Resource ceiling for one aggregate verification window.
@@ -1137,7 +1139,16 @@ fn validate_cross_family_closure(
         limits.max_total_rows,
         reference_scratch.remaining().min(limits.max_references),
     );
-    let types = validate_types_family_v2_with_limits(families[1].iter().copied(), family_limits)?;
+    let types =
+        validate_types_family_v2_with_limits_detailed(families[1].iter().copied(), family_limits)
+            .map_err(|error| match error {
+            TypesFamilyValidationError::Record(error) => error.into(),
+            TypesFamilyValidationError::ReferenceLimitExceeded => {
+                SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                    budget: "reference-count",
+                }
+            }
+        })?;
     reference_scratch.charge_u64(types.reference_count())?;
     let relations = decode_relations(&families[2], &mut reference_scratch)?;
     let occurrences = decode_occurrences(&families[3], &mut reference_scratch)?;
@@ -1152,13 +1163,21 @@ fn validate_cross_family_closure(
         limits.max_total_rows,
         reference_scratch.remaining().min(limits.max_references),
     );
-    let extensions = validate_language_extension_family_v2_with_limits(
+    let extensions = validate_language_extension_family_v2_with_limits_detailed(
         profile,
         families[6].iter().copied(),
         &types,
         &core.captured_extension_owners,
         extension_limits,
-    )?;
+    )
+    .map_err(|error| match error {
+        LanguageExtensionFamilyValidationError::Record(error) => error.into(),
+        LanguageExtensionFamilyValidationError::ReferenceLimitExceeded => {
+            SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                budget: "reference-count",
+            }
+        }
+    })?;
     reference_scratch.charge_u64(extensions.reference_count())?;
     types.verify_reachable_closure(extensions.types_references())?;
 

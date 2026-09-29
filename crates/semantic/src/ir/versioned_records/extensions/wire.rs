@@ -17,7 +17,7 @@ use crate::ir::{
     SemanticReader, TypeScriptFacts,
 };
 
-const MAX_EXTENSION_DECLARATION_REFERENCES: usize = 1_000_000;
+pub(super) const MAX_EXTENSION_DECLARATION_REFERENCES: usize = 1_000_000;
 const EXTENSION_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.language-extension-row.v1\0";
 pub(super) const TYPESCRIPT_TAG: u8 = 1;
 pub(super) const CSHARP_TAG: u8 = 2;

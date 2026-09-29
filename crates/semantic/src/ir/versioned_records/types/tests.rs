@@ -27,6 +27,23 @@ fn empty_types_catalog_rejects_missing_extension_roots() {
 }
 
 #[test]
+fn explicit_payload_limit_still_reports_row_too_large() {
+    let identity = [0x34; 32];
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&identity);
+    payload.push(0);
+    payload.extend_from_slice(&[0; 32]);
+    let limits = TypesFamilyVerificationLimitsV2::bounded(64, 1, 1);
+
+    let result = CheckedTypesFamilyV2::from_records_with_limits(
+        [(identity, ROOT_TAG, payload.as_slice())],
+        limits,
+    );
+
+    assert!(matches!(result, Err(SemanticPlaneRecordError::RowTooLarge)));
+}
+
+#[test]
 fn catalog_exposes_each_entity_root_type_presence_bit() {
     let missing_identity = [0x11; 32];
     let present_identity = [0x22; 32];

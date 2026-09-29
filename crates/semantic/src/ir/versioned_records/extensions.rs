@@ -17,6 +17,10 @@ pub use catalog::{
     CheckedLanguageExtensionFamilyV2, LanguageExtensionVerificationLimitsV2,
     validate_language_extension_family_v2, validate_language_extension_family_v2_with_limits,
 };
+pub(super) use catalog::{
+    LanguageExtensionFamilyValidationError,
+    validate_language_extension_family_v2_with_limits_detailed,
+};
 pub use plan::{
     LanguageExtensionRows, encode_language_extension_plane,
     verify_language_extension_plane_against_reader,

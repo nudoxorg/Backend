@@ -258,24 +258,10 @@ impl<'sink, S: JumboRopeObjectSink + ?Sized> RopeWriter<'sink, S> {
         scratch
             .try_reserve_exact(JUMBO_ROPE_MAX_LEAF_BYTES)
             .map_err(|_| JumboRopeError::Allocation)?;
-        if scratch.capacity() > JUMBO_ROPE_MAX_LEAF_BYTES {
-            return Err(JumboRopeError::ScratchCapacity {
-                observed: scratch.capacity(),
-                maximum: JUMBO_ROPE_MAX_LEAF_BYTES,
-            }
-            .into());
-        }
         let mut frontier = Vec::new();
         frontier
             .try_reserve_exact(MAX_PROOF_DEPTH)
             .map_err(|_| JumboRopeError::Allocation)?;
-        if frontier.capacity() > MAX_PROOF_DEPTH {
-            return Err(JumboRopeError::FrontierCapacity {
-                observed: frontier.capacity(),
-                maximum: MAX_PROOF_DEPTH,
-            }
-            .into());
-        }
         Ok(Self {
             context,
             limits,

@@ -18,6 +18,28 @@ use crate::ir::LanguageProfile;
 
 const EXTENSION_FAMILY_ROOT_DOMAIN: &[u8] = b"backend.semantic.ir.language-extension-family.v1\0";
 
+/// Typed failure used by aggregate verification for shared reference budgeting.
+#[derive(Debug)]
+pub(super) enum LanguageExtensionFamilyValidationError {
+    Record(SemanticPlaneRecordError),
+    ReferenceLimitExceeded,
+}
+
+impl From<SemanticPlaneRecordError> for LanguageExtensionFamilyValidationError {
+    fn from(error: SemanticPlaneRecordError) -> Self {
+        Self::Record(error)
+    }
+}
+
+impl From<LanguageExtensionFamilyValidationError> for SemanticPlaneRecordError {
+    fn from(error: LanguageExtensionFamilyValidationError) -> Self {
+        match error {
+            LanguageExtensionFamilyValidationError::Record(error) => error,
+            LanguageExtensionFamilyValidationError::ReferenceLimitExceeded => Self::RowTooLarge,
+        }
+    }
+}
+
 /// Explicit resource ceiling for standalone language-extension validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LanguageExtensionVerificationLimitsV2 {
@@ -155,6 +177,24 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
     expected_captured_owners: &[[u8; 32]],
     limits: LanguageExtensionVerificationLimitsV2,
 ) -> Result<CheckedLanguageExtensionFamilyV2, SemanticPlaneRecordError> {
+    validate_language_extension_family_v2_with_limits_detailed(
+        profile,
+        segments,
+        types,
+        expected_captured_owners,
+        limits,
+    )
+    .map_err(Into::into)
+}
+
+/// Validates a family while preserving the typed reference-limit failure.
+pub(super) fn validate_language_extension_family_v2_with_limits_detailed<'bytes>(
+    profile: LanguageProfile,
+    segments: impl IntoIterator<Item = CanonicalSemanticPlaneSegmentView<'bytes>>,
+    types: &CheckedTypesFamilyV2,
+    expected_captured_owners: &[[u8; 32]],
+    limits: LanguageExtensionVerificationLimitsV2,
+) -> Result<CheckedLanguageExtensionFamilyV2, LanguageExtensionFamilyValidationError> {
     let expected_kind = SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(profile));
     if u64::try_from(expected_captured_owners.len())
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
@@ -165,7 +205,7 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
                 .is_none_or(|(left, right)| left >= right)
         })
     {
-        return Err(SemanticPlaneRecordError::RowGrammar);
+        return Err(SemanticPlaneRecordError::RowGrammar.into());
     }
     let mut previous = None;
     let mut row_keys = Vec::new();
@@ -180,7 +220,7 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
     let mut reference_count = 0_u64;
     for segment in segments {
         if segment.kind() != expected_kind {
-            return Err(SemanticPlaneRecordError::PlaneKind);
+            return Err(SemanticPlaneRecordError::PlaneKind.into());
         }
         for record in segment.records() {
             payload_bytes = payload_bytes
@@ -193,27 +233,56 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
                 .checked_add(1)
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             if payload_bytes > limits.max_payload_bytes || row_count > limits.max_rows {
-                return Err(SemanticPlaneRecordError::RowTooLarge);
+                return Err(SemanticPlaneRecordError::RowTooLarge.into());
             }
             row_keys
                 .try_reserve(1)
                 .map_err(SemanticPlaneRecordError::Allocation)?;
             let key = record.key();
             if previous.is_some_and(|prior| prior >= key) {
-                return Err(SemanticPlaneRecordError::RecordOrder);
+                return Err(SemanticPlaneRecordError::RecordOrder.into());
             }
             let declaration_reference_count = declaration_references.len();
-            let parsed = parse_record_with_declarations(
+            let remaining_reference_budget = limits
+                .max_references
+                .saturating_sub(reference_count)
+                .saturating_sub(1); // Every extension row resolves its owner against Core.
+            let aggregate_declaration_reference_limit = usize::try_from(remaining_reference_budget)
+                .ok()
+                .and_then(|remaining| declaration_reference_count.checked_add(remaining))
+                .unwrap_or(usize::MAX);
+            let parsed = match parse_record_with_declarations(
                 expected_kind,
                 key,
                 record.tag(),
                 record.payload(),
                 &mut declaration_references,
-                limits
-                    .max_references
-                    .saturating_sub(reference_count)
-                    .saturating_sub(1), // Every extension row resolves its owner against Core.
-            )?;
+                remaining_reference_budget,
+            ) {
+                Ok(parsed) => parsed,
+                Err(SemanticPlaneRecordError::RowTooLarge) => {
+                    match super::wire::validate_record(
+                        expected_kind,
+                        key,
+                        record.tag(),
+                        record.payload(),
+                    ) {
+                        Ok(())
+                            if aggregate_declaration_reference_limit
+                                <= super::wire::MAX_EXTENSION_DECLARATION_REFERENCES =>
+                        {
+                            return Err(
+                                LanguageExtensionFamilyValidationError::ReferenceLimitExceeded,
+                            );
+                        }
+                        Ok(()) => {
+                            return Err(SemanticPlaneRecordError::RowTooLarge.into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            };
             let added_declaration_references = declaration_references
                 .len()
                 .checked_sub(declaration_reference_count)
@@ -233,7 +302,7 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
                 )
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
             if reference_count > limits.max_references {
-                return Err(SemanticPlaneRecordError::RowTooLarge);
+                return Err(LanguageExtensionFamilyValidationError::ReferenceLimitExceeded);
             }
             owners
                 .try_reserve(1)
@@ -263,10 +332,10 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
             .zip(pair.get(1))
             .is_none_or(|(left, right)| left >= right)
     }) {
-        return Err(SemanticPlaneRecordError::StableKeyCollision);
+        return Err(SemanticPlaneRecordError::StableKeyCollision.into());
     }
     if owners.as_slice() != expected_captured_owners {
-        return Err(SemanticPlaneRecordError::RowGrammar);
+        return Err(SemanticPlaneRecordError::RowGrammar.into());
     }
     root.update(&row_count.to_be_bytes());
     Ok(CheckedLanguageExtensionFamilyV2 {

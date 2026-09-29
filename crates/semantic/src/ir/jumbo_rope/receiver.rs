@@ -134,20 +134,19 @@ impl JumboRopeClosure {
         let descriptor = descriptor.check(limits)?;
         let leaf_count =
             usize::try_from(descriptor.leaf_count).map_err(|_| JumboRopeError::LengthOverflow)?;
+        let requested_metadata = leaf_count
+            .checked_mul(size_of::<Option<LeafReceipt>>())
+            .ok_or(JumboRopeError::LengthOverflow)?;
+        if requested_metadata > limits.max_metadata_bytes {
+            return Err(JumboRopeError::MetadataTooLarge {
+                observed: requested_metadata,
+                maximum: limits.max_metadata_bytes,
+            });
+        }
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(leaf_count)
             .map_err(|_| JumboRopeError::Allocation)?;
-        let allocated_metadata = slots
-            .capacity()
-            .checked_mul(size_of::<Option<LeafReceipt>>())
-            .ok_or(JumboRopeError::LengthOverflow)?;
-        if allocated_metadata > limits.max_metadata_bytes {
-            return Err(JumboRopeError::MetadataTooLarge {
-                observed: allocated_metadata,
-                maximum: limits.max_metadata_bytes,
-            });
-        }
         slots.resize(leaf_count, None);
         let missing_count = descriptor.leaf_count;
         Ok(Self {
@@ -467,37 +466,23 @@ fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
         return Err(JumboRopeError::ClosureCensusMismatch.into());
     }
     let root = descriptor.root_ref()?;
-    let mut stack = Vec::new();
     const MAX_CLOSURE_STACK_ENTRIES: usize = MAX_PROOF_DEPTH + 1;
-    stack
-        .try_reserve_exact(MAX_CLOSURE_STACK_ENTRIES)
-        .map_err(|_| JumboRopeError::Allocation)?;
-    if stack.capacity() > MAX_CLOSURE_STACK_ENTRIES {
-        return Err(JumboRopeError::FrontierCapacity {
-            observed: stack.capacity(),
-            maximum: MAX_CLOSURE_STACK_ENTRIES,
-        }
-        .into());
-    }
-    stack.push((root, 0_usize));
-    let mut canonical_frontier = Vec::new();
-    canonical_frontier
-        .try_reserve_exact(MAX_PROOF_DEPTH)
-        .map_err(|_| JumboRopeError::Allocation)?;
-    if canonical_frontier.capacity() > MAX_PROOF_DEPTH {
-        return Err(JumboRopeError::FrontierCapacity {
-            observed: canonical_frontier.capacity(),
-            maximum: MAX_PROOF_DEPTH,
-        }
-        .into());
-    }
+    let mut stack = [None; MAX_CLOSURE_STACK_ENTRIES];
+    stack[0] = Some((root, 0_usize));
+    let mut stack_len = 1;
+    let mut canonical_frontier = [None; MAX_PROOF_DEPTH];
+    let mut canonical_frontier_len = 0;
     let mut canonical_chunks = CanonicalChunkBoundaryValidator::new();
     let mut next_leaf = 0_u64;
     let mut byte_offset = 0_u64;
     let mut node_count = 0_u64;
     let mut utf8 = Utf8Validator::default();
     let mut leaf_buffer = [0_u8; JUMBO_ROPE_MAX_LEAF_BYTES];
-    while let Some((reference, depth)) = stack.pop() {
+    while stack_len > 0 {
+        stack_len -= 1;
+        let (reference, depth) = stack[stack_len]
+            .take()
+            .ok_or(JumboRopeError::ClosureCensusMismatch)?;
         if depth > MAX_PROOF_DEPTH {
             return Err(JumboRopeError::ProofTooDeep {
                 observed: depth,
@@ -540,22 +525,31 @@ fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
                 }
                 let is_last = next_leaf.saturating_add(1) == descriptor.leaf_count;
                 canonical_chunks.admit_leaf(bytes, is_last)?;
-                canonical_frontier.push(reference);
-                while canonical_frontier.len() >= 2 {
-                    let right_index = canonical_frontier.len() - 1;
+                if canonical_frontier_len == MAX_PROOF_DEPTH {
+                    return Err(JumboRopeError::FrontierCapacity {
+                        observed: canonical_frontier_len + 1,
+                        maximum: MAX_PROOF_DEPTH,
+                    }
+                    .into());
+                }
+                canonical_frontier[canonical_frontier_len] = Some(reference);
+                canonical_frontier_len += 1;
+                while canonical_frontier_len >= 2 {
+                    let right_index = canonical_frontier_len - 1;
                     let left_index = right_index - 1;
-                    if canonical_frontier[left_index].leaf_count
-                        != canonical_frontier[right_index].leaf_count
-                    {
+                    let left = canonical_frontier[left_index]
+                        .ok_or(JumboRopeError::ClosureCensusMismatch)?;
+                    let right = canonical_frontier[right_index]
+                        .ok_or(JumboRopeError::ClosureCensusMismatch)?;
+                    if left.leaf_count != right.leaf_count {
                         break;
                     }
-                    let right = canonical_frontier
-                        .pop()
-                        .ok_or(JumboRopeError::ClosureCensusMismatch)?;
-                    let left = canonical_frontier
-                        .pop()
-                        .ok_or(JumboRopeError::ClosureCensusMismatch)?;
-                    canonical_frontier.push(JumboRopeNode::create(left, right)?.as_ref());
+                    canonical_frontier[left_index] = None;
+                    canonical_frontier[right_index] = None;
+                    canonical_frontier_len -= 2;
+                    canonical_frontier[canonical_frontier_len] =
+                        Some(JumboRopeNode::create(left, right)?.as_ref());
+                    canonical_frontier_len += 1;
                 }
                 if descriptor.encoding == JumboValueEncoding::Utf8 {
                     for byte in bytes.iter().copied() {
@@ -575,6 +569,13 @@ fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
                     .ok_or(JumboRopeError::LengthOverflow)?;
             }
             RopeObjectKind::Interior => {
+                if depth >= MAX_PROOF_DEPTH {
+                    return Err(JumboRopeError::ProofTooDeep {
+                        observed: depth + 1,
+                        maximum: MAX_PROOF_DEPTH,
+                    }
+                    .into());
+                }
                 let bytes = source
                     .read_interior(reference.id)
                     .map_err(JumboOperationError::Store)?
@@ -586,8 +587,16 @@ fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
                 node_count = node_count
                     .checked_add(1)
                     .ok_or(JumboRopeError::LengthOverflow)?;
-                stack.push((node.right, depth + 1));
-                stack.push((node.left, depth + 1));
+                if stack_len + 2 > MAX_CLOSURE_STACK_ENTRIES {
+                    return Err(JumboRopeError::FrontierCapacity {
+                        observed: stack_len + 2,
+                        maximum: MAX_CLOSURE_STACK_ENTRIES,
+                    }
+                    .into());
+                }
+                stack[stack_len] = Some((node.right, depth + 1));
+                stack[stack_len + 1] = Some((node.left, depth + 1));
+                stack_len += 2;
             }
         }
     }
@@ -600,16 +609,19 @@ fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
     if descriptor.encoding == JumboValueEncoding::Utf8 {
         utf8.finish()?;
     }
-    while canonical_frontier.len() > 1 {
-        let right = canonical_frontier
-            .pop()
+    while canonical_frontier_len > 1 {
+        let right = canonical_frontier[canonical_frontier_len - 1]
+            .take()
             .ok_or(JumboRopeError::ClosureCensusMismatch)?;
-        let left = canonical_frontier
-            .pop()
+        let left = canonical_frontier[canonical_frontier_len - 2]
+            .take()
             .ok_or(JumboRopeError::ClosureCensusMismatch)?;
-        canonical_frontier.push(JumboRopeNode::create(left, right)?.as_ref());
+        canonical_frontier_len -= 2;
+        canonical_frontier[canonical_frontier_len] =
+            Some(JumboRopeNode::create(left, right)?.as_ref());
+        canonical_frontier_len += 1;
     }
-    if canonical_frontier.first().copied() != Some(root) {
+    if canonical_frontier_len != 1 || canonical_frontier[0] != Some(root) {
         return Err(JumboRopeError::NonCanonicalTreeShape.into());
     }
     Ok(())
@@ -627,17 +639,19 @@ where
     if descriptor.leaf_count == 0 {
         return Ok(0);
     }
-    let mut stack = Vec::new();
-    stack
-        .try_reserve(MAX_PROOF_DEPTH)
-        .map_err(|_| JumboRopeError::Allocation)?;
-    stack.push((descriptor.root_ref()?, 0_usize));
+    let mut stack = [None; MAX_PROOF_DEPTH + 1];
+    stack[0] = Some((descriptor.root_ref()?, 0_usize));
+    let mut stack_len = 1;
     let mut next_leaf = 0_u64;
     let mut byte_offset = 0_u64;
     let mut node_count = 0_u64;
     let mut utf8 = Utf8Validator::default();
     let mut leaf_buffer = [0_u8; JUMBO_ROPE_MAX_LEAF_BYTES];
-    while let Some((reference, depth)) = stack.pop() {
+    while stack_len > 0 {
+        stack_len -= 1;
+        let (reference, depth) = stack[stack_len]
+            .take()
+            .ok_or(JumboRopeError::ClosureCensusMismatch)?;
         if depth > MAX_PROOF_DEPTH {
             return Err(JumboRopeError::ProofTooDeep {
                 observed: depth,
@@ -680,6 +694,13 @@ where
                     .ok_or(JumboRopeError::LengthOverflow)?;
             }
             RopeObjectKind::Interior => {
+                if depth >= MAX_PROOF_DEPTH {
+                    return Err(JumboRopeError::ProofTooDeep {
+                        observed: depth + 1,
+                        maximum: MAX_PROOF_DEPTH,
+                    }
+                    .into());
+                }
                 let bytes = source
                     .read_interior(reference.id)
                     .map_err(JumboOperationError::Store)?
@@ -691,8 +712,16 @@ where
                 node_count = node_count
                     .checked_add(1)
                     .ok_or(JumboRopeError::LengthOverflow)?;
-                stack.push((node.right, depth + 1));
-                stack.push((node.left, depth + 1));
+                if stack_len + 2 > MAX_PROOF_DEPTH + 1 {
+                    return Err(JumboRopeError::FrontierCapacity {
+                        observed: stack_len + 2,
+                        maximum: MAX_PROOF_DEPTH + 1,
+                    }
+                    .into());
+                }
+                stack[stack_len] = Some((node.right, depth + 1));
+                stack[stack_len + 1] = Some((node.left, depth + 1));
+                stack_len += 2;
             }
         }
     }

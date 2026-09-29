@@ -19,6 +19,9 @@ pub use catalog::{
     CheckedTypesFamilyV2, TypesFamilyVerificationLimitsV2, TypesReferenceV2, TypesRowDomainV2,
     validate_types_family_v2, validate_types_family_v2_with_limits,
 };
+pub(super) use catalog::{
+    TypesFamilyValidationError, validate_types_family_v2_with_limits_detailed,
+};
 pub use plan::{TypedRecordPlan, TypesClosureSemantics, TypesRowHandle, TypesRows};
 pub(super) fn validate_record(
     kind: crate::ir::SemanticPlaneKind,
