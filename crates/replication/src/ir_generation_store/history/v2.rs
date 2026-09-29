@@ -7,6 +7,8 @@
 //! object bridges. A cold reader must verify that entire binding before it
 //! receives a proof-bearing replay token.
 
+use super::catalog::validate_history_commit_node;
+use super::codec::{identify_history_record, prepare_history_layout, write_history_payload_root};
 use super::*;
 
 const TYPED_V2_LOCATOR_DOMAIN: &[u8] = b"backend.semantic.history-typed-v2-locator.v1\0";
@@ -98,13 +100,13 @@ impl TypedV2HistoryLocator {
         let mut writer = Writer::new(MAX_HISTORY_TYPED_V2_LOCATOR_BYTES);
         writer.header(HISTORY_TYPED_V2_LOCATOR_TAG)?;
         writer.sized_bytes(&self.manifest, MAX_TYPED_V2_MANIFEST_BYTES)?;
-        writer.u32(u32::try_from(self.segments.len()).map_err(display_error)?)?;
+        writer.u32(u32::try_from(self.segments.len()).map_err(|error| error.to_string())?)?;
         for segment in &self.segments {
             writer.fixed(segment.segment.as_bytes())?;
             writer.fixed(segment.object.as_bytes())?;
             writer.u64(segment.byte_length)?;
         }
-        writer.u32(u32::try_from(self.jumbo.len()).map_err(display_error)?)?;
+        writer.u32(u32::try_from(self.jumbo.len()).map_err(|error| error.to_string())?)?;
         for object in &self.jumbo {
             writer.u8(match object.kind {
                 backend_semantic::ir::JumboRopeObjectKind::Leaf => 0,
@@ -163,10 +165,8 @@ pub(super) fn validate_typed_v2_locator_binding(
     };
     let locator = load_typed_v2_history_locator(target_root, record.identity, claim.locator)?;
     let manifest = locator.validate()?;
-    if !manifest.content_root_claim().matches(claim.content_root)
-        || !manifest
-            .generation_root_claim()
-            .matches(claim.generation_root)
+    if manifest.content_root_claim().as_bytes() != claim.content_root.as_bytes()
+        || manifest.generation_root_claim().as_bytes() != claim.generation_root.as_bytes()
     {
         return Err("typed V2 history commit roots differ from its locator manifest".to_owned());
     }
@@ -216,7 +216,7 @@ pub(super) fn decode_typed_v2_locator(
     let mut reader = Reader::new(content);
     reader.header(HISTORY_TYPED_V2_LOCATOR_TAG)?;
     let manifest = reader.sized_bytes(MAX_TYPED_V2_MANIFEST_BYTES)?.to_vec();
-    let segment_count = usize::try_from(reader.u32()?).map_err(display_error)?;
+    let segment_count = usize::try_from(reader.u32()?).map_err(|error| error.to_string())?;
     if segment_count > backend_semantic::ir::MAX_TYPED_PLANE_SEGMENTS_V2
         || segment_count > MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS
     {
@@ -233,7 +233,7 @@ pub(super) fn decode_typed_v2_locator(
             byte_length: reader.u64()?,
         });
     }
-    let jumbo_count = usize::try_from(reader.u32()?).map_err(display_error)?;
+    let jumbo_count = usize::try_from(reader.u32()?).map_err(|error| error.to_string())?;
     if segment_count.saturating_add(jumbo_count) > MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS {
         return Err("typed V2 history rope map exceeds its count bound".to_owned());
     }

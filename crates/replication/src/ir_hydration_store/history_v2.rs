@@ -47,7 +47,7 @@ impl FileSemanticRangeStore {
         let manifest_bytes = manifest
             .canonical_bytes()
             .map_err(|error| format!("encode typed V2 history manifest: {error}"))?;
-        let mut locator = super::ir_generation_store::TypedV2HistoryLocator {
+        let mut locator = crate::ir_generation_store::TypedV2HistoryLocator {
             manifest: manifest_bytes,
             segments: segment_objects.to_vec(),
             jumbo: jumbo_objects.to_vec(),
@@ -99,7 +99,7 @@ impl FileSemanticRangeStore {
         let _state_lock = self.acquire_state_lock()?;
         let receipt = self.generations.admit_typed_v2_history_proposal(
             proposal,
-            super::ir_generation_store::AdmittedHistoryPayloadRoot {
+            crate::ir_generation_store::AdmittedHistoryPayloadRoot {
                 closure: closure.id(),
             },
             source,
@@ -139,12 +139,9 @@ impl FileSemanticRangeStore {
             (commit, claim, locator)
         };
         let manifest = locator.validate()?;
-        if !manifest
-            .content_root_claim()
-            .matches(claim.content_root_claim())
-            || !manifest
-                .generation_root_claim()
-                .matches(claim.generation_root_claim())
+        if manifest.content_root_claim().as_bytes() != claim.content_root_claim().as_bytes()
+            || manifest.generation_root_claim().as_bytes()
+                != claim.generation_root_claim().as_bytes()
         {
             return Err("typed V2 commit roots differ from its cold manifest".to_owned());
         }
@@ -188,7 +185,7 @@ fn reopen_typed_v2_history_closure(
     store: &FileStore,
     claim: ArtifactClosureClaim,
     closure: &DurableManifest,
-    locator: &super::ir_generation_store::TypedV2HistoryLocator,
+    locator: &crate::ir_generation_store::TypedV2HistoryLocator,
     manifest: &SemanticTypedPlaneManifestV2,
     tier: SemanticTypedPlaneVerificationTierV2,
 ) -> Result<(), String> {
@@ -304,7 +301,7 @@ fn verification_byte_limit(tier: SemanticTypedPlaneVerificationTierV2) -> u64 {
 fn verify_typed_v2_history_content(
     store: &FileStore,
     closure: &DurableManifest,
-    locator: &super::ir_generation_store::TypedV2HistoryLocator,
+    locator: &crate::ir_generation_store::TypedV2HistoryLocator,
     manifest: &SemanticTypedPlaneManifestV2,
     tier: SemanticTypedPlaneVerificationTierV2,
     jumbo_limits: JumboRopeLimits,
