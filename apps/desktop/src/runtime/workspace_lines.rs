@@ -8,8 +8,6 @@
 //! meanwhile. With the page carrying them there is no placeholder and no
 //! second cache.
 
-#![cfg_attr(not(test), allow(dead_code, reason = "wired when SymbolPage carries its lines (I3.md, workspace lines)"))]
-
 use crate::model::pages::{ReferenceSite, Resolution, UseLine};
 use backend_library::SemanticConfidence;
 use std::collections::HashMap;
@@ -53,13 +51,14 @@ pub(crate) fn read(references: &[ReferenceSite], files: &dyn Files) -> Arc<[UseL
         let path = Path::new(package.as_str()).join(span.file.as_ref());
         let text = texts.entry(path.clone()).or_insert_with(|| files.text(&path)).clone();
         let Some(text) = text else { continue };
-        let Some((line, shown)) = line_at(&text, span.bytes.start as usize) else { continue };
+        let Some(found) = line_at(&text, span.bytes.start as usize, span.bytes.end as usize) else { continue };
         lines.push(UseLine {
             package: Arc::from(package.display_name()),
             file: Arc::clone(&span.file),
             path: Arc::from(path.to_string_lossy().as_ref()),
-            line,
-            text: Arc::from(shown),
+            line: found.number,
+            text: Arc::from(found.shown),
+            mark: found.mark,
             relation: reference.relation,
             resolution: match reference.confidence {
                 SemanticConfidence::Compiler | SemanticConfidence::Imported | SemanticConfidence::Indexed => Resolution::Resolved,
@@ -70,17 +69,34 @@ pub(crate) fn read(references: &[ReferenceSite], files: &dyn Files) -> Arc<[UseL
     Arc::from(lines)
 }
 
-/// The line a byte offset is on: its one-based number and its trimmed text
-/// (`None` past the end, inside a character, or on a blank line).
-fn line_at(text: &str, at: usize) -> Option<(u32, String)> {
+/// The line a span is on.
+struct Found {
+    /// One-based.
+    number: u32,
+    /// Trimmed and cut at [`UseLine::MAX_TEXT`] characters.
+    shown: String,
+    /// The span in `shown`'s bytes, when it lies wholly inside what is shown.
+    mark: Option<std::ops::Range<u32>>,
+}
+
+/// The line a byte span starts on (`None` past the end, inside a character,
+/// or on a blank line).
+fn line_at(text: &str, at: usize, end: usize) -> Option<Found> {
     if at > text.len() || !text.is_char_boundary(at) {
         return None;
     }
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
-    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    let stop = text[at..].find('\n').map_or(text.len(), |i| at + i);
     let number = u32::try_from(text[..start].bytes().filter(|byte| *byte == b'\n').count() + 1).ok()?;
-    let shown: String = text[start..end].trim().chars().take(UseLine::MAX_TEXT).collect();
-    (!shown.is_empty()).then_some((number, shown))
+    let line = &text[start..stop];
+    let indent = line.len() - line.trim_start().len();
+    let shown: String = line.trim().chars().take(UseLine::MAX_TEXT).collect();
+    let mark = at
+        .checked_sub(start + indent)
+        .zip(end.min(stop).checked_sub(start + indent))
+        .filter(|(from, to)| from < to && *to <= shown.len() && shown.is_char_boundary(*from) && shown.is_char_boundary(*to))
+        .and_then(|(from, to)| Some(u32::try_from(from).ok()?..u32::try_from(to).ok()?));
+    (!shown.is_empty()).then_some(Found { number, shown, mark })
 }
 
 #[cfg(test)]

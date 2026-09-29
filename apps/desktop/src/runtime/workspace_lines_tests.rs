@@ -94,17 +94,37 @@ fn nothing_is_guessed_a_use_that_cannot_be_read_is_left_out_and_each_file_is_rea
     assert!(!asked.iter().any(|path| path.to_string_lossy().contains("serde")), "a registry package's uses are not yours to open");
 }
 
+/// The line a byte lies on, as `(number, shown)`.
+fn shown(text: &str, at: usize) -> Option<(u32, String)> {
+    line_at(text, at, at).map(|found| (found.number, found.shown))
+}
+
 #[test]
 fn a_line_is_the_text_between_newlines_a_blank_one_is_no_line_and_a_long_one_is_cut() {
     let text = "a\n\n   \nlet x = 1;\n";
-    assert_eq!(line_at(text, 0), Some((1, "a".to_owned())));
-    assert_eq!(line_at(text, 2), None, "a blank line names nothing");
-    assert_eq!(line_at(text, 5), None, "neither does one of spaces");
-    assert_eq!(line_at(text, text.find('x').expect("x")), Some((4, "let x = 1;".to_owned())));
-    assert_eq!(line_at(text, text.len() + 1), None, "past the end is nowhere");
-    assert_eq!(line_at("é = 1", 1), None, "inside a character is nowhere");
+    assert_eq!(shown(text, 0), Some((1, "a".to_owned())));
+    assert_eq!(shown(text, 2), None, "a blank line names nothing");
+    assert_eq!(shown(text, 5), None, "neither does one of spaces");
+    assert_eq!(shown(text, text.find('x').expect("x")), Some((4, "let x = 1;".to_owned())));
+    assert_eq!(shown(text, text.len() + 1), None, "past the end is nowhere");
+    assert_eq!(shown("é = 1", 1), None, "inside a character is nowhere");
     let long = "x".repeat(UseLine::MAX_TEXT + 100);
-    assert_eq!(line_at(&long, 3).map(|(_, shown)| shown.chars().count()), Some(UseLine::MAX_TEXT), "cut, not dropped");
+    assert_eq!(shown(&long, 3).map(|(_, shown)| shown.chars().count()), Some(UseLine::MAX_TEXT), "cut, not dropped");
+}
+
+#[test]
+fn the_span_is_marked_in_the_trimmed_line_so_the_page_reads_the_token_not_the_first_word() {
+    let files = given();
+    let at = APP.find("parse").expect("the call");
+    let lines = read(&[reference("/work/app", "src/main.rs", Some(at), SemanticLinkKind::Calls, SemanticConfidence::Compiler)], &files);
+    let mark = lines[0].mark.clone().expect("the span is on the line");
+    assert_eq!(&lines[0].text[mark.start as usize..mark.end as usize], "parse", "the bytes the index gave, in the line as shown");
+    // A span that runs past the shown text has no mark rather than a wrong one.
+    let long = format!("    {}x", "y".repeat(UseLine::MAX_TEXT + 20));
+    let found = line_at(&long, long.len() - 1, long.len()).expect("a line");
+    assert_eq!(found.mark, None);
+    // A span that starts in the indent is not a mark either.
+    assert_eq!(line_at("    let x = 1;", 1, 3).and_then(|found| found.mark), None);
 }
 
 #[test]

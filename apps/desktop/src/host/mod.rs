@@ -7,6 +7,9 @@ pub(crate) mod launch;
 pub(crate) mod lease;
 pub(crate) mod owner;
 pub(crate) mod paths;
+pub(crate) mod toolchain;
+#[cfg(test)]
+mod embedded_owner_tests;
 #[cfg(test)]
 mod window_first_tests;
 

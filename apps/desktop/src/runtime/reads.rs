@@ -962,7 +962,7 @@ fn compose_symbol(
         |package| outline(engine, &package, context),
     );
     check(context.cancel)?;
-    Ok(PageValue::Symbol(page_mapping::symbol_page(
+    let mut page = page_mapping::symbol_page(
         &SymbolInputs {
             coordinate: symbol,
             document: &document,
@@ -977,7 +977,13 @@ fn compose_symbol(
             references: references.as_ref(),
             outline: outline.as_deref().map_err(Clone::clone),
         },
-    )))
+    );
+    // Your own files at each use's span: read here, on the worker, so the page
+    // lands with its lines and nothing reads them again on the UI thread.
+    if let Some(sites) = page.references.known() {
+        page.workspace = super::workspace_lines::read(sites, &super::workspace_lines::OnDisk);
+    }
+    Ok(PageValue::Symbol(page))
 }
 
 /// Reads a local project file for the source view. Only a local package's

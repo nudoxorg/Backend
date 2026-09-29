@@ -925,6 +925,7 @@ mod tests {
                 implemented_by: Known::Unknown(unknown()),
             },
             references: Known::Unknown(unknown()),
+            workspace: Arc::from([]),
             outline: Known::Unknown(unknown()),
         }
     }

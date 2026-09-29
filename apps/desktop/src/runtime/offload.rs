@@ -158,7 +158,7 @@ where
             let mut inner = self.shared.inner.borrow_mut();
             inner.clock = inner.clock.next();
             let now = inner.clock;
-            if let Some(entry) = inner.entries.get_mut(key).filter(|_| false) {
+            if let Some(entry) = inner.entries.get_mut(key) {
                 entry.used = now;
                 return match &entry.state {
                     State::Ready(value) => Answer::Ready(Arc::clone(value)),

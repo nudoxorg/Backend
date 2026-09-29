@@ -33,6 +33,10 @@ pub struct UseLine {
     pub line: u32,
     /// The line's text, trimmed and cut at [`Self::MAX_TEXT`] characters.
     pub text: Arc<str>,
+    /// Where the index's span sits in `text`, in bytes: the token the use is
+    /// (none when the span runs past the shown text).
+    #[serde(default)]
+    pub mark: Option<std::ops::Range<u32>>,
     /// What the index says the relation is.
     pub relation: SemanticLinkKind,
     /// Whether the index resolved it.
