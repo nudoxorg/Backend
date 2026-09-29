@@ -165,9 +165,9 @@ fn batch_update_handles_insert_replace_delete_and_reuses_unchanged_nodes() {
 
     let many_rows = fixture_rows(1_024);
     let wide_base = StableRowIndex::from_sorted_rows(&many_rows).expect("valid wide index");
-    let edit = [StableRowIndexChange::new(
+    let edit = [StableRowIndexChange::put(
         key(RowFamily::Core, 511),
-        Some(payload(b"changed")),
+        payload(b"changed"),
     )];
     let wide_next = wide_base
         .prepare_update(&edit)
@@ -186,13 +186,13 @@ fn batch_update_handles_insert_replace_delete_and_reuses_unchanged_nodes() {
     assert!(retained_nodes > 0);
 
     let sparse_edits = [
-        StableRowIndexChange::new(
+        StableRowIndexChange::put(
             key(RowFamily::Core, 10),
-            Some(payload(b"first distant replacement")),
+            payload(b"first distant replacement"),
         ),
-        StableRowIndexChange::new(
+        StableRowIndexChange::put(
             key(RowFamily::Core, 900),
-            Some(payload(b"second distant replacement")),
+            payload(b"second distant replacement"),
         ),
     ];
     let sparse = wide_base
@@ -324,13 +324,10 @@ fn borrowed_two_root_diff_skips_no_op_and_sparse_equal_subtrees() {
     assert_eq!(no_op.work().decoded_rows, 0);
 
     let changes = [
-        StableRowIndexChange::new(
-            key(RowFamily::Core, 4),
-            Some(payload(b"sparse low replacement")),
-        ),
-        StableRowIndexChange::new(
+        StableRowIndexChange::put(key(RowFamily::Core, 4), payload(b"sparse low replacement")),
+        StableRowIndexChange::put(
             key(RowFamily::Core, 4_090),
-            Some(payload(b"sparse high replacement")),
+            payload(b"sparse high replacement"),
         ),
     ];
     let after = before
@@ -364,9 +361,9 @@ fn two_root_diff_matches_btree_map_oracle_for_insert_delete_replace() {
     let before = StableRowIndex::from_sorted_rows(&before_rows).expect("valid base index");
     let mut oracle: BTreeMap<_, _> = before_rows.iter().copied().collect();
     let changes = [
-        StableRowIndexChange::new(key(RowFamily::Core, 0), None),
-        StableRowIndexChange::new(key(RowFamily::Core, 7), Some(payload(b"replacement"))),
-        StableRowIndexChange::new(key(RowFamily::Core, 4_096), Some(payload(b"inserted"))),
+        StableRowIndexChange::delete(key(RowFamily::Core, 0)),
+        StableRowIndexChange::put(key(RowFamily::Core, 7), payload(b"replacement")),
+        StableRowIndexChange::put(key(RowFamily::Core, 4_096), payload(b"inserted")),
     ];
     let after = before
         .prepare_update(&changes)
@@ -562,7 +559,10 @@ fn structured_multifamily_diffs_match_oracle_and_replay_across_boundary_edits() 
         let before = StableRowIndex::from_sorted_rows(&before_rows).expect("valid model root");
         let mut changes: Vec<_> = pending
             .iter()
-            .map(|(key, after)| StableRowIndexChange::new(*key, *after))
+            .map(|(key, after)| match after {
+                Some(payload) => StableRowIndexChange::put(*key, *payload),
+                None => StableRowIndexChange::delete(*key),
+            })
             .collect();
         if case % 9 == 0 {
             if let Some(key) = before_model.keys().find(|key| !pending.contains_key(*key)) {
