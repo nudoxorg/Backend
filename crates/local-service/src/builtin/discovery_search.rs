@@ -40,6 +40,7 @@ const BOUNDARY_TOKEN: &str = "catalogboundary";
 const SORT_KEY_FIELD: &str = "sort_key";
 const MAX_RELEASES_PER_GROUP: usize = 16;
 const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
+const VERSION_RANK_STRIDE: u128 = 1_u128 << 64;
 
 /// Identity for one source-specific discovery claim. A second configured source
 /// may publish the same coordinate and remains a distinct search result.
@@ -726,6 +727,27 @@ const SEARCH_TIERS: [SearchTier; 14] = [
     SearchTier::FuzzyAlias,
 ];
 
+impl SearchTier {
+    const fn evidence(self) -> SearchMatchEvidence {
+        match self {
+            Self::ExactCoordinate => SearchMatchEvidence::ExactCoordinate,
+            Self::ExactName => SearchMatchEvidence::ExactName,
+            Self::ExactAlias => SearchMatchEvidence::ExactAlias,
+            Self::PrefixCoordinate => SearchMatchEvidence::PrefixCoordinate,
+            Self::PrefixName => SearchMatchEvidence::PrefixName,
+            Self::PrefixAlias => SearchMatchEvidence::PrefixAlias,
+            Self::Substring => SearchMatchEvidence::Substring,
+            Self::AliasTerms => SearchMatchEvidence::AliasTerms,
+            Self::KeywordTerms => SearchMatchEvidence::KeywordTerms,
+            Self::AdvisoryTerms => SearchMatchEvidence::AdvisoryTerms,
+            Self::DescriptionTerms => SearchMatchEvidence::DescriptionTerms,
+            Self::GenericTerms => SearchMatchEvidence::GenericTerms,
+            Self::FuzzyName => SearchMatchEvidence::FuzzyName,
+            Self::FuzzyAlias => SearchMatchEvidence::FuzzyAlias,
+        }
+    }
+}
+
 /// Query text and an optional canonical ecosystem facet for registry discovery.
 /// Facets constrain Tantivy postings before pagination, so a sparse ecosystem
 /// does not lose candidates to a page filled by another registry.
@@ -774,12 +796,683 @@ pub(crate) struct GroupedSearchPage {
 #[derive(Clone)]
 struct LineageReleaseDocument {
     coordinate: String,
+    version: String,
+    order_sort_key: String,
     aliases: BTreeSet<String>,
+    alias_tokens: BTreeSet<String>,
     keywords: BTreeSet<String>,
     descriptions: BTreeSet<String>,
     advisories: BTreeSet<String>,
     generic: BTreeSet<String>,
     fingerprint: [u8; 32],
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct VersionedReleaseKey {
+    version: backend_engine::advisory::NormalizedVersion,
+    // Descending stable key at equal versions gives ascending display order
+    // when the posting rank is read from newest to oldest.
+    stable_sort_key: Reverse<String>,
+    identity: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ReleasePostingField {
+    Coordinate,
+    AliasValue,
+    AliasToken,
+    Keyword,
+    Description,
+    Advisory,
+    Generic,
+    CoordinateGram1,
+    CoordinateGram2,
+    CoordinateGram3,
+}
+
+#[derive(Default)]
+struct VersionedReleaseProjection {
+    order: BTreeMap<VersionedReleaseKey, String>,
+    ranks_by_identity: BTreeMap<String, u128>,
+    identities_by_rank: BTreeMap<u128, String>,
+    all_ranks: BTreeSet<u128>,
+    postings: BTreeMap<ReleasePostingField, BTreeMap<String, BTreeSet<u128>>>,
+    memberships: BTreeMap<String, Vec<(ReleasePostingField, String)>>,
+    invalid_versions: BTreeSet<String>,
+}
+
+struct ReleasePostingPage {
+    identities: Vec<String>,
+    posting_entries_examined: usize,
+    more: bool,
+}
+
+impl VersionedReleaseProjection {
+    fn is_orderable(&self) -> bool {
+        self.invalid_versions.is_empty()
+    }
+
+    fn logical_payload_bytes(&self) -> usize {
+        use std::mem::size_of;
+
+        let ordered = self
+            .order
+            .iter()
+            .map(|(key, identity)| {
+                size_of::<VersionedReleaseKey>()
+                    .saturating_add(key.version.canonical.len())
+                    .saturating_add(format!("{:?}", key.version).len())
+                    .saturating_add(key.stable_sort_key.0.len())
+                    .saturating_add(key.identity.len())
+                    .saturating_add(size_of::<String>())
+                    .saturating_add(identity.len())
+            })
+            .sum::<usize>();
+        let identity_ranks = self
+            .ranks_by_identity
+            .keys()
+            .map(|identity| size_of::<(String, u128)>().saturating_add(identity.len()))
+            .sum::<usize>();
+        let reverse_ranks = self
+            .identities_by_rank
+            .values()
+            .map(|identity| size_of::<(u128, String)>().saturating_add(identity.len()))
+            .sum::<usize>();
+        let posting_bytes = self
+            .postings
+            .values()
+            .flat_map(|values| values.iter())
+            .map(|(value, ranks)| {
+                size_of::<(String, BTreeSet<u128>)>()
+                    .saturating_add(value.len())
+                    .saturating_add(ranks.len().saturating_mul(size_of::<u128>()))
+            })
+            .sum::<usize>();
+        let membership_bytes = self
+            .memberships
+            .iter()
+            .map(|(identity, memberships)| {
+                size_of::<(String, Vec<(ReleasePostingField, String)>)>()
+                    .saturating_add(identity.len())
+                    .saturating_add(
+                        memberships
+                            .iter()
+                            .map(|(_, value)| {
+                                size_of::<(ReleasePostingField, String)>()
+                                    .saturating_add(value.len())
+                            })
+                            .sum::<usize>(),
+                    )
+            })
+            .sum::<usize>();
+        ordered
+            .saturating_add(identity_ranks)
+            .saturating_add(reverse_ranks)
+            .saturating_add(self.all_ranks.len().saturating_mul(size_of::<u128>()))
+            .saturating_add(posting_bytes)
+            .saturating_add(membership_bytes)
+            .saturating_add(
+                self.invalid_versions
+                    .iter()
+                    .map(|identity| size_of::<String>().saturating_add(identity.len()))
+                    .sum::<usize>(),
+            )
+    }
+
+    fn insert(
+        &mut self,
+        identity: &str,
+        document: &LineageReleaseDocument,
+        ecosystem: RegistryEcosystem,
+    ) {
+        let Some(version) =
+            super::product_state::normalized_version_key(ecosystem, &document.version)
+        else {
+            self.invalid_versions.insert(identity.to_owned());
+            return;
+        };
+        let order_key = VersionedReleaseKey {
+            version,
+            stable_sort_key: Reverse(document.order_sort_key.clone()),
+            identity: identity.to_owned(),
+        };
+        self.order.insert(order_key.clone(), identity.to_owned());
+        let rank = self.rank_between_neighbors(&order_key);
+        let rank = if let Some(rank) = rank {
+            rank
+        } else {
+            self.rebalance_ranks();
+            *self
+                .ranks_by_identity
+                .get(identity)
+                .expect("rebalance includes the inserted release")
+        };
+        self.ranks_by_identity.insert(identity.to_owned(), rank);
+        self.identities_by_rank.insert(rank, identity.to_owned());
+        self.all_ranks.insert(rank);
+
+        let memberships = release_posting_values(document);
+        for (field, value) in &memberships {
+            self.postings
+                .entry(*field)
+                .or_default()
+                .entry(value.clone())
+                .or_default()
+                .insert(rank);
+        }
+        self.memberships.insert(identity.to_owned(), memberships);
+    }
+
+    fn remove(
+        &mut self,
+        identity: &str,
+        document: &LineageReleaseDocument,
+        ecosystem: RegistryEcosystem,
+    ) {
+        if self.invalid_versions.remove(identity) {
+            return;
+        }
+        let Some(rank) = self.ranks_by_identity.remove(identity) else {
+            return;
+        };
+        if let Some(version) =
+            super::product_state::normalized_version_key(ecosystem, &document.version)
+        {
+            self.order.remove(&VersionedReleaseKey {
+                version,
+                stable_sort_key: Reverse(document.order_sort_key.clone()),
+                identity: identity.to_owned(),
+            });
+        }
+        self.identities_by_rank.remove(&rank);
+        self.all_ranks.remove(&rank);
+        if let Some(memberships) = self.memberships.remove(identity) {
+            for (field, value) in memberships {
+                let remove_value = if let Some(values) = self.postings.get_mut(&field) {
+                    let remove_posting = if let Some(ranks) = values.get_mut(&value) {
+                        ranks.remove(&rank);
+                        ranks.is_empty()
+                    } else {
+                        false
+                    };
+                    if remove_posting {
+                        values.remove(&value);
+                    }
+                    values.is_empty()
+                } else {
+                    false
+                };
+                if remove_value {
+                    self.postings.remove(&field);
+                }
+            }
+        }
+    }
+
+    fn rank_between_neighbors(&self, key: &VersionedReleaseKey) -> Option<u128> {
+        let lower = self
+            .order
+            .range(..key.clone())
+            .next_back()
+            .and_then(|(_, identity)| self.ranks_by_identity.get(identity))
+            .copied();
+        let upper = self
+            .order
+            .range((Bound::Excluded(key.clone()), Bound::Unbounded))
+            .next()
+            .and_then(|(_, identity)| self.ranks_by_identity.get(identity))
+            .copied();
+        match (lower, upper) {
+            (None, None) => Some(VERSION_RANK_STRIDE),
+            (Some(lower), None) => lower.checked_add(VERSION_RANK_STRIDE),
+            (None, Some(upper)) => upper.checked_sub(VERSION_RANK_STRIDE),
+            (Some(lower), Some(upper)) if upper.saturating_sub(lower) > 1 => {
+                Some(lower + (upper - lower) / 2)
+            }
+            (Some(_), Some(_)) => None,
+        }
+    }
+
+    fn rebalance_ranks(&mut self) {
+        self.ranks_by_identity.clear();
+        self.identities_by_rank.clear();
+        self.all_ranks.clear();
+        for (offset, identity) in self.order.values().enumerate() {
+            let rank = u128::try_from(offset)
+                .expect("a release lineage cannot contain more than u128::MAX entries")
+                .saturating_add(1)
+                .saturating_mul(VERSION_RANK_STRIDE);
+            self.ranks_by_identity.insert(identity.clone(), rank);
+            self.identities_by_rank.insert(rank, identity.clone());
+            self.all_ranks.insert(rank);
+        }
+        for values in self.postings.values_mut() {
+            for ranks in values.values_mut() {
+                ranks.clear();
+            }
+        }
+        for (identity, memberships) in &self.memberships {
+            let Some(rank) = self.ranks_by_identity.get(identity).copied() else {
+                continue;
+            };
+            for (field, value) in memberships {
+                self.postings
+                    .entry(*field)
+                    .or_default()
+                    .entry(value.clone())
+                    .or_default()
+                    .insert(rank);
+            }
+        }
+    }
+
+    fn top_matches(
+        &self,
+        key: &LineageKey,
+        releases: &BTreeMap<String, LineageReleaseDocument>,
+        query: &str,
+        limit: usize,
+    ) -> ReleasePostingPage {
+        let limit = limit.min(MAX_SEARCH_PAGE_SIZE);
+        if limit == 0 || self.all_ranks.is_empty() {
+            return ReleasePostingPage {
+                identities: Vec::new(),
+                posting_entries_examined: 0,
+                more: false,
+            };
+        }
+        let query = normalize(query);
+        if query.is_empty() {
+            let (examined, identities) = self.collect_posting_page(
+                &[&self.all_ranks],
+                key,
+                releases,
+                &query,
+                None,
+                limit.saturating_add(1),
+            );
+            let more = identities.len() > limit;
+            let mut identities = identities;
+            identities.truncate(limit);
+            return ReleasePostingPage {
+                identities,
+                posting_entries_examined: examined,
+                more,
+            };
+        }
+
+        let mut identities = Vec::with_capacity(limit.saturating_add(1));
+        let mut posting_entries_examined = 0_usize;
+        for tier in SEARCH_TIERS {
+            let remaining = limit.saturating_add(1).saturating_sub(identities.len());
+            if remaining == 0 {
+                break;
+            }
+            let postings = self.postings_for_tier(key, &query, tier);
+            if postings.is_empty() {
+                continue;
+            }
+            let (examined, hits) =
+                self.collect_posting_page(&postings, key, releases, &query, Some(tier), remaining);
+            posting_entries_examined = posting_entries_examined.saturating_add(examined);
+            identities.extend(hits);
+        }
+        let more = identities.len() > limit;
+        identities.truncate(limit);
+        ReleasePostingPage {
+            identities,
+            posting_entries_examined,
+            more,
+        }
+    }
+
+    fn postings_for_tier<'a>(
+        &'a self,
+        key: &LineageKey,
+        query: &str,
+        tier: SearchTier,
+    ) -> Vec<&'a BTreeSet<u128>> {
+        let name = normalize(lineage_search_name(key.ecosystem, &key.lineage));
+        match tier {
+            SearchTier::ExactCoordinate => {
+                self.exact_posting(ReleasePostingField::Coordinate, query)
+            }
+            SearchTier::ExactName | SearchTier::PrefixName => {
+                if name == query
+                    || (matches!(tier, SearchTier::PrefixName) && name.starts_with(query))
+                {
+                    vec![&self.all_ranks]
+                } else {
+                    Vec::new()
+                }
+            }
+            SearchTier::ExactAlias => self.exact_posting(ReleasePostingField::AliasValue, query),
+            SearchTier::PrefixCoordinate => {
+                self.prefix_postings(ReleasePostingField::Coordinate, query)
+            }
+            SearchTier::PrefixAlias => self.prefix_postings(ReleasePostingField::AliasValue, query),
+            SearchTier::Substring => {
+                if name.contains(query) {
+                    return vec![&self.all_ranks];
+                }
+                let width = match query.chars().count() {
+                    0 => return Vec::new(),
+                    1 => 1,
+                    2 => 2,
+                    _ => 3,
+                };
+                let field = release_gram_field(width);
+                let mut candidates = gram_tokens(query, width)
+                    .into_iter()
+                    .filter_map(|gram| self.exact_posting(field, &gram).into_iter().next())
+                    .collect::<Vec<_>>();
+                if candidates.is_empty() {
+                    return candidates;
+                }
+                candidates.sort_by_key(|posting| posting.len());
+                candidates.truncate(1);
+                candidates
+            }
+            SearchTier::AliasTerms => {
+                self.rare_token_posting(ReleasePostingField::AliasToken, query)
+            }
+            SearchTier::KeywordTerms => {
+                self.rare_token_posting(ReleasePostingField::Keyword, query)
+            }
+            SearchTier::AdvisoryTerms => {
+                self.rare_token_posting(ReleasePostingField::Advisory, query)
+            }
+            SearchTier::DescriptionTerms => {
+                self.rare_token_posting(ReleasePostingField::Description, query)
+            }
+            SearchTier::GenericTerms => {
+                self.rare_token_posting(ReleasePostingField::Generic, query)
+            }
+            SearchTier::FuzzyName => {
+                if fuzzy_term_matches(&name, query) {
+                    vec![&self.all_ranks]
+                } else {
+                    Vec::new()
+                }
+            }
+            SearchTier::FuzzyAlias => self.fuzzy_alias_postings(query),
+        }
+    }
+
+    fn exact_posting(&self, field: ReleasePostingField, value: &str) -> Vec<&BTreeSet<u128>> {
+        self.postings
+            .get(&field)
+            .and_then(|values| values.get(value))
+            .map_or_else(Vec::new, |posting| vec![posting])
+    }
+
+    fn prefix_postings(&self, field: ReleasePostingField, prefix: &str) -> Vec<&BTreeSet<u128>> {
+        let Some(values) = self.postings.get(&field) else {
+            return Vec::new();
+        };
+        values
+            .range(prefix.to_owned()..)
+            .take_while(|(value, _)| value.starts_with(prefix))
+            .map(|(_, posting)| posting)
+            .collect()
+    }
+
+    fn rare_token_posting(&self, field: ReleasePostingField, query: &str) -> Vec<&BTreeSet<u128>> {
+        let tokens = query
+            .split(|character: char| !character.is_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .collect::<BTreeSet<_>>();
+        if tokens.is_empty() || tokens.iter().any(|token| token.chars().count() > 40) {
+            return Vec::new();
+        }
+        let Some(values) = self.postings.get(&field) else {
+            return Vec::new();
+        };
+        let mut postings = Vec::with_capacity(tokens.len());
+        for token in tokens {
+            let Some(posting) = values.get(token) else {
+                return Vec::new();
+            };
+            postings.push(posting);
+        }
+        postings.sort_by_key(|posting| posting.len());
+        postings.truncate(1);
+        postings
+    }
+
+    fn fuzzy_alias_postings(&self, query: &str) -> Vec<&BTreeSet<u128>> {
+        let Some(values) = self.postings.get(&ReleasePostingField::AliasValue) else {
+            return Vec::new();
+        };
+        values
+            .iter()
+            .filter(|(alias, _)| fuzzy_term_matches(alias, query))
+            .map(|(_, posting)| posting)
+            .collect()
+    }
+
+    fn collect_posting_page(
+        &self,
+        postings: &[&BTreeSet<u128>],
+        key: &LineageKey,
+        releases: &BTreeMap<String, LineageReleaseDocument>,
+        query: &str,
+        tier: Option<SearchTier>,
+        limit: usize,
+    ) -> (usize, Vec<String>) {
+        if limit == 0 || postings.is_empty() {
+            return (0, Vec::new());
+        }
+        let mut iterators = postings
+            .iter()
+            .map(|posting| posting.iter().rev())
+            .collect::<Vec<_>>();
+        let mut frontier = BinaryHeap::with_capacity(iterators.len());
+        let mut examined = 0_usize;
+        for (iterator_index, posting) in iterators.iter_mut().enumerate() {
+            if let Some(rank) = posting.next() {
+                examined = examined.saturating_add(1);
+                frontier.push((*rank, iterator_index));
+            }
+        }
+        let mut selected = Vec::with_capacity(limit);
+        let mut last_rank = None;
+        while let Some((rank, iterator_index)) = frontier.pop() {
+            if last_rank != Some(rank) {
+                last_rank = Some(rank);
+                if let (Some(tier), Some(identity)) = (tier, self.identities_by_rank.get(&rank))
+                    && releases.get(identity).is_some_and(|document| {
+                        release_search_evidence(key, document, query) == Some(tier.evidence())
+                    })
+                {
+                    selected.push(identity.clone());
+                    if selected.len() == limit {
+                        break;
+                    }
+                } else if tier.is_none()
+                    && let Some(identity) = self.identities_by_rank.get(&rank)
+                {
+                    selected.push(identity.clone());
+                    if selected.len() == limit {
+                        break;
+                    }
+                }
+            }
+            if let Some(rank) = iterators[iterator_index].next() {
+                examined = examined.saturating_add(1);
+                frontier.push((*rank, iterator_index));
+            }
+        }
+        (examined, selected)
+    }
+}
+
+fn release_posting_values(document: &LineageReleaseDocument) -> Vec<(ReleasePostingField, String)> {
+    let coordinate = normalize(&document.coordinate);
+    let mut memberships = vec![(ReleasePostingField::Coordinate, coordinate.clone())];
+    memberships.extend(
+        document
+            .aliases
+            .iter()
+            .cloned()
+            .map(|value| (ReleasePostingField::AliasValue, value)),
+    );
+    for (field, tokens) in [
+        (ReleasePostingField::AliasToken, &document.alias_tokens),
+        (ReleasePostingField::Keyword, &document.keywords),
+        (ReleasePostingField::Description, &document.descriptions),
+        (ReleasePostingField::Advisory, &document.advisories),
+        (ReleasePostingField::Generic, &document.generic),
+    ] {
+        memberships.extend(tokens.iter().cloned().map(|value| (field, value)));
+    }
+    for (width, field) in [
+        (1, ReleasePostingField::CoordinateGram1),
+        (2, ReleasePostingField::CoordinateGram2),
+        (3, ReleasePostingField::CoordinateGram3),
+    ] {
+        memberships.extend(
+            gram_tokens(&coordinate, width)
+                .into_iter()
+                .map(|value| (field, value)),
+        );
+    }
+    memberships.sort();
+    memberships.dedup();
+    memberships
+}
+
+fn release_search_evidence(
+    key: &LineageKey,
+    document: &LineageReleaseDocument,
+    query: &str,
+) -> Option<SearchMatchEvidence> {
+    if query.is_empty() {
+        return Some(SearchMatchEvidence::AllDocuments);
+    }
+    let coordinate = normalize(&document.coordinate);
+    let name = normalize(lineage_search_name(key.ecosystem, &key.lineage));
+    if coordinate == query {
+        return Some(SearchMatchEvidence::ExactCoordinate);
+    }
+    if name == query {
+        return Some(SearchMatchEvidence::ExactName);
+    }
+    if document.aliases.contains(query) {
+        return Some(SearchMatchEvidence::ExactAlias);
+    }
+    if coordinate.starts_with(query) {
+        return Some(SearchMatchEvidence::PrefixCoordinate);
+    }
+    if name.starts_with(query) {
+        return Some(SearchMatchEvidence::PrefixName);
+    }
+    if document
+        .aliases
+        .iter()
+        .any(|alias| alias.starts_with(query))
+    {
+        return Some(SearchMatchEvidence::PrefixAlias);
+    }
+    if coordinate.contains(query) || name.contains(query) {
+        return Some(SearchMatchEvidence::Substring);
+    }
+    let tokens = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<BTreeSet<_>>();
+    if !tokens.is_empty() && tokens.iter().all(|token| token.chars().count() <= 40) {
+        if tokens
+            .iter()
+            .all(|token| document.alias_tokens.contains(*token))
+        {
+            return Some(SearchMatchEvidence::AliasTerms);
+        }
+        if tokens
+            .iter()
+            .all(|token| document.keywords.contains(*token))
+        {
+            return Some(SearchMatchEvidence::KeywordTerms);
+        }
+        if tokens
+            .iter()
+            .all(|token| document.advisories.contains(*token))
+        {
+            return Some(SearchMatchEvidence::AdvisoryTerms);
+        }
+        if tokens
+            .iter()
+            .all(|token| document.descriptions.contains(*token))
+        {
+            return Some(SearchMatchEvidence::DescriptionTerms);
+        }
+        if tokens.iter().all(|token| document.generic.contains(*token)) {
+            return Some(SearchMatchEvidence::GenericTerms);
+        }
+    }
+    if fuzzy_term_matches(&name, query) {
+        return Some(SearchMatchEvidence::FuzzyName);
+    }
+    if document
+        .aliases
+        .iter()
+        .any(|alias| fuzzy_term_matches(alias, query))
+    {
+        return Some(SearchMatchEvidence::FuzzyAlias);
+    }
+    None
+}
+
+fn fuzzy_term_matches(candidate: &str, query: &str) -> bool {
+    let candidate = candidate.chars().collect::<Vec<_>>();
+    let query = query.chars().collect::<Vec<_>>();
+    if !(3..=64).contains(&query.len()) || candidate.len().abs_diff(query.len()) > 1 {
+        return false;
+    }
+    if candidate == query {
+        return true;
+    }
+    if candidate.len() == query.len() {
+        let differences = candidate
+            .iter()
+            .zip(&query)
+            .enumerate()
+            .filter_map(|(index, (left, right))| (left != right).then_some(index))
+            .collect::<Vec<_>>();
+        return differences.len() == 1
+            || (differences.len() == 2
+                && differences[1] == differences[0] + 1
+                && candidate[differences[0]] == query[differences[1]]
+                && candidate[differences[1]] == query[differences[0]]);
+    }
+    let (shorter, longer) = if candidate.len() < query.len() {
+        (&candidate, &query)
+    } else {
+        (&query, &candidate)
+    };
+    let mut short_index = 0;
+    let mut long_index = 0;
+    let mut skipped = false;
+    while short_index < shorter.len() && long_index < longer.len() {
+        if shorter[short_index] == longer[long_index] {
+            short_index += 1;
+            long_index += 1;
+        } else if skipped {
+            return false;
+        } else {
+            skipped = true;
+            long_index += 1;
+        }
+    }
+    true
+}
+
+fn release_gram_field(width: usize) -> ReleasePostingField {
+    match width {
+        1 => ReleasePostingField::CoordinateGram1,
+        2 => ReleasePostingField::CoordinateGram2,
+        _ => ReleasePostingField::CoordinateGram3,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -828,10 +1521,9 @@ impl LineageAccumulator {
             LineageFacetField::AliasValue,
             &mut deltas,
         );
-        let alias_tokens = token_set(document.aliases.iter().map(String::as_str));
         adjust_ref_counts(
             &mut self.alias_tokens,
-            alias_tokens.iter(),
+            document.alias_tokens.iter(),
             add,
             LineageFacetField::AliasToken,
             &mut deltas,
@@ -913,6 +1605,7 @@ fn adjust_ref_counts<'a>(
 pub(crate) struct LineageSearchIndex {
     inner: TextSearchIndex<LineageKey>,
     releases: BTreeMap<LineageKey, BTreeMap<String, LineageReleaseDocument>>,
+    versioned_releases: BTreeMap<LineageKey, VersionedReleaseProjection>,
     aggregates: BTreeMap<LineageKey, LineageAccumulator>,
     release_to_lineage: BTreeMap<String, LineageKey>,
     coordinate_lineages: BTreeMap<String, BTreeMap<String, (LineageKey, usize)>>,
@@ -926,6 +1619,7 @@ impl LineageSearchIndex {
         Ok(Self {
             inner: TextSearchIndex::new_with_memory(WRITER_MEMORY_BYTES)?,
             releases: BTreeMap::new(),
+            versioned_releases: BTreeMap::new(),
             aggregates: BTreeMap::new(),
             release_to_lineage: BTreeMap::new(),
             coordinate_lineages: BTreeMap::new(),
@@ -947,6 +1641,9 @@ impl LineageSearchIndex {
                     .get_mut(&previous_key)
                     .and_then(|releases| releases.remove(&identity));
                 if let Some(previous) = previous {
+                    if let Some(projection) = self.versioned_releases.get_mut(&previous_key) {
+                        projection.remove(&identity, &previous, previous_key.ecosystem);
+                    }
                     let deltas = self
                         .aggregates
                         .get_mut(&previous_key)
@@ -962,12 +1659,17 @@ impl LineageSearchIndex {
                     .is_some_and(BTreeMap::is_empty)
                 {
                     self.releases.remove(&previous_key);
+                    self.versioned_releases.remove(&previous_key);
                     self.aggregates.remove(&previous_key);
                 }
                 affected.insert(previous_key);
             }
 
             self.add_fingerprint(document.fingerprint);
+            self.versioned_releases
+                .entry(key.clone())
+                .or_default()
+                .insert(&identity, &document, key.ecosystem);
             self.adjust_coordinate_lineage(&key, &document.coordinate, true);
             let deltas = self
                 .aggregates
@@ -998,6 +1700,9 @@ impl LineageSearchIndex {
                 .get_mut(&key)
                 .and_then(|releases| releases.remove(&identity));
             if let Some(removed) = removed {
+                if let Some(projection) = self.versioned_releases.get_mut(&key) {
+                    projection.remove(&identity, &removed, key.ecosystem);
+                }
                 let deltas = self
                     .aggregates
                     .get_mut(&key)
@@ -1009,6 +1714,7 @@ impl LineageSearchIndex {
             }
             if self.releases.get(&key).is_some_and(BTreeMap::is_empty) {
                 self.releases.remove(&key);
+                self.versioned_releases.remove(&key);
                 self.aggregates.remove(&key);
             }
             affected.insert(key);
@@ -1017,6 +1723,34 @@ impl LineageSearchIndex {
             self.refresh_lineage(&key)?;
         }
         Ok(())
+    }
+
+    fn versioned_release_page(
+        &self,
+        key: &LineageKey,
+        query: &str,
+        limit: usize,
+    ) -> Option<ReleasePostingPage> {
+        let projection = self.versioned_releases.get(key)?;
+        if !projection.is_orderable() {
+            return None;
+        }
+        let releases = self.releases.get(key)?;
+        Some(projection.top_matches(key, releases, query, limit))
+    }
+
+    fn versioned_release_projection_stats(&self) -> (usize, usize) {
+        let release_count = self
+            .versioned_releases
+            .values()
+            .map(|projection| projection.all_ranks.len() + projection.invalid_versions.len())
+            .sum();
+        let logical_payload_bytes = self
+            .versioned_releases
+            .values()
+            .map(VersionedReleaseProjection::logical_payload_bytes)
+            .sum();
+        (release_count, logical_payload_bytes)
     }
 
     fn apply_facet_deltas(&mut self, key: &LineageKey, deltas: Vec<LineageFacetDelta>) {
@@ -1496,6 +2230,30 @@ fn merge_lineage_candidates(
             *index_documents_visited = (*index_documents_visited).saturating_add(1);
         }
     }
+}
+
+fn versioned_release_facet(
+    lineages: &LineageSearchIndex,
+    releases: &TextSearchIndex<DiscoverySearchKey>,
+    key: &LineageKey,
+    query: &str,
+    limit: usize,
+) -> Result<Option<(Vec<DiscoverySearchKey>, usize, bool)>, String> {
+    let Some(page) = lineages.versioned_release_page(key, query, limit) else {
+        return Ok(None);
+    };
+    let mut hits = Vec::with_capacity(page.identities.len());
+    for identity in page.identities {
+        let sort_key = releases.identities.get(&identity).ok_or_else(|| {
+            "versioned release projection references a missing search document".to_owned()
+        })?;
+        let key = releases
+            .keys
+            .get(sort_key)
+            .ok_or_else(|| "versioned release key is outside the search revision".to_owned())?;
+        hits.push(key.clone());
+    }
+    Ok(Some((hits, page.posting_entries_examined, page.more)))
 }
 
 fn facet_from_counts<'a>(counts: &'a BTreeMap<String, usize>) -> SearchTextFacet<'a> {
@@ -2216,37 +2974,63 @@ impl DiscoverySearchIndex {
                 }),
             };
             let sort_key = lineage_sort_key(&hit.key);
-            let facet_page = prepared_release_query.page_in_group(
-                MAX_RELEASES_PER_GROUP,
-                request.ecosystem.map(RegistryEcosystem::as_str),
-                &sort_key,
-                None,
-            )?;
-            posting_candidates = posting_candidates.saturating_add(facet_page.posting_candidates);
-            facet_releases_examined =
-                facet_releases_examined.saturating_add(facet_page.posting_candidates);
-            let mut matched_release_hits = facet_page.hits;
-            let mut more_releases = facet_page.next_cursor.is_some();
-            let release_match_scope = if matched_release_hits.is_empty() {
+            let (mut matched_releases, facet_candidates, mut more_releases) =
+                if let Some((hits, examined, more)) = versioned_release_facet(
+                    &self.lineages,
+                    &self.inner,
+                    &hit.key,
+                    &normalized_query,
+                    MAX_RELEASES_PER_GROUP,
+                )? {
+                    (hits, examined, more)
+                } else {
+                    let facet_page = prepared_release_query.page_in_group(
+                        MAX_RELEASES_PER_GROUP,
+                        request.ecosystem.map(RegistryEcosystem::as_str),
+                        &sort_key,
+                        None,
+                    )?;
+                    (
+                        order_grouped_release_hits(facet_page.hits),
+                        facet_page.posting_candidates,
+                        facet_page.next_cursor.is_some(),
+                    )
+                };
+            posting_candidates = posting_candidates.saturating_add(facet_candidates);
+            facet_releases_examined = facet_releases_examined.saturating_add(facet_candidates);
+            let release_match_scope = if matched_releases.is_empty() {
                 // A lineage can match through the package-level union of facts
                 // contributed by different releases. Keep a bounded source
                 // facet page visible, with an explicit scope marker.
-                let fallback = empty_release_query.page_in_group(
+                if let Some((fallback, examined, more)) = versioned_release_facet(
+                    &self.lineages,
+                    &self.inner,
+                    &hit.key,
+                    "",
                     MAX_RELEASES_PER_GROUP,
-                    request.ecosystem.map(RegistryEcosystem::as_str),
-                    &sort_key,
-                    None,
-                )?;
-                posting_candidates = posting_candidates.saturating_add(fallback.posting_candidates);
-                facet_releases_examined =
-                    facet_releases_examined.saturating_add(fallback.posting_candidates);
-                matched_release_hits.extend(fallback.hits);
-                more_releases = fallback.next_cursor.is_some();
+                )? {
+                    posting_candidates = posting_candidates.saturating_add(examined);
+                    facet_releases_examined = facet_releases_examined.saturating_add(examined);
+                    matched_releases = fallback;
+                    more_releases = more;
+                } else {
+                    let fallback = empty_release_query.page_in_group(
+                        MAX_RELEASES_PER_GROUP,
+                        request.ecosystem.map(RegistryEcosystem::as_str),
+                        &sort_key,
+                        None,
+                    )?;
+                    posting_candidates =
+                        posting_candidates.saturating_add(fallback.posting_candidates);
+                    facet_releases_examined =
+                        facet_releases_examined.saturating_add(fallback.posting_candidates);
+                    matched_releases = order_grouped_release_hits(fallback.hits);
+                    more_releases = fallback.next_cursor.is_some();
+                }
                 ReleaseMatchScope::LineageMetadataOnly
             } else {
                 ReleaseMatchScope::ReleaseMatches
             };
-            let matched_releases = order_grouped_release_hits(matched_release_hits);
             groups.push(DiscoveryPackageSearchGroup {
                 key: hit.key.clone(),
                 source: source.clone(),
@@ -3187,6 +3971,7 @@ fn lineage_release_document(
         .map(|value| normalize(value))
         .filter(|value| !value.is_empty())
         .collect();
+    let alias_tokens = token_set(aliases.iter().map(String::as_str));
     let keywords = token_set(search_text.keywords.values().iter().copied());
     let mut descriptions = token_set(search_text.descriptions.values().iter().copied());
     if let Some(readme) = readme {
@@ -3219,7 +4004,10 @@ fn lineage_release_document(
     }
     LineageReleaseDocument {
         coordinate: key.coordinate.as_str().to_owned(),
+        version: key.coordinate.version().to_owned(),
+        order_sort_key: discovery_sort_key(&key.source, key.coordinate.as_str()),
         aliases,
+        alias_tokens,
         keywords,
         descriptions,
         advisories,
@@ -5376,6 +6164,22 @@ mod tests {
             first.groups[0].matched_releases.len(),
             MAX_RELEASES_PER_GROUP
         );
+        assert_eq!(
+            first.groups[0]
+                .matched_releases
+                .iter()
+                .map(|key| key.coordinate.version().to_owned())
+                .collect::<Vec<_>>(),
+            (304..320)
+                .rev()
+                .map(|patch| format!("1.0.{patch}"))
+                .collect::<Vec<_>>(),
+            "the bounded facet must start at the globally newest typed versions"
+        );
+        assert_eq!(
+            first.facet_releases_examined, 17,
+            "only the top 16 plus one lookahead release posting should be examined"
+        );
         assert!(first.groups[0].more_releases);
         assert!(first.next_cursor.is_some());
         assert!(matches!(first.result_count, SearchResultCount::AtLeast(2)));
@@ -5509,7 +6313,10 @@ mod tests {
         let identity = "mixed-case-coordinate-release".to_owned();
         let document = LineageReleaseDocument {
             coordinate: "PKG:CARGO/Widget@1.0.0".to_owned(),
+            version: "1.0.0".to_owned(),
+            order_sort_key: identity.clone(),
             aliases: BTreeSet::new(),
+            alias_tokens: BTreeSet::new(),
             keywords: BTreeSet::new(),
             descriptions: BTreeSet::new(),
             advisories: BTreeSet::new(),
@@ -5727,6 +6534,13 @@ mod tests {
                 .collect::<Vec<_>>()
         })
         .fold(0_u64, u64::saturating_add);
+        let (versioned_release_count, versioned_release_payload_bytes) =
+            search.lineages.versioned_release_projection_stats();
+        let versioned_release_payload_bytes_per_release = if versioned_release_count == 0 {
+            0
+        } else {
+            versioned_release_payload_bytes / versioned_release_count
+        };
         let rss_after = resident_set_kib();
 
         let deep_lineage = format!("pkg-{:06}", lineage_count * 9 / 10);
@@ -5770,7 +6584,7 @@ mod tests {
         let p50_micros = percentile_micros(&mut warm_samples, 50);
         let p95_micros = percentile_micros(&mut warm_samples, 95);
         eprintln!(
-            "discovery scale: releases={release_count} lineages={lineage_count} build_ms={build_millis} index_bytes={index_bytes} rss_before_kib={rss_before:?} rss_after_kib={rss_after:?} deep_page_p50_us={p50_micros} deep_page_p95_us={p95_micros} page_counters={last_page_counters:?} cursor_bytes={}",
+            "discovery scale: releases={release_count} lineages={lineage_count} cold_projection_build_ms={build_millis} tantivy_index_bytes={index_bytes} versioned_release_payload_bytes={versioned_release_payload_bytes} versioned_release_payload_bytes_per_release={versioned_release_payload_bytes_per_release} versioned_release_count={versioned_release_count} rss_before_kib={rss_before:?} rss_after_kib={rss_after:?} deep_page_p50_us={p50_micros} deep_page_p95_us={p95_micros} page_counters={last_page_counters:?} cursor_bytes={}",
             cursor_bytes.len()
         );
     }
@@ -5987,48 +6801,151 @@ mod tests {
     fn cold_reopen_orders_grouped_releases_by_semantic_version() {
         let path = temp_journal_path();
         let source = source(RegistryEcosystem::Cargo, "https://index.crates.io");
-        let older = "pkg:cargo/order-demo@1.0.1";
-        let newer = "pkg:cargo/order-demo@1.0.10";
+        let mut rows = (0..320)
+            .map(|patch| {
+                (
+                    format!("pkg:cargo/order-demo@1.0.{patch}"),
+                    DiscoveryStanding::Published,
+                    "2026-09-01".to_owned(),
+                    (patch % 251) as u8,
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.push((
+            "pkg:cargo/order-demo-addon@1.0.0".to_owned(),
+            DiscoveryStanding::Published,
+            "2026-09-01".to_owned(),
+            252,
+        ));
+        let rows = rows
+            .iter()
+            .map(|(coordinate, standing, event_time, proof)| {
+                (coordinate.as_str(), *standing, event_time.as_str(), *proof)
+            })
+            .collect::<Vec<_>>();
         let mut store = DiscoveryStore::open(path.clone()).expect("open journal");
         store
-            .commit(discovery_batch(
-                source,
-                "",
-                "order-window-1",
-                100,
-                &[
-                    (older, DiscoveryStanding::Published, "2026-09-01", 1),
-                    (newer, DiscoveryStanding::Published, "2026-09-02", 2),
-                ],
-            ))
-            .expect("commit multiple releases");
-        let warm = DiscoverySearchIndex::open(&store).expect("warm projection");
+            .commit(discovery_batch(source, "", "order-window-1", 100, &rows))
+            .expect("commit release history");
+        let mut warm = DiscoverySearchIndex::open(&store).expect("warm projection");
         let request = DiscoverySearchRequest {
             text: "order-demo",
             ecosystem: Some(RegistryEcosystem::Cargo),
         };
-        let release_order = |index: &DiscoverySearchIndex| {
-            let page = index.search_groups(request, 1).expect("group search");
+        let release_page = |index: &DiscoverySearchIndex| {
+            let page = index
+                .search_groups_after(request, 1, None)
+                .expect("group search");
             assert_eq!(page.groups.len(), 1);
-            page.groups[0]
+            let versions = page.groups[0]
                 .matched_releases
                 .iter()
-                .map(|key| key.coordinate.as_str().to_owned())
-                .collect::<Vec<_>>()
+                .map(|key| key.coordinate.version().to_owned())
+                .collect::<Vec<_>>();
+            (
+                versions,
+                page.groups[0].more_releases,
+                page.facet_releases_examined,
+                page.next_cursor,
+            )
         };
-        let expected = [newer.to_owned(), older.to_owned()];
-        assert_eq!(release_order(&warm), expected);
+        let expected = (304..320)
+            .rev()
+            .map(|patch| format!("1.0.{patch}"))
+            .collect::<Vec<_>>();
+        let (initial_order, initial_more, initial_examined, _) = release_page(&warm);
+        assert_eq!(initial_order, expected);
+        assert!(initial_more);
+        assert_eq!(initial_examined, 17);
+
+        let yanked_coordinate = "pkg:cargo/order-demo@1.0.320";
+        store
+            .commit(discovery_batch(
+                source,
+                "order-window-1",
+                "order-window-2",
+                200,
+                &[(
+                    yanked_coordinate,
+                    DiscoveryStanding::Yanked,
+                    "2026-09-02",
+                    253,
+                )],
+            ))
+            .expect("commit newest yanked release");
+        warm.sync(&store)
+            .expect("incrementally sync newest release");
+        let (updated_order, updated_more, updated_examined, updated_cursor) = release_page(&warm);
+        assert_eq!(
+            updated_order,
+            (305..321)
+                .rev()
+                .map(|patch| format!("1.0.{patch}"))
+                .collect::<Vec<_>>()
+        );
+        assert!(updated_more);
+        assert_eq!(updated_examined, 17);
+        let updated_cursor = updated_cursor.expect("cursor continues after first lineage");
+        let encoded_cursor = serde_json::to_vec(&updated_cursor).expect("encode group cursor");
+        let updated_cursor: DiscoverySearchCursor =
+            serde_json::from_slice(&encoded_cursor).expect("decode group cursor");
+
+        let yanked_search = warm
+            .search_with_store(
+                &store,
+                DiscoverySearchRequest {
+                    text: yanked_coordinate,
+                    ecosystem: Some(RegistryEcosystem::Cargo),
+                },
+                1,
+            )
+            .expect("read current standing overlay");
+        assert_eq!(yanked_search.hits.len(), 1);
+        assert_eq!(
+            yanked_search.hits[0].standing,
+            SearchStandingEvidence::Yanked
+        );
 
         drop(warm);
         drop(store);
         let reopened = DiscoveryStore::open(path.clone()).expect("reopen journal");
         let cold = DiscoverySearchIndex::open(&reopened).expect("cold projection");
-        assert_eq!(release_order(&cold), expected);
+        let (cold_order, cold_more, cold_examined, cold_cursor) = release_page(&cold);
+        assert_eq!(
+            cold_order,
+            (305..321)
+                .rev()
+                .map(|patch| format!("1.0.{patch}"))
+                .collect::<Vec<_>>()
+        );
+        assert!(cold_more);
+        assert_eq!(cold_examined, 17);
+        assert_eq!(cold_cursor, Some(updated_cursor.clone()));
+        let second_group = cold
+            .search_groups_after(request, 1, Some(&updated_cursor))
+            .expect("continue after cold reopen");
+        assert_eq!(second_group.groups.len(), 1);
+        assert_eq!(second_group.groups[0].lineage, "order-demo-addon");
+        assert!(second_group.next_cursor.is_none());
+        let cold_yanked = cold
+            .search_with_store(
+                &reopened,
+                DiscoverySearchRequest {
+                    text: yanked_coordinate,
+                    ecosystem: Some(RegistryEcosystem::Cargo),
+                },
+                1,
+            )
+            .expect("reopen current standing overlay");
+        assert_eq!(cold_yanked.hits[0].standing, SearchStandingEvidence::Yanked);
 
         drop(cold);
         drop(reopened);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("journal.lock"));
+        let mut lock_path = path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let _ = std::fs::remove_file(std::path::PathBuf::from(lock_path));
     }
 
     #[test]
