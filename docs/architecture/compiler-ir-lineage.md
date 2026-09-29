@@ -48,9 +48,10 @@ machinery, and semantic diff. The [streaming target](compiler-artifact-streaming
 is a design contract, not evidence that stable-key microsegments already ship.
 
 Persistent IR commit/replay history is a distinct gap. The older Pijul-like
-`workspace/ir-vcs` supplied replay, branches/tags, archive serving, and a
-scan-resistant whole-archive `ServeCache` in active-history commits
-`c91c654ac` and `1ec859f8a`; the package was removed in `23530d79b`.
+package, initially `workspace/nudox-ir-vcs` and later `workspace/ir-vcs`,
+supplied replay, branches/tags, archive serving, and a scan-resistant
+whole-archive `ServeCache` in active-history commits `c91c654ac` and
+`1ec859f8a`; `workspace/ir-vcs` was removed in `23530d79b`.
 Today's `vcs.rs` is a snapshot-diff API, not that repository. Reintroduce
 historical semantics only where the product needs them, using the canonical IR
 and current store rather than restoring the old parallel implementation. The
