@@ -88,6 +88,18 @@ pub struct RustWorkspaceFile<'source> {
     pub source: &'source str,
 }
 
+/// Borrow-scoped observer for the exact selected editor buffers installed in
+/// rust-analyzer's database for one workspace operation.
+///
+/// This is deliberately narrower than a compiler read observer: it does not
+/// report disk-loaded siblings, negative path lookups, directory listings,
+/// project-model reads, environment values, or child-process activity.
+pub trait RustWorkspaceEditorBufferObserver {
+    /// Receives one selected path and the exact UTF-8 bytes now visible through
+    /// `SourceDatabase::file_text` after the overlay has been applied.
+    fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]);
+}
+
 /// Stable identity for one rust-analyzer workspace operation.
 ///
 /// The key carries the full compiler authority identity even though cross-call
@@ -364,6 +376,32 @@ impl RustWorkspaceSessionLane {
         files: &[RustWorkspaceFile<'_>],
         control: RustAnalysisControl<'_>,
     ) -> Result<RustWorkspaceSessionLease<'cache>, RustAuthorityError> {
+        self.begin_inner(key, files, control, None)
+    }
+
+    /// Opens a fresh workspace and reports exact selected editor buffers to a
+    /// caller-owned observer while the transaction remains single-owner.
+    ///
+    /// The callback sees only the selected overlay paths after RA has applied
+    /// them. It is diagnostic evidence, not a complete filesystem frontier,
+    /// and cannot authorize workspace reuse.
+    pub fn begin_with_editor_buffer_observer<'cache>(
+        &'cache mut self,
+        key: RustWorkspaceSessionKey,
+        files: &[RustWorkspaceFile<'_>],
+        control: RustAnalysisControl<'_>,
+        observer: &mut dyn RustWorkspaceEditorBufferObserver,
+    ) -> Result<RustWorkspaceSessionLease<'cache>, RustAuthorityError> {
+        self.begin_inner(key, files, control, Some(observer))
+    }
+
+    fn begin_inner<'cache>(
+        &'cache mut self,
+        key: RustWorkspaceSessionKey,
+        files: &[RustWorkspaceFile<'_>],
+        control: RustAnalysisControl<'_>,
+        observer: Option<&mut dyn RustWorkspaceEditorBufferObserver>,
+    ) -> Result<RustWorkspaceSessionLease<'cache>, RustAuthorityError> {
         control.check()?;
         if files.len() != key.source_paths.len()
             || files
@@ -406,7 +444,7 @@ impl RustWorkspaceSessionLane {
         })?;
         self.stats.workspace_loads = self.stats.workspace_loads.saturating_add(1);
         let update_started = Instant::now();
-        let result = workspace.apply_selected_sources(files, &key, control);
+        let result = workspace.apply_selected_sources(files, &key, control, observer);
         self.stats.source_update_nanos = self
             .stats
             .source_update_nanos
@@ -928,6 +966,7 @@ impl RustWorkspace {
         files: &[RustWorkspaceFile<'_>],
         key: &RustWorkspaceSessionKey,
         control: RustAnalysisControl<'_>,
+        mut observer: Option<&mut dyn RustWorkspaceEditorBufferObserver>,
     ) -> Result<(usize, usize, usize, usize, usize), RustAuthorityError> {
         if files.len() != key.source_paths.len() {
             return Err(RustAuthorityError::SessionFrontierMismatch);
@@ -986,6 +1025,13 @@ impl RustWorkspace {
         let mut unchanged = 0_usize;
         let mut added = 0_usize;
         let mut added_ids = Vec::new();
+        let mut selected_file_ids = None;
+        if observer.is_some() {
+            let mut file_ids = Vec::new();
+            if file_ids.try_reserve_exact(files.len()).is_ok() {
+                selected_file_ids = Some(file_ids);
+            }
+        }
         let mut selected_source_roots = HashSet::new();
         let mut local_roots_by_directory = None;
         for (index, file) in files.iter().enumerate() {
@@ -1045,6 +1091,9 @@ impl RustWorkspace {
                     added = added.saturating_add(1);
                     (file_id, true)
                 };
+            if let Some(selected_file_ids) = selected_file_ids.as_mut() {
+                selected_file_ids.push(file_id);
+            }
             if newly_added {
                 change.change_file(file_id, Some(file.source.to_owned()));
                 updated = updated.saturating_add(1);
@@ -1124,6 +1173,15 @@ impl RustWorkspace {
                 )
             })
             .collect();
+        if let (Some(observer), Some(selected_file_ids)) =
+            (observer.as_mut(), selected_file_ids.as_ref())
+        {
+            for (file, file_id) in files.iter().zip(selected_file_ids) {
+                let observed = SourceDatabase::file_text(&self.database, *file_id);
+                let observed_text = observed.text(&self.database);
+                observer.observe_editor_buffer(file.relative_path, observed_text.as_bytes());
+            }
+        }
         Ok((
             updated,
             unchanged,

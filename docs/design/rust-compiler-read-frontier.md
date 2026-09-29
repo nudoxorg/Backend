@@ -69,6 +69,54 @@ and sysroot selection. A VFS walk is therefore a useful positive file
 inventory, but it is neither the process read frontier nor a negative lookup
 proof.
 
+The compiler now has one real, borrow-scoped observation seam in
+`RustWorkspaceSessionLane::begin_with_editor_buffer_observer`: after applying
+the selected editor overlay, it reads each selected `FileId` back through
+`SourceDatabase::file_text` and passes the relative path and exact bytes to the
+caller-owned callback. The production Rust package compiler feeds those events
+to a bounded, attempt-fenced diagnostic recorder and emits a debug summary.
+The callback is synchronous and uses no per-read `Arc<Mutex<_>>`. It observes
+only selected editor buffers; it does not walk the workspace VFS and therefore
+does not claim disk-loaded dependency or sibling coverage. Its 512 MiB aggregate
+hashing budget and fixed event limit poison the diagnostic recorder on overflow
+without changing compile admission or results.
+
+The recorder has a fixed required channel set. A channel token is tied to one
+monotone operation attempt; accepted events are sequenced into a rolling
+per-channel transcript, and a producer seal must match the observed sequence
+count. Wrong-attempt tokens, channel/class mismatches, unsupported paths,
+sequence gaps, byte/event limits, and terminal-count mismatches poison the
+report. The production path registers and seals only `editor_overlay`, so its
+report remains partial. Seals establish administrative producer closure only:
+the same adapter can still omit an event and report a self-consistent count.
+The recorder has no method that mints `VerifiedUnitReadClosure`, and the V2
+trust registry remains empty.
+
+## Current channel coverage
+
+| Required channel | Current evidence | Remaining blocker |
+| --- | --- | --- |
+| Selected editor overlay | Captured bytes read back from RA `SourceDatabase` after overlay application | Does not cover disk-loaded source files or filesystem reads |
+| RA VFS loader | None from the new recorder | Pinned loader is constructed inside `load_workspace_into_db`; no event receiver or injectable handle |
+| Rust module resolver | None | Positive and negative `ModDir::resolve_declaration` candidates are not exposed |
+| Authority filesystem | None | Frontend `canonicalize`, `metadata`, `symlink_metadata`, and open attempts bypass RA VFS |
+| Directory enumeration | None | No complete child-set/error callback for RA loader or project model |
+| Cargo project model | None | Manifest discovery and metadata/config reads use direct filesystem calls and Cargo |
+| Environment | None | RA, Cargo, rustup, and toolchain environment observations are not routed through one sealed policy observer |
+| Process tree | None | Cargo/rustc/rustup children and descendants lack a joined event broker and independent terminal count |
+| Toolchain/sysroot | None | Sysroot discovery, standard-library inputs, helper probes, and symlink identity are not captured as a closed root |
+| Generated outputs | None | Build outputs are disabled in this RA configuration, but no observer proves that every generated input path is absent |
+| External dependencies | None | Registry/path dependency source and metadata reads are not bound to verified external roots |
+
+This is not a complete self-contained compile recipe: there is no existing
+Rust authority path that proves its dependency, sysroot, environment, Cargo,
+and process inputs are preadmitted as one immutable owner-controlled tree. No
+VFS validation scan, manifest scan, source-root rebuild, or fresh RA load is
+skipped on the strength of this observation. The practical precursor is
+positive evidence for exact selected buffers and a recorder contract that a
+future adapter can extend channel by channel without introducing per-read
+locking.
+
 The API-level integration points are the `ra_ap_load_cargo` load boundary and
 the RA module resolver, not only the semantic callback in `RustAuthority`. A
 future adapter needs an event hook around
@@ -201,6 +249,18 @@ each of these changes the captured closure or rejects admission:
    panic. Each case must fail closed without an end marker or a verified
    closure.
 
+The current broker tests include an independently authored expected negative
+module candidate and an independently sealed child-process terminal count. The
+first fault-injection case shows that a producer can omit a negative candidate
+and still seal its own internally consistent count; only the separate oracle
+detects the omission. The second drops the child's final event and is rejected
+because the process supervisor's terminal count disagrees. These validate the
+failure contract, not actual RA capture. A future experiment must drive the
+actual loader/module/project/process hooks through those cases before any
+protocol is registered.
+
 Passing only the VFS-positive-file checks is insufficient. Until all supported
 read classes have evidence and unsupported classes are rejected, the workspace
-manifest and Rust reuse lane remain fresh-only.
+manifest and Rust reuse lane remain fresh-only. The debug summary is
+observability only; it does not change compiler readiness or authorize skipped
+work.

@@ -17,9 +17,9 @@ pub use self::authority::{
     ByteSpan, MAX_RUST_WORKSPACE_SESSION_SOURCES, ModuleDeclaration, RustAnalysisControl,
     RustAuthority, RustAuthorityError, RustDeclaration, RustDefinition, RustFeatureControl,
     RustFieldAccess, RustInferredExpression, RustMethodCall, RustProject, RustReexport,
-    RustSourceScope, RustWorkspace, RustWorkspaceFile, RustWorkspaceSessionKey,
-    RustWorkspaceSessionLane, RustWorkspaceSessionLease, RustWorkspaceSessionStats, SemanticKind,
-    SourceByteLimit, SourceOrigin,
+    RustSourceScope, RustWorkspace, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
+    RustWorkspaceSessionKey, RustWorkspaceSessionLane, RustWorkspaceSessionLease,
+    RustWorkspaceSessionStats, SemanticKind, SourceByteLimit, SourceOrigin,
 };
 pub use self::purl::{RustLocatedPackage, RustPackageUrl, RustPurlError, manifest_edition};
 

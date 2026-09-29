@@ -4,6 +4,10 @@
 //! One single-request local compiler specialization over explicit local ownership.
 
 use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
+use crate::compiler_unit_read_closure_v2::{
+    CompilerReadObservationChannelV2, CompilerReadObservationProducerV2,
+    CompilerReadObservationRecorderV2,
+};
 use crate::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment,
     DeclarationScope, PackageDeclarationScopeFault, ToolchainSelection,
@@ -21,7 +25,8 @@ use backend_compile::{
 };
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustWorkspaceFile, RustWorkspaceSessionKey,
+    RustAnalysisControl, RustAuthorityError, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
+    RustWorkspaceSessionKey, RustWorkspaceSessionLane, RustWorkspaceSessionLease,
 };
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
@@ -70,6 +75,65 @@ pub(crate) const MAX_PACKAGE_FRAGMENT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_PACKAGE_SEMANTIC_BYTES: usize = 512 * 1024 * 1024;
 /// Maximum optional embedding payload bytes retained for one staged package.
 pub const MAX_PACKAGE_EMBEDDING_BYTES: usize = 64 * 1024 * 1024;
+
+struct RustEditorBufferObservation<'observer> {
+    recorder: &'observer mut CompilerReadObservationRecorderV2,
+    producer: CompilerReadObservationProducerV2,
+    next_sequence: u64,
+}
+
+impl RustWorkspaceEditorBufferObserver for RustEditorBufferObservation<'_> {
+    fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]) {
+        let relative_path = relative_path.to_str().unwrap_or_default();
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        // Observation failure is diagnostic-only. The compiler transaction
+        // continues, while the recorder remains poisoned and cannot seal.
+        let _ =
+            self.recorder
+                .observe_editor_buffer(&self.producer, sequence, relative_path, contents);
+    }
+}
+
+fn begin_rust_workspace_with_observation<'lane>(
+    lane: &'lane mut RustWorkspaceSessionLane,
+    key: RustWorkspaceSessionKey,
+    files: &[RustWorkspaceFile<'_>],
+    control: RustAnalysisControl<'_>,
+) -> Result<RustWorkspaceSessionLease<'lane>, RustAuthorityError> {
+    let Ok(mut recorder) = CompilerReadObservationRecorderV2::new() else {
+        return lane.begin(key, files, control);
+    };
+    let Ok(producer) = recorder.register(CompilerReadObservationChannelV2::EditorOverlay) else {
+        return lane.begin(key, files, control);
+    };
+    let seal_producer = producer;
+    let mut observer = RustEditorBufferObservation {
+        recorder: &mut recorder,
+        producer,
+        next_sequence: 0,
+    };
+    let lease = lane.begin_with_editor_buffer_observer(key, files, control, &mut observer)?;
+    let final_event_count = u64::try_from(files.len()).unwrap_or(u64::MAX);
+    drop(observer);
+    let _ = recorder.seal(&seal_producer, final_event_count);
+    let report = recorder.report();
+    tracing::debug!(
+        target: "compiler.read_frontier",
+        attempt_id = report.attempt_id(),
+        observed_events = report.events(),
+        observed_bytes = report.bytes(),
+        registered_channels = report.registered_channels(),
+        sealed_channels = report.sealed_channels(),
+        required_channels = report.required_channels(),
+        all_required_producers_sealed = report.all_required_producers_sealed(),
+        failure = ?report.failure(),
+        missing_channels = ?report.missing_channel_labels(),
+        transcript = ?report.transcript_digest(),
+        "Rust compiler read observation remains diagnostic until every read channel is proven"
+    );
+    Ok(lease)
+}
 
 /// Whether an embedding failure should leave a typed unavailable plane or fail compilation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1651,30 +1715,29 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     })
                     .collect::<Vec<_>>();
                 Some(
-                    scratch
-                        .rust_workspace_session_lane
-                        .begin(
-                            key,
-                            &source_frontier,
-                            RustAnalysisControl {
-                                cancelled: control.cancelled,
-                                maximum_source_bytes: authority_configuration.maximum_source_bytes,
-                                deadline: control.deadline,
-                            },
+                    begin_rust_workspace_with_observation(
+                        &mut scratch.rust_workspace_session_lane,
+                        key,
+                        &source_frontier,
+                        RustAnalysisControl {
+                            cancelled: control.cancelled,
+                            maximum_source_bytes: authority_configuration.maximum_source_bytes,
+                            deadline: control.deadline,
+                        },
+                    )
+                    .map_err(|cause| {
+                        package_authority_terminal(
+                            package.package_target.target(),
+                            first_application_request,
+                            first_authority,
+                            toolchain,
+                            PackageAuthorityError::RustProject(cause),
                         )
-                        .map_err(|cause| {
-                            package_authority_terminal(
-                                package.package_target.target(),
-                                first_application_request,
-                                first_authority,
-                                toolchain,
-                                PackageAuthorityError::RustProject(cause),
-                            )
-                        })
-                        .map_err(|terminal| PackageSemanticError::Compile {
-                            path: first_source.relative_path.into(),
-                            terminal: Box::new(terminal),
-                        })?,
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?,
                 )
             } else {
                 None

@@ -8,13 +8,26 @@ use std::{
 };
 
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustFeatureControl, RustToolchain, RustWorkspace, RustWorkspaceFile,
-    RustWorkspaceSessionKey, RustWorkspaceSessionLane, SourceByteLimit,
+    RustAnalysisControl, RustFeatureControl, RustToolchain, RustWorkspace,
+    RustWorkspaceEditorBufferObserver, RustWorkspaceFile, RustWorkspaceSessionKey,
+    RustWorkspaceSessionLane, SourceByteLimit,
 };
 use backend_semantic::vocabulary::{RustEdition, Stage};
 use ra_ap_syntax::AstNode;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Default)]
+struct RecordingEditorBuffers {
+    observed: std::collections::HashMap<PathBuf, Vec<u8>>,
+}
+
+impl RustWorkspaceEditorBufferObserver for RecordingEditorBuffers {
+    fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]) {
+        self.observed
+            .insert(relative_path.to_path_buf(), contents.to_vec());
+    }
+}
 
 #[test]
 fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transaction()
@@ -115,7 +128,29 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
         let mut lane = RustWorkspaceSessionLane::default();
         let initial = package_frontier(root_source, disk_sibling, None);
         {
-            let lease = lane.begin(key_for(&initial)?, &initial, control())?;
+            let mut observed_buffers = RecordingEditorBuffers::default();
+            let lease = lane.begin_with_editor_buffer_observer(
+                key_for(&initial)?,
+                &initial,
+                control(),
+                &mut observed_buffers,
+            )?;
+            assert_eq!(
+                observed_buffers
+                    .observed
+                    .get(Path::new("src/lib.rs"))
+                    .map(Vec::as_slice),
+                Some(root_source.as_bytes()),
+                "the observer must receive the exact bytes now present in RA's database"
+            );
+            assert_eq!(
+                observed_buffers
+                    .observed
+                    .get(Path::new("src/sibling.rs"))
+                    .map(Vec::as_slice),
+                Some(disk_sibling.as_bytes()),
+                "each selected buffer must be reported once from the RA database"
+            );
             let unresolved =
                 nested_module_resolves(lease.workspace(), &root, root_source, control())?;
             assert!(!unresolved, "the nested module is absent on the first load");
