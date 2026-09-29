@@ -197,11 +197,10 @@ impl ForgeAcquisitionService {
 
     fn with_product_journal_fence<T>(
         &self,
-        coordinate: &ForgeCoordinate,
+        expected_product_key: WorkKey,
         product_lease: &mut LeaseGuard,
         publish: impl FnOnce(&mut BTreeMap<[u8; ID_BYTES], ForgeJournalEvent>) -> io::Result<T>,
     ) -> io::Result<Option<T>> {
-        let expected_product_key = forge_product_work_key(self.root_identity, coordinate);
         if product_lease.lease().key != expected_product_key {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -681,7 +680,8 @@ impl ForgeAcquisitionService {
         record: ForgeJournalRecord,
         product_lease: &mut LeaseGuard,
     ) -> Result<(), ForgeAcquisitionError> {
-        self.with_product_journal_fence(&record.coordinate, product_lease, |catalog| {
+        let product_key = forge_product_work_key(self.root_identity, &record.coordinate);
+        self.with_product_journal_fence(product_key, product_lease, |catalog| {
             let event = ForgeJournalEvent::Published(record);
             self.journal.append(&event).map_err(journal_io_error)?;
             catalog.insert(event.coordinate().identity(), event);
@@ -698,7 +698,8 @@ impl ForgeAcquisitionService {
         reason: ForgeRejectReason,
         product_lease: &mut LeaseGuard,
     ) -> Result<(), ForgeAcquisitionError> {
-        self.with_product_journal_fence(coordinate, product_lease, |catalog| {
+        let product_key = forge_product_work_key(self.root_identity, coordinate);
+        self.with_product_journal_fence(product_key, product_lease, |catalog| {
             let event = ForgeJournalEvent::Tombstone {
                 coordinate: coordinate.clone(),
                 reason,

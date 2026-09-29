@@ -59,7 +59,7 @@ fn forge_journal_work_key(root: [u8; ID_BYTES]) -> WorkKey {
 }
 
 fn forge_product_work_key(root: [u8; ID_BYTES], coordinate: &ForgeCoordinate) -> WorkKey {
-    acquisition_work_key(root, coordinate.to_string().as_bytes(), [0; ID_BYTES], 1, 0)
+    acquisition_work_key(root, &coordinate.identity(), [0; ID_BYTES], 1, 0)
 }
 
 fn journal_io_error(error: JournalError) -> io::Error {

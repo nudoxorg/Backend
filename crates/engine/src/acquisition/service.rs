@@ -1474,7 +1474,7 @@ pub(super) fn registry_catalog_snapshot(
     let packages = owner.published_packages();
     let mut entries = Vec::with_capacity(packages.len());
     let mut claims = Vec::with_capacity(packages.len());
-    for package in &packages {
+    for package in packages {
         // The owner receipt contains a verified archive claim and exact byte
         // extent. Rehydrate the object identity from those durable facts; a
         // warm snapshot must never reopen or hash every archive in the
