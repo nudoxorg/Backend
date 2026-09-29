@@ -1360,7 +1360,19 @@ mod tests {
         let mut docs_wire = Vec::new();
         docs_wire.extend_from_slice(&1_u32.to_be_bytes()); // one fragment
         docs_wire.push(0); // text fragment
-        let text = vec![b'd'; 300 * 1024];
+        let text_length = MAX_SEMANTIC_SEGMENT_BYTES
+            .checked_add(1)
+            .expect("jumbo documentation length fits usize");
+        let mut text = Vec::with_capacity(text_length);
+        let mut text_state = 0x4d59_5df4_d0f3_3173_u64;
+        for _ in 0..text_length {
+            text_state ^= text_state << 13;
+            text_state ^= text_state >> 7;
+            text_state ^= text_state << 17;
+            text.push(
+                b'a' + u8::try_from(text_state % 26).expect("fixture text alphabet index fits u8"),
+            );
+        }
         docs_wire.extend_from_slice(
             &u32::try_from(text.len())
                 .expect("fixture jumbo documentation length fits u32")
@@ -1613,10 +1625,23 @@ mod tests {
     ) {
         let mut jumbo = PositiveJumboObjects::default();
         let rows = positive_v2_rows(&mut jumbo);
-        assert_eq!(
-            jumbo.0.len(),
-            3,
-            "large fixture value uses two leaves and an interior"
+        let leaf_count = jumbo
+            .0
+            .iter()
+            .filter(|object| object.kind == JumboRopeObjectKind::Leaf)
+            .count();
+        let interior_count = jumbo
+            .0
+            .iter()
+            .filter(|object| object.kind == JumboRopeObjectKind::Interior)
+            .count();
+        assert!(
+            leaf_count >= 5,
+            "over-one-MiB fixture docs use multiple bounded rope leaves"
+        );
+        assert!(
+            interior_count > 0,
+            "multi-leaf fixture docs use interior rope nodes"
         );
         let profile = positive_v2_profile();
         let family_kinds = positive_v2_family_kinds(profile);
