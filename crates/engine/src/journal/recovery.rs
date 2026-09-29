@@ -124,6 +124,9 @@ impl<D: JournalCodec> HashChainJournal<D> {
     /// history. The complete replay is synced before the append cursor is
     /// returned, which lets a domain-specific owner derive a fixed-width
     /// watermark in the same bounded scan used to authenticate the file.
+    /// The visitor may run before the final sync completes. It must only fold
+    /// into temporary state and must not publish an external effect; a later
+    /// validation or sync error returns no journal or scan result.
     /// # Errors
     ///
     /// Returns an error when validation, persistence, or admission of the
@@ -143,6 +146,8 @@ impl<D: JournalCodec> HashChainJournal<D> {
     /// final frame. Domain owners use this during cold replay, then let their
     /// own interprocess fence authorize tail repair during refresh. Complete
     /// frames visited at open are synced before the journal is returned.
+    /// The visitor may run before that final sync completes, so it must only
+    /// fold into temporary state and must not publish an external effect.
     /// # Errors
     ///
     /// Returns an error when validation or admission of the supplied value
@@ -286,7 +291,9 @@ impl<D: JournalCodec> HashChainJournal<D> {
     }
 
     /// Opens from a checked frame and visits the bounded suffix while
-    /// retaining no frame history.
+    /// retaining no frame history. The visitor may run before the final sync
+    /// completes, so it must fold only into temporary state and must not
+    /// publish external effects.
     /// # Errors
     ///
     /// Returns an error when validation, persistence, or admission of the
@@ -539,6 +546,8 @@ impl<D: JournalCodec> HashChainJournal<D> {
 
     /// Folds validated frames with one reusable payload buffer. A successful
     /// scan syncs the bytes it visited before returning the folded state.
+    /// The visitor runs before that sync, so it must not publish any external
+    /// effect; on failure no scan result is returned.
     ///
     /// The visitor must finish using the payload before returning. The scan
     /// retains no frame or payload history, so its memory is bounded by the
@@ -576,7 +585,9 @@ impl<D: JournalCodec> HashChainJournal<D> {
     }
 
     /// Folds validated frames into caller-owned state without retaining the
-    /// journal history.
+    /// journal history. The accumulated state is returned only after the
+    /// scan's durability barrier succeeds; the fold callback must not publish
+    /// an external effect before then.
     /// # Errors
     ///
     /// Returns an error when validation, persistence, or admission of the
@@ -595,7 +606,8 @@ impl<D: JournalCodec> HashChainJournal<D> {
     }
 
     /// Folds only the suffix after a checked checkpoint, then syncs it before
-    /// returning the fold result.
+    /// returning the scan result. The visitor runs before that sync, so it
+    /// must not publish any external effect; on failure no scan is returned.
     /// # Errors
     ///
     /// Returns an error when validation, persistence, or admission of the
