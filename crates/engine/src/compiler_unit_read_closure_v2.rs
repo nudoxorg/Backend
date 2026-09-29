@@ -369,6 +369,7 @@ impl CompilerReadObservationRecorderV2 {
         relative_path: &str,
         contents: &[u8],
     ) -> Result<(), CompilerReadObservationFailureV2> {
+        self.check_healthy()?;
         if producer.channel != CompilerReadObservationChannelV2::EditorOverlay {
             return self.poison(CompilerReadObservationFailureV2::UnsupportedReadClass);
         }
@@ -378,7 +379,6 @@ impl CompilerReadObservationRecorderV2 {
         {
             return self.poison(CompilerReadObservationFailureV2::UnsupportedPath);
         }
-        self.check_healthy()?;
         if producer.attempt_id != self.attempt_id
             || producer.channel != CompilerReadObservationChannelV2::EditorOverlay
         {
@@ -430,6 +430,7 @@ impl CompilerReadObservationRecorderV2 {
         evidence_digest: [u8; 32],
         byte_charge: u64,
     ) -> Result<(), CompilerReadObservationFailureV2> {
+        self.check_healthy()?;
         if !matches!(
             class,
             CompilerReadObservationEventClassV2::PresentFile
@@ -475,6 +476,7 @@ impl CompilerReadObservationRecorderV2 {
         evidence_digest: [u8; 32],
         byte_charge: u64,
     ) -> Result<(), CompilerReadObservationFailureV2> {
+        self.check_healthy()?;
         if !matches!(
             class,
             CompilerReadObservationEventClassV2::EnvironmentValue
@@ -616,8 +618,8 @@ impl CompilerReadObservationRecorderV2 {
         &mut self,
         failure: CompilerReadObservationFailureV2,
     ) -> Result<T, CompilerReadObservationFailureV2> {
-        self.failure = Some(failure);
-        Err(failure)
+        let first_failure = *self.failure.get_or_insert(failure);
+        Err(first_failure)
     }
 }
 
@@ -1397,6 +1399,26 @@ mod tests {
         assert_eq!(
             recorder.seal(&producer, 0),
             Err(CompilerReadObservationFailureV2::UnsupportedPath)
+        );
+    }
+
+    #[test]
+    fn observation_failure_keeps_the_first_cause() {
+        let mut recorder = CompilerReadObservationRecorderV2::new().expect("attempt id");
+        let producer = recorder
+            .register(CompilerReadObservationChannelV2::EditorOverlay)
+            .expect("editor producer");
+        assert_eq!(
+            recorder.observe_editor_buffer(&producer, 1, "src/lib.rs", b"fn f() {}"),
+            Err(CompilerReadObservationFailureV2::SequenceGap)
+        );
+        assert_eq!(
+            recorder.observe_editor_buffer(&producer, 0, "src/../bad.rs", b"fn f() {}"),
+            Err(CompilerReadObservationFailureV2::SequenceGap)
+        );
+        assert_eq!(
+            recorder.report().failure(),
+            Some(CompilerReadObservationFailureV2::SequenceGap)
         );
     }
 
