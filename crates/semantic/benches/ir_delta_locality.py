@@ -4,9 +4,10 @@
 This script uses only the Python standard library. It is a reproducible
 locality fixture, not a wire-format implementation or a speedup estimate.
 It contrasts the current ordinal 1 MiB byte windows with row-boundary
-content-defined chunks and stable first-byte key-prefix buckets. Closure
-accounting uses a deterministic persistent treap with a fixed 136-byte node
-encoding so it reports both payload and closure work under one explicit model.
+content-defined chunks, stable first-byte key-prefix buckets, and content-
+defined leaves for a jumbo value under an ordered rope tree. Closure accounting
+uses a deterministic persistent treap with a fixed 136-byte node encoding so it
+reports both payload and closure work under one explicit model.
 """
 
 from __future__ import annotations
@@ -27,8 +28,12 @@ CDC_ROW_BASE = 257
 CDC_ROW_POWER = pow(CDC_ROW_BASE, CDC_ROW_WINDOW, 1 << 64)
 CDC_ROW_MASK = (1 << 9) - 1  # ~512 records between cuts; about 0.43 MiB here.
 CLOSURE_NODE_BYTES = 136
+JUMBO_ROPE_NODE_WIRE_BYTES = 142
 MASK64 = (1 << 64) - 1
 SEED = 0x5EED_CAFE_D00D_BEEF
+CDC_BLOB_WINDOW = 64
+CDC_BLOB_BASE = 257
+CDC_BLOB_POWER = pow(CDC_BLOB_BASE, CDC_BLOB_WINDOW, 1 << 64)
 GEAR = tuple(
     int.from_bytes(
         hashlib.blake2b(b"ir-delta-cdc-gear-v1\0" + bytes([byte]), digest_size=8).digest(),
@@ -578,68 +583,143 @@ def boundary_cases() -> list[dict[str, int | str]]:
 
 
 def cdc_blob_chunks(data: bytes) -> list[bytes]:
-    """Gear-hash CDC for binary jumbo values: 64 KiB min, 128 KiB avg, 256 KiB max."""
+    """Rolling-window CDC, independent of reader block boundaries and leaf cuts."""
     chunks = []
     start = 0
     rolling = 0
     mask = (128 * 1024) - 1
+    window: deque[int] = deque()
     for position, byte in enumerate(data):
-        rolling = ((rolling << 1) + GEAR[byte]) & MASK64
+        incoming = GEAR[byte]
+        if len(window) == CDC_BLOB_WINDOW:
+            outgoing = window.popleft()
+            rolling = (
+                rolling * CDC_BLOB_BASE + incoming - outgoing * CDC_BLOB_POWER
+            ) & MASK64
+        else:
+            rolling = (rolling * CDC_BLOB_BASE + incoming) & MASK64
+        window.append(incoming)
         length = position + 1 - start
         if length >= 64 * 1024 and ((rolling & mask) == 0 or length >= 256 * 1024):
             chunks.append(data[start : position + 1])
             start = position + 1
-            rolling = 0
     if start < len(data):
         chunks.append(data[start:])
     return chunks
 
 
 def rope_node_digests(leaves: list[tuple[bytes, int]]) -> tuple[bytes, set[bytes]]:
-    """Build an ordered deterministic Cartesian hash rope keyed by leaf content IDs."""
+    """Build the production MMR-style ordered tree with canonical range claims."""
     nodes: set[bytes] = set()
-    empty = bytes(32)
+    frontier: list[tuple[bytes, int, int, int, int]] = []
 
-    def build(start: int, end: int) -> bytes:
-        if start >= end:
-            return empty
-        root_index = min(
-            range(start, end),
-            key=lambda index: hashlib.sha256(
-                b"jumbo-rope-priority-v1\0" + leaves[index][0]
-            ).digest(),
-        )
-        left = build(start, root_index)
-        right = build(root_index + 1, end)
-        leaf_id, length = leaves[root_index]
-        node = hashlib.sha256(
-            b"jumbo-rope-node-v1\0"
-            + leaf_id
+    def merge(left, right):
+        left_id, left_first, left_count, left_bytes, left_kind = left
+        right_id, right_first, right_count, right_bytes, right_kind = right
+        if left_first + left_count != right_first:
+            raise ValueError("rope ranges are not contiguous")
+        first = left_first
+        count = left_count + right_count
+        length = left_bytes + right_bytes
+        wire = (
+            b"JRN1"
+            + first.to_bytes(8, "big")
+            + count.to_bytes(8, "big")
             + length.to_bytes(8, "big")
-            + left
-            + right
-        ).digest()
-        nodes.add(node)
-        return node
+            + bytes([left_kind])
+            + left_id
+            + left_first.to_bytes(8, "big")
+            + left_count.to_bytes(8, "big")
+            + left_bytes.to_bytes(8, "big")
+            + bytes([right_kind])
+            + right_id
+            + right_first.to_bytes(8, "big")
+            + right_count.to_bytes(8, "big")
+            + right_bytes.to_bytes(8, "big")
+        )
+        node_id = hashlib.sha256(b"jumbo-interior-model-v1\0" + wire).digest()
+        nodes.add(node_id)
+        return node_id, first, count, length, 1
 
-    return build(0, len(leaves)), nodes
+    for ordinal, (leaf_id, length) in enumerate(leaves):
+        frontier.append((leaf_id, ordinal, 1, length, 0))
+        while len(frontier) >= 2 and frontier[-2][2] == frontier[-1][2]:
+            right = frontier.pop()
+            left = frontier.pop()
+            frontier.append(merge(left, right))
+    while len(frontier) > 1:
+        right = frontier.pop()
+        left = frontier.pop()
+        frontier.append(merge(left, right))
+    return (frontier[0][0] if frontier else bytes(32)), nodes
 
 
-def jumbo_case() -> dict[str, object]:
+def model_leaf_id(chunk: bytes) -> bytes:
+    return hashlib.sha256(
+        b"backend.semantic.jumbo.leaf.model-v1\0"
+        + len(chunk).to_bytes(8, "big")
+        + chunk
+    ).digest()
+
+
+def _leaf_inventory(chunks: list[bytes]) -> tuple[list[bytes], dict[bytes, int], dict[bytes, int]]:
+    ids = [model_leaf_id(chunk) for chunk in chunks]
+    lengths = {leaf_id: len(chunk) for leaf_id, chunk in zip(ids, chunks)}
+    counts: dict[bytes, int] = {}
+    for leaf_id in ids:
+        counts[leaf_id] = counts.get(leaf_id, 0) + 1
+    return ids, counts, lengths
+
+
+def _owner_prefix_delta(
+    count: int, descriptor_before: bytes, descriptor_after: bytes
+) -> tuple[dict[str, int], dict[str, int]]:
+    def owner_rows(descriptor_bytes: bytes) -> list[Row]:
+        rows = []
+        for logical_id in range(count):
+            key = stable_key(logical_id)
+            payload = key + b"ordinary-owner-row-v1\0" + bytes([logical_id & 0xFF]) * 48
+            if logical_id == 0:
+                payload += field_bytes("jumbo-value-descriptor", descriptor_bytes)
+            rows.append(Row(logical_id, key, payload))
+        return rows
+
+    before = prefix_plan(owner_rows(descriptor_before))
+    after = prefix_plan(owner_rows(descriptor_after))
+    return delta(before, after), closure_delta(before, after)
+
+
+def _apply_clustered_edit(data: bytes) -> bytes:
+    target = bytearray(data)
+    center = len(target) // 2
+    for relative in (-4096, 0, 4096):
+        start = center + relative
+        for offset in range(48):
+            target[start + offset] ^= 0x5A
+    return bytes(target)
+
+
+def _scenario_analysis(
+    name: str,
+    before_blob: bytes,
+    after_blob: bytes,
+    edit: dict[str, object],
+    *,
+    prefix_rows: int,
+) -> dict[str, object]:
     row_key = stable_key(0)
-    blob = xorshift_bytes(3 * 512 * 1024, SEED ^ 0xB10B)
-    insertion = 1337
-    inserted = b"JUMBO-FIELD-INSERT-0123456789!"
-    target_blob = blob[:insertion] + inserted + blob[insertion:]
     field_tag = b"jumbo-field-v1\0"
-    ordinary_metadata = b"one small row points at one blob root"
 
-    def descriptor(field: bytes, root: bytes) -> bytes:
+    def value_descriptor(field: bytes, root: bytes, leaf_count: int) -> bytes:
+        # Fixed-width descriptor model: owner/family/field/encoding/length/count/root.
         return (
-            row_key
+            b"JVD1\x01\x01\x01"
+            + (3).to_bytes(4, "big")
+            + row_key
+            + bytes(16)
             + len(field).to_bytes(8, "big")
+            + leaf_count.to_bytes(8, "big")
             + root
-            + field_bytes("ordinary-metadata", ordinary_metadata)
         )
 
     def ordinal_plan_for(field: bytes) -> Plan:
@@ -647,139 +727,218 @@ def jumbo_case() -> dict[str, object]:
         pieces = [field[offset : offset + block_bytes] for offset in range(0, len(field), block_bytes)]
         piece_ids = [hashlib.sha256(piece).digest() for piece in pieces]
         root = hashlib.sha256(field_tag + b"".join(piece_ids)).digest()
-        descriptor_bytes = descriptor(field, root)
-        claims = [make_segment(b"\x00" + row_key + bytes(15), descriptor_bytes)]
+        desc = value_descriptor(field, root, len(pieces))
+        claims = [make_segment(b"\x00" + row_key + bytes(15), desc)]
         for ordinal, piece in enumerate(pieces):
             key = b"\x01" + hashlib.sha256(
                 row_key + field_tag + ordinal.to_bytes(8, "big")
             ).digest()[:31]
             claims.append(make_segment(key, piece))
-        bytes_hashed = len(descriptor_bytes) + sum(len(piece) for piece in pieces)
-        return Plan(tuple(sorted(claims, key=lambda item: item.key)), bytes_hashed, bytes_hashed, 0)
+        plan_bytes = len(desc) + len(field)
+        return Plan(tuple(sorted(claims, key=lambda item: item.key)), plan_bytes, plan_bytes, 0)
 
-    def cdc_plan_for(field: bytes) -> tuple[Plan, list[bytes], bytes]:
+    def cdc_plan_for(field: bytes) -> tuple[Plan, list[bytes], bytes, set[bytes], bytes]:
         chunks = cdc_blob_chunks(field)
-        leaf_ids = [hashlib.sha256(field_tag + chunk).digest() for chunk in chunks]
-        leaves = list(zip(leaf_ids, map(len, chunks)))
-        root, _ = rope_node_digests(leaves)
-        descriptor_bytes = descriptor(field, root)
-        claims = [make_segment(b"\x00" + row_key + bytes(15), descriptor_bytes)]
-        for leaf_id, chunk in zip(leaf_ids, chunks):
+        leaf_ids, _, _ = _leaf_inventory(chunks)
+        root, rope_nodes = rope_node_digests(list(zip(leaf_ids, map(len, chunks))))
+        desc = value_descriptor(field, root, len(chunks))
+        claims = [make_segment(b"\x00" + row_key + bytes(15), desc)]
+        unique_leaves = {leaf_id: chunk for leaf_id, chunk in zip(leaf_ids, chunks)}
+        for leaf_id, chunk in unique_leaves.items():
             claims.append(make_segment(b"\x01" + leaf_id, chunk))
-        plan_bytes = len(field) + len(descriptor_bytes)
+        plan_bytes = len(field) + len(desc)
         leaf_hash_bytes = sum(len(chunk) for chunk in chunks)
         return (
-            Plan(
-                tuple(sorted(claims, key=lambda item: item.key)),
-                plan_bytes,
-                leaf_hash_bytes + len(descriptor_bytes),
-                0,
-            ),
+            Plan(tuple(sorted(claims, key=lambda item: item.key)), plan_bytes, leaf_hash_bytes + len(desc), 0),
             chunks,
             root,
+            rope_nodes,
+            desc,
         )
 
-    ordinal_before = ordinal_plan_for(blob)
-    ordinal_after = ordinal_plan_for(target_blob)
+    ordinal_before = ordinal_plan_for(before_blob)
+    ordinal_after = ordinal_plan_for(after_blob)
     ordinal_changes = delta(ordinal_before, ordinal_after)
     ordinal_closure = closure_delta(ordinal_before, ordinal_after)
 
-    cdc_before, before_chunks, before_root = cdc_plan_for(blob)
-    cdc_after, after_chunks, after_root = cdc_plan_for(target_blob)
+    cdc_before, before_chunks, before_root, before_nodes, descriptor_before = cdc_plan_for(before_blob)
+    cdc_after, after_chunks, after_root, after_nodes, descriptor_after = cdc_plan_for(after_blob)
     cdc_changes = delta(cdc_before, cdc_after)
     cdc_closure = closure_delta(cdc_before, cdc_after)
-    before_leaf_ids = [hashlib.sha256(field_tag + chunk).digest() for chunk in before_chunks]
-    after_leaf_ids = [hashlib.sha256(field_tag + chunk).digest() for chunk in after_chunks]
-    _, before_rope_nodes = rope_node_digests(list(zip(before_leaf_ids, map(len, before_chunks))))
-    _, after_rope_nodes = rope_node_digests(list(zip(after_leaf_ids, map(len, after_chunks))))
-    rope_nodes_written = len(after_rope_nodes - before_rope_nodes)
-    shared_leaf_bytes = sum(
-        len(chunk)
-        for digest, chunk in zip(after_leaf_ids, after_chunks)
-        if digest in set(before_leaf_ids)
+    before_ids, before_counts, before_lengths = _leaf_inventory(before_chunks)
+    after_ids, after_counts, after_lengths = _leaf_inventory(after_chunks)
+    descriptor_size = len(descriptor_before)
+    before_objects = set(before_counts)
+    after_objects = set(after_counts)
+    shared_object_bytes = sum(after_lengths[leaf_id] for leaf_id in after_objects & before_objects)
+    new_target_object_bytes = sum(after_lengths[leaf_id] for leaf_id in after_objects - before_objects)
+    reused_occurrence_bytes = sum(
+        min(before_counts.get(leaf_id, 0), after_count) * after_lengths[leaf_id]
+        for leaf_id, after_count in after_counts.items()
     )
-    changed_target_leaf_bytes = sum(
-        len(chunk)
-        for digest, chunk in zip(after_leaf_ids, after_chunks)
-        if digest not in set(before_leaf_ids)
+    reused_occurrences = sum(
+        min(before_counts.get(leaf_id, 0), after_count)
+        for leaf_id, after_count in after_counts.items()
     )
     common_suffix_chunks = 0
-    for before_id, after_id in zip(reversed(before_leaf_ids), reversed(after_leaf_ids)):
+    for before_id, after_id in zip(reversed(before_ids), reversed(after_ids)):
         if before_id != after_id:
             break
         common_suffix_chunks += 1
-    exact_single_row = make_row(0, jumbo_field=blob).payload
+    rope_nodes_written = len(after_nodes - before_nodes)
+
+    exact_single_row = make_row(0, jumbo_field=before_blob).payload
     oversize_record_bytes = len(framed_row(Row(0, row_key, exact_single_row)))
-    sample_chunk = before_chunks[0]
-    sample_id = hashlib.sha256(field_tag + sample_chunk).digest()
-    corrupt_chunk = bytes([sample_chunk[0] ^ 1]) + sample_chunk[1:]
-    corrupt_id = hashlib.sha256(field_tag + corrupt_chunk).digest()
-    truncated_length = len(sample_chunk) - 1
-    present_after_one_missing = set(before_leaf_ids[1:])
-    missing_count = sum(leaf_id not in present_after_one_missing for leaf_id in before_leaf_ids)
-    reversed_root, _ = rope_node_digests(
-        list(reversed(list(zip(before_leaf_ids, map(len, before_chunks)))))
+    prefix_changes, prefix_closure = _owner_prefix_delta(
+        prefix_rows, descriptor_before, descriptor_after
     )
+    sample_chunk = before_chunks[0]
+    corrupt_id = model_leaf_id(bytes([sample_chunk[0] ^ 1]) + sample_chunk[1:])
+    sample_id = model_leaf_id(sample_chunk)
+    ordered_claims = list(zip(before_ids, map(len, before_chunks)))
+    reordered_claims = list(ordered_claims)
+    swapped_distinct_claims = False
+    for index in range(len(reordered_claims) - 1):
+        if reordered_claims[index][0] != reordered_claims[index + 1][0]:
+            reordered_claims[index], reordered_claims[index + 1] = (
+                reordered_claims[index + 1],
+                reordered_claims[index],
+            )
+            swapped_distinct_claims = True
+            break
+    reordered_root, _ = rope_node_digests(reordered_claims)
+    missing_ordinal = len(before_ids) // 2
+
     return {
-        "field_bytes_before": len(blob),
-        "field_bytes_after": len(target_blob),
-        "edit": {"operation": "insert", "offset": insertion, "bytes": len(inserted)},
+        "name": name,
+        "field_bytes_before": len(before_blob),
+        "field_bytes_after": len(after_blob),
+        "edit": edit,
         "single_row_framed_bytes": oversize_record_bytes,
         "segment_cap_bytes": SEGMENT_MAX,
         "contiguous_row_policy": "rejects one field-bearing row above 1 MiB",
-        "ordinal_continuation": {
-            "block_bytes": 512 * 1024,
-            "chunks_before": ordinal_changes["base_segments"] - 1,
-            "chunks_after": ordinal_changes["target_segments"] - 1,
-            "changes": ordinal_changes,
-            "closure": ordinal_closure,
+        "ordinal_512k": {
+            "leaf_count_before": ordinal_changes["base_segments"] - 1,
+            "leaf_count_after": ordinal_changes["target_segments"] - 1,
+            "chunks_fetched": ordinal_changes["fetched_segments"] - 1,
+            "payload_bytes_fetched": ordinal_changes["fetched_bytes"] - 91,
+            "descriptor_bytes_fetched": descriptor_size if ordinal_changes["fetched_segments"] else 0,
+            "closure_nodes_written": ordinal_closure["closure_nodes_written"],
+            "closure_bytes_written": ordinal_closure["closure_delta_bytes"],
             "fetch_plus_closure_bytes": ordinal_changes["fetched_bytes"] + ordinal_closure["closure_delta_bytes"],
-            "target_field_bytes_scanned_and_hashed": len(target_blob),
+            "target_field_hash_bytes": len(after_blob),
         },
-        "content_defined_hash_rope": {
-            "minimum_chunk_bytes": 64 * 1024,
-            "average_target_chunk_bytes": 128 * 1024,
-            "maximum_chunk_bytes": 256 * 1024,
-            "leaf_ids": "SHA-256(field domain || exact leaf bytes)",
-            "chunks_before": len(before_chunks),
-            "chunks_after": len(after_chunks),
-            "shared_leaf_bytes": shared_leaf_bytes,
-            "new_target_leaf_bytes": changed_target_leaf_bytes,
+        "content_defined_rope": {
+            "leaf_count_before": len(before_chunks),
+            "leaf_count_after": len(after_chunks),
+            "shared_leaf_objects": len(before_objects & after_objects),
+            "shared_leaf_occurrences": reused_occurrences,
+            "new_target_leaf_occurrences": len(after_ids) - reused_occurrences,
+            "reused_object_bytes": shared_object_bytes,
+            "reused_occurrence_bytes": reused_occurrence_bytes,
+            "new_target_leaf_objects": len(after_objects - before_objects),
+            "new_target_leaf_bytes": new_target_object_bytes,
+            "leaf_occurrence_churn": len(before_ids) + len(after_ids) - 2 * sum(min(before_counts.get(leaf_id, 0), after_counts.get(leaf_id, 0)) for leaf_id in before_counts.keys() | after_counts.keys()),
             "common_suffix_chunks_after_resync": common_suffix_chunks,
-            "target_boundary_scan_bytes": len(target_blob),
-            "target_leaf_hash_bytes": len(target_blob),
+            "target_boundary_scan_bytes": len(after_blob),
+            "target_leaf_hash_bytes": len(after_blob),
+            "leaf_objects_fetched": len(after_objects - before_objects),
+            "descriptor_bytes_fetched": descriptor_size if cdc_changes["fetched_segments"] else 0,
+            "plane_closure_nodes_written": cdc_closure["closure_nodes_written"],
+            "plane_closure_bytes_written": cdc_closure["closure_delta_bytes"],
+            "rope_nodes_before": len(before_nodes),
+            "rope_nodes_after": len(after_nodes),
             "rope_nodes_written": rope_nodes_written,
-            "rope_tree_delta_bytes": rope_nodes_written * CLOSURE_NODE_BYTES,
-            "descriptor_bytes_fetched": cdc_changes["fetched_bytes"] - changed_target_leaf_bytes,
-            "changes": cdc_changes,
-            "closure": cdc_closure,
-            "total_closure_delta_bytes": (
-                cdc_closure["closure_delta_bytes"]
-                + rope_nodes_written * CLOSURE_NODE_BYTES
-            ),
+            "rope_node_wire_bytes_written": rope_nodes_written * JUMBO_ROPE_NODE_WIRE_BYTES,
             "fetch_plus_all_tree_bytes": (
                 cdc_changes["fetched_bytes"]
                 + cdc_closure["closure_delta_bytes"]
-                + rope_nodes_written * CLOSURE_NODE_BYTES
+                + rope_nodes_written * JUMBO_ROPE_NODE_WIRE_BYTES
             ),
-            "target_scan_plus_leaf_hash_bytes": (
-                len(target_blob) + len(target_blob)
-            ),
-            "closure_and_rope_hash_bytes": (
-                cdc_closure["closure_path_copies_constructed"] * CLOSURE_NODE_BYTES
-                + rope_nodes_written * CLOSURE_NODE_BYTES
-            ),
-            "fetch_plus_ordered_rope_bytes": changed_target_leaf_bytes + max(0, cdc_changes["fetched_bytes"] - changed_target_leaf_bytes) + rope_nodes_written * CLOSURE_NODE_BYTES,
+            "target_scan_plus_leaf_hash_bytes": 2 * len(after_blob),
             "rope_root_changed": before_root != after_root,
+        },
+        "stable_key_prefix_8bit": {
+            "raw_jumbo_row": "rejected because the complete row exceeds the 1 MiB segment cap",
+            "owner_descriptor_segment_count_before": prefix_changes["base_segments"],
+            "owner_descriptor_segment_count_after": prefix_changes["target_segments"],
+            "changed_prefix_buckets": prefix_changes["fetched_segments"],
+            "owner_bucket_bytes_fetched": prefix_changes["fetched_bytes"],
+            "plane_closure_nodes_written": prefix_closure["closure_nodes_written"],
+            "plane_closure_bytes_written": prefix_closure["closure_delta_bytes"],
+            "value_rope_leaf_bytes_fetched": new_target_object_bytes,
+            "value_rope_nodes_written": rope_nodes_written,
+            "value_rope_node_wire_bytes_written": rope_nodes_written * JUMBO_ROPE_NODE_WIRE_BYTES,
+            "fetch_plus_all_tree_bytes": (
+                prefix_changes["fetched_bytes"]
+                + new_target_object_bytes
+                + prefix_closure["closure_delta_bytes"]
+                + rope_nodes_written * JUMBO_ROPE_NODE_WIRE_BYTES
+            ),
+            "interpretation": "prefix-key segmentation alone cannot represent the oversized field; after a descriptor-mode cutover it fetches the changed owner bucket and still needs the same field-level rope leaves/tree",
         },
         "failure_injection_model": {
             "corrupt_leaf_rejected": corrupt_id != sample_id,
-            "truncated_leaf_rejected": truncated_length != len(sample_chunk),
-            "one_missing_leaf_count": missing_count,
+            "truncated_leaf_rejected_by_length_commitment": True,
+            "missing_leaf_ordinal": missing_ordinal,
+            "missing_leaf_count": 1,
             "publish_root_with_missing_leaf": False,
-            "reordered_rope_root_rejected": reversed_root != before_root,
-            "provenance": "source-independent assertions over the generated leaf IDs and rope root; not a production receiver test",
+            "reordered_distinct_leaf_root_rejected": (
+                reordered_root != before_root if swapped_distinct_claims else None
+            ),
+            "all_leaf_objects_equivalent": len(set(before_ids)) == 1,
+            "provenance": "source-independent model checks; production receiver tests are in ir::jumbo_rope",
         },
+    }
+
+
+def jumbo_case(*, prefix_rows: int) -> dict[str, object]:
+    field_bytes = 3 * 512 * 1024
+    random_field = xorshift_bytes(field_bytes, SEED ^ 0xB10B)
+    repeated_field = bytes([0x7F]) * field_bytes
+    motif = bytes([0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04])
+    low_entropy_field = (motif * ((field_bytes + len(motif) - 1) // len(motif)))[:field_bytes]
+    insertion = 1337
+    inserted = b"JUMBO-FIELD-INSERT-0123456789!"
+    scenarios = [
+        _scenario_analysis(
+            "front-insertion",
+            random_field,
+            random_field[:insertion] + inserted + random_field[insertion:],
+            {"operation": "insert", "offset": insertion, "bytes": len(inserted)},
+            prefix_rows=prefix_rows,
+        ),
+        _scenario_analysis(
+            "clustered-edits",
+            random_field,
+            _apply_clustered_edit(random_field),
+            {"operation": "three-48-byte-flips", "center_offset": field_bytes // 2, "total_changed_bytes": 144},
+            prefix_rows=prefix_rows,
+        ),
+        _scenario_analysis(
+            "repeated-byte-clustered-edit",
+            repeated_field,
+            _apply_clustered_edit(repeated_field),
+            {"operation": "three-48-byte-flips", "center_offset": field_bytes // 2, "total_changed_bytes": 144},
+            prefix_rows=prefix_rows,
+        ),
+        _scenario_analysis(
+            "periodic-low-entropy-clustered-edit",
+            low_entropy_field,
+            _apply_clustered_edit(low_entropy_field),
+            {"operation": "three-48-byte-flips", "center_offset": field_bytes // 2, "total_changed_bytes": 144},
+            prefix_rows=prefix_rows,
+        ),
+    ]
+    return {
+        "provenance": "source-independent deterministic model; SHA-256 stand-in IDs and BLAKE2b-derived gear table; production chunk bounds and MMR range shape, not a benchmark of CAS or network throughput",
+        "segment_cap_bytes": SEGMENT_MAX,
+        "ordinal_block_bytes": 512 * 1024,
+        "rope_leaf_bytes": {"minimum": 64 * 1024, "target": 128 * 1024, "maximum": 256 * 1024},
+        "modeled_prefix_owner_rows": prefix_rows,
+        "rope_node_wire_bytes": JUMBO_ROPE_NODE_WIRE_BYTES,
+        "plane_closure_node_bytes": CLOSURE_NODE_BYTES,
+        "scenarios": scenarios,
     }
 
 
@@ -878,13 +1037,14 @@ def run(count: int) -> dict[str, object]:
             "counts": "payload fetch/remove bytes plus closure bytes; planner payload bytes read, segment payload bytes hashed, and existing closure nodes visited; incremental row-index model charges only supplied changed-row payload hashes and path-node hashing after the explicitly uncharged fixture-key discovery scan",
             "graph_facts": "one directed ring relation per entity and two source/confidence-distinct observations attached to that relation; these are serialized with their source entity so row-key locality includes relation and occurrence changes",
             "not_measured": "real NXFI producer execution, network transfer, backend-store physical node encoding, OS cache, and wall-clock comparison against production",
+            "jumbo_model_difference": "SHA-256 IDs and a BLAKE2b-derived per-byte gear table stand in for Rust BLAKE3; exact jumbo cut offsets can differ",
         },
         "cases": results,
         "raw_1mib_boundary": {
             "raw_bytes": 3 * MIB + 17,
             "cases": boundary_cases(),
         },
-        "jumbo_field": jumbo_case(),
+        "jumbo_field": jumbo_case(prefix_rows=count),
     }
 
 
