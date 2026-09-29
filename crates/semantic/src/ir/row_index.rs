@@ -7,7 +7,7 @@
 //! rows in leaf slabs and copies affected paths for edits, so there is no
 //! `Arc` per row and no process-wide mutable interner.
 
-use std::{mem::size_of, ops::Bound, sync::Arc};
+use std::{fmt, mem::size_of, ops::Bound, sync::Arc};
 
 use backend_version::{
     ObjectVersion, ObjectVersionHasher, PersistentTree, Relation, RuntimeIdentityError, Schema,
@@ -755,12 +755,104 @@ pub struct StableRowIndexDiffWork {
     pub peak_run_cursor_scratch_bytes: u64,
 }
 
-/// Ordered diff whose payload references borrow the two immutable roots.
+/// One exact equal subtree found while comparing two live admitted indexes.
+///
+/// This borrow-scoped structural certificate is useful to a caller that can
+/// retain the same row trees across generations: the subtree commitment,
+/// key envelope, and census are equal in both borrowed roots. It does not
+/// prove that either row index completely represents a semantic reader, nor
+/// is it a portable proof that can be detached from these indexes.
+#[derive(Clone, Copy)]
+pub struct StableRowIndexUnchangedSubtree<'before, 'after> {
+    before: &'before StableRowIndex,
+    after: &'after StableRowIndex,
+    before_root: StableRowIndexRoot,
+    after_root: StableRowIndexRoot,
+    first_key: Option<StableRowKey>,
+    last_key: Option<StableRowKey>,
+    row_count: u64,
+    subtree_commitment: [u8; 32],
+}
+
+impl StableRowIndexUnchangedSubtree<'_, '_> {
+    /// Returns the exact prior index root that scopes this certificate.
+    #[must_use]
+    pub const fn before_root(self) -> StableRowIndexRoot {
+        self.before_root
+    }
+
+    /// Returns the exact target index root that scopes this certificate.
+    #[must_use]
+    pub const fn after_root(self) -> StableRowIndexRoot {
+        self.after_root
+    }
+
+    /// Returns the first key in the equal subtree.
+    #[must_use]
+    pub const fn first_key(self) -> Option<StableRowKey> {
+        self.first_key
+    }
+
+    /// Returns the last key in the equal subtree.
+    #[must_use]
+    pub const fn last_key(self) -> Option<StableRowKey> {
+        self.last_key
+    }
+
+    /// Returns the exact number of rows in the equal subtree.
+    #[must_use]
+    pub const fn row_count(self) -> u64 {
+        self.row_count
+    }
+
+    /// Returns the equal subtree's authenticated commitment.
+    #[must_use]
+    pub const fn subtree_commitment(self) -> [u8; 32] {
+        self.subtree_commitment
+    }
+
+    /// Returns whether this certificate is scoped to these exact borrowed
+    /// index instances, including instances with equal content roots.
+    #[must_use]
+    pub fn is_scoped_to(self, before: &StableRowIndex, after: &StableRowIndex) -> bool {
+        core::ptr::eq(self.before, before) && core::ptr::eq(self.after, after)
+    }
+}
+
+impl fmt::Debug for StableRowIndexUnchangedSubtree<'_, '_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StableRowIndexUnchangedSubtree")
+            .field("before_root", &self.before_root)
+            .field("after_root", &self.after_root)
+            .field("first_key", &self.first_key)
+            .field("last_key", &self.last_key)
+            .field("row_count", &self.row_count)
+            .field("subtree_commitment", &self.subtree_commitment)
+            .finish()
+    }
+}
+
+impl PartialEq for StableRowIndexUnchangedSubtree<'_, '_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.before_root == other.before_root
+            && self.after_root == other.after_root
+            && self.first_key == other.first_key
+            && self.last_key == other.last_key
+            && self.row_count == other.row_count
+            && self.subtree_commitment == other.subtree_commitment
+    }
+}
+
+impl Eq for StableRowIndexUnchangedSubtree<'_, '_> {}
+
+/// Ordered diff and exact skipped-subtree facts borrowing two immutable roots.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StableRowIndexDiff<'before, 'after> {
     before_root: StableRowIndexRoot,
     after_root: StableRowIndexRoot,
     entries: Box<[StableRowIndexDiffEntry<'before, 'after>]>,
+    unchanged_subtrees: Box<[StableRowIndexUnchangedSubtree<'before, 'after>]>,
     work: StableRowIndexDiffWork,
 }
 
@@ -781,6 +873,17 @@ impl<'before, 'after> StableRowIndexDiff<'before, 'after> {
     #[must_use]
     pub fn entries(&self) -> &[StableRowIndexDiffEntry<'before, 'after>] {
         &self.entries
+    }
+
+    /// Exact equal subtrees skipped while producing this pair's row diff.
+    ///
+    /// Each item borrows both complete indexes, so it cannot be used after
+    /// either owner is dropped or mistaken for a semantic-reader completeness
+    /// proof. Subtrees whose boundaries diverged may instead be compared row
+    /// by row and therefore have no compact certificate here.
+    #[must_use]
+    pub fn unchanged_subtrees(&self) -> &[StableRowIndexUnchangedSubtree<'before, 'after>] {
+        &self.unchanged_subtrees
     }
 
     /// Structural traversal and row-comparison counters.
@@ -836,12 +939,36 @@ impl StableRowIndexDiffCounter {
 fn diff_node<'before, 'after>(
     before: RowNodeView<'before>,
     after: RowNodeView<'after>,
+    before_index: &'before StableRowIndex,
+    after_index: &'after StableRowIndex,
     entries: &mut Vec<StableRowIndexDiffEntry<'before, 'after>>,
+    unchanged_subtrees: &mut Vec<StableRowIndexUnchangedSubtree<'before, 'after>>,
     counter: &mut StableRowIndexDiffCounter,
 ) -> Result<(), StableRowIndexError> {
     counter.visited_node()?;
     counter.visited_node()?;
     if before.id().to_bytes() == after.id().to_bytes() {
+        if before.canonical_bytes() != after.canonical_bytes()
+            || before.row_count() != after.row_count()
+            || before.len() != after.len()
+            || before.first_key() != after.first_key()
+            || last_key_in_node(before) != last_key_in_node(after)
+        {
+            return Err(StableRowIndexError::Tree(TreeError::InvalidRoot));
+        }
+        unchanged_subtrees
+            .try_reserve(1)
+            .map_err(|_| StableRowIndexError::Allocation)?;
+        unchanged_subtrees.push(StableRowIndexUnchangedSubtree {
+            before: before_index,
+            after: after_index,
+            before_root: before_index.root(),
+            after_root: after_index.root(),
+            first_key: before.first_key().copied(),
+            last_key: last_key_in_node(before).copied(),
+            row_count: before.row_count(),
+            subtree_commitment: before.id().to_bytes(),
+        });
         return counter.skipped_subtree();
     }
     if before.is_empty() || after.is_empty() {
@@ -858,7 +985,15 @@ fn diff_node<'before, 'after>(
         (None, None) if before.level() == after.level() => {
             let before_children = collect_children(before)?;
             let after_children = collect_children(after)?;
-            diff_node_lists(&before_children, &after_children, entries, counter)
+            diff_node_lists(
+                &before_children,
+                &after_children,
+                before_index,
+                after_index,
+                entries,
+                unchanged_subtrees,
+                counter,
+            )
         }
         _ => {
             // Trees can have different heights after a root split or collapse.
@@ -867,8 +1002,25 @@ fn diff_node<'before, 'after>(
             let target_level = before.level().min(after.level()).saturating_sub(1);
             let before_frontier = collect_at_level(before, target_level, counter)?;
             let after_frontier = collect_at_level(after, target_level, counter)?;
-            diff_node_lists(&before_frontier, &after_frontier, entries, counter)
+            diff_node_lists(
+                &before_frontier,
+                &after_frontier,
+                before_index,
+                after_index,
+                entries,
+                unchanged_subtrees,
+                counter,
+            )
         }
+    }
+}
+
+fn last_key_in_node<'tree>(mut node: RowNodeView<'tree>) -> Option<&'tree StableRowKey> {
+    loop {
+        if let Some(entries) = node.entries() {
+            return entries.last().map(|(key, _)| key);
+        }
+        node = node.children().last()?;
     }
 }
 
@@ -916,13 +1068,24 @@ fn collect_at_level_into<'tree>(
 fn diff_node_lists<'before, 'after>(
     before: &[RowNodeView<'before>],
     after: &[RowNodeView<'after>],
+    before_tree: &'before StableRowIndex,
+    after_tree: &'after StableRowIndex,
     entries: &mut Vec<StableRowIndexDiffEntry<'before, 'after>>,
+    unchanged_subtrees: &mut Vec<StableRowIndexUnchangedSubtree<'before, 'after>>,
     counter: &mut StableRowIndexDiffCounter,
 ) -> Result<(), StableRowIndexError> {
     let (mut before_index, mut after_index) = (0, 0);
     while before_index < before.len() && after_index < after.len() {
         if node_frontiers_align(before, before_index, after, after_index)? {
-            diff_node(before[before_index], after[after_index], entries, counter)?;
+            diff_node(
+                before[before_index],
+                after[after_index],
+                before_tree,
+                after_tree,
+                entries,
+                unchanged_subtrees,
+                counter,
+            )?;
             before_index += 1;
             after_index += 1;
             continue;
@@ -1479,23 +1642,29 @@ impl StableRowIndex {
     /// Child subtrees are paired only when their key intervals align; if a
     /// split changed an interval boundary, the divergent run is merged by row
     /// key up to the next shared boundary. The returned changes borrow payload
-    /// references from both immutable roots.
+    /// references from both immutable roots; equal structural subtrees are
+    /// retained as borrow-scoped certificates on the result.
     pub fn diff<'before, 'after>(
         &'before self,
         after: &'after Self,
     ) -> Result<StableRowIndexDiff<'before, 'after>, StableRowIndexError> {
         let mut entries = Vec::new();
+        let mut unchanged_subtrees = Vec::new();
         let mut counter = StableRowIndexDiffCounter::default();
         diff_node(
             self.tree.root_view(),
             after.tree.root_view(),
+            self,
+            after,
             &mut entries,
+            &mut unchanged_subtrees,
             &mut counter,
         )?;
         Ok(StableRowIndexDiff {
             before_root: self.root(),
             after_root: after.root(),
             entries: entries.into_boxed_slice(),
+            unchanged_subtrees: unchanged_subtrees.into_boxed_slice(),
             work: counter.work,
         })
     }

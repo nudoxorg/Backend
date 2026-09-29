@@ -379,6 +379,111 @@ fn borrowed_two_root_diff_skips_no_op_and_sparse_equal_subtrees() {
 }
 
 #[test]
+fn diff_equal_subtree_certificates_are_root_bound_and_cover_exact_rows() {
+    let empty = StableRowIndex::from_sorted_rows(&[]).expect("canonical empty root");
+    let empty_diff = empty.diff(&empty).expect("empty same-root diff");
+    let [empty_certificate] = empty_diff.unchanged_subtrees() else {
+        panic!("equal empty roots produce one borrowed root certificate");
+    };
+    assert_eq!(empty_certificate.first_key(), None);
+    assert_eq!(empty_certificate.last_key(), None);
+    assert_eq!(empty_certificate.row_count(), 0);
+    assert!(empty_certificate.is_scoped_to(&empty, &empty));
+
+    let before_rows = fixture_rows(4_096);
+    let before = StableRowIndex::from_sorted_rows(&before_rows).expect("valid base index");
+    let no_op = before.diff(&before).expect("same-root diff");
+    let [root_certificate] = no_op.unchanged_subtrees() else {
+        panic!("equal roots produce one borrowed root certificate");
+    };
+    assert_eq!(root_certificate.before_root(), before.root());
+    assert_eq!(root_certificate.after_root(), before.root());
+    assert_eq!(root_certificate.first_key(), Some(key(RowFamily::Core, 0)));
+    assert_eq!(
+        root_certificate.last_key(),
+        Some(key(RowFamily::Core, 4_095))
+    );
+    assert_eq!(root_certificate.row_count(), 4_096);
+    assert_eq!(
+        root_certificate.subtree_commitment(),
+        before.tree.root_view().id().to_bytes()
+    );
+    assert!(root_certificate.is_scoped_to(&before, &before));
+
+    let changes = [
+        StableRowIndexChange::put(key(RowFamily::Core, 4), payload(b"sparse low replacement")),
+        StableRowIndexChange::put(
+            key(RowFamily::Core, 4_090),
+            payload(b"sparse high replacement"),
+        ),
+    ];
+    let after = before
+        .prepare_update(&changes)
+        .expect("two ordered sparse changes")
+        .commit();
+    let diff = before.diff(&after).expect("borrowed two-root diff");
+    assert!(!diff.unchanged_subtrees().is_empty());
+    assert_eq!(
+        u64::try_from(diff.unchanged_subtrees().len()).expect("certificate count fits"),
+        diff.work().skipped_equal_subtrees
+    );
+
+    let before_node_ids: BTreeSet<_> = before
+        .tree
+        .node_closure()
+        .map(|node| node.id().to_bytes())
+        .collect();
+    let after_node_ids: BTreeSet<_> = after
+        .tree
+        .node_closure()
+        .map(|node| node.id().to_bytes())
+        .collect();
+    let changed_keys = [key(RowFamily::Core, 4), key(RowFamily::Core, 4_090)];
+    let mut previous_last_key = None;
+    for certificate in diff.unchanged_subtrees() {
+        let first_key = certificate
+            .first_key()
+            .expect("nonempty fixture subtree has a first key");
+        let last_key = certificate
+            .last_key()
+            .expect("nonempty fixture subtree has a last key");
+        assert_eq!(certificate.before_root(), before.root());
+        assert_eq!(certificate.after_root(), after.root());
+        assert!(certificate.is_scoped_to(&before, &after));
+        assert!(!certificate.is_scoped_to(&after, &before));
+        assert!(certificate.row_count() > 0);
+        assert!(first_key <= last_key);
+        assert!(previous_last_key.is_none_or(|previous| previous < first_key));
+        previous_last_key = Some(last_key);
+        assert!(before_node_ids.contains(&certificate.subtree_commitment()));
+        assert!(after_node_ids.contains(&certificate.subtree_commitment()));
+        assert!(
+            changed_keys
+                .iter()
+                .all(|changed| { *changed < first_key || *changed > last_key })
+        );
+
+        let before_rows_in_range: Vec<_> = before
+            .range(StableRowRange::new(None, None).expect("unbounded range"))
+            .expect("valid prior range")
+            .filter(|entry| *entry.key >= first_key && *entry.key <= last_key)
+            .map(|entry| (*entry.key, *entry.payload))
+            .collect();
+        let after_rows_in_range: Vec<_> = after
+            .range(StableRowRange::new(None, None).expect("unbounded range"))
+            .expect("valid target range")
+            .filter(|entry| *entry.key >= first_key && *entry.key <= last_key)
+            .map(|entry| (*entry.key, *entry.payload))
+            .collect();
+        assert_eq!(before_rows_in_range, after_rows_in_range);
+        assert_eq!(
+            u64::try_from(before_rows_in_range.len()).expect("row count fits"),
+            certificate.row_count()
+        );
+    }
+}
+
+#[test]
 fn divergent_run_cursor_borrows_large_row_runs_with_tree_depth_scratch() {
     let rows = fixture_rows(16_384);
     let index = StableRowIndex::from_sorted_rows(&rows).expect("valid base index");
