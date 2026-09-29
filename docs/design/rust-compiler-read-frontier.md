@@ -62,12 +62,15 @@ constructs up to two candidates (`name.rs` and `name/mod.rs`, or the explicit
 `#[path]`) and calls `DefDatabase::resolve_path` for each. That call reaches
 `ra_ap_base_db::RootDatabase::resolve_path`, which asks the anchored
 `SourceRoot`/`FileSet` for membership and returns `None` when a candidate is
-absent. The resolver itself has no callback, but `ra_ap_hir::Module::diagnostics`
-exposes an `UnresolvedModule` diagnostic with candidate strings when every
-candidate fails; the diagnostic-only observer now uses that real HIR result.
-This captures rejected module candidates, not every internal `resolve_path`
-call or unrelated failed lookup. The crate graph can also be created from
-Cargo and project-model data before VFS source loading begins. Project-model code directly uses filesystem
+absent. The resolver itself has no callback, but the crate's `DefMap` retains
+`UnresolvedModule` diagnostics with candidate strings when every candidate
+fails. The observer reads only those name-resolution diagnostics through
+`ra_ap_hir_def::nameres::crate_def_map`; it does not call the broader
+`ra_ap_hir::Module::diagnostics`, which computes unrelated type and MIR
+diagnostics. This captures rejected module candidates, not every internal
+`resolve_path` call or unrelated failed lookup. The crate graph can also be
+created from Cargo and project-model data before VFS source loading begins.
+Project-model code directly uses filesystem
 metadata/read calls and child processes for manifest discovery, Cargo queries,
 and sysroot selection. A VFS walk is therefore a useful positive file
 inventory, but it is neither the process read frontier nor a negative lookup
@@ -76,9 +79,10 @@ proof.
 The compiler has an opt-in, borrow-scoped observation seam in
 `RustWorkspaceSessionLane::begin_with_read_frontier_observer`. It observes the
 selected editor overlay, synchronously walks `Vfs.iter()` and reads each
-representable loaded file through `SourceDatabase::file_text`, then asks each
-loaded crate module for HIR diagnostics and emits unique
-crate-root/declaration/candidate identities from `UnresolvedModule.candidates`.
+representable loaded file through `SourceDatabase::file_text`, then reads the
+name-resolution diagnostics retained by each loaded crate's `DefMap` and emits
+unique crate-root/declaration/candidate identities from
+`UnresolvedModule.candidates`.
 The frontend reports independent
 visited-versus-acknowledged totals for the VFS and module-candidate scans; the
 engine seals those producer streams against the source-side visited counts, so
@@ -118,7 +122,7 @@ trust registry remains empty.
 | --- | --- | --- |
 | Selected editor overlay | Captured bytes read back from RA `SourceDatabase` after overlay application | Does not cover disk-loaded source files or filesystem reads |
 | RA VFS loader | Diagnostic post-load snapshot of VFS paths and exact `SourceDatabase` text | No loader event receiver; failed reads, directory results, and later changes are invisible |
-| Rust module resolver | HIR `UnresolvedModule` candidate pairs for declarations whose candidates all failed | No hook for successful resolution or every individual `resolve_path` attempt; HIR diagnostics are a post-load scan |
+| Rust module resolver | `DefMap` `UnresolvedModule` candidate pairs for declarations whose candidates all failed | No hook for successful resolution or every individual `resolve_path` attempt; candidate data is a post-load scan |
 | Authority filesystem | None | Frontend `canonicalize`, `metadata`, `symlink_metadata`, and open attempts bypass RA VFS |
 | Directory enumeration | None | No complete child-set/error callback for RA loader or project model |
 | Cargo project model | None | Manifest discovery and metadata/config reads use direct filesystem calls and Cargo |
@@ -133,7 +137,7 @@ Rust authority path that proves its dependency, sysroot, environment, Cargo,
 and process inputs are preadmitted as one immutable owner-controlled tree. No
 VFS validation scan, manifest scan, source-root rebuild, or fresh RA load is
 skipped on the strength of this observation. The precursor provides actual RA
-positive-file snapshots and actual HIR-reported negative module candidates,
+positive-file snapshots and actual DefMap-reported negative module candidates,
 with independent callback-loss checks, and a recorder contract that a future
 adapter can extend channel by channel without introducing per-read locking.
 
@@ -141,8 +145,8 @@ The API-level integration points are the `ra_ap_load_cargo` load boundary and
 the RA module resolver, not only the semantic callback in `RustAuthority`. A
 future adapter still needs an event hook around
 `ModDir::resolve_declaration`/`RootDatabase::resolve_path` to retain every
-successful and failed module attempt; the HIR diagnostic scan only recovers
-the failed candidate sets. It also needs the `loader::Handle`
+successful and failed module attempt; the DefMap scan only recovers the failed
+candidate sets. It also needs the `loader::Handle`
 boundary to retain successful file buffers and complete directory enumeration
 results. In one scope it must cover manifest/project discovery, Cargo and
 rustc subprocesses, sysroot resolution, project-folder enumerations, and every
@@ -247,7 +251,7 @@ experiment is evidence for designing an observer, not a production proof.
 
 The frontend's workspace-session fixture now drives the real pinned RA
 workspace and introduces `mod absent;`; it receives the VFS root/sibling
-buffers and HIR-reported `absent.rs`/`absent/mod.rs` candidate pair. Its
+buffers and DefMap-reported `absent.rs`/`absent/mod.rs` candidate pair. Its
 observer deliberately rejects one candidate callback and asserts that the
 independent RA-side visited total exceeds acknowledged deliveries. The engine's
 read-closure tests separately include an independent-oracle fault injection

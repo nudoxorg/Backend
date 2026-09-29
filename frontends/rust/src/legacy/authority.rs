@@ -20,6 +20,7 @@ use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
 };
+use ra_ap_hir_def::nameres::{crate_def_map, diagnostics::DefDiagnosticKind};
 use ra_ap_ide_db::{ChangeWithProcMacros, LibraryRoots, LocalRoots, RootDatabase};
 use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
 use ra_ap_syntax::{
@@ -102,10 +103,10 @@ pub trait RustWorkspaceEditorBufferObserver {
 
 /// Borrow-scoped observer for selected buffers plus two concrete rust-analyzer
 /// read surfaces: loaded VFS file contents and rejected `mod` candidates from
-/// HIR's unresolved-module diagnostics.
+/// RA's name-resolution `DefMap` diagnostics.
 ///
 /// This is diagnostic evidence only. The VFS scan does not see failed VFS
-/// loader probes, and HIR candidate diagnostics do not cover arbitrary
+/// loader probes, and unresolved-module DefMap diagnostics do not cover arbitrary
 /// filesystem calls, Cargo/project-model reads, environment values, child
 /// processes, sysroot discovery, or generated outputs. It cannot authorize
 /// workspace reuse.
@@ -144,7 +145,7 @@ pub struct RustWorkspaceReadFrontierSummary {
     pub vfs_files_visited: u64,
     /// RA VFS callbacks acknowledged by the observer.
     pub vfs_events_delivered: u64,
-    /// Unique crate/declaration/candidate identities in HIR diagnostics.
+    /// Unique crate/declaration/candidate identities in RA name-resolution diagnostics.
     pub module_candidates_visited: u64,
     /// Module-candidate callbacks acknowledged by the observer.
     pub module_candidate_events_delivered: u64,
@@ -505,7 +506,7 @@ impl RustWorkspaceSessionLane {
     }
 
     /// Opens a fresh workspace and synchronously reports selected buffers,
-    /// loaded RA VFS files, and HIR-reported unresolved module candidates.
+    /// loaded RA VFS files, and unresolved module candidates from RA's DefMap.
     ///
     /// The returned source-side totals let a diagnostic consumer detect
     /// omitted or rejected callbacks. They do not certify complete compiler
@@ -1392,133 +1393,104 @@ impl RustWorkspace {
                 }
             }
 
-            // HIR exposes the candidate set retained by its real module resolver
-            // only when all candidates failed. Multiple module traversals can
-            // surface the same inline-module diagnostic, so collapse exact
-            // (crate root, declaring file, candidate) duplicates in a bounded set.
+            // DefMap contains diagnostics emitted by real name resolution.
+            // Read only this narrow data rather than calling Module::diagnostics,
+            // which also runs unrelated type and MIR diagnostics.
             let mut seen_candidates = HashSet::<[u8; 32]>::new();
-            let mut modules_visited = 0_u64;
-            for krate in all_crates(&self.database)
-                .iter()
-                .copied()
-                .map(ra_ap_hir::Crate::from)
-            {
+            let mut crate_maps_visited = 0_u64;
+            for crate_id in all_crates(&self.database).iter().copied() {
                 if summary.truncated || control.check().is_err() {
                     summary.truncated = true;
                     break;
                 }
+                if crate_maps_visited >= MAX_RUST_READ_FRONTIER_EVENTS {
+                    summary.truncated = true;
+                    break;
+                }
+                crate_maps_visited = crate_maps_visited.saturating_add(1);
+                let krate = ra_ap_hir::Crate::from(crate_id);
                 let crate_root_file_id = krate.root_file(&self.database);
                 let Some(crate_root_file) = self.vfs.file_path(crate_root_file_id).as_path() else {
                     summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
                     continue;
                 };
                 let crate_root_file = crate_root_file.as_str();
-                let mut pending_modules = Vec::new();
-                if pending_modules.try_reserve(1).is_err() {
-                    summary.truncated = true;
-                    break;
-                }
-                pending_modules.push(krate.root_module(&self.database));
-                while let Some(module) = pending_modules.pop() {
-                    if modules_visited >= MAX_RUST_READ_FRONTIER_EVENTS || control.check().is_err()
-                    {
+                let def_map = crate_def_map(&self.database, crate_id);
+                for diagnostic in def_map.diagnostics() {
+                    if summary.truncated || control.check().is_err() {
                         summary.truncated = true;
                         break;
                     }
-                    modules_visited = modules_visited.saturating_add(1);
-                    for child in module.children(&self.database) {
-                        if modules_visited.saturating_add(
-                            u64::try_from(pending_modules.len()).unwrap_or(u64::MAX),
-                        ) >= MAX_RUST_READ_FRONTIER_EVENTS
-                            || pending_modules.try_reserve(1).is_err()
+                    let DefDiagnosticKind::UnresolvedModule { ast, candidates } = &diagnostic.kind
+                    else {
+                        continue;
+                    };
+                    let file_id = ast
+                        .file_id
+                        .original_file_respecting_includes(&self.database)
+                        .file_id(&self.database);
+                    let Some(declaring_file) = self.vfs.file_path(file_id).as_path() else {
+                        summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
+                        continue;
+                    };
+                    for candidate in candidates.iter() {
+                        if summary.module_candidates_visited >= MAX_RUST_READ_FRONTIER_EVENTS {
+                            summary.truncated = true;
+                            break;
+                        }
+                        let byte_charge = u64::try_from(
+                            crate_root_file
+                                .len()
+                                .saturating_add(declaring_file.as_str().len())
+                                .saturating_add(candidate.len()),
+                        )
+                        .unwrap_or(u64::MAX);
+                        if observed_bytes
+                            .checked_add(byte_charge)
+                            .is_none_or(|total| total > MAX_RUST_READ_FRONTIER_BYTES)
                         {
                             summary.truncated = true;
                             break;
                         }
-                        pending_modules.push(child);
-                    }
-                    if summary.truncated {
-                        break;
-                    }
-                    let mut diagnostics = Vec::new();
-                    module.diagnostics(&self.database, &mut diagnostics, false);
-                    for diagnostic in diagnostics {
-                        let ra_ap_hir::diagnostics::AnyDiagnostic::UnresolvedModule(diagnostic) =
-                            diagnostic
-                        else {
+                        let mut candidate_hasher = blake3::Hasher::new();
+                        candidate_hasher.update(b"backend.ra.unresolved-module-candidate.v1\0");
+                        candidate_hasher.update(
+                            &u64::try_from(crate_root_file.len())
+                                .unwrap_or(u64::MAX)
+                                .to_be_bytes(),
+                        );
+                        candidate_hasher.update(crate_root_file.as_bytes());
+                        candidate_hasher.update(
+                            &u64::try_from(declaring_file.as_str().len())
+                                .unwrap_or(u64::MAX)
+                                .to_be_bytes(),
+                        );
+                        candidate_hasher.update(declaring_file.as_str().as_bytes());
+                        candidate_hasher.update(
+                            &u64::try_from(candidate.len())
+                                .unwrap_or(u64::MAX)
+                                .to_be_bytes(),
+                        );
+                        candidate_hasher.update(candidate.as_bytes());
+                        let candidate_identity = *candidate_hasher.finalize().as_bytes();
+                        if seen_candidates.contains(&candidate_identity) {
                             continue;
-                        };
-                        let file_id = diagnostic
-                            .decl
-                            .file_id
-                            .original_file_respecting_includes(&self.database)
-                            .file_id(&self.database);
-                        let Some(declaring_file) = self.vfs.file_path(file_id).as_path() else {
-                            summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
-                            continue;
-                        };
-                        for candidate in diagnostic.candidates.iter() {
-                            if summary.module_candidates_visited >= MAX_RUST_READ_FRONTIER_EVENTS {
-                                summary.truncated = true;
-                                break;
-                            }
-                            let byte_charge = u64::try_from(
-                                crate_root_file
-                                    .len()
-                                    .saturating_add(declaring_file.as_str().len())
-                                    .saturating_add(candidate.len()),
-                            )
-                            .unwrap_or(u64::MAX);
-                            if observed_bytes
-                                .checked_add(byte_charge)
-                                .is_none_or(|total| total > MAX_RUST_READ_FRONTIER_BYTES)
-                            {
-                                summary.truncated = true;
-                                break;
-                            }
-                            let mut candidate_hasher = blake3::Hasher::new();
-                            candidate_hasher.update(b"backend.ra.unresolved-module-candidate.v1\0");
-                            candidate_hasher.update(
-                                &u64::try_from(crate_root_file.len())
-                                    .unwrap_or(u64::MAX)
-                                    .to_be_bytes(),
-                            );
-                            candidate_hasher.update(crate_root_file.as_bytes());
-                            candidate_hasher.update(
-                                &u64::try_from(declaring_file.as_str().len())
-                                    .unwrap_or(u64::MAX)
-                                    .to_be_bytes(),
-                            );
-                            candidate_hasher.update(declaring_file.as_str().as_bytes());
-                            candidate_hasher.update(
-                                &u64::try_from(candidate.len())
-                                    .unwrap_or(u64::MAX)
-                                    .to_be_bytes(),
-                            );
-                            candidate_hasher.update(candidate.as_bytes());
-                            let candidate_identity = *candidate_hasher.finalize().as_bytes();
-                            if seen_candidates.contains(&candidate_identity) {
-                                continue;
-                            }
-                            if seen_candidates.try_reserve(1).is_err() {
-                                summary.truncated = true;
-                                break;
-                            }
-                            seen_candidates.insert(candidate_identity);
-                            observed_bytes += byte_charge;
-                            summary.module_candidates_visited =
-                                summary.module_candidates_visited.saturating_add(1);
-                            if observer.observe_unresolved_module_candidate(
-                                crate_root_file,
-                                declaring_file.as_str(),
-                                candidate,
-                            ) {
-                                summary.module_candidate_events_delivered =
-                                    summary.module_candidate_events_delivered.saturating_add(1);
-                            }
                         }
-                        if summary.truncated {
+                        if seen_candidates.try_reserve(1).is_err() {
+                            summary.truncated = true;
                             break;
+                        }
+                        seen_candidates.insert(candidate_identity);
+                        observed_bytes += byte_charge;
+                        summary.module_candidates_visited =
+                            summary.module_candidates_visited.saturating_add(1);
+                        if observer.observe_unresolved_module_candidate(
+                            crate_root_file,
+                            declaring_file.as_str(),
+                            candidate,
+                        ) {
+                            summary.module_candidate_events_delivered =
+                                summary.module_candidate_events_delivered.saturating_add(1);
                         }
                     }
                     if summary.truncated {

@@ -214,7 +214,7 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
             assert_eq!(
                 read_summary.module_candidate_events_delivered + 1,
                 read_summary.module_candidates_visited,
-                "the independent HIR candidate count must expose the injected dropped event"
+                "the independent DefMap candidate count must expose the injected dropped event"
             );
             assert!(
                 observed_buffers
