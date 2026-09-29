@@ -505,7 +505,13 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         | backend_frontend_rust::legacy::RustAuthorityError::MissingManifest { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotFile { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceBudget { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::SourceRead { .. } => {
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceRead { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionFrontierMismatch
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionSourceRootAmbiguous
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionSourceRootLimit { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionSourcePath { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionSourceCardinality { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::WorkspaceBindingMismatch => {
             AuthorityPhase::Open
         }
     }

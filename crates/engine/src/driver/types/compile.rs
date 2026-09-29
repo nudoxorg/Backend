@@ -1035,6 +1035,20 @@ fn rust_authority_diagnostic<'diagnostic>(
         RustError::SourceRead { .. } => {
             let _ = message.write_str("Rust authority could not read the selected source.");
         }
+        RustError::SessionFrontierMismatch
+        | RustError::SessionSourcePath { .. }
+        | RustError::SessionSourceCardinality { .. }
+        | RustError::WorkspaceBindingMismatch => {
+            let _ = message.write_str("Rust workspace source selection could not be admitted.");
+        }
+        RustError::SessionSourceRootAmbiguous => {
+            let _ = message.write_str(
+                "rust-analyzer could not place a new editor source in one Cargo source root.",
+            );
+        }
+        RustError::SessionSourceRootLimit { .. } => {
+            let _ = message.write_str("Rust workspace source-root update exceeded its limit.");
+        }
         RustError::InvalidSpan { .. } | RustError::Coordinate { .. } => {
             let _ = message.write_str(
                 "rust-analyzer returned a source coordinate outside its admitted range.",
