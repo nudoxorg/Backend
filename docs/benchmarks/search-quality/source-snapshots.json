@@ -66,8 +66,8 @@
     },
     {
       "path": "docs/benchmarks/search-quality/adapter/Cargo.toml",
-      "sha256": "5d6d0cb9ad7ef616849b9646b79abc2a7aebec117ade2f72f283cd219de4d0f0",
-      "snapshot_id": "workspace-file:sha256:5d6d0cb9ad7ef616849b9646b79abc2a7aebec117ade2f72f283cd219de4d0f0"
+      "sha256": "f2aed5ef2fb37cd07a5739c1ec5dc376cffeb348aacb0902efe878995acb9f4f",
+      "snapshot_id": "workspace-file:sha256:f2aed5ef2fb37cd07a5739c1ec5dc376cffeb348aacb0902efe878995acb9f4f"
     },
     {
       "path": "docs/benchmarks/search-quality/adapter/src/main.rs",
@@ -121,14 +121,14 @@
     },
     {
       "path": "docs/benchmarks/search-quality/adapter/Cargo.lock",
-      "sha256": "3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2",
-      "snapshot_id": "search-adapter-cargo-lock:sha256:3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2"
+      "sha256": "631dd8dd02830ed4b50a6604bcfedf92323eda2b2e89d88ef0697a6395846bc4",
+      "snapshot_id": "search-adapter-cargo-lock:sha256:631dd8dd02830ed4b50a6604bcfedf92323eda2b2e89d88ef0697a6395846bc4"
     },
     {
-      "alias_of": "search-adapter-cargo-lock:sha256:3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2",
+      "alias_of": "search-adapter-cargo-lock:sha256:631dd8dd02830ed4b50a6604bcfedf92323eda2b2e89d88ef0697a6395846bc4",
       "path": "docs/benchmarks/search-quality/adapter/Cargo.lock",
-      "sha256": "3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2",
-      "snapshot_id": "workspace-file:sha256:3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2"
+      "sha256": "631dd8dd02830ed4b50a6604bcfedf92323eda2b2e89d88ef0697a6395846bc4",
+      "snapshot_id": "workspace-file:sha256:631dd8dd02830ed4b50a6604bcfedf92323eda2b2e89d88ef0697a6395846bc4"
     },
     {
       "bytes": 54201,

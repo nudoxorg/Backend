@@ -5302,8 +5302,6 @@ dependencies = [
 [[package]]
 name = "ra_ap_project_model"
 version = "0.0.341"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39bb40bb07225a98419eb89043144a9ceb3bafd37acdd51bb2535e698f2cb716"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -5439,8 +5437,6 @@ dependencies = [
 [[package]]
 name = "ra_ap_toolchain"
 version = "0.0.341"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "151a6ee0476b683412cd321f209b9789b2e41c7edaf97d529f707ae7d83298f3"
 dependencies = [
  "camino",
 ]
