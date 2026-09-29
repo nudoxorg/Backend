@@ -7,6 +7,17 @@ V2 workspace manifest correctly reports `CompilerReadFrontierStatusV2::Unproven`
 and `RustWorkspaceSessionLane` opens a fresh Cargo/rust-analyzer workspace for
 each operation. Keep both behaviors.
 
+The manifest also exposes the typed partial reason
+`NoRegisteredCompleteReadAdapter`. This is diagnostic state only: it does not
+change admission, register a protocol, or skip compiler work. No safe reuse
+subset has been established from `RustWorkspaceSessionKey`; its selected source
+paths are an editor-buffer overlay, not a complete Cargo package, dependency,
+or toolchain read closure. In particular, omission from that list does not
+delete a disk-visible module, and an unchanged list cannot establish that
+negative module candidates, Cargo/project-model reads, sysroot inputs, or
+child-process observations stayed unchanged. Reusing an RA database from that
+key would still risk stale results.
+
 The internal trace builder in
 `crates/engine/src/compiler_unit_read_closure_v2.rs` is a typed sink, not a
 read observer. Its production trust registry is empty. Test fixtures can call
@@ -164,6 +175,15 @@ not observe values returned by `getenv`; that difference is exactly why this
 experiment is evidence for designing an observer, not a production proof.
 
 ## Adversarial admission gates
+
+The engine's read-closure tests include a diagnostic independent-oracle fault
+injection. The fixture oracle requires a present root file, an absent Rust
+module candidate, and a toolchain fact emitted by a compiler child. Omitting
+the negative fact yields a structurally valid trace but fails the oracle;
+dropping the final child event while retaining the child's independently
+sealed event count makes trace closure fail. This tests the failure behavior
+needed from a future broker. The fixture is deliberately not an observer of the
+real rust-analyzer process and grants no frontier completeness to production.
 
 Before a Rust adapter protocol is registered, its tests must show that changing
 each of these changes the captured closure or rejects admission:

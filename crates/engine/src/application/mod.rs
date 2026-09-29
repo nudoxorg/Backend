@@ -115,7 +115,7 @@ pub use crate::compiler_input_capture_v2::{
 };
 pub use crate::compiler_input_manifest_v2::{
     CompilationUnitKeyV2, CompilerInputManifestV2, CompilerInputManifestV2Error,
-    CompilerInvocationRecipeV2, CompilerPackageTargetV2,
+    CompilerInvocationRecipeV2, CompilerPackageTargetV2, CompilerReadFrontierPartialReasonV2,
 };
 pub use backend_compile::{
     EmbeddingArtifact, EmbeddingArtifactId, EmbeddingExecutable, EmbeddingExecutableError,

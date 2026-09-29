@@ -6,7 +6,8 @@
 
 use crate::compiler_input_manifest_v2::{
     CompilationUnitKeyV2, CompilerInputManifestV2, CompilerPackageTargetV2,
-    CompilerReadFrontierStatusV2, validate_compiler_input_path_v2,
+    CompilerReadFrontierPartialReasonV2, CompilerReadFrontierStatusV2,
+    validate_compiler_input_path_v2,
 };
 use crate::compiler_input_tree_v2::{
     CompilerInputMerkleTreeV2, CompilerInputTreeKindV2, CompilerInputTreeRecordV2,
@@ -271,8 +272,8 @@ pub enum UnitExecutionFallbackReasonV2 {
     #[error("exact frontend is unavailable for {0:?}")]
     FrontendUnavailable(Language),
     /// The workspace tree is not a compiler read-frontier completeness proof.
-    #[error("complete compiler read frontier was not captured")]
-    ReadFrontierNotCaptured,
+    #[error("complete compiler read frontier is unavailable: {0:?}")]
+    ReadFrontierNotCaptured(CompilerReadFrontierPartialReasonV2),
     /// The language needs a closure the current V2 capture cannot attest.
     #[error("unsupported compiler closure requirement: {0}")]
     UnsupportedClosure(UnsupportedClosureRequirementV2),
@@ -630,7 +631,9 @@ pub fn unit_execution_readiness_v2(
                 ));
             }
             Ok(UnitExecutionReadinessV2::LocalFallback(
-                UnitExecutionFallbackReasonV2::ReadFrontierNotCaptured,
+                UnitExecutionFallbackReasonV2::ReadFrontierNotCaptured(
+                    manifest.read_frontier_partial_reason(),
+                ),
             ))
         }
     }

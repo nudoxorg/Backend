@@ -93,6 +93,21 @@ pub enum CompilerReadFrontierStatusV2 {
     Unproven,
 }
 
+/// Current typed reason that a compiler read frontier is only partial.
+///
+/// No compiler adapter has passed review for complete positive and negative
+/// read coverage. In particular, the pinned rust-analyzer path does not surface
+/// module-resolution misses, project-model and loader I/O can bypass the VFS,
+/// and child-process/environment/toolchain reads are not fenced into the
+/// operation. Keep this separate from the status so callers that only make
+/// admission decisions can continue to treat every non-complete frontier as
+/// the same fail-closed state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerReadFrontierPartialReasonV2 {
+    /// No registered compiler adapter accounts for every positive and negative read.
+    NoRegisteredCompleteReadAdapter,
+}
+
 /// Rejection while deriving or decoding a portable invocation recipe.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum CompilerInvocationRecipeV2Error {
@@ -851,6 +866,12 @@ impl CompilerInputManifestV2 {
         CompilerReadFrontierStatusV2::Unproven
     }
 
+    /// Typed reason no compiler authority can currently provide a complete frontier.
+    #[must_use]
+    pub const fn read_frontier_partial_reason(&self) -> CompilerReadFrontierPartialReasonV2 {
+        CompilerReadFrontierPartialReasonV2::NoRegisteredCompleteReadAdapter
+    }
+
     /// Compatibility bytes carried in the existing assignment `read_manifest` field.
     ///
     /// These bytes identify the workspace snapshot and do not prove completeness of
@@ -1499,6 +1520,10 @@ mod tests {
         assert_eq!(
             manifest.read_frontier_status(),
             CompilerReadFrontierStatusV2::Unproven
+        );
+        assert_eq!(
+            manifest.read_frontier_partial_reason(),
+            CompilerReadFrontierPartialReasonV2::NoRegisteredCompleteReadAdapter
         );
     }
 

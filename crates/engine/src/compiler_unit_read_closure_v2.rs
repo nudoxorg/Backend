@@ -725,6 +725,35 @@ mod tests {
         builder.finish(workspace)
     }
 
+    fn trace_with_facts(
+        manifest: &CompilerInputManifestV2,
+        workspace: &CompilerInputMerkleTreeV2,
+        facts: Vec<Record>,
+        independently_reported_event_count: u64,
+    ) -> Result<VerifiedUnitReadClosure, CompilerUnitReadClosureErrorV2> {
+        let mut builder = CompilerReadTraceBuilderV2::for_manifest(reviewed_protocol(), manifest);
+        builder.begin()?;
+        for (sequence, fact) in facts.into_iter().enumerate() {
+            builder.observe(sequence as u64, fact)?;
+        }
+        builder.end(independently_reported_event_count)?;
+        builder.finish(workspace)
+    }
+
+    fn independent_oracle_contains_all(
+        closure: &VerifiedUnitReadClosure,
+        expected: &[Record],
+    ) -> bool {
+        // Deliberately use a linear equality scan over an independently-authored fixture list;
+        // this does not share the production tree's path ordering or deduplication logic.
+        expected.iter().all(|expected_fact| {
+            closure
+                .fact_tree()
+                .records()
+                .any(|observed_fact| observed_fact == expected_fact)
+        })
+    }
+
     #[test]
     fn complete_closure_binds_target_recipe_capture_and_all_typed_facts() {
         let workspace = workspace(false);
@@ -848,6 +877,57 @@ mod tests {
         assert_eq!(
             listing.finish(&changed),
             Err(CompilerUnitReadClosureErrorV2::WorkspaceReadMismatch)
+        );
+    }
+
+    #[test]
+    fn independent_oracle_catches_omitted_negative_probe_and_lost_child_event() {
+        let workspace = workspace(false);
+        let manifest = manifest_for_workspace(workspace.root(), [0xa1; 32]);
+        let expected = [
+            Record::PresentFile {
+                path: "src/lib.rs".into(),
+                object_id: [0x11; 32],
+                length: 24,
+            },
+            // The fixture's module-resolution oracle requires the failed candidate as well as
+            // the source file. Workspace capture alone cannot infer this negative dependency.
+            Record::AbsentPath {
+                path: "src/optional.rs".into(),
+            },
+            // This record is emitted by the fixture's compiler child, not the parent authority.
+            Record::ToolchainInput {
+                key: "bin/rustc".into(),
+                content_digest: [0x81; 32],
+                length: 32,
+            },
+        ];
+
+        let omitted_negative = trace_with_facts(
+            &manifest,
+            &workspace,
+            vec![expected[0].clone(), expected[2].clone()],
+            2,
+        )
+        .expect("the event stream is internally well-formed");
+        assert!(!independent_oracle_contains_all(
+            &omitted_negative,
+            &expected
+        ));
+
+        // The child's sealed count comes from a separate producer fence. If its final event is
+        // dropped before merge, the parent's locally observed sequence is shorter than that
+        // count, so the closure builder must refuse to finish.
+        assert_eq!(
+            trace_with_facts(
+                &manifest,
+                &workspace,
+                vec![expected[0].clone(), expected[1].clone()],
+                3,
+            ),
+            Err(CompilerUnitReadClosureErrorV2::Incomplete(
+                CompilerReadClosureIncompleteReasonV2::TruncatedOrDiscontinuousTrace
+            ))
         );
     }
 
