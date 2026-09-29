@@ -199,6 +199,90 @@ fn hard_exited_writer_suffix_is_durably_adopted_under_refresh_fence() {
 }
 
 #[test]
+fn cold_open_syncs_a_hard_exited_writer_suffix_before_returning_the_cursor() {
+    let path = test_path("cold-open-hard-exit");
+    let candidate_path = path.with_extension("candidate");
+    let (journal, _) = HashChainJournal::<TestLog>::open(&path).expect("open");
+    let first = journal.append(&b"first".to_vec()).expect("first");
+    let mut candidate_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&candidate_path)
+        .expect("create candidate");
+    candidate_file
+        .write_all(&candidate_after(&first, b"cold-replay"))
+        .expect("write candidate");
+    candidate_file.sync_all().expect("sync candidate fixture");
+    drop(candidate_file);
+    drop(journal);
+
+    let status = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "journal::tests::hard_exit_external_suffix_child",
+            "--nocapture",
+        ])
+        .env(HARD_EXIT_SUFFIX_PATH, &path)
+        .env(HARD_EXIT_SUFFIX_FRAME, &candidate_path)
+        .status()
+        .expect("run hard-exit writer");
+    assert_eq!(status.code(), Some(79));
+
+    let order = RefCell::new(Vec::new());
+    let (journal, scan) = HashChainJournal::<TestLog>::open_streaming_with_mode_and_sync(
+        &path,
+        limits(),
+        |frame| {
+            order.borrow_mut().push("visitor");
+            assert_eq!(frame.payload, b"cold-replay");
+            Ok(())
+        },
+        false,
+        |file| {
+            order.borrow_mut().push("sync");
+            file.sync_data()
+        },
+    )
+    .expect("cold replay crosses durability barrier");
+    assert_eq!(scan.last_sequence, Some(1));
+    assert_eq!(*order.borrow(), vec!["visitor", "sync"]);
+    drop(journal);
+    remove(&candidate_path);
+    remove(&path);
+}
+
+#[test]
+fn cold_open_sync_failure_returns_no_journal_cursor() {
+    let path = test_path("cold-open-sync-failure");
+    let (journal, _) = HashChainJournal::<TestLog>::open(&path).expect("open");
+    let first = journal.append(&b"first".to_vec()).expect("first");
+    let mut external = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("external append");
+    external
+        .write_all(&candidate_after(&first, b"visible-before-sync"))
+        .expect("complete external frame");
+    drop(external);
+    drop(journal);
+
+    let visitor_called = RefCell::new(false);
+    let result = HashChainJournal::<TestLog>::open_streaming_with_mode_and_sync(
+        &path,
+        limits(),
+        |_| {
+            *visitor_called.borrow_mut() = true;
+            Ok(())
+        },
+        false,
+        |_| Err(std::io::Error::other("injected cold-open sync failure")),
+    );
+    assert!(matches!(result, Err(JournalError::Io(_))));
+    assert!(*visitor_called.borrow());
+    remove(&path);
+}
+
+#[test]
 fn stream_reuses_one_payload_slot_for_large_history() {
     let path = test_path("stream");
     let (journal, _) = HashChainJournal::<TestLog>::open(&path).expect("open");

@@ -2,12 +2,12 @@
 
 use super::frame::read_frame_at_path;
 use super::scan::{collect_recovery, repair_tail, scan_path, scan_path_from};
-use std::fs::File;
 use super::{
     HashChainJournal, JournalCheckpoint, JournalCodec, JournalError, JournalFrame, JournalFrameRef,
     JournalLimits, JournalReceipt, JournalRecovery, JournalScan, JournalState, Mutex, OpenOptions,
     Path, containing_directory, validate_limits,
 };
+use std::fs::File;
 
 impl<D: JournalCodec> HashChainJournal<D> {
     /// Opens a journal and repairs only a torn final frame.
@@ -77,6 +77,10 @@ impl<D: JournalCodec> HashChainJournal<D> {
         if repair_torn_tail {
             repair_tail(&path, &scan)?;
         }
+        // Cold replay initializes the in-memory cursor from every complete
+        // frame it observed. Flush those bytes before exposing that cursor,
+        // since the previous writer may have exited between write and sync.
+        file.sync_data()?;
         if !existed {
             backend_platform::durability::open_directory(containing_directory(&path))?
                 .sync_all()?;
@@ -117,9 +121,9 @@ impl<D: JournalCodec> HashChainJournal<D> {
     }
 
     /// Opens a journal and visits each validated frame without retaining the
-    /// history.  The visitor runs before the append cursor is returned, which
-    /// lets a domain-specific owner derive a fixed-width watermark in the
-    /// same bounded scan used to authenticate the file.
+    /// history. The complete replay is synced before the append cursor is
+    /// returned, which lets a domain-specific owner derive a fixed-width
+    /// watermark in the same bounded scan used to authenticate the file.
     /// # Errors
     ///
     /// Returns an error when validation, persistence, or admission of the
@@ -137,7 +141,8 @@ impl<D: JournalCodec> HashChainJournal<D> {
 
     /// Opens and streams validated journal frames without repairing a torn
     /// final frame. Domain owners use this during cold replay, then let their
-    /// own interprocess fence authorize tail repair during refresh.
+    /// own interprocess fence authorize tail repair during refresh. Complete
+    /// frames visited at open are synced before the journal is returned.
     /// # Errors
     ///
     /// Returns an error when validation or admission of the supplied value
@@ -156,11 +161,31 @@ impl<D: JournalCodec> HashChainJournal<D> {
     fn open_streaming_with_mode<F>(
         path: impl AsRef<Path>,
         limits: JournalLimits,
-        mut visitor: F,
+        visitor: F,
         repair_torn_tail: bool,
     ) -> Result<(Self, JournalScan<D>), JournalError>
     where
         F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
+    {
+        Self::open_streaming_with_mode_and_sync(
+            path,
+            limits,
+            visitor,
+            repair_torn_tail,
+            File::sync_data,
+        )
+    }
+
+    fn open_streaming_with_mode_and_sync<F, S>(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+        mut visitor: F,
+        repair_torn_tail: bool,
+        sync_scanned: S,
+    ) -> Result<(Self, JournalScan<D>), JournalError>
+    where
+        F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
+        S: FnOnce(&File) -> std::io::Result<()>,
     {
         validate_limits(limits)?;
         let path = path.as_ref().to_owned();
@@ -175,6 +200,10 @@ impl<D: JournalCodec> HashChainJournal<D> {
         if repair_torn_tail {
             repair_tail(&path, &scan)?;
         }
+        // Domain visitors used by owner construction fold into temporary
+        // state. Do not return the append cursor unless every replayed byte
+        // has crossed its durability barrier.
+        sync_scanned(&file)?;
         if !existed {
             backend_platform::durability::open_directory(containing_directory(&path))?
                 .sync_all()?;
@@ -222,6 +251,7 @@ impl<D: JournalCodec> HashChainJournal<D> {
             .open(&path)?;
         let (recovery, scan) = collect_recovery(&path, limits, Some(checkpoint))?;
         repair_tail(&path, &scan)?;
+        file.sync_data()?;
         let next_sequence = recovery.last_sequence.map_or(Ok(0), |sequence| {
             sequence.checked_add(1).ok_or(JournalError::Bounds)
         })?;
@@ -279,6 +309,7 @@ impl<D: JournalCodec> HashChainJournal<D> {
             .open(&path)?;
         let scan = scan_path(&path, limits, Some(checkpoint), visitor)?;
         repair_tail(&path, &scan)?;
+        file.sync_data()?;
         let next_sequence = scan.last_sequence.map_or(Ok(0), |sequence| {
             sequence.checked_add(1).ok_or(JournalError::Bounds)
         })?;
@@ -377,6 +408,10 @@ impl<D: JournalCodec> HashChainJournal<D> {
         {
             state.unusable = true;
             return Err(error);
+        }
+        if let Err(error) = state.file.sync_data() {
+            state.unusable = true;
+            return Err(JournalError::Io(error));
         }
         state.next_sequence = match recovery.last_sequence.map_or(Ok(0), |sequence| {
             sequence.checked_add(1).ok_or(JournalError::Bounds)
@@ -502,7 +537,8 @@ impl<D: JournalCodec> HashChainJournal<D> {
         Ok(scan)
     }
 
-    /// Folds validated frames with one reusable payload buffer.
+    /// Folds validated frames with one reusable payload buffer. A successful
+    /// scan syncs the bytes it visited before returning the folded state.
     ///
     /// The visitor must finish using the payload before returning. The scan
     /// retains no frame or payload history, so its memory is bounded by the
@@ -525,10 +561,18 @@ impl<D: JournalCodec> HashChainJournal<D> {
             .lock()
             .map_err(|_| JournalError::Corrupt("poisoned journal"))?;
         let result = scan_path(&self.path, limits, None, visitor);
-        if result.is_err() {
+        let scan = match result {
+            Ok(scan) => scan,
+            Err(error) => {
+                guard.unusable = true;
+                return Err(error);
+            }
+        };
+        if let Err(error) = guard.file.sync_data() {
             guard.unusable = true;
+            return Err(JournalError::Io(error));
         }
-        result
+        Ok(scan)
     }
 
     /// Folds validated frames into caller-owned state without retaining the
@@ -550,7 +594,8 @@ impl<D: JournalCodec> HashChainJournal<D> {
         Ok((state, scan))
     }
 
-    /// Folds only the suffix after a checked checkpoint.
+    /// Folds only the suffix after a checked checkpoint, then syncs it before
+    /// returning the fold result.
     /// # Errors
     ///
     /// Returns an error when validation, persistence, or admission of the
@@ -570,10 +615,18 @@ impl<D: JournalCodec> HashChainJournal<D> {
             .lock()
             .map_err(|_| JournalError::Corrupt("poisoned journal"))?;
         let result = scan_path(&self.path, limits, Some(checkpoint), visitor);
-        if result.is_err() {
+        let scan = match result {
+            Ok(scan) => scan,
+            Err(error) => {
+                guard.unusable = true;
+                return Err(error);
+            }
+        };
+        if let Err(error) = guard.file.sync_data() {
             guard.unusable = true;
+            return Err(JournalError::Io(error));
         }
-        result
+        Ok(scan)
     }
 
     /// Folds only the suffix after a checked checkpoint.
