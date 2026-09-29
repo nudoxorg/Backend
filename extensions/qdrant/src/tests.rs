@@ -302,6 +302,131 @@ fn reopened_vector_facts_rerank_canonical_persisted_bytes_bit_exactly() {
     }
 }
 
+#[test]
+fn reopened_vector_facts_reject_malformed_persisted_payloads_without_materializing_points() {
+    let model = ModelVersion::from_value(&[0x2a; 32]);
+    let payload_with_bits = |dimension: u32, bits: &[u32]| {
+        let mut payload = dimension.to_be_bytes().to_vec();
+        for coordinate in bits {
+            payload.extend_from_slice(&coordinate.to_be_bytes());
+        }
+        payload
+    };
+    let mut dimension_two = 2_u32.to_be_bytes().to_vec();
+    dimension_two.extend_from_slice(&0.25_f32.to_bits().to_be_bytes());
+    let mut partial_coordinate_tail = payload_with_bits(1, &[0.25_f32.to_bits()]);
+    partial_coordinate_tail.push(0xaa);
+    let cases = [
+        ("short header", vec![0, 0, 0], 2, Error::MalformedInput),
+        (
+            "zero dimension",
+            0_u32.to_be_bytes().to_vec(),
+            2,
+            Error::MalformedInput,
+        ),
+        (
+            "truncated coordinates",
+            dimension_two,
+            2,
+            Error::MalformedInput,
+        ),
+        (
+            "extra trailing coordinate",
+            payload_with_bits(1, &[0.25_f32.to_bits(), (-0.5_f32).to_bits()]),
+            1,
+            Error::MalformedInput,
+        ),
+        (
+            "partial coordinate tail",
+            partial_coordinate_tail,
+            1,
+            Error::MalformedInput,
+        ),
+        (
+            "recipe dimension mismatch",
+            payload_with_bits(2, &[0.25_f32.to_bits(), (-0.5_f32).to_bits()]),
+            3,
+            Error::DimensionMismatch,
+        ),
+        (
+            "quiet nan",
+            payload_with_bits(1, &[0x7fc0_0000]),
+            1,
+            Error::MalformedInput,
+        ),
+        (
+            "positive infinity",
+            payload_with_bits(1, &[0x7f80_0000]),
+            1,
+            Error::MalformedInput,
+        ),
+        (
+            "negative infinity",
+            payload_with_bits(1, &[0xff80_0000]),
+            1,
+            Error::MalformedInput,
+        ),
+        (
+            "non-finite before dimension mismatch",
+            payload_with_bits(1, &[0x7fc0_0000]),
+            2,
+            Error::MalformedInput,
+        ),
+    ];
+
+    for (label, payload, dimensions, expected_error) in cases {
+        let (state_binding, coverage) = binding(&[(1, payload.clone())]);
+        let persisted = CandidateState::new(
+            state_binding,
+            coverage,
+            vec![(CandidateId(1), payload)],
+            Limits::default(),
+        )
+        .expect("persist malformed bytes as a relation payload");
+        let reloaded = CandidateState::new(
+            persisted.binding(),
+            persisted.coverage(),
+            persisted
+                .iter()
+                .map(|(id, bytes)| (id, bytes.to_vec()))
+                .collect(),
+            Limits::default(),
+        )
+        .expect("reopen the exact persisted bytes");
+
+        assert_eq!(
+            VectorFacts::new(reloaded, model, Metric::EuclideanSquared, dimensions)
+                .expect_err(label),
+            expected_error,
+            "{label}"
+        );
+    }
+
+    let oversized_dimension = u32::MAX.to_be_bytes().to_vec();
+    let (state_binding, coverage) = binding(&[(1, oversized_dimension.clone())]);
+    let persisted = CandidateState::new(
+        state_binding,
+        coverage,
+        vec![(CandidateId(1), oversized_dimension)],
+        Limits::default(),
+    )
+    .expect("persist the oversized dimension header");
+    let reloaded = CandidateState::new(
+        persisted.binding(),
+        persisted.coverage(),
+        persisted
+            .iter()
+            .map(|(id, bytes)| (id, bytes.to_vec()))
+            .collect(),
+        Limits::default(),
+    )
+    .expect("reopen the oversized dimension header");
+    assert!(matches!(
+        VectorFacts::new(reloaded, model, Metric::EuclideanSquared, 1),
+        Err(Error::MalformedInput | Error::SizeLimit)
+    ));
+}
+
 fn test_coordinate(index: usize, salt: usize) -> f32 {
     let mixed = index
         .wrapping_mul(0x9e37)

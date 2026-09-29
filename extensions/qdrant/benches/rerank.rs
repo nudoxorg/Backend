@@ -119,6 +119,8 @@ fn fixture(
     VectorIndex<MemorySource>,
     QueryVector,
     backend_extension_qdrant::Limits,
+    CandidateState,
+    EmbeddingRecipe,
 ) {
     let recipe = recipe(dimensions, metric);
     let coverage = coverage(7);
@@ -162,7 +164,7 @@ fn fixture(
     .with_frontier(Frontier::from_value(&[0x35; 32]));
     let state =
         CandidateState::new(binding, coverage, candidates, limits()).expect("candidate state");
-    let facts = VectorFacts::from_recipe(state, recipe).expect("vector facts");
+    let facts = VectorFacts::from_recipe(state.clone(), recipe).expect("vector facts");
     let base = AnnBase::from_facts(&facts, SearchQuality::Exact, limits()).expect("ANN base");
     let source = MemorySource::new(
         binding,
@@ -185,6 +187,8 @@ fn fixture(
         VectorIndex::new(base, facts, source).expect("vector index"),
         query,
         limits(),
+        state,
+        recipe,
     )
 }
 
@@ -204,6 +208,7 @@ fn allocation_percentile(samples: &[AllocationInfo], get: impl Fn(AllocationInfo
 fn main() {
     for dimensions in DIMENSIONS {
         for candidate_count in CANDIDATE_COUNTS {
+            measure_admission_case(dimensions, candidate_count);
             for metric in METRICS {
                 measure_case(dimensions, candidate_count, metric);
             }
@@ -211,8 +216,74 @@ fn main() {
     }
 }
 
+fn measure_admission_case(dimensions: usize, candidate_count: usize) {
+    let (_, _, _, state, embedding_recipe) =
+        fixture(dimensions, candidate_count, Metric::EuclideanSquared);
+    for _ in 0..WARMUPS {
+        for (id, payload) in state.iter() {
+            let point = backend_extension_qdrant::VectorPoint::from_payload(id, payload)
+                .expect("allocating admission baseline");
+            assert_eq!(point.values().len(), dimensions);
+            black_box(point.values());
+        }
+        let facts = VectorFacts::from_recipe(state.clone(), embedding_recipe)
+            .expect("borrowed admission warmup");
+        black_box(facts.dimensions());
+    }
+
+    let mut allocating_elapsed_ns = Vec::with_capacity(SAMPLES);
+    let mut allocating_allocations = Vec::with_capacity(SAMPLES);
+    let mut borrowed_elapsed_ns = Vec::with_capacity(SAMPLES);
+    let mut borrowed_allocations = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        let allocation = measure(|| {
+            for (id, payload) in state.iter() {
+                let point = backend_extension_qdrant::VectorPoint::from_payload(id, payload)
+                    .expect("allocating admission baseline");
+                assert_eq!(point.values().len(), dimensions);
+                black_box(point.values());
+            }
+        });
+        allocating_elapsed_ns.push(start.elapsed().as_nanos());
+        allocating_allocations.push(allocation);
+
+        let mut facts = None;
+        let start = Instant::now();
+        let allocation = measure(|| {
+            facts = Some(
+                VectorFacts::from_recipe(state.clone(), embedding_recipe)
+                    .expect("borrowed facts admission"),
+            );
+        });
+        borrowed_elapsed_ns.push(start.elapsed().as_nanos());
+        borrowed_allocations.push(allocation);
+        black_box(facts.as_ref().map(VectorFacts::dimensions));
+        drop(facts);
+    }
+
+    let work = u128::try_from(candidate_count)
+        .expect("candidate count")
+        .saturating_mul(u128::try_from(dimensions).expect("dimension count"));
+    let allocating_p50_ns = percentile(&mut allocating_elapsed_ns, 50, 100);
+    let allocating_p95_ns = percentile(&mut allocating_elapsed_ns, 95, 100);
+    let borrowed_p50_ns = percentile(&mut borrowed_elapsed_ns, 50, 100);
+    let borrowed_p95_ns = percentile(&mut borrowed_elapsed_ns, 95, 100);
+    let allocating_coordinates_per_second =
+        work.saturating_mul(1_000_000_000) / allocating_p50_ns.max(1);
+    let borrowed_coordinates_per_second =
+        work.saturating_mul(1_000_000_000) / borrowed_p50_ns.max(1);
+    println!(
+        "qdrant_admission dimensions={dimensions} candidates={candidate_count} samples={SAMPLES} allocating_p50_ns={allocating_p50_ns} allocating_p95_ns={allocating_p95_ns} allocating_coordinate_checks_per_second={allocating_coordinates_per_second} allocating_count_p50={} allocating_bytes_p50={} borrowed_p50_ns={borrowed_p50_ns} borrowed_p95_ns={borrowed_p95_ns} borrowed_coordinate_checks_per_second={borrowed_coordinates_per_second} borrowed_count_p50={} borrowed_bytes_p50={}",
+        allocation_percentile(&allocating_allocations, |sample| sample.count_total),
+        allocation_percentile(&allocating_allocations, |sample| sample.bytes_total),
+        allocation_percentile(&borrowed_allocations, |sample| sample.count_total),
+        allocation_percentile(&borrowed_allocations, |sample| sample.bytes_total),
+    );
+}
+
 fn measure_case(dimensions: usize, candidate_count: usize, metric: Metric) {
-    let (index, query, limits) = fixture(dimensions, candidate_count, metric);
+    let (index, query, limits, _, _) = fixture(dimensions, candidate_count, metric);
     let result_limit = candidate_count / 4;
     for _ in 0..WARMUPS {
         let result = index
