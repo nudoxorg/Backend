@@ -113,6 +113,9 @@ Therefore replay does not mint `VerifiedTypedLineageEdgeSetV1` and callers
 must treat every returned candidate—including a stored `Confirmed` status—as
 unproven display metadata. A parent generation root that matches its history
 record is still a persisted claim until that parent closure is cold-replayed.
+The implementable next step is to attach bounded identity probes to the
+existing borrowed SPIR Core-row cursor, as specified in
+[`typed-lineage-borrowed-membership-seam.md`](typed-lineage-borrowed-membership-seam.md).
 
 No semantic identity changes are needed. Current V2 history rejects
 second-parent-only payload closures, so lineage remains first-parent-only and
