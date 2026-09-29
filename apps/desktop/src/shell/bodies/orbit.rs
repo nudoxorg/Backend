@@ -80,12 +80,14 @@ pub(super) fn body(
         // A click focuses the tile it lands on (so Back, returning here,
         // restores it) and remembers this route was left by it, since
         // `Reader::arrive` unfocuses every new page it draws.
-        let targets = ctx.targets.clone();
+        // Not `ctx.targets.clone()`: this action is stored in that very list
+        // (`push` below), and an action that holds its own list is a cycle.
+        let recall = ctx.targets.recall();
         let leave_id = id.clone();
         let act: Act = Rc::new(move |_, cx| {
             let leaving = links.snapshot(cx).route().clone();
-            targets.focus(leave_id.clone());
-            targets.remember_leave(leaving, leave_id.clone());
+            recall.focus(leave_id.clone());
+            recall.remember_leave(leaving, leave_id.clone());
             links.dispatch(Intent::ActivateProject(project_id.clone()), cx);
             if let Some(route) = project_route.clone() {
                 links.dispatch(Intent::Navigate(route), cx);
@@ -127,8 +129,13 @@ pub(super) fn body(
         Shown::Ready(model) => {
             if let Some(indexed) = model.indexed.known() {
                 let mut ring = div().flex().flex_wrap().justify_center().gap(measure.space(Space::Roomy));
+                // The names wrap as the room changes; a name that moves to
+                // another line glides there (FLIP) instead of jumping.
+                let flow = facet::motion::Flow::scoped("orbit-ring", cx);
+                flow.epoch((measure.density(), measure.scale().to_bits()));
                 for package in indexed.iter() {
-                    ring = ring.child(package_name(package, ctx, cx));
+                    let key = gpui::ElementId::Name(format!("orbit-chip-{}", package.package).into());
+                    ring = ring.child(flow.item(key, package_name(package, ctx, cx)));
                 }
                 leaves.push(Leaf::new(ring));
             }

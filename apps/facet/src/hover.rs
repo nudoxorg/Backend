@@ -112,6 +112,14 @@ fn set_target(value: Option<(ElementId, Subject)>, window: &mut Window, cx: &mut
     window.refresh();
 }
 
+/// The subject of whatever is the target now (the pointer's or keyboard
+/// focus's), for painters that answer a scrub across the page (W-Glyph's
+/// reach bar: the decks bring the scrubbed member's lines forward).
+#[must_use]
+pub fn hovered(window: &Window, cx: &App) -> Option<Subject> {
+    target(window, cx).map(|(_, subject)| subject)
+}
+
 /// How the hoverable `id` with `subject` is lit.
 #[must_use]
 pub fn lit_as(id: &ElementId, subject: &Subject, window: &Window, cx: &App) -> Lit {

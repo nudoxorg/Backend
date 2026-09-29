@@ -30,6 +30,9 @@ pub mod does;
 pub mod fork;
 #[cfg(feature = "gallery")]
 pub(crate) mod gallery;
+#[cfg(feature = "gallery")]
+pub(crate) mod glyph_gallery;
+pub mod history;
 pub mod holds;
 pub mod in_use;
 pub mod pipe;
@@ -40,6 +43,10 @@ pub mod unroll;
 pub mod fails;
 pub mod prism;
 pub mod rail;
+pub mod reach;
+pub mod reach_world;
+pub mod sigil;
+pub mod symbol;
 pub mod text;
 #[cfg(test)]
 mod tests;

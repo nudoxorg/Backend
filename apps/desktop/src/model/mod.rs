@@ -7,6 +7,7 @@ pub mod pages;
 pub mod persistence;
 pub mod selectors;
 pub mod snapshot;
+pub mod source_facts;
 pub mod viewport;
 pub mod workspace;
 

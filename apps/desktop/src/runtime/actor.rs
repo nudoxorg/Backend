@@ -108,7 +108,7 @@ impl EngineRequest {
         }
     }
 
-    fn cancelled(&self) -> bool {
+    pub(crate) fn cancelled(&self) -> bool {
         match self {
             Self::Root { cancel, .. }
             | Self::Object { cancel, .. }

@@ -8,11 +8,11 @@
 //! shell animates the column — both, crossfaded.
 
 use super::focus::{Act, Target, Targets};
-use super::kit::{HoverIntent, keycap, kind_of, package_route, symbol_route, text};
+use super::kit::{HoverIntent, gap_words, keycap, kind_of, package_route, symbol_route, text};
 use super::region::{Links, Region, RegionCore};
 use super::jump::{route_package, route_symbol, settings_name};
 use crate::model::AppSnapshot;
-use crate::model::pages::{OutlineNode, PackageRef, PageKey, SymbolRef};
+use crate::model::pages::{DependencyScope, Known, OutlineNode, PackageDossier, PackageRef, PageKey, Standing, SymbolRef};
 use crate::navigation::{Intent, Overlay, Route, SettingsPage};
 use crate::runtime::store::{Branch, DataStore};
 use facet::icons::{self, Icon, IconSize, Kind, KindSize};
@@ -44,12 +44,55 @@ struct Row {
     warm: Option<PageKey>,
     /// S peels to source.
     source: Option<SymbolRef>,
+    /// Quiet words at the row's right edge: a requirement, a version, "your pin".
+    detail: Option<SharedString>,
+    /// Drawn quieter: not indexed, or an honest "nothing here".
+    dim: bool,
 }
 
 #[derive(Clone, Copy)]
 enum RowMark {
     Kind(Kind),
     Icon(Icon),
+    /// A release: the pin in mint, the one being read in periwinkle.
+    Release { pinned: bool, viewing: bool },
+}
+
+/// What the shelf lists about the book you are in (`v6/cohesion/COHESION.md`,
+/// the sidebar): its contents, its releases, what it rests on, and what rests
+/// on it. One row grammar for all four; the reader does not move when the
+/// lens changes (browsing is not navigating).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Lens {
+    /// The outline at a release: a release row heads it, and opening that
+    /// row lists the book's releases in place. Contents and versions are one
+    /// list seen at one release, not two lenses.
+    #[default]
+    Contents,
+    /// Dependencies.
+    RestsOn,
+    /// Dependents.
+    UsedBy,
+}
+
+impl Lens {
+    const ALL: [Self; 3] = [Self::Contents, Self::RestsOn, Self::UsedBy];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Contents => "Contents",
+            Self::RestsOn => "Rests on",
+            Self::UsedBy => "Used by",
+        }
+    }
+
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Contents => "contents",
+            Self::RestsOn => "rests-on",
+            Self::UsedBy => "used-by",
+        }
+    }
 }
 
 /// The header above the rows.
@@ -60,6 +103,9 @@ struct Head {
     /// The book's releases for the version comb (oldest first), the one you
     /// pin, and the one being read.
     releases: Option<Releases>,
+    /// How much each lens holds, in `Lens::ALL` order (`None`: not known);
+    /// absent outside a book.
+    lenses: Option<[Option<usize>; 3]>,
 }
 
 #[derive(Clone)]
@@ -82,6 +128,14 @@ pub(crate) struct Shelf {
     toggled: BTreeSet<SymbolRef>,
     /// Whether the trailing "tests" fold was opened or closed by hand.
     tests_toggled: bool,
+    /// The lens on the book, and the book it was chosen in: a new book
+    /// opens on its contents, the same book keeps the lens across its pages
+    /// and across the releases it is read at.
+    lens: Lens,
+    lens_book: Option<SharedString>,
+    /// Whether the release row at the head of Contents is open (its releases
+    /// listed beneath it). A new book, or choosing a release, folds it.
+    releases_open: bool,
     /// The resting width of the full shelf, from the shell.
     rest: Pixels,
     /// The resting width of the spine, from the shell.
@@ -109,6 +163,9 @@ impl Shelf {
             hover: HoverIntent::default(),
             toggled: BTreeSet::new(),
             tests_toggled: false,
+            lens: Lens::Contents,
+            lens_book: None,
+            releases_open: false,
             rest: px(264.0),
             spine: px(42.0),
             rows: Rc::new(Vec::new()),
@@ -188,10 +245,16 @@ impl Region for Shelf {
         keys
     }
 
-    fn observe(&mut self, event: &crate::runtime::store::StoreEvent, _: &DataStore) {
-        // A new book starts with only the current group open.
+    fn observe(&mut self, event: &crate::runtime::store::StoreEvent, store: &DataStore) {
+        // A new book starts with only the current group open, on its contents.
         if event.is_branch(Branch::Route) {
             self.toggled.clear();
+            let book = pinned_book(store.snapshot().route());
+            if book != self.lens_book {
+                self.lens = Lens::Contents;
+                self.lens_book = book;
+            }
+            self.releases_open = false;
         }
     }
 }
@@ -268,6 +331,7 @@ impl Shelf {
                     crumb: Some(("Nudox".into(), snapshot.route().clone())),
                     book: None,
                     releases: None,
+                    lenses: None,
                 },
                 self.settings_rows(current),
             );
@@ -298,6 +362,8 @@ impl Shelf {
                 act: Some(Rc::new(move |_, cx| links.dispatch(Intent::OpenSettings(page), cx))),
                 warm: None,
                 source: None,
+                detail: None,
+                dim: false,
             }
         })
         .collect()
@@ -321,6 +387,8 @@ impl Shelf {
                 act: Some(Rc::new(move |_, cx| links.dispatch(Intent::ActivateProject(id.clone()), cx))),
                 warm: None,
                 source: None,
+                detail: None,
+                dim: false,
             });
         }
         let indexed = orbit.loaded_value().and_then(|model| model.indexed.known().cloned());
@@ -338,6 +406,8 @@ impl Shelf {
                 act: route.map(|route| -> Act { Rc::new(move |_, cx| links.dispatch(Intent::Navigate(route.clone()), cx)) }),
                 warm: Some(PageKey::Package(package.package.clone())),
                 source: None,
+                detail: None,
+                dim: false,
             });
         }
         let book = (
@@ -354,6 +424,7 @@ impl Shelf {
                 crumb: None,
                 book: Some(book),
                 releases: None,
+                lenses: None,
             },
             rows,
         )
@@ -419,16 +490,34 @@ impl Shelf {
                 diffs,
             }
         });
+        let count = |known: Option<usize>| known;
+        let lenses = dossier.map(|dossier| {
+            [
+                count(dossier.outline.known().map(|tree| tree.count())),
+                count(dossier.dependencies.known().map(|list| list.len())),
+                count(dossier.dependents.known().map(|list| list.len())),
+            ]
+        });
         let head = Head {
             crumb,
             book: Some((package.display_name().to_owned().into(), version.into())),
             releases,
+            lenses,
         };
-        let Some(tree) = dossier.and_then(|dossier| dossier.outline.known()) else {
-            return (head, Vec::new());
-        };
+        if self.lens != Lens::Contents {
+            let rows = dossier.map_or_else(Vec::new, |dossier| self.lens_rows(self.lens, dossier, route));
+            return (head, rows);
+        }
         let mut rows = Vec::new();
         let weak = cx.weak_entity();
+        // The release the contents are at heads them; opened, it lists the
+        // book's releases beneath it, and choosing one reads the book there.
+        if let Some(dossier) = dossier {
+            self.push_releases(&weak, &mut rows, dossier, route);
+        }
+        let Some(tree) = dossier.and_then(|dossier| dossier.outline.known()) else {
+            return (head, rows);
+        };
         // Test-only modules never sit among the real ones: they fold into
         // one trailing "tests" row, wherever in the top two levels they are.
         let mut tests: Vec<&OutlineNode> = Vec::new();
@@ -471,6 +560,8 @@ impl Shelf {
                 })),
                 warm: None,
                 source: None,
+                detail: None,
+                dim: false,
             });
             if open {
                 for node in tests {
@@ -479,6 +570,156 @@ impl Shelf {
             }
         }
         (head, rows)
+    }
+
+    /// The rows of a lens other than Contents, from the dossier the page
+    /// already read. An unknown list is one honest row saying why; an empty
+    /// one says so.
+    fn lens_rows(&self, lens: Lens, dossier: &PackageDossier, route: &Route) -> Vec<Row> {
+        let quiet = |id: &str, words: SharedString| Row {
+            id: format!("shelf-{}-{id}", lens.key()).into(),
+            depth: 0,
+            mark: RowMark::Icon(Icon::Info),
+            name: words,
+            current: false,
+            group: None,
+            act: None,
+            warm: None,
+            source: None,
+            detail: None,
+            dim: true,
+        };
+        let links = self.links.clone();
+        let open = move |package: &PackageRef| -> Option<Act> {
+            let route = package_route(package)?;
+            let links = links.clone();
+            Some(Rc::new(move |_, cx| links.dispatch(Intent::Navigate(route.clone()), cx)))
+        };
+        match lens {
+            Lens::Contents => Vec::new(),
+            Lens::RestsOn => match &dossier.dependencies {
+                Known::Known(list) if list.is_empty() => vec![quiet("none", "Rests on nothing".into())],
+                Known::Known(list) => list
+                    .iter()
+                    .map(|dependency| {
+                        let scope = match dependency.scope {
+                            DependencyScope::Development => " · dev",
+                            DependencyScope::Build => " · build",
+                            DependencyScope::Optional => " · optional",
+                            DependencyScope::Runtime | DependencyScope::Peer => "",
+                        };
+                        Row {
+                            id: format!("shelf-dep-{}", dependency.name).into(),
+                            depth: 0,
+                            mark: RowMark::Kind(Kind::Package),
+                            name: dependency.name.to_string().into(),
+                            current: false,
+                            group: None,
+                            act: dependency.resolved.as_ref().and_then(&open),
+                            warm: dependency.resolved.clone().map(PageKey::Package),
+                            source: None,
+                            detail: Some(format!("{}{scope}", dependency.requirement).into()),
+                            // Not resolved to an indexed release: nowhere to go yet.
+                            dim: dependency.resolved.is_none(),
+                        }
+                    })
+                    .collect(),
+                Known::Unknown(gap) => vec![quiet("gap", gap_words(gap))],
+            },
+            Lens::UsedBy => match &dossier.dependents {
+                Known::Known(list) if list.is_empty() => vec![quiet("none", "Nothing here uses it yet".into())],
+                Known::Known(list) => list
+                    .iter()
+                    .map(|record| Row {
+                        id: format!("shelf-dependent-{}", record.package).into(),
+                        depth: 0,
+                        mark: RowMark::Kind(Kind::Package),
+                        name: record.name.to_string().into(),
+                        current: false,
+                        group: None,
+                        act: open(&record.package),
+                        warm: Some(PageKey::Package(record.package.clone())),
+                        source: None,
+                        detail: record.version.known().map(|version| SharedString::from(version.to_string())),
+                        dim: false,
+                    })
+                    .collect(),
+                Known::Unknown(gap) => vec![quiet("gap", gap_words(gap))],
+            },
+        }
+    }
+
+    /// The head of Contents: the release it is at ("0.8.23 · your pin", or
+    /// "1.1.6 · reading"), and, when opened, every release newest first.
+    /// A local project has no releases, so no row.
+    fn push_releases(&self, weak: &gpui::WeakEntity<Self>, rows: &mut Vec<Row>, dossier: &PackageDossier, route: &Route) {
+        let Known::Known(list) = &dossier.versions else { return };
+        if list.is_empty() {
+            return;
+        }
+        // The pin is the route's own release (or the dossier's current one);
+        // the one being read is the route's `at`.
+        let pinned = PackageRef::parse(match route {
+            Route::Package(route) => route.package.as_str(),
+            Route::Symbol(route) => route.package.as_str(),
+            Route::Orbit(_) | Route::World => "",
+        })
+        .ok()
+        .and_then(|package| package.version().map(str::to_owned))
+        .or_else(|| list.iter().find(|entry| entry.current).map(|entry| entry.version.to_string()));
+        let viewing = route.at().map(|at| at.as_str().to_owned());
+        let shown = viewing.clone().or_else(|| pinned.clone()).unwrap_or_default();
+        let toggle = weak.clone();
+        rows.push(Row {
+            id: RELEASE_HEAD_ROW.into(),
+            depth: 0,
+            mark: RowMark::Release { pinned: viewing.is_none(), viewing: viewing.is_some() },
+            name: shown.into(),
+            current: false,
+            group: None,
+            act: Some(Rc::new(move |_, cx| {
+                let _ = toggle.update(cx, |shelf, cx| {
+                    shelf.releases_open = !shelf.releases_open;
+                    cx.notify();
+                });
+            })),
+            warm: None,
+            source: None,
+            detail: Some(if viewing.is_some() { "reading".into() } else { "your pin".into() }),
+            dim: false,
+        });
+        if !self.releases_open {
+            return;
+        }
+        for entry in list.iter() {
+            let version = entry.version.to_string();
+            let is_pin = pinned.as_deref() == Some(version.as_str());
+            let is_viewing = viewing.as_deref() == Some(version.as_str());
+            let links = self.links.clone();
+            let at = (!is_pin).then(|| crate::navigation::ReleaseId::new(&version).ok()).flatten();
+            rows.push(Row {
+                id: format!("shelf-release-{version}").into(),
+                depth: 1,
+                mark: RowMark::Release { pinned: is_pin, viewing: is_viewing },
+                name: version.clone().into(),
+                current: is_viewing || (is_pin && viewing.is_none()),
+                group: None,
+                // The route's change folds the list (`observe`).
+                act: Some(Rc::new(move |_, cx| links.dispatch(Intent::SetRelease(at.clone()), cx))),
+                warm: None,
+                source: None,
+                detail: if is_pin {
+                    Some("your pin".into())
+                } else if entry.standing == Standing::Yanked {
+                    Some("yanked".into())
+                } else if is_viewing {
+                    Some("reading".into())
+                } else {
+                    None
+                },
+                dim: entry.standing == Standing::Yanked,
+            });
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -517,6 +758,8 @@ impl Shelf {
             act: Some(act),
             warm: (!is_group).then(|| PageKey::Symbol(symbol.clone())),
             source: (!is_group).then_some(symbol),
+            detail: None,
+            dim: false,
         });
     }
 
@@ -603,6 +846,9 @@ impl Shelf {
                 }
             }
         }
+        if let Some(counts) = head.lenses {
+            column = column.child(self.lens_bar(counts, measure, palette, cx));
+        }
         let links = self.links.clone();
         column = column.child(
             div().px(gutter).pb(measure.space(Space::Base)).child(
@@ -644,6 +890,46 @@ impl Shelf {
             .into_any_element()
     }
 
+    /// Contents · Rests on · Used by. The lens you are on shows how much it
+    /// holds; choosing one changes the list, never the page.
+    fn lens_bar(&self, counts: [Option<usize>; 3], measure: &Measure, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let mut bar = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .mx(measure.space(Space::Base))
+            .mb(measure.space(Space::Base))
+            .border_b_1()
+            .border_color(palette.line1.hsla());
+        for (index, lens) in Lens::ALL.into_iter().enumerate() {
+            let on = lens == self.lens;
+            let mut tab = div()
+                .id(SharedString::from(format!("shelf-lens-{}", lens.key())))
+                .relative()
+                .flex()
+                .items_center()
+                .gap(measure.space(Space::Snug))
+                .px(measure.space(Space::Snug))
+                .py(measure.space(Space::Base))
+                .cursor_pointer()
+                .child(text(ty::SMALL, measure, if on { palette.ink0 } else { palette.ink3 }).child(lens.label()));
+            if on {
+                if let Some(count) = counts[index] {
+                    tab = tab.child(text(ty::MONO_SMALL, measure, palette.ink3).child(count.to_string()));
+                }
+                tab = tab.child(div().absolute().left_0().right_0().bottom(px(-1.0)).h(px(2.0)).bg(palette.peri.base));
+            }
+            bar = bar.child(tab.on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
+                if shelf.lens != lens {
+                    shelf.lens = lens;
+                    shelf.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                    cx.notify();
+                }
+            })));
+        }
+        bar.into_any_element()
+    }
+
     fn render_rows(&mut self, range: Range<usize>, measure: &Measure, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let palette = cx.facet().palette();
         let rows = Rc::clone(&self.rows);
@@ -662,6 +948,7 @@ impl Shelf {
             RowMark::Icon(icon) => icons::ui(icon, IconSize::S14, palette.ink2)
                 .size(measure.icon(14.0))
                 .into_any_element(),
+            RowMark::Release { pinned, viewing } => release_mark(pinned, viewing, measure, palette),
         };
         let focused = self.targets.is_focused(&row.id);
         let mut element = div()
@@ -686,14 +973,25 @@ impl Shelf {
                 // read here as "shelf-row:X and text:X overlap by …". One
                 // registration, keyed as the row (`.keyed` instead of the
                 // second wrapper), says the same thing once.
-                text(ty::MONO_ROW, measure, ink)
-                    .keyed(gpui::ElementId::Name(format!("shelf-row:{}", row.id).into()))
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(row.name.clone()),
-            );
+                // The name is measured on its own: a click hands its box to the
+                // title it opens (below).
+                self.targets.measure(
+                    name_id(&row.id),
+                    text(ty::MONO_ROW, measure, ink)
+                        .keyed(gpui::ElementId::Name(format!("shelf-row:{}", row.id).into()))
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(row.name.clone()),
+                ),
+            )
+            .children(row.detail.clone().map(|detail| {
+                text(ty::MONO_SMALL, measure, palette.ink3).ml_auto().flex_none().whitespace_nowrap().child(detail)
+            }));
+        if row.dim {
+            element = element.opacity(0.5);
+        }
         if row.current {
             element = element
                 .bg(palette.tint)
@@ -705,6 +1003,12 @@ impl Shelf {
                 shelf.targets.focus(row_id(&group));
                 shelf.toggle(group.clone(), cx);
             }));
+        } else if row.id.as_ref() == RELEASE_HEAD_ROW {
+            element = element.on_click(cx.listener(|shelf, _: &ClickEvent, _, cx| {
+                shelf.targets.focus(SharedString::from(RELEASE_HEAD_ROW));
+                shelf.releases_open = !shelf.releases_open;
+                cx.notify();
+            }));
         } else if row.id.as_ref() == TESTS_ROW {
             element = element.on_click(cx.listener(|shelf, _: &ClickEvent, _, cx| {
                 shelf.targets.focus(SharedString::from(TESTS_ROW));
@@ -713,8 +1017,20 @@ impl Shelf {
             }));
         } else if let Some(act) = row.act.clone() {
             let id = row.id.clone();
+            // A row that opens a declaration hands its name's box to that
+            // declaration's title (W-Page2's `title_key`), so the title grows
+            // out of the row that was clicked. It is registered at the click,
+            // not painted as a shared element, because the same declaration
+            // can also be a door on the page, and one key may have only one
+            // owner per frame. The row for the page you are on opens nothing.
+            let opens = row.source.clone().filter(|_| !row.current);
             element = element.on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
                 shelf.targets.focus(id.clone());
+                if let Some(symbol) = &opens
+                    && let Some(name) = shelf.targets.bounds_of(&name_id(&id))
+                {
+                    facet::motion::shared::remember(facet::anatomy::page::title_key(symbol.as_str()), name, window, cx);
+                }
                 act(window, cx);
             }));
         }
@@ -742,6 +1058,7 @@ impl Shelf {
             let mark = match row.mark {
                 RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, measure, palette),
                 RowMark::Icon(icon) => icons::ui(icon, IconSize::S14, palette.ink2).into_any_element(),
+                RowMark::Release { pinned, viewing } => release_mark(pinned, viewing, measure, palette),
             };
             let act = row.act.clone();
             let mut cell = div()
@@ -767,9 +1084,40 @@ impl Shelf {
     }
 }
 
+/// The book a route is in, as pinned: reading it at another release is
+/// still the same book (unlike `route_package`, which scopes to the release).
+fn pinned_book(route: &Route) -> Option<SharedString> {
+    match route {
+        Route::Package(route) => Some(route.package.as_str().to_owned().into()),
+        Route::Symbol(route) => Some(route.package.as_str().to_owned().into()),
+        Route::Orbit(_) | Route::World => None,
+    }
+}
+
+/// A release's mark in the Versions lens: the pin in mint, the release being
+/// read in periwinkle, every other one quiet. The FACET cut, small.
+fn release_mark(pinned: bool, viewing: bool, measure: &Measure, palette: &Palette) -> AnyElement {
+    let ink: Hsla = if viewing {
+        palette.peri_hi.into()
+    } else if pinned {
+        palette.mint.base.into()
+    } else {
+        palette.ink4.into()
+    };
+    let side = px(8.0 * measure.scale());
+    div().flex_none().size(side).bg(ink).into_any_element()
+}
+
 /// A module row reads as its module (`glyph`), not its file (`glyph.rs`).
 /// The trailing fold that holds a package's test-only modules.
 pub(crate) const TESTS_ROW: &str = "shelf-tests";
+/// Where a row's name is measured (its box is what a click hands to a title).
+fn name_id(row: &SharedString) -> SharedString {
+    SharedString::from(format!("{row}#name"))
+}
+
+/// The row at the head of Contents naming the release it is at.
+const RELEASE_HEAD_ROW: &str = "shelf-release-head";
 
 /// Whether `node` is a test-only module (`#[cfg(test)] mod browse_tests;`,
 /// an inline `mod tests`). The index carries no `cfg` attributes, so this

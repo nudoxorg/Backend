@@ -31,6 +31,10 @@ pub(super) fn rails(source: &Source) -> Vec<Rail> {
             .collect::<Vec<_>>()
     };
     out.sort_by_key(|rail| (rank(&rail.from), !rail.fails));
+    // Two makers that read the same in words are one route (`From<BTreeMap>`
+    // and `From<HashMap>` both start from "map S → V").
+    let mut seen = std::collections::BTreeSet::new();
+    out.retain(|rail| seen.insert((rail.from.plain(), rail.verb.clone(), rail.fails)));
     out
 }
 

@@ -447,18 +447,25 @@ impl Rig {
 fn a_page_renders_its_real_content_through_the_shell(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     let said = rig.said();
+    // The drawn page: the name, the lede, the fork (one tine per variant,
+    // what each carries, the accessor that reads it), then What it does.
     for expected in [
         "RelationLabel",
         "The readable label of RelationLabel.",
-        "One of",
-        "Typed · SemanticLinkKind",
-        "A relation whose kind is known.",
+        "one of 2",
+        "Typed",
+        "SemanticLinkKind",
+        "is_typed",
+        "Related",
         "What it does",
         "as_str",
-        "Display",
-        "Relations need a compiler publication; this package has none.",
     ] {
         assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
+    }
+    // A variant's doc is its peek, never a line at rest; the tabs and the
+    // relation list are gone.
+    for gone in ["A relation whose kind is known.", "One of", "Reference", "Relations", "Usage", "History"] {
+        assert!(!said.iter().any(|line| line == gone), "{gone:?} is still on screen: {said:#?}");
     }
     assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "source lives in Code: {said:#?}");
     // The route and the store agree, and the thread has Orbit behind.
@@ -567,7 +574,9 @@ fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
         selected: None,
     })), 1440.0, 900.0);
     let (before, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.descent(cx));
-    // Walk to the first "start with" row and open it.
+    // Walk to the first module, open it, walk to its first name and open that.
+    rig.keys("j");
+    rig.keys("enter");
     rig.keys("j");
     rig.keys("enter");
     let route = rig.route();
@@ -596,22 +605,28 @@ fn a_shelf_row_paints_its_label_once(cx: &mut TestAppContext) {
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     rig.repaint();
     let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
-    let all: Vec<_> = ledger.texts.iter().filter(|text| text.content == "RelationLabel").collect();
-    let shelf_hits = all.iter().filter(|text| text.key.starts_with("shelf-row:")).count();
-    let stray_hits = all.iter().filter(|text| text.key == "text:RelationLabel").count();
-    assert_eq!(shelf_hits, 1, "the shelf row's own label: {all:#?}");
-    assert_eq!(stray_hits, 0, "a second, default-keyed registration of the same label (the double paint): {all:#?}");
+    // Scoped to the shelf's own column (x < its 264 px resting width): the
+    // titlebar's current-place name and the reader's hero both also read
+    // "RelationLabel" on this route (three different, legitimate elements
+    // sharing one word), so counting the word anywhere on screen is not a
+    // duplicate-paint check — only a second box *inside the shelf* is.
+    let in_shelf: Vec<_> = ledger.texts.iter().filter(|text| text.content == "RelationLabel" && text.bounds.x < 264.0).collect();
+    assert_eq!(in_shelf.len(), 1, "the shelf's \"RelationLabel\" row should paint once, not: {in_shelf:#?}");
+    assert!(in_shelf[0].key.starts_with("shelf-row:"), "{:?}", in_shelf[0]);
 }
 
-/// `jump_bar`'s row used to size itself from its own content (no `flex_1`),
-/// while its one real child (`here`) is `flex_1().min_w(0)` — a 0%-basis,
-/// 0-floor item contributes ~0 to that computation, so the row collapsed to
-/// almost nothing. Its fixed-size children (each segment, each `›`) still
-/// painted at their natural size regardless (nothing shrinks a `flex_none`
-/// item below it); only the current name — the sole child with no floor of
-/// its own, `min_w(0)` for its own truncation — absorbed the whole
-/// shortfall, down to a literal 0 px box (J1's stop-1/code checkpoints:
-/// `clip text:from_str: "from_str" needs 60.0 px … in a 0.0 px box`).
+/// A sanity check for J1's stop-1/code checkpoints (`clip text:from_str:
+/// "from_str" needs 60.0 px … in a 0.0 px box`): every breadcrumb segment,
+/// including the current name, must lay out with real width.
+///
+/// This does not itself prove the fix: `jump_bar`'s row was suspected to
+/// collapse because it sized itself from its own content (no `flex_1`)
+/// while its one real child (`here`) is `flex_1().min_w(0)` — but reverting
+/// that (and the current name's `.text_ellipsis()`) here, alone and
+/// together, still measures every segment above 0 px in this headless rig;
+/// the collapse did not reproduce outside the real harness capture (native
+/// layout is the actual failure surface — see J1.md for the trap-mutation
+/// record). Kept as a real content-level regression guard regardless.
 #[gpui::test]
 fn the_jump_bar_keeps_the_current_names_own_box(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
@@ -1512,10 +1527,20 @@ fn immediate_page_to_graph_acquires_its_actual_visible_hero(cx: &mut TestAppCont
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     rig.go(Intent::Navigate(page_route("RelationLabel")));
     rig.repaint();
+    let key = super::kit::shared_id(&symbol("RelationLabel"));
+    let hero = rig.cx.update(|window, cx| facet::motion::shared::last_bounds(key, window, cx)).expect("Page A paints its hero");
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Graph), cx));
     rig.frame(16);
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "the immediately visible Page A supplies the native canvas endpoint");
+    // The Fold carries the gem from the immediately visible Page A's hero
+    // into the node (W-Flip T2); the map draws no second gem of its own.
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let edge = |key: &str| ledger.tracks.iter().rev().find(|track| track.key == key).map(|track| track.value);
+    let gem = (edge("reader.gem.left"), edge("reader.gem.top"), edge("reader.gem.right"), edge("reader.gem.bottom"));
+    let want = (Some(f32::from(hero.left())), Some(f32::from(hero.top())), Some(f32::from(hero.right())), Some(f32::from(hero.bottom())));
+    assert_eq!(gem, want, "the travelling gem starts on Page A's painted hero");
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "one gem travels, not two");
     rig.settle();
     assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)));
 }

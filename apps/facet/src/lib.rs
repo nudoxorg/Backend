@@ -12,6 +12,7 @@
 pub mod tokens;
 pub mod theme;
 pub mod measure;
+pub mod fluid;
 
 pub mod fonts;
 pub mod motion;
@@ -29,6 +30,7 @@ pub mod semantics;
 pub mod anatomy;
 pub mod browse;
 pub mod marks;
+pub mod folio;
 
 #[cfg(feature = "gallery")]
 pub mod gallery;

@@ -1,15 +1,16 @@
 //! Flow: FLIP layout motion on *layout epochs*.
 //!
 //! Wrap keyed elements with [`Flow::item`]. When an element's laid-out
-//! bounds change across an epoch — a room class, density, text scale, route,
+//! bounds change across an epoch — a layout mode ([`crate::fluid`]), density, text scale, route,
 //! list order or data change — it springs from where it was painted to where
 //! it now is. Between epochs layout motion is followed directly: a window or
 //! splitter drag, or a presence slot opening above it, moves it with no lag.
 //!
 //! ```ignore
 //! // Every render: the epoch token names what counts as a discrete change.
-//! // Width is not in it (drags are followed); the room class is.
-//! self.flow.epoch((measure.room(), facet.density, facet.text_scale.to_bits(), self.order));
+//! // Width is not in it (drags are followed); the layout modes are.
+//! let notes = self.modes.settle(&fluid::NOTES, measure.fluid_room());
+//! self.flow.epoch((notes.epoch, facet.density, facet.text_scale.to_bits(), self.order));
 //! div().children(self.rows.iter().map(|row| self.flow.item(row.id, render_row(row))))
 //! ```
 //!

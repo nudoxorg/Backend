@@ -138,7 +138,14 @@ pub struct FloatRequest {
     pub unfurl: bool,
     /// How the card lines up with its anchor above or below it.
     pub align: place::Align,
+    /// How long a cold rest waits before the card rises, when the kind's
+    /// own delay is not wanted (an inline disclosure asks for [`QUICK_REST`]).
+    pub rest: Option<Duration>,
 }
+
+/// The rest a card that answers what a word says asks for: it rises after
+/// 120 ms (the kind's own delay is for cards about other places).
+pub const QUICK_REST: Duration = Duration::from_millis(120);
 
 impl FloatRequest {
     /// A request on the kind's default side (tips above, the rest below).
@@ -159,7 +166,15 @@ impl FloatRequest {
             content: Rc::new(content),
             unfurl: true,
             align: place::Align::Centre,
+            rest: None,
         }
+    }
+
+    /// Rises after [`QUICK_REST`] instead of the kind's delay.
+    #[must_use]
+    pub const fn quick(mut self) -> Self {
+        self.rest = Some(QUICK_REST);
+        self
     }
 
     /// Hangs from the anchor's start (inline marks): the card's text lines

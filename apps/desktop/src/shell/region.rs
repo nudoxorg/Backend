@@ -6,6 +6,7 @@ use crate::model::pages::PageKey;
 use crate::navigation::Intent;
 use crate::runtime::UiRootEntity;
 use crate::runtime::store::{Branch, DataStore, StoreEvent, Watch};
+use facet::fluid::Modes;
 use facet::{ActiveFacet as _, Measure};
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Element, ElementId, Entity, GlobalElementId,
@@ -18,6 +19,10 @@ use std::sync::Arc;
 /// render counter the isolation tests read.
 pub(crate) struct RegionCore {
     width: Pixels,
+    /// The modes the region is in (a shelf beside the page or a drawer, the
+    /// titlebar's controls): remembered here so a width resting on a
+    /// threshold cannot flip them back and forth (`facet::fluid`).
+    modes: Modes,
     renders: u64,
     watch: Watch,
     _events: Option<Subscription>,
@@ -28,6 +33,7 @@ impl RegionCore {
     pub(crate) fn new(store: &DataStore, branches: &[Branch]) -> Self {
         Self {
             width: px(0.0),
+            modes: Modes::new(),
             renders: 0,
             watch: Watch::new(store, [], branches),
             _events: None,
@@ -43,6 +49,11 @@ impl RegionCore {
     /// The measured width.
     pub(crate) const fn width(&self) -> Pixels {
         self.width
+    }
+
+    /// The region's layout modes.
+    pub(crate) const fn modes(&self) -> &Modes {
+        &self.modes
     }
 
     /// Counts one render. Call first thing in `render`.

@@ -13,7 +13,7 @@
 //! [`Motion`](crate::Motion) store scoped to that state, so every track
 //! publishes to the probe ledger as `<id>-<channel>`.
 
-mod state;
+pub(crate) mod state;
 mod sweep;
 mod text;
 

@@ -64,6 +64,14 @@ pub(crate) struct Ctx<'a> {
     pub measure: Measure,
     /// The margin's measure (the folio's when notes fold under).
     pub note: Measure,
+    /// The measure wide content (tables, rails, comparisons) may take: the
+    /// folio's until 1440 px, then growing to fill a big window
+    /// (`facet::tokens::fluid::WIDE_FOLIO`). Prose keeps `measure`.
+    pub wide: Measure,
+    /// The reader's layout modes, for a page whose own arrangement changes
+    /// with its room (`Modes::settle`, `Modes::columns`): held through a
+    /// hysteresis band so a width on the edge cannot flip it every frame.
+    pub modes: facet::fluid::Modes,
     /// The active palette.
     pub palette: &'static Palette,
     /// Held reveal modes.
@@ -86,6 +94,9 @@ pub(crate) struct Ctx<'a> {
     pub package_outline_expanded: bool,
     /// Explicit Find choices retained through Compare and route history.
     pub find_held: Vec<facet::browse::find::HeldPackage>,
+    /// A declaration page reached by a hop forward from another declaration:
+    /// the one it came from, which the page rings where it finds it.
+    pub arrived_from: Option<crate::model::pages::SymbolRef>,
 }
 
 impl Ctx<'_> {

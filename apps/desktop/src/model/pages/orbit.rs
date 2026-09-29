@@ -5,7 +5,7 @@ use super::package::PackageRecord;
 use std::sync::Arc;
 
 /// Readiness of one indexed package on the shelf, as its row says.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Readiness {
     /// Readable.
     Ready,
@@ -16,7 +16,7 @@ pub enum Readiness {
 }
 
 /// One package the local owner has indexed (a shelf row).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IndexedPackage {
     /// Exact package locator.
     pub package: PackageRef,
@@ -27,7 +27,7 @@ pub struct IndexedPackage {
 }
 
 /// One project (a named group of pinned packages).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OrbitProject {
     /// Stable identity.
     pub id: u64,
@@ -40,7 +40,7 @@ pub struct OrbitProject {
 }
 
 /// What one shared-tree node displays.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TreeSubject {
     /// A package.
     Package(PackageRef),
@@ -55,7 +55,7 @@ pub enum TreeSubject {
 }
 
 /// Which surface opened a tree node.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TreeOpener {
     /// This desktop.
     Desktop,
@@ -66,7 +66,7 @@ pub enum TreeOpener {
 }
 
 /// One node of the shared session tree.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TreeNode {
     /// Stable identity.
     pub id: u64,
@@ -83,7 +83,7 @@ pub struct TreeNode {
 }
 
 /// Everything the Orbit board renders.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OrbitModel {
     /// Packages indexed by the local owner.
     pub indexed: Known<Arc<[IndexedPackage]>>,

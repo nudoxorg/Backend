@@ -486,7 +486,6 @@ fn group_head(words: String, count: usize, measure: &Measure, palette: &facet::P
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, PageValue, ReadFailure, SearchPage, SearchRow};
     use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
     use crate::shell::tests::{Fixture, page_route, rig_with_reads};

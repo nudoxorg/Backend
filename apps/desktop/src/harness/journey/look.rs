@@ -27,8 +27,8 @@ fn rect(area: Area, frame: Option<&Frame>, viewport: Viewport) -> (f32, f32, f32
     let Some(frame) = frame else {
         return (0.0, 0.0, width, height);
     };
-    let (top, bottom) = (frame.titlebar, height - frame.status);
-    let (shelf, pins) = (frame.shelf_width, width - frame.pins_width);
+    let (top, bottom) = (f32::from(frame.titlebar), height - f32::from(frame.status));
+    let (shelf, pins) = (f32::from(frame.shelf_width), width - f32::from(frame.pins_width));
     match area {
         Area::Titlebar => (0.0, 0.0, width, top),
         Area::Status => (0.0, bottom, width, height),
@@ -343,7 +343,11 @@ impl Seen {
             let _ = writeln!(
                 out,
                 "  frame: titlebar {:.0}, status {:.0}, shelf {:?} {:.0}, pins {:.0}",
-                frame.titlebar, frame.status, frame.shelf, frame.shelf_width, frame.pins_width
+                f32::from(frame.titlebar),
+                f32::from(frame.status),
+                frame.shelf,
+                f32::from(frame.shelf_width),
+                f32::from(frame.pins_width)
             );
         }
         let _ = writeln!(out, "  texts (paint order; * = outside the window):");

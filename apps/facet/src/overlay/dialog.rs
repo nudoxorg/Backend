@@ -19,7 +19,7 @@ use crate::paint::{Chamfer, cut};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
 use gpui::{
-    AnyElement, App, FocusHandle, Global, InteractiveElement, IntoElement,
+    AnyElement, App, FocusHandle, Global, InteractiveElement, IntoElement, StatefulInteractiveElement,
     KeyDownEvent, MouseButton, ParentElement, SharedString, Styled, Window, WindowId, div, px,
 };
 use std::cell::RefCell;
@@ -31,6 +31,9 @@ const ENTER: Duration = Duration::from_millis(380);
 const EXIT: Duration = Duration::from_millis(200);
 
 type Action = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// Builds a sheet's content for the width it is given.
+pub type SheetContent = Rc<dyn Fn(&Measure, &mut Window, &mut App) -> AnyElement>;
 
 /// One button.
 #[derive(Clone)]
@@ -82,6 +85,9 @@ pub struct Dialog {
     pub buttons: Vec<DialogButton>,
     /// Esc and a press on the scrim close it.
     pub dismissible: bool,
+    /// A sheet: this content stands where the prose body would, on a wider
+    /// plate that scrolls when it is long (the heads-up sheet).
+    pub sheet: Option<SheetContent>,
 }
 
 struct Open {
@@ -195,7 +201,7 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
     }
     let palette = cx.facet().palette();
     let scale = measure.scale();
-    let width = px(440.0 * scale).min(measure.width() - px(32.0));
+    let width = px(if dialog.sheet.is_some() { 700.0 } else { 440.0 } * scale).min(measure.width() - px(32.0));
     let inner = measure.within(width - px(48.0 * scale));
     let count = dialog.buttons.len();
     let mut buttons = div().flex().justify_end().gap(px(8.0 * scale));
@@ -228,11 +234,18 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
                 .text_color(palette.ink0.hsla())
                 .child(dialog.title.clone()),
         )
-        .child(
-            prose("dialog-body", dialog.body.clone(), ty::BODY, &inner)
+        .child(match &dialog.sheet {
+            Some(content) => div()
+                .max_h(window.viewport_size().height * 0.62)
+                .id("dialog-sheet")
+                .overflow_y_scroll()
+                .child(content(&inner, window, cx))
+                .into_any_element(),
+            None => prose("dialog-body", dialog.body.clone(), ty::BODY, &inner)
                 .color(palette.ink2)
-                .code_color(palette.ink1),
-        )
+                .code_color(palette.ink1)
+                .into_any_element(),
+        })
         .child(buttons);
     let scrim = div()
         .id("dialog-scrim")
@@ -359,6 +372,7 @@ mod tests {
             body: "Its pages stay in the index.".into(),
             buttons: vec![DialogButton::new("Keep", |_, _| {}), DialogButton::new("Remove", |_, _| {}).primary()],
             dismissible,
+            sheet: None,
         }
     }
 

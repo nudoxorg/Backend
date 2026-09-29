@@ -13,7 +13,7 @@ const MAX_README_BYTES: u64 = 512 * 1024;
 const MAX_BLOCKS: usize = 1_024;
 
 /// One structural README block.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ReadmeBlock {
     /// An ATX heading (`#` through `######`).
     Heading {

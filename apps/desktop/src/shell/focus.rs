@@ -59,6 +59,26 @@ pub(crate) struct Target {
     pub source: Option<SymbolRef>,
 }
 
+/// What a click leaves behind: the focused target and which target left
+/// which route. See [`Targets::recall`].
+#[derive(Clone)]
+pub(crate) struct Recall {
+    focused: Rc<RefCell<Option<SharedString>>>,
+    left_by: Rc<RefCell<HashMap<Route, SharedString>>>,
+}
+
+impl Recall {
+    /// Focuses `id` (as [`Targets::focus`]).
+    pub(crate) fn focus(&self, id: impl Into<SharedString>) {
+        *self.focused.borrow_mut() = Some(id.into());
+    }
+
+    /// Remembers that activating `id` left `route` (as [`Targets::remember_leave`]).
+    pub(crate) fn remember_leave(&self, route: Route, id: impl Into<SharedString>) {
+        self.left_by.borrow_mut().insert(route, id.into());
+    }
+}
+
 /// A region's targets, rebuilt every render, and its focused one.
 #[derive(Clone, Default)]
 pub(crate) struct Targets {
@@ -127,6 +147,20 @@ impl Targets {
         Tracked {
             id,
             focused,
+            target: true,
+            bounds: Rc::clone(&self.bounds),
+            layouts: Rc::clone(&self.layouts),
+            child: child.into_any_element(),
+        }
+    }
+
+    /// Wraps `child` so its bounds are recorded under `id` at prepaint, and
+    /// nothing else: a part of a target (a row's name), not a target itself.
+    pub(crate) fn measure(&self, id: impl Into<SharedString>, child: impl IntoElement) -> Tracked {
+        Tracked {
+            id: id.into(),
+            focused: false,
+            target: false,
             bounds: Rc::clone(&self.bounds),
             layouts: Rc::clone(&self.layouts),
             child: child.into_any_element(),
@@ -168,6 +202,21 @@ impl Targets {
     /// keyboard on the same row when it lands on `route` again.
     pub(crate) fn remember_leave(&self, route: Route, id: impl Into<SharedString>) {
         self.left_by.borrow_mut().insert(route, id.into());
+    }
+
+    /// The two things a click writes when it leaves a page, without the
+    /// list. An action stored in [`Self::push`] must capture this and never
+    /// a clone of the `Targets`: the list holds the action, so an action
+    /// that holds the list is a cycle that keeps everything the action
+    /// captured (the shell's links, the store) alive past the window.
+    pub(crate) fn recall(&self) -> Recall {
+        Recall { focused: Rc::clone(&self.focused), left_by: Rc::clone(&self.left_by) }
+    }
+
+    /// A probe on the list: dead once every holder of the list has let go.
+    #[cfg(test)]
+    pub(crate) fn list_probe(&self) -> std::rc::Weak<RefCell<Vec<Target>>> {
+        Rc::downgrade(&self.list)
     }
 
     /// The target `route` was left by, when a click (not a key walk) is
@@ -243,6 +292,9 @@ impl Targets {
 pub(crate) struct Tracked {
     id: SharedString,
     focused: bool,
+    /// Published to the probe as a target (`track`), or only measured
+    /// (`measure`: a part of a target, such as a row's name).
+    target: bool,
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     layouts: Rc<RefCell<HashMap<SharedString, LayoutId>>>,
     child: AnyElement,
@@ -290,6 +342,10 @@ impl Element for Tracked {
         cx: &mut App,
     ) {
         self.bounds.borrow_mut().insert(self.id.clone(), bounds);
+        if !self.target {
+            self.child.prepaint(window, cx);
+            return;
+        }
         facet::probe::record_target(
             cx,
             &ElementId::Name(self.id.clone()),

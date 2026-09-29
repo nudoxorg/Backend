@@ -19,6 +19,8 @@ pub struct LocalEngineClient {
     project: LocalProjectId,
     session: Option<Session>,
     subscription: Option<LocalSubscriptionTransport>,
+    /// The owner this client waits for, on the actor thread (I1).
+    gate: Option<super::owner::OwnerGate>,
 }
 
 impl LocalEngineClient {
@@ -30,6 +32,21 @@ impl LocalEngineClient {
             project,
             session: None,
             subscription: None,
+            gate: None,
+        }
+    }
+
+    /// A client whose requests wait, on the actor thread, for the owner to
+    /// answer; a request cancelled while it waited is not run.
+    #[must_use]
+    pub fn gated(
+        endpoint: impl AsRef<Path>,
+        project: LocalProjectId,
+        gate: super::owner::OwnerGate,
+    ) -> Self {
+        Self {
+            gate: Some(gate),
+            ..Self::new(endpoint, project)
         }
     }
 
@@ -240,6 +257,19 @@ impl LocalEngineClient {
 
 impl EngineClient for LocalEngineClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        if let Some(gate) = &self.gate {
+            gate.wait().map_err(|message| {
+                EngineFault::Failed(crate::core::ErrorValue::new(
+                    FaultCode::Transport,
+                    format!("the index could not start: {message}"),
+                ))
+            })?;
+            // Superseded while it waited (the startup root read, once the
+            // owner's own root arrived): not run.
+            if request.cancelled() {
+                return Err(EngineFault::Cancelled);
+            }
+        }
         match request {
             EngineRequest::Root { .. } => self.request_root(request),
             EngineRequest::Surface { .. } => self.request_surface(request),

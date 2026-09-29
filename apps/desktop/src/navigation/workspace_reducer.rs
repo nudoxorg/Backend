@@ -259,7 +259,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             }
             effects.push(Effect::Persist);
         }
-        Intent::RevealProject(_) => {}
+        Intent::RevealProject(_) | Intent::OpenSource { .. } => {}
         Intent::RetryIndex(project) => {
             let previous_request = next
                 .workspace()
@@ -305,6 +305,15 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             } else {
                 ConnectionStatus::Disconnected
             };
+            next = next.with_settings(settings);
+        }
+        Intent::OwnerReady { key, mode } => {
+            // The owner's own root, read by the owner thread the moment it
+            // answered; no read was ever asked at the unserved one.
+            next = next.with_key(*key, None);
+            let mut settings = next.settings().clone();
+            settings.service_mode = *mode;
+            settings.connection = ConnectionStatus::Connected;
             next = next.with_settings(settings);
         }
         Intent::OpenHelp => {

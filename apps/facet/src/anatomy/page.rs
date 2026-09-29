@@ -13,12 +13,29 @@
 //! doc only in the hover's peek; a group of more than 7 folds; counts ride
 //! the strokes; below the wide room the margins fold into the column.
 
+mod badges;
+mod does;
+mod fails;
 mod fork;
+mod history;
 mod ink;
+mod lazy;
+mod pipe;
 mod rails;
+mod socket;
+mod strip;
+mod uses;
+mod yours;
+#[cfg(feature = "gallery")]
+pub(crate) mod gallery;
 
+pub use does::{Capability, DoesGroup, DoesRow, does};
+pub use fails::fails;
+pub use uses::uses;
+pub use yours::{scrub_subject, yours};
 pub use fork::{CASES, more_link};
 pub use ink::ink;
+pub use rails::band_possible;
 pub use rails::RAILS;
 
 use super::plan::{AnchorId, Dir, Fam, Hero, Mark, PagePlan, Part, Record, Section, SectionId, Spec, Tok, TokKind, Ty, Wrap};
@@ -87,6 +104,18 @@ impl Geometry {
     fn s(&self, value: f32) -> Pixels {
         px(value * self.scale)
     }
+}
+
+/// Rows a group shows before it folds, everywhere on the page (cases,
+/// rails, operations, sites).
+pub const FOLD_AT: usize = 7;
+
+/// Whether a group of `n` rows folds: only when that hides two rows or
+/// more (never fold a single row: 8 shows all 8, 9 shows 7 and "and 2
+/// more").
+#[must_use]
+pub const fn folds(n: usize) -> bool {
+    n > FOLD_AT + 1
 }
 
 /// The hue a family draws structure in.
@@ -252,6 +281,8 @@ pub struct Door {
     pub peek: Option<Rc<dyn Fn(Bounds<Pixels>) -> FloatRequest>>,
     /// A click.
     pub open: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    /// It is the declaration this page was reached from: ringed, "from".
+    pub from: bool,
 }
 
 /// A fold's state: open or not, its clip motion, and its toggle.
@@ -276,6 +307,16 @@ pub trait Doors {
     fn track(&self, key: SharedString, label: SharedString, door: Option<&Door>, element: AnyElement) -> AnyElement;
     /// Records a string the page puts on screen.
     fn say(&self, text: &str);
+    /// One level up from this page (its package, folding the page back into
+    /// the card it came from): the sibling strip's module chip.
+    fn up(&self) -> Option<Rc<dyn Fn(&mut Window, &mut App)>> {
+        None
+    }
+    /// The shared-element id of the mark of the declaration at `link`, so a
+    /// chip's mark and the page's hero mark are one element in flight.
+    fn mark(&self, _link: &str) -> Option<ElementId> {
+        None
+    }
 }
 
 /// No doors: a still page (the gallery, tests).
@@ -305,18 +346,81 @@ pub fn named(
     doors: &dyn Doors,
     build: impl FnOnce(Lit) -> AnyElement + 'static,
 ) -> AnyElement {
+    named_as(key, label, link, hue, doors, true, build)
+}
+
+/// [`named`], the door shared under its title's key (`share`) or not: a chip
+/// that is more than a name shares only its name (it wraps the name in
+/// [`title_key`] itself), so a flight carries the name, never the plate.
+pub fn named_as(
+    key: impl Into<SharedString>,
+    label: &str,
+    link: Option<&str>,
+    hue: Hsla,
+    doors: &dyn Doors,
+    share: bool,
+    build: impl FnOnce(Lit) -> AnyElement + 'static,
+) -> AnyElement {
     let key = key.into();
     let door = link.and_then(|link| doors.door(link));
     let Some(door) = door else { return build(Lit::Rest) };
-    let mut lit = hover::hoverable(ElementId::Name(SharedString::from(format!("{key}-hover"))), door.subject.clone(), hue, build);
+    // A row that opens a declaration carries its title's key: its name
+    // becomes that page's title.
+    let shared_key = title_key(door.subject.0.as_ref());
+    let mut lit = hover::hoverable(ElementId::Name(SharedString::from(format!("{key}-hover"))), door.subject.clone(), hue, move |lit| {
+        if share {
+            crate::motion::shared::shared(shared_key, build(lit)).into_any_element()
+        } else {
+            build(lit)
+        }
+    });
     if let Some(peek) = door.peek.clone() {
         lit = lit.peek(move |bounds| peek(bounds));
     }
-    let mut hit = div().id(ElementId::Name(key.clone())).cursor_pointer().child(lit);
+    let mut hit = div().id(ElementId::Name(key.clone())).relative().cursor_pointer().child(lit);
+    if door.from {
+        // Where you came from stays ringed (dashed, in the periwinkle: the
+        // current chip's ring is solid).
+        hit = hit.child(from_ring(hue));
+    }
     if let Some(open) = door.open.clone() {
         hit = hit.on_click(move |_, window, cx| open(window, cx));
     }
     doors.track(key, SharedString::from(label.to_owned()), Some(&door), hit.into_any_element())
+}
+
+/// A dashed chamfered ring around what it sits in, with the word "from" on
+/// its edge: "you came from here".
+fn from_ring(hue: Hsla) -> AnyElement {
+    let ring = canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            let (x, y) = (f32::from(bounds.origin.x) - 3.0, f32::from(bounds.origin.y) - 2.0);
+            let (w, h) = (f32::from(bounds.size.width) + 6.0, f32::from(bounds.size.height) + 4.0);
+            let c = 4.0;
+            let pts = [point(px(x + c), px(y)), point(px(x + w), px(y)), point(px(x + w), px(y + h - c)), point(px(x + w - c), px(y + h)), point(px(x), px(y + h)), point(px(x), px(y + c))];
+            let mut path = PathBuilder::stroke(px(1.2)).dash_array(&[px(3.0), px(2.5)]);
+            path.add_polygon(&pts, true);
+            if let Ok(path) = path.build() {
+                window.paint_path(path, hue.opacity(0.9));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
+    // The word rides the ring's top edge, small, in the ring's own hue.
+    let role = scale::LABEL_MONO;
+    let tag = probe::text(
+        ElementId::Name("page-from-tag".into()),
+        SharedString::from("from"),
+        role,
+        1.0,
+        TextOverflow::Clip,
+        crate::fonts::Typeset::typeset_at(div().whitespace_nowrap().text_color(hue), TypeRole { size: 9.5, line: 11.0, ..role }, 1.0).child("from"),
+    );
+    div().absolute().top_0().left_0().size_full().child(ring).child(div().absolute().top(px(-9.0)).right(px(6.0)).child(tag)).into_any_element()
 }
 
 // ------------------------------------------------------------------ text
@@ -437,22 +541,53 @@ pub fn words_w(chars: usize, role: TypeRole, scale: f32) -> Pixels {
 
 // ------------------------------------------------------------------ hero
 
-/// The top of the page: the gem on the spine, the name, the author's lede
-/// (only when the docs have one), and the marks the chrome does not already
-/// say: since, deprecated, yours. `gem` and `title` come from the shell
-/// (shared elements, a name fitted to the room).
+/// The key a declaration's title is shared under, by its address: the
+/// title and every row that opens the declaration carry it, so the row's
+/// name becomes the title (and Back returns it), driven by the reader.
 #[must_use]
-pub fn hero(plan: &Hero, gem: AnyElement, title: AnyElement, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette, doors: &dyn Doors) -> AnyElement {
+pub fn title_key(address: &str) -> ElementId {
+    ElementId::Name(SharedString::from(format!("title:{address}")))
+}
+
+/// The top of the page, in two parts. The title line (the gem on the spine
+/// and the name) stands apart so a transition can carry the name along its
+/// plate's edge while the rest prints; then the author's lede (only when
+/// the docs have one) and the marks the chrome does not already say:
+/// since, deprecated, yours. `gem` and `title` come from the shell (shared
+/// elements, a name fitted to the room).
+#[must_use]
+pub fn hero(plan: &PagePlan, gem: AnyElement, title: AnyElement, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette, doors: &dyn Doors) -> (AnyElement, Option<AnyElement>) {
     let m = measure;
+    let hero = &plan.hero;
     let gem = anchor(at(SectionId::Spec, Part::Gem), anchors, div().w(px(geo.gem)).h(px(geo.gem)).child(gem));
-    // Centred on the title's first line.
+    // The kind line: what it is and where, quiet, above the name.
+    let kind_h = geo.s(16.0);
+    let word = badges::kind_word(plan);
+    let place = if hero.module.is_empty() { word.to_owned() } else { format!("{word} · {}", hero.module) };
+    doors.say(&place);
+    let kind_line = div().h(kind_h).flex().items_center().child(said("page-kind-line", place.to_uppercase(), scale::LABEL_MONO, hue(hero.fam, palette), m));
+    // The gem is centred on the title's first line.
     let line = scale::DISPLAY.line * geo.scale;
-    let gem = div().absolute().left(geo.spine - geo.col - px(geo.gem / 2.0)).top(px((line - geo.gem) / 2.0)).child(gem);
-    let mut column = div().relative().flex().flex_col().child(gem).child(anchor(at(SectionId::Spec, Part::Title), anchors, title));
-    if let Some(lede) = &plan.lede {
+    // The sibling strip runs above the name, from the spine.
+    let lead = geo.col - geo.spine;
+    let strip = strip::strip(plan, geo.col_w + lead, geo, m, palette, doors)
+        .map(|strip| div().ml(-lead).mb(geo.s(4.0)).child(strip).into_any_element());
+    let above = if strip.is_some() { geo.s(46.0) } else { px(0.0) };
+    let gem = div().absolute().left(geo.spine - geo.col - px(geo.gem / 2.0)).top(above + (kind_h + px(line) - px(geo.gem)) / 2.0).child(gem);
+    // Its history: in the right margin when the margins carry the edges,
+    // else under the badges.
+    let history_wide = geo.margins().then(|| history::history(&plan.history, (geo.reach - geo.s(72.0)).min(geo.s(300.0)), m, palette)).flatten();
+    let history_wide = history_wide.map(|history| div().absolute().left(geo.col_w + geo.s(28.0)).top(above).child(history).into_any_element());
+    let title_line = div().relative().child(gem).children(history_wide)
+        .child(div().flex().flex_col().children(strip).child(kind_line).child(anchor(at(SectionId::Spec, Part::Title), anchors, title)))
+        .into_any_element();
+    let mut rest = div().flex().flex_col();
+    let mut any = false;
+    if let Some(lede) = &hero.lede {
         let lede = plain(lede);
         doors.say(&lede);
-        column = column.child(
+        any = true;
+        rest = rest.child(
             div().mt(geo.s(4.0)).max_w(geo.col_w).child(
                 probe::text(
                     ElementId::Name("page-lede".into()),
@@ -465,14 +600,25 @@ pub fn hero(plan: &Hero, gem: AnyElement, title: AnyElement, geo: &Geometry, anc
             ),
         );
     }
-    if !plan.marks.is_empty() {
+    if let Some(row) = badges::row(plan, geo, m, palette, doors) {
+        any = true;
+        rest = rest.child(div().mt(geo.s(12.0)).max_w(geo.col_w + geo.reach.min(geo.s(120.0))).child(row));
+    }
+    if !geo.margins()
+        && let Some(history) = history::history(&plan.history, geo.col_w.min(geo.s(320.0)), m, palette)
+    {
+        any = true;
+        rest = rest.child(div().mt(geo.s(12.0)).child(history));
+    }
+    if !hero.marks.is_empty() {
+        any = true;
         let mut marks = div().flex().flex_wrap().items_center().gap_x(geo.s(20.0)).gap_y(geo.s(6.0)).mt(geo.s(10.0));
-        for (n, mark) in plan.marks.iter().enumerate() {
+        for (n, mark) in hero.marks.iter().enumerate() {
             marks = marks.child(mark_element(n, mark, m, palette, doors));
         }
-        column = column.child(marks);
+        rest = rest.child(marks);
     }
-    column.into_any_element()
+    (title_line, any.then(|| rest.into_any_element()))
 }
 
 fn mark_element(n: usize, mark: &Mark, m: &Measure, palette: &Palette, doors: &dyn Doors) -> AnyElement {
@@ -511,6 +657,8 @@ pub fn specimen(plan: &PagePlan, geo: &Geometry, anchors: &Rc<Anchors>, measure:
         Spec::None => None,
         Spec::Record(record) => Some(bracket(record, geo, anchors, measure, palette)),
         Spec::Choice(choice) => Some(fork::fork(choice, plan.hero.fam, geo, anchors, measure, palette, doors)),
+        Spec::Callable(callable) => Some(pipe::pipe(callable, &plan.hero.name, geo, anchors, measure, palette, doors)),
+        Spec::Contract(contract) => Some(socket::socket(contract, plan.hero.fam, geo, anchors, measure, palette, doors)),
     }
 }
 
@@ -612,7 +760,10 @@ pub fn section_head(section: &Section, fam: Fam, geo: &Geometry, anchors: &Rc<An
         let label = section.yours.as_ref().map_or_else(|| count.clone(), |yours| format!("{count} · {yours}"));
         doors.say(&label);
         let words = count_label(&key, count, section.yours.as_deref(), measure, palette);
-        let place = if geo.margins() && section.dir != Dir::None {
+        // A count too long for its margin folds to the head's right end.
+        let margin_room = f32::from(geo.reach - (geo.col - geo.spine)) - 30.0 * geo.scale;
+        let est = label.chars().count() as f32 * scale::LABEL_MONO.size * 0.6 * geo.scale;
+        let place = if geo.margins() && section.dir != Dir::None && est <= margin_room {
             match section.dir {
                 Dir::In => div().absolute().right(geo.col_w + (geo.col - geo.spine) + geo.s(18.0)).bottom(geo.s(10.0)),
                 _ => div().absolute().left(geo.col_w + geo.s(14.0)).bottom(geo.s(10.0)),
@@ -627,9 +778,11 @@ pub fn section_head(section: &Section, fam: Fam, geo: &Geometry, anchors: &Rc<An
 
 fn count_label(key: &str, count: &str, yours: Option<&str>, m: &Measure, palette: &Palette) -> AnyElement {
     let mut row = div().flex().items_baseline().gap(px(6.0 * m.scale()));
-    row = row.child(said(format!("{key}-count"), count.to_owned(), scale::LABEL_MONO, palette.ink3, m));
+    // The separator rides the count's own run: a lone `·` is too little ink
+    // to read (and to measure) on its own.
+    let count = if yours.is_some() { format!("{count} ·") } else { count.to_owned() };
+    row = row.child(said(format!("{key}-count"), count, scale::LABEL_MONO, palette.ink3, m));
     if let Some(yours) = yours {
-        row = row.child(said(format!("{key}-count-dot"), "·", scale::LABEL_MONO, palette.ink4, m));
         row = row.child(said(format!("{key}-count-yours"), yours.to_owned(), scale::LABEL_MONO, palette.mint.base, m));
     }
     row.into_any_element()
@@ -637,8 +790,8 @@ fn count_label(key: &str, count: &str, yours: Option<&str>, m: &Measure, palette
 
 /// Getting one's body: the rails.
 #[must_use]
-pub fn getting(plan: &PagePlan, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette, doors: &dyn Doors) -> Option<AnyElement> {
-    rails::rails(plan, geo, anchors, measure, palette, doors)
+pub fn getting(plan: &PagePlan, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette, doors: &dyn Doors, band: Option<AnyElement>) -> Option<AnyElement> {
+    rails::rails(plan, geo, anchors, measure, palette, doors, band)
 }
 
 // ------------------------------------------------------------------ the page
@@ -656,20 +809,40 @@ pub fn page(
     gem: AnyElement,
     title: AnyElement,
     mut bodies: Vec<(SectionId, AnyElement)>,
+    band: Option<AnyElement>,
     geo: Geometry,
     anchors: &Rc<Anchors>,
     measure: &Measure,
     palette: &Palette,
     doors: &dyn Doors,
 ) -> AnyElement {
-    let mut parts: Vec<AnyElement> = vec![hero(&plan.hero, gem, title, &geo, anchors, measure, palette, doors)];
+    let (title_line, hero_rest) = hero(plan, gem, title, &geo, anchors, measure, palette, doors);
+    let mut parts: Vec<AnyElement> = hero_rest.into_iter().collect();
+    // The band: where what makes one runs to a plate and what it does runs
+    // on from it (left = where it comes from, right = where it goes), then
+    // its cases hang below. What it does is said there, and not again.
+    let band_on = band.is_some() && rails::band_possible(plan, &geo);
+    if band_on && let Some(section) = plan.sections.iter().find(|section| section.id == SectionId::Getting) {
+        let head = section_head(section, plan.hero.fam, &geo, anchors, measure, palette, doors);
+        let mut block = div().flex().flex_col().mt(geo.s(rhythm::SECTION - 24.0)).child(head);
+        if let Some(body) = getting(plan, &geo, anchors, measure, palette, doors, band) {
+            block = block.child(anchor(at(SectionId::Getting, Part::Body), anchors, div().mt(geo.s(rhythm::HEAD_GAP - 4.0)).child(body)));
+        }
+        parts.push(block.into_any_element());
+    }
     if let Some(spec) = specimen(plan, &geo, anchors, measure, palette, doors) {
         parts.push(div().mt(geo.s(24.0)).child(spec).into_any_element());
     }
     for section in &plan.sections {
+        if band_on && matches!(section.id, SectionId::Getting | SectionId::Does) {
+            continue;
+        }
         let body = match bodies.iter().position(|(id, _)| *id == section.id) {
             Some(at) => Some(bodies.remove(at).1),
-            None if section.id == SectionId::Getting => getting(plan, &geo, anchors, measure, palette, doors),
+            None if section.id == SectionId::Getting => getting(plan, &geo, anchors, measure, palette, doors, None),
+            None if section.id == SectionId::Fails => fails(&plan.fails, &geo, anchors, measure, palette, doors),
+            None if section.id == SectionId::Uses => uses(&plan.uses, &geo, measure, palette, doors),
+            None if section.id == SectionId::Yours => yours(&plan.reach, &plan.hero.name, &geo, measure, palette, doors),
             None => None,
         };
         let head = section_head(section, plan.hero.fam, &geo, anchors, measure, palette, doors);
@@ -679,7 +852,9 @@ pub fn page(
         }
         parts.push(block.into_any_element());
     }
-    let mut column = div().relative().w(geo.col + geo.col_w).pl(geo.col).flex().flex_col();
+    // The title line stands outside the parts a transition prints in reading
+    // order (`page-part-{n}`): it rides the opening plate's edge instead.
+    let mut column = div().relative().w(geo.col + geo.col_w).pl(geo.col).flex().flex_col().child(div().id("page-title-line").child(title_line));
     for (n, part) in parts.into_iter().enumerate() {
         column = column.child(div().id(SharedString::from(format!("page-part-{n}"))).child(part));
     }

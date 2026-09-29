@@ -7,7 +7,7 @@
 //! An open choice (Go's named int, a TypeScript union kept open) runs its
 //! trunk on, dashed, to what else it admits. The strokes are [`super::ink`]'s.
 
-use super::{Doors, Geometry, at, hue, mono_w, named, said, stone, ty_lit, words_w};
+use super::{Doors, FOLD_AT, Geometry, at, folds, hue, mono_w, named, said, stone, ty_lit, words_w};
 use crate::anatomy::plan::{Case, CaseKind, Choice, Fam, Part, SectionId};
 use crate::anatomy::page::{Anchors, anchor};
 use crate::hover::{self, Lit};
@@ -16,8 +16,6 @@ use crate::tokens::{Palette, rhythm, scale};
 use gpui::{AnyElement, IntoElement, ParentElement, Pixels, Styled, div, px};
 use std::rc::Rc;
 
-/// Cases shown before the fold.
-pub(crate) const FOLD_AT: usize = 7;
 
 /// The fold key the shell keeps a fork's "and N more" under.
 pub const CASES: &str = "page-cases";
@@ -59,9 +57,9 @@ pub(super) fn fork(choice: &Choice, fam: Fam, geo: &Geometry, anchors: &Rc<Ancho
     let s = geo.scale;
     let pitch = px(rhythm::ROW_PITCH * s);
     let kind = hue(fam, palette).hsla();
-    let fold = (choice.cases.len() > FOLD_AT).then(|| doors.fold(CASES)).flatten();
+    let fold = folds(choice.cases.len()).then(|| doors.fold(CASES)).flatten();
     let open = fold.as_ref().is_some_and(|fold| fold.open);
-    let folded = choice.cases.len() > FOLD_AT;
+    let folded = folds(choice.cases.len());
 
     // The count line: "one of 7", what every case is, what tells them apart.
     let mut count = div().flex().items_baseline().gap(px(5.0 * s)).h(px(16.0 * s)).mb(px(4.0 * s));
@@ -69,8 +67,11 @@ pub(super) fn fork(choice: &Choice, fam: Fam, geo: &Geometry, anchors: &Rc<Ancho
     count = count.child(said("page-count-1", choice.cases.len().to_string(), scale::LABEL, palette.ink2, m));
     doors.say(&format!("one of {}", choice.cases.len()));
     if let Some(each) = &choice.each {
-        count = count.child(said("page-count-2", "· each", scale::LABEL, palette.ink3, m));
-        count = count.child(ty_lit("page-count-each", each, m, palette, m.reveal().xray, Lit::Rest));
+        // What every case is underneath, as the language spells it (`int`).
+        let spelled = if each.exact.is_empty() { each.plain() } else { each.exact.clone() };
+        doors.say(&spelled);
+        count = count.child(said("page-count-2", "· each an", scale::LABEL, palette.ink3, m));
+        count = count.child(said("page-count-each", spelled, scale::LABEL_MONO, palette.ink2, m));
     }
     if let Some(told) = &choice.told_by {
         count = count.child(said("page-count-3", "· told apart by", scale::LABEL, palette.ink3, m));
@@ -149,7 +150,7 @@ pub fn more_link(key: &str, words: String, toggle: Option<Rc<dyn Fn(&mut gpui::W
         said(words_key, text, scale::LABEL, hover::ink(pal.ink2, lit, &pal), &m)
     });
     let Some(toggle) = toggle else { return lit.into_any_element() };
-    let door = super::Door { subject: hover::Subject::new(key.clone()), peek: None, open: Some(Rc::clone(&toggle)) };
+    let door = super::Door { subject: hover::Subject::new(key.clone()), peek: None, open: Some(Rc::clone(&toggle)), from: false };
     let hit = div().id(gpui::ElementId::Name(format!("{key}-hit").into())).cursor_pointer().child(lit)
         .on_click(move |_, window, cx| toggle(window, cx));
     doors.track(key, words.into(), Some(&door), hit.into_any_element())
@@ -191,7 +192,7 @@ fn case_row(n: usize, case: &Case, name_w: Pixels, payload_w: Pixels, condensed:
     if case.kind != CaseKind::Type {
         for (q, ty) in case.carries.iter().enumerate() {
             if q > 0 {
-                payload = payload.child(said(format!("{key}-times-{q}"), "×", scale::BODY, palette.ink4, m));
+                payload = payload.child(said(format!("{key}-times-{q}"), "×", scale::BODY, palette.ink3, m));
             }
             doors.say(&ty.plain());
             let (ty, tkey, link) = (ty.clone(), format!("{key}-carries-{q}"), ty.head().filter(|tok| tok.kind == crate::anatomy::plan::TokKind::Named).map(|tok| tok.text.clone()));

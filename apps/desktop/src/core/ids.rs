@@ -456,6 +456,23 @@ impl VersionedRoot {
         }
     }
 
+    /// The authority a window holds before any owner has answered: the
+    /// empty view at the genesis cursor (`Cursor::new`), epoch 1, the epoch
+    /// every owner-issued root this process admits carries. It is not a
+    /// fabricated root: it is the one state that is true of every index
+    /// before its first answer, and no read is ever asked at it (the store
+    /// holds reads while the owner starts, `runtime::owner`).
+    #[must_use]
+    pub fn unserved() -> Self {
+        Self::from_revision(1, backend_library::Cursor::new(), 0)
+    }
+
+    /// Whether this is [`Self::unserved`]: no owner has answered yet.
+    #[must_use]
+    pub fn is_unserved(self) -> bool {
+        self.same_authority(Self::unserved())
+    }
+
     /// Creates a synthetic authority for reducer/model fixtures.
     ///
     /// Production code must use [`Self::from_revision`]. Keeping this

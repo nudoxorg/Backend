@@ -1,27 +1,30 @@
-//! The package page: recorded identity, a bounded outline, dependencies and
-//! authored README blocks. A future tour needs live typed use evidence;
+//! The package page. The hero says what it is; the crest carries its
+//! licence, what it does to your build and machine, its weight and its
+//! advisories; the release ticker travels to any release; and the shingles
+//! are its territory, one per public name, opening into cards whose badges
+//! say what each name is. A future tour needs live typed use evidence;
 //! prototype fixture-world rankings never recommend a starting declaration.
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf};
 use crate::model::AppSnapshot;
 use crate::model::local_package::{ActiveProject, ReadmeBlock, active_project};
-use crate::model::pages::{Dependency, DependencyScope, OutlineNode, PackageDossier, PackageRef, PageKey, RecordSource, Standing};
+use crate::model::pages::{Dependency, DependencyScope, PackageDossier, PackageRef, PageKey, RecordSource};
 use crate::navigation::{Intent, Route};
-use crate::runtime::fixture_releases;
-use crate::shell::focus::{Act, Target};
-use crate::shell::kit::{HoverIntent, gap_words, kind_of, package_route, quiet, symbol_route, text};
+use crate::shell::kit::{HoverIntent, package_route, quiet, text};
 use crate::shell::reader::Reader;
-use facet::icons::{Icon, IconSize, Kind, KindSize, ui};
-use facet::marks::semver::ReleaseFact;
-use facet::marks::{DepFacts, DepKind, Eco, EcoFacts, LicenseFacts, VersionFacts, dep_link, dep_line, ecosystem_mark, license_mark, version_mark};
+use facet::icons::Kind;
+use facet::marks::{DepFacts, DepKind, Eco, EcoFacts, dep_line, ecosystem_mark};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
-use gpui::{
-    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, px,
-};
+use gpui::{AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
 use std::rc::Rc;
+
+mod data;
+mod fluid;
+mod folio;
+#[cfg(test)]
+mod tests;
 
 pub(super) fn body(
     place: &Route,
@@ -48,52 +51,139 @@ pub(super) fn body(
     // The package whose page is open *is* that active project: its own
     // hero reads its own tree rather than comparing itself with itself.
     let is_active_project = workspace_active.is_some_and(|project| dossier.package.as_str() == project.as_str());
-    let mut leaves = vec![hero(&dossier, &active, is_active_project, ctx, cx)];
-    leaves.push(outline(&dossier, ctx, cx));
-    if let Some(leaf) = dependencies(&dossier, &active, ctx) {
-        leaves.push(leaf);
-    }
+
+    // The pin is the route's package; the dossier is about the release being
+    // read, which is the pin unless the route says `at`.
+    let (pin, at) = match place {
+        Route::Package(route) => (PackageRef::parse(route.package.as_str()).ok(), route.at.clone()),
+        Route::Symbol(route) => (PackageRef::parse(route.package.as_str()).ok(), route.at.clone()),
+        _ => (None, None),
+    };
+    let pin_version = pin.as_ref().and_then(|pin| pin.version()).map(str::to_owned);
+    let record = dossier.record.known();
+    let name = record.map_or_else(|| dossier.package.display_name().to_owned(), |record| record.name.to_string());
+    let project_name = active.name.as_deref().unwrap_or("your project");
+    let today = today();
+    let past = at.as_ref().and_then(|at| pin.as_ref().map(|pin| data::past(pin, at.as_str(), cx)));
+    // What the source on disk says (read off the UI thread; cached).
+    let hints: std::collections::HashMap<String, String> = dossier
+        .dependencies
+        .known()
+        .map(|list| list.iter().filter_map(|d| d.resolved.as_ref().and_then(|r| r.version()).map(|v| (d.name.to_string(), v.to_owned()))).collect())
+        .unwrap_or_default();
+    let project_path = workspace_active.map(|project| project.path());
+    let source = crate::model::source_facts::reading(&dossier.package, &hints, project_path.as_deref(), cx);
+    let ready = match &source {
+        crate::model::source_facts::Reading::Ready(facts) => Some(facts.clone()),
+        _ => None,
+    };
+    let modules = dossier.outline.known().map(|tree| data::modules(tree, &name, ready.as_deref())).unwrap_or_default();
+    let facts = Rc::new(folio::Facts {
+        name: name.clone().into(),
+        at: at.as_ref().map(|at| at.as_str().to_owned().into()),
+        pin: pin_version.clone().map(Into::into),
+        documented: data::documented(&modules),
+        outline_gap: match &dossier.outline {
+            crate::model::pages::Known::Unknown(gap) => Some(crate::shell::kit::gap_words(gap)),
+            _ => None,
+        },
+        modules,
+        heads: ready.as_deref().map(|source| Rc::new(facet::folio::heads::findings(&data::signals(source)))),
+        berg: ready.as_deref().map(|source| Rc::new(data::berg(&name, source))),
+        features: ready.as_deref().and_then(data::features).map(Rc::new),
+        source,
+        licence: data::licence(record, active.license.as_deref(), project_name, if is_active_project { data::Subject::Project } else { data::Subject::Dependency }),
+        advisories: data::advisories(record),
+        ticker: data::ticker(&dossier, ready.as_deref(), pin_version.as_deref(), at.as_ref().map(|at| at.as_str()), &today, cx),
+        past,
+    });
+
+    // The page's own width: the folio column is a reading column; the
+    // territory wants the room the reader has.
+    let measure = page_measure(ctx);
+    let byline = ready.as_deref().map(data::byline).unwrap_or_default();
+    let hero = hero(&dossier, &active, &name, &byline, &measure, ctx);
+    let id = format!("folio-{}", pin.as_ref().map_or_else(|| dossier.package.as_str().to_owned(), |pin| pin.as_str().to_owned()));
+    // A click on a card left this page: that card's module is open again on
+    // coming back.
+    let reopen = ctx.targets.left_by(place).and_then(|left| {
+        let symbol = left.strip_prefix("pkg-card-")?.to_owned();
+        facts.modules.iter().find(|m| m.items.iter().any(|i| i.symbol.as_str() == symbol)).map(|m| m.name.clone())
+    });
+    let folio = folio::Folio {
+        id: id.into(),
+        facts,
+        measure,
+        hero,
+        links: ctx.links.clone(),
+        targets: ctx.targets.clone(),
+        recall: ctx.targets.recall(),
+        reopen,
+        active: ctx.active,
+        package: dossier.package.clone(),
+    };
+    // Centred on the reading column it overflows.
+    let overshoot = (measure.width() - ctx.measure.width()).max(px(0.0));
+    let mut leaves = vec![Leaf::new(div().ml(-(overshoot * 0.5)).child(folio))];
     if let Some(leaf) = readme(&dossier, ctx) {
         leaves.push(leaf);
     }
     leaves
 }
 
+/// The measure of the page: the room the reader has, up to a cap, rather
+/// than the reading column's width. The reader's scroller reports its own
+/// bounds once it has been laid out; before that the reading column is all
+/// there is.
+fn page_measure(ctx: &Ctx<'_>) -> Measure {
+    let viewport = ctx.reader_scroll.bounds().size.width;
+    let scale = ctx.measure.scale();
+    let column = ctx.measure.width();
+    if viewport <= column {
+        return ctx.measure;
+    }
+    let pad = ctx.measure.within(viewport).fluid(22.0, 40.0);
+    let content = (viewport - pad * 2.0).max(column);
+    ctx.measure.within(content.min(px(PAGE_MAX * scale)))
+}
+
+/// The widest the folio grows, px at 100 % text.
+const PAGE_MAX: f32 = 1800.0;
+
 fn hero(
     dossier: &PackageDossier,
     active: &ActiveProject,
-    is_active_project: bool,
+    name: &str,
+    byline: &[SharedString],
+    measure: &Measure,
     ctx: &mut Ctx<'_>,
-    cx: &mut Context<Reader>,
-) -> Leaf {
-    let measure = ctx.measure;
+) -> AnyElement {
     let palette = ctx.palette;
     let record = dossier.record.known();
-    let name = ctx.say(
-        record
-            .map_or_else(|| dossier.package.display_name().to_owned(), |record| record.name.to_string()),
-    );
-    let mut words = div().flex().flex_col().gap(measure.space(Space::Tight)).child(text(ty::HERO, &measure, palette.ink0).child(name));
+    let name = ctx.say(name.to_owned());
+    let mut words = div().flex().flex_col().gap(measure.space(Space::Tight)).child(text(ty::HERO, measure, palette.ink0).child(name));
     if let Some(description) = record.and_then(|record| record.description.known()) {
         let lede = ctx.say(description.to_string());
-        words = words.child(text(ty::LEDE, &measure, palette.ink2).child(lede));
+        words = words.child(text(ty::LEDE, measure, palette.ink2).max_w(measure.width() * 0.9).child(lede));
     }
-
-    // The rejected pattern was a table of italic labels (VERSION /
-    // ECOSYSTEM / OUTLINE READ). Each fact is now its own mark
-    // (gui-plan.md §6.2: "facts are components, not text"), built straight
-    // from the dossier the marks module already knows how to render, never
-    // duplicating a producer. A fact this dossier does not carry (release
-    // dates beyond the pinned upgrade-lens fixture, lockfile duplicates,
-    // tree licenses, dependency usage) renders through the mark's own
-    // honest-unknown path rather than being invented here.
+    // Who made it, read from its manifest (labelled: not an index fact).
+    if !byline.is_empty() {
+        let mut line = div().flex().flex_wrap().items_center().gap_x(measure.space(Space::Snug));
+        for (index, part) in byline.iter().enumerate() {
+            if index > 0 {
+                line = line.child(text(ty::SMALL, measure, palette.ink3).child("·"));
+            }
+            let ink = if part.contains('.') && part.contains('/') { palette.ink1 } else { palette.ink2 };
+            line = line.child(text(ty::SMALL, measure, ink).child(ctx.say(part.clone())));
+        }
+        words = words.child(line);
+    }
+    // Facts are marks, not text (gui-plan §6.2): the registry's stone with
+    // its install line, and what it rests on. The licence and the releases
+    // have their own places beneath.
     let mut marks = div().id("pkg-hero-marks").flex().flex_wrap().items_center().gap(measure.space(Space::Wide));
     if let Some(record) = record {
-        // No committed release exists for this coordinate at all (a
-        // workspace project that was never published, e.g. `publish =
-        // false`): the ecosystem mark names the path instead of a
-        // registry, and the version mark's comb shows the unpublished
-        // trail instead of a release history.
+        // A project that was never published names its path, not a registry.
         let unpublished = matches!(record.source, RecordSource::LocalManifest);
         if let Some(eco) = record.ecosystem.known().and_then(|ecosystem| Eco::of(ecosystem)) {
             let version = record.version.known().map(|version| version.as_ref());
@@ -102,50 +192,7 @@ fn hero(
             if unpublished {
                 facts.local = Some(SharedString::from(dossier.package.display_name().to_owned()));
             }
-            marks = marks.child(ecosystem_mark("mk-eco", facts, &measure));
-        }
-        let spdx = record.license.known().map(ToString::to_string);
-        // Comparing a package's license with itself says nothing (the
-        // lead's ruling): the fit is measured against the *active*
-        // project's own license, read from its manifest, never from this
-        // dossier. When that project's own license is not known, the card
-        // omits the fit line rather than guess.
-        let project_name = active.name.as_deref().unwrap_or("your project");
-        let mut license_facts = LicenseFacts::new(spdx.as_deref(), active.license.as_deref(), project_name);
-        license_facts.own = is_active_project;
-        marks = marks.child(license_mark("mk-license", license_facts, &measure));
-
-        if let Some(versions) = dossier.versions.known() {
-            // Release publish dates: the pinned upgrade-lens fixture
-            // (`runtime::fixture_releases`, toml and smallvec today). Every
-            // other release renders with `at: None`, an honest unknown age
-            // rather than a guess.
-            let dated = fixture_releases::release_data(&dossier.package, cx);
-            let releases = versions
-                .iter()
-                .map(|entry| {
-                    let at = dated.and_then(|release| {
-                        release
-                            .versions
-                            .iter()
-                            .find(|known| known.v.as_ref() == entry.version.as_ref())
-                            .map(|known| known.at.to_string())
-                    });
-                    ReleaseFact::new(entry.version.to_string(), at.as_deref(), entry.standing == Standing::Yanked)
-                })
-                .collect::<Vec<_>>();
-            let facts = VersionFacts {
-                name: record.name.to_string().into(),
-                releases,
-                pin: record.version.known().map(ToString::to_string),
-                also: Vec::new(),
-                yours: Vec::new(),
-                pin_via: Vec::new(),
-                measured: None,
-                local: unpublished.then(|| SharedString::from(dossier.package.display_name().to_owned())),
-                now: today().into(),
-            };
-            marks = marks.child(version_mark("mk-version", facts, &measure));
+            marks = marks.child(ecosystem_mark("mk-eco", facts, measure));
         }
     }
     if let Some(list) = dossier.dependencies.known()
@@ -154,26 +201,24 @@ fn hero(
         let parent = dossier.package.display_name().to_owned();
         let facts: Vec<DepFacts> = list.iter().map(|dependency| dep_facts(dependency, active)).collect();
         let links = ctx.links.clone();
-        marks = marks.child(dep_line("mk-deps", facts, parent, &measure).on_open(move |target, _window, cx| {
+        marks = marks.child(dep_line("mk-deps", facts, parent, measure).on_open(move |target, _window, cx| {
             open_dependency(target, &links, cx);
         }));
     }
-
-    Leaf::new(
-        div()
-            .flex()
-            .flex_col()
-            .gap(measure.space(Space::Roomy))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(measure.space(Space::Wide))
-                    .child(facet::paint::gem(Kind::Package).size(f32::from(measure.fluid(48.0, 64.0))))
-                    .child(words),
-            )
-            .child(marks),
-    )
+    div()
+        .flex()
+        .flex_col()
+        .gap(measure.space(Space::Roomy))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(measure.space(Space::Wide))
+                .child(facet::paint::gem(Kind::Package).size(f32::from(measure.fluid(48.0, 64.0))))
+                .child(words),
+        )
+        .child(marks)
+        .into_any_element()
 }
 
 /// Today, as `semver::ago` reads it (`YYYY-MM-DD`, UTC): the inverse of the
@@ -245,124 +290,6 @@ fn open_dependency(target: &SharedString, links: &crate::shell::region::Links, c
     }
 }
 
-fn outline(dossier: &PackageDossier, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
-    let measure = ctx.measure;
-    let palette = ctx.palette;
-    let heading = ctx.say("Recorded outline");
-    let note = ctx.say("Choose a row to inspect the declarations recorded beneath it.");
-    let mut column = div().flex().flex_col()
-        .child(head(heading, &measure, palette))
-        .child(text(ty::SMALL, &measure, palette.ink2).child(note));
-    match dossier.outline.known() {
-        Some(tree) => {
-            let expanded = ctx.package_outline_expanded;
-            let shown = tree.roots.len().min(if expanded { 48 } else { 8 });
-            for node in tree.roots.iter().take(shown) {
-                column = column.child(node_row(node, &dossier.package, ctx, cx));
-            }
-            if tree.roots.len() > 8 {
-                let id: SharedString = "pkg-outline-toggle".into();
-                let label = ctx.say(if expanded { "Show fewer entries" } else { "Show more entries" });
-                let weak = cx.weak_entity();
-                let act: Act = Rc::new(move |_, cx| { let _ = weak.update(cx, |reader, cx| reader.toggle_package_outline(cx)); });
-                if ctx.active { ctx.targets.push(Target { id: id.clone(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None }); }
-                let mut toggle = div().id(id.clone()).flex().items_center().gap(measure.space(Space::Base))
-                    .py(measure.space(Space::Base)).px(measure.space(Space::Base)).cursor_pointer()
-                    .hover(|style| style.bg(palette.tint))
-                    .child(ui(Icon::Layers, IconSize::S16, palette.peri.base))
-                    .child(text(ty::SMALL, &measure, palette.ink0).child(label));
-                if !expanded {
-                    toggle = toggle.child(text(ty::CAPTION, &measure, palette.ink2).child(ctx.say(format!("{} further top-level entries", tree.roots.len() - shown))));
-                }
-                column = column.child(ctx.targets.track(id.clone(), toggle.on_click(move |_: &ClickEvent, window, cx| act(window, cx))));
-            }
-            if tree.roots.len() > shown && expanded {
-                column = column.child(quiet(ctx.say(format!("{} further top-level entries are in the library sidebar", tree.roots.len() - shown)), &measure, palette));
-            }
-            if !tree.complete {
-                let more = ctx.say("The outline is still being read.");
-                column = column.child(quiet(more, &measure, palette));
-            }
-        }
-        None => {
-            if let Some(gap) = dossier.outline.gap() {
-                let words = ctx.say(gap_words(gap));
-                column = column.child(quiet(words, &measure, palette));
-            }
-        }
-    }
-    Leaf::new(column)
-}
-
-fn node_row(node: &OutlineNode, package: &PackageRef, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
-    let measure = ctx.measure;
-    let palette = ctx.palette;
-    let symbol = node.decl.coordinate.clone();
-    let id: SharedString = format!("pkg-{}", symbol.as_str()).into();
-    let name = ctx.say(node.decl.name.to_string());
-    let route = symbol_route(package.as_str(), &symbol);
-    let links = ctx.links.clone();
-    let act: Act = Rc::new(move |_, cx| {
-        if let Some(route) = route.clone() {
-            links.dispatch(Intent::Navigate(route), cx);
-        }
-    });
-    ctx.targets.push(Target {
-        id: id.clone(),
-        label: name.clone(),
-        act: Rc::clone(&act),
-        peek: Some(PageKey::Symbol(symbol.clone())),
-        source: None,
-    });
-    let count = node.count().saturating_sub(1);
-    let warm = PageKey::Symbol(symbol);
-    let row = div()
-        .id(id.clone())
-        .flex()
-        .items_center()
-        .gap(measure.space(Space::Roomy))
-        .h(measure.row() + measure.space(Space::Base))
-        .px(measure.space(Space::Base))
-        .hover(|style| style.bg(palette.tint))
-        .child(crate::shell::kit::kind_mark(kind_of(node.decl.kind), KindSize::Sm, &measure, palette))
-        .child(text(ty::MONO_ROW, &measure, palette.ink1).child(name))
-        .children((count > 0).then(|| text(ty::SMALL, &measure, palette.ink2).child(format!("{count} nested"))))
-        .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
-        .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx)));
-    ctx.targets.track(id, row).into_any_element()
-}
-
-fn dependencies(dossier: &PackageDossier, active: &ActiveProject, ctx: &mut Ctx<'_>) -> Option<Leaf> {
-    let measure = ctx.measure;
-    let palette = ctx.palette;
-    let list = dossier.dependencies.known()?;
-    if list.is_empty() {
-        return None;
-    }
-    let heading = ctx.say("Depends on");
-    let mut column = div().flex().flex_col().child(head(heading, &measure, palette));
-    let parent = dossier.package.display_name().to_owned();
-    let links = ctx.links.clone();
-    for dependency in list.iter() {
-        let id: SharedString = format!("pkg-dep-{}", dependency.name.as_ref()).into();
-        let facts = dep_facts(dependency, active);
-        let links = links.clone();
-        let link = dep_link(id.clone(), facts, parent.clone(), &measure)
-            .on_open(move |target, _window, cx| open_dependency(target, &links, cx));
-        column = column.child(
-            div()
-                .id(id)
-                .flex()
-                .items_center()
-                .gap(measure.space(Space::Roomy))
-                .h(measure.row() + measure.space(Space::Tight))
-                .px(measure.space(Space::Base))
-                .child(link),
-        );
-    }
-    Some(Leaf::new(column))
-}
-
 fn readme(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Option<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
@@ -377,7 +304,7 @@ fn readme(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Option<Leaf> {
         .gap(measure.space(Space::Base))
         .max_w(px(680.0 * measure.scale()))
         .child(head(heading, &measure, palette));
-    for block in blocks.iter().take(24) {
+    for block in blocks.iter().filter(|block| !matches!(block, ReadmeBlock::Paragraph(words) if crate::model::source_facts::docs::nav_row(words))).take(24) {
         column = column.child(readme_block(block, ctx));
     }
     Some(Leaf::new(column))
@@ -386,11 +313,13 @@ fn readme(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Option<Leaf> {
 fn readme_block(block: &ReadmeBlock, ctx: &mut Ctx<'_>) -> AnyElement {
     let measure = ctx.measure;
     let palette = ctx.palette;
+    // Markdown reads as words: a link is its text, an image is gone.
+    let plain = |words: &str| crate::model::source_facts::docs::clean_inline(words);
     let (role, words, ink) = match block {
-        ReadmeBlock::Heading { text: words, .. } => (ty::HEAD, words.to_string(), palette.ink0),
-        ReadmeBlock::Paragraph(words) => (ty::PROSE, words.to_string(), palette.ink1),
+        ReadmeBlock::Heading { text: words, .. } => (ty::HEAD, plain(words), palette.ink0),
+        ReadmeBlock::Paragraph(words) => (ty::PROSE, plain(words), palette.ink1),
         ReadmeBlock::Code { text: words, .. } => (ty::CODE, words.to_string(), palette.ink1),
-        ReadmeBlock::Bullet(words) => (ty::PROSE, format!("· {words}"), palette.ink1),
+        ReadmeBlock::Bullet(words) => (ty::PROSE, format!("· {}", plain(words)), palette.ink1),
     };
     let said = ctx.say(words);
     text(role, &measure, ink).child(said).into_any_element()

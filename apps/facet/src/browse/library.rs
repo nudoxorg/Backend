@@ -12,11 +12,14 @@
 
 use crate::icons::{Icon, IconSize, Kind, KindSize, kind_mark, ui};
 use crate::controls::button::button;
-use crate::measure::{Measure, Room, Set, Space};
+use crate::fluid::Modes;
+use crate::motion::Flow;
+use crate::measure::{Measure, Set, Space};
 use crate::overlay::float::{self, FloatKind, FloatRequest};
 use crate::overlay::tooltip::Tipped;
 use crate::probe::{self, TextOverflow};
 use crate::theme::ActiveFacet;
+use crate::tokens::fluid::ROLES;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
@@ -240,17 +243,26 @@ fn hero(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette) -> 
 
 /// Roles in one or two columns, balanced by height, then "Here twice".
 fn roles(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette, window: &mut Window, cx: &mut App) -> AnyElement {
-    let two = matches!(measure.room(), Room::Regular | Room::Wide | Room::Vast);
-    let (count, column) = if two { measure.columns(340.0, Space::Section, 2) } else { (1, *measure) };
+    let modes = Modes::keyed(child(id, "roles-modes"), window, cx);
+    let columns = modes.columns(&ROLES, measure.fluid_room(), measure.space(Space::Section));
+    let (count, column) = (columns.count, measure.within(columns.column.width()));
+    // A change of column count is an epoch: the blocks spring to their new
+    // places instead of jumping.
+    let flow = Flow::scoped(format!("library-roles-{id:?}"), cx);
+    flow.epoch((columns.epoch, count));
     // Each block's height in rows; the duplicates block goes last, in the shorter column.
     let mut blocks: Vec<(usize, AnyElement)> = model
         .roles
         .iter()
         .enumerate()
-        .map(|(index, role)| (role.rows.len().min(6) + 2, role_block(id, index, role, &column, palette, window, cx)))
+        .map(|(index, role)| {
+            let block = role_block(id, index, role, &column, palette, window, cx);
+            (role.rows.len().min(6) + 2, flow.item(child(id, format!("role-flow-{index}")), block).into_any_element())
+        })
         .collect();
     if !model.twice.is_empty() {
-        blocks.push((TWICE_AT_REST + 2, twice_block(id, model, &column, palette, window, cx)));
+        let block = twice_block(id, model, &column, palette, window, cx);
+        blocks.push((TWICE_AT_REST + 2, flow.item(child(id, "twice-flow"), block).into_any_element()));
     }
     let mut columns: Vec<(usize, Vec<AnyElement>)> = (0..count).map(|_| (0, Vec::new())).collect();
     let total: usize = blocks.iter().map(|(height, _)| *height).sum();

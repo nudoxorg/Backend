@@ -18,6 +18,7 @@
 //! Plain data in, and nothing here knows the engine: a fact that is not
 //! known renders as unknown, never invented.
 
+pub mod badges;
 mod card;
 pub mod deps;
 pub mod eco;

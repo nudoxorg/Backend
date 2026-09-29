@@ -5,7 +5,7 @@ use crate::model::local_package::ReadmeBlock;
 use std::sync::Arc;
 
 /// Everything the Package board renders about one package.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PackageDossier {
     /// The package asked for.
     pub package: PackageRef,
@@ -24,7 +24,7 @@ pub struct PackageDossier {
 }
 
 /// Where a record's facts came from.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum RecordSource {
     /// A committed local registry publication.
     Registry,
@@ -33,7 +33,7 @@ pub enum RecordSource {
 }
 
 /// Registry release standing (the bevel voice of a release tick).
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Standing {
     /// Offered to new resolutions.
     Available,
@@ -65,7 +65,7 @@ impl Standing {
 }
 
 /// Download telemetry that never turns "not recorded" into zero.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Downloads {
     /// Exact cumulative count.
     Exact(u64),
@@ -74,7 +74,7 @@ pub enum Downloads {
 }
 
 /// Condensed advisory state for the dossier hero.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AdvisorySummary {
     /// Number of advisories matching this exact release.
     pub advisories: usize,
@@ -89,7 +89,7 @@ pub struct AdvisorySummary {
 }
 
 /// One package record, from a registry release or a local manifest.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PackageRecord {
     /// Exact package locator.
     pub package: PackageRef,
@@ -116,7 +116,7 @@ pub struct PackageRecord {
 }
 
 /// One tick on the release comb.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VersionEntry {
     /// Exact release locator.
     pub package: PackageRef,
@@ -129,7 +129,7 @@ pub struct VersionEntry {
 }
 
 /// Dependency resolver scope.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum DependencyScope {
     /// Normal runtime dependency.
     Runtime,
@@ -158,7 +158,7 @@ impl DependencyScope {
 }
 
 /// One outgoing dependency edge.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Dependency {
     /// Registry-qualified name.
     pub name: Arc<str>,
@@ -173,7 +173,7 @@ pub struct Dependency {
 }
 
 /// One node of the package outline (a mosaic stone).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OutlineNode {
     /// The declaration.
     pub decl: DeclRef,
@@ -191,7 +191,7 @@ impl OutlineNode {
 
 /// The package outline as a forest: modules (or top-level items) at the
 /// roots, their items below.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OutlineTree {
     /// Top-level nodes in outline order.
     pub roots: Arc<[OutlineNode]>,

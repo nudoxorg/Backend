@@ -231,7 +231,7 @@ fn the_recorded_outline_keeps_the_graph_tour_explicit(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, anatomy_tests::package_route());
     let ledger = painted(&mut rig);
     let said = rig.said();
-    assert!(said.iter().any(|line| line == "Recorded outline"));
+    assert!(ledger.texts.iter().any(|text| text.key.contains("shingles-region-glyph")), "the package page draws its recorded outline as the territory: {said:#?}");
     assert!(!ledger.targets.iter().any(|target| target.key == "tour-fly"));
     assert_eq!(rig.route(), anatomy_tests::package_route());
     rig.keys("t");

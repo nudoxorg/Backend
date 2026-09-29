@@ -198,6 +198,14 @@ pub enum Intent {
     RemoveProject(LocalProjectId),
     /// Reveal a project folder in the platform file browser.
     RevealProject(LocalProjectId),
+    /// Open a file at a line in the editor: the configured one, else `code`,
+    /// then `zed`, then whatever the platform opens the file with.
+    OpenSource {
+        /// The file's absolute path.
+        path: Arc<str>,
+        /// The one-based line.
+        line: u32,
+    },
     /// Retry a stopped or failed index job.
     RetryIndex(LocalProjectId),
     /// Cancel an active index job while retaining the shelf row.
@@ -208,6 +216,14 @@ pub enum Intent {
     ConnectionResult {
         /// Whether the service answered.
         connected: bool,
+    },
+    /// The index owner answered for the first time (W-Open I1): the window
+    /// opened before it, at the unserved root, and adopts this one.
+    OwnerReady {
+        /// The owner's root when it first answered.
+        key: VersionedRoot,
+        /// Embedded in this process, or attached to a live owner.
+        mode: crate::model::ServiceMode,
     },
     /// Open the help page in Settings.
     OpenHelp,

@@ -61,6 +61,10 @@ pub enum Landing {
     Applied,
     /// A newer request owns the slot (or the slot was evicted); dropped.
     Superseded,
+    /// A quiet revalidation of a launch-snapshot value (W-Open I2) found
+    /// the same value: it is now current at the new root and nothing a view
+    /// draws changed, so no stamp moved and nothing needs to redraw.
+    Unchanged,
 }
 
 /// Cheap identity of one slot's visible state, for equality-gated views.
@@ -80,6 +84,13 @@ struct Slot<T> {
     used: u64,
     /// Root the running (or last) fetch was issued at.
     asked_at: Option<VersionedRoot>,
+    /// The value came from the launch snapshot and no owner has confirmed
+    /// it yet (W-Open I2): its next fetch is quiet.
+    seeded: bool,
+    /// The running fetch is a quiet revalidation: it changed nothing
+    /// visible when it began, and an equal value changes nothing when it
+    /// lands.
+    quiet: bool,
 }
 
 impl<T> Slot<T> {
@@ -91,6 +102,8 @@ impl<T> Slot<T> {
             revision: 0,
             used,
             asked_at: None,
+            seeded: false,
+            quiet: false,
         }
     }
 
@@ -142,9 +155,50 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         slot.generation = generation;
         slot.inflight = true;
         slot.asked_at = Some(root);
-        slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).working();
-        slot.revision = slot.revision.wrapping_add(1);
+        // A snapshot value is revalidated quietly: it stays exactly as drawn
+        // (no "working", no stamp) until a different value lands.
+        slot.quiet = slot.seeded && !force;
+        if !slot.quiet {
+            slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).working();
+            slot.revision = slot.revision.wrapping_add(1);
+        }
         Some(generation)
+    }
+
+    /// Fills a slot from the launch snapshot, current at `root` (the
+    /// unserved root at launch). A slot a fetch already owns is left alone.
+    fn seed(&mut self, key: &K, value: T, root: VersionedRoot, clock: u64) -> bool {
+        if !self.map.contains_key(key) {
+            self.evict_for_insert();
+            self.map.insert(key.clone(), Slot::new(clock));
+        }
+        let Some(slot) = self.map.get_mut(key) else {
+            return false;
+        };
+        if slot.inflight || slot.resource.loaded_value().is_some() {
+            return false;
+        }
+        slot.used = clock;
+        slot.asked_at = Some(root);
+        slot.resource = Resource::loaded_at(value, root);
+        slot.seeded = true;
+        slot.revision = slot.revision.wrapping_add(1);
+        true
+    }
+
+    /// The owner serves the root the snapshot was read at: the seeded value
+    /// is current at `root` as it is. Nothing visible changes.
+    fn confirm(&mut self, key: &K, root: VersionedRoot) -> bool {
+        let Some(slot) = self.map.get_mut(key) else {
+            return false;
+        };
+        if !slot.seeded || slot.inflight {
+            return false;
+        }
+        slot.seeded = false;
+        slot.asked_at = Some(root);
+        slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).rebased(root);
+        true
     }
 
     fn touch(&mut self, key: &K, clock: u64) {
@@ -179,7 +233,10 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         generation: u64,
         result: Result<T, ReadFailure>,
         merge: impl FnOnce(Option<&T>, T) -> T,
-    ) -> Landing {
+    ) -> Landing
+    where
+        T: PartialEq,
+    {
         let Some(slot) = self.map.get_mut(key) else {
             return Landing::Superseded;
         };
@@ -188,6 +245,24 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         }
         slot.inflight = false;
         let root = slot.asked_at;
+        if std::mem::take(&mut slot.quiet) {
+            match (&result, root) {
+                (Ok(value), Some(root)) if slot.resource.loaded_value() == Some(value) => {
+                    slot.seeded = false;
+                    slot.resource =
+                        std::mem::replace(&mut slot.resource, Resource::not_yet()).rebased(root);
+                    return Landing::Unchanged;
+                }
+                (Err(ReadFailure::Cancelled), _) => {
+                    // Still the snapshot's value, still unconfirmed.
+                    slot.asked_at = None;
+                    return Landing::Unchanged;
+                }
+                (Ok(_), _) => slot.seeded = false,
+                // A failed revalidation keeps the value it could not confirm.
+                (Err(_), _) => {}
+            }
+        }
         let previous = std::mem::replace(&mut slot.resource, Resource::not_yet());
         slot.resource = match (result, root) {
             (Ok(value), Some(root)) => {
@@ -219,6 +294,10 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         }
         slot.inflight = false;
         slot.asked_at = None;
+        if std::mem::take(&mut slot.quiet) {
+            // Nothing visible began, so nothing visible ends.
+            return Some(slot.generation);
+        }
         slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).resting();
         slot.revision = slot.revision.wrapping_add(1);
         Some(slot.generation)
@@ -232,6 +311,10 @@ impl<K: Ord + Clone, T> Slots<K, T> {
 
     fn stamp(&self, key: &K) -> Stamp {
         Stamp(self.map.get(key).map_or(0, |slot| slot.revision))
+    }
+
+    fn seeded(&self, key: &K) -> bool {
+        self.map.get(key).is_some_and(|slot| slot.seeded)
     }
 
     fn inflight(&self, key: &K) -> Option<u64> {
@@ -410,6 +493,37 @@ impl PageStore {
             self.next_generation = self.next_generation.wrapping_add(1).max(1);
         }
         started
+    }
+
+    /// Fills `key`'s slot with a launch-snapshot value, current at `root`
+    /// until an owner confirms it ([`Self::confirm`]) or revalidates it (its
+    /// next fetch is quiet: [`Landing::Unchanged`] when the value is equal).
+    /// Returns whether the slot took it (a family the snapshot does not
+    /// keep, a slot in flight or already holding a value, does not).
+    pub fn seed(&mut self, key: &PageKey, value: PageValue, root: VersionedRoot) -> bool {
+        self.clock = self.clock.wrapping_add(1);
+        let clock = self.clock;
+        match (key, value) {
+            (PageKey::Symbol(symbol), PageValue::Symbol(page)) => self.symbols.seed(symbol, page, root, clock),
+            (PageKey::Source(symbol), PageValue::Source(view)) => self.sources.seed(symbol, view, root, clock),
+            (PageKey::Package(package), PageValue::Package(dossier)) => {
+                self.packages.seed(package, dossier, root, clock)
+            }
+            (PageKey::Orbit, PageValue::Orbit(model)) => self.orbit.seed(&(), model, root, clock),
+            _ => false,
+        }
+    }
+
+    /// The owner serves the root the snapshot was read at: `key`'s seeded
+    /// value is current at `root`, with no fetch and no visible change.
+    pub fn confirm(&mut self, key: &PageKey, root: VersionedRoot) -> bool {
+        dispatch!(self, key, |slots, k| slots.confirm(k, root))
+    }
+
+    /// Whether `key` shows a launch-snapshot value no owner has confirmed.
+    #[must_use]
+    pub fn is_seeded(&self, key: &PageKey) -> bool {
+        dispatch_ref!(self, key, |slots, k| slots.seeded(k))
     }
 
     /// Records an access without starting a fetch.

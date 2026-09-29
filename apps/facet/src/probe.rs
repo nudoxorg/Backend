@@ -297,7 +297,7 @@ impl ScrollSample {
     /// bounds it). A container whose content does not exceed its viewport on
     /// either axis does not scroll at all, so it reaches nothing extra.
     #[must_use]
-    pub(crate) fn reaches(&self, bounds: &BoundsSample) -> bool {
+    pub fn reaches(&self, bounds: &BoundsSample) -> bool {
         let scrolls_y = self.content.height > self.viewport.height + 0.5;
         let scrolls_x = self.content.width > self.viewport.width + 0.5;
         if !scrolls_x && !scrolls_y {

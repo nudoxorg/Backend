@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 
 /// Exact engine coordinate of one declaration, never abbreviated.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct SymbolRef(Arc<str>);
 
 /// A page key that cannot cross the engine boundary.
@@ -87,8 +87,28 @@ impl fmt::Display for SymbolRef {
     }
 }
 
+/// A producer row key as the desktop keeps it: the key's bytes. The desktop
+/// only compares keys; holding the bytes rather than the capability-typed
+/// `SymbolKey` (which only an admitted reply can create) lets a page be
+/// persisted and read back (W-Open I2, the launch snapshot).
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub struct RowKey([u8; 32]);
+
+impl From<SymbolKey> for RowKey {
+    fn from(key: SymbolKey) -> Self {
+        Self(key.to_bytes())
+    }
+}
+
+impl fmt::Debug for RowKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RowKey:")?;
+        self.0.iter().try_for_each(|byte| write!(formatter, "{byte:02x}"))
+    }
+}
+
 /// Exact package locator: a local project root or a version-pinned purl.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct PackageRef(backend_library::PackageReference);
 
 impl PackageRef {
@@ -177,7 +197,7 @@ impl fmt::Display for PackageRef {
 }
 
 /// One field that is either a producer fact or a typed gap.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Known<T> {
     /// The producer answered with this value.
     Known(T),
@@ -221,7 +241,7 @@ impl<T> Known<T> {
 }
 
 /// Why one field is unknown. Closed so a board can pick its hatch and words.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum GapReason {
     /// The producer retained nothing for this field.
     NotCaptured,
@@ -275,7 +295,7 @@ impl GapReason {
 }
 
 /// A typed reason plus the producer's own bounded words, when it gave any.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Gap {
     /// Closed reason.
     pub reason: GapReason,
@@ -312,7 +332,7 @@ impl fmt::Display for Gap {
 }
 
 /// Kind family: the gem's hue. Shape is the [`DeclarationKind`].
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum KindFamily {
     /// Modules, packages, imports, unknown kinds.
     Namespace,
@@ -371,7 +391,7 @@ impl KindFamily {
 }
 
 /// A deprecation notice in the source's own words.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Deprecation {
     /// The version the source says the deprecation began in.
     pub since: Option<Arc<str>>,
@@ -382,13 +402,14 @@ pub struct Deprecation {
 /// Facts a reader weighs before using a declaration. Each is a producer
 /// statement (`Known(None)` is "the producer looked: not deprecated") or a
 /// typed gap when the producer did not look.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeclFacts {
     /// Whether and how the declaration is deprecated.
     pub deprecation: Known<Option<Deprecation>>,
     /// What an implementor of the enclosing contract owes for it
     /// (required, optional, or provided); `Known(None)` for a declaration
     /// that is not part of a contract.
+    #[serde(with = "super::serde_ext::obligation")]
     pub obligation: Known<Option<backend_library::Obligation>>,
 }
 
@@ -434,15 +455,16 @@ impl DeclFacts {
 
 /// One declaration reference as every board names it: the exact coordinate
 /// plus the parts a gem, a trail, and a tooltip need.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeclRef {
     /// Exact coordinate the engine accepts.
     pub coordinate: SymbolRef,
     /// Stable row key, when the reply carried one.
-    pub key: Option<SymbolKey>,
+    pub key: Option<RowKey>,
     /// Declaration name (the coordinate's leaf).
     pub name: Arc<str>,
     /// Declaration kind, when the producer typed it.
+    #[serde(with = "super::serde_ext::declaration_kind")]
     pub kind: Option<DeclarationKind>,
     /// Kind family (gem hue).
     pub family: KindFamily,
@@ -451,6 +473,7 @@ pub struct DeclRef {
     /// One-based declaration line, when known.
     pub line: Option<u32>,
     /// Source language implied by the path.
+    #[serde(with = "super::serde_ext::language")]
     pub language: Language,
     /// Whether the coordinate is compiler-addressed (`::semantic::`) rather
     /// than file-addressed.
@@ -482,7 +505,7 @@ impl DeclRef {
             language: identity.language(),
             semantic: matches!(identity.shape(), IdentityShape::Semantic),
             coordinate,
-            key,
+            key: key.map(RowKey::from),
             kind,
             family: KindFamily::of(kind),
             facts: DeclFacts::unread(),
@@ -515,7 +538,7 @@ impl DeclRef {
 
 /// Where one relation or link came from. A board never renders a name match
 /// or a desktop derivation as if the compiler had proven it.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Provenance {
     /// A typed edge from the compiler graph authority, with its confidence.
     Semantic(SemanticConfidence),
@@ -534,7 +557,7 @@ pub enum Provenance {
 }
 
 /// The closed set of desktop derivations over compiler facts.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Derivation {
     /// An impl block published as a `Type` row whose type references name
     /// both a nominal self type and a trait: "self type implements trait".
@@ -585,7 +608,7 @@ pub const fn link_name(kind: SemanticLinkKind) -> &'static str {
 }
 
 /// A half-open UTF-8 byte range inside one text.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct ByteSpan {
     /// Inclusive start byte.
     pub start: u32,
@@ -612,7 +635,7 @@ impl ByteSpan {
 }
 
 /// One contiguous inclusive range of one-based source lines.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct LineSpan {
     /// First line, one-based.
     pub first: u32,

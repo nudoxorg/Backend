@@ -20,6 +20,8 @@ enum Shape {
     None,
     Bracket(Vec<bool>),
     Fork { shared: usize, open: bool },
+    Pipe { ports: usize, drops: usize },
+    Socket { rows: Vec<(u8, bool)>, doers: usize },
 }
 
 /// The page's ink: an absolute canvas over the page.
@@ -35,6 +37,11 @@ pub fn ink(plan: &PagePlan, geo: Geometry, anchors: &Rc<Anchors>, palette: &Pale
     let shape = match &plan.spec {
         Spec::Record(record) => Shape::Bracket(record.rungs.iter().map(|rung| rung.optional).collect()),
         Spec::Choice(choice) => Shape::Fork { shared: choice.shared.len(), open: choice.open.is_some() },
+        Spec::Callable(callable) => Shape::Pipe { ports: callable.ports.len(), drops: callable.drops.len() },
+        Spec::Contract(contract) => Shape::Socket {
+            rows: contract.write.iter().map(|slot| (0, slot.optional)).chain(contract.other.iter().map(|_| (1, false))).chain(contract.get.iter().map(|_| (2, false))).collect(),
+            doers: contract.doers.names.len(),
+        },
         Spec::None => Shape::None,
     };
     let maybe = plan.getting.iter().map(|rail| rail.maybe).collect::<Vec<_>>();
@@ -65,6 +72,11 @@ pub fn ink(plan: &PagePlan, geo: Geometry, anchors: &Rc<Anchors>, palette: &Pale
                 Shape::None => {}
                 Shape::Bracket(optional) => bracket(&pen, window, &anchors, optional, x_spine, x_col, gem_bottom, kind, ground),
                 Shape::Fork { shared, open } => fork(&pen, window, &anchors, *shared, *open, x_spine, x_col, gem_bottom, kind, ground),
+                Shape::Socket { rows, doers } => socket(&pen, window, &anchors, rows, *doers, x_spine, gem_bottom, kind),
+                Shape::Pipe { ports, drops } => {
+                    let reach = geo.margins().then(|| x_spine - (geo.reach - px(16.0 * s)).min(geo.col));
+                    pipe(&pen, window, &anchors, *ports, *drops, reach, kind, coral);
+                }
             }
 
             // Getting one's rails.
@@ -98,6 +110,19 @@ pub fn ink(plan: &PagePlan, geo: Geometry, anchors: &Rc<Anchors>, palette: &Pale
                 }
                 if let (Some(top), Some(bottom)) = (top, bottom) {
                     pen.line(window, point(terminal, top - px(9.0 * s)), point(terminal, bottom + px(9.0 * s)), stroke::RELATION, kind, None);
+                }
+            }
+
+            // What can go wrong: a coral tree off the spine, a tine per way.
+            let branches = anchors.rows(SectionId::Fails);
+            if let (Some(head), Some((_, last))) = (anchors.get(at(SectionId::Fails, Part::Head)), branches.last()) {
+                let chamfer = px(7.0 * s);
+                let top = mid(&head) + px(9.0 * s);
+                let end = x_col - px(10.0 * s);
+                pen.line(window, point(x_spine, top), point(x_spine, mid(last) - chamfer), stroke::RELATION, coral, None);
+                for (_, b) in &branches {
+                    let y = mid(b);
+                    pen.path(window, &[point(x_spine, y - chamfer), point(x_spine + chamfer, y), point(end, y)], stroke::HAIR, coral);
                 }
             }
 
@@ -283,11 +308,123 @@ fn fork(pen: &Pen, window: &mut Window, anchors: &Anchors, shared: usize, open: 
     }
 }
 
+/// A callable's pipe: the plate chamfered in its hue, each port's line
+/// converging into it (from the reader's left edge when the margins carry
+/// the edges), what it gives back leaving right with a chevron, what it is
+/// called on entering from above, and each drop falling below in coral.
+#[allow(clippy::too_many_arguments)]
+fn pipe(pen: &Pen, window: &mut Window, anchors: &Anchors, ports: usize, drops: usize, reach: Option<Pixels>, kind: Hsla, coral: Hsla) {
+    let s = pen.s;
+    let mid = |b: &Bounds<Pixels>| (b.origin.y + b.size.height / 2.0).round() + px(0.5);
+    let Some(plate) = anchors.get(at(SectionId::Spec, Part::Plate)) else { return };
+    let (l, r, t, b) = (plate.left(), plate.right(), plate.top(), plate.bottom());
+    let c = 8.0 * s;
+    let y_plate = mid(&plate);
+    // The ports converge: straight along their row, then a 45° run into the
+    // plate's left edge at its middle.
+    for n in 0..ports {
+        let Some(port) = anchors.get(at(SectionId::Spec, Part::Row(n as u16))) else { continue };
+        let y = mid(&port);
+        if let Some(edge) = reach {
+            pen.line(window, point(edge, y), point(port.left() - px(10.0 * s), y), stroke::HAIR, kind.opacity(0.3), None);
+        }
+        let dy = y_plate - y;
+        let run = dy.abs().min(l - port.right() - px(20.0 * s)).max(px(0.0));
+        let knee = l - px(6.0 * s) - run;
+        pen.path(window, &[point(port.right() + px(8.0 * s), y), point(knee, y), point(l - px(6.0 * s), y_plate), point(l, y_plate)], stroke::HAIR, kind.opacity(0.85));
+    }
+    let outline = [point(l + px(c), t), point(r, t), point(r, b - px(c)), point(r - px(c), b), point(l, b), point(l, t + px(c))];
+    pen.poly(window, &outline, stroke::RELATION, kind, None);
+    // What it gives back.
+    if let Some(gives) = anchors.get(at(SectionId::Spec, Part::Gives)) {
+        let end = gives.left() + px(28.0 * s);
+        pen.line(window, point(r, y_plate), point(end, y_plate), stroke::RELATION, kind.opacity(0.8), None);
+        let h = px(3.5 * s);
+        pen.path(window, &[point(end - h, y_plate - h), point(end, y_plate), point(end - h, y_plate + h)], stroke::RELATION, kind.opacity(0.8));
+    }
+    // What it is called on.
+    if let Some(receiver) = anchors.get(at(SectionId::Spec, Part::Receiver)) {
+        let x = l + px(16.0 * s);
+        pen.line(window, point(x, receiver.bottom() - px(2.0 * s)), point(x, t), stroke::RELATION, kind.opacity(0.8), None);
+    }
+    // Each way out that is not the answer.
+    let x = l + px(16.0 * s);
+    let mut last = None;
+    for n in 0..drops {
+        let Some(drop) = anchors.get(at(SectionId::Spec, Part::Drop(n as u16))) else { continue };
+        let y = mid(&drop);
+        pen.line(window, point(x, y), point(drop.left() - px(6.0 * s), y), stroke::HAIR, coral, None);
+        last = Some(y);
+    }
+    if let Some(y) = last {
+        pen.line(window, point(x, b), point(x, y), stroke::RELATION, coral, None);
+    }
+}
+
+/// A contract's socket: its left edge is the spine, cut with a notch for
+/// each member an implementor writes (dashed when it may be left out); its
+/// right edge carries a tab for each it gets; who does it plugs in from the
+/// left margin, converging on one junction and one bus into the spine.
+#[allow(clippy::too_many_arguments)]
+fn socket(pen: &Pen, window: &mut Window, anchors: &Anchors, rows: &[(u8, bool)], doers: usize, x_spine: Pixels, gem_bottom: Option<Pixels>, kind: Hsla) {
+    let s = pen.s;
+    let mid = |b: &Bounds<Pixels>| (b.origin.y + b.size.height / 2.0).round() + px(0.5);
+    let Some(body) = anchors.get(at(SectionId::Spec, Part::Plate)) else { return };
+    let top = body.top() - px(6.0 * s);
+    let bottom = body.bottom() + px(6.0 * s);
+    let right = body.right() + px(12.0 * s);
+    let c = px(10.0 * s);
+    if let Some(gem) = gem_bottom {
+        pen.line(window, point(x_spine, gem), point(x_spine, top), stroke::HAIR, kind.opacity(0.45), None);
+    }
+    pen.path(window, &[point(x_spine, top), point(right - c, top), point(right, top + c), point(right, bottom), point(x_spine, bottom)], stroke::RELATION, kind);
+    // The spine as the left edge, notched.
+    let (notch_w, notch_h) = (px(10.0 * s), px(7.0 * s));
+    let mut y0 = top;
+    for (n, (group, optional)) in rows.iter().enumerate() {
+        let Some(row) = anchors.get(at(SectionId::Spec, Part::Row(n as u16))) else { continue };
+        let y = mid(&row);
+        if *group == 2 {
+            let tab = [point(right, y - px(5.0 * s)), point(right + px(8.0 * s), y - px(5.0 * s)), point(right + px(8.0 * s), y + px(5.0 * s)), point(right, y + px(5.0 * s))];
+            pen.poly(window, &tab, stroke::HAIR, kind, Some(kind));
+            continue;
+        }
+        if *group != 0 {
+            continue;
+        }
+        pen.line(window, point(x_spine, y0), point(x_spine, y - notch_h), stroke::RELATION, kind, None);
+        let dash = optional.then_some(stroke::OPTIONAL);
+        pen.line(window, point(x_spine, y - notch_h), point(x_spine + notch_w, y - notch_h), stroke::RELATION, kind, dash);
+        pen.line(window, point(x_spine + notch_w, y - notch_h), point(x_spine + notch_w, y + notch_h), stroke::RELATION, kind, dash);
+        pen.line(window, point(x_spine + notch_w, y + notch_h), point(x_spine, y + notch_h), stroke::RELATION, kind, dash);
+        y0 = y + notch_h;
+    }
+    pen.line(window, point(x_spine, y0), point(x_spine, bottom), stroke::RELATION, kind, None);
+    // The plug.
+    let y_bus = (top + bottom) / 2.0;
+    let junction = x_spine - px(22.0 * s);
+    let mut any = false;
+    for n in 0..doers {
+        let Some(doer) = anchors.get(at(SectionId::Spec, Part::Doer(n as u16))) else { continue };
+        let y = mid(&doer);
+        let dy = (y_bus - y).abs().min(junction - doer.right() - px(14.0 * s)).max(px(0.0));
+        let knee = junction - dy;
+        pen.path(window, &[point(doer.right() + px(6.0 * s), y), point(knee, y), point(junction, y_bus)], stroke::HAIR, kind.opacity(0.7));
+        any = true;
+    }
+    if any {
+        pen.line(window, point(junction, y_bus), point(x_spine, y_bus), stroke::RELATION, kind, None);
+        let r = px(2.5 * s);
+        pen.poly(window, &[point(junction - r, y_bus - r), point(junction + r, y_bus - r), point(junction + r, y_bus + r), point(junction - r, y_bus + r)], stroke::HAIR, kind, Some(kind));
+    }
+}
+
 /// A section's gutter mark: one glyph per section, 12 px.
 fn mark(window: &mut Window, id: SectionId, c: Point<Pixels>, s: f32, color: Hsla) {
     let p = |x: f32, y: f32| point(c.x + px(x * s), c.y + px(y * s));
     let mut path = PathBuilder::stroke(px(1.4));
     match id {
+        SectionId::Yours => { path.add_polygon(&[p(0.0, -6.0), p(6.0, 0.0), p(0.0, 6.0), p(-6.0, 0.0)], true); path.add_polygon(&[p(0.0, -2.5), p(2.5, 0.0), p(0.0, 2.5), p(-2.5, 0.0)], true); }
         SectionId::Getting => { path.move_to(p(-5.0, 0.0)); path.line_to(p(5.0, 0.0)); path.move_to(p(1.0, -4.0)); path.line_to(p(5.0, 0.0)); path.line_to(p(1.0, 4.0)); }
         SectionId::Does => { for (x, y) in [(-5.0, -5.0), (1.0, -5.0), (-5.0, 1.0), (1.0, 1.0)] { path.add_polygon(&[p(x, y), p(x + 4.0, y), p(x + 4.0, y + 4.0), p(x, y + 4.0)], true); } }
         SectionId::Fails => { path.move_to(p(0.0, -6.0)); path.line_to(p(0.0, -1.0)); path.line_to(p(-5.0, 5.0)); path.move_to(p(0.0, -1.0)); path.line_to(p(5.0, 5.0)); }

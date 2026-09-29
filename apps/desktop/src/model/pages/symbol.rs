@@ -1,13 +1,13 @@
 //! The Page board's read model: one declaration and everything it touches.
 
 use super::common::{ByteSpan, DeclRef, Known, LineSpan, PackageRef, Provenance, SymbolRef};
-use backend_library::{SemanticConfidence, SemanticLinkKind, SymbolKey};
+use backend_library::{SemanticConfidence, SemanticLinkKind};
 use std::sync::Arc;
 
 pub use backend_present::SectionKind;
 
 /// Everything the Page board renders about one declaration, read once.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SymbolPage {
     /// The declaration itself.
     pub identity: DeclRef,
@@ -33,7 +33,7 @@ pub struct SymbolPage {
 }
 
 /// A signature as text plus classified, linkable token spans.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SignatureText {
     /// Exact signature text.
     pub text: Arc<str>,
@@ -55,7 +55,7 @@ impl SignatureText {
 }
 
 /// What one signature token reads as.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum TokenClass {
     /// Reserved word.
     Keyword,
@@ -76,7 +76,7 @@ pub enum TokenClass {
 }
 
 /// One classified token of a signature.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SignatureToken {
     /// Byte span inside [`SignatureText::text`].
     pub span: ByteSpan,
@@ -87,7 +87,7 @@ pub struct SignatureToken {
 }
 
 /// A navigable target with the evidence that justifies the link.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SymbolLink {
     /// Exact target coordinate.
     pub target: SymbolRef,
@@ -96,7 +96,7 @@ pub struct SymbolLink {
 }
 
 /// One documentation fragment, in producer order.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DocFragment {
     /// Prose.
     Text(Arc<str>),
@@ -107,7 +107,7 @@ pub enum DocFragment {
         /// Display label.
         label: Arc<str>,
         /// Stable target key from the producer.
-        target: SymbolKey,
+        target: super::common::RowKey,
         /// Coordinate of the target, when the package outline names the key.
         coordinate: Option<SymbolRef>,
     },
@@ -136,7 +136,7 @@ impl DocFragment {
 /// `Raises:`, `Deprecated:`). The fragments are the documentation's own,
 /// with each convention's marker (`# `, `@throws T`, `ValueError:`) read
 /// into the section's kind, title, and entry subject.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DocSections {
     /// Prose before the first section.
     pub lead: Arc<[DocFragment]>,
@@ -145,9 +145,10 @@ pub struct DocSections {
 }
 
 /// One conventional documentation section.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DocSection {
     /// What the section is about.
+    #[serde(with = "super::serde_ext::section_kind")]
     pub kind: SectionKind,
     /// The title as written (`Errors`, `throws`, `Raises`).
     pub title: Arc<str>,
@@ -158,7 +159,7 @@ pub struct DocSection {
 }
 
 /// One named entry of a section.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DocEntry {
     /// What the entry names (`IOException`, `x`).
     pub subject: Arc<str>,
@@ -167,7 +168,7 @@ pub struct DocEntry {
 }
 
 /// Where a declaration's source is, and whether its text is here.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SourceSite {
     /// Package-relative file and one-based start line.
     pub location: Known<SourceLocation>,
@@ -176,7 +177,7 @@ pub struct SourceSite {
 }
 
 /// Package-relative file plus one-based start line.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct SourceLocation {
     /// Package-relative path.
     pub path: Arc<str>,
@@ -185,7 +186,7 @@ pub struct SourceLocation {
 }
 
 /// The producer's bounded declaration text.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Excerpt {
     /// Excerpt text.
     pub text: Arc<str>,
@@ -196,7 +197,7 @@ pub struct Excerpt {
 }
 
 /// How a method receives its value: the modifier mark on its ledger row.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Receiver {
     /// Borrows `self` mutably: changes it.
     Changes,
@@ -225,7 +226,7 @@ impl Receiver {
 }
 
 /// One ledger row.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Member {
     /// The member declaration.
     pub decl: DeclRef,
@@ -240,7 +241,7 @@ pub struct Member {
 }
 
 /// Methods that share one receiver.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MethodGroup {
     /// Shared receiver.
     pub receiver: Receiver,
@@ -249,7 +250,7 @@ pub struct MethodGroup {
 }
 
 /// The members ledger: what a declaration is made of and what it does.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Members {
     /// Fields and variants, in source order.
     pub made_of: Arc<[Member]>,
@@ -282,7 +283,7 @@ impl Members {
 }
 
 /// What connects the page's declaration to a related one.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum RelationKind {
     /// A compiler relation kind.
     Semantic(SemanticLinkKind),
@@ -291,7 +292,7 @@ pub enum RelationKind {
 }
 
 /// How an implementation arrives, when the producer states it.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Arrival {
     /// Written for this type.
     Direct,
@@ -304,7 +305,7 @@ pub enum Arrival {
 }
 
 /// One related declaration on the rose.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Relation {
     /// The related declaration.
     pub decl: DeclRef,
@@ -323,7 +324,7 @@ pub struct Relation {
 ///
 /// Each direction is independently known: a structural-only reply knows
 /// containment (`down`) but not typed edges, and says so per direction.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rose {
     /// Up, "is": implements, inherits, overrides, supertraits.
     pub up: Known<Arc<[Relation]>>,
@@ -338,7 +339,7 @@ pub struct Rose {
 }
 
 /// Where the use points, as the producer resolved it.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum ReferenceScope {
     /// Same package image.
     Local,
@@ -351,7 +352,7 @@ pub enum ReferenceScope {
 }
 
 /// A byte span inside one package-relative file.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct FileSpan {
     /// Package-relative path.
     pub file: Arc<str>,
@@ -360,7 +361,7 @@ pub struct FileSpan {
 }
 
 /// One use of the page's declaration.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReferenceSite {
     /// The declaration whose source contains the use.
     pub site: DeclRef,
@@ -375,7 +376,7 @@ pub struct ReferenceSite {
 }
 
 /// The declaration's place in its package outline.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OutlinePosition {
     /// Root-first containment chain, excluding the declaration.
     pub ancestors: Arc<[DeclRef]>,

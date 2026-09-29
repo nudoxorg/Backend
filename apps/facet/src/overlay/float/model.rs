@@ -642,7 +642,7 @@ impl Model {
         if warm {
             self.show(request, None, false, now);
         } else {
-            let due = now + request.kind.rest_delay();
+            let due = now + request.rest.unwrap_or_else(|| request.kind.rest_delay());
             self.tip_pending = Some(Pending {
                 request,
                 level: None,
@@ -709,7 +709,7 @@ impl Model {
         if warm {
             self.show(request, Some(level), false, now);
         } else {
-            let due = now + request.kind.rest_delay();
+            let due = now + request.rest.unwrap_or_else(|| request.kind.rest_delay());
             self.pending = Some(Pending {
                 request,
                 level: Some(level),

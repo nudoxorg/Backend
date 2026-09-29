@@ -131,7 +131,7 @@ fn union(source: &Source) -> Option<Choice> {
     for part in &parts {
         let part = part.trim();
         if part.replace(' ', "").starts_with("(string&") {
-            open = Some("any text".to_owned());
+            open = Some("any other text".to_owned());
         } else if part.starts_with(['"', '\'', '`']) || part.parse::<f64>().is_ok() || matches!(part, "true" | "false") {
             cases.push(case(&part.replace('\'', "\""), CaseKind::Literal, None));
         } else {
@@ -180,7 +180,7 @@ fn iota(source: &Source) -> Option<Choice> {
     if cases.is_empty() {
         return None;
     }
-    Some(Choice { cases, open: Some(format!("any {underlying}")), shared: Vec::new(), told_by: None, each: Some(words(underlying, Lang::Go)) })
+    Some(Choice { cases, open: Some(format!("any other {underlying}")), shared: Vec::new(), told_by: None, each: Some(words(underlying, Lang::Go)) })
 }
 
 /// `DateTime` → `date_time`.

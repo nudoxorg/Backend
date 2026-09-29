@@ -73,7 +73,10 @@ pub fn all() -> Vec<Scene> {
         crate::chrome::gallery::SCENES,
         crate::graph::gallery::SCENES,
         crate::anatomy::gallery::SCENES,
+        crate::anatomy::glyph_gallery::SCENES,
+        crate::anatomy::symbol::gallery::SCENES,
         crate::marks::gallery::SCENES,
+        crate::folio::gallery::SCENES,
         bench::SCENES,
     ];
     groups

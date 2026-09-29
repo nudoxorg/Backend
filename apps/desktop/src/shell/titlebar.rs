@@ -8,9 +8,14 @@
 //! declaration) opens its siblings; hovering the plate shows the
 //! `nudox://` address (⌘⇧C copies it).
 //!
-//! It degrades from its own measured width: below 700 effective px the
-//! plate drops the package segment, below 560 the module segments, below
-//! 520 the icon buttons go.
+//! It degrades from its own measured room, in three modes
+//! (`facet::tokens::fluid::BAR`): everything from 760 design px; from 560 the
+//! plate drops the package segment and the view switch gives way to it; below
+//! that the plate keeps only the name and the inbox button goes. The modes
+//! hold through a hysteresis band, and what arrives or leaves glides to its
+//! place (`Flow`) instead of jumping. The shelf toggle never goes: below 640
+//! the shelf is not inline, and this button is the pointer's only way to open
+//! it over the reader.
 
 use super::focus::{Target, Targets};
 use super::jump::{self, Here, Mark, Segment};
@@ -21,6 +26,8 @@ use crate::model::pages::PageKey;
 use crate::navigation::{Intent, OrbitRoute, Route, View};
 use crate::runtime::store::{Branch, DataStore, route_package, route_symbol};
 use facet::icons::{self, Icon, IconSize, KindSize};
+use facet::motion::Flow;
+use facet::tokens::fluid::{BAR, Bar};
 use facet::overlay::float::{self, FloatKind, FloatRequest, Side};
 use facet::overlay::menu::{self, Menu, MenuItem};
 use facet::paint::{Bevel, Chamfer, cut};
@@ -46,6 +53,9 @@ pub(crate) struct Titlebar {
     press: Option<Task<()>>,
     /// The press became a long press: its click is not a step back.
     long: Rc<Cell<bool>>,
+    /// What the bar's modes move: the controls that arrive or leave and the
+    /// plate's segments glide to their new places.
+    flow: Flow,
 }
 
 impl Titlebar {
@@ -56,6 +66,7 @@ impl Titlebar {
             targets: Targets::named("titlebar"),
             press: None,
             long: Rc::new(Cell::new(false)),
+            flow: Flow::new("titlebar"),
         }
     }
 
@@ -87,8 +98,9 @@ impl Render for Titlebar {
         let facet = cx.facet();
         let palette = facet.palette();
         let keys = facet.reveal.keys;
-        let effective = measure.effective();
-        let icons_shown = effective > 520.0;
+        let bar = self.core.modes().settle(&BAR, measure.fluid_room());
+        self.flow.epoch(bar.epoch);
+        let inbox_shown = bar.mode >= Bar::Snug;
         let snapshot = self.links.snapshot(cx);
         let (here, segments) = {
             let store = self.links.store.read(cx);
@@ -100,47 +112,47 @@ impl Render for Titlebar {
 
         let inset = if cfg!(target_os = "macos") { px(78.0) } else { measure.space(Space::Roomy) };
         let mut left = div().flex().flex_none().items_center().gap(measure.space(Space::Base)).pl(inset);
-        if icons_shown {
-            let id: SharedString = "tb-shelf".into();
-            let toggle_links = links.clone();
-            let act: super::focus::Act = Rc::new(move |_, cx| {
-                toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(cx));
-            });
-            self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), act: Rc::clone(&act), peek: None, source: None });
-            left = left.child(
-                self.targets.track(
-                    id.clone(),
-                    facet::controls::icon_button(id, Icon::SideL, "Toggle the shelf", &measure)
-                        .on(shelf_on)
-                        .key("⌘\\")
-                        .on_click(move |window, cx| act(window, cx)),
-                ),
-            );
-        }
+        let id: SharedString = "tb-shelf".into();
+        let toggle_links = links.clone();
+        let act: super::focus::Act = Rc::new(move |_, cx| {
+            toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(cx));
+        });
+        self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), act: Rc::clone(&act), peek: None, source: None });
+        left = left.child(
+            self.targets.track(
+                id.clone(),
+                facet::controls::icon_button(id, Icon::SideL, "Toggle the shelf", &measure)
+                    .on(shelf_on)
+                    .key("⌘\\")
+                    .on_click(move |window, cx| act(window, cx)),
+            ),
+        );
         // The altimeter's slot is the view switch (§8.4): Graph · Page · Code,
         // only the active view named. Below 760 it gives way to the bar.
         if let Some(active) = view_of(snapshot.route())
-            && effective > 760.0
+            && bar.mode == Bar::Full
         {
-            left = left.child(self.view_switch(active, &measure, palette, keys));
+            let switch = self.view_switch(active, &measure, palette, keys);
+            left = left.child(self.flow.item("tb-flow-views", switch));
         }
 
         let center = if orbit {
             self.ask_field(&measure, palette, keys, cx)
         } else {
-            self.jump_bar(&snapshot, &here, &segments, effective, &measure, palette, keys, cx)
+            self.jump_bar(&snapshot, &here, &segments, bar.mode, &measure, palette, keys, cx)
         };
 
         let mut right = div().flex().flex_none().items_center().gap(measure.space(Space::Tight)).pr(measure.space(Space::Roomy));
-        if icons_shown {
+        if inbox_shown {
             let id = "tb-inbox";
             let target_links = links.clone();
             let act: super::focus::Act = Rc::new(move |_, cx| target_links.dispatch(Intent::OpenInbox, cx));
             self.targets.push(Target { id: id.into(), label: "Inbox".into(), act: Rc::clone(&act), peek: None, source: None });
-            right = right.child(self.targets.track(
+            let inbox = self.targets.track(
                 id,
                 facet::controls::icon_button(id, Icon::Inbox, "Inbox", &measure).on_click(move |window, cx| act(window, cx)),
-            ));
+            );
+            right = right.child(self.flow.item("tb-flow-inbox", inbox));
         }
 
         let glow = self.targets.glow(&measure);
@@ -207,7 +219,7 @@ impl Titlebar {
         snapshot: &AppSnapshot,
         here: &Here,
         segments: &[Segment],
-        effective: f32,
+        mode: Bar,
         measure: &Measure,
         palette: &'static Palette,
         keys: bool,
@@ -350,12 +362,10 @@ impl Titlebar {
         // Package › module segments before the name (the name is the last
         // segment); the narrow bar keeps the name and what is nearest it.
         let lead = segments.len().saturating_sub(1);
-        let keep_from = if effective < 560.0 {
-            lead
-        } else if effective < 700.0 {
-            1.min(lead)
-        } else {
-            0
+        let keep_from = match mode {
+            Bar::Bare => lead,
+            Bar::Snug => 1.min(lead),
+            Bar::Full => 0,
         };
         for (index, segment) in segments.iter().enumerate().take(lead).skip(keep_from) {
             let id: SharedString = format!("jump-seg-{index}").into();
@@ -364,29 +374,31 @@ impl Titlebar {
             // separator is drawn as a text glyph. `ink3` ("quiet words",
             // already this file's tone for the plate's own quiet line) is
             // the nearest step up that clears 4.5:1 (6.12:1 here).
-            plate = plate.child(self.segment(id, index, segment, measure, palette, cx)).child(text(ty::SMALL, measure, palette.ink3).child("›"));
+            let segment = self.segment(id, index, segment, measure, palette, cx);
+            plate = plate
+                .child(self.flow.item(SharedString::from(format!("tb-flow-segment-{index}")), segment))
+                .child(self.flow.item(SharedString::from(format!("tb-flow-segment-{index}-sep")), text(ty::SMALL, measure, palette.ink3).child("›")));
         }
         let last_id: SharedString = format!("jump-seg-{lead}").into();
         let last_links = self.links.clone();
         let last_targets = self.targets.clone();
-        plate = plate.child(
-            self.targets.track(
-                last_id.clone(),
-                div()
-                    .id(last_id.clone())
-                    .flex()
-                    .items_center()
-                    .h(hit_side(measure))
-                    .gap(measure.space(Space::Snug))
-                    .min_w(px(0.0))
-                    .cursor_pointer()
-                    .child(mark)
-                    .child(name)
-                    .on_click(move |_: &ClickEvent, window, cx| {
-                        siblings_menu(&last_links, &last_targets, lead, window, cx);
-                    }),
-            ),
+        let here_name = self.targets.track(
+            last_id.clone(),
+            div()
+                .id(last_id.clone())
+                .flex()
+                .items_center()
+                .h(hit_side(measure))
+                .gap(measure.space(Space::Snug))
+                .min_w(px(0.0))
+                .cursor_pointer()
+                .child(mark)
+                .child(name)
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    siblings_menu(&last_links, &last_targets, lead, window, cx);
+                }),
         );
+        plate = plate.child(self.flow.item("tb-flow-name", here_name));
         // Not a declaration: the place names itself (`registry`, `Appearance`).
         let quiet: Option<SharedString> = if segments.is_empty() || here.path.starts_with("viewing ") {
             Some(here.path.clone())

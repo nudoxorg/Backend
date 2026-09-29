@@ -65,6 +65,7 @@ fn review_diag(message: &str) {
 pub struct Fixture {
     host: crate::DesktopHost,
     projects: Vec<PathBuf>,
+    failed: Vec<(PathBuf, String)>,
 }
 
 impl Fixture {
@@ -74,10 +75,17 @@ impl Fixture {
         self.host.endpoint()
     }
 
-    /// The indexed fixture roots.
+    /// Every fixture root, indexed or not.
     #[must_use]
     pub fn projects(&self) -> &[PathBuf] {
         &self.projects
+    }
+
+    /// The roots that did not index, each with the owner's own words. Their
+    /// pages show the app's fault plate; every other root is served as usual.
+    #[must_use]
+    pub fn failed(&self) -> &[(PathBuf, String)] {
+        &self.failed
     }
 }
 
@@ -243,85 +251,379 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
     progress("Preparing the fixture owner");
     // `NUDOX_HARNESS_STATE` keeps a run's index (and its owner's advisory
     // authority) apart from the shared one other runs use.
-    let state = STATE
+    let configured = STATE
         .get()
         .cloned()
         .or_else(|| std::env::var_os("NUDOX_HARNESS_STATE").map(PathBuf::from))
         .unwrap_or_else(|| repo.join(".local/harness/desktop"));
-    std::fs::create_dir_all(state.join("data")).map_err(|error| format!("{}: {error}", state.display()))?;
-    let endpoint = endpoint_for(&state.join("data"))?;
-    let paths = backend_runtime::WorkspacePaths::discover(
-        Some(projects[0].clone()),
-        Some(state.join("data")),
-        Some(endpoint.clone()),
-    )
-    .map_err(|error| format!("workspace paths: {error}"))?;
-    // Another process may hold the index lock and still be opening it (the
-    // host waits 2 s for its endpoint; a debug owner can take longer): keep
-    // asking until it answers or the lock frees, for up to a minute.
-    let attaching = Instant::now();
-    let host = loop {
-        match crate::DesktopHost::start_with_paths(paths.clone()) {
-            Ok(host) => break host,
-            Err(crate::HostError::Contended { .. }) if attaching.elapsed() < OWNER_DEADLINE => {
-                std::thread::sleep(Duration::from_millis(250));
+    private_umask();
+    let (host, endpoint, state) = match open_owner(&configured, &projects[0]) {
+        Ok(opened) => opened,
+        // The owner refused the directory itself (a mode it will not accept,
+        // an index written by another build): index into a clean one this
+        // harness owns instead of failing every capture, and say so once.
+        Err(Opening::Refused(reason)) => {
+            let fresh = fallback_state(&repo, &configured);
+            if fresh == configured {
+                return Err(format!("fixture owner: {} refused: {reason}", configured.display()));
             }
-            Err(error) => return Err(format!("fixture owner: {error}")),
+            report_once(format!(
+                "state dir {} refused by the owner ({reason}); using the clean state dir {}",
+                configured.display(),
+                fresh.display()
+            ));
+            open_owner(&fresh, &projects[0]).map_err(|second| {
+                format!(
+                    "fixture owner: {} refused ({reason}); the clean state dir {} failed too: {}",
+                    configured.display(),
+                    fresh.display(),
+                    second.words()
+                )
+            })?
         }
+        Err(Opening::Failed(reason)) => return Err(format!("fixture owner: {reason}")),
     };
-    crate::runtime::trace::span("boot.owner_start", attaching, format_args!("{:?}", host.mode()));
     let indexing = Instant::now();
     let mut session = Session::connect(&endpoint).map_err(|error| format!("session: {error}"))?;
     let total = projects.len();
+    // A root whose index request the owner refuses (a compile failure, say)
+    // is not a reason to stop: it is recorded with the owner's words and the
+    // other roots are indexed and captured as usual. Its pages then show the
+    // app's own fault plate.
+    let mut refused: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+    // A refusal is a property of the owner's source, not of the run:
+    // repeating the request for every capture costs minutes per root for the
+    // same answer. Refusals recorded for this exact owner source are read
+    // back from the state directory and not asked again (a change under
+    // `crates/` or `frontends/` asks afresh).
+    let recorded = recorded_failures(&state);
     for (index, project) in projects.iter().enumerate() {
         progress(&format!("Indexing {} ({}/{total})", project.file_name().and_then(|name| name.to_str()).unwrap_or("fixture"), index + 1));
-        session
-            .index(utf8(project)?)
-            .map_err(|error| format!("index {}: {error}", project.display()))?;
+        if let Some(reason) = recorded.get(project) {
+            report_root_failed(project, &format!("{reason} (refused earlier by this same owner source; not asked again)"));
+            refused.insert(index, reason.clone());
+            continue;
+        }
+        if let Err(error) = session.index(utf8(project)?) {
+            report_root_failed(project, &error.to_string());
+            refused.insert(index, error.to_string());
+        }
     }
+    record_failures(
+        &state,
+        &refused.iter().map(|(index, reason)| (projects[*index].clone(), reason.clone())).collect(),
+    );
     crate::runtime::trace::span("boot.index_requests", indexing, format_args!("{total} roots"));
     progress("Waiting for indexed sources");
     let started = Instant::now();
     let (mut last_rows, mut stable) = (0, 0);
     let mut polls = 0_u32;
+    let mut standings = (0..total).map(|index| standing(refused.get(&index).map(String::as_str), None)).collect::<Vec<_>>();
     loop {
         polls += 1;
-        let ready = match session.packages().map(|reply| reply.reply) {
-            Ok(backend_library::CommandReply::Packages(snapshot)) => {
-                // With NUDOX_REVIEW_DIAGNOSTICS, say which roots are still not
-                // ready, and how, every ~10 s of waiting.
-                if polls.is_multiple_of(33) {
-                    for project in &projects {
-                        let row = snapshot.root.rows().iter().find(|row| Some(row.label.as_str()) == project.to_str());
-                        if row.is_none_or(|row| row.state != backend_library::RowState::Ready) {
-                            review_diag(&format!("waiting on {}: {:?}", project.display(), row.map(|row| (&row.state, row.document.len()))));
-                        }
+        if let Ok(backend_library::CommandReply::Packages(snapshot)) = session.packages().map(|reply| reply.reply) {
+            for (index, project) in projects.iter().enumerate() {
+                let row = snapshot
+                    .root
+                    .rows()
+                    .iter()
+                    .find(|row| Some(row.label.as_str()) == project.to_str())
+                    .map(|row| (row.state, row_words(row)));
+                standings[index] = standing(refused.get(&index).map(String::as_str), row);
+                if let Standing::Failed(reason) = &standings[index] {
+                    report_root_failed(project, reason);
+                }
+            }
+            // With NUDOX_REVIEW_DIAGNOSTICS, say which roots are still not
+            // ready, and how, every ~10 s of waiting.
+            if polls.is_multiple_of(33) {
+                for (project, standing) in projects.iter().zip(&standings) {
+                    if *standing != Standing::Ready {
+                        review_diag(&format!("waiting on {}: {standing:?}", project.display()));
                     }
                 }
-                projects.iter().all(|project| {
-                    snapshot.root.rows().iter().any(|row| {
-                        Some(row.label.as_str()) == project.to_str()
-                            && row.state == backend_library::RowState::Ready
-                    })
-                })
             }
-            _ => false,
-        };
+        }
         let rows = session.health().map_or(0, |health| health.row_count());
-        stable = if ready && rows > 0 && rows == last_rows { stable + 1 } else { 0 };
+        // With every root failed there are no rows to wait for: the pages
+        // are the app's fault plates and the wait is over once it is quiet.
+        let all_failed = standings.iter().all(|standing| matches!(standing, Standing::Failed(_)));
+        stable = if settled(&standings) && (rows > 0 || all_failed) && rows == last_rows { stable + 1 } else { 0 };
         last_rows = rows;
         if stable >= 3 {
             break;
         }
         if started.elapsed() > INDEX_DEADLINE {
-            return Err("the fixture index never settled".to_owned());
+            let pending = projects
+                .iter()
+                .zip(&standings)
+                .filter(|(_, standing)| **standing == Standing::Pending)
+                .map(|(project, _)| project.display().to_string())
+                .collect::<Vec<_>>();
+            return Err(format!("the fixture index never settled; still pending: {}", pending.join(", ")));
         }
         std::thread::sleep(Duration::from_millis(300));
     }
     crate::runtime::trace::span("boot.index_settled", started, format_args!("{last_rows} rows"));
-    let fixture: &'static Fixture = Box::leak(Box::new(Fixture { host, projects }));
+    let failed: Vec<(PathBuf, String)> = projects
+        .iter()
+        .zip(&standings)
+        .filter_map(|(project, standing)| match standing {
+            Standing::Failed(reason) => Some((project.clone(), reason.clone())),
+            Standing::Ready | Standing::Pending => None,
+        })
+        .collect();
+    if failed.len() == total {
+        report_once(format!(
+            "no fixture root is indexed ({total} of {total} failed): every package and symbol page shows the app's fault plate"
+        ));
+    }
+    let fixture: &'static Fixture = Box::leak(Box::new(Fixture { host, projects, failed }));
     *cached = Some(fixture);
     Ok(fixture)
+}
+
+/// Where a fixture root stands while the index settles.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Standing {
+    /// No row yet, or the row is still loading.
+    Pending,
+    /// The row's content is available.
+    Ready,
+    /// The owner refused the root's index request, or recorded its row as
+    /// failed; the words are the owner's.
+    Failed(String),
+}
+
+/// A root's standing from what the index request answered and the owner's
+/// row for it (its state, and the prose the row carries).
+///
+/// A Ready row wins over a refused refresh: the owner keeps the prior
+/// generation and serves it.
+fn standing(refused: Option<&str>, row: Option<(backend_library::RowState, String)>) -> Standing {
+    match (refused, &row) {
+        (_, Some((backend_library::RowState::Ready, _))) => return Standing::Ready,
+        (Some(reason), _) => return Standing::Failed(reason.to_owned()),
+        _ => {}
+    }
+    match row {
+        Some((backend_library::RowState::Ready, _)) => Standing::Ready,
+        Some((backend_library::RowState::Failed, words)) if words.is_empty() => {
+            Standing::Failed("the owner recorded this root's row as Failed and gave no reason".to_owned())
+        }
+        Some((backend_library::RowState::Failed, words)) => Standing::Failed(words),
+        Some((backend_library::RowState::Loading, _)) | None => Standing::Pending,
+    }
+}
+
+/// The wait is over when no root is still pending: each is Ready or Failed.
+fn settled(standings: &[Standing]) -> bool {
+    standings.iter().all(|standing| *standing != Standing::Pending)
+}
+
+/// The prose a row carries, in order.
+fn row_words(row: &backend_library::Row) -> String {
+    row.document
+        .iter()
+        .filter_map(|fragment| match fragment {
+            backend_library::Fragment::Text(text) | backend_library::Fragment::Code(text) => Some(text.as_str()),
+            backend_library::Fragment::Link { label, .. } => Some(label.as_str()),
+            backend_library::Fragment::Break => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_owned()
+}
+
+/// Identifies the owner's source: the index refuses or accepts a root as a
+/// function of `crates/` and `frontends/` (the compiler and its frontends),
+/// never of the desktop or the design system, so a rebuilt shell keeps
+/// reading the refusals recorded for the same owner and a change to the
+/// owner asks again. Every `.rs` and `Cargo.toml` file's path, size and
+/// modification time.
+fn owner_fingerprint() -> Option<String> {
+    use std::hash::{Hash as _, Hasher as _};
+    use std::os::unix::fs::MetadataExt as _;
+
+    fn walk(dir: &Path, out: &mut Vec<(PathBuf, u64, i64, i64)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else { continue };
+            if metadata.is_dir() {
+                if !matches!(path.file_name().and_then(|name| name.to_str()), Some("target" | ".git" | "node_modules")) {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                || path.file_name().is_some_and(|name| name == "Cargo.toml")
+            {
+                out.push((path, metadata.len(), metadata.mtime(), metadata.mtime_nsec()));
+            }
+        }
+    }
+    let repo = repo().canonicalize().ok()?;
+    let mut files = Vec::new();
+    for root in ["crates", "frontends"] {
+        walk(&repo.join(root), &mut files);
+    }
+    if files.is_empty() {
+        return None;
+    }
+    files.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    files.hash(&mut hasher);
+    Some(format!("owner-source:{}:{:016x}", files.len(), hasher.finish()))
+}
+
+const FAILED_ROOTS_FILE: &str = "harness-failed-roots.tsv";
+
+/// The roots this owner source already refused in `state`, with its words.
+fn recorded_failures(state: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+    let Some(fingerprint) = owner_fingerprint() else { return std::collections::BTreeMap::new() };
+    let Ok(text) = std::fs::read_to_string(state.join(FAILED_ROOTS_FILE)) else { return std::collections::BTreeMap::new() };
+    let mut lines = text.lines();
+    if lines.next() != Some(fingerprint.as_str()) {
+        return std::collections::BTreeMap::new();
+    }
+    lines
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(root, reason)| (PathBuf::from(root), reason.to_owned()))
+        .collect()
+}
+
+/// Remembers which roots this owner source refused (none clears the record).
+fn record_failures(state: &Path, failures: &std::collections::BTreeMap<PathBuf, String>) {
+    let path = state.join(FAILED_ROOTS_FILE);
+    let Some(fingerprint) = owner_fingerprint() else { return };
+    if failures.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let mut text = format!("{fingerprint}\n");
+    for (root, reason) in failures {
+        text.push_str(&format!("{}\t{}\n", root.display(), reason.replace(['\n', '\t', '\r'], " ")));
+    }
+    let _ = std::fs::write(path, text);
+}
+
+/// Says `message` on stderr the first time only: a run that retries its
+/// boot, or polls a failed root every 300 ms, names it once.
+fn report_once(message: String) {
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut said = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !said.contains(&message) {
+        eprintln!("[harness] {message}");
+        said.push(message);
+    }
+}
+
+fn report_root_failed(project: &Path, reason: &str) {
+    report_once(format!("root {} failed to index, capturing the rest: {reason}", project.display()));
+}
+
+/// Why the owner would not start on a state directory.
+enum Opening {
+    /// The owner refused the directory itself: its mode or owner, or an index
+    /// written in a format this build does not read. A clean directory may
+    /// still work.
+    Refused(String),
+    /// Anything else: the path is not UTF-8, another owner never answered.
+    Failed(String),
+}
+
+impl Opening {
+    fn words(&self) -> &str {
+        match self {
+            Self::Refused(words) | Self::Failed(words) => words,
+        }
+    }
+}
+
+/// Whether the owner refused the workspace itself rather than another live
+/// process still opening it (which is worth waiting for). Composition
+/// reports every refusal as prose (`ProcessError::Profile`), so the held lock
+/// is told by the engine's own name for it, `AlreadyOwned`.
+fn state_refused(error: &crate::HostError) -> bool {
+    match error {
+        crate::HostError::Runtime(_) | crate::HostError::Service(_) => true,
+        crate::HostError::Contended { refusal, .. } => {
+            let held = matches!(**refusal, backend_local_service::ProcessError::Listener(_))
+                || refusal.to_string().contains("AlreadyOwned");
+            !held
+        }
+        crate::HostError::UnsupportedPathEncoding { .. } => false,
+    }
+}
+
+/// A private umask for a process that owns durable state. The owner creates
+/// its own subdirectories with the process umask and refuses to write beneath
+/// any that is group- or world-accessible (`crates/platform/durable.rs`), so
+/// under a shell's usual 022 the first boot succeeds and every later boot of
+/// the same state directory is refused. Files this process writes afterwards
+/// (captures included) are 0600.
+fn private_umask() {
+    #[cfg(unix)]
+    rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o077));
+}
+
+/// A directory only this user can enter: the owner refuses anything looser
+/// (`crates/platform/durable.rs`), and `create_dir_all` alone honours the
+/// umask (0755).
+fn private_dir(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(path)
+}
+
+/// The clean state directory a run falls back to when `configured` is
+/// refused: one per refused directory under `.local/harness/w-fit-*`, kept
+/// between runs so its index stays warm.
+fn fallback_state(repo: &Path, configured: &Path) -> PathBuf {
+    let name = configured
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect::<String>();
+    repo.join(".local/harness").join(format!("w-fit-{name}"))
+}
+
+/// Starts (or attaches to) the owner of the index in `state`.
+///
+/// Another process may hold the index lock and still be opening it (the host
+/// waits 2 s for its endpoint; a debug owner can take longer): keep asking
+/// until it answers or the lock frees, for up to a minute. A directory the
+/// owner refuses is reported at once instead.
+fn open_owner(state: &Path, project: &Path) -> Result<(crate::DesktopHost, PathBuf, PathBuf), Opening> {
+    private_dir(&state.join("data")).map_err(|error| Opening::Refused(format!("{}: {error}", state.display())))?;
+    let endpoint = endpoint_for(&state.join("data")).map_err(Opening::Failed)?;
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(project.to_path_buf()),
+        Some(state.join("data")),
+        Some(endpoint.clone()),
+    )
+    .map_err(|error| Opening::Failed(format!("workspace paths: {error}")))?;
+    let attaching = Instant::now();
+    loop {
+        match crate::DesktopHost::start_with_paths(paths.clone()) {
+            Ok(host) => {
+                crate::runtime::trace::span("boot.owner_start", attaching, format_args!("{:?}", host.mode()));
+                return Ok((host, endpoint, state.to_path_buf()));
+            }
+            Err(error) if state_refused(&error) => return Err(Opening::Refused(error.to_string())),
+            Err(crate::HostError::Contended { .. }) if attaching.elapsed() < OWNER_DEADLINE => {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(error) => return Err(Opening::Failed(error.to_string())),
+        }
+    }
 }
 
 /// Reject an unsupported source-language edition before starting an owner or
@@ -636,6 +938,19 @@ fn resolve_symbol_kind(
         return Err(format!("symbol `{id}`: expected package::path::Name"));
     };
     let package = resolve_package(package, fixture)?;
+    // A package whose root failed to index has no outline to resolve against:
+    // open the page for the coordinate the scene names, at line 1, so the
+    // capture shows the app's own fault plate instead of dying at boot.
+    if let Some((_, reason)) = fixture.failed().iter().find(|(root, _)| root.to_str() == Some(package.as_str())) {
+        let file = expected_path.unwrap_or("lib.rs");
+        report_once(format!(
+            "symbol `{id}`: its package failed to index ({}); opening it unresolved at {file}:1 for the fault plate",
+            reason.chars().take(90).collect::<String>()
+        ));
+        let coordinate = SymbolRef::new(&format!("{}::{file}:1::{name}", package.as_str()))
+            .map_err(|error| format!("symbol `{id}`: {error:?}"))?;
+        return Ok((coordinate, 1));
+    }
     let package_ref = package.clone();
     let mut reader = SessionReader::connect(fixture.endpoint());
     let cancel = CancellationToken::new();
@@ -1396,6 +1711,103 @@ mod tests {
         ] {
             assert!(ids.contains(&id), "missing fixture scene {id}");
         }
+    }
+
+    #[test]
+    fn the_wait_settles_when_every_root_is_ready_or_failed_and_only_then() {
+        use super::{Standing, settled, standing};
+        use backend_library::RowState;
+
+        let ready = standing(None, Some((RowState::Ready, String::new())));
+        let failed = standing(None, Some((RowState::Failed, "assemble.rs: LowerIr".to_owned())));
+        let refused = standing(Some("local semantic compilation failed"), None);
+        assert_eq!(ready, Standing::Ready);
+        assert_eq!(failed, Standing::Failed("assemble.rs: LowerIr".to_owned()));
+        assert_eq!(refused, Standing::Failed("local semantic compilation failed".to_owned()));
+        // A failed row that carries no prose still says why it is failed.
+        assert!(matches!(standing(None, Some((RowState::Failed, String::new()))), Standing::Failed(words) if !words.is_empty()));
+        assert!(settled(&[ready.clone(), failed.clone(), refused]));
+        // A loading row, and a row that has not appeared, both keep the wait open.
+        let loading = standing(None, Some((RowState::Loading, String::new())));
+        assert_eq!(loading, Standing::Pending);
+        assert_eq!(standing(None, None), Standing::Pending);
+        // A refused refresh still serves the prior generation when its row is Ready.
+        assert_eq!(standing(Some("refused"), Some((RowState::Ready, String::new()))), Standing::Ready);
+        assert!(!settled(&[ready, failed, loading]));
+    }
+
+    #[test]
+    fn only_a_refused_workspace_falls_back_never_one_another_process_holds() {
+        use super::state_refused;
+        use crate::HostError;
+        use backend_local_service::{ListenerError, ProcessError};
+
+        let contended = |refusal| HostError::Contended {
+            endpoint: "/tmp/nx-harness-test.sock".into(),
+            data: "/tmp/data".into(),
+            refusal: Box::new(refusal),
+        };
+        // An index another build wrote: no owner will ever answer, so switch at once.
+        assert!(state_refused(&contended(ProcessError::Profile("unsupported view DTO version".to_owned()))));
+        // A live owner still opening the same workspace: wait for it instead.
+        assert!(!state_refused(&contended(ProcessError::Profile("workspace error: AlreadyOwned".to_owned()))));
+        assert!(!state_refused(&contended(ProcessError::Listener(ListenerError::AlreadyRunning))));
+        assert!(!state_refused(&HostError::UnsupportedPathEncoding { path: "/tmp".into() }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_state_dir_the_harness_creates_is_one_the_owner_accepts() {
+        use super::{fallback_state, private_dir, repo};
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // The owner refuses a private state directory that is group- or
+        // world-accessible (`crates/platform/durable.rs`); the umask alone
+        // makes `create_dir_all` produce 0755.
+        let root = repo().join(format!(".local/harness/w-fit-unit-{}", std::process::id()));
+        let data = root.join("state/data");
+        private_dir(&data).expect("create private dirs");
+        for dir in [&root, &root.join("state"), &data] {
+            let mode = std::fs::metadata(dir).expect("metadata").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} is {mode:o}", dir.display());
+        }
+        std::fs::remove_dir_all(&root).expect("remove the test's own scratch");
+        // The fallback lives beside the shared index, named for the refused one.
+        assert_eq!(
+            fallback_state(&repo(), &repo().join(".local/harness/desktop")),
+            repo().join(".local/harness/w-fit-desktop")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refusal_is_read_back_for_the_same_owner_source_and_only_then() {
+        use super::{owner_fingerprint, private_dir, record_failures, recorded_failures, repo};
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        let state = repo().join(format!(".local/harness/w-fit-unit-record-{}", std::process::id()));
+        private_dir(&state).expect("create the test's own scratch");
+        let refused = BTreeMap::from([(PathBuf::from("/fixture/present"), "package semantic compilation failed\n\twith a tab".to_owned())]);
+        record_failures(&state, &refused);
+        let read = recorded_failures(&state);
+        assert_eq!(read.len(), 1);
+        assert_eq!(
+            read.get(&PathBuf::from("/fixture/present")).map(String::as_str),
+            Some("package semantic compilation failed  with a tab"),
+            "one line per root, whatever the owner's words held"
+        );
+        // Another owner source, another fingerprint: nothing is trusted.
+        let file = state.join(super::FAILED_ROOTS_FILE);
+        let text = std::fs::read_to_string(&file).expect("record");
+        let (head, rest) = text.split_once('\n').expect("a header line");
+        assert_eq!(Some(head.to_owned()), owner_fingerprint());
+        std::fs::write(&file, format!("owner-source:0:0000000000000000\n{rest}")).expect("rewrite");
+        assert!(recorded_failures(&state).is_empty(), "a record made for other source is not read");
+        // A run that refused nothing clears the record.
+        record_failures(&state, &BTreeMap::new());
+        assert!(!file.exists());
+        std::fs::remove_dir_all(&state).expect("remove the test's own scratch");
     }
 
     /// `tree` must resolve to the pinned two-member fixture

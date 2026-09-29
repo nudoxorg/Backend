@@ -5,11 +5,13 @@
 
 use super::view::{KeyboardReveal, child, words, words_ellipsis};
 use crate::controls::button::button;
+use crate::fluid::Modes;
 use crate::icons::{Icon, IconSize, Kind, KindSize, kind_mark, ui};
 use crate::measure::{Control, Measure, Set, Space};
 use crate::motion::flow::Flow;
 use crate::semantics::model::Pipe;
 use crate::theme::ActiveFacet;
+use crate::tokens::fluid::{FIND, FIND_INSPECTOR, Split};
 use crate::tokens::ty;
 use gpui::{AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
     RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px};
@@ -317,13 +319,14 @@ impl RenderOnce for Find {
             Selection::Package(key) => model.candidates.iter().find(|candidate| &candidate.key == key).map(|candidate| (candidate, None)),
             Selection::Answer(key) => model.candidates.iter().find_map(|candidate| candidate.answers.iter().find(|answer| &answer.key == key).map(|answer| (candidate, Some(answer)))),
         }).or_else(|| if empty || loose_selected.is_some() { None } else { model.candidates.first().map(|candidate| (candidate, candidate.answers.first())) });
-        let wide = m.effective() >= 760.0;
+        let split = Modes::keyed(child(&self.id, "modes"), window, cx).settle(&FIND, m.fluid_room());
+        let wide = split.mode == Split::Beside;
         let (list_m, inspect_m) = if wide {
-            let inspector = (m.effective() * 0.38).clamp(280.0, 390.0) * m.scale();
-            (m.within(m.width() - px(inspector) - m.space(Space::Section)), m.within(px(inspector)))
+            let inspector = FIND_INSPECTOR.at(m.fluid_room());
+            (m.within(m.width() - inspector - m.space(Space::Section)), m.within(inspector))
         } else { (m, m) };
         let flow = Flow::scoped(format!("find-{:?}", self.id), cx);
-        flow.epoch((m.room(), model.query.clone(), selected.clone().map(|selection| format!("{selection:?}"))));
+        flow.epoch((split.epoch, model.query.clone(), selected.clone().map(|selection| format!("{selection:?}"))));
         let mut list = div().flex().flex_col().w(list_m.width()).gap(m.space(Space::Base));
         let limit = if state.read(cx).all_packages { model.candidates.len() } else { 8 };
         for (at, candidate) in model.candidates.iter().take(limit).enumerate() {

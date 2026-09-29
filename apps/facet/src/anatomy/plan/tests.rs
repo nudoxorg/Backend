@@ -7,7 +7,7 @@
 use super::{CaseKind, Choice, DeclKind, Deprecated, Effect, Lang, PagePlan, Record, SectionFacts, SectionId, Source, SourceMember, Spec, Tier, compile};
 
 fn member(name: &str, kind: DeclKind, signature: &str, summary: Option<&str>) -> SourceMember {
-    SourceMember { name: name.to_owned(), kind, signature: Some(signature.to_owned()), summary: summary.map(ToOwned::to_owned), deprecated: None, effect: Effect::None, link: None }
+    SourceMember { name: name.to_owned(), kind, signature: Some(signature.to_owned()), summary: summary.map(ToOwned::to_owned), deprecated: None, effect: Effect::None, link: None, owes: Default::default() }
 }
 
 fn method(name: &str, effect: Effect, signature: &str) -> SourceMember {
@@ -33,6 +33,14 @@ fn source(name: &str, kind: DeclKind, lang: Lang, package: &str, signature: &str
         rails: Vec::new(),
         since: None,
         yours: false,
+        failures: Vec::new(),
+        uses: Default::default(),
+        doers: Default::default(),
+        reach: Default::default(),
+        caps: Vec::new(),
+        siblings: Vec::new(),
+        scope: String::new(),
+        history: Default::default(),
     }
 }
 
@@ -142,10 +150,14 @@ fn unexported_go_fields_and_private_rust_fields_are_a_count_never_names() {
 }
 
 #[test]
-fn an_interface_with_methods_is_not_drawn_as_a_record() {
+fn an_interface_with_methods_is_a_socket_not_a_record() {
     let mut contract = too_small();
     contract.made_of.push(member("add", DeclKind::Method, "add(value: unknown): void", None));
-    assert_eq!(compile(&contract).spec, Spec::None);
+    // It is a contract: a socket, its method a notch, its properties held.
+    let plan = compile(&contract);
+    let Spec::Contract(socket) = &plan.spec else { panic!("expected a socket, got {:?}", plan.spec) };
+    assert_eq!(socket.write.iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>(), ["add"]);
+    assert_eq!(socket.held.iter().map(|rung| rung.name.as_str()).collect::<Vec<_>>(), ["code", "origin", "minimum", "inclusive", "exact", "input"]);
 }
 
 #[test]
@@ -158,7 +170,11 @@ fn sections_come_in_reading_order_with_their_stubs_counted_and_tiered() {
     ];
     let plan = compile(&s);
     let heads = plan.sections.iter().map(|section| (section.title.as_str(), section.count.as_deref(), section.yours.as_deref())).collect::<Vec<_>>();
-    assert_eq!(heads, [("Getting one", Some("4 ways"), None), ("Who uses it", Some("59 places"), Some("7 yours")), ("Its own words", None, None)]);
+    assert_eq!(
+        heads,
+        [("Your code and it", None, None), ("Getting one", Some("4 ways"), None), ("Who uses it", Some("59 places"), Some("7 yours")), ("Its own words", None, None)],
+        "a type always asks what your code does with it; the index not having read that is said, not hidden"
+    );
 }
 
 #[test]
@@ -280,7 +296,7 @@ fn a_typescript_literal_union_is_a_fork_of_literals() {
     assert_eq!(choice.open, None, "no `(string & {{}})`: closed");
     let mut open = string_formats();
     open.signature = Some("export type Origin = \"number\" | \"int\" | (string & {});".to_owned());
-    assert_eq!(super::choice::choice(&open).and_then(|choice| choice.open).as_deref(), Some("any text"));
+    assert_eq!(super::choice::choice(&open).and_then(|choice| choice.open).as_deref(), Some("any other text"));
 }
 
 #[test]
@@ -304,4 +320,220 @@ fn getting_one_reads_the_makers_best_first() {
         "list of V → from",
         "map S → V → from",
     ]);
+}
+
+// ------------------------------------------------------------------ pipes
+//
+// The signatures are the declarations as their sources write them
+// (serde_json 1.0.151 `de.rs:2709`, pflag `flag.go:1164`, `:1264`,
+// `int.go:30`); the TypeScript one is written for the test.
+
+fn pipe(plan: &PagePlan) -> &super::Callable {
+    match &plan.spec { Spec::Callable(callable) => callable, other => panic!("expected a pipe, got {other:?}") }
+}
+
+/// A pipe as the page reads it: `on T effect | port: type… → gives | drop`.
+fn reads(callable: &super::Callable) -> String {
+    let mut out = String::new();
+    if let Some(receiver) = &callable.receiver {
+        out.push_str(&format!("on {} {:?} | ", receiver.ty.plain(), receiver.effect));
+    }
+    out.push_str(&callable.ports.iter().map(|port| format!("{}: {}", port.name, port.ty.plain())).collect::<Vec<_>>().join(", "));
+    out.push_str(" → ");
+    out.push_str(&callable.gives.as_ref().map_or_else(|| "nothing".to_owned(), super::Ty::plain));
+    for drop in &callable.drops {
+        out.push_str(&format!(" | {}{}", drop.verb.words(), drop.ty.as_ref().map_or_else(String::new, |ty| format!(" {}", ty.plain()))));
+    }
+    out
+}
+
+#[test]
+fn a_rust_function_is_a_pipe_with_its_bound_in_words_and_its_error_as_a_drop() {
+    let s = source("from_str", DeclKind::Function, Lang::Rust, "serde_json",
+        "pub fn from_str<'a, T>(s: &'a str) -> Result<T>\nwhere\n    T: de::Deserialize<'a>,", vec![]);
+    let plan = compile(&s);
+    assert_eq!(reads(pipe(&plan)), "s: text → T | or fails with");
+    assert_eq!(plan.hero.fam, super::Fam::Callable);
+}
+
+#[test]
+fn a_go_method_is_a_pipe_that_changes_its_receiver_and_returns_error() {
+    let mut s = source("Parse", DeclKind::Method, Lang::Go, "pflag", "func (f *FlagSet) Parse(arguments []string) error", vec![]);
+    s.owner = Some("FlagSet".to_owned());
+    assert_eq!(reads(pipe(&compile(&s))), "on FlagSet Changes | arguments: list of text → nothing | or returns error");
+    let make = source("NewFlagSet", DeclKind::Function, Lang::Go, "pflag", "func NewFlagSet(name string, errorHandling ErrorHandling) *FlagSet", vec![]);
+    assert_eq!(reads(pipe(&compile(&make))), "name: text, errorHandling: ErrorHandling → FlagSet");
+    let mut two = source("GetInt", DeclKind::Method, Lang::Go, "pflag", "func (f *FlagSet) GetInt(name string) (int, error)", vec![]);
+    two.owner = Some("FlagSet".to_owned());
+    assert_eq!(reads(pipe(&compile(&two))), "on FlagSet Changes | name: text → integer | or returns error");
+}
+
+#[test]
+fn a_typescript_function_is_the_same_pipe() {
+    let s = source("safeParse", DeclKind::Function, Lang::TypeScript, "zod",
+        "export function safeParse(schema: $ZodType, data: unknown): SafeParseResult", vec![]);
+    assert_eq!(reads(pipe(&compile(&s))), "schema: $ZodType, data: anything → SafeParseResult");
+}
+
+#[test]
+fn what_can_go_wrong_carries_the_docs_words_on_the_pipe_s_drop() {
+    let mut s = source("from_str", DeclKind::Function, Lang::Rust, "serde_json",
+        "pub fn from_str<'a, T>(s: &'a str) -> Result<T>\nwhere\n    T: de::Deserialize<'a>,", vec![]);
+    s.failures = vec![super::SourceFailure {
+        verb: super::DropVerb::FailsWith,
+        member: None,
+        words: "This conversion can fail if the structure of the input does not match the structure expected by T.".to_owned(),
+    }];
+    let plan = compile(&s);
+    assert_eq!(plan.fails.len(), 1);
+    assert_eq!(plan.fails[0].verb, super::DropVerb::FailsWith);
+    assert_eq!(plan.fails[0].words.as_deref(), Some("This conversion can fail if the structure of the input does not match the structure expected by T."));
+}
+
+// ------------------------------------------------------------------ sockets
+//
+// Declarations as their sources write them: serde_core 1.0.229
+// `ser/mod.rs`, pflag `flag.go:208`, yaml 2.9.0 `nodes/Collection.d.ts`.
+
+fn owed(name: &str, signature: &str, owes: super::Owes) -> SourceMember {
+    SourceMember { owes, ..member(name, DeclKind::Method, signature, None) }
+}
+
+fn socket(plan: &PagePlan) -> &super::Contract {
+    match &plan.spec { Spec::Contract(contract) => contract, other => panic!("expected a socket, got {other:?}") }
+}
+
+/// A socket as the page reads it: `write: a b? | get: c | other: d`.
+fn slots(contract: &super::Contract) -> String {
+    let list = |slots: &[super::Slot]| slots.iter().map(|slot| format!("{}{}{}", slot.name, if slot.optional { "?" } else { "" }, if slot.fails { "!" } else { "" })).collect::<Vec<_>>().join(" ");
+    format!("write: {} | get: {} | other: {}", list(&contract.write), list(&contract.get), list(&contract.other))
+}
+
+#[test]
+fn a_rust_trait_is_a_socket_its_bodiless_method_a_notch() {
+    let mut s = source("Serialize", DeclKind::Trait, Lang::Rust, "serde", "pub trait Serialize", vec![]);
+    s.does = vec![owed("serialize", "fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>\n    where\n        S: Serializer;", super::Owes::Required)];
+    let plan = compile(&s);
+    assert_eq!(slots(socket(&plan)), "write: serialize! | get:  | other: ");
+    assert_eq!(plan.hero.fam, super::Fam::Contract);
+}
+
+#[test]
+fn a_go_interface_is_all_notches_by_the_language_s_rule() {
+    let mut s = source("Value", DeclKind::Interface, Lang::Go, "pflag", "Value interface", vec![]);
+    s.does = vec![
+        owed("String", "String() string", super::Owes::Unknown),
+        owed("Set", "Set(string) error", super::Owes::Unknown),
+        owed("Type", "Type() string", super::Owes::Unknown),
+    ];
+    let plan = compile(&s);
+    let contract = socket(&plan);
+    assert_eq!(slots(contract), "write: String Set! Type | get:  | other: ");
+    assert_eq!(contract.write[0].gives.as_ref().map(super::Ty::plain).as_deref(), Some("text"));
+}
+
+#[test]
+fn a_typescript_abstract_class_writes_its_abstract_members_and_gets_the_rest() {
+    let mut s = source("Collection", DeclKind::Class, Lang::TypeScript, "yaml", "export declare abstract class Collection extends NodeBase", vec![]);
+    s.does = vec![
+        owed("add", "abstract add(value: unknown): void;", super::Owes::Required),
+        owed("get", "abstract get(key: unknown, keepScalar?: boolean): unknown;", super::Owes::Required),
+        owed("clone", "clone(schema?: Schema): Collection;", super::Owes::Provided),
+    ];
+    let plan = compile(&s);
+    let contract = socket(&plan);
+    assert_eq!(slots(contract), "write: add get | get: clone | other: ");
+    assert_eq!(contract.get[0].gives.as_ref().map(super::Ty::plain).as_deref(), Some("Collection"));
+    // A class with nothing abstract is not a contract.
+    let mut plain = s.clone();
+    for member in &mut plain.does { member.owes = super::Owes::Provided; }
+    assert!(!matches!(compile(&plain).spec, Spec::Contract(_)));
+}
+
+// ------------------------------------------------------------------ relations back to us
+
+mod yours {
+    use super::super::{DeclKind, Lang, SectionId, Spec, compile};
+    use super::{datetime, flag};
+    use crate::anatomy::reach::{Basis, CrateUse, Line, Reach};
+    use crate::anatomy::sigil::{Form, Sigil};
+
+    fn reach() -> Reach {
+        Reach {
+            yours: vec![
+                CrateUse { name: "desktop".to_owned(), count: 43, members: vec![("as_str".to_owned(), 8)], lines: vec![Line { file: "src/harness.rs".to_owned(), line: 607, text: "let v: toml::Datetime = x;".to_owned(), ..Line::default() }] },
+                CrateUse { name: "engine".to_owned(), count: 15, ..CrateUse::default() },
+            ],
+            basis: Basis::Scanned,
+            ..Reach::default()
+        }
+    }
+
+    #[test]
+    fn your_code_and_it_leads_the_sections_and_counts_places_and_crates() {
+        let mut s = datetime();
+        s.reach = reach();
+        let plan = compile(&s);
+        let head = &plan.sections[0];
+        assert_eq!((head.id, head.title.as_str(), head.count.as_deref(), head.yours.as_deref()), (SectionId::Yours, "Your code and it", Some("58 places"), Some("2 crates")));
+    }
+
+    #[test]
+    fn a_page_that_has_not_read_your_code_says_unknown_never_none() {
+        let s = datetime();
+        assert!(!s.reach.read(), "nothing was read");
+        let plan = compile(&s);
+        let head = plan.sections.iter().find(|section| section.id == SectionId::Yours).expect("the section is there, to say it");
+        assert_eq!(head.count, None, "no count is claimed for what nobody read");
+        // A module or a field has no such question.
+        let mut field = datetime();
+        field.kind = DeclKind::Field;
+        assert!(compile(&field).sections.iter().all(|section| section.id != SectionId::Yours));
+    }
+
+    #[test]
+    fn a_crates_real_lines_replace_who_uses_its_call_sites_so_a_line_is_said_once() {
+        let mut s = datetime();
+        s.uses.sites.push(super::super::Site { caller: "c".to_owned(), place: "p".to_owned(), ..Default::default() });
+        s.reach = reach();
+        assert!(compile(&s).uses.sites.is_empty(), "the reach draws the lines");
+        s.reach.yours[0].lines.clear();
+        assert_eq!(compile(&s).uses.sites.len(), 1, "without lines the call sites stay");
+    }
+
+    #[test]
+    fn a_pipes_sigil_has_a_prong_per_input_an_arrow_and_a_drop_when_it_can_fail() {
+        use crate::anatomy::plan::{DeclKind, Lang, Source};
+        let mut s = super::datetime();
+        s = Source {
+            name: "from_str".to_owned(),
+            kind: DeclKind::Function,
+            lang: Lang::Rust,
+            signature: Some("pub fn from_str<'a, T>(s: &'a str, strict: bool) -> Result<T>\nwhere\n    T: de::Deserialize<'a>,".to_owned()),
+            made_of: Vec::new(),
+            ..s
+        };
+        let sigil = Sigil::of(&compile(&s));
+        assert_eq!((sigil.form, sigil.ins, sigil.gives, sigil.fails, sigil.recv), (Form::Fn, 2, true, true, false));
+        // A method is called on something: the stem from above.
+        s.kind = DeclKind::Method;
+        s.owner = Some("Value".to_owned());
+        s.signature = Some("pub fn as_str(&self) -> Option<&str>".to_owned());
+        s.name = "as_str".to_owned();
+        let sigil = Sigil::of(&compile(&s));
+        assert_eq!((sigil.form, sigil.ins, sigil.gives, sigil.fails, sigil.recv), (Form::Method, 0, true, false, true));
+    }
+
+    #[test]
+    fn the_sigil_carries_the_pages_own_facts() {
+        // A record of three fields, named by two crates of yours.
+        let mut s = datetime();
+        s.reach = reach();
+        let sigil = Sigil::of(&compile(&s)).yours(2);
+        assert_eq!((sigil.form, sigil.fields, sigil.yours), (Form::Struct, 3, 2));
+        // A Go struct is the same form: eleven fields, capped at five ticks when drawn.
+        let go = Sigil::of(&compile(&flag()));
+        assert_eq!((go.form, go.fields), (Form::Struct, 11));
+        assert!(matches!(compile(&flag()).spec, Spec::Record(_)) && Lang::Go != Lang::Rust);
+    }
 }

@@ -60,6 +60,12 @@ mod hand_tests;
 mod jump_tests;
 #[cfg(test)]
 mod graph_tests;
+#[cfg(test)]
+mod shelf_tests;
+#[cfg(test)]
+mod fit_tests;
+#[cfg(test)]
+mod fluid_tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};
 pub use reader::Way;

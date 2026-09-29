@@ -5,10 +5,12 @@
 use super::find::Answer;
 use super::view::{KeyboardReveal, child, words, words_ellipsis};
 use crate::controls::button::button;
+use crate::fluid::Modes;
 use crate::icons::{Icon, Kind, KindSize, kind_mark};
 use crate::measure::{Control, Measure, Space};
 use crate::motion::flow::Flow;
 use crate::theme::ActiveFacet;
+use crate::tokens::fluid::{COMPARE, COMPARE_COLUMNS, COMPARE_DETAIL, Split};
 use crate::tokens::ty;
 use gpui::{AnyElement, App, AppContext as _, ElementId, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, px};
@@ -261,12 +263,14 @@ impl RenderOnce for Compare {
         // only a row actually shown now. Returning restores the old focus.
         let selected = state.read(cx).selected.clone();
         let chosen = chosen_visible(page_rows, selected.as_ref());
-        let beside = chosen.is_some() && m.effective() >= 760.0;
-        let detail_width = (m.effective() * 0.52).clamp(350.0, 520.0) * m.scale();
+        let modes = Modes::keyed(child(&self.id, "modes"), window, cx);
+        let split = modes.settle(&COMPARE, m.fluid_room());
+        let beside = chosen.is_some() && split.mode == Split::Beside;
+        let detail_width = f32::from(COMPARE_DETAIL.at(m.fluid_room()));
         let rows_m = if beside { m.within(m.width() - px(detail_width) - m.space(Space::Section)) } else { m };
         let detail_m = if beside { m.within(px(detail_width)) } else { m };
         let flow = Flow::scoped(format!("compare-{:?}", self.id), cx);
-        flow.epoch((m.room(), state.read(cx).family, scope, state.read(cx).page));
+        flow.epoch((split.epoch, beside, state.read(cx).family, scope, state.read(cx).page));
         let keys = page_rows.iter().map(|row| (row.name.clone(), row.kind)).collect::<Vec<_>>();
         let keyboard = state.clone();
         page = page.on_key_down(move |event, _, cx| {
@@ -311,7 +315,7 @@ impl RenderOnce for Compare {
                 .child(div().flex().items_center().gap(m.space(Space::Base))
                     .child(kind_mark(chosen.kind, KindSize::Md, p))
                     .child(words(child(&self.id, "focused-name"), chosen.name.clone(), ty::HEAD, p.ink0, &detail_m)))
-                .child(operation_detail(&child(&self.id, "focus"), chosen, &self.model, &state, &self.actions, &detail_m, cx));
+                .child(operation_detail(&child(&self.id, "focus"), chosen, &self.model, &state, &self.actions, &modes, &detail_m, cx));
             comparison = comparison.child(detail);
         }
         page = page.child(comparison);
@@ -374,10 +378,10 @@ fn aligned_row(id: &ElementId, row: &Alignment, active: bool, model: &Model, sta
         .into_any_element()
 }
 
-fn operation_detail(id: &ElementId, row: &Alignment, model: &Model, state: &Entity<State>, actions: &Actions, m: &Measure, cx: &mut App) -> AnyElement {
+fn operation_detail(id: &ElementId, row: &Alignment, model: &Model, state: &Entity<State>, actions: &Actions, modes: &Modes, m: &Measure, cx: &mut App) -> AnyElement {
     let p = cx.palette();
     let count = model.candidates.len().max(1);
-    let wide = m.effective() >= 850.0;
+    let wide = modes.settle(&COMPARE_COLUMNS, m.fluid_room()).mode == Split::Beside;
     let gap = m.space(Space::Wide);
     let column_m = if wide { m.within((m.width() - gap * (count.saturating_sub(1) as f32)) / count as f32) } else { *m };
     let mut spread = if wide { div().flex().items_start().gap(gap) } else { div().flex().flex_col().gap(gap) };

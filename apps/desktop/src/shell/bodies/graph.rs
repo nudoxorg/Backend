@@ -1113,15 +1113,13 @@ impl gpui::Element for FocusMark {
         let size = f32::from(bounds.size.height);
         let morphing = Rc::new(std::cell::Cell::new(false));
         let seen_morph = morphing.clone();
+        // A morphing gem is the node on its way (opaque, never fading into
+        // the canvas glyph); at rest the canvas draws the node alone.
         let mut mark = facet::motion::shared::shared_with(key.clone(), move |morph| {
             seen_morph.set(morph.from.is_some());
             facet::paint::gem(kind)
                 .size(size)
-                .opacity(if morph.from.is_some() {
-                    1.0 - morph.t
-                } else {
-                    0.0
-                })
+                .opacity(if morph.from.is_some() { 1.0 } else { 0.0 })
         })
         .timing(
             std::time::Duration::from_millis(460),
@@ -1246,10 +1244,11 @@ impl Render for Map {
             );
         }
         let root = root.child(
+            // Bottom right: the where-line owns the bottom left (W-Flip R-T2-1).
             div()
                 .absolute()
                 .bottom(px(8.0))
-                .left(px(16.0))
+                .right(px(16.0))
                 .text_size(px(11.0))
                 .child(
                     self.load_error

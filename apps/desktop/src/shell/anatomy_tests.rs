@@ -188,33 +188,6 @@ impl PageReader for CrossPackageFixture {
     }
 }
 
-struct MirroredRelations;
-impl PageReader for MirroredRelations {
-    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
-        let mut value = Fixture.read(request, context)?;
-        if let PageValue::Symbol(page) = &mut value
-            && page.identity.name.as_ref() == "KindGlyph"
-        {
-            page.rose.up = page.rose.down.clone();
-        }
-        Ok(value)
-    }
-}
-
-#[gpui::test]
-fn the_same_recorded_relation_in_two_directions_has_distinct_targets(cx: &mut TestAppContext) {
-    let pool = ReadPool::start(2, |_| MirroredRelations).expect("mirrored relation pool");
-    let mut rig = rig_with_reads(cx, Some(page_route("KindGlyph")), 1440.0, 900.0, pool);
-    rig.cx.update(|_, cx| facet::probe::enable(cx));
-    let ledger = painted(&mut rig);
-    let target = super::tests::coordinate("Typed");
-    let is = format!("rel-is-0-{target}");
-    let made_of = format!("rel-made of-0-{target}");
-    assert!(ledger.targets.iter().any(|entry| entry.key == is), "the 'is' occurrence is independently actionable");
-    assert!(ledger.targets.iter().any(|entry| entry.key == made_of), "the 'made of' occurrence is independently actionable");
-    assert_ne!(is, made_of);
-}
-
 #[gpui::test]
 fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(cx: &mut TestAppContext) {
     let gate = Arc::new(PackageGate::default());
@@ -285,109 +258,66 @@ fn at(ledger: &Ledger, key: &str) -> Vec<String> {
     ledger.texts.iter().filter(|text| text.key == key).map(|text| text.content.clone()).collect()
 }
 
-/// The fork's branch names, in paint order (`anatomy-shape-{n}-name`).
-fn branch_names(ledger: &Ledger) -> Vec<String> {
+/// The fork's case names, in paint order.
+fn case_names(ledger: &Ledger) -> Vec<String> {
     ledger
         .texts
         .iter()
-        .filter(|text| text.key.starts_with("anatomy-shape-") && text.key.ends_with("-name") && !text.key.contains("-in-"))
+        .filter(|text| text.key.starts_with("page-case-") && text.key.ends_with("-name"))
         .map(|text| text.content.clone())
         .collect()
 }
 
 #[gpui::test]
-fn an_enum_page_draws_one_of_with_each_variant_in_place_of_its_code(cx: &mut TestAppContext) {
+fn an_enum_page_draws_its_fork_in_place_of_its_code(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
-    assert_eq!(at(&ledger, "anatomy-shape-heading"), ["one of"]);
-    assert_eq!(branch_names(&ledger), ["Typed", "Related"], "one row per variant, in order");
-    assert_eq!(at(&ledger, "anatomy-shape-0-ty"), ["SemanticLinkKind"], "Typed carries its payload");
+    assert_eq!(at(&ledger, "page-count-0"), ["one of"]);
+    assert_eq!(at(&ledger, "page-count-1"), ["2"]);
+    assert_eq!(case_names(&ledger), ["Typed", "Related"], "one tine per variant, in order");
+    assert_eq!(at(&ledger, "page-case-0-carries-0-tok-0"), ["SemanticLinkKind"], "Typed carries its payload, in words");
+    assert_eq!(at(&ledger, "page-case-0-acc-0"), ["is_typed"], "the accessor that reads Typed sits on its tine");
     let said = rig.said();
-    assert!(
-        !said.iter().any(|line| line.starts_with("pub enum RelationLabel {")),
-        "the anatomy replaces the declaration's code: {said:#?}"
-    );
-    assert!(
-        !ledger.texts.iter().any(|text| text.key.contains("prism")),
-        "the prism stays in the graph"
-    );
-    // Said once: the one-of rows already name what it is made of.
-    assert!(!said.iter().any(|line| line == "made of"), "no made-of row under the fork: {said:#?}");
+    assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "the fork replaces the declaration's code: {said:#?}");
+    assert!(!ledger.texts.iter().any(|text| text.key.contains("prism")), "the prism stays in the graph");
+    for gone in ["Reference", "Relations", "Usage", "History", "made of", "is", "from", "to"] {
+        assert!(!said.iter().any(|line| line == gone), "`{gone}` (a tab or the relation list) is still said: {said:#?}");
+    }
 }
 
 #[gpui::test]
-fn relations_the_anatomy_does_not_say_stay_in_a_plain_list(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    install(&mut rig);
-    let _ = painted(&mut rig);
-    let said = rig.said();
-    let used = said.iter().position(|line| line == "used by").unwrap_or_else(|| panic!("the used-by group is not covered by the anatomy: {said:#?}"));
-    let caller = said.iter().position(|line| line == "print_labels").expect("pinned caller in the anatomy");
-    assert!(caller < used, "the anatomy owns the featured caller: {said:#?}");
-    assert_eq!(said.get(used + 1).map(String::as_str), Some("1 example from a real caller"), "the plain list stays summarized: {said:#?}");
-}
-
-#[gpui::test]
-fn getting_one_shows_its_producer_without_repeating_the_maker_count(cx: &mut TestAppContext) {
+fn getting_one_draws_the_world_s_routes_as_rails(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
-    let said = rig.said();
-
-    assert!(said.iter().any(|line| line == "comes from"), "Getting one exposes its producer row: {said:#?}");
-    assert!(said.iter().any(|line| line == "relation_label"), "the exact pinned producer remains visible: {said:#?}");
+    assert_eq!(at(&ledger, "page-section-Getting"), ["Getting one"]);
+    assert_eq!(at(&ledger, "page-rail-0-verb"), ["relation_label"], "the world's maker is the rail's step");
     assert!(
         !ledger.texts.iter().any(|sample| sample.content.contains("in this world make one")),
-        "the rendered recipe foot's maker count is replaced by the producer row: {:#?}",
-        ledger.texts.iter().map(|sample| (&sample.key, &sample.content)).collect::<Vec<_>>(),
+        "no maker count in prose; the count rides the stub",
     );
 }
 
 #[gpui::test]
-fn a_function_page_draws_its_pipe_from_inputs_to_output(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(page_route("relation_label")), 1440.0, 900.0);
-    install(&mut rig);
-    let ledger = painted(&mut rig);
-    assert_eq!(at(&ledger, "anatomy-shape-in-0-name"), ["link"], "the input's name");
-    assert_eq!(at(&ledger, "anatomy-shape-in-0"), ["Link"], "the input's type");
-    assert_eq!(at(&ledger, "anatomy-shape-out"), ["RelationLabel"], "the output");
-}
-
-#[gpui::test]
-fn the_usage_lens_shows_the_statements_callers_write(cx: &mut TestAppContext) {
+fn who_uses_it_shows_the_statements_callers_write(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
-    let usage = ledger.targets.iter().find(|target| target.key == "lens-Usage").expect("the Usage tab").bounds.clone();
-    rig.cx.simulate_click(
-        point(px(usage.x + usage.width / 2.0), px(usage.y + usage.height / 2.0)),
-        Modifiers::default(),
-    );
-    rig.settle();
-    let ledger = painted(&mut rig);
-    assert_eq!(at(&ledger, "anatomy-in-use-caller-0"), ["print_labels"], "captioned with its caller");
-    assert_eq!(
-        at(&ledger, "anatomy-in-use-code-0-0"),
-        ["let label = RelationLabel::Related;"],
-        "the statement itself, not only where it is"
-    );
+    assert_eq!(at(&ledger, "page-section-Uses"), ["Who uses it"], "one page, no Usage tab");
+    assert_eq!(at(&ledger, "page-site-0-caller"), ["print_labels"], "captioned with its caller");
+    assert_eq!(at(&ledger, "page-site-0-code"), ["let label = RelationLabel::Related;"], "the line itself, not only where it is");
 }
 
 #[gpui::test]
-fn a_declaration_the_world_does_not_know_keeps_its_indexed_body(cx: &mut TestAppContext) {
+fn a_declaration_the_world_does_not_know_draws_from_the_index_alone(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("KindGlyph")), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
-    assert!(!ledger.texts.iter().any(|text| text.key.starts_with("anatomy")), "no anatomy without a node");
+    assert!(!ledger.texts.iter().any(|text| text.key.starts_with("anatomy")), "no world anatomy without a node");
+    assert_eq!(case_names(&ledger), ["Typed", "Related"], "the index's variants are the fork");
     let said = rig.said();
-    assert!(
-        !said.iter().any(|line| line.starts_with("pub enum KindGlyph {")),
-        "the indexed fallback also reserves raw declarations for Code: {said:#?}"
-    );
-    assert!(said.iter().any(|line| line == "One of"), "the recorded enum parts remain readable: {said:#?}");
-    assert!(said.iter().any(|line| line == "Typed" || line.starts_with("Typed · ")), "the recorded variant and its captured payload are retained: {said:#?}");
-    assert!(said.iter().any(|line| line == "Related"), "the recorded variant is retained: {said:#?}");
+    assert!(!said.iter().any(|line| line.starts_with("pub enum KindGlyph {")), "raw declarations stay in Code: {said:#?}");
 }
 
 pub(super) fn package_route() -> crate::navigation::Route {
@@ -400,30 +330,42 @@ pub(super) fn package_route() -> crate::navigation::Route {
     })
 }
 
-/// The package body begins with the producer's recorded outline, in its
-/// recorded root order. It does not rank fixture declarations as advice.
+/// The package page is the producer's recorded outline: its names, in the
+/// recorded order, drawn as the territory (one region per module) that opens
+/// into one card per name. It does not rank fixture declarations as advice.
 #[gpui::test]
 fn the_package_page_shows_its_recorded_outline(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
     install(&mut rig);
-    let _ = painted(&mut rig);
+    let ledger = painted(&mut rig);
+    // The fixture files every declaration under `glyph.rs`, so the recorded
+    // outline is one module of its six names.
+    let regions: Vec<&str> = ledger.texts.iter().filter(|text| text.key.contains("shingles-region-")).map(|text| text.content.as_str()).collect();
+    assert_eq!(regions, ["glyph"], "the recorded outline's module is a region of the territory");
+    let region = ledger.texts.iter().find(|text| text.key.contains("shingles-region-glyph")).expect("the glyph region").bounds.clone();
+    rig.cx.simulate_click(point(px(region.x + region.width / 2.0), px(region.y + region.height / 2.0)), Modifiers::default());
+    rig.settle();
+    let ledger = painted(&mut rig);
+    let names: Vec<&str> = ledger.texts.iter().filter(|text| text.key.contains("module-card-") && text.key.ends_with("-name")).map(|text| text.content.as_str()).collect();
+    assert_eq!(names, ["Identity", "RelationLabel", "RelationDirection", "KindGlyph", "relation_label", "Outline"], "the recorded order is preserved");
     let said = rig.said();
-    let from = said.iter().position(|line| line == "Recorded outline").unwrap_or_else(|| panic!("no recorded outline: {said:#?}"));
-    assert_eq!(said.get(from + 1).map(String::as_str), Some("Choose a row to inspect the declarations recorded beneath it."));
-    let roots = said[from + 2..].iter().filter(|line| ["identity", "glyph", "outline"].contains(&line.as_str())).map(String::as_str).collect::<Vec<_>>();
-    assert_eq!(roots, ["identity", "glyph", "outline"], "the recorded root order is preserved: {said:#?}");
-    assert!(!said.iter().any(|line| line == "Start here" || line == "what you hold"), "no fixture-ranked tour: {said:#?}");
+    let painted_words: Vec<&str> = ledger.texts.iter().map(|text| text.content.as_str()).collect();
+    assert!(!said.iter().any(|line| line == "Start here" || line == "what you hold") && !painted_words.iter().any(|w| *w == "Start here" || *w == "what you hold"), "no fixture-ranked tour: {said:#?}");
 }
 
-/// A recorded outline row is a door to its exact indexed coordinate.
+/// A recorded name's card is a door to its exact indexed coordinate.
 #[gpui::test]
 fn a_recorded_outline_row_opens_its_page(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
-    let key = format!("pkg-{}", super::tests::coordinate("glyph"));
-    let glyph = ledger.targets.iter().find(|target| target.key == key).expect("recorded glyph root").bounds.clone();
-    rig.cx.simulate_click(point(px(glyph.x + glyph.width / 2.0), px(glyph.y + glyph.height / 2.0)), Modifiers::default());
+    let region = ledger.texts.iter().find(|text| text.key.contains("shingles-region-glyph")).expect("the glyph region").bounds.clone();
+    rig.cx.simulate_click(point(px(region.x + region.width / 2.0), px(region.y + region.height / 2.0)), Modifiers::default());
     rig.settle();
-    assert_eq!(rig.route(), page_route("glyph"));
+    let ledger = painted(&mut rig);
+    let key = format!("pkg-card-{}", super::tests::coordinate("RelationLabel"));
+    let card = ledger.targets.iter().find(|target| target.key == key).expect("the recorded RelationLabel card").bounds.clone();
+    rig.cx.simulate_click(point(px(card.x + card.width / 2.0), px(card.y + card.height / 2.0)), Modifiers::default());
+    rig.settle();
+    assert_eq!(rig.route(), page_route("RelationLabel"));
 }

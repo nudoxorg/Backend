@@ -478,6 +478,8 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
 pub struct SessionEngine {
     endpoint: PathBuf,
     session: Option<Session>,
+    /// The owner this engine waits for before its first connect (I1).
+    gate: Option<super::owner::OwnerGate>,
 }
 
 impl std::fmt::Debug for SessionEngine {
@@ -496,6 +498,17 @@ impl SessionEngine {
         Self {
             endpoint: endpoint.as_ref().to_path_buf(),
             session: None,
+            gate: None,
+        }
+    }
+
+    /// An engine that, before it first connects, waits on this worker
+    /// thread for the owner to answer (the window opened before it did).
+    #[must_use]
+    pub fn gated(endpoint: impl AsRef<Path>, gate: super::owner::OwnerGate) -> Self {
+        Self {
+            gate: Some(gate),
+            ..Self::new(endpoint)
         }
     }
 
@@ -505,6 +518,10 @@ impl SessionEngine {
     ) -> Result<T, ClientError> {
         for attempt in 0..2 {
             if self.session.is_none() {
+                if let Some(gate) = &self.gate {
+                    gate.wait()
+                        .map_err(|message| ClientError::Io(format!("the index could not start: {message}")))?;
+                }
                 self.session = Some(Session::connect(&self.endpoint)?);
             }
             let Some(session) = self.session.as_mut() else {
@@ -633,6 +650,12 @@ impl SessionReader<SessionEngine> {
     #[must_use]
     pub fn connect(endpoint: impl AsRef<Path>) -> Self {
         Self::new(SessionEngine::new(endpoint), LocalPackageLoader::default())
+    }
+
+    /// A reader whose first connect waits for the owner, on its worker.
+    #[must_use]
+    pub fn gated(endpoint: impl AsRef<Path>, gate: super::owner::OwnerGate) -> Self {
+        Self::new(SessionEngine::gated(endpoint, gate), LocalPackageLoader::default())
     }
 }
 

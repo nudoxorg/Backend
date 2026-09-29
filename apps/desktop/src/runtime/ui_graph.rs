@@ -221,6 +221,10 @@ impl UiRootEntity {
             }
             Intent::OpenFolderPicker => self.start_folder_picker(cx),
             Intent::RevealProject(project) => cx.reveal_path(&project.path()),
+            Intent::OpenSource { path, line } => {
+                let launch = crate::host::editor::launcher(cx);
+                crate::host::editor::open(launch.as_ref(), None, &path, line);
+            }
             Intent::TestConnection => {
                 self.dispatch_runtime(Intent::TestConnection, cx);
                 if self.connection_probe.is_none() {
@@ -271,6 +275,20 @@ impl UiRootEntity {
             }
             other => self.dispatch_runtime(other, cx),
         }
+    }
+
+    /// The owner answered (W-Open I1): its root replaces the unserved one,
+    /// and the root read (project, catalog) is asked again at it — the one
+    /// asked at startup waited behind the owner at the unserved basis.
+    pub fn admit_owner(
+        &mut self,
+        key: crate::core::VersionedRoot,
+        mode: crate::model::ServiceMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
+        let request = self.runtime.allocate_request();
+        self.dispatch_runtime(Intent::RefreshRoot { basis: key, request }, cx);
     }
 
     fn dispatch_runtime(&mut self, intent: Intent, cx: &mut Context<Self>) {
@@ -489,13 +507,33 @@ impl UiEntityGraph {
         persistence: Option<PersistentState>,
         reads: Option<ReadPool>,
     ) -> Self {
-        let store = DataStore::install(cx, runtime.snapshot(), reads);
+        Self::install_with_owner(cx, runtime, persistence, reads, None, None)
+    }
+
+    /// [`Self::install_with_reads`] for a window that opens before its owner
+    /// answered (W-Open I1): the store holds reads until the gate says the
+    /// owner is ready, and every owner state arrives as a data event
+    /// ([`super::owner::watch`]). `None`: the owner already answered.
+    /// `keep` paints the launch snapshot's pages meanwhile and saves the
+    /// route's pages for the next launch (W-Open I2).
+    pub fn install_with_owner(
+        cx: &mut App,
+        runtime: DesktopRuntime,
+        persistence: Option<PersistentState>,
+        reads: Option<ReadPool>,
+        gate: Option<super::owner::OwnerGate>,
+        keep: Option<super::snapshot::Keep>,
+    ) -> Self {
+        let store = DataStore::install_with_owner(cx, runtime.snapshot(), reads, gate.clone(), keep);
         let attached = store.clone();
         let root = cx.new(|cx| {
             let mut root = UiRootEntity::new(runtime, persistence);
             root.attach(Some(attached), cx);
             root
         });
+        if let Some(gate) = gate {
+            super::owner::watch(gate, root.clone(), store.clone(), cx);
+        }
         Self { root, store }
     }
 }

@@ -238,10 +238,12 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::ActivateProject(_)
         | Intent::RemoveProject(_)
         | Intent::RevealProject(_)
+        | Intent::OpenSource { .. }
         | Intent::RetryIndex(_)
         | Intent::CancelIndex(_)
         | Intent::TestConnection
         | Intent::ConnectionResult { .. }
+        | Intent::OwnerReady { .. }
         | Intent::OpenHelp => {
             unreachable!("workspace reducer owns workspace intents")
         }

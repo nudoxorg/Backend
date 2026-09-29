@@ -332,7 +332,7 @@ const fn token_class(kind: TokenKind) -> TokenClass {
 pub fn signature_text(
     text: Option<&str>,
     language: Language,
-    own: Option<SymbolKey>,
+    own: Option<crate::model::pages::RowKey>,
     outline: Option<&OutlineIndex>,
 ) -> Known<SignatureText> {
     let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
@@ -365,7 +365,7 @@ pub fn signature_text(
             .then(|| {
                 outline?
                     .resolve_name(token.text(), is_type_like)
-                    .filter(|row| own.is_none_or(|own| row.id != RowId::Symbol(own)))
+                    .filter(|row| own.is_none_or(|own| !matches!(row.id, RowId::Symbol(key) if crate::model::pages::RowKey::from(key) == own)))
                     .and_then(|row| SymbolRef::new(&row.label).ok())
             })
             .flatten()
@@ -392,7 +392,7 @@ pub fn doc_fragments(fragments: &[Fragment], outline: Option<&OutlineIndex>) -> 
             Fragment::Code(code) => DocFragment::Code(Arc::from(code.as_str())),
             Fragment::Link { label, target } => DocFragment::Link {
                 label: Arc::from(label.as_str()),
-                target: *target,
+                target: crate::model::pages::RowKey::from(*target),
                 coordinate: outline
                     .and_then(|outline| outline.row(*target))
                     .and_then(|row| SymbolRef::new(&row.label).ok()),
@@ -1359,7 +1359,7 @@ pub fn verify_local_file(file: &str, excerpt: &str, line: u32) -> bool {
 
 fn identifier_spans(
     text: &str,
-    own: Option<SymbolKey>,
+    own: Option<crate::model::pages::RowKey>,
     outline: Option<&OutlineIndex>,
 ) -> Known<Arc<[IdentifierSpan]>> {
     let Some(outline) = outline else {
@@ -1380,7 +1380,7 @@ fn identifier_spans(
                 && let Some(row) = outline.resolve_name(word, |kind| {
                     is_type_like(kind) && kind != Some(DeclarationKind::Type)
                 })
-                && own.is_none_or(|own| row.id != RowId::Symbol(own))
+                && own.is_none_or(|own| !matches!(row.id, RowId::Symbol(key) if crate::model::pages::RowKey::from(key) == own))
                 && let (Some(span), Ok(target)) = (
                     u32::try_from(start)
                         .ok()
@@ -1426,7 +1426,7 @@ pub fn source_view(
         .or_else(|| DeclRef::from_label(coordinate.as_str(), Some(document.symbol), None, captured))
         .unwrap_or_else(|| DeclRef {
             coordinate: coordinate.clone(),
-            key: Some(document.symbol),
+            key: Some(crate::model::pages::RowKey::from(document.symbol)),
             name: Arc::from(leaf_name(coordinate.as_str())),
             kind: None,
             family: crate::model::pages::KindFamily::Namespace,
@@ -3134,7 +3134,7 @@ mod tests {
             DocFragment::Text(Arc::from("@throws ")),
             DocFragment::Link {
                 label: Arc::from("TypeError"),
-                target,
+                target: crate::model::pages::RowKey::from(target),
                 coordinate: None,
             },
             DocFragment::Text(Arc::from(" when the input is bad")),

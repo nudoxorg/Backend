@@ -12,9 +12,10 @@
 //!    a spine, exactly as if the window were smaller. Nothing ever overlaps
 //!    because the text got bigger.
 //! 2. **Continuous, not stepped.** Spacing and display type interpolate
-//!    smoothly with effective width ([`Measure::fluid`]); only structural
-//!    changes (a margin folding, a shelf collapsing) are discrete, and those
-//!    are animated by `motion::flow`.
+//!    smoothly with the room ([`crate::fluid`] tokens, from a 320 px phone to
+//!    a 2560 px window); only structural changes (a margin folding, a shelf
+//!    collapsing) are discrete, and those are modes with hysteresis
+//!    ([`crate::fluid::Ladder`]) animated by `motion::flow`.
 //! 3. **The ladder.** Every datum can be drawn at four rungs of detail —
 //!    [`Rung::Mark`] (a glyph), [`Rung::Tag`] (glyph + name),
 //!    [`Rung::Row`] (a line with its key facts), [`Rung::Card`] (everything
@@ -25,6 +26,7 @@
 
 use crate::fonts::Typeset;
 use crate::theme::Facet;
+use crate::tokens::fluid::{BREATHE, DISPLAY};
 use crate::tokens::{Face, TypeRole};
 use gpui::{Pixels, Styled, px};
 
@@ -83,6 +85,11 @@ impl Density {
 }
 
 /// A container's width class, decided on effective width (width ÷ text scale).
+///
+/// **Legacy:** hard cutoffs cannot glide. New layout reads a [`crate::fluid`]
+/// token (a value that follows the room) or a [`crate::fluid::Ladder`] mode
+/// (which holds still at an edge) through [`Measure::fluid_room`]; this class
+/// stays for callers not yet migrated (see `.local/lanes/wave6/fluid/ADOPT.md`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Room {
     /// Under 480: a phone-width column. Lists, not diagrams.
@@ -263,10 +270,17 @@ impl Measure {
         f32::from(self.width) / self.scale
     }
 
-    /// The width class.
+    /// The width class (legacy: hard cutoffs; prefer [`Measure::fluid_room`]).
     #[must_use]
     pub fn room(&self) -> Room {
         Room::of(self.effective())
+    }
+
+    /// The room this container has: its width and the text scale, what every
+    /// [`crate::fluid`] token and mode is read from.
+    #[must_use]
+    pub fn fluid_room(&self) -> crate::fluid::Room {
+        crate::fluid::Room::new(self.width, self.scale)
     }
 
     /// Text scale (1.0 = 100 %).
@@ -303,7 +317,9 @@ impl Measure {
     }
 
     /// How many columns of at least `min` effective px fit (≤ `max`), and the
-    /// measure of one column, with `gap` between them.
+    /// measure of one column, with `gap` between them (legacy: the count
+    /// changes at a bare edge; new code uses a [`crate::fluid::Grid`], which
+    /// holds its count through a hysteresis band).
     #[must_use]
     pub fn columns(&self, min: f32, gap: Space, max: usize) -> (usize, Self) {
         let gap = f32::from(self.space(gap));
@@ -340,20 +356,21 @@ impl Measure {
     }
 
     /// A spacing token, at this density, text scale and container width
-    /// (gaps breathe a little more in big containers and tighten in small ones).
+    /// (gaps breathe a little more in big containers and tighten in small ones:
+    /// [`BREATHE`]).
     #[must_use]
     pub fn space(&self, space: Space) -> Pixels {
-        let breathe = 0.78 + 0.34 * self.t();
-        px(space.base() * self.density.space() * breathe * self.scale)
+        px(space.base() * self.density.space() * BREATHE.at(self.fluid_room()) * self.scale)
     }
 
     /// A type role resolved for this container: display type grows fluidly
-    /// (78 % of its size at 480 effective px, full size at 1600), UI and mono
+    /// ([`DISPLAY`]: 70 % of its size on a 320 px phone, full size at
+    /// 1600, 120 % at 2560), UI and mono
     /// type follow density, with floors so nothing becomes illegible.
     #[must_use]
     pub fn role(&self, role: TypeRole) -> TypeRole {
         let factor = match role.face {
-            Face::Display => 0.78 + 0.22 * self.t(),
+            Face::Display => DISPLAY.at(self.fluid_room()),
             Face::Ui | Face::Mono | Face::Serif => self.density.text(),
         };
         let floor: f32 = match role.face {
@@ -444,9 +461,17 @@ mod tests {
 
     #[test]
     fn big_text_behaves_like_a_small_window() {
+        // 200 % text on 1440 px is a 720 design px room, the same as 720 px at 100 %.
         assert_eq!(at(1440.0, 2.0, Density::Comfortable).room(), Room::Slim);
         assert_eq!(at(720.0, 1.0, Density::Comfortable).room(), Room::Slim);
         assert_eq!(at(1440.0, 1.0, Density::Comfortable).room(), Room::Wide);
+        let big = at(1440.0, 2.0, Density::Comfortable).fluid_room();
+        assert_eq!(big.design(), at(720.0, 1.0, Density::Comfortable).fluid_room().design());
+        assert_eq!(big.design().get(), 720.0);
+        assert_eq!(at(1440.0, 1.0, Density::Comfortable).fluid_room().design().get(), 1440.0);
+        // And the gaps breathe as they do in a 720 px window (twice as many real px).
+        let gap = |m: Measure| f32::from(m.space(Space::Gutter));
+        assert!((gap(at(1440.0, 2.0, Density::Comfortable)) - 2.0 * gap(at(720.0, 1.0, Density::Comfortable))).abs() < 1e-3);
     }
 
     #[test]
@@ -477,6 +502,25 @@ mod tests {
         assert!(f32::from(column.width()) >= 300.0);
         let (one, _) = at(200.0, 1.0, Density::Comfortable).columns(300.0, Space::Gutter, 6);
         assert_eq!(one, 1);
+    }
+
+    #[test]
+    fn spacing_is_what_it_was_from_480_to_1600_and_keeps_going_either_side() {
+        // The curve every page was set against (smoothstep, 0.78 -> 1.12): unchanged where it was defined.
+        let old = |w: f32| {
+            let raw = ((w - 480.0) / 1120.0).clamp(0.0, 1.0);
+            16.0 * (0.78 + 0.34 * (raw * raw * (3.0 - 2.0 * raw)))
+        };
+        for w in (480..=1600).step_by(5) {
+            #[allow(clippy::cast_precision_loss)]
+            let w = w as f32;
+            let now = f32::from(at(w, 1.0, Density::Comfortable).space(Space::Gutter));
+            assert!((now - old(w)).abs() < 1e-3, "moved at {w}: {} -> {now}", old(w));
+        }
+        // Below 480 it keeps tightening down to a phone, above 1600 it keeps opening up.
+        let gutter = |w: f32| f32::from(at(w, 1.0, Density::Comfortable).space(Space::Gutter));
+        assert!(gutter(320.0) < gutter(400.0) && gutter(400.0) < gutter(480.0), "no tightening under 480");
+        assert!(gutter(2560.0) > gutter(2000.0) && gutter(2000.0) > gutter(1600.0), "no opening over 1600");
     }
 
     #[test]

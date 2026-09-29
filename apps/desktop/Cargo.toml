@@ -40,15 +40,25 @@ toml.workspace = true
 
 [features]
 # Direct GPUI CE capture against the same live host/bootstrap as the product.
-visual-harness = ["dep:backend-gui-harness", "dep:image", "gpui_component/headless", "backend-facet/gallery"]
+visual-harness = ["dep:backend-gui-harness", "dep:image", "dep:rustix", "gpui_component/headless", "backend-facet/gallery"]
 
 [dependencies.backend-gui-harness]
 path = "../../tools/gui-harness"
 optional = true
 
+[[bin]]
+name = "backend-desktop-folio-capture"
+path = "src/bin/backend-desktop-folio-capture.rs"
+required-features = ["visual-harness"]
+
 [[test]]
 name = "shell_capture"
 path = "tests/shell_capture.rs"
+
+# The capture harness owns private durable state, which the owner refuses unless
+# every directory is 0700: it sets a private umask (`harness::private_umask`).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["fs", "process"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"] }

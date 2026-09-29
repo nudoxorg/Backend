@@ -730,6 +730,8 @@ pub mod geo {
     pub const SHELF_MAX: Pixels = px(420.0);
     /// The collapsed shelf spine.
     pub const KSPINE: Pixels = px(42.0);
+    /// The third column of pinned peeks.
+    pub const PINS: Pixels = px(320.0);
     /// Reading column maximum.
     pub const FOLIO_MAX: Pixels = px(1080.0);
     /// Margin note column.
@@ -752,18 +754,133 @@ pub mod geo {
     pub const HERE: Pixels = px(34.0);
 }
 
-/// Responsive breakpoints, measured against the reader's available width.
-pub mod breakpoint {
-    use gpui::{Pixels, px};
+/// Fluid tokens: every size that depends on the room a region has, as a ramp
+/// between end points (`facet::fluid`), and every genuine change of
+/// arrangement, as an ordered set of modes with hysteresis. This is the one
+/// place a width becomes a layout decision: nothing else in the app compares
+/// a width with a number.
+///
+/// Rooms are in design px (width at 100 % text); lengths read back in real px.
+pub mod fluid {
+    use crate::fluid::{Blend, Grid, Ladder, Length, ModeId, rung, stop};
 
-    /// Below this, margin notes fold under their paragraph.
-    pub const MARGIN_FOLDS: Pixels = px(1100.0);
-    /// Below this, the shelf becomes the kspine.
-    pub const SHELF_SPINE: Pixels = px(900.0);
-    /// Below this, the spine becomes an on-request overlay.
-    pub const SPINE_OVERLAY: Pixels = px(640.0);
-    /// At or below this, the rose becomes a list and the thread keeps only "here".
-    pub const NARROWEST: Pixels = px(480.0);
+    // ---- The shell's frame ----
+
+    /// How the shelf sits in the window.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Dock {
+        /// Not inline: a drawer over the page, opened from the titlebar.
+        Drawer,
+        /// The 42 px kspine inline; the full shelf opens over the page.
+        Spine,
+        /// The full shelf inline.
+        Shelf,
+    }
+
+    /// Shelf beside the page from 900, a spine from 640, a drawer below.
+    pub const DOCK: Ladder<Dock> = Ladder::new(
+        ModeId::Dock,
+        &[rung(Dock::Drawer, 0.0), rung(Dock::Spine, 640.0), rung(Dock::Shelf, 900.0)],
+    );
+
+    /// Whether pinned peeks have a column of their own.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Pins {
+        /// Pins float over the page.
+        Over,
+        /// A third column beside the page.
+        Column,
+    }
+
+    /// The page keeps its full measure beside a third column from 1900.
+    pub const PINS: Ladder<Pins> = Ladder::new(ModeId::Pins, &[rung(Pins::Over, 0.0), rung(Pins::Column, 1900.0)]);
+
+    /// The drawer's scrim strip: the part of the page left showing beside an
+    /// open drawer, so a click there can close it.
+    pub const DRAWER_STRIP: Length = Length::new(&[stop(320.0, 48.0), stop(640.0, 96.0)]);
+
+    /// What the titlebar carries.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Bar {
+        /// The toggle, the place's name and Search.
+        Bare,
+        /// Adds the inbox and the trail to the name, less the package.
+        Snug,
+        /// Everything: the view switch and the whole trail.
+        Full,
+    }
+
+    /// The titlebar's controls arrive from 560 and 760.
+    pub const BAR: Ladder<Bar> = Ladder::new(ModeId::Bar, &[rung(Bar::Bare, 0.0), rung(Bar::Snug, 560.0), rung(Bar::Full, 760.0)]);
+
+    // ---- The reader ----
+
+    /// The reader's side gutter: 16 px on a phone, the design's 22 at 480,
+    /// 40 at 1600.
+    pub const READER_PAD: Length = Length::new(&[stop(320.0, 16.0), stop(480.0, 22.0), stop(1600.0, 40.0)]).smooth();
+
+    /// The space above a page.
+    pub const READER_TOP: Length = Length::new(&[stop(320.0, 16.0), stop(480.0, 22.0), stop(1600.0, 56.0)]).smooth();
+
+    /// The measure wide content (tables, rails, comparisons) may take:
+    /// the reading column until 1440, then growing to fill a big window.
+    /// Prose keeps the reading column.
+    pub const WIDE_FOLIO: Length = Length::new(&[stop(1440.0, 784.0), stop(2560.0, 1120.0)]);
+
+    /// Where margin notes sit.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Notes {
+        /// Folded under their block.
+        Under,
+        /// Beside their block, in a margin.
+        Beside,
+    }
+
+    /// Notes sit in a margin from 1100.
+    pub const NOTES: Ladder<Notes> = Ladder::new(ModeId::Notes, &[rung(Notes::Under, 0.0), rung(Notes::Beside, 1100.0)]);
+
+    // ---- Rhythm and type, everywhere ----
+
+    /// How much gaps breathe: tight on a phone, roomy in a big window.
+    pub const BREATHE: Blend = Blend::new(&[stop(320.0, 0.66), stop(480.0, 0.78), stop(1600.0, 1.12), stop(2560.0, 1.3)]).smooth();
+
+    /// Display type's share of its size: a page title shrinks on a phone and
+    /// grows in a big window; body text never does.
+    pub const DISPLAY: Blend = Blend::new(&[stop(320.0, 0.70), stop(480.0, 0.78), stop(1600.0, 1.0), stop(2560.0, 1.2)]).smooth();
+
+    /// How a page sets its detail against its list.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Split {
+        /// The detail under the row it belongs to.
+        Stacked,
+        /// The detail beside the list, in a column of its own.
+        Beside,
+    }
+
+    /// Find's inspector sits beside its results from 760.
+    pub const FIND: Ladder<Split> = Ladder::new(ModeId::Find, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)]);
+
+    /// Compare's row detail sits beside its rows from 760.
+    pub const COMPARE: Ladder<Split> = Ladder::new(ModeId::Compare, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)]);
+
+    /// Find's inspector column: 38 % of the room, between 280 and 390.
+    pub const FIND_INSPECTOR: Length = Length::new(&[stop(736.84, 280.0), stop(1026.32, 390.0)]);
+
+    /// Compare's detail column: 52 % of the room, between 350 and 520.
+    pub const COMPARE_DETAIL: Length = Length::new(&[stop(673.08, 350.0), stop(1000.0, 520.0)]);
+
+    /// Compare's release columns sit side by side from 850.
+    pub const COMPARE_COLUMNS: Ladder<Split> =
+        Ladder::new(ModeId::CompareColumns, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 850.0)]);
+
+    /// The motion lab's cards: as many columns of 220 as fit, up to four.
+    pub const LAB_CARDS: Grid = Grid::new(ModeId::Lab, Length::new(&[stop(320.0, 220.0), stop(1440.0, 220.0)]), 4);
+
+    /// The Library's project gem.
+    pub const HERO_GEM: Length = Length::new(&[stop(320.0, 40.0), stop(1440.0, 56.0), stop(2560.0, 88.0)]);
+
+    /// The Library's roles: two columns from 714 (two of 340 and the gap).
+    pub const ROLES: Grid = Grid::new(ModeId::Library, Length::new(&[stop(320.0, 340.0), stop(1440.0, 340.0)]), 2);
 }
 
 /// Motion durations and curves.

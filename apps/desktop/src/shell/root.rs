@@ -12,7 +12,7 @@ use super::facet_sync::{Surroundings, facet_for};
 use super::system;
 use facet::overlay::float;
 use super::focus::{Target, Zone};
-use super::frame::{Frame, FrameInput, KSPINE, SHELF, ShelfMode};
+use super::frame::{Frame, FrameInput, ShelfMode};
 use super::hints::{HintMode, Step};
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
@@ -31,13 +31,15 @@ use crate::navigation::{Intent, Overlay, Route, RouteDepth, SettingsPage, View};
 use std::sync::Arc;
 use crate::runtime::store::{Branch, StoreEvent};
 use crate::runtime::UiEntityGraph;
+use facet::fluid::{Modes, Room};
 use facet::motion::{Motion, spec};
 use facet::paint::ground;
+use facet::tokens::geo;
 use facet::{ActiveFacet as _, Measure, Reveal};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
     KeyContext, KeyDownEvent, Modifiers, ModifiersChangedEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window,
+    Pixels, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window,
     WindowAppearance, div, px,
 };
 
@@ -80,7 +82,11 @@ pub struct Shell {
     /// The card the keyboard stands on in the open hand (shown order).
     hand_at: usize,
     shelf_over_open: bool,
-    shelf_width: f32,
+    /// The shelf's width the person has dragged it to, at 100 % text.
+    shelf_width: Pixels,
+    /// The shell's layout modes (the shelf beside the page, a spine, or a
+    /// drawer; the pins column), held through their hysteresis bands.
+    modes: Modes,
     zone: Zone,
     hold: RevealHold,
     hold_timer: Option<Task<()>>,
@@ -186,7 +192,8 @@ impl Shell {
             hand_open: false,
             hand_at: 0,
             shelf_over_open: false,
-            shelf_width: SHELF,
+            shelf_width: geo::SHELF,
+            modes: Modes::new(),
             zone: Zone::Reader,
             hold: RevealHold::default(),
             hold_timer: None,
@@ -1224,15 +1231,23 @@ impl Render for Shell {
         let scale = facet.text_scale;
         let viewport = window.viewport_size();
         let snapshot = self.links.snapshot(cx);
-        let frame = Frame::resolve(FrameInput {
-            width: f32::from(viewport.width),
-            scale,
-            shelf_open: snapshot.settings().shelf_open,
-            zen: self.zen,
-            shelf_width: self.shelf_width,
-            pinned: self.pinned > 0,
-        });
+        let frame = Frame::resolve(
+            FrameInput {
+                window: Room::new(viewport.width, scale),
+                shelf_open: snapshot.settings().shelf_open,
+                zen: self.zen,
+                shelf_width: self.shelf_width,
+                pinned: self.pinned > 0,
+            },
+            &self.modes,
+        );
         self.frame = Some(frame);
+        // The shelf opened over the reader answers a window too narrow to
+        // hold it inline. A window that holds it has answered that ask: it
+        // must not come back by itself when the window narrows again.
+        if !frame.shelf_overlays {
+            self.shelf_over_open = false;
+        }
         // The status bar grows a line when the address's name has to wrap;
         // sized here from the same fit the bar sets, in the same frame.
         let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.notice().cloned()) };
@@ -1241,20 +1256,20 @@ impl Render for Shell {
         let status_height = if super::status::graph_speaks(&snapshot, graph_focus.as_ref(), graph_notice.as_ref()) {
             // Set beside the hand's marks when it holds anything (the same
             // room the foot sets it in).
-            let room = super::status::line_room(viewport.width, px(frame.shelf_width), snapshot.session().hand.held().len(), scale);
+            let room = super::status::line_room(viewport.width, frame.shelf_width, snapshot.session().hand.held().len(), scale);
             let (lines, role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), room, cx);
-            super::status::height(lines.len(), &role, frame.status)
+            super::status::height(lines.len(), &role, f32::from(frame.status))
         } else {
-            frame.status
+            f32::from(frame.status)
         };
         // Structural changes animate (the shelf becoming a spine, the pins
         // column arriving); a window drag inside one mode tracks directly,
         // because the targets do not move.
-        let shelf_width = self.motion.animate("shelf-w", frame.shelf_width, spec::SETTLE, window, cx);
-        let pins_width = self.motion.animate("pins-w", frame.pins_width, spec::SETTLE, window, cx);
-        let spine = KSPINE * scale;
-        self.shelf.update(cx, |shelf, _| shelf.set_rest(px(frame.shelf_body), px(spine)));
-        self.shelf_over.update(cx, |shelf, _| shelf.set_rest(px(frame.shelf_body), px(spine)));
+        let shelf_width = self.motion.animate("shelf-w", f32::from(frame.shelf_width), spec::SETTLE, window, cx);
+        let pins_width = self.motion.animate("pins-w", f32::from(frame.pins_width), spec::SETTLE, window, cx);
+        let spine = geo::KSPINE * scale;
+        self.shelf.update(cx, |shelf, _| shelf.set_rest(frame.shelf_body, spine));
+        self.shelf_over.update(cx, |shelf, _| shelf.set_rest(frame.drawer, spine));
         // The hand's marks start from the reader column's left edge.
         let reader_left = px(shelf_width);
         self.status.update(cx, |status, cx| {
@@ -1264,7 +1279,8 @@ impl Render for Shell {
             }
         });
         let over = frame.shelf_overlays && self.shelf_over_open;
-        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -frame.shelf_body }, spec::SETTLE, window, cx);
+        let drawer = f32::from(frame.drawer);
+        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx);
 
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -1364,7 +1380,7 @@ impl Render for Shell {
                     .flex_col()
                     .child(measured(
                         &self.titlebar,
-                        StyleRefinement::default().w_full().h(px(frame.titlebar)).flex_none(),
+                        StyleRefinement::default().w_full().h(frame.titlebar).flex_none(),
                     ))
                     .child(body)
                     .child(measured(
@@ -1388,19 +1404,36 @@ impl Render for Shell {
         } else if self.hand_open {
             self.hand_open = false;
         }
-        if over || over_x > -frame.shelf_body + 0.5 {
-            let links = self.links.clone();
-            let _ = links;
-            root = root.child(
-                div()
-                    .absolute()
-                    .top(px(frame.titlebar))
-                    .bottom(px(status_height))
-                    .left(px(over_x))
-                    .w(px(frame.shelf_body))
-                    .bg(palette.g2)
-                    .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
-            );
+        if over || over_x > -drawer + 0.5 {
+            // The drawer's scrim: the page dims as the shelf slides over it,
+            // and a click on the strip of page left beside it puts it away.
+            let opened = ((over_x + drawer) / drawer.max(1.0)).clamp(0.0, 1.0);
+            root = root
+                .child(
+                    div()
+                        .id("shelf-scrim")
+                        .absolute()
+                        .top(frame.titlebar)
+                        .bottom(px(status_height))
+                        .left_0()
+                        .right_0()
+                        .bg(palette.veil.alpha(opened))
+                        .on_click(cx.listener(|shell, _, _, cx| {
+                            shell.shelf_over_open = false;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id("shelf-drawer")
+                        .absolute()
+                        .top(frame.titlebar)
+                        .bottom(px(status_height))
+                        .left(px(over_x))
+                        .w(frame.drawer)
+                        .bg(palette.g2)
+                        .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
+                );
         }
         // A peek the layer closed by itself (pointer, click outside) is over.
         if let Some(key) = self.peeking.clone()

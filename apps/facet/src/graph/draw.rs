@@ -209,6 +209,13 @@ pub fn tone(t: Tone, alpha: f32) -> Hsla {
     h
 }
 
+/// A resting label is drawn only from this level of detail up (below it,
+/// it is absent, never faint).
+const LABEL_DETAIL: f32 = 0.5;
+/// The faintest a drawn label's ink may stand from the ground (about 3:1 on
+/// the abyss ground): dimming stops here.
+const LABEL_FLOOR: f32 = 0.4;
+
 /// Count doubling adds a visible, compressed step without adding geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct EdgeWeight(f32);
@@ -1845,17 +1852,15 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let t = &layout.packages[p as usize];
             let pxs = f64::from(t.r) * k;
             let a = (smooth(pxs, 26.0, 60.0) * (1.0 - smooth(pxs, 1400.0, 2600.0))) as f32;
-            if a < 0.02 {
+            // Legible or absent: the territory's name is drawn opaque from
+            // its level of detail on, and not at all below it.
+            if a < LABEL_DETAIL {
                 continue;
             }
             let size_px = (12.0 + pxs / 40.0).min(22.0).round() as f32;
             let r = scaled(role(Face::Display, 620.0, size_px), ts);
             let name = world.package_short(p);
-            let c = if yours_pkg(p) {
-                tone(mint, 0.9 * a)
-            } else {
-                tone(ink, 0.75 * a)
-            };
+            let c = crate::paint::mix(tone(palette.g0, 1.0), tone(if yours_pkg(p) { mint } else { ink }, 1.0), if yours_pkg(p) { 0.9 } else { 0.75 });
             let label = shape(SharedString::from(name.to_owned()), r, c, window);
             let w = label.width();
             let x = sx(t.x) - w / 2.0;
@@ -1865,7 +1870,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let title_box = [x - 4.0, y - half, x + w + 4.0, y + half];
             let subtitle_alpha =
                 (smooth(pxs, 60.0, 90.0) * (1.0 - smooth(pxs, 420.0, 500.0))) as f32;
-            let subtitle = if subtitle_alpha > 0.001 {
+            let subtitle = if subtitle_alpha >= LABEL_DETAIL {
                 let reach = scene.pkg_reach[p as usize];
                 let text = if !yours_pkg(p) && reach > 0 {
                     format!(
@@ -1878,7 +1883,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                 let sub = shape(
                     SharedString::from(text),
                     scaled(roles::SUB, ts),
-                    tone(ink, 0.32 * a * subtitle_alpha),
+                    crate::paint::mix(tone(palette.g0, 1.0), tone(ink, 1.0), LABEL_FLOOR),
                     window,
                 );
                 let sy_ = y + r.size * 0.5 + 9.0 * ts;
@@ -1945,7 +1950,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let a = (smooth(mr, 40.0, 80.0)
                 * (1.0 - smooth(mr, 900.0, 1500.0))
                 * smooth(pr, 200.0, 400.0)) as f32;
-            if a < 0.03 {
+            if a < LABEL_DETAIL {
                 continue;
             }
             let path = &world.modules[m as usize].path;
@@ -1957,7 +1962,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let label = shape(
                 name,
                 scaled(roles::MODULE, ts),
-                tone(ink, 0.42 * a * if look.focus.is_some() { 0.6 } else { 1.0 }),
+                crate::paint::mix(tone(palette.g0, 1.0), tone(ink, 1.0), (0.42_f32 * if look.focus.is_some() { 0.6 } else { 1.0 }).max(LABEL_FLOOR)),
                 window,
             );
             let w = label.width();
@@ -2027,21 +2032,30 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                 || Scene::glyph(node.kind, k).label_alpha,
                 |parent| scene.member_detail(parent, k).glyph.label_alpha,
             );
+            // Legible or absent (DIRECTION law 2, W-Flip T2): the level of
+            // detail decides whether a resting label is drawn at all, and a
+            // drawn one is opaque, its weight carried by how far its ink
+            // stands from the ground, never below the legible floor. A
+            // label is never left translucent at rest.
+            let quiet = label_accent(i).near <= 0.0;
+            if !strong && quiet && detail_alpha < LABEL_DETAIL {
+                continue;
+            }
             let a = if strong {
                 0.95
             } else {
-                (if member {
+                ((if member {
                     0.45
                 } else {
                     0.4 + 0.45 * world.importance[i as usize]
-                }) * dim_all
-                    * detail_alpha
+                }) * dim_all)
+                    .max(LABEL_FLOOR)
             };
             let yours = world.yours(i) || (world.reached(i) && strong);
             let mut rest = if focused || sought || (reached && !world.yours(i)) {
                 tone(peri, 1.0)
             } else {
-                tone(if yours { mint } else { ink }, a)
+                crate::paint::mix(tone(palette.g0, 1.0), tone(if yours { mint } else { ink }, 1.0), a)
             };
             // Labels admitted only by hover have no resting text. Existing
             // labels keep their font, shape anchor and occupancy throughout

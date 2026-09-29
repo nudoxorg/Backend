@@ -13,6 +13,7 @@ pub mod key;
 pub mod orbit;
 pub mod package;
 pub mod search;
+pub(crate) mod serde_ext;
 pub mod source;
 pub mod store;
 pub mod symbol;
@@ -20,7 +21,7 @@ pub mod symbol;
 pub use backend_library::Obligation;
 pub use common::{
     ByteSpan, DeclFacts, DeclRef, Deprecation, Derivation, Gap, GapReason, KeyError, KindFamily,
-    Known, LineSpan, PackageRef, Provenance, SymbolRef, confidence_name, link_name,
+    Known, LineSpan, PackageRef, Provenance, RowKey, SymbolRef, confidence_name, link_name,
 };
 pub use health::{FaultProgress, HealthModel, IngestModel, LanguageProgress, MissingCapability};
 pub use key::{PageKey, SearchQuery};
