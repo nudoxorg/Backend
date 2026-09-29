@@ -3,7 +3,7 @@ use core::convert::Infallible;
 use std::io::{Cursor, Read};
 
 use super::descriptor::empty_rope_root;
-use super::wire::{RopeObjectRef, leaf_identity};
+use super::wire::{RopeObjectKind, RopeObjectRef, leaf_identity};
 use super::*;
 
 #[derive(Default)]
