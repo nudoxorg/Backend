@@ -397,6 +397,30 @@ pub(crate) struct LocalCompilerPlaneExecutionSeed {
 }
 
 impl LocalCompilerPlaneExecutionSeed {
+    pub(crate) const fn target(self) -> ContentId<CompilationTargetDomain> {
+        self.target
+    }
+
+    pub(crate) const fn profile(self) -> LanguageProfile {
+        self.profile
+    }
+
+    pub(crate) const fn stage(self) -> Stage {
+        self.stage
+    }
+
+    pub(crate) const fn toolchain_identity(self) -> [u8; 32] {
+        self.toolchain_identity
+    }
+
+    pub(crate) const fn local_authority_fingerprint(self) -> [u8; 32] {
+        self.local_authority_fingerprint
+    }
+
+    pub(crate) const fn environment_identity(self) -> [u8; 32] {
+        self.environment_identity
+    }
+
     fn with_local_authority_fingerprint(mut self, fingerprint: [u8; 32]) -> Self {
         self.local_authority_fingerprint = fingerprint;
         self

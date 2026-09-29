@@ -20,6 +20,9 @@ use backend_compile::{
     EmbeddingPurpose,
 };
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
+use backend_frontend_rust::legacy::{
+    RustAnalysisControl, RustWorkspaceFile, RustWorkspaceSessionKey,
+};
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
@@ -51,7 +54,9 @@ use std::{
 use thiserror::Error;
 
 use crate::application::executor::StagedOutputLease;
-use crate::application::package_authority::enter_package_authority_with_go_authority_witness;
+use crate::application::package_authority::{
+    enter_package_authority_with_go_authority_witness, enter_package_authority_with_rust_workspace,
+};
 use crate::application::{
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerExecutionIdentity,
     LocalCompilerOpenError, LocalCompilerPath, LocalCompilerPlaneExecutionIdentity,
@@ -1272,7 +1277,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             toolchain,
             authority,
             control,
-            scratch,
+            &mut scratch.diagnostic_output,
+            &mut scratch.fragment_output,
             progress,
         )
     }
@@ -1369,7 +1375,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             toolchain,
             authority.input(&resolved.source_path),
             control,
-            scratch,
+            &mut scratch.diagnostic_output,
+            &mut scratch.fragment_output,
             progress,
         )
     }
@@ -1543,11 +1550,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut fragment_bytes = 0_usize;
         let mut semantic_bytes = 0_usize;
 
-        // Rust uses one ephemeral analyzer owner for the whole selected package
-        // frontier. Its workspace VFS and database remain borrowed through each
-        // source callback and are dropped only after the package staging loop.
-        let rust_workspace_authority =
-            if target.profile.language() == backend_semantic::vocabulary::Language::Rust {
+        // The lane owns one quiescent RA database. A package lease keeps the
+        // candidate database private until every source and output succeeds;
+        // any early return drops it and forces a clean Cargo/RA load next time.
+        let rust_workspace_lease =
+            if let backend_semantic::vocabulary::LanguageProfile::Rust(edition) = target.profile {
                 let source_path = package.package_root.join(first_source.relative_path);
                 let toolchain = self
                     .toolchain(first_application_request)
@@ -1558,37 +1565,163 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         path: first_source.relative_path.into(),
                         terminal: Box::new(terminal),
                     })?;
-                Some(
-                    enter_package_authority_with_go_authority_witness(
-                        PackageAuthorityRequest {
-                            package_root: package.package_root,
-                            source_path: &source_path,
-                            source: first_source.source.as_bytes(),
-                            unit_key: package.package_target.unit_key(),
-                            profile: target.profile,
-                            toolchain,
-                            control,
-                            configuration: self.package_authority,
-                        },
-                        package.go_authority_witness,
-                    )
-                    .map_err(|cause| {
-                        package_authority_terminal(
+                let authority_configuration = self.package_authority.rust.ok_or_else(|| {
+                    let cause = PackageAuthorityError::AdapterUnavailable {
+                    profile: target.profile,
+                    stage:
+                        crate::application::package_authority::PackageAuthorityStage::RustProject,
+                };
+                    PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(package_authority_terminal(
                             package.package_target.target(),
                             first_application_request,
                             first_authority,
                             toolchain,
                             cause,
-                        )
+                        )),
+                    }
+                })?;
+                let (toolchain_identity, environment_identity, local_authority_identity) =
+                    execution_identity
+                        .filter(|identity| {
+                            identity.target() == package.package_target.target()
+                                && identity.profile() == target.profile
+                                && identity.stage() == target.stage
+                        })
+                        .map(|identity| {
+                            (
+                                Some(identity.toolchain_identity()),
+                                Some(identity.environment_identity()),
+                                Some(identity.local_authority_fingerprint()),
+                            )
+                        })
+                        .or_else(|| {
+                            plane_execution_seed
+                                .filter(|identity| {
+                                    identity.target() == package.package_target.target()
+                                        && identity.profile() == target.profile
+                                        && identity.stage() == target.stage
+                                })
+                                .map(|identity| {
+                                    (
+                                        Some(identity.toolchain_identity()),
+                                        Some(identity.environment_identity()),
+                                        Some(identity.local_authority_fingerprint()),
+                                    )
+                                })
+                        })
+                        .unwrap_or((None, None, None));
+                let source_paths = package
+                    .sources
+                    .iter()
+                    .map(|source| PathBuf::from(source.relative_path))
+                    .collect::<Vec<_>>();
+                let key = RustWorkspaceSessionKey::new(
+                    package.package_root,
+                    authority_configuration.toolchain,
+                    edition,
+                    target.stage,
+                    authority_configuration.features,
+                    toolchain_identity,
+                    environment_identity,
+                    local_authority_identity,
+                    *package.package_target.target().as_ref(),
+                    &source_paths,
+                )
+                .map_err(|cause| {
+                    package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        PackageAuthorityError::RustProject(cause),
+                    )
+                })
+                .map_err(|terminal| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                })?;
+                let source_frontier = package
+                    .sources
+                    .iter()
+                    .map(|source| RustWorkspaceFile {
+                        relative_path: Path::new(source.relative_path),
+                        source: source.source,
                     })
-                    .map_err(|terminal| PackageSemanticError::Compile {
-                        path: first_source.relative_path.into(),
-                        terminal: Box::new(terminal),
-                    })?,
+                    .collect::<Vec<_>>();
+                Some(
+                    scratch
+                        .rust_workspace_sessions
+                        .begin(
+                            key,
+                            &source_frontier,
+                            RustAnalysisControl {
+                                cancelled: control.cancelled,
+                                maximum_source_bytes: authority_configuration.maximum_source_bytes,
+                                deadline: control.deadline,
+                            },
+                        )
+                        .map_err(|cause| {
+                            package_authority_terminal(
+                                package.package_target.target(),
+                                first_application_request,
+                                first_authority,
+                                toolchain,
+                                PackageAuthorityError::RustProject(cause),
+                            )
+                        })
+                        .map_err(|terminal| PackageSemanticError::Compile {
+                            path: first_source.relative_path.into(),
+                            terminal: Box::new(terminal),
+                        })?,
                 )
             } else {
                 None
             };
+        let rust_workspace_authority = if let Some(lease) = rust_workspace_lease.as_ref() {
+            let source_path = package.package_root.join(first_source.relative_path);
+            let toolchain = self
+                .toolchain(first_application_request)
+                .map_err(|cause| {
+                    toolchain_terminal(first_authority, first_application_request, cause)
+                })
+                .map_err(|terminal| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                })?;
+            Some(
+                enter_package_authority_with_rust_workspace(
+                    PackageAuthorityRequest {
+                        package_root: package.package_root,
+                        source_path: &source_path,
+                        source: first_source.source.as_bytes(),
+                        unit_key: package.package_target.unit_key(),
+                        profile: target.profile,
+                        toolchain,
+                        control,
+                        configuration: self.package_authority,
+                    },
+                    package.go_authority_witness,
+                    lease.workspace(),
+                )
+                .map_err(|cause| {
+                    package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        cause,
+                    )
+                })
+                .map_err(|terminal| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                })?,
+            )
+        } else {
+            None
+        };
 
         for source in package.compilation_sources() {
             if cancelled.load(Ordering::Acquire) {
@@ -1672,7 +1805,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 toolchain,
                 authority,
                 control,
-                scratch,
+                &mut scratch.diagnostic_output,
+                &mut scratch.fragment_output,
                 progress,
             ) {
                 Ok(compiled) => compiled,
@@ -1771,7 +1905,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Coverage::Partial,
             );
         }
-        Ok(StagedPackageCompilation {
+        let staged = StagedPackageCompilation {
             artifacts,
             coverage_gaps: coverage_gaps.into_boxed_slice(),
             image_plan: image_plan.into_boxed_slice(),
@@ -1793,7 +1927,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 unavailable_reason: embedding_unavailable,
             }),
             embedding_provisioning_failure: package.embedding_provisioning_failure,
-        })
+        };
+        drop(rust_workspace_authority);
+        if let Some(lease) = rust_workspace_lease {
+            lease.commit();
+        }
+        Ok(staged)
     }
 
     fn stage_prepared(
@@ -1804,7 +1943,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         toolchain: ToolchainSelection<'_>,
         authority: crate::driver::SemanticAuthorityInput<'_>,
         control: CompileControl<'_>,
-        scratch: &mut LocalCompilerScratch,
+        diagnostic_output: &mut [u8; backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES],
+        fragment_output: &mut crate::application::config::FragmentOutput,
         progress: &mut impl FnMut(PackageCompilePhase),
     ) -> Result<StagedCompilerArtifact, CompilerTerminal> {
         progress(PackageCompilePhase::Lower);
@@ -1819,11 +1959,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 control,
             },
             CompileScratch {
-                diagnostic_output: &mut scratch.diagnostic_output,
+                diagnostic_output,
                 native_work: &self.native_work_directory,
             },
             CompileOutput {
-                fragment_output: scratch.fragment_output.as_mut(),
+                fragment_output: fragment_output.as_mut(),
             },
         )
         .map_err(compile_terminal)?;

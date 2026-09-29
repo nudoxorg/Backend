@@ -3,7 +3,7 @@
 //! Never renders, copies, or serializes semantic facts before the shared IR lowerer consumes them.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, BTreeSet, HashSet},
     fmt, fs,
     io::Read,
     ops::Deref,
@@ -12,21 +12,28 @@ use std::{
     time::Instant,
 };
 
-use backend_semantic::vocabulary::RustEdition;
+use backend_semantic::vocabulary::{RustEdition, Stage};
 use ra_ap_base_db::{EditionedFileId, SourceDatabase, all_crates};
 use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
 };
-use ra_ap_ide_db::RootDatabase;
+use ra_ap_ide_db::{ChangeWithProcMacros, RootDatabase};
 use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
 use ra_ap_syntax::{
     AstNode,
     ast::{self, HasName, HasVisibility},
 };
-use ra_ap_vfs::{AbsPathBuf, Vfs, VfsPath};
+use ra_ap_vfs::{AbsPathBuf, FileExcluded, Vfs, VfsPath};
 
 use crate::legacy::{LoadError, RustToolchain};
+
+/// Largest sorted package source path set retained by one Rust authority lane.
+pub const MAX_RUST_WORKSPACE_SESSION_SOURCES: usize = 100_000;
+const MAX_RETENTION_SNAPSHOT_FILES: usize = 100_000;
+const MAX_RETENTION_SNAPSHOT_DIRECTORIES: usize = 50_000;
+const MAX_RETENTION_SNAPSHOT_DIRECTORY_ENTRIES: usize = 100_000;
+const MAX_RETENTION_SNAPSHOT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Caller-owned Cargo root selected for one semantic authority transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +68,718 @@ impl fmt::Debug for RustWorkspace {
             .field("root", &self.root)
             .field("edition", &self.edition)
             .finish_non_exhaustive()
+    }
+}
+
+/// One existing package path and exact buffer admitted into a retained Rust workspace update.
+///
+/// This can carry an unsaved replacement for an existing disk file. New unsaved
+/// files and deletions are not admitted by the current Cargo VFS boundary.
+#[derive(Clone, Copy, Debug)]
+pub struct RustWorkspaceFile<'source> {
+    /// Normalized path relative to the admitted Cargo package root.
+    pub relative_path: &'source Path,
+    /// Exact UTF-8 bytes selected by the compiler request.
+    pub source: &'source str,
+}
+
+/// Stable identity for a retained rust-analyzer workspace.
+///
+/// Source contents are represented by [`RustWorkspaceFrontierId`] and can
+/// advance incrementally. The path set and every compiler authority input
+/// remain part of this key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RustWorkspaceSessionKey {
+    root: PathBuf,
+    toolchain: RustToolchain,
+    edition: RustEdition,
+    stage: Stage,
+    features: RustWorkspaceFeatureKey,
+    toolchain_identity: Option<[u8; 32]>,
+    environment_identity: Option<[u8; 32]>,
+    local_authority_identity: Option<[u8; 32]>,
+    package_target_identity: [u8; 32],
+    environment_policy: &'static str,
+    source_paths: Box<[PathBuf]>,
+    canonical_source_paths: Box<[PathBuf]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RustWorkspaceFeatureKey {
+    all_features: bool,
+    no_default_features: bool,
+    features: Box<[String]>,
+}
+
+impl RustWorkspaceSessionKey {
+    /// Creates a key from the exact authority, environment, target, and source path set.
+    ///
+    /// Paths are relative to `root` and must be normalized and strictly ordered.
+    pub fn new(
+        root: impl AsRef<Path>,
+        toolchain: &RustToolchain,
+        edition: RustEdition,
+        stage: Stage,
+        features: RustFeatureControl<'_>,
+        toolchain_identity: Option<[u8; 32]>,
+        environment_identity: Option<[u8; 32]>,
+        local_authority_identity: Option<[u8; 32]>,
+        package_target_identity: [u8; 32],
+        source_paths: &[PathBuf],
+    ) -> Result<Self, RustAuthorityError> {
+        let root = RustProject::validate_root(root)?;
+        if source_paths.is_empty() || source_paths.len() > MAX_RUST_WORKSPACE_SESSION_SOURCES {
+            return Err(RustAuthorityError::SessionSourceCardinality {
+                actual: source_paths.len(),
+                maximum: MAX_RUST_WORKSPACE_SESSION_SOURCES,
+            });
+        }
+        let mut previous: Option<&Path> = None;
+        let mut canonical_source_paths = Vec::with_capacity(source_paths.len());
+        for path in source_paths {
+            if !is_normalized_relative_path(path)
+                || previous.is_some_and(|previous| previous >= path.as_path())
+            {
+                return Err(RustAuthorityError::SessionSourcePath { path: path.clone() });
+            }
+            let requested_path = root.join(path);
+            let canonical = requested_path.canonicalize().map_err(|source| {
+                RustAuthorityError::ProjectSource {
+                    path: requested_path,
+                    source,
+                }
+            })?;
+            if !canonical.is_file() {
+                return Err(RustAuthorityError::SourceNotFile { path: canonical });
+            }
+            if !canonical.starts_with(&root) {
+                return Err(RustAuthorityError::SourceOutsidePackage {
+                    root: root.clone(),
+                    path: canonical,
+                });
+            }
+            canonical_source_paths.push(canonical);
+            previous = Some(path);
+        }
+        let mut selected_features = features
+            .features
+            .iter()
+            .map(|feature| (*feature).to_owned())
+            .collect::<Vec<_>>();
+        selected_features.sort_unstable();
+        selected_features.dedup();
+        Ok(Self {
+            root,
+            toolchain: toolchain.clone(),
+            edition,
+            stage,
+            features: RustWorkspaceFeatureKey {
+                all_features: features.all_features,
+                no_default_features: features.no_default_features,
+                features: selected_features.into_boxed_slice(),
+            },
+            toolchain_identity,
+            environment_identity,
+            local_authority_identity,
+            package_target_identity,
+            environment_policy: crate::legacy::RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1,
+            source_paths: source_paths.to_vec().into_boxed_slice(),
+            canonical_source_paths: canonical_source_paths.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the exact sorted package source path set.
+    #[must_use]
+    pub fn source_paths(&self) -> &[PathBuf] {
+        &self.source_paths
+    }
+}
+
+/// Content identity of one exact admitted source frontier generation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RustWorkspaceFrontierId([u8; 32]);
+
+impl RustWorkspaceFrontierId {
+    /// Returns the fixed-width frontier identity.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+fn is_normalized_relative_path(path: &Path) -> bool {
+    let Some(spelling) = path.to_str() else {
+        return false;
+    };
+    !spelling.is_empty()
+        && !spelling.contains('\\')
+        && !path.is_absolute()
+        && spelling
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn workspace_source_fingerprints(files: &[RustWorkspaceFile<'_>]) -> Vec<[u8; 32]> {
+    files
+        .iter()
+        .map(|file| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"backend.rust.workspace-source.v1\0");
+            hash_path(&mut hasher, file.relative_path);
+            hash_bytes(&mut hasher, file.source.as_bytes());
+            *hasher.finalize().as_bytes()
+        })
+        .collect()
+}
+
+fn workspace_frontier_id(files: &[RustWorkspaceFile<'_>]) -> RustWorkspaceFrontierId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.rust.workspace-frontier.v1\0");
+    hasher.update(&(files.len() as u64).to_be_bytes());
+    for file in files {
+        hash_path(&mut hasher, file.relative_path);
+        hash_bytes(&mut hasher, file.source.as_bytes());
+    }
+    RustWorkspaceFrontierId(*hasher.finalize().as_bytes())
+}
+
+fn hash_path(hasher: &mut blake3::Hasher, path: &Path) {
+    if let Some(path) = path.to_str() {
+        hash_bytes(hasher, path.as_bytes());
+    }
+}
+
+fn hash_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
+fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// Fingerprints the currently loaded RA source/config snapshot for session retention only.
+///
+/// This does not observe every positive or negative Cargo/RA read and must
+/// never be treated as a compiler read-closure or IR reuse witness.
+fn workspace_retention_fingerprint(
+    workspace: &RustWorkspace,
+    frontier_paths: &BTreeSet<PathBuf>,
+    toolchain: &RustToolchain,
+    control: RustAnalysisControl<'_>,
+) -> WorkspaceRetentionMeasurement {
+    let started = Instant::now();
+    let mut files_read = 0_u64;
+    let mut directories_read = 0_u64;
+    let mut bytes_read = 0_u64;
+    let mut interrupted = None;
+    let digest = (|| {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.rust.workspace-retention-snapshot.v1\0");
+        let mut loaded = BTreeMap::new();
+        let mut directories = BTreeSet::new();
+        let mut config_files = BTreeSet::new();
+
+        for (file_id, vfs_path) in workspace.vfs.iter() {
+            if let Err(error) = control.check() {
+                interrupted = Some(error);
+                return None;
+            }
+            let Some(path) = vfs_path.as_path() else {
+                return None;
+            };
+            let path: &Path = AsRef::<Path>::as_ref(path);
+            let path = path.to_path_buf();
+            if path.to_str().is_none() {
+                return None;
+            }
+            loaded.insert(path.clone(), file_id);
+            if loaded.len() > MAX_RETENTION_SNAPSHOT_FILES {
+                return None;
+            }
+            if let Some(parent) = path.parent() {
+                directories.insert(parent.to_path_buf());
+                add_authority_config_candidates(parent, &mut config_files);
+                if directories.len() > MAX_RETENTION_SNAPSHOT_DIRECTORIES {
+                    return None;
+                }
+            }
+        }
+        for path in frontier_paths {
+            if path.to_str().is_none() {
+                return None;
+            }
+            if let Some(parent) = path.parent() {
+                directories.insert(parent.to_path_buf());
+                add_authority_config_candidates(parent, &mut config_files);
+                if directories.len() > MAX_RETENTION_SNAPSHOT_DIRECTORIES {
+                    return None;
+                }
+            }
+        }
+        if let Some(cargo_home) = &toolchain.cargo_home {
+            config_files.insert(cargo_home.join("config"));
+            config_files.insert(cargo_home.join("config.toml"));
+            if let Some(parent) = cargo_home.parent() {
+                add_authority_config_candidates(parent, &mut config_files);
+            }
+        }
+        if let Some(rustup_home) = &toolchain.rustup_home {
+            config_files.insert(rustup_home.join("settings.toml"));
+        }
+
+        for (path, file_id) in loaded {
+            if let Err(error) = control.check() {
+                interrupted = Some(error);
+                return None;
+            }
+            hash_bytes(&mut hasher, path.to_str()?.as_bytes());
+            if frontier_paths.contains(&path) {
+                hasher.update(b"frontier-owned\0");
+                continue;
+            }
+            if files_read >= MAX_RETENTION_SNAPSHOT_FILES as u64 {
+                return None;
+            }
+            let metadata = fs::metadata(&path).ok()?;
+            if metadata.len() > MAX_RETENTION_SNAPSHOT_BYTES
+                || bytes_read.saturating_add(metadata.len()) > MAX_RETENTION_SNAPSHOT_BYTES
+            {
+                return None;
+            }
+            let disk = fs::read(&path).ok()?;
+            files_read = files_read.saturating_add(1);
+            bytes_read = bytes_read.saturating_add(u64::try_from(disk.len()).unwrap_or(u64::MAX));
+            let database_text = SourceDatabase::file_text(&workspace.database, file_id);
+            if database_text.text(&workspace.database).as_bytes() != disk.as_slice() {
+                return None;
+            }
+            hasher.update(b"loaded-source\0");
+            hash_bytes(&mut hasher, &disk);
+        }
+
+        for path in config_files {
+            if let Err(error) = control.check() {
+                interrupted = Some(error);
+                return None;
+            }
+            let spelling = path.to_str()?;
+            hash_bytes(&mut hasher, spelling.as_bytes());
+            match fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    if files_read >= MAX_RETENTION_SNAPSHOT_FILES as u64 {
+                        return None;
+                    }
+                    let metadata = fs::metadata(&path).ok()?;
+                    if metadata.len() > MAX_RETENTION_SNAPSHOT_BYTES
+                        || bytes_read.saturating_add(metadata.len()) > MAX_RETENTION_SNAPSHOT_BYTES
+                    {
+                        return None;
+                    }
+                    let bytes = fs::read(&path).ok()?;
+                    files_read = files_read.saturating_add(1);
+                    bytes_read =
+                        bytes_read.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+                    hasher.update(b"present-config\0");
+                    hash_bytes(&mut hasher, &bytes);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    hasher.update(b"absent-config\0");
+                }
+                Err(_) => return None,
+            }
+        }
+
+        for directory in directories {
+            if let Err(error) = control.check() {
+                interrupted = Some(error);
+                return None;
+            }
+            directories_read = directories_read.saturating_add(1);
+            if directories_read > MAX_RETENTION_SNAPSHOT_DIRECTORIES as u64 {
+                return None;
+            }
+            hash_bytes(&mut hasher, directory.to_str()?.as_bytes());
+            let entries = fs::read_dir(&directory).ok()?;
+            let mut names = Vec::new();
+            for entry in entries {
+                if let Err(error) = control.check() {
+                    interrupted = Some(error);
+                    return None;
+                }
+                if names.len() >= MAX_RETENTION_SNAPSHOT_DIRECTORY_ENTRIES {
+                    return None;
+                }
+                let entry = entry.ok()?;
+                let name = entry.file_name();
+                let name = name.to_str()?.to_owned();
+                let file_type = entry.file_type().ok()?;
+                let kind = if file_type.is_dir() {
+                    1_u8
+                } else if file_type.is_file() {
+                    2_u8
+                } else if file_type.is_symlink() {
+                    3_u8
+                } else {
+                    4_u8
+                };
+                names.push((name, kind));
+            }
+            names.sort_unstable();
+            hasher.update(&(names.len() as u64).to_be_bytes());
+            for (name, kind) in names {
+                hasher.update(&[kind]);
+                hash_bytes(&mut hasher, name.as_bytes());
+            }
+        }
+        Some(*hasher.finalize().as_bytes())
+    })();
+
+    WorkspaceRetentionMeasurement {
+        digest,
+        files_read,
+        directories_read,
+        bytes_read,
+        elapsed_nanos: elapsed_nanos(started),
+        interrupted,
+    }
+}
+
+fn add_authority_config_candidates(directory: &Path, output: &mut BTreeSet<PathBuf>) {
+    let mut current = Some(directory);
+    while let Some(parent) = current {
+        output.insert(parent.join("Cargo.toml"));
+        output.insert(parent.join("Cargo.lock"));
+        output.insert(parent.join(".cargo/config"));
+        output.insert(parent.join(".cargo/config.toml"));
+        output.insert(parent.join("rust-toolchain"));
+        output.insert(parent.join("rust-toolchain.toml"));
+        current = parent.parent();
+    }
+}
+
+/// Work counts for retained Rust workspace authority.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RustWorkspaceSessionStats {
+    /// Fresh Cargo/rust-analyzer workspace loads.
+    pub workspace_loads: u64,
+    /// Reuses of a retained workspace whose key and retention snapshot still match.
+    pub workspace_reuses: u64,
+    /// Source texts changed in the rust-analyzer database.
+    pub source_updates: u64,
+    /// Admitted source texts already current in the rust-analyzer database.
+    pub unchanged_sources: u64,
+    /// Retained sessions dropped because an authority key or retention snapshot changed.
+    pub invalidations: u64,
+    /// Repeated package frontiers that needed no RA database or VFS update.
+    pub frontier_noops: u64,
+    /// Updates whose whole package operation failed and discarded the session.
+    pub failed_transactions: u64,
+    /// Fresh RA workspace load wall time in nanoseconds.
+    pub workspace_load_nanos: u64,
+    /// Exact source-frontier update wall time in nanoseconds.
+    pub source_update_nanos: u64,
+    /// Time spent checking a retained workspace's snapshot before reuse.
+    pub retention_validation_nanos: u64,
+    /// Files read while checking a retained workspace before reuse.
+    pub retention_validation_files_read: u64,
+    /// Directory listings read while checking a retained workspace before reuse.
+    pub retention_validation_directories_read: u64,
+    /// Bytes read while checking a retained workspace before reuse.
+    pub retention_validation_bytes_read: u64,
+    /// Time spent building the snapshot stored after a source-frontier update.
+    pub retention_snapshot_nanos: u64,
+    /// Files read while building the snapshot stored after a source-frontier update.
+    pub retention_snapshot_files_read: u64,
+    /// Directory listings read while building the retained snapshot.
+    pub retention_snapshot_directories_read: u64,
+    /// Bytes read while building the retained snapshot.
+    pub retention_snapshot_bytes_read: u64,
+}
+
+#[derive(Debug, Default)]
+struct WorkspaceRetentionMeasurement {
+    digest: Option<[u8; 32]>,
+    files_read: u64,
+    directories_read: u64,
+    bytes_read: u64,
+    elapsed_nanos: u64,
+    interrupted: Option<RustAuthorityError>,
+}
+
+struct RustWorkspaceSession {
+    key: RustWorkspaceSessionKey,
+    workspace: RustWorkspace,
+    frontier: RustWorkspaceFrontierId,
+    source_fingerprints: Box<[[u8; 32]]>,
+    retention_fingerprint: Option<[u8; 32]>,
+}
+
+/// Single-owner, bounded Rust workspace reuse for a serialized compiler lane.
+///
+/// A failed package operation drops its in-progress analyzer workspace. The
+/// canonical IR publication owner is independent, so no partially updated
+/// compiler state becomes visible.
+#[derive(Default)]
+pub struct RustWorkspaceSessionCache {
+    live: Option<RustWorkspaceSession>,
+    stats: RustWorkspaceSessionStats,
+}
+
+/// Mutably borrowed in-progress update to one retained analyzer workspace.
+pub struct RustWorkspaceSessionLease<'cache> {
+    cache: &'cache mut RustWorkspaceSessionCache,
+    session: Option<RustWorkspaceSession>,
+    next_frontier: RustWorkspaceFrontierId,
+    committed: bool,
+}
+
+impl RustWorkspaceSessionCache {
+    /// Admits exact package buffers into a reused or newly loaded workspace.
+    ///
+    /// The returned lease must be committed after the complete package
+    /// operation succeeds. Dropping it invalidates and drops the mutated HIR
+    /// workspace, including during unwinding. Reuse is disabled unless the
+    /// typed key carries toolchain, environment, and local-authority identities.
+    pub fn begin<'cache>(
+        &'cache mut self,
+        key: RustWorkspaceSessionKey,
+        files: &[RustWorkspaceFile<'_>],
+        control: RustAnalysisControl<'_>,
+    ) -> Result<RustWorkspaceSessionLease<'cache>, RustAuthorityError> {
+        control.check()?;
+        let frontier = workspace_frontier_id(files);
+        let source_fingerprints = workspace_source_fingerprints(files);
+        if files.len() != key.source_paths.len()
+            || files
+                .iter()
+                .zip(key.source_paths.iter())
+                .any(|(file, expected)| file.relative_path != expected)
+        {
+            return Err(RustAuthorityError::SessionFrontierMismatch);
+        }
+        let frontier_paths = key
+            .canonical_source_paths
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let reusable = if let Some(session) = self.live.as_ref().filter(|session| {
+            session.key == key
+                && session.retention_fingerprint.is_some()
+                && session.key.toolchain_identity.is_some()
+                && session.key.environment_identity.is_some()
+                && session.key.local_authority_identity.is_some()
+        }) {
+            let witness = workspace_retention_fingerprint(
+                &session.workspace,
+                &frontier_paths,
+                &key.toolchain,
+                control,
+            );
+            let mut witness = witness;
+            self.record_validation(&witness);
+            if let Some(error) = witness.interrupted.take() {
+                self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
+                return Err(error);
+            }
+            witness.digest == session.retention_fingerprint
+        } else {
+            false
+        };
+        let frontier_noop = reusable
+            && self
+                .live
+                .as_ref()
+                .is_some_and(|session| session.frontier == frontier);
+        let changed_sources = if reusable {
+            self.live
+                .as_ref()
+                .map(|session| {
+                    session
+                        .source_fingerprints
+                        .iter()
+                        .zip(&source_fingerprints)
+                        .map(|(previous, next)| previous != next)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            vec![true; files.len()]
+        };
+        let mut session = if reusable {
+            self.stats.workspace_reuses = self.stats.workspace_reuses.saturating_add(1);
+            self.live.take().expect("reusable session is present")
+        } else {
+            if self.live.take().is_some() {
+                self.stats.invalidations = self.stats.invalidations.saturating_add(1);
+            }
+            let load_started = Instant::now();
+            let selected_features = key
+                .features
+                .features
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let features = RustFeatureControl {
+                all_features: key.features.all_features,
+                no_default_features: key.features.no_default_features,
+                features: &selected_features,
+            };
+            let workspace = RustWorkspace::open_with_features(
+                &key.root,
+                &key.toolchain,
+                key.edition,
+                features,
+                control,
+            );
+            self.stats.workspace_load_nanos = self
+                .stats
+                .workspace_load_nanos
+                .saturating_add(elapsed_nanos(load_started));
+            let workspace = workspace.map_err(|error| {
+                self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
+                error
+            })?;
+            self.stats.workspace_loads = self.stats.workspace_loads.saturating_add(1);
+            RustWorkspaceSession {
+                key: key.clone(),
+                workspace,
+                frontier,
+                source_fingerprints: source_fingerprints.clone().into_boxed_slice(),
+                retention_fingerprint: None,
+            }
+        };
+        session.key = key;
+        let (updated, unchanged) = if frontier_noop {
+            self.stats.frontier_noops = self.stats.frontier_noops.saturating_add(1);
+            (0, files.len())
+        } else {
+            let update_started = Instant::now();
+            let result = session.workspace.apply_source_frontier(
+                files,
+                session.key.source_paths(),
+                &changed_sources,
+                control,
+            );
+            self.stats.source_update_nanos = self
+                .stats
+                .source_update_nanos
+                .saturating_add(elapsed_nanos(update_started));
+            result.map_err(|error| {
+                self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
+                error
+            })?
+        };
+        self.stats.source_updates = self.stats.source_updates.saturating_add(updated as u64);
+        self.stats.unchanged_sources = self
+            .stats
+            .unchanged_sources
+            .saturating_add(unchanged as u64);
+        let witness = workspace_retention_fingerprint(
+            &session.workspace,
+            &frontier_paths,
+            &session.key.toolchain,
+            control,
+        );
+        let mut witness = witness;
+        self.record_snapshot(&witness);
+        if let Some(error) = witness.interrupted.take() {
+            self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
+            return Err(error);
+        }
+        session.retention_fingerprint = witness.digest;
+        session.frontier = frontier;
+        session.source_fingerprints = source_fingerprints.into_boxed_slice();
+        control.check().map_err(|error| {
+            self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
+            error
+        })?;
+        Ok(RustWorkspaceSessionLease {
+            cache: self,
+            session: Some(session),
+            next_frontier: frontier,
+            committed: false,
+        })
+    }
+
+    /// Returns cumulative session work counts for this compiler lane.
+    #[must_use]
+    pub const fn stats(&self) -> RustWorkspaceSessionStats {
+        self.stats
+    }
+
+    fn record_validation(&mut self, measurement: &WorkspaceRetentionMeasurement) {
+        self.stats.retention_validation_nanos = self
+            .stats
+            .retention_validation_nanos
+            .saturating_add(measurement.elapsed_nanos);
+        self.stats.retention_validation_files_read = self
+            .stats
+            .retention_validation_files_read
+            .saturating_add(measurement.files_read);
+        self.stats.retention_validation_directories_read = self
+            .stats
+            .retention_validation_directories_read
+            .saturating_add(measurement.directories_read);
+        self.stats.retention_validation_bytes_read = self
+            .stats
+            .retention_validation_bytes_read
+            .saturating_add(measurement.bytes_read);
+    }
+
+    fn record_snapshot(&mut self, measurement: &WorkspaceRetentionMeasurement) {
+        self.stats.retention_snapshot_nanos = self
+            .stats
+            .retention_snapshot_nanos
+            .saturating_add(measurement.elapsed_nanos);
+        self.stats.retention_snapshot_files_read = self
+            .stats
+            .retention_snapshot_files_read
+            .saturating_add(measurement.files_read);
+        self.stats.retention_snapshot_directories_read = self
+            .stats
+            .retention_snapshot_directories_read
+            .saturating_add(measurement.directories_read);
+        self.stats.retention_snapshot_bytes_read = self
+            .stats
+            .retention_snapshot_bytes_read
+            .saturating_add(measurement.bytes_read);
+    }
+}
+
+impl RustWorkspaceSessionLease<'_> {
+    /// Borrows the analyzer workspace for the current package operation.
+    #[must_use]
+    pub fn workspace(&self) -> &RustWorkspace {
+        &self
+            .session
+            .as_ref()
+            .expect("session lease is active")
+            .workspace
+    }
+
+    /// Returns the exact content identity being admitted by this update.
+    #[must_use]
+    pub const fn frontier(&self) -> RustWorkspaceFrontierId {
+        self.next_frontier
+    }
+
+    /// Retains the updated analyzer workspace after whole-package success.
+    pub fn commit(mut self) {
+        let mut session = self.session.take().expect("session lease is active");
+        session.frontier = self.next_frontier;
+        self.cache.live = Some(session);
+        self.committed = true;
+    }
+}
+
+impl Drop for RustWorkspaceSessionLease<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.session.take();
+            self.cache.stats.failed_transactions =
+                self.cache.stats.failed_transactions.saturating_add(1);
+        }
     }
 }
 
@@ -217,6 +936,19 @@ impl RustProject {
 }
 
 impl RustWorkspace {
+    /// Confirms that a borrowed package owner addresses this workspace's exact root and edition.
+    pub fn validate_binding(
+        &self,
+        root: impl AsRef<Path>,
+        edition: RustEdition,
+    ) -> Result<(), RustAuthorityError> {
+        let root = RustProject::validate_root(root)?;
+        if self.root != root || self.edition != edition {
+            return Err(RustAuthorityError::WorkspaceBindingMismatch);
+        }
+        Ok(())
+    }
+
     /// Loads one Cargo package graph under its exact toolchain, edition, and feature policy.
     ///
     /// No source-specific HIR is returned here. Each admitted package source
@@ -441,6 +1173,93 @@ impl RustWorkspace {
                 source_scope,
             })
         })
+    }
+
+    fn apply_source_frontier(
+        &mut self,
+        files: &[RustWorkspaceFile<'_>],
+        key: &RustWorkspaceSessionKey,
+        changed_sources: &[bool],
+        control: RustAnalysisControl<'_>,
+    ) -> Result<(usize, usize), RustAuthorityError> {
+        if files.len() != key.source_paths.len() || changed_sources.len() != files.len() {
+            return Err(RustAuthorityError::SessionFrontierMismatch);
+        }
+        let mut change = ChangeWithProcMacros::default();
+        let mut updated = 0_usize;
+        let mut unchanged = 0_usize;
+        for (index, (file, expected_path)) in files.iter().zip(key.source_paths.iter()).enumerate()
+        {
+            control.check()?;
+            if file.relative_path != expected_path
+                || !is_normalized_relative_path(file.relative_path)
+            {
+                return Err(RustAuthorityError::SessionSourcePath {
+                    path: file.relative_path.to_path_buf(),
+                });
+            }
+            if file.source.len() > *control.maximum_source_bytes as usize {
+                return Err(RustAuthorityError::SourceBudget {
+                    actual: u64::try_from(file.source.len()).unwrap_or(u64::MAX),
+                    maximum: control.maximum_source_bytes,
+                });
+            }
+            let requested_path = self.root.join(file.relative_path);
+            let source_path = key.canonical_source_paths[index].clone();
+            if !source_path.is_file() {
+                return Err(RustAuthorityError::SourceNotFile { path: source_path });
+            }
+            let canonical_now = requested_path.canonicalize().map_err(|source| {
+                RustAuthorityError::ProjectSource {
+                    path: requested_path,
+                    source,
+                }
+            })?;
+            if canonical_now != source_path {
+                return Err(RustAuthorityError::SessionSourcePath {
+                    path: file.relative_path.to_path_buf(),
+                });
+            }
+            if !source_path.starts_with(&self.root) {
+                return Err(RustAuthorityError::SourceOutsidePackage {
+                    root: self.root.clone(),
+                    path: source_path,
+                });
+            }
+            let Some(path_text) = source_path.to_str() else {
+                return Err(RustAuthorityError::SessionSourcePath {
+                    path: file.relative_path.to_path_buf(),
+                });
+            };
+            if !changed_sources[index] {
+                unchanged = unchanged.saturating_add(1);
+                continue;
+            }
+            let vfs_path = VfsPath::from(AbsPathBuf::assert_utf8(PathBuf::from(path_text)));
+            let (file_id, excluded) =
+                self.vfs
+                    .file_id(&vfs_path)
+                    .ok_or_else(|| RustAuthorityError::SourceNotLoaded {
+                        path: source_path.clone(),
+                    })?;
+            if excluded == FileExcluded::Yes {
+                return Err(RustAuthorityError::SourceNotLoaded { path: source_path });
+            }
+            let observed = SourceDatabase::file_text(&self.database, file_id);
+            let observed_text = observed.text(&self.database);
+            if observed_text == file.source {
+                unchanged = unchanged.saturating_add(1);
+            } else {
+                change.change_file(file_id, Some(file.source.to_owned()));
+                updated = updated.saturating_add(1);
+            }
+        }
+        control.check()?;
+        if updated != 0 {
+            self.database.apply_change(change);
+        }
+        control.check()?;
+        Ok((updated, unchanged))
     }
 }
 
@@ -1591,6 +2410,26 @@ pub enum RustAuthorityError {
         #[source]
         source: anyhow::Error,
     },
+    /// A retained-session request disagreed with the exact keyed source frontier.
+    #[error("Rust workspace session source frontier does not match its key")]
+    SessionFrontierMismatch,
+    /// A retained-session source path is not an admitted normalized package path.
+    #[error("Rust workspace session rejected source path {path}")]
+    SessionSourcePath {
+        /// Rejected package-relative source path.
+        path: PathBuf,
+    },
+    /// A retained-session source set is empty or exceeds its fixed bound.
+    #[error("Rust workspace session source count {actual} exceeds allowed range 1..={maximum}")]
+    SessionSourceCardinality {
+        /// Observed source path count.
+        actual: usize,
+        /// Largest admitted source path count.
+        maximum: usize,
+    },
+    /// A caller attempted to use a retained workspace for another root or edition.
+    #[error("Rust workspace session is bound to another package root or edition")]
+    WorkspaceBindingMismatch,
     /// The declared crate root could not be read after project loading.
     #[error("cannot read Rust crate root {path}: {source}")]
     SourceRead {

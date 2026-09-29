@@ -140,7 +140,7 @@ pub struct PackageAuthorityRequest<'request, 'config> {
 /// This owner is intentionally separate from [`SemanticAuthorityInput`].
 /// Calling [`Self::input`] borrows this enum after construction, so no report
 /// pointer can outlive the transaction that owns it.
-pub enum PackageAuthorityOwner {
+pub enum PackageAuthorityOwner<'workspace> {
     /// C or C++ compilation with the exact selected libclang authority.
     Clang {
         /// Exact C-family profile admitted by the caller.
@@ -172,6 +172,15 @@ pub enum PackageAuthorityOwner {
         /// Original bounded source admission policy.
         maximum_source_bytes: SourceByteLimit,
     },
+    /// Borrowed lane-owned analyzer workspace retained by an in-progress session lease.
+    RustBorrowed {
+        /// Exact checked profile.
+        profile: LanguageProfile,
+        /// Analyzer workspace that remains owned by the caller's cache lease.
+        workspace: &'workspace RustWorkspace,
+        /// Original bounded source admission policy.
+        maximum_source_bytes: SourceByteLimit,
+    },
     /// Go authority image owned for the driver's borrowed image input.
     Go {
         /// Exact checked profile.
@@ -197,7 +206,7 @@ pub enum PackageAuthorityOwner {
     },
 }
 
-impl PackageAuthorityOwner {
+impl PackageAuthorityOwner<'_> {
     /// Borrows this retained authority in the exact shape accepted by the
     /// driver. C/C++ use the exact retained project and selected libclang
     /// rather than an external authority image.
@@ -219,6 +228,15 @@ impl PackageAuthorityOwner {
                 source_path,
                 maximum_source_bytes: *maximum_source_bytes,
             },
+            Self::RustBorrowed {
+                workspace,
+                maximum_source_bytes,
+                ..
+            } => SemanticAuthorityInput::RustWorkspace {
+                workspace: *workspace,
+                source_path,
+                maximum_source_bytes: *maximum_source_bytes,
+            },
             Self::Go { image, .. } => SemanticAuthorityInput::Go { image },
             Self::CSharp { image, .. } => SemanticAuthorityInput::CSharp { image },
             Self::Java { image, .. } => SemanticAuthorityInput::Java { image },
@@ -232,6 +250,7 @@ impl PackageAuthorityOwner {
             Self::Clang { profile, .. }
             | Self::Python { profile, .. }
             | Self::Rust { profile, .. }
+            | Self::RustBorrowed { profile, .. }
             | Self::Go { profile, .. }
             | Self::CSharp { profile, .. }
             | Self::Java { profile, .. } => *profile,
@@ -249,14 +268,34 @@ impl PackageAuthorityOwner {
 /// or deadline won the enclosing compilation.
 pub fn enter_package_authority<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
-) -> Result<PackageAuthorityOwner, PackageAuthorityError> {
+) -> Result<PackageAuthorityOwner<'static>, PackageAuthorityError> {
     enter_package_authority_with_go_authority_witness(request, None)
 }
 
 pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
     captured_go_authority: Option<&GoPackageAuthorityWitness>,
-) -> Result<PackageAuthorityOwner, PackageAuthorityError> {
+) -> Result<PackageAuthorityOwner<'static>, PackageAuthorityError> {
+    enter_package_authority_with_retained_rust_workspace(request, captured_go_authority, None)
+}
+
+pub(crate) fn enter_package_authority_with_rust_workspace<'request, 'config, 'workspace>(
+    request: PackageAuthorityRequest<'request, 'config>,
+    captured_go_authority: Option<&GoPackageAuthorityWitness>,
+    rust_workspace: &'workspace RustWorkspace,
+) -> Result<PackageAuthorityOwner<'workspace>, PackageAuthorityError> {
+    enter_package_authority_with_retained_rust_workspace(
+        request,
+        captured_go_authority,
+        Some(rust_workspace),
+    )
+}
+
+fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'workspace>(
+    request: PackageAuthorityRequest<'request, 'config>,
+    captured_go_authority: Option<&GoPackageAuthorityWitness>,
+    rust_workspace: Option<&'workspace RustWorkspace>,
+) -> Result<PackageAuthorityOwner<'workspace>, PackageAuthorityError> {
     checkpoint(
         request.control,
         request.profile,
@@ -395,27 +434,43 @@ pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'confi
                         },
                     ));
                 }
-                let workspace = RustWorkspace::open_with_features(
-                    request.package_root,
-                    configuration.toolchain,
-                    profile,
-                    configuration.features,
-                    RustAnalysisControl {
-                        cancelled: request.control.cancelled,
+                if let Some(workspace) = rust_workspace {
+                    workspace
+                        .validate_binding(request.package_root, profile)
+                        .map_err(PackageAuthorityError::RustProject)?;
+                    checkpoint(
+                        request.control,
+                        request.profile,
+                        PackageAuthorityStage::RustProject,
+                    )?;
+                    PackageAuthorityOwner::RustBorrowed {
+                        profile: request.profile,
+                        workspace,
                         maximum_source_bytes: configuration.maximum_source_bytes,
-                        deadline: request.control.deadline,
-                    },
-                )
-                .map_err(PackageAuthorityError::RustProject)?;
-                checkpoint(
-                    request.control,
-                    request.profile,
-                    PackageAuthorityStage::RustProject,
-                )?;
-                PackageAuthorityOwner::Rust {
-                    profile: request.profile,
-                    workspace,
-                    maximum_source_bytes: configuration.maximum_source_bytes,
+                    }
+                } else {
+                    let workspace = RustWorkspace::open_with_features(
+                        request.package_root,
+                        configuration.toolchain,
+                        profile,
+                        configuration.features,
+                        RustAnalysisControl {
+                            cancelled: request.control.cancelled,
+                            maximum_source_bytes: configuration.maximum_source_bytes,
+                            deadline: request.control.deadline,
+                        },
+                    )
+                    .map_err(PackageAuthorityError::RustProject)?;
+                    checkpoint(
+                        request.control,
+                        request.profile,
+                        PackageAuthorityStage::RustProject,
+                    )?;
+                    PackageAuthorityOwner::Rust {
+                        profile: request.profile,
+                        workspace,
+                        maximum_source_bytes: configuration.maximum_source_bytes,
+                    }
                 }
             }
             LanguageProfile::Go(_) => {

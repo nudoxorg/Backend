@@ -14,10 +14,12 @@ mod authority;
 mod purl;
 
 pub use self::authority::{
-    ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
-    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustInferredExpression,
-    RustMethodCall, RustProject, RustReexport, RustSourceScope, RustWorkspace, SemanticKind,
-    SourceByteLimit, SourceOrigin,
+    ByteSpan, MAX_RUST_WORKSPACE_SESSION_SOURCES, ModuleDeclaration, RustAnalysisControl,
+    RustAuthority, RustAuthorityError, RustDeclaration, RustDefinition, RustFeatureControl,
+    RustFieldAccess, RustInferredExpression, RustMethodCall, RustProject, RustReexport,
+    RustSourceScope, RustWorkspace, RustWorkspaceFile, RustWorkspaceFrontierId,
+    RustWorkspaceSessionCache, RustWorkspaceSessionKey, RustWorkspaceSessionLease,
+    RustWorkspaceSessionStats, SemanticKind, SourceByteLimit, SourceOrigin,
 };
 pub use self::purl::{RustLocatedPackage, RustPackageUrl, RustPurlError, manifest_edition};
 
