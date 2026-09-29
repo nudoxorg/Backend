@@ -80,24 +80,31 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     let reader_endpoint = endpoint.clone();
     let pool = ReadPool::start(2, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
     let mut rig = rig_with_reads(cx, Some(tree_route(&fixture)), 1440.0, 900.0, pool);
-    let lede = "Your 2 packages lean on 3 others directly, and 31 in all.";
+    // `browse` runs `cargo metadata --offline`. With the fixture's crates in
+    // the local cargo cache that is the host view (31 crates, with package
+    // categories); without them (a CI worker, a fresh checkout) it falls back
+    // to Cargo.lock alone (every platform, no metadata: 34) and says so. Both
+    // are honest answers; the test checks whichever one the owner gave.
+    let with_metadata = "Your 2 packages lean on 3 others directly, and 31 in all.";
+    let lockfile_only = "Your 2 packages lean on 3 others directly, and 34 in all.";
     let started = Instant::now();
     let mut said = rig.said();
-    while !said.iter().any(|line| line == lede) {
+    while !said.iter().any(|line| line == with_metadata || line == lockfile_only) {
         assert!(started.elapsed() < Duration::from_secs(120), "the tree never landed: {said:#?}");
         std::thread::sleep(Duration::from_millis(50));
         rig.settle();
         said = rig.said();
     }
+    let metadata = said.iter().any(|line| line == with_metadata);
+    let (lede, crates) = if metadata { (with_metadata, 31) } else { (lockfile_only, 34) };
+    let partial = format!("advisories from a partial source, not a full check of {crates}");
     for expected in [
         "browse_tree",
         lede,
         "bincode 1.3.3 is unmaintained",
         "4 crates are here twice",
-        "advisories from a partial source, not a full check of 31",
-        "checks our work",
+        partial.as_str(),
         "trybuild",
-        "speaks formats",
         "toml",
         "twice · 0.8.23 · 1.1.6",
         "bincode",
@@ -106,10 +113,20 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     ] {
         assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
     }
-    // bincode speaks a format; its "network-programming" category loses the vote.
-    let formats = said.iter().position(|line| line == "speaks formats").expect("formats");
-    let bincode = said.iter().position(|line| line == "bincode").expect("bincode row");
-    assert!(bincode > formats, "bincode is listed under speaks formats: {said:#?}");
+    if metadata {
+        for expected in ["checks our work", "speaks formats"] {
+            assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
+        }
+        // bincode speaks a format; its "network-programming" category loses the vote.
+        let formats = said.iter().position(|line| line == "speaks formats").expect("formats");
+        let bincode = said.iter().position(|line| line == "bincode").expect("bincode row");
+        assert!(bincode > formats, "bincode is listed under speaks formats: {said:#?}");
+    } else {
+        assert!(
+            said.iter().any(|line| line.starts_with("Read from Cargo.lock alone, for every platform and without package metadata")),
+            "the lockfile-only tree must say why: {said:#?}"
+        );
+    }
     let address = rig.shell.read_with(rig.cx, |_, cx| {
         let snapshot = rig.graph.store.read(cx).snapshot().clone();
         crate::shell::jump::address_parts(&snapshot).full()
@@ -130,7 +147,11 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
         }
     };
     let repository_tree = tree(&repository(), &mut reader);
-    assert_eq!(repository_tree.name, "backend");
+    // A tree is named for its project directory: `backend` in a default
+    // clone, `Backend` or CI's `src` elsewhere.
+    let checkout = repository();
+    let checkout_name = checkout.file_name().and_then(|name| name.to_str()).expect("checkout name");
+    assert_eq!(repository_tree.name, checkout_name);
     let again = tree(&fixture, &mut reader);
     assert_eq!(again.name, "browse_tree");
     assert_eq!(again.lede, lede);
