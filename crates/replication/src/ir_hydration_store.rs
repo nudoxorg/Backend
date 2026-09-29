@@ -444,6 +444,16 @@ pub struct FileSemanticRangeStore {
     limits: TransportLimits,
 }
 
+/// Holds the collection lease before the state lock for one bounded history
+/// page. A page is capped at `MAX_HISTORY_REPLAY_COMMITS`, so neither lease is
+/// held while a caller walks the full ancestry.
+struct HistoryPageReadLease {
+    _state_lock: File,
+    // Declared after `_state_lock` so Rust drops the state lock first and
+    // releases the shared collection pin second.
+    _gc_pin: GcPinGuard,
+}
+
 impl fmt::Debug for FileSemanticRangeStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -543,6 +553,18 @@ impl FileSemanticRangeStore {
         set_private_file(&path)?;
         file.lock().map_err(display_io)?;
         Ok(file)
+    }
+
+    fn acquire_history_page_read_lease(&self) -> Result<HistoryPageReadLease, String> {
+        let gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin semantic history replay page: {error:?}"))?;
+        let state_lock = self.acquire_state_lock()?;
+        Ok(HistoryPageReadLease {
+            _state_lock: state_lock,
+            _gc_pin: gc_pin,
+        })
     }
 
     fn prune_sparse_state(&self) -> Result<(), String> {
@@ -1371,6 +1393,7 @@ impl FileSemanticRangeStore {
         target: &crate::SemanticTargetKey,
         tip: crate::HistoryCommitId,
     ) -> Result<crate::HistoryReplay, String> {
+        let _page_lease = self.acquire_history_page_read_lease()?;
         self.generations.replay_history(target, tip)
     }
 
@@ -1380,7 +1403,20 @@ impl FileSemanticRangeStore {
         target: &crate::SemanticTargetKey,
         cursor: crate::HistoryReplayCursor,
     ) -> Result<crate::HistoryReplay, String> {
+        let _page_lease = self.acquire_history_page_read_lease()?;
         self.generations.continue_history_replay(target, cursor)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replay_history_with_page_hook(
+        &self,
+        target: &crate::SemanticTargetKey,
+        tip: crate::HistoryCommitId,
+        after_entry: impl FnMut() -> Result<(), String>,
+    ) -> Result<crate::HistoryReplay, String> {
+        let _page_lease = self.acquire_history_page_read_lease()?;
+        self.generations
+            .replay_history_with_page_hook(target, tip, after_entry)
     }
 
     /// Advances a durable bounded history mark/sweep batch. Ref mutations,

@@ -50,6 +50,47 @@ thread_local! {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct HistoryReplayLoadCounts {
+    pub(super) commit_decodes: usize,
+    pub(super) generation_decodes: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static HISTORY_REPLAY_LOAD_COUNTS: Cell<HistoryReplayLoadCounts> =
+        const { Cell::new(HistoryReplayLoadCounts { commit_decodes: 0, generation_decodes: 0 }) };
+}
+
+#[cfg(test)]
+pub(super) fn reset_history_replay_load_counts() {
+    HISTORY_REPLAY_LOAD_COUNTS.with(|counts| counts.set(HistoryReplayLoadCounts::default()));
+}
+
+#[cfg(test)]
+pub(super) fn history_replay_load_counts() -> HistoryReplayLoadCounts {
+    HISTORY_REPLAY_LOAD_COUNTS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn count_history_commit_decode() {
+    HISTORY_REPLAY_LOAD_COUNTS.with(|counts| {
+        let mut current = counts.get();
+        current.commit_decodes = current.commit_decodes.saturating_add(1);
+        counts.set(current);
+    });
+}
+
+#[cfg(test)]
+fn count_history_generation_decode() {
+    HISTORY_REPLAY_LOAD_COUNTS.with(|counts| {
+        let mut current = counts.get();
+        current.generation_decodes = current.generation_decodes.saturating_add(1);
+        counts.set(current);
+    });
+}
+
+#[cfg(test)]
 pub(super) fn arm_history_test_fault(point: HistoryTestFault) {
     HISTORY_TEST_FAULT.with(|fault| fault.set(Some(point)));
 }
@@ -852,6 +893,8 @@ fn load_record(
     let bytes = read_optional_bounded(&path, MAX_GENERATION_RECORD_BYTES)?
         .ok_or_else(|| "local semantic generation head references a missing record".to_owned())?;
     let record = decode_generation_record(&bytes)?;
+    #[cfg(test)]
+    count_history_generation_decode();
     if record.identity != identity || &record.target != target {
         return Err("local semantic generation head references another target".to_owned());
     }
@@ -3599,11 +3642,20 @@ mod tests {
         drop(files);
 
         let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
+        reset_history_replay_load_counts();
         let mut page = reopened
             .replay_history(&target, tip)
             .expect("read first bounded history page");
         assert_eq!(page.entries().len(), MAX_HISTORY_REPLAY_COMMITS);
         assert!(page.includes_checkpoint());
+        assert_eq!(
+            history_replay_load_counts(),
+            HistoryReplayLoadCounts {
+                commit_decodes: MAX_HISTORY_REPLAY_COMMITS + 1,
+                generation_decodes: MAX_HISTORY_REPLAY_COMMITS + 1,
+            },
+            "one bounded page decodes its 32 returned nodes and one validated cursor lookahead"
+        );
         let mut reverse_pages = vec![
             page.entries()
                 .iter()
@@ -3657,6 +3709,7 @@ mod tests {
         drop(files);
 
         let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
+        reset_history_replay_load_counts();
         let mut page = reopened
             .replay_history(&target, tip)
             .expect("read long history page");
@@ -3671,6 +3724,188 @@ mod tests {
             replayed,
             usize::try_from(HISTORY_LENGTH).expect("history length fits")
         );
+        let expected_loads = usize::try_from(HISTORY_LENGTH).expect("history length fits")
+            + usize::try_from(HISTORY_LENGTH - 1).expect("history edge count fits")
+                / MAX_HISTORY_REPLAY_COMMITS;
+        assert_eq!(
+            history_replay_load_counts(),
+            HistoryReplayLoadCounts {
+                commit_decodes: expected_loads,
+                generation_decodes: expected_loads,
+            },
+            "full replay loads each node once plus one lookahead for every page boundary"
+        );
+    }
+
+    #[test]
+    fn replay_page_fails_closed_when_its_immediate_parent_is_malformed() {
+        let directory = TestDirectory::create();
+        let base = fixture(b"replay missing parent base", 1, 81);
+        let next = fixture(b"replay missing parent next", 2, 82);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let _base_generation = commit(&files, &base, [base.stamp, base.stamp])
+            .expect("commit base generation");
+        let base_commit = files
+            .history_ref(
+                &base.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local-cache ref"),
+            )
+            .expect("read base ref")
+            .expect("base ref exists")
+            .commit();
+        let _ = commit(&files, &next, [next.stamp, next.stamp])
+            .expect("commit next generation");
+        let tip = files
+            .history_ref(
+                &next.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local-cache ref"),
+            )
+            .expect("read next ref")
+            .expect("next ref exists")
+            .commit();
+        let target_root = files.target_root(&next.target);
+        let parent_path = target_root
+            .join("history")
+            .join("commits")
+            .join(format!("{}.commit", hex(base_commit.as_bytes())));
+        fs::write(&parent_path, b"malformed commit record")
+            .expect("corrupt immediate parent commit");
+
+        let error = files
+            .replay_history(&next.target, tip)
+            .expect_err("a malformed lookahead parent rejects the page");
+        assert!(error.contains("length is invalid"), "{error}");
+    }
+
+    #[test]
+    fn replay_page_pins_gc_and_cursor_fails_after_ref_move_and_prune() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let store = FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open FileStore");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let range_store =
+            FileSemanticRangeStore::open(store, limits).expect("open range store");
+        let files = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
+            .expect("open history files");
+        let generation = fixture(b"replay page lease", 1, 83);
+        let _ = commit(&files, &generation, [generation.stamp, generation.stamp])
+            .expect("commit initial generation");
+        let local_cache = HistoryRefName::new("local-cache").expect("local-cache ref");
+        let first = files
+            .history_ref(&generation.target, HistoryRefKind::Branch, &local_cache)
+            .expect("read initial ref")
+            .expect("initial ref exists")
+            .commit();
+        let mut tip = first;
+        for step in 1..=MAX_HISTORY_REPLAY_COMMITS + 2 {
+            let mut provenance = [0_u8; 32];
+            provenance[0] = u8::try_from(step).expect("small replay fixture step");
+            tip = admit_history(&files, &generation, &[tip], provenance).identity();
+        }
+        range_store
+            .compare_and_swap_history_ref(
+                &generation.target,
+                HistoryRefKind::Branch,
+                local_cache.clone(),
+                Some(first),
+                Some(tip),
+            )
+            .expect("select long replay line");
+        let unrelated = admit_history(&files, &generation, &[], [0xfe; 32]);
+
+        let writer_store = FileSemanticRangeStore::open(
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open writer FileStore"),
+            limits,
+        )
+        .expect("open concurrent ref writer");
+        let (start_writer_tx, start_writer_rx) = std::sync::mpsc::channel();
+        let (writer_started_tx, writer_started_rx) = std::sync::mpsc::channel();
+        let (writer_done_tx, writer_done_rx) = std::sync::mpsc::channel();
+        let writer_target = generation.target.clone();
+        let writer_local_cache = local_cache.clone();
+        let unrelated_identity = unrelated.identity();
+        let writer = std::thread::spawn(move || {
+            start_writer_rx
+                .recv()
+                .expect("page releases concurrent writer");
+            writer_started_tx
+                .send(())
+                .expect("signal concurrent ref update start");
+            let result = writer_store
+                .compare_and_swap_history_ref(
+                    &writer_target,
+                    HistoryRefKind::Branch,
+                    writer_local_cache,
+                    Some(tip),
+                    Some(unrelated_identity),
+                )
+                .map(|_| ());
+            writer_done_tx
+                .send(result)
+                .expect("report concurrent ref update result");
+        });
+
+        let mut gc_was_blocked = false;
+        let mut writer_started = false;
+        let page = range_store
+            .replay_history_with_page_hook(&generation.target, tip, || {
+                if !writer_started {
+                    start_writer_tx
+                        .send(())
+                        .expect("start ref update during replay page");
+                    writer_started_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("concurrent ref update reached its commit call");
+                    match writer_done_rx.recv_timeout(Duration::from_millis(50)) {
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            panic!("concurrent ref writer exited before reporting its result")
+                        }
+                        Ok(result) => {
+                            panic!(
+                                "ref update completed while replay held its page lease: {result:?}"
+                            )
+                        }
+                    }
+                    writer_started = true;
+                }
+                if !gc_was_blocked {
+                    let error = range_store
+                        .advance_history_gc(&generation.target)
+                        .expect_err("page lease prevents a concurrent history sweep");
+                    assert!(error.contains("deferred"), "{error}");
+                    gc_was_blocked = true;
+                }
+                Ok(())
+            })
+            .expect("bounded page remains complete while GC and ref update wait");
+        assert_eq!(page.entries().len(), MAX_HISTORY_REPLAY_COMMITS);
+        assert!(gc_was_blocked);
+        let cursor = page.next_cursor().expect("older page remains");
+        drop(page);
+        writer.join().expect("concurrent ref writer thread");
+        writer_done_rx
+            .recv()
+            .expect("concurrent ref writer reports result")
+            .expect("ref moves after the page lease drops");
+
+        let mut progress = range_store
+            .advance_history_gc(&generation.target)
+            .expect("collect after the ref moved");
+        while !progress.complete() {
+            progress = range_store
+                .advance_history_gc(&generation.target)
+                .expect("finish pruning the now-unrooted ancestry");
+        }
+        let error = range_store
+            .continue_history_replay(&generation.target, cursor)
+            .expect_err("the pruned cursor must fail closed without a partial page");
+        assert!(error.contains("missing commit object"), "{error}");
     }
 
     #[test]

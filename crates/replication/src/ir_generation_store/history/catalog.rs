@@ -570,7 +570,14 @@ pub(super) fn generation_from_record(
     stamp: SelectedGenerationStamp,
 ) -> Result<LocalSemanticGeneration, String> {
     validate_record_selection(&record, stamp)?;
-    Ok(LocalSemanticGeneration {
+    Ok(generation_from_validated_record(record, stamp))
+}
+
+pub(super) fn generation_from_validated_record(
+    record: GenerationRecord,
+    stamp: SelectedGenerationStamp,
+) -> LocalSemanticGeneration {
+    LocalSemanticGeneration {
         identity: record.identity,
         previous_identity: None,
         previous_image: None,
@@ -581,7 +588,7 @@ pub(super) fn generation_from_record(
         image: record.image,
         image_identity: record.image_identity,
         manifest: record.manifest,
-    })
+    }
 }
 
 pub(crate) fn validate_commit_generation(
@@ -601,16 +608,17 @@ pub(crate) fn validate_commit_generation(
 
 pub(super) fn validate_commit_ancestry(
     record: &HistoryCommitRecord,
-    records: &HashMap<HistoryCommitId, HistoryCommitRecord>,
+    parents: &[HistoryCommitRecord],
 ) -> Result<(), String> {
     if record.parents.is_empty() {
-        if record.first_parent_depth != 0 || !record.checkpoint {
+        if !parents.is_empty() || record.first_parent_depth != 0 || !record.checkpoint {
             return Err("semantic history root has invalid checkpoint metadata".to_owned());
         }
         return Ok(());
     }
-    let parent = records
-        .get(&record.parents[0])
+    let parent = parents
+        .iter()
+        .find(|parent| parent.identity == record.parents[0])
         .ok_or_else(|| "semantic history commit has a missing first parent".to_owned())?;
     if record.target != parent.target
         || record.first_parent_depth != parent.first_parent_depth.saturating_add(1)
@@ -618,10 +626,10 @@ pub(super) fn validate_commit_ancestry(
     {
         return Err("semantic history first-parent chain is inconsistent".to_owned());
     }
-    for identity in record.parents.iter().skip(1) {
-        let parent = records
-            .get(identity)
-            .ok_or_else(|| "semantic history commit has a missing merge parent".to_owned())?;
+    for (identity, parent) in record.parents.iter().skip(1).zip(parents.iter().skip(1)) {
+        if parent.identity != *identity {
+            return Err("semantic history commit has a missing merge parent".to_owned());
+        }
         if parent.target != record.target {
             return Err("semantic history merge crosses target scope".to_owned());
         }
@@ -638,16 +646,42 @@ pub(super) fn validate_parent_set(
     {
         return Err("semantic history commit has an invalid parent set".to_owned());
     }
-    if record.parents.is_empty() {
-        return validate_commit_ancestry(record, &HashMap::new());
-    }
-    let mut parents = HashMap::new();
+    let mut parents = Vec::with_capacity(record.parents.len());
     for identity in &record.parents {
-        let parent = load_history_commit(commits_root, *identity)?;
+        parents.push(load_history_commit(commits_root, *identity)?);
+    }
+    validate_parent_set_with_records(record, &parents)
+}
+
+pub(super) fn validate_parent_set_with_records(
+    record: &HistoryCommitRecord,
+    parents: &[HistoryCommitRecord],
+) -> Result<(), String> {
+    if record.parents.len() > MAX_HISTORY_PARENTS
+        || record.parents.windows(2).any(|pair| pair[0] == pair[1])
+    {
+        return Err("semantic history commit has an invalid parent set".to_owned());
+    }
+    if parents.len() != record.parents.len() {
+        return Err(if record.parents.is_empty() {
+            "semantic history root has invalid checkpoint metadata".to_owned()
+        } else if record.parents.len() == 1 {
+            "semantic history commit has a missing first parent".to_owned()
+        } else {
+            "semantic history commit has a missing merge parent".to_owned()
+        });
+    }
+    for (identity, parent) in record.parents.iter().zip(parents) {
+        if parent.identity != *identity {
+            return Err(if record.parents.first() == Some(identity) {
+                "semantic history commit has a missing first parent".to_owned()
+            } else {
+                "semantic history commit has a missing merge parent".to_owned()
+            });
+        }
         if parent.target != record.target {
             return Err("semantic history parent belongs to another target".to_owned());
         }
-        parents.insert(*identity, parent);
     }
-    validate_commit_ancestry(record, &parents)
+    validate_commit_ancestry(record, parents)
 }

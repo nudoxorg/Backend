@@ -245,6 +245,8 @@ pub(crate) fn load_history_commit(
     let bytes = read_optional_bounded(&path, MAX_HISTORY_COMMIT_BYTES)?
         .ok_or_else(|| "semantic history references a missing commit object".to_owned())?;
     let record = decode_history_commit(&bytes)?;
+    #[cfg(test)]
+    super::super::count_history_commit_decode();
     if record.identity != identity {
         return Err("semantic history commit filename differs from its identity".to_owned());
     }
