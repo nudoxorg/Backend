@@ -275,7 +275,8 @@ pub use versioned_records::{
     stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits,
     stream_canonical_plane_family_with_stable_key_anchors, validate_language_extension_family_v2,
     verify_canonical_semantic_plane_segment_boundaries, verify_jumbo_plane_family_closures,
-    verify_language_extension_plane_against_reader, verify_semantic_plane_family_against_reader,
+    verify_jumbo_plane_family_closures_with_policy, verify_language_extension_plane_against_reader,
+    verify_semantic_plane_family_against_reader,
 };
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{

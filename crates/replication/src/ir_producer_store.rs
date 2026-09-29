@@ -2014,8 +2014,8 @@ mod tests {
         Visibility, encode_full_semantic_image, full_semantic_image_len,
         stream_canonical_plane_family_with_jumbo,
         stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
-        verify_canonical_semantic_plane_segment_boundaries, verify_jumbo_plane_family_closures,
-        write_jumbo_value,
+        verify_canonical_semantic_plane_segment_boundaries,
+        verify_jumbo_plane_family_closures_with_policy, write_jumbo_value,
     };
     use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
     use backend_store::{ClosureCompositionBudget, ClosureMembershipChange};
@@ -3198,10 +3198,11 @@ mod tests {
             leaves,
             interiors,
         };
-        verify_jumbo_plane_family_closures(
+        verify_jumbo_plane_family_closures_with_policy(
             SemanticPlaneKind::Ir(SemanticIrPlane::Documentation),
             &segment_descriptors,
             &payload_refs,
+            policy,
             &mut source,
         )
         .expect("cold SPIR and jumbo roots re-admit through strict family closure verification")
