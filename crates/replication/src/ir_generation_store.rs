@@ -2988,6 +2988,17 @@ mod tests {
             )
             .expect("publish long ancestry tip");
         let unrelated = admit_history(&files, &generation, &[], [0xff; 32]).identity();
+        let retained_name = HistoryRefName::new("aba-retained")
+            .expect("alternate root ref name");
+        range_store
+            .compare_and_swap_history_ref(
+                &generation.target,
+                HistoryRefKind::Branch,
+                retained_name.clone(),
+                None,
+                Some(unrelated),
+            )
+            .expect("retain unrelated commit under a separate branch");
 
         let mut gc_batches = 0;
         let proof = range_store
@@ -3022,6 +3033,27 @@ mod tests {
                         assert!(
                             gc_calls > 1,
                             "the commit index forces a durable retention cursor resume"
+                        );
+                        assert_eq!(
+                            range_store
+                                .history_ref(
+                                    &generation.target,
+                                    HistoryRefKind::Branch,
+                                    &retained_name,
+                                )
+                                .expect("read retained alternate ref after GC")
+                                .expect("alternate ref remains rooted through GC")
+                                .commit(),
+                            unrelated,
+                            "the alternate commit remains live through GC"
+                        );
+                        assert_eq!(
+                            range_store
+                                .history_commit(&generation.target, unrelated)
+                                .expect("read alternate commit after GC")
+                                .identity(),
+                            unrelated,
+                            "the retained alternate commit object survives GC"
                         );
                         range_store
                             .compare_and_swap_history_ref(
