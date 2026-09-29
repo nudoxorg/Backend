@@ -338,7 +338,7 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
     ) -> Result<Self, String> {
         let gc_pin = store
             .pin_garbage_collection()
-            .map_err(|error| format!("pin semantic producer segments against GC: {error}"))?;
+            .map_err(|error| format!("pin semantic producer segments against GC: {error:?}"))?;
         Ok(Self {
             store,
             receipts,
@@ -435,7 +435,7 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
     ) -> Result<Self, String> {
         let gc_pin = store
             .pin_garbage_collection()
-            .map_err(|error| format!("pin jumbo producer objects against GC: {error}"))?;
+            .map_err(|error| format!("pin jumbo producer objects against GC: {error:?}"))?;
         Ok(Self {
             store,
             receipts,
@@ -587,11 +587,11 @@ fn commit_and_read(
 ) -> Result<ObjectWriteReceipt, String> {
     let receipt = store
         .write_object_with_receipt(object)
-        .map_err(|error| format!("durably write semantic producer object: {error}"))?;
+        .map_err(|error| format!("durably write semantic producer object: {error:?}"))?;
     if receipt.created() {
         let reopened = store
             .read_object(receipt.id())
-            .map_err(|error| format!("read back semantic producer object: {error}"))?;
+            .map_err(|error| format!("read back semantic producer object: {error:?}"))?;
         if reopened.id() != receipt.id()
             || reopened.schema() != object.schema()
             || reopened.key() != object.key()
@@ -1038,7 +1038,7 @@ mod tests {
             let object = self
                 .store
                 .read_object(object_id)
-                .map_err(|error| format!("cold read jumbo leaf object: {error}"))?;
+                .map_err(|error| format!("cold read jumbo leaf object: {error:?}"))?;
             if object.id() != object_id
                 || object.schema() != ProducedSemanticObjectKind::JumboLeaf.schema_identity()
             {
@@ -1062,7 +1062,7 @@ mod tests {
             let object = self
                 .store
                 .read_object(object_id)
-                .map_err(|error| format!("cold read jumbo interior object: {error}"))?;
+                .map_err(|error| format!("cold read jumbo interior object: {error:?}"))?;
             if object.id() != object_id
                 || object.schema() != ProducedSemanticObjectKind::JumboInterior.schema_identity()
             {
@@ -1374,6 +1374,7 @@ mod tests {
             reopened.object_count() as usize,
             base_all
                 .iter()
+                .copied()
                 .map(DurableSemanticObjectAdmission::object_id)
                 .collect::<HashSet<_>>()
                 .len()

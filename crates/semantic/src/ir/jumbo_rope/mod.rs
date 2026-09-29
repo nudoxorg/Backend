@@ -23,7 +23,7 @@ pub use receiver::{
 };
 pub use wire::{
     JumboRopeNode, JumboRopeObjectId, JumboRopeObjectKind, JumboRopeProof, JumboRopeProofSibling,
-    JumboRopeProofSide, JumboRopeProofSpan, ROPE_NODE_WIRE_BYTES,
+    JumboRopeProofSide, JumboRopeProofSpan,
 };
 pub use writer::{
     JumboRopeBuildMetrics, JumboRopeStreamWriter, JumboRopeWriteReceipt, write_jumbo_value,
