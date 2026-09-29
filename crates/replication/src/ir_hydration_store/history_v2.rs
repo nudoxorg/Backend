@@ -1740,7 +1740,7 @@ mod tests {
         assert_eq!(verified.content_root().as_bytes(), &expected_content);
         assert_eq!(verified.generation_root().as_bytes(), &expected_generation);
         let expected_rows = [1_u64, 2, 0, 0, 1, 1, 0];
-        for (family, expected) in verified.families().iter().zip(expected_rows) {
+        for (family, expected) in verified.family_commitments().iter().zip(expected_rows) {
             assert_eq!(family.row_count(), expected);
         }
     }
