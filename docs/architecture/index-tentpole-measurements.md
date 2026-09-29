@@ -41,6 +41,19 @@ baseline, not a before/after speedup or a large-corpus throughput claim.
 The full local evidence is under
 `.local/live-turso/20260929T025610Z-62613/artifacts/restore/`.
 
+An isolated copy of that restored owner was sampled on 2026-09-29 without a
+new build. The first search rebuilt in-memory discovery and local-declaration
+Tantivy indexes; the cold stack spent substantial time adding declaration
+documents and committing the writer. A separate warm search sample spent most
+owner samples in ranked release-facet queries repeated for selected lineages.
+These are sampling observations, not a controlled latency attribution or a
+speedup measurement. One cold attempt while other builds ran returned an IPC
+`operation would block` fault; a later cloned-owner run completed. The raw
+profiles and fault are under `.local/search-profile-20260929T032223Z-4079/`
+and `.local/search-profile-20260929T032040Z-2692/`. Next compare cold-open,
+owner-only warm search, and new-CLI-process latency on the same saved owner,
+with exact result and cursor parity, before claiming an optimization.
+
 ## Package graph projection, 2026-09-28
 
 Command: `cargo bench -p backend-extension-turso --bench package_graph --offline`.
