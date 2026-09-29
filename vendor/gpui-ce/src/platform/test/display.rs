@@ -12,7 +12,10 @@ impl TestDisplay {
     pub fn new() -> Self {
         TestDisplay {
             id: DisplayId(1),
-            uuid: uuid::Uuid::new_v4(),
+            // NUDOX: the headless machine's one display is the same display
+            // on every launch, as a person's monitor is (per-display settings,
+            // such as the zoom, are keyed by it and must survive a relaunch).
+            uuid: uuid::Uuid::from_u128(0x6e75_646f_7865_6865_6164_6c65_7373_0001),
             bounds: Bounds::from_corners(Point::default(), Point::new(px(1920.), px(1080.))),
         }
     }

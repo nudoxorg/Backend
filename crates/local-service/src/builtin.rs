@@ -1638,12 +1638,54 @@ pub(crate) fn compose_owner(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .serve_semantic_control(request_id, payload)
     };
-    Ok(daemon.into_owner_with_admission_and_semantic_ranges(
-        command,
-        NoCompletionAdmission,
-        replication,
-        semantic_ranges,
-    ))
+    let deferred = Box::new(DeferredBuiltinCommands(Arc::clone(&commands)));
+    Ok(daemon
+        .into_owner_with_admission_and_semantic_ranges(
+            command,
+            NoCompletionAdmission,
+            replication,
+            semantic_ranges,
+        )
+        .with_deferred_commands(deferred))
+}
+
+/// The builtin owner's deferred commands: an `Add` of a local folder hands
+/// its compile off the owner loop, which answers reads meanwhile.
+struct DeferredBuiltinCommands(Arc<Mutex<commands::CommandAdapter>>);
+
+impl crate::DeferredCommands<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>
+    for DeferredBuiltinCommands
+{
+    fn command(
+        &mut self,
+        daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<crate::CommandOutcome, String> {
+        match self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .execute_or_defer(daemon, body, ticket)
+        {
+            Ok(commands::Executed::Reply(reply)) => Ok(crate::CommandOutcome::Reply(reply)),
+            Ok(commands::Executed::Deferred) => Ok(crate::CommandOutcome::Deferred),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn poll(
+        &mut self,
+        daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    ) -> Vec<(u64, Result<Vec<u8>, String>)> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .poll_deferred(daemon)
+            .into_iter()
+            .map(|(ticket, reply)| (ticket, reply.map_err(|error| error.to_string())))
+            .collect()
+    }
 }
 
 /// Processes one durable row per retry sweep, rotating through unresolved rows so an older

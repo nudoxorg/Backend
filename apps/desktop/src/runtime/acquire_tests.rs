@@ -110,7 +110,7 @@ fn a_release_only_the_registry_has_fails_in_words_and_is_never_fetched(cx: &mut 
     // The worker is a real thread that wakes the UI task, as the read pool's do.
     cx.executor().allow_parking();
     let wanted = release("anyhash", "0.1.0");
-    let composition = Composition { endpoint: PathBuf::from("/nonexistent/owner.sock"), source: Arc::new(Shelf) };
+    let composition = Composition { endpoint: PathBuf::from("/nonexistent/owner.sock"), source: Arc::new(Shelf), refusals: None };
     cx.update(|cx| acquire::add_with(wanted.clone(), Some(composition), WeakEntity::new_invalid(), cx));
     assert_eq!(cx.update(|cx| acquire::stage(&wanted, Asker::Everyone, cx)), Some(Stage::Queued), "it is taken at once");
     assert_eq!(
@@ -124,7 +124,7 @@ fn a_release_only_the_registry_has_fails_in_words_and_is_never_fetched(cx: &mut 
 fn an_owner_that_does_not_answer_is_a_failure_with_its_words_and_can_be_tried_again(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let wanted = release("anyhow", "1.0.104");
-    let compose = || Some(Composition { endpoint: PathBuf::from("/nonexistent/owner.sock"), source: Arc::new(Shelf) });
+    let compose = || Some(Composition { endpoint: PathBuf::from("/nonexistent/owner.sock"), source: Arc::new(Shelf), refusals: None });
     cx.update(|cx| acquire::add_with(wanted.clone(), compose(), WeakEntity::new_invalid(), cx));
     let Some(Stage::Failed(words)) = settled(&wanted, cx) else { panic!("an unreachable source is a failure") };
     assert!(words.starts_with("the index refused anyhow 1.0.104: "), "the failure names the release and carries the owner's words: {words}");

@@ -19,7 +19,7 @@ mod work;
 
 pub(crate) use work::{Dependency, NOT_CARGO, Origin};
 #[cfg(test)]
-pub(crate) use work::dependencies;
+pub(crate) use work::{Listed, Refusals, dependencies, index_release};
 
 use super::offload::Asker;
 use super::ui_graph::UiRootEntity;

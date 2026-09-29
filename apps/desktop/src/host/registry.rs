@@ -280,6 +280,10 @@ pub(crate) struct Composition {
     /// The owner's endpoint.
     pub(crate) endpoint: PathBuf,
     pub(crate) source: Arc<dyn RegistrySource>,
+    /// Where the owner's words are kept for releases it listed but could not
+    /// compile (`runtime::acquire::work::Refusals`), beside its workspace so
+    /// they go wherever the index goes. `None`: not kept (tests).
+    pub(crate) refusals: Option<PathBuf>,
 }
 
 impl fmt::Debug for Composition {
@@ -294,7 +298,8 @@ static COMPOSED: RwLock<Option<Composition>> = RwLock::new(None);
 /// `data` (archives unpack into `data/registry-sources`).
 pub(crate) fn publish(endpoint: &Path, data: &Path) {
     let Some(source) = CargoCache::from_env(data.join("registry-sources")) else { return };
-    install(Composition { endpoint: endpoint.to_path_buf(), source: Arc::new(source) });
+    let refusals = Some(data.join("registry-sources").join("refusals.json"));
+    install(Composition { endpoint: endpoint.to_path_buf(), source: Arc::new(source), refusals });
 }
 
 /// Installs a composition (tests compose their own).

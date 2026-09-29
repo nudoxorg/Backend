@@ -31,13 +31,18 @@ struct Owner {
 /// A fresh scratch root with a one-file anchor crate, and the owner's paths in it.
 fn anchored(tag: &str) -> (PathBuf, WorkspacePaths) {
     let root = scratch(tag);
-    crate::host::private_dir(&root).expect("private scratch root");
+    let paths = anchored_at(&root);
+    (root, paths)
+}
+
+/// The owner's paths under `root`, with its one-file anchor crate.
+fn anchored_at(root: &Path) -> WorkspacePaths {
+    crate::host::private_dir(root).expect("private scratch root");
     let anchor = root.join("anchor");
     std::fs::create_dir_all(anchor.join("src")).expect("anchor");
     std::fs::write(anchor.join("Cargo.toml"), b"[package]\nname = \"w-acquire-anchor\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").expect("manifest");
     std::fs::write(anchor.join("src/lib.rs"), b"pub fn one() -> u8 { 1 }\n").expect("source");
-    let paths = WorkspacePaths::discover(Some(anchor), Some(root.join("data")), Some(root.with_extension("sock"))).expect("paths");
-    (root, paths)
+    WorkspacePaths::discover(Some(anchor), Some(root.join("data")), Some(root.with_extension("sock"))).expect("paths")
 }
 
 /// The package page's names at `endpoint`, as the app reads them.
@@ -239,7 +244,7 @@ fn a_projects_packages_are_indexed_by_the_owner_and_their_pages_read_their_real_
     let owner = Owner::start("deps");
     let project = one_dependency_project(&owner.root);
     let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
-    let composition = Composition { endpoint: owner.host.endpoint().to_path_buf(), source: Arc::new(source.clone()) };
+    let composition = Composition { endpoint: owner.host.endpoint().to_path_buf(), source: Arc::new(source.clone()), refusals: None };
     let id = crate::core::LocalProjectId::from_path(&project).expect("project id");
     cx.update(|cx| acquire::add_dependencies_with(id.clone(), Some(composition), gpui::WeakEntity::new_invalid(), cx));
     let started = Instant::now();
@@ -363,6 +368,146 @@ fn an_owner_reopens_its_workspace_after_indexing_a_crate_whose_docs_link_to_std(
     let reopened = DesktopHost::start_with_paths(paths).expect("the owner reopens the workspace it wrote");
     assert_eq!(names_at(reopened.endpoint(), &tree), expected, "the reopened owner serves the same page");
     drop(reopened);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_page_is_read_from_the_last_publication_while_the_owner_compiles_another_package() {
+    let owner = Owner::start("concurrent");
+    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let small = source.resolve(&Release::new("equivalent", "1.0.2").expect("release")).expect("equivalent 1.0.2 is in the local cargo cache");
+    owner.index(&small);
+    let expected = owner.names(&small);
+    let big = source.resolve(&Release::new("toml_edit", "0.22.27").expect("release")).expect("toml_edit 0.22.27 is in the local cargo cache");
+    let (endpoint, big_root) = (owner.host.endpoint().to_path_buf(), big.root.clone());
+    let compiling = std::thread::spawn(move || {
+        let started = Instant::now();
+        let indexed = Session::connect(&endpoint).and_then(|mut session| session.index(big_root.to_str().expect("UTF-8")));
+        (indexed.map(|_| ()).map_err(|error| error.to_string()), started.elapsed())
+    });
+    // Its scan and source frontier are on the owner loop; its compile is not.
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    assert!(!compiling.is_finished(), "toml_edit's compile is under way");
+    let asked = Instant::now();
+    let names = owner.names(&small);
+    let listed = Session::connect(owner.host.endpoint()).expect("session").packages().is_ok();
+    let answered = asked.elapsed();
+    let still_compiling = !compiling.is_finished();
+    let (indexed, total) = compiling.join().expect("the compile thread");
+    eprintln!("CONCURRENT read answered in {answered:?}; toml_edit indexed in {total:?}: {indexed:?}");
+    assert_eq!(names, expected, "the page is equivalent's, from the last publication");
+    assert!(listed, "the packages list is read too");
+    assert!(
+        still_compiling,
+        "the read was answered only once toml_edit's index had finished ({answered:?} after asking, the index took {total:?}): it waited for the compile"
+    );
+    assert!(answered < std::time::Duration::from_secs(5), "the read waited {answered:?}");
+    assert!(indexed.is_ok(), "the deferred index still publishes: {indexed:?}");
+    let mut session = Session::connect(owner.host.endpoint()).expect("session");
+    let CommandReply::Packages(snapshot) = session.packages().expect("packages").reply else { panic!("packages") };
+    assert!(
+        snapshot.root.rows().iter().any(|row| row.label == big.root.to_str().expect("UTF-8") && row.state == backend_library::RowState::Ready),
+        "toml_edit is published once its compile is done"
+    );
+    let names = owner.names(&big);
+    assert!(names.iter().any(|name| name == "DocumentMut"), "toml_edit's page reads its real names: {} names", names.len());
+}
+
+/// The child half of [`an_owner_killed_mid_compile_reopens_at_its_last_publication_and_indexes_again`]:
+/// an owner at `NX_CRASH_ROOT` publishes equivalent, starts compiling
+/// toml_edit, says so, and waits to be killed.
+#[test]
+#[ignore = "run by an_owner_killed_mid_compile_reopens_at_its_last_publication_and_indexes_again, which kills it"]
+fn crash_child() {
+    let root = PathBuf::from(std::env::var_os("NX_CRASH_ROOT").expect("NX_CRASH_ROOT"));
+    let host = DesktopHost::start_with_paths(anchored_at(&root)).expect("the owner starts");
+    let source = CargoCache::from_env(root.join("unpacked")).expect("a cargo home");
+    let small = source.resolve(&Release::new("equivalent", "1.0.2").expect("release")).expect("equivalent");
+    Session::connect(host.endpoint()).expect("session").index(small.root.to_str().expect("UTF-8")).expect("equivalent is published");
+    let big = source.resolve(&Release::new("toml_edit", "0.22.27").expect("release")).expect("toml_edit");
+    let endpoint = host.endpoint().to_path_buf();
+    std::thread::spawn(move || {
+        let _ = Session::connect(&endpoint).and_then(|mut session| session.index(big.root.to_str().expect("UTF-8")));
+    });
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    println!("CRASH-CHILD COMPILING");
+    std::thread::sleep(std::time::Duration::from_secs(600));
+    drop(host);
+}
+
+#[test]
+fn an_owner_killed_mid_compile_reopens_at_its_last_publication_and_indexes_again() {
+    use std::io::BufRead as _;
+    let root = scratch("crash");
+    let mut child = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", "host::registry::owner_tests::crash_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("NX_CRASH_ROOT", &root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the child runs");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut lines = std::io::BufReader::new(stdout).lines();
+    let compiling = lines.by_ref().map_while(Result::ok).any(|line| line.contains("CRASH-CHILD COMPILING"));
+    assert!(compiling, "the child reached its compile");
+    // kill -9: no destructor, no flush, mid-compile.
+    let killed = std::process::Command::new("kill").args(["-9", &child.id().to_string()]).status().expect("kill");
+    assert!(killed.success());
+    let _ = child.wait();
+    let host = DesktopHost::start_with_paths(anchored_at(&root)).expect("the owner reopens after a crash mid-compile");
+    let source = CargoCache::from_env(root.join("unpacked")).expect("a cargo home");
+    let small = source.resolve(&Release::new("equivalent", "1.0.2").expect("release")).expect("equivalent");
+    let big = source.resolve(&Release::new("toml_edit", "0.22.27").expect("release")).expect("toml_edit");
+    let listed = |host: &DesktopHost| {
+        let CommandReply::Packages(snapshot) = Session::connect(host.endpoint()).expect("session").packages().expect("packages").reply else { panic!("packages") };
+        snapshot.root.rows().iter().map(|row| (row.label.clone(), row.state)).collect::<Vec<_>>()
+    };
+    let before = listed(&host);
+    assert!(
+        before.iter().any(|(label, state)| label == small.root.to_str().expect("UTF-8") && *state == backend_library::RowState::Ready),
+        "the last publication stands: {before:?}"
+    );
+    assert!(!names_at(host.endpoint(), &small).is_empty(), "equivalent's page reads");
+    // The job the crash cut short runs again, to the end.
+    Session::connect(host.endpoint()).expect("session").index(big.root.to_str().expect("UTF-8")).expect("toml_edit indexes after the crash");
+    assert!(names_at(host.endpoint(), &big).iter().any(|name| name == "DocumentMut"), "toml_edit's page reads its real names");
+    drop(host);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_package_the_compiler_could_not_finish_still_says_so_after_a_relaunch() {
+    use crate::runtime::acquire::{Listed, Stage, index_release};
+    let owner = Owner::start("thin");
+    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let refusals = owner.root.join("data/registry-sources/refusals.json");
+    let composition = Composition { endpoint: owner.host.endpoint().to_path_buf(), source: Arc::new(source), refusals: Some(refusals.clone()) };
+    // serde_core 1.0.229: the compiler stops on a generic parameter it cannot
+    // lower (src/de/mod.rs); the owner still lists it on its source's names.
+    let release = Release::new("serde_core", "1.0.229").expect("release");
+    let first = index_release(&composition, &release, Listed::Any, &|_| {});
+    let Stage::Partial { page, words } = &first else { panic!("the compiler finishes serde_core now; pick another refused crate: {first:?}") };
+    assert!(words.contains("src/de/mod.rs"), "the owner's words name the file: {words}");
+    // A relaunch: the owner already lists it, so it is not compiled again,
+    // and it is still the package the compiler could not finish.
+    let stages = std::sync::Mutex::new(Vec::new());
+    let again = index_release(&composition, &release, Listed::Any, &|stage| stages.lock().expect("stages").push(stage));
+    assert_eq!(again, Stage::Partial { page: page.clone(), words: words.clone() }, "after a relaunch it is still thin, for the same reason");
+    assert!(!stages.lock().expect("stages").contains(&Stage::Indexing), "and it was not compiled again");
+    assert!(refusals.is_file(), "the words are kept beside the owner's workspace");
+}
+
+#[test]
+fn refusal_words_are_kept_and_forgotten_by_release() {
+    let root = scratch("refusals");
+    let refusals = crate::runtime::acquire::Refusals::at(&root.join("refusals.json"));
+    assert_eq!(refusals.words("/cache/a-1.0.0"), None);
+    refusals.keep("/cache/a-1.0.0", "the compiler could not finish reading src/lib.rs");
+    refusals.keep("/cache/b-2.0.0", "another reason");
+    assert_eq!(refusals.words("/cache/a-1.0.0").as_deref(), Some("the compiler could not finish reading src/lib.rs"));
+    refusals.forget("/cache/a-1.0.0");
+    assert_eq!(refusals.words("/cache/a-1.0.0"), None, "a compile that finished later forgets the refusal");
+    assert_eq!(refusals.words("/cache/b-2.0.0").as_deref(), Some("another reason"));
     let _ = std::fs::remove_dir_all(&root);
 }
 

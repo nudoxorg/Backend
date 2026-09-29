@@ -767,20 +767,24 @@ impl DataStore {
         for key in keys {
             self.fail(&key, fault, cx);
         }
-        // A page painted from the launch snapshot stays (it is the page as
-        // it was left), and says it could not be brought up to date.
-        if self.focused.iter().any(|key| self.pages.is_seeded(key)) {
-            let notice = super::graph_focus::Notice {
-                visit: self.snapshot.route().clone(),
-                root: self.snapshot.key(),
-                message: Arc::from(format!(
-                    "The index could not start, so this is the page as you left it. {fault}"
-                )),
-                // "Try again" asks the page for itself again, which starts the owner.
-                retry: self.focused.iter().next().cloned(),
-            };
-            self.set_notice(Some(notice), cx);
-        }
+        // The foot says it wherever the person is, with "Try again" beside
+        // it (R7). A page painted from the launch snapshot stays (it is the
+        // page as it was left), and says it could not be brought up to date.
+        let seeded = self.focused.iter().any(|key| self.pages.is_seeded(key));
+        let message = if seeded {
+            format!("The index could not start, so this is the page as you left it. {fault}")
+        } else {
+            format!("The index could not start. {fault}")
+        };
+        let notice = super::graph_focus::Notice {
+            visit: self.snapshot.route().clone(),
+            root: self.snapshot.key(),
+            message: Arc::from(message),
+            // "Try again" asks the page for itself again, which starts the
+            // owner; with no page on the route, the Library's.
+            retry: Some(self.focused.iter().next().cloned().unwrap_or(PageKey::Orbit)),
+        };
+        self.set_notice(Some(notice), cx);
     }
 
     /// The owner is starting (again): pages asked from now on are held.

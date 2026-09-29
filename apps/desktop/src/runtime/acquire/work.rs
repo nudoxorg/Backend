@@ -236,8 +236,11 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, skip: 
     };
     let Some(coordinate) = tree.root.to_str() else { return failed(format!("{} is not UTF-8", tree.root.display())) };
     let started = std::time::Instant::now();
+    let refusals = composition.refusals.as_deref().map(Refusals::at);
+    let mut listed_already = false;
     let indexed = Session::connect(&composition.endpoint).and_then(|mut session| {
         if is_listed(&mut session, coordinate, skip) {
+            listed_already = true;
             return Ok(());
         }
         post(Stage::Indexing);
@@ -245,16 +248,81 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, skip: 
     });
     crate::runtime::trace::span("acquire.index", started, format_args!("{release}"));
     match (indexed, PackageRef::parse(coordinate)) {
-        (Ok(()), Ok(package)) => finish(Stage::Added(package)),
+        // Listed by an earlier launch: what the owner said then, if it could
+        // not finish the compile, still stands.
+        (Ok(()), Ok(package)) if listed_already => match refusals.as_ref().and_then(|refusals| refusals.words(coordinate)) {
+            Some(words) => finish(Stage::Partial { page: package, words }),
+            None => finish(Stage::Added(package)),
+        },
+        (Ok(()), Ok(package)) => {
+            if let Some(refusals) = &refusals {
+                refusals.forget(coordinate);
+            }
+            finish(Stage::Added(package))
+        }
         // A compile the owner refused still lists the release, on the names
         // its source declares: it is in the library, and says why it is thin.
         (Err(error), Ok(package))
             if Session::connect(&composition.endpoint).is_ok_and(|mut session| is_listed(&mut session, coordinate, Listed::Any)) =>
         {
-            finish(Stage::Partial { page: package, words: Arc::from(error.to_string()) })
+            let words: Arc<str> = Arc::from(error.to_string());
+            if let Some(refusals) = &refusals {
+                refusals.keep(coordinate, &words);
+            }
+            finish(Stage::Partial { page: package, words })
         }
         (Err(error), _) => failed(format!("the index refused {release}: {error}")),
         (Ok(()), Err(error)) => failed(format!("{coordinate} is not a package address: {error:?}")),
+    }
+}
+
+/// The owner's words for each release it lists but could not compile, kept
+/// beside its workspace: a relaunch reads a release the owner already lists
+/// as it was left, thin and why, not as fully added. One small JSON map from
+/// the release's source tree to the words; written whole, atomically.
+pub(crate) struct Refusals {
+    path: std::path::PathBuf,
+}
+
+impl Refusals {
+    pub(crate) fn at(path: &Path) -> Self {
+        Self { path: path.to_path_buf() }
+    }
+
+    fn read(&self) -> std::collections::BTreeMap<String, String> {
+        std::fs::read(&self.path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    }
+
+    fn write(&self, map: &std::collections::BTreeMap<String, String>) {
+        let Some(parent) = self.path.parent() else { return };
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let Ok(bytes) = serde_json::to_vec_pretty(map) else { return };
+        let staged = self.path.with_extension("json.new");
+        if std::fs::write(&staged, bytes).is_ok() {
+            let _ = std::fs::rename(&staged, &self.path);
+        }
+    }
+
+    /// The words kept for `coordinate`.
+    pub(crate) fn words(&self, coordinate: &str) -> Option<Arc<str>> {
+        self.read().get(coordinate).map(|words| Arc::from(words.as_str()))
+    }
+
+    /// Keeps `words` for `coordinate`.
+    pub(crate) fn keep(&self, coordinate: &str, words: &str) {
+        let mut map = self.read();
+        map.insert(coordinate.to_owned(), words.to_owned());
+        self.write(&map);
+    }
+
+    /// Forgets `coordinate`: its compile finished.
+    pub(crate) fn forget(&self, coordinate: &str) {
+        let mut map = self.read();
+        if map.remove(coordinate).is_some() {
+            self.write(&map);
+        }
     }
 }
 

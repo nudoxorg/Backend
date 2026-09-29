@@ -55,7 +55,8 @@ pub use protocol::{
     frame, is_lifecycle, read_frame, unframe, write_frame,
 };
 pub use service::{
-    CompletionAdmission, LocaldOwner, LocaldService, NoCompletionAdmission, NoReplicationAdmission,
+    CommandOutcome, CompletionAdmission, DeferredCommands, Handled, LocaldOwner, LocaldService,
+    NoCompletionAdmission, NoReplicationAdmission,
     NoSemanticRangeAdmission, OwnerService, ReplicationAdmission, SemanticRangeAdmission,
     ServiceError,
 };
