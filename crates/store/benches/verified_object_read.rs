@@ -49,13 +49,15 @@ enum ReadMode {
     Owned,
     OwnedThenPayloadCopy,
     BorrowedPinned,
+    BorrowedConvenience,
 }
 
 impl ReadMode {
-    const ALL: [Self; 3] = [
+    const ALL: [Self; 4] = [
         Self::Owned,
         Self::OwnedThenPayloadCopy,
         Self::BorrowedPinned,
+        Self::BorrowedConvenience,
     ];
 
     const fn label(self) -> &'static str {
@@ -63,6 +65,7 @@ impl ReadMode {
             Self::Owned => "legacy_owned",
             Self::OwnedThenPayloadCopy => "legacy_owned_plus_producer_vec_copy",
             Self::BorrowedPinned => "borrowed_pinned",
+            Self::BorrowedConvenience => "borrowed_convenience_pin_per_call",
         }
     }
 }
@@ -70,7 +73,7 @@ impl ReadMode {
 struct Fixture {
     store: FileStore,
     id: ObjectId,
-    pin: GcPinGuard,
+    pin: Option<GcPinGuard>,
     root: PathBuf,
 }
 
@@ -101,11 +104,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             .len();
 
             let first_start = Instant::now();
-            run_once(mode, &fixture.store, fixture.id, &fixture.pin)?;
+            run_once(mode, &fixture.store, fixture.id, fixture.pin.as_ref())?;
             let first_read_ns = first_start.elapsed().as_nanos();
 
             for _ in 0..WARMUP_COUNT {
-                run_once(mode, &fixture.store, fixture.id, &fixture.pin)?;
+                run_once(mode, &fixture.store, fixture.id, fixture.pin.as_ref())?;
             }
             let allocation = allocation_sample(mode, &fixture)?;
             let latencies = latency_samples(mode, &fixture, samples)?;
@@ -147,7 +150,11 @@ fn make_fixture(size: usize, mode: ReadMode) -> Result<Fixture, Box<dyn Error>> 
     let id = store.write_object(&object)?;
     drop(object);
     drop(value);
-    let pin = store.pin_garbage_collection()?;
+    let pin = if matches!(mode, ReadMode::BorrowedPinned) {
+        Some(store.pin_garbage_collection()?)
+    } else {
+        None
+    };
     Ok(Fixture {
         store,
         id,
@@ -160,7 +167,7 @@ fn run_once(
     mode: ReadMode,
     store: &FileStore,
     id: ObjectId,
-    pin: &GcPinGuard,
+    pin: Option<&GcPinGuard>,
 ) -> Result<(), StoreError> {
     match mode {
         ReadMode::Owned => {
@@ -173,7 +180,14 @@ fn run_once(
             black_box(second_payload);
         }
         ReadMode::BorrowedPinned => {
+            let pin = pin.ok_or(StoreError::Corrupt)?;
             store.with_verified_object_pinned(pin, id, |object| {
+                black_box(object.bytes());
+                Ok(())
+            })?;
+        }
+        ReadMode::BorrowedConvenience => {
+            store.with_verified_object(id, |object| {
                 black_box(object.bytes());
                 Ok(())
             })?;
@@ -185,7 +199,12 @@ fn run_once(
 fn allocation_sample(mode: ReadMode, fixture: &Fixture) -> Result<AllocationInfo, StoreError> {
     let mut result = None;
     let info = measure(|| {
-        result = Some(run_once(mode, &fixture.store, fixture.id, &fixture.pin));
+        result = Some(run_once(
+            mode,
+            &fixture.store,
+            fixture.id,
+            fixture.pin.as_ref(),
+        ));
     });
     result.expect("allocation measurement executed")?;
     Ok(info)
@@ -199,7 +218,7 @@ fn latency_samples(
     let mut latency = Vec::with_capacity(samples);
     for _ in 0..samples {
         let start = Instant::now();
-        run_once(mode, &fixture.store, fixture.id, &fixture.pin)?;
+        run_once(mode, &fixture.store, fixture.id, fixture.pin.as_ref())?;
         latency.push(start.elapsed().as_nanos());
     }
     latency.sort_unstable();
@@ -227,7 +246,7 @@ fn sampled_rss(
     let start = Instant::now();
     let mut result = Ok(());
     while start.elapsed() < RSS_WINDOW {
-        if let Err(error) = run_once(mode, &fixture.store, fixture.id, &fixture.pin) {
+        if let Err(error) = run_once(mode, &fixture.store, fixture.id, fixture.pin.as_ref()) {
             result = Err(error);
             break;
         }

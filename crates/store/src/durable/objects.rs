@@ -464,7 +464,7 @@ impl FileStore {
     where
         F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
     {
-        if !pin.covers_root(&self.root) {
+        if !pin.covers_identity(self.gc_identity) {
             return Err(StoreError::Corrupt);
         }
         let claimed_id = ObjectId::from_bytes(*claim.as_bytes());

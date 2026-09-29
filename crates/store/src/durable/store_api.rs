@@ -1,5 +1,6 @@
 //! `FileStore` opening and immutable pack/object/closure access.
 
+use super::layout::collection_pin_root_identity;
 use super::nodes;
 use super::recovery;
 use super::{
@@ -47,8 +48,10 @@ impl FileStore {
         fs::create_dir_all(root.join("objects")).map_err(|error| io_error(&error))?;
         fs::create_dir_all(root.join("closures")).map_err(|error| io_error(&error))?;
         fs::create_dir_all(root.join("nodes")).map_err(|error| io_error(&error))?;
+        let gc_identity = collection_pin_root_identity(&root);
         let store = Self {
             root,
+            gc_identity,
             max_pack_bytes,
             lock: Arc::new(Mutex::new(())),
             journal_tail: Arc::new(Mutex::new(recovery::JournalTail::default())),

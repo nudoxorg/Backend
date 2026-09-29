@@ -200,13 +200,13 @@ impl Drop for GcPinLease {
 #[derive(Debug)]
 pub struct GcPinGuard {
     _lease: GcPinLease,
-    root: PathBuf,
+    root_identity: Hash,
     acquired_at: Instant,
 }
 
 impl GcPinGuard {
-    pub(super) fn covers_root(&self, root: &Path) -> bool {
-        self.root == root
+    pub(super) fn covers_identity(&self, identity: Hash) -> bool {
+        self.root_identity == identity
     }
 
     /// Elapsed time since this shared collection pin was acquired.
@@ -467,6 +467,7 @@ impl SelectedHead {
 #[derive(Clone, Debug)]
 pub struct FileStore {
     pub(super) root: PathBuf,
+    pub(super) gc_identity: Hash,
     pub(super) max_pack_bytes: usize,
     pub(super) lock: Arc<Mutex<()>>,
     pub(super) journal_tail: Arc<Mutex<super::recovery::JournalTail>>,
@@ -496,7 +497,7 @@ impl FileStore {
         ACTIVE_GC_PINS.fetch_add(1, Ordering::Relaxed);
         Ok(GcPinGuard {
             _lease: lease,
-            root: self.root.clone(),
+            root_identity: self.gc_identity,
             acquired_at: Instant::now(),
         })
     }
@@ -548,4 +549,8 @@ impl FileStore {
     ) -> Result<StorePublicationAuthority, PublicationAuthorityError> {
         StorePublicationAuthority::acquire(publication_lock_path(&self.root))
     }
+}
+
+pub(in crate::durable) fn collection_pin_root_identity(root: &Path) -> Hash {
+    *blake3::hash(root.as_os_str().as_encoded_bytes()).as_bytes()
 }
