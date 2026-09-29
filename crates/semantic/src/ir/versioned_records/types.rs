@@ -19,7 +19,14 @@ pub use catalog::{
     CheckedTypesFamilyV2, TypesReferenceV2, TypesRowDomainV2, validate_types_family_v2,
 };
 pub use plan::{TypedRecordPlan, TypesClosureSemantics, TypesRowHandle, TypesRows};
-pub(super) use wire::validate_record;
+pub(super) fn validate_record(
+    kind: crate::ir::SemanticPlaneKind,
+    key: [u8; 32],
+    tag: u8,
+    payload: &[u8],
+) -> Result<(), crate::ir::SemanticPlaneRecordError> {
+    wire::validate_record(kind, key, tag, payload)
+}
 
 const ROOT_TAG: u8 = 1;
 const TYPE_TAG: u8 = 2;

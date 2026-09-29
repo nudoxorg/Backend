@@ -2,8 +2,9 @@ use alloc::vec::Vec;
 
 use crate::ir::{SemanticIrPlane, SemanticPlaneKind, SemanticPlaneRecordError};
 
+use super::EXTERNAL_TARGET_TAG;
 use super::plan::TypesClosureSemantics;
-use super::wire::{EXTERNAL_TARGET_TAG, parse_types_row};
+use super::wire::parse_types_row;
 
 const TYPES_FAMILY_ROOT_DOMAIN: &[u8] = b"backend.semantic.ir.types-family-root.v2\0";
 
