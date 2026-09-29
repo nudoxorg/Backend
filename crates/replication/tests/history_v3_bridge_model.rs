@@ -19,8 +19,7 @@ use backend_store::{
 use backend_version::{
     CanonicalRelation, ClosedRelationScope, CoverageWitness, IdContext, LazyTree,
     LazyTreeMetadataShape, LazyTreeUpdateBudget, ObjectKey, Relation, RelationDecodeError,
-    RelationState, Schema, SchemaIdentity, ScopeRoot, StateRoot, TreeChange, TreeNodeLoader,
-    UntrustedId,
+    RelationState, Schema, SchemaIdentity, ScopeRoot, StateRoot, TreeNodeLoader, UntrustedId,
 };
 
 const STORE_MAX_BYTES: usize = 1024 * 1024;
@@ -1002,20 +1001,21 @@ fn changed_tree<'store>(
     let prior = tree
         .lookup_many_sorted(&keys)
         .map_err(|error| format!("read bridge before values: {error:?}"))?;
-    let mut tree_changes = Vec::with_capacity(changes.len());
+    let mut replacements = Vec::new();
+    replacements
+        .try_reserve_exact(changes.len())
+        .map_err(|_| "reserve bounded bridge replacement batch".to_owned())?;
     let mut before_values = Vec::with_capacity(changes.len());
     for ((key, after), before) in changes.iter().zip(prior) {
         let before = before
             .ok_or_else(|| "prototype updates replace existing bridge rows only".to_owned())?;
         before_values.push((*key, before));
-        tree_changes.push(TreeChange {
-            key: *key,
-            after: *after,
-        });
+        let after = after.ok_or_else(|| "prototype accepts replacement rows only".to_owned())?;
+        replacements.push((*key, after));
     }
     let budget = LazyTreeUpdateBudget::new(changes.len(), 64 * 1024 * 1024, relation_shape());
     let update = tree
-        .prepare_update_bounded(&tree_changes, budget)
+        .prepare_replacements_bounded(&replacements, budget)
         .map_err(|error| format!("prepare bounded lazy bridge update: {error:?}"))?;
     let mut new_node_objects = Vec::with_capacity(update.changed_nodes().len());
     for node in update.changed_nodes() {

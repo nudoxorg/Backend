@@ -196,7 +196,10 @@ fn leaf_boundary_is_cut<R: Relation>(
     )
 }
 
-fn merge_segment<R: Relation>(existing: &[Item<R>], changes: &[TreeChange<R>]) -> Vec<Item<R>> {
+pub(super) fn merge_segment<R: Relation>(
+    existing: &[(R::Key, R::Value)],
+    changes: &[TreeChange<R>],
+) -> Vec<(R::Key, R::Value)> {
     let mut output = Vec::with_capacity(existing.len().saturating_add(changes.len()));
     let mut change_at = 0usize;
     for (key, value) in existing {

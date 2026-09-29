@@ -9,6 +9,7 @@ use crate::{
 use std::{borrow::Borrow, cell::Cell, mem::size_of};
 
 use super::TreeNodeLoader;
+use super::update::merge_segment;
 
 #[path = "lazy/helpers.rs"]
 mod helpers;
@@ -324,6 +325,9 @@ fn tree_height(member_count: usize, minimum_fanout: usize) -> Option<usize> {
     if minimum_fanout == 0 {
         return None;
     }
+    if minimum_fanout == 1 {
+        return (member_count <= 1).then_some(1);
+    }
     let mut nodes = member_count.max(1).div_ceil(minimum_fanout);
     let mut height = 1usize;
     while nodes > 1 {
@@ -420,6 +424,28 @@ struct RewriteResult<R: CanonicalRelation> {
     change: MapChange<R>,
 }
 
+struct BatchReplacementResult<R: CanonicalRelation> {
+    root: CanonicalNode<R>,
+    changed: Vec<CanonicalNode<R>>,
+    changes: Vec<MapChange<R>>,
+}
+
+#[derive(Default)]
+struct BatchReplacementAttempt {
+    changed_nodes: usize,
+    changed_node_bytes: usize,
+    loaded_nodes: usize,
+    peak_metadata_bytes: usize,
+}
+
+#[derive(Clone, Copy)]
+struct BatchReplacementBudget {
+    base_bytes: usize,
+    retained_root_bytes: usize,
+    budget_bytes: usize,
+    target_root_bytes: usize,
+}
+
 struct BoundedUpdateCharge {
     budget_bytes: usize,
     base_bytes: usize,
@@ -449,6 +475,45 @@ fn step_metadata_bytes<R: CanonicalRelation>(
 
 fn root_metadata_bytes<R: CanonicalRelation>(root: &CheckedCanonicalRoot<R>) -> Option<usize> {
     size_of::<CheckedCanonicalRoot<R>>().checked_add(root.node().as_bytes().len().checked_mul(2)?)
+}
+
+fn record_batch_replacement_node<R: CanonicalRelation>(
+    node_bytes: usize,
+    attempt: &mut BatchReplacementAttempt,
+    budget: Option<BatchReplacementBudget>,
+) -> Option<()> {
+    let next_nodes = attempt.changed_nodes.checked_add(1)?;
+    let next_bytes = attempt.changed_node_bytes.checked_add(node_bytes)?;
+    if let Some(budget) = budget {
+        let node_structs = size_of::<CanonicalNode<R>>().checked_mul(next_nodes)?;
+        let in_flight = node_structs.checked_add(next_bytes.checked_mul(2)?)?;
+        let frontier = node_structs
+            .checked_mul(2)?
+            .checked_add(next_bytes.checked_mul(2)?)?;
+        let overlay_per_node = size_of::<CheckedCanonicalRoot<R>>()
+            .checked_add(size_of::<[u8; crate::ID_BYTES]>())?
+            .checked_add(MAP_NODE_LINK_BYTES)?;
+        let overlay = overlay_per_node
+            .checked_mul(next_nodes)?
+            .checked_add(next_bytes.checked_mul(2)?)?;
+        let target_root = size_of::<CheckedCanonicalRoot<R>>()
+            .checked_add(budget.target_root_bytes.checked_mul(2)?)?
+            .checked_mul(2)?;
+        let required = budget
+            .base_bytes
+            .checked_add(budget.retained_root_bytes)?
+            .checked_add(in_flight)?
+            .checked_add(frontier)?
+            .checked_add(overlay)?
+            .checked_add(target_root)?;
+        if required > budget.budget_bytes {
+            return None;
+        }
+        attempt.peak_metadata_bytes = attempt.peak_metadata_bytes.max(required);
+    }
+    attempt.changed_nodes = next_nodes;
+    attempt.changed_node_bytes = next_bytes;
+    Some(())
 }
 
 /// A lazily opened canonical root with a store supplied node loader.
@@ -835,6 +900,131 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         changes: &[TreeChange<R>],
         budget: LazyTreeUpdateBudget,
     ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
+        self.prepare_update_bounded_with_mode(changes, budget, false)
+    }
+
+    /// Prepares sorted replacements for existing keys using a shared-path
+    /// batch rewrite when encoded widths and canonical leaf cuts stay stable.
+    /// Width changes or a changed leaf cut fall back to the regular bounded
+    /// sequential/spill path. Every key must already exist in the base tree.
+    ///
+    /// # Errors
+    /// Returns [`LazyTreeError::MissingKey`] when a requested replacement key
+    /// is absent, and forwards bounded metadata, canonical, and loader errors.
+    pub fn prepare_replacements_bounded(
+        &self,
+        replacements: &[(R::Key, R::Value)],
+        budget: LazyTreeUpdateBudget,
+    ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
+        if replacements
+            .windows(2)
+            .any(|window| window[0].0 >= window[1].0)
+        {
+            return Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate));
+        }
+        if replacements.len() > budget.max_changes {
+            return Err(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: usize::MAX,
+                max_bytes: budget.max_metadata_bytes,
+            });
+        }
+        if !replacements.is_empty() && self.root.row_count() == 0 {
+            return Err(LazyTreeError::MissingKey);
+        }
+        let shape = budget.shape;
+        if !shape.valid() {
+            return Err(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: usize::MAX,
+                max_bytes: budget.max_metadata_bytes,
+            });
+        }
+        let root_levels = usize::from(self.root.node().level()).saturating_add(1);
+        let required_levels = usize::try_from(self.root.row_count())
+            .ok()
+            .and_then(|rows| {
+                shape
+                    .minimum_fanout()
+                    .and_then(|fanout| tree_height(rows, fanout))
+            });
+        if shape.max_tree_levels < root_levels
+            || required_levels.is_none_or(|levels| shape.max_tree_levels < levels)
+        {
+            return Err(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: usize::MAX,
+                max_bytes: budget.max_metadata_bytes,
+            });
+        }
+        validate_node_shape(&self.root, shape).map_err(LazyTreeError::Node)?;
+        let Some(charge) = shape.update_metadata_bytes::<R>(replacements.len()) else {
+            return Err(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: usize::MAX,
+                max_bytes: budget.max_metadata_bytes,
+            });
+        };
+        let retained_root =
+            root_metadata_bytes(&self.root).ok_or(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: usize::MAX,
+                max_bytes: budget.max_metadata_bytes,
+            })?;
+        let initial_charge =
+            charge
+                .checked_add(retained_root)
+                .ok_or(LazyTreeError::MetadataBudgetExceeded {
+                    required_bytes: usize::MAX,
+                    max_bytes: budget.max_metadata_bytes,
+                })?;
+        if initial_charge > budget.max_metadata_bytes {
+            return Err(LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: initial_charge,
+                max_bytes: budget.max_metadata_bytes,
+            });
+        }
+        for (key, value) in replacements {
+            let mut encoded = Vec::new();
+            R::encode_key(key, &mut encoded);
+            if encoded.len() > shape.max_key_bytes {
+                return Err(LazyTreeError::MetadataBudgetExceeded {
+                    required_bytes: encoded.len(),
+                    max_bytes: shape.max_key_bytes,
+                });
+            }
+            encoded.clear();
+            R::encode_value(value, &mut encoded);
+            if encoded.len() > shape.max_value_bytes {
+                return Err(LazyTreeError::MetadataBudgetExceeded {
+                    required_bytes: encoded.len(),
+                    max_bytes: shape.max_value_bytes,
+                });
+            }
+        }
+        let mut changes = Vec::new();
+        changes.try_reserve_exact(replacements.len()).map_err(|_| {
+            LazyTreeError::MetadataBudgetExceeded {
+                required_bytes: usize::MAX,
+                max_bytes: budget.max_metadata_bytes,
+            }
+        })?;
+        changes.extend(replacements.iter().map(|(key, value)| TreeChange {
+            key: key.clone(),
+            after: Some(value.clone()),
+        }));
+        let prepared = self.prepare_update_bounded_with_mode(&changes, budget, true)?;
+        if prepared
+            .changes
+            .iter()
+            .any(|change| change.before.is_none())
+        {
+            return Err(LazyTreeError::MissingKey);
+        }
+        Ok(prepared)
+    }
+
+    fn prepare_update_bounded_with_mode(
+        &self,
+        changes: &[TreeChange<R>],
+        budget: LazyTreeUpdateBudget,
+        batch_replacements: bool,
+    ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
         if changes
             .windows(2)
             .any(|window| window[0].key >= window[1].key)
@@ -925,7 +1115,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             retained_overlay_bytes: 0,
             retained_root_bytes,
         };
-        let prepared = self.prepare_update_inner(changes, Some(bounded));
+        let prepared = self.prepare_update_inner(changes, Some(bounded), batch_replacements);
         self.bounded_shape.set(previous_shape);
         prepared
     }
@@ -948,13 +1138,14 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         &self,
         changes: &[TreeChange<R>],
     ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
-        self.prepare_update_inner(changes, None)
+        self.prepare_update_inner(changes, None, false)
     }
 
     fn prepare_update_inner(
         &self,
         changes: &[TreeChange<R>],
         mut bounded: Option<BoundedUpdateCharge>,
+        batch_replacements: bool,
     ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
         if changes
             .windows(2)
@@ -983,6 +1174,26 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 prepared.work.peak_metadata_bytes = bounded.peak_bytes;
             }
             return Ok(prepared);
+        }
+
+        let mut batch_attempt = BatchReplacementAttempt::default();
+        if batch_replacements && !changes.is_empty() {
+            let batch_budget = bounded.as_ref().map(|bounded| BatchReplacementBudget {
+                base_bytes: bounded.base_bytes,
+                retained_root_bytes: bounded.retained_root_bytes,
+                budget_bytes: bounded.budget_bytes,
+                target_root_bytes: self.root.node().as_bytes().len(),
+            });
+            let (batched, attempt) =
+                self.try_prepare_stable_replacement_batch(changes, batch_budget)?;
+            batch_attempt = attempt;
+            if let Some(mut prepared) = batched {
+                if let Some(bounded) = &mut bounded {
+                    bounded.peak_bytes = bounded.peak_bytes.max(batch_attempt.peak_metadata_bytes);
+                    prepared.work.peak_metadata_bytes = bounded.peak_bytes;
+                }
+                return Ok(prepared);
+            }
         }
 
         let mut overlay = OverlayLoader::<R, L>::new(self.loader);
@@ -1093,7 +1304,15 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         }
 
         let mut work = work;
+        work.loaded_nodes = work.loaded_nodes.saturating_add(batch_attempt.loaded_nodes);
+        work.rebuilt_nodes = work
+            .rebuilt_nodes
+            .saturating_add(batch_attempt.changed_nodes);
+        work.emitted_bytes = work
+            .emitted_bytes
+            .saturating_add(batch_attempt.changed_node_bytes);
         if let Some(bounded) = bounded {
+            bounded.peak_bytes = bounded.peak_bytes.max(batch_attempt.peak_metadata_bytes);
             work.peak_metadata_bytes = bounded.peak_bytes;
         }
         Ok(LazyPreparedUpdate {
@@ -1103,6 +1322,209 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             work,
             changes: effective,
         })
+    }
+
+    fn try_prepare_stable_replacement_batch(
+        &self,
+        changes: &[TreeChange<R>],
+        budget: Option<BatchReplacementBudget>,
+    ) -> Result<(Option<LazyPreparedUpdate<R>>, BatchReplacementAttempt), LazyTreeError<L::Error>>
+    {
+        let loaded_before = self.loaded_nodes.get();
+        let mut attempt = BatchReplacementAttempt::default();
+        if self.root.node().level() > 0
+            && self
+                .root
+                .child_summaries()
+                .map_err(LazyTreeError::Node)?
+                .len()
+                == 1
+        {
+            // The sequential root rewrite collapses a one-child root after a
+            // child replacement. Keep that less common canonical shape on the
+            // existing path rather than reproducing its special root rule.
+            return Ok((None, attempt));
+        }
+        let result = self.rewrite_stable_replacements(&self.root, changes, &mut attempt, budget)?;
+        attempt.loaded_nodes = self.loaded_nodes.get().saturating_sub(loaded_before);
+        let Some(result) = result else {
+            return Ok((None, attempt));
+        };
+        let emitted_bytes = result
+            .changed
+            .iter()
+            .map(|node| node.as_bytes().len())
+            .sum();
+        let work = LazyTreeWork {
+            loaded_nodes: attempt.loaded_nodes,
+            rebuilt_nodes: result.changed.len(),
+            split_nodes: 0,
+            removed_entries: 0,
+            emitted_bytes,
+            peak_metadata_bytes: attempt.peak_metadata_bytes,
+        };
+        Ok((
+            Some(LazyPreparedUpdate {
+                base: self.root.root(),
+                target: CheckedCanonicalRoot::from_parts(result.root.commitment(), result.root),
+                changed: result.changed,
+                work,
+                changes: result.changes,
+            }),
+            attempt,
+        ))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the batch path validates and rebuilds one shared authenticated path"
+    )]
+    fn rewrite_stable_replacements(
+        &self,
+        node: &CheckedCanonicalRoot<R>,
+        changes: &[TreeChange<R>],
+        attempt: &mut BatchReplacementAttempt,
+        budget: Option<BatchReplacementBudget>,
+    ) -> Result<Option<BatchReplacementResult<R>>, LazyTreeError<L::Error>> {
+        if changes.is_empty() {
+            return Ok(Some(BatchReplacementResult {
+                root: node.node().clone(),
+                changed: Vec::new(),
+                changes: Vec::new(),
+            }));
+        }
+        if node.node().level() == 0 {
+            let entries = node.leaf_entries().map_err(LazyTreeError::Node)?;
+            let mut effective = Vec::new();
+            let mut stable_width = true;
+            for change in changes {
+                let Some(after) = change.after.as_ref() else {
+                    return Ok(None);
+                };
+                let Ok(index) = entries.binary_search_by(|(key, _)| key.cmp(&change.key)) else {
+                    // A missing key can be an insertion. Let the general path
+                    // handle it together with every other edit in the batch.
+                    return Ok(None);
+                };
+                let before = &entries[index].1;
+                let mut before_bytes = Vec::new();
+                let mut after_bytes = Vec::new();
+                R::encode_value(before, &mut before_bytes);
+                R::encode_value(after, &mut after_bytes);
+                stable_width &= before_bytes.len() == after_bytes.len();
+                if before != after {
+                    effective.push(MapChange {
+                        key: change.key.clone(),
+                        before: Some(before.clone()),
+                        after: Some(after.clone()),
+                    });
+                }
+            }
+            if effective.is_empty() {
+                return Ok(Some(BatchReplacementResult {
+                    root: node.node().clone(),
+                    changed: Vec::new(),
+                    changes: effective,
+                }));
+            }
+            let merged = merge_segment::<R>(&entries, changes);
+            let cuts = leaf_probe_cuts::<R>(&merged, None)
+                .map_err(|_| LazyTreeError::Node(NodeError::InvalidBranch))?;
+            if cuts.len() != 1 || cuts[0] != merged.len() {
+                return Ok(None);
+            }
+            if !stable_width {
+                return Ok(None);
+            }
+            if record_batch_replacement_node::<R>(node.node().as_bytes().len(), attempt, budget)
+                .is_none()
+            {
+                return Ok(None);
+            }
+            let leaves = make_leaves::<R>(&merged).map_err(LazyTreeError::Node)?;
+            if leaves.len() != 1 || leaves[0].as_bytes().len() != node.node().as_bytes().len() {
+                return Err(LazyTreeError::Node(NodeError::InvalidBranch));
+            }
+            let leaf = leaves
+                .into_iter()
+                .next()
+                .ok_or(LazyTreeError::Node(NodeError::InvalidBranch))?;
+            return Ok(Some(BatchReplacementResult {
+                root: leaf.clone(),
+                changed: vec![leaf],
+                changes: effective,
+            }));
+        }
+
+        let summaries = node.child_summaries().map_err(LazyTreeError::Node)?;
+        if summaries.is_empty() || changes[0].key < summaries[0].first_key {
+            return Ok(None);
+        }
+        let mut changed = Vec::new();
+        let mut effective = Vec::new();
+        let mut next_summaries = Vec::with_capacity(summaries.len());
+        let mut start = 0usize;
+        for (index, summary) in summaries.iter().enumerate() {
+            let mut end = start;
+            while end < changes.len()
+                && (index + 1 == summaries.len()
+                    || changes[end].key < summaries[index + 1].first_key)
+            {
+                end += 1;
+            }
+            if end == start {
+                next_summaries.push(summary.clone());
+                continue;
+            }
+            let child = self.load(child_claim(summary).map_err(LazyTreeError::Node)?)?;
+            let Some(child_result) =
+                self.rewrite_stable_replacements(&child, &changes[start..end], attempt, budget)?
+            else {
+                return Ok(None);
+            };
+            if child_result.changed.is_empty() {
+                next_summaries.push(summary.clone());
+            } else {
+                let replacement =
+                    committed_child(&child_result.root).map_err(LazyTreeError::Node)?;
+                if replacement.first_key != summary.first_key
+                    || replacement.level != summary.level
+                    || replacement.row_count != summary.row_count
+                {
+                    return Ok(None);
+                }
+                next_summaries.push(replacement);
+                changed.extend(child_result.changed);
+                effective.extend(child_result.changes);
+            }
+            start = end;
+        }
+        if start != changes.len() {
+            return Ok(None);
+        }
+        if changed.is_empty() {
+            return Ok(Some(BatchReplacementResult {
+                root: node.node().clone(),
+                changed,
+                changes: effective,
+            }));
+        }
+        if record_batch_replacement_node::<R>(node.node().as_bytes().len(), attempt, budget)
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let branch = canonical_branch_from_commitments::<R>(node.node().level(), &next_summaries)
+            .map_err(LazyTreeError::Node)?;
+        if branch.as_bytes().len() != node.node().as_bytes().len() {
+            return Err(LazyTreeError::Node(NodeError::InvalidBranch));
+        }
+        changed.push(branch.clone());
+        Ok(Some(BatchReplacementResult {
+            root: branch,
+            changed,
+            changes: effective,
+        }))
     }
 
     fn prepare_empty_bulk(

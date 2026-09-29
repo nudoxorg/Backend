@@ -147,6 +147,19 @@ impl Relation for VariableRelation {
     }
 }
 
+impl CanonicalRelation for VariableRelation {
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, RelationDecodeError> {
+        bytes
+            .try_into()
+            .map(u64::from_be_bytes)
+            .map_err(|_| RelationDecodeError::Malformed)
+    }
+
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError> {
+        Ok(bytes.to_vec())
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct OtherRelation;
 
@@ -413,6 +426,42 @@ impl TreeNodeLoader<RelationFixture> for CountingLoader {
     }
 }
 
+struct MeasuredLoader<R: CanonicalRelation> {
+    nodes: BTreeMap<[u8; ID_BYTES], Vec<u8>>,
+    calls: Cell<usize>,
+    bytes_read: Cell<usize>,
+    marker: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R: CanonicalRelation> MeasuredLoader<R> {
+    fn new(nodes: BTreeMap<[u8; ID_BYTES], Vec<u8>>) -> Self {
+        Self {
+            nodes,
+            calls: Cell::new(0),
+            bytes_read: Cell::new(0),
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R: CanonicalRelation> TreeNodeLoader<R> for MeasuredLoader<R> {
+    type Error = NodeError;
+
+    fn load(&self, claim: UntrustedId<R>) -> Result<CheckedCanonicalRoot<R>, Self::Error> {
+        self.calls.set(self.calls.get().saturating_add(1));
+        let bytes = self
+            .nodes
+            .get(claim.as_bytes())
+            .ok_or(NodeError::MalformedEncoding)?;
+        self.bytes_read
+            .set(self.bytes_read.get().saturating_add(bytes.len()));
+        admit_canonical_root_claim(claim, bytes).map_err(|error| match error {
+            CanonicalRootAdmissionError::Node(error) => error,
+            CanonicalRootAdmissionError::Identity(_) => NodeError::MalformedEncoding,
+        })
+    }
+}
+
 #[test]
 fn lazy_sorted_lookup_batches_share_paths_and_match_single_key_lookup()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -620,6 +669,246 @@ fn lazy_batch_reuses_its_frontier_and_emits_one_exact_delta()
         ]),
         Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate))
     ));
+    Ok(())
+}
+
+#[test]
+fn lazy_bounded_replacements_rebuild_stable_width_shared_paths_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let items: Vec<_> = (0..8_192u64).map(|key| (key * 2, key * 4)).collect();
+    let tree = PersistentTree::<RelationFixture>::from_sorted_items(&items)?;
+    let base_nodes: BTreeMap<_, _> = tree
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect();
+    let clustered = (0..12u64)
+        .map(|offset| TreeChange {
+            key: 4_000 + offset * 2,
+            after: Some(8_001 + offset * 4),
+        })
+        .collect::<Vec<_>>();
+    let scattered = (0..12u64)
+        .map(|offset| {
+            let row = offset * (8_192 - 1) / 11;
+            TreeChange {
+                key: row * 2,
+                after: Some(row * 4 + 1),
+            }
+        })
+        .collect::<Vec<_>>();
+    for (label, changes) in [("clustered", clustered), ("scattered", scattered)] {
+        let mut sequential = tree.clone();
+        let mut sequential_nodes = 0usize;
+        let mut sequential_bytes = 0usize;
+        for change in &changes {
+            let prepared = sequential.prepare_update(std::slice::from_ref(change))?;
+            sequential_nodes += prepared.work().nodes;
+            sequential_bytes += prepared.work().encoded_bytes;
+            sequential = prepared.commit();
+        }
+
+        let loader = MeasuredLoader::<RelationFixture>::new(base_nodes.clone());
+        let claim = UntrustedId::from_wire(
+            tree.root().commitment().as_bytes(),
+            IdContext::relation::<RelationFixture>(),
+        )?;
+        let lazy = LazyTree::open(&loader, claim)?;
+        let calls_before = loader.calls.get();
+        let bytes_before = loader.bytes_read.get();
+        let budget = LazyTreeUpdateBudget::new(
+            changes.len(),
+            32 * 1024 * 1024,
+            LazyTreeMetadataShape::new(8, 8, 64, 1_024, 18, 6),
+        );
+        let replacements = changes
+            .iter()
+            .map(|change| {
+                (
+                    change.key,
+                    change.after.expect("stable replacement has a value"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let update = lazy.prepare_replacements_bounded(&replacements, budget)?;
+        let relation_node_reads = loader.calls.get() - calls_before;
+        let relation_read_bytes = loader.bytes_read.get() - bytes_before;
+        assert_eq!(
+            update.target().node().as_bytes(),
+            sequential.root().as_bytes(),
+            "{label} batch root must match the sequential canonical oracle byte-for-byte"
+        );
+        assert_eq!(update.delta().changes().count(), changes.len());
+        assert!(update.work().rebuilt_nodes < sequential_nodes);
+        assert!(update.work().emitted_bytes < sequential_bytes);
+        assert_eq!(update.work().loaded_nodes, relation_node_reads);
+        assert!(
+            relation_node_reads <= changes.len() * usize::from(tree.root().level()).max(1),
+            "{label} update fetched {relation_node_reads} nodes for {} changes",
+            changes.len()
+        );
+        assert!(update.work().peak_metadata_bytes <= budget.max_metadata_bytes);
+        assert!(update.work().peak_metadata_bytes > 0);
+
+        let mut expected = items.clone();
+        for change in &changes {
+            let index = expected
+                .binary_search_by_key(&change.key, |(key, _)| *key)
+                .map_err(|_| "stable replacement fixture key missing")?;
+            expected[index].1 = change.after.expect("replacement value");
+        }
+        let cold_nodes = sequential
+            .node_closure()
+            .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+            .collect();
+        let cold_loader = MeasuredLoader::<RelationFixture>::new(cold_nodes);
+        let cold_claim = UntrustedId::from_wire(
+            update.target().root().as_bytes(),
+            IdContext::relation::<RelationFixture>(),
+        )?;
+        let reopened = LazyTree::open(&cold_loader, cold_claim)?;
+        let keys = expected.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+        let membership = reopened.lookup_many_sorted(&keys)?;
+        assert_eq!(
+            membership,
+            expected
+                .iter()
+                .map(|(_, value)| Some(*value))
+                .collect::<Vec<_>>()
+        );
+        eprintln!(
+            "stable-width {label}: batch reads={relation_node_reads} nodes/{relation_read_bytes}B writes={} nodes/{}B; sequential oracle writes={sequential_nodes} nodes/{}B; cold membership reads={} nodes/{}B",
+            update.work().rebuilt_nodes,
+            update.work().emitted_bytes,
+            sequential_bytes,
+            cold_loader.calls.get(),
+            cold_loader.bytes_read.get(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn lazy_batch_falls_back_cleanly_on_width_and_leaf_cut_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let items: Vec<_> = (0..2_048u64)
+        .map(|row| (row * 2, vec![row as u8; 8]))
+        .collect();
+    let tree = PersistentTree::<VariableRelation>::from_sorted_items(&items)?;
+    let base_nodes: BTreeMap<_, _> = tree
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect();
+    let mut cases = vec![(
+        "width-change",
+        vec![
+            TreeChange {
+                key: 0,
+                after: Some(vec![7; 8]),
+            },
+            TreeChange {
+                key: 4_094,
+                after: Some(vec![9; 17]),
+            },
+        ],
+        LazyTreeMetadataShape::new(8, 17, 64, 1024, 18, 6),
+    )];
+    let cut_leaf = tree
+        .node_closure()
+        .filter(|node| node.is_leaf())
+        .filter(|node| node.first_key().is_some_and(|key| *key > 0))
+        .find_map(|node| {
+            let entries = node.entries()?;
+            (entries.len() > 125).then(|| {
+                entries
+                    .iter()
+                    .take(126)
+                    .map(|(key, _)| *key)
+                    .collect::<Vec<_>>()
+            })
+        })
+        .expect("fixture has a non-first leaf whose enlarged values force a cut");
+    let mut cut_changes = vec![TreeChange {
+        key: 0,
+        after: Some(vec![7; 8]),
+    }];
+    cut_changes.extend(cut_leaf.into_iter().map(|key| TreeChange {
+        key,
+        after: Some(vec![9; 500]),
+    }));
+    cases.push((
+        "leaf-cut-change",
+        cut_changes,
+        LazyTreeMetadataShape::new(8, 500, 64, 1024, 35, 3),
+    ));
+    for (label, changes, shape) in cases {
+        let mut sequential = tree.clone();
+        for change in &changes {
+            sequential = sequential
+                .prepare_update(std::slice::from_ref(change))?
+                .commit();
+        }
+        let loader = MeasuredLoader::<VariableRelation>::new(base_nodes.clone());
+        let claim = UntrustedId::from_wire(
+            tree.root().commitment().as_bytes(),
+            IdContext::relation::<VariableRelation>(),
+        )?;
+        let lazy = LazyTree::open(&loader, claim)?;
+        let calls_before = loader.calls.get();
+        let replacements = changes
+            .iter()
+            .map(|change| {
+                (
+                    change.key,
+                    change.after.clone().expect("replacement has a value"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let budget = LazyTreeUpdateBudget::new(replacements.len(), 128 * 1024 * 1024, shape);
+        let baseline_loader = MeasuredLoader::<VariableRelation>::new(base_nodes.clone());
+        let baseline_claim = UntrustedId::from_wire(
+            tree.root().commitment().as_bytes(),
+            IdContext::relation::<VariableRelation>(),
+        )?;
+        let baseline_lazy = LazyTree::open(&baseline_loader, baseline_claim)?;
+        let baseline_calls_before = baseline_loader.calls.get();
+        let baseline = baseline_lazy.prepare_update_bounded(&changes, budget)?;
+        let baseline_reads = baseline_loader.calls.get() - baseline_calls_before;
+        assert_eq!(
+            baseline.target().node().as_bytes(),
+            sequential.root().as_bytes()
+        );
+
+        let update = lazy.prepare_replacements_bounded(&replacements, budget)?;
+        assert_eq!(
+            update.target().node().as_bytes(),
+            sequential.root().as_bytes(),
+            "{label} fallback must start from the original root without a partial overlay"
+        );
+        assert!(loader.calls.get() > calls_before);
+        assert_eq!(
+            update.work().loaded_nodes,
+            loader.calls.get() - calls_before
+        );
+        assert!(
+            update.work().loaded_nodes > baseline_reads,
+            "{label} must exercise the sequential fallback after provisional shared-path work"
+        );
+
+        let cold_nodes = sequential
+            .node_closure()
+            .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+            .collect();
+        let cold_loader = MeasuredLoader::<VariableRelation>::new(cold_nodes);
+        let cold_claim = UntrustedId::from_wire(
+            update.target().root().as_bytes(),
+            IdContext::relation::<VariableRelation>(),
+        )?;
+        let reopened = LazyTree::open(&cold_loader, cold_claim)?;
+        assert!(reopened.lookup(&0)?.is_some());
+        for change in &changes {
+            assert!(reopened.lookup(&change.key)?.is_some());
+        }
+    }
     Ok(())
 }
 
