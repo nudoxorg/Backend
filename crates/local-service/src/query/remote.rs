@@ -26,8 +26,9 @@ use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Qdrant endpoint environment variable.
 pub const QDRANT_ENDPOINT_ENV: &str = "BACKEND_QDRANT_ENDPOINT";
@@ -66,6 +67,19 @@ const MAX_VECTOR_FACT_BYTES: usize = 512 * 1024 * 1024;
 const EMBEDDING_PROTOCOL_ABI: u16 = 1;
 const EMBEDDING_BATCH_PROTOCOL_ABI: u16 = 2;
 const EMBEDDING_DEADLINE: Duration = Duration::from_secs(5);
+// The environment-configured Qdrant producer is separate from the compiler's persisted
+// EmbeddingRuntimeLimits. Apply a fixed local-worker policy: bounded workspace/output, a short
+// wall/CPU deadline, and supported OS process/address-space limits. Outside 64-bit Linux the
+// process API cannot enforce a memory limit; on non-Unix platforms it cannot enforce CPU/process
+// limits, so the configured local executable remains trusted code within the portable I/O, wall,
+// and workspace bounds.
+const EMBEDDING_WORKSPACE_GROWTH_BYTES: usize = 256 * 1024 * 1024;
+#[cfg(unix)]
+const EMBEDDING_PROCESS_COUNT_LIMIT: usize = 256;
+#[cfg(unix)]
+const EMBEDDING_CPU_TIME_LIMIT: Duration = EMBEDDING_DEADLINE;
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+const EMBEDDING_ADDRESS_SPACE_LIMIT_BYTES: usize = 8 * 1024 * 1024 * 1024;
 const PRODUCER_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 fn embedding_capability_recipe(
@@ -845,6 +859,56 @@ struct EmbeddingProducer {
     manifest: [u8; 32],
     protocol: EmbeddingProducerProtocol,
     batch_runtime: Option<EmbeddingExecutable>,
+    _batch_workspace: Option<EmbeddingRuntimeWorkspace>,
+}
+
+struct EmbeddingRuntimeWorkspace {
+    path: PathBuf,
+}
+
+impl fmt::Debug for EmbeddingRuntimeWorkspace {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EmbeddingRuntimeWorkspace(<private>)")
+    }
+}
+
+static EMBEDDING_WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+impl EmbeddingRuntimeWorkspace {
+    fn create() -> Result<Self, RemoteConfigError> {
+        for _ in 0..32 {
+            let sequence = EMBEDDING_WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| RemoteConfigError::ProducerProtocol)?
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "backend-qdrant-embedding-{}-{stamp}-{sequence}",
+                std::process::id(),
+            ));
+            #[cfg(unix)]
+            let result = {
+                use std::os::unix::fs::DirBuilderExt as _;
+
+                let mut builder = fs::DirBuilder::new();
+                builder.mode(0o700).create(&path)
+            };
+            #[cfg(not(unix))]
+            let result = fs::create_dir(&path);
+            match result {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(RemoteConfigError::ProducerIo(error)),
+            }
+        }
+        Err(RemoteConfigError::ProducerProtocol)
+    }
+}
+
+impl Drop for EmbeddingRuntimeWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -969,21 +1033,15 @@ impl EmbeddingProducer {
         if maximum_batch_output > resource_bound || maximum_batch_input > resource_bound {
             return Err(RemoteConfigError::ProjectionLimit);
         }
-        let limits = ProcessLimits::new(
-            resource_bound,
-            64 * 1024,
-            EMBEDDING_DEADLINE,
-            resource_bound,
-        )
-        .and_then(|limits| limits.with_input_bytes_limit(resource_bound))
-        .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+        let limits = bounded_embedding_process_limits(resource_bound)?;
         let environment = ProcessEnvironment::new(vec![("LC_ALL".into(), "C".into())])
             .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+        let workspace = EmbeddingRuntimeWorkspace::create()?;
         let runtime = EmbeddingExecutable::activate_with_spec(
             spec,
             self.program.clone(),
             Vec::new(),
-            std::env::temp_dir(),
+            workspace.path.clone(),
             environment,
             limits,
             program,
@@ -996,6 +1054,7 @@ impl EmbeddingProducer {
         }
         self.verify_artifacts()?;
         self.batch_runtime = Some(runtime);
+        self._batch_workspace = Some(workspace);
         Ok(())
     }
 
@@ -1194,6 +1253,68 @@ impl EmbeddingProducer {
         }
         Ok(response.values)
     }
+}
+
+fn bounded_embedding_process_limits(
+    resource_bound: usize,
+) -> Result<ProcessLimits, RemoteConfigError> {
+    let limits = ProcessLimits::new(
+        resource_bound,
+        64 * 1024,
+        EMBEDDING_DEADLINE,
+        resource_bound,
+    )
+    .and_then(|limits| limits.with_input_bytes_limit(resource_bound))
+    .and_then(|limits| limits.with_workspace_limit(EMBEDDING_WORKSPACE_GROWTH_BYTES))
+    .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+    #[cfg(unix)]
+    let limits = limits
+        .with_process_count_limit(EMBEDDING_PROCESS_COUNT_LIMIT)
+        .and_then(|limits| limits.with_cpu_time_limit(EMBEDDING_CPU_TIME_LIMIT))
+        .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+    #[cfg(not(unix))]
+    let limits = limits;
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    let limits = limits
+        .with_memory_bytes_limit(EMBEDDING_ADDRESS_SPACE_LIMIT_BYTES)
+        .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+    #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+    let limits = limits;
+    Ok(limits)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+fn test_bounded_embedding_process_limits() {
+    let limits = bounded_embedding_process_limits(20 * 1024 * 1024)
+        .expect("construct bounded embedding worker limits");
+    assert_eq!(limits.input_bytes(), 20 * 1024 * 1024);
+    assert_eq!(limits.output_bytes(), 20 * 1024 * 1024);
+    assert_eq!(
+        limits.workspace_limit(),
+        Some(EMBEDDING_WORKSPACE_GROWTH_BYTES)
+    );
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            limits.process_count_limit(),
+            Some(EMBEDDING_PROCESS_COUNT_LIMIT)
+        );
+        assert_eq!(limits.cpu_time_limit(), Some(EMBEDDING_CPU_TIME_LIMIT));
+    }
+    #[cfg(not(unix))]
+    {
+        assert_eq!(limits.process_count_limit(), None);
+        assert_eq!(limits.cpu_time_limit(), None);
+    }
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    assert_eq!(
+        limits.memory_bytes_limit(),
+        Some(EMBEDDING_ADDRESS_SPACE_LIMIT_BYTES)
+    );
+    #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+    assert_eq!(limits.memory_bytes_limit(), None);
+    assert_eq!(limits.unsupported_limit(), None);
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -1486,6 +1607,11 @@ mod tests {
         (EMBEDDING_PROTOCOL_ENV, "json-v1"),
     ];
 
+    #[test]
+    fn bem2_producer_process_limits_are_explicit() {
+        test_bounded_embedding_process_limits();
+    }
+
     #[cfg(unix)]
     #[test]
     fn duplicate_document_payloads_share_one_exact_producer_result() {
@@ -1543,6 +1669,7 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             manifest,
             protocol: EmbeddingProducerProtocol::JsonV1,
             batch_runtime: None,
+            _batch_workspace: None,
         };
         let recipe = test_recipe();
         let client =
@@ -1692,6 +1819,7 @@ for identity in items:
             },
             protocol: EmbeddingProducerProtocol::Bem2,
             batch_runtime: None,
+            _batch_workspace: None,
         };
         let recipe = test_recipe();
         let mut producer = producer;
@@ -1965,6 +2093,7 @@ for identity in items:
             manifest: *hasher.finalize().as_bytes(),
             protocol: EmbeddingProducerProtocol::JsonV1,
             batch_runtime: None,
+            _batch_workspace: None,
         };
 
         let (coordinator, coverage, documents, selected_point, recipe) = http_projection_inputs();

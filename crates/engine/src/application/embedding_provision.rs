@@ -1088,19 +1088,52 @@ mod tests {
         directory: &Path,
         requirement: EmbeddingRequirement,
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1), EmbeddingRuntimeError> {
-        // This executable verifies the persisted-artifact paths and BEM2/BEC2 activation
+        // This executable verifies persisted-artifact paths and the real BEM2/BEC2 batch
         // boundary. Its fixed vector is a protocol fixture, not a pretrained model.
-        let program = directory.join("embedding-protocol-fixture.sh");
+        let program = directory.join("embedding-protocol-fixture.py");
         fs::write(
             &program,
-            b"#!/bin/sh\ntest -f \"$BACKEND_EMBEDDING_MODEL_FILE\" || exit 4\ntest -f \"$BACKEND_EMBEDDING_TOKENIZER_FILE\" || exit 5\nwhile IFS= read -r line || [ -n \"$line\" ]; do :; done\nprintf '\\102\\105\\103\\061\\000\\002\\000\\000\\200\\077\\000\\000\\000\\000'\n",
+            br"#!/usr/bin/env python3
+import os, struct, sys
+if not os.path.isfile(os.environ['BACKEND_EMBEDDING_MODEL_FILE']):
+    sys.exit(4)
+if not os.path.isfile(os.environ['BACKEND_EMBEDDING_TOKENIZER_FILE']):
+    sys.exit(5)
+frame = sys.stdin.buffer.read()
+if len(frame) < 108 or frame[:4] != b'BEM2':
+    sys.exit(6)
+dimension = struct.unpack('>H', frame[6:8])[0]
+count = struct.unpack('>I', frame[104:108])[0]
+if dimension != 2 or count < 1:
+    sys.exit(7)
+offset = 108
+identities = []
+for _ in range(count):
+    if offset + 36 > len(frame):
+        sys.exit(8)
+    identity = frame[offset:offset + 32]
+    text_bytes = struct.unpack('>I', frame[offset + 32:offset + 36])[0]
+    offset += 36
+    if offset + text_bytes > len(frame):
+        sys.exit(9)
+    identities.append(identity)
+    offset += text_bytes
+if offset != len(frame):
+    sys.exit(10)
+response = bytearray(b'BEC2')
+response.extend(struct.pack('>HI', dimension, count))
+for identity in identities:
+    response.extend(identity)
+    response.extend(struct.pack('<ff', 1.0, 0.0))
+sys.stdout.buffer.write(response)
+",
         )?;
         #[cfg(unix)]
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700))?;
         let limits = EmbeddingRuntimeLimits {
-            stdout_bytes: 64,
+            stdout_bytes: 128,
             stderr_bytes: 64,
-            output_bytes: 128,
+            output_bytes: 256,
             input_bytes: 512,
             wall_time_ms: 2_000,
             workspace_bytes: 1024 * 1024,
@@ -1117,7 +1150,7 @@ mod tests {
                 program,
                 arguments: Vec::new(),
                 dependencies: Vec::new(),
-                environment: Vec::new(),
+                environment: vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned())],
                 limits,
                 model_bytes: b"exact-model-artifact".to_vec(),
                 tokenizer_bytes: b"exact-tokenizer-artifact".to_vec(),
@@ -1155,6 +1188,10 @@ mod tests {
             loaded.status()
         );
         let runtime = loaded.runtime().ok_or("active executable missing")?;
+        assert_eq!(
+            runtime.batch_protocol(),
+            backend_compile::EmbeddingBatchProtocol::BatchV2
+        );
         assert_eq!(runtime.execution_identity().model(), expected.model());
         assert_eq!(
             runtime.execution_identity().tokenizer(),
@@ -1165,6 +1202,19 @@ mod tests {
             runtime.execution_identity().recipe(),
             expected.recipe_identity()
         );
+        let coordinates = runtime.infer_batch(
+            backend_compile::EmbeddingPurpose::Document,
+            &[
+                "cold reopen duplicate",
+                "cold reopen duplicate",
+                "cold reopen other",
+            ],
+        )?;
+        assert_eq!(coordinates.len(), 3);
+        assert!(std::sync::Arc::ptr_eq(
+            &coordinates[0].shared_values(),
+            &coordinates[1].shared_values()
+        ));
         fs::remove_dir_all(directory)?;
         Ok(())
     }

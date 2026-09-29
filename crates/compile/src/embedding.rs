@@ -37,6 +37,8 @@ const BATCH_RESPONSE_ITEM_HEADER_BYTES: usize = 32;
 pub const MAX_EMBEDDING_BATCH_ITEMS: usize = 256;
 /// Maximum original inputs accepted by one call; duplicates are folded before dispatch.
 pub const MAX_EMBEDDING_BATCH_INPUTS: usize = 65_536;
+/// Maximum aggregate UTF-8 payload bytes admitted to one API batch before identity hashing.
+pub const MAX_EMBEDDING_BATCH_INPUT_BYTES: usize = 512 * 1024 * 1024;
 /// Maximum decoded float32 coordinates retained by one batch call.
 pub const MAX_EMBEDDING_BATCH_COORDINATE_BYTES: usize = 64 * 1024 * 1024;
 /// Conservative allowance for bounded per-input batch and output metadata.
@@ -1480,15 +1482,12 @@ impl EmbeddingExecutable {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        check_cancelled(cancelled)?;
-        for text in texts {
-            if text.len() > self.maximum_text_bytes {
-                return Err(EmbeddingExecutableError::TextLimit {
-                    observed: text.len(),
-                    maximum: self.maximum_text_bytes,
-                });
-            }
-        }
+        validate_batch_input_bytes(
+            texts,
+            self.maximum_text_bytes,
+            MAX_EMBEDDING_BATCH_INPUT_BYTES,
+            cancelled,
+        )?;
 
         // Cache hits are accepted only after every mutable artifact path has been checked against
         // the activated manifest. Cache residency never becomes executable/model authority.
@@ -1511,6 +1510,7 @@ impl EmbeddingExecutable {
             .try_reserve_exact(texts.len())
             .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
         for text in texts {
+            check_cancelled(cancelled)?;
             let invocation = EmbeddingInvocation { purpose, text };
             let identity = EmbeddingInputIdentity::new(self.execution_identity(), invocation);
             let index = if let Some(index) = unique_by_identity.get(&identity) {
@@ -2082,6 +2082,13 @@ pub enum EmbeddingExecutableError {
         /// Maximum admitted inputs.
         maximum: usize,
     },
+    /// Aggregate original UTF-8 payload bytes exceed the hashing-work bound.
+    BatchInputBytesLimit {
+        /// Aggregate bytes in supplied inputs.
+        observed: usize,
+        /// Maximum aggregate bytes admitted.
+        maximum: usize,
+    },
     /// Decoded coordinates for unique misses exceed the bounded batch retention allowance.
     BatchResultLimit {
         /// Required coordinate bytes.
@@ -2146,6 +2153,34 @@ impl std::error::Error for EmbeddingExecutableError {}
 fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), EmbeddingExecutableError> {
     if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
         return Err(EmbeddingExecutableError::Process(ProcessError::Cancelled));
+    }
+    Ok(())
+}
+
+fn validate_batch_input_bytes(
+    texts: &[&str],
+    maximum_text_bytes: usize,
+    maximum_batch_bytes: usize,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), EmbeddingExecutableError> {
+    let mut total = 0_usize;
+    for (index, text) in texts.iter().enumerate() {
+        if index % 256 == 0 {
+            check_cancelled(cancelled)?;
+        }
+        if text.len() > maximum_text_bytes {
+            return Err(EmbeddingExecutableError::TextLimit {
+                observed: text.len(),
+                maximum: maximum_text_bytes,
+            });
+        }
+        total = total.saturating_add(text.len());
+    }
+    if total > maximum_batch_bytes {
+        return Err(EmbeddingExecutableError::BatchInputBytesLimit {
+            observed: total,
+            maximum: maximum_batch_bytes,
+        });
     }
     Ok(())
 }
@@ -2703,6 +2738,24 @@ else:
                 observed: 67_141_632,
                 maximum: MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
             })
+        ));
+    }
+
+    #[test]
+    fn batch_input_bytes_are_bounded_before_identity_work_and_poll_cancellation() {
+        let texts = ["same", "same", "other"];
+        assert!(matches!(
+            validate_batch_input_bytes(&texts, 8, 12, None),
+            Err(EmbeddingExecutableError::BatchInputBytesLimit {
+                observed: 13,
+                maximum: 12,
+            })
+        ));
+
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            validate_batch_input_bytes(&texts, 8, 64, Some(&cancelled)),
+            Err(EmbeddingExecutableError::Process(ProcessError::Cancelled))
         ));
     }
 
