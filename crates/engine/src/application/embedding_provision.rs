@@ -3,13 +3,14 @@
 //! Portable model and invocation identity is owned by `backend-compile`'s
 //! `EmbeddingRuntimeSpecV1`. This module stores only the owner-local launch
 //! paths, explicit environment and limits, and bounded content-addressed model
-//! and tokenizer bytes. Activation always goes through the shared BEM1/BEC1
-//! executable boundary and its real self-test.
+//! and tokenizer bytes. Activation always goes through the shared supervised
+//! BEM1/BEC1 or BEM2/BEC2 executable boundary and its real self-test.
 
 use super::compiler::{EmbeddingProvisioningFailure, EmbeddingRequirement};
 use backend_compile::{
     EmbeddingArtifact, EmbeddingExecutable, EmbeddingNormalization, EmbeddingRuntimeSpecV1,
-    ExecutableIdentity, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
+    ExecutableIdentity, MAX_EMBEDDING_BATCH_COORDINATE_BYTES, MAX_EMBEDDING_BATCH_METADATA_BYTES,
+    MAX_EMBEDDING_CACHE_COORDINATE_BYTES, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
     ProcessEnvironment, ProcessLimits, ToolchainArtifact,
 };
 use std::fs::{self, File};
@@ -42,8 +43,8 @@ const MAX_RUNTIME_WORKSPACE_BYTES: u64 = 512 * 1024 * 1024;
 ///
 /// `memory_bytes` is an OS-enforced process limit where the platform supports
 /// it. `resident_credit_bytes` separately reserves owner scheduler credits
-/// for resident artifacts and one inference's bounded scratch. The latter is
-/// never described as an OS memory ceiling.
+/// for resident artifacts and the bounded batch/cache memory envelope. The
+/// latter is never described as an OS memory ceiling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EmbeddingRuntimeLimits {
     /// Maximum captured stdout bytes.
@@ -52,7 +53,7 @@ pub struct EmbeddingRuntimeLimits {
     pub stderr_bytes: u64,
     /// Maximum total captured process output bytes.
     pub output_bytes: u64,
-    /// Maximum BEM1 request bytes sent to the process.
+    /// Maximum embedding request bytes sent to the process.
     pub input_bytes: u64,
     /// Maximum wall-clock time for one inference.
     pub wall_time_ms: u64,
@@ -108,6 +109,15 @@ impl EmbeddingRuntimeLimits {
             .checked_add(tokenizer_bytes)
             .and_then(|bytes| bytes.checked_add(self.input_bytes))
             .and_then(|bytes| bytes.checked_add(self.output_bytes))
+            .and_then(|bytes| {
+                bytes.checked_add(u64::try_from(MAX_EMBEDDING_BATCH_COORDINATE_BYTES).ok()?)
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(u64::try_from(MAX_EMBEDDING_BATCH_METADATA_BYTES).ok()?)
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(u64::try_from(MAX_EMBEDDING_CACHE_COORDINATE_BYTES).ok()?)
+            })
             .and_then(|bytes| bytes.checked_add(self.memory_bytes.unwrap_or(0)))
             .and_then(|bytes| bytes.checked_add(u64::from(dimension.get()) * 4))
             .ok_or(EmbeddingRuntimeError::InvalidConfig)?;
@@ -144,13 +154,18 @@ impl EmbeddingRuntimeLimits {
 pub struct EmbeddingRuntimeInstall {
     /// Whether indexing may continue with an explicit unavailable embedding plane.
     pub requirement: EmbeddingRequirement,
-    /// Absolute external model-runtime executable.
+    /// Absolute external model-runtime executable. Its verified bytes and exact launch path are
+    /// included in activated execution identity.
     pub program: PathBuf,
-    /// Explicit argument vector; ambient shell parsing is not used.
+    /// Exact ordered argument vector; ambient shell parsing is not used, and every argument is
+    /// included in activated execution identity.
     pub arguments: Vec<String>,
-    /// Exact executable dependencies included in the portable toolchain identity.
+    /// Exact executable dependencies included in the portable toolchain identity. Any worker
+    /// data files that can affect output must be declared here or committed by `options_digest`.
     pub dependencies: Vec<PathBuf>,
-    /// Explicit child environment, never inherited from the owner process.
+    /// Explicit child environment, never inherited from the owner process. Every output-affecting
+    /// value is included in activated execution identity; only the private artifact paths injected
+    /// by activation are excluded because model/tokenizer byte identities already cover them.
     pub environment: Vec<(String, String)>,
     /// Bounded inference resources and scheduler credit reservation.
     pub limits: EmbeddingRuntimeLimits,
@@ -164,7 +179,9 @@ pub struct EmbeddingRuntimeInstall {
     pub normalization: EmbeddingNormalization,
     /// Maximum UTF-8 bytes accepted by one inference request.
     pub maximum_text_bytes: NonZeroU32,
-    /// Digest of model-side options and task treatment.
+    /// Digest of model-side options and task treatment that are not represented by the model,
+    /// tokenizer, arguments, or explicit environment. Callers must change this digest when those
+    /// output-affecting options change.
     pub options_digest: [u8; 32],
 }
 
@@ -204,7 +221,7 @@ pub enum EmbeddingUnavailableReason {
     UnsupportedResourceLimit,
     /// This platform cannot create or protect the private inference workspace.
     PlatformUnsupported,
-    /// The external program failed the bounded BEM1/BEC1 activation self-test.
+    /// The external program failed the bounded BEM1/BEC1 or BEM2/BEC2 activation self-test.
     ActivationFailed,
 }
 
@@ -1071,7 +1088,7 @@ mod tests {
         directory: &Path,
         requirement: EmbeddingRequirement,
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1), EmbeddingRuntimeError> {
-        // This executable verifies the persisted-artifact paths and BEM1/BEC1 activation
+        // This executable verifies the persisted-artifact paths and BEM2/BEC2 activation
         // boundary. Its fixed vector is a protocol fixture, not a pretrained model.
         let program = directory.join("embedding-protocol-fixture.sh");
         fs::write(
@@ -1090,7 +1107,7 @@ mod tests {
             process_count: 2,
             memory_bytes: None,
             cpu_time_ms: Some(2_000),
-            resident_credit_bytes: 1024 * 1024,
+            resident_credit_bytes: 128 * 1024 * 1024,
         };
         let config = directory.join("embedding.config");
         let spec = install_embedding_runtime(

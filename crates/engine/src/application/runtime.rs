@@ -3358,6 +3358,10 @@ fn staged_output_reservation(
         .min(MAX_PACKAGE_EMBEDDING_BYTES);
     let per_source = core::mem::size_of::<StagedCompilerArtifact>()
         .checked_add(core::mem::size_of::<StagedSemanticArtifact>())?
+        .checked_add(core::mem::size_of::<[u8; 32]>())?
+        .checked_add(core::mem::size_of::<Box<[u8]>>())?
+        .checked_add(core::mem::size_of::<(&str, &str)>())?
+        .checked_add(core::mem::size_of::<&str>())?
         .checked_add(core::mem::size_of::<StagedSemanticObjectClaim>().checked_mul(2)?)?
         .checked_add(core::mem::size_of::<usize>())?
         .checked_add(crate::publication::manifest::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES)?;

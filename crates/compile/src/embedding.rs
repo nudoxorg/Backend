@@ -37,6 +37,12 @@ const BATCH_RESPONSE_ITEM_HEADER_BYTES: usize = 32;
 pub const MAX_EMBEDDING_BATCH_ITEMS: usize = 256;
 /// Maximum original inputs accepted by one call; duplicates are folded before dispatch.
 pub const MAX_EMBEDDING_BATCH_INPUTS: usize = 65_536;
+/// Maximum decoded float32 coordinates retained by one batch call.
+pub const MAX_EMBEDDING_BATCH_COORDINATE_BYTES: usize = 64 * 1024 * 1024;
+/// Conservative allowance for bounded per-input batch and output metadata.
+pub const MAX_EMBEDDING_BATCH_METADATA_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum float32 coordinate storage retained by the exact-input cache.
+pub const MAX_EMBEDDING_CACHE_COORDINATE_BYTES: usize = 8 * 1024 * 1024;
 const RUNTIME_SPEC_MAGIC: &[u8; 4] = b"BERS";
 const RUNTIME_SPEC_VERSION: u8 = 1;
 const RUNTIME_SPEC_BYTES: usize = 4 + 1 + 32 + 32 + 32 + 32 + 2 + 1 + 4 + 32;
@@ -71,7 +77,11 @@ impl InferenceAdmissionGate {
         }
     }
 
-    fn acquire(&self) -> Result<InferenceAdmissionPermit<'_>, EmbeddingExecutableError> {
+    fn acquire(
+        &self,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<InferenceAdmissionPermit<'_>, EmbeddingExecutableError> {
+        check_cancelled(cancelled)?;
         let deadline = Instant::now()
             .checked_add(self.wait_budget)
             .ok_or(EmbeddingExecutableError::InferenceAdmissionTimeout)?;
@@ -80,6 +90,7 @@ impl InferenceAdmissionGate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while *occupied {
+            check_cancelled(cancelled)?;
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(EmbeddingExecutableError::InferenceAdmissionTimeout);
             };
@@ -88,10 +99,11 @@ impl InferenceAdmissionGate {
             }
             let (next, timeout) = self
                 .available
-                .wait_timeout(occupied, remaining)
+                .wait_timeout(occupied, remaining.min(Duration::from_millis(10)))
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             occupied = next;
-            if timeout.timed_out() || Instant::now() >= deadline {
+            check_cancelled(cancelled)?;
+            if timeout.timed_out() && Instant::now() >= deadline {
                 return Err(EmbeddingExecutableError::InferenceAdmissionTimeout);
             }
         }
@@ -162,7 +174,10 @@ impl EmbeddingArtifact {
 /// Decoding this value does not admit model or executable authority. Owners must activate the
 /// runtime from their verified artifacts and compare the resulting
 /// [`EmbeddingExecutionIdentity`] with [`Self::validate_execution_identity`]. Local paths,
-/// temporary artifact paths, and process environment values are deliberately excluded.
+/// temporary artifact paths, arguments, and process environment values are deliberately excluded
+/// from this portable claim. The activated execution identity hashes executable/cwd paths, exact
+/// arguments, explicit environment (excluding injected private artifact paths), and process limits
+/// so changed launch settings cannot alias in input caches or compiler embedding-plane identities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EmbeddingRuntimeSpecV1 {
     model: [u8; 32],
@@ -480,6 +495,7 @@ impl EmbeddingInputIdentity {
         configuration.update(&execution.dimension.to_be_bytes());
         configuration.update(&execution.maximum_text_bytes.to_be_bytes());
         configuration.update(&execution.options_digest);
+        configuration.update(&execution.launch_configuration);
         configuration.update(&[match execution.normalization {
             EmbeddingNormalization::None => 0,
             EmbeddingNormalization::L2 => 1,
@@ -510,7 +526,7 @@ impl EmbeddingInputIdentity {
 /// Protocol selected after the activation self-test.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EmbeddingBatchProtocol {
-    /// BEM2/BEC2 accepted a real bounded batch self-test.
+    /// BEM2/BEC2 accepted a real bounded two-item batch self-test.
     BatchV2,
     /// The executable supports only the original BEM1/BEC1 one-input protocol.
     SingleV1,
@@ -527,7 +543,7 @@ pub struct EmbeddingCoordinates {
     values: Arc<[f32]>,
 }
 
-/// Portable identity of one activated embedding invocation recipe.
+/// Identity of one activated embedding invocation recipe and its exact launch policy.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct EmbeddingExecutionIdentity {
     model: [u8; 32],
@@ -539,6 +555,7 @@ pub struct EmbeddingExecutionIdentity {
     recipe: [u8; 32],
     maximum_text_bytes: u32,
     options_digest: [u8; 32],
+    launch_configuration: [u8; 32],
 }
 
 impl EmbeddingExecutionIdentity {
@@ -595,6 +612,16 @@ impl EmbeddingExecutionIdentity {
     #[must_use]
     pub const fn options_digest(self) -> [u8; 32] {
         self.options_digest
+    }
+
+    /// Digest of executable/cwd paths, exact arguments, explicit output-affecting environment
+    /// values, and process limits.
+    ///
+    /// The owner-private model and tokenizer paths injected into the child environment are
+    /// excluded; their immutable bytes already have separate identities.
+    #[must_use]
+    pub const fn launch_configuration(self) -> [u8; 32] {
+        self.launch_configuration
     }
 }
 
@@ -862,6 +889,88 @@ fn embedding_environment(
     ProcessEnvironment::new(variables).map_err(EmbeddingExecutableError::Process)
 }
 
+fn embedding_launch_configuration(
+    program: &Path,
+    workspace: &Path,
+    arguments: &[String],
+    environment: &ProcessEnvironment,
+    process_limits: ProcessLimits,
+) -> [u8; 32] {
+    let mut hasher =
+        blake3::Hasher::new_derive_key("backend.compile.embedding-launch-configuration.v1");
+    update_launch_configuration_field(&mut hasher, program.as_os_str().as_encoded_bytes());
+    update_launch_configuration_field(&mut hasher, workspace.as_os_str().as_encoded_bytes());
+    hasher.update(
+        &u64::try_from(arguments.len())
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    for argument in arguments {
+        update_launch_configuration_field(&mut hasher, argument.as_bytes());
+    }
+    let variable_count = environment
+        .variables()
+        .iter()
+        .filter(|(key, _)| key != MODEL_FILE_ENV && key != TOKENIZER_FILE_ENV)
+        .count();
+    hasher.update(
+        &u64::try_from(variable_count)
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    for (key, value) in environment.variables() {
+        if key == MODEL_FILE_ENV || key == TOKENIZER_FILE_ENV {
+            continue;
+        }
+        update_launch_configuration_field(&mut hasher, key.as_bytes());
+        update_launch_configuration_field(&mut hasher, value.as_bytes());
+    }
+    for limit in [
+        process_limits.stdout(),
+        process_limits.stderr(),
+        process_limits.output_bytes(),
+        process_limits.input_bytes(),
+    ] {
+        hasher.update(&u64::try_from(limit).unwrap_or(u64::MAX).to_be_bytes());
+    }
+    update_launch_duration(&mut hasher, process_limits.wall_time());
+    update_launch_optional_usize(&mut hasher, process_limits.workspace_limit());
+    update_launch_optional_usize(&mut hasher, process_limits.process_count_limit());
+    update_launch_optional_usize(&mut hasher, process_limits.memory_bytes_limit());
+    match process_limits.cpu_time_limit() {
+        Some(duration) => {
+            hasher.update(&[1]);
+            update_launch_duration(&mut hasher, duration);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn update_launch_configuration_field(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hasher.update(bytes);
+}
+
+fn update_launch_optional_usize(hasher: &mut blake3::Hasher, value: Option<usize>) {
+    match value {
+        Some(value) => {
+            hasher.update(&[1]);
+            hasher.update(&u64::try_from(value).unwrap_or(u64::MAX).to_be_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+}
+
+fn update_launch_duration(hasher: &mut blake3::Hasher, duration: Duration) {
+    hasher.update(&duration.as_secs().to_be_bytes());
+    hasher.update(&duration.subsec_nanos().to_be_bytes());
+}
+
 /// Failure to encode a vector into the canonical bounded segment payload.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum EmbeddingPayloadError {
@@ -956,13 +1065,13 @@ pub struct EmbeddingExecutable {
     model: EmbeddingArtifact,
     tokenizer: EmbeddingArtifact,
     artifact_workspace: EmbeddingArtifactWorkspace,
+    launch_configuration: [u8; 32],
     inference_gate: InferenceAdmissionGate,
     inference_cache: Mutex<EmbeddingInferenceCache>,
     batch_protocol: EmbeddingBatchProtocol,
     active: bool,
 }
 
-const MAX_EMBEDDING_CACHE_COORDINATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EMBEDDING_CACHE_ENTRIES: usize = 256;
 
 #[derive(Default)]
@@ -1021,7 +1130,8 @@ impl fmt::Debug for EmbeddingExecutable {
 }
 
 impl EmbeddingExecutable {
-    /// Returns the portable identity of this activated model runtime.
+    /// Returns the exact activated model runtime identity, including launch arguments and
+    /// output-affecting explicit environment values.
     #[must_use]
     pub fn execution_identity(&self) -> EmbeddingExecutionIdentity {
         let model = self.model.identity.as_bytes();
@@ -1035,6 +1145,7 @@ impl EmbeddingExecutable {
             recipe: self.recipe,
             maximum_text_bytes: u32::try_from(self.maximum_text_bytes).unwrap_or(u32::MAX),
             options_digest: self.options_digest,
+            launch_configuration: self.launch_configuration,
         }
     }
 
@@ -1050,14 +1161,16 @@ impl EmbeddingExecutable {
         self.maximum_text_bytes
     }
 
-    /// Upper bound for the Rust-owned transient request, captured process output, and decoded
-    /// coordinates retained while one inference is in flight.
+    /// Upper bound for cache storage, batch request/output scratch, decoded coordinates, and
+    /// per-input batch metadata. Compiler staging reserves encoded BVE1 payloads separately.
     #[must_use]
     pub const fn maximum_inference_scratch_bytes(&self) -> usize {
         self.process_limits
             .input_bytes()
             .saturating_add(self.process_limits.output_bytes())
-            .saturating_add(self.dimensions.get() as usize * size_of::<f32>())
+            .saturating_add(MAX_EMBEDDING_BATCH_COORDINATE_BYTES)
+            .saturating_add(MAX_EMBEDDING_BATCH_METADATA_BYTES)
+            .saturating_add(MAX_EMBEDDING_CACHE_COORDINATE_BYTES)
     }
 
     /// Maximum simultaneous child processes admitted through this activated model runtime.
@@ -1223,6 +1336,13 @@ impl EmbeddingExecutable {
         {
             return Err(EmbeddingExecutableError::ResponseBound);
         }
+        let launch_configuration = embedding_launch_configuration(
+            &program,
+            &workspace,
+            &arguments,
+            &environment,
+            process_limits,
+        );
         let artifact_workspace =
             EmbeddingArtifactWorkspace::create(&workspace, &model, &tokenizer)?;
         let environment = embedding_environment(&environment, &artifact_workspace)?;
@@ -1242,6 +1362,7 @@ impl EmbeddingExecutable {
             model,
             tokenizer,
             artifact_workspace,
+            launch_configuration,
             inference_gate: InferenceAdmissionGate::new(process_limits.wall_time()),
             inference_cache: Mutex::new(EmbeddingInferenceCache::default()),
             batch_protocol: EmbeddingBatchProtocol::SingleV1,
@@ -1268,9 +1389,21 @@ impl EmbeddingExecutable {
             purpose: EmbeddingPurpose::Query,
             text: "backend embedding readiness",
         };
-        let identity = EmbeddingInputIdentity::new(self.execution_identity(), probe);
-        if let Ok(coordinates) = self.run_batch_v2(&[(identity, probe.text)], probe.purpose, None) {
-            debug_assert_eq!(coordinates.len(), 1);
+        let second_probe = EmbeddingInvocation {
+            purpose: EmbeddingPurpose::Query,
+            text: "backend embedding batch check",
+        };
+        let probes = [probe, second_probe];
+        let batch = probes.map(|invocation| {
+            (
+                EmbeddingInputIdentity::new(self.execution_identity(), invocation),
+                invocation.text,
+            )
+        });
+        if batch_single_request_fits(self.maximum_text_bytes, self.process_limits.input_bytes())
+            && let Ok(coordinates) = self.run_batch_v2(&batch, probe.purpose, None)
+            && coordinates.len() == probes.len()
+        {
             self.batch_protocol = EmbeddingBatchProtocol::BatchV2;
             return Ok(());
         }
@@ -1288,6 +1421,13 @@ impl EmbeddingExecutable {
         &self,
         invocation: EmbeddingInvocation<'_>,
     ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
+        if self.batch_protocol == EmbeddingBatchProtocol::BatchV2 {
+            return self
+                .infer_batch(invocation.purpose, &[invocation.text])?
+                .into_iter()
+                .next()
+                .ok_or(EmbeddingExecutableError::Protocol);
+        }
         self.infer_inner(invocation, true)
     }
 
@@ -1409,7 +1549,7 @@ impl EmbeddingExecutable {
         let _permit = if misses.is_empty() {
             None
         } else {
-            Some(self.inference_gate.acquire()?)
+            Some(self.inference_gate.acquire(cancelled)?)
         };
         if _permit.is_some() {
             check_cancelled(cancelled)?;
@@ -1437,6 +1577,7 @@ impl EmbeddingExecutable {
             }
             misses = still_missing;
         }
+        check_batch_result_limit(misses.len(), self.dimensions.get())?;
 
         if self.batch_protocol == EmbeddingBatchProtocol::SingleV1 {
             for index in misses {
@@ -1455,18 +1596,7 @@ impl EmbeddingExecutable {
                 let first_index = misses[cursor];
                 let first = unique_inputs[first_index];
                 if !self.batch_request_fits(&[first]) {
-                    // A single long input can fit the legacy framing even when its BEM2 identity
-                    // tag would exceed the independent request/output bounds.
-                    unique_results[first_index] = Some(self.infer_inner_admitted(
-                        EmbeddingInvocation {
-                            purpose,
-                            text: first.1,
-                        },
-                        false,
-                        cancelled,
-                    )?);
-                    cursor += 1;
-                    continue;
+                    return Err(EmbeddingExecutableError::BatchRequestExtent);
                 }
                 let mut end = cursor + 1;
                 while end < misses.len() && end - cursor < MAX_EMBEDDING_BATCH_ITEMS {
@@ -1544,7 +1674,7 @@ impl EmbeddingExecutable {
             return Err(EmbeddingExecutableError::Revoked);
         }
         check_cancelled(cancelled)?;
-        let _permit = self.inference_gate.acquire()?;
+        let _permit = self.inference_gate.acquire(cancelled)?;
         self.infer_inner_admitted(invocation, use_cache, cancelled)
     }
 
@@ -1737,7 +1867,7 @@ impl EmbeddingExecutable {
             return Err(EmbeddingExecutableError::Revoked);
         }
         check_cancelled(cancelled)?;
-        let _permit = self.inference_gate.acquire()?;
+        let _permit = self.inference_gate.acquire(cancelled)?;
         self.run_batch_v2_admitted(batch, purpose, cancelled)
     }
 
@@ -1952,6 +2082,13 @@ pub enum EmbeddingExecutableError {
         /// Maximum admitted inputs.
         maximum: usize,
     },
+    /// Decoded coordinates for unique misses exceed the bounded batch retention allowance.
+    BatchResultLimit {
+        /// Required coordinate bytes.
+        observed: usize,
+        /// Maximum retained coordinate bytes.
+        maximum: usize,
+    },
     /// Request header/text extent cannot be represented or exceeds the process input bound.
     RequestExtent,
     /// Batch request, response, or scratch extent cannot be represented or exceeds its bound.
@@ -2011,6 +2148,33 @@ fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), EmbeddingExecut
         return Err(EmbeddingExecutableError::Process(ProcessError::Cancelled));
     }
     Ok(())
+}
+
+fn check_batch_result_limit(
+    unique_misses: usize,
+    dimensions: u16,
+) -> Result<(), EmbeddingExecutableError> {
+    let coordinate_bytes = unique_misses
+        .checked_mul(usize::from(dimensions))
+        .and_then(|coordinates| coordinates.checked_mul(size_of::<f32>()))
+        .ok_or(EmbeddingExecutableError::BatchResultLimit {
+            observed: usize::MAX,
+            maximum: MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
+        })?;
+    if coordinate_bytes > MAX_EMBEDDING_BATCH_COORDINATE_BYTES {
+        return Err(EmbeddingExecutableError::BatchResultLimit {
+            observed: coordinate_bytes,
+            maximum: MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn batch_single_request_fits(maximum_text_bytes: usize, input_bytes: usize) -> bool {
+    REQUEST_HEADER_BYTES
+        .checked_add(BATCH_ITEM_HEADER_BYTES)
+        .and_then(|bytes| bytes.checked_add(maximum_text_bytes))
+        .is_some_and(|request_bytes| request_bytes <= input_bytes)
 }
 
 fn run_supervised_command(
@@ -2087,9 +2251,6 @@ EXPECTED_TOKENIZER_ID = "{}"
 counter = os.environ.get("BACKEND_EMBEDDING_ACTIVE_COUNTER")
 call_counter = os.environ.get("BACKEND_EMBEDDING_CALL_COUNTER")
 fault_file = os.environ.get("BACKEND_EMBEDDING_FAULT_FILE")
-if call_counter:
-    with open(call_counter, "a") as output:
-        output.write("call\n")
 if counter:
     import fcntl, time
     def update_counter(delta):
@@ -2115,6 +2276,8 @@ if model_bytes != EXPECTED_MODEL or tokenizer_bytes != EXPECTED_TOKENIZER:
 frame = sys.stdin.buffer.read()
 if len(frame) < 108 or frame[:4] not in (b"BEM1", b"BEM2"):
     sys.exit(72)
+if os.environ.get("BACKEND_EMBEDDING_REQUIRE_BEM2") and frame[:4] != b"BEM2":
+    sys.exit(78)
 if frame[40:72].hex() != EXPECTED_MODEL_ID or frame[72:104].hex() != EXPECTED_TOKENIZER_ID:
     sys.exit(73)
 batch = frame[:4] == b"BEM2"
@@ -2139,6 +2302,9 @@ else:
     if len(text) != text_length:
         sys.exit(74)
     items.append((None, text))
+if call_counter:
+    with open(call_counter, "a") as output:
+        output.write("%s %d\n" % (frame[:4].decode(), len(items)))
 if frame[6:8] == b"\x00\x00":
     sys.exit(74)
 dimension = struct.unpack(">H", frame[6:8])[0]
@@ -2215,7 +2381,6 @@ else:
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
     {
         let (root, program) = fixture()?;
-        let artifact = ToolchainArtifact::from_path(&program, Vec::new())?;
         let mut environment = vec![("PATH".into(), "/usr/bin:/bin".into())];
         if let Some(counter) = counter {
             environment.push((
@@ -2236,6 +2401,17 @@ else:
             ));
         }
         let environment = ProcessEnvironment::new(environment)?;
+        activate_fixture(root, program, Vec::new(), environment)
+    }
+
+    fn activate_fixture(
+        root: PathBuf,
+        program: PathBuf,
+        arguments: Vec<String>,
+        environment: ProcessEnvironment,
+    ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
+    {
+        let artifact = ToolchainArtifact::from_path(&program, Vec::new())?;
         let limits = ProcessLimits::new(128, 64, Duration::from_secs(2), 256)?
             .with_input_bytes_limit(512)?;
         let model = EmbeddingArtifact::new(Arc::from(MODEL_BYTES));
@@ -2253,7 +2429,7 @@ else:
         let runtime = EmbeddingExecutable::activate_with_spec(
             spec,
             program,
-            Vec::new(),
+            arguments,
             root.clone(),
             environment,
             limits,
@@ -2324,6 +2500,42 @@ else:
     }
 
     #[test]
+    fn batch_only_worker_is_activated_with_two_items_and_single_infer_uses_bem2()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, program) = fixture()?;
+        let calls = root.join("protocol-calls.txt");
+        let environment = ProcessEnvironment::new(vec![
+            (
+                "BACKEND_EMBEDDING_CALL_COUNTER".into(),
+                calls.to_string_lossy().into_owned(),
+            ),
+            ("BACKEND_EMBEDDING_REQUIRE_BEM2".into(), "1".into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ])?;
+        let (root, _, runtime) = activate_fixture(
+            root,
+            program,
+            vec!["--fixture-option=stable".into()],
+            environment,
+        )?;
+        assert_eq!(runtime.batch_protocol(), EmbeddingBatchProtocol::BatchV2);
+
+        let coordinates = runtime.infer(EmbeddingInvocation {
+            purpose: EmbeddingPurpose::Document,
+            text: "alpha",
+        })?;
+        assert_eq!(coordinates.purpose(), EmbeddingPurpose::Document);
+        assert_eq!(
+            fs::read_to_string(&calls)?.lines().collect::<Vec<_>>(),
+            ["BEM2 2", "BEM2 1"]
+        );
+
+        drop(runtime);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn exact_input_cache_reuses_coordinates_and_keeps_probe_uncached()
     -> Result<(), Box<dyn std::error::Error>> {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -2362,6 +2574,12 @@ else:
             document_identity,
             EmbeddingInputIdentity::new(changed_configuration, document)
         );
+        let mut changed_launch = runtime.execution_identity();
+        changed_launch.launch_configuration = [0x5C; 32];
+        assert_ne!(
+            document_identity,
+            EmbeddingInputIdentity::new(changed_launch, document)
+        );
         assert_eq!(fs::read_to_string(&counter)?.lines().count(), 1); // activation probe
 
         let cold_started = Instant::now();
@@ -2394,6 +2612,109 @@ else:
         fs::remove_dir_all(root)?;
         fs::remove_dir_all(counter_root)?;
         Ok(())
+    }
+
+    #[test]
+    fn launch_configuration_binds_arguments_and_environment_but_not_private_artifact_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let first = ProcessEnvironment::new(vec![
+            (MODEL_FILE_ENV.into(), "/private/first/model.bin".into()),
+            (
+                TOKENIZER_FILE_ENV.into(),
+                "/private/first/tokenizer.bin".into(),
+            ),
+            ("EMBEDDING_MODE".into(), "float32".into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ])?;
+        let relocated = ProcessEnvironment::new(vec![
+            (MODEL_FILE_ENV.into(), "/private/second/model.bin".into()),
+            (
+                TOKENIZER_FILE_ENV.into(),
+                "/private/second/tokenizer.bin".into(),
+            ),
+            ("EMBEDDING_MODE".into(), "float32".into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ])?;
+        let changed_mode = ProcessEnvironment::new(vec![
+            (MODEL_FILE_ENV.into(), "/private/second/model.bin".into()),
+            (
+                TOKENIZER_FILE_ENV.into(),
+                "/private/second/tokenizer.bin".into(),
+            ),
+            ("EMBEDDING_MODE".into(), "bf16".into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ])?;
+        let arguments = ["--device=cpu".to_owned(), "--precision=float32".to_owned()];
+        let program = Path::new("/opt/backend/embedding-worker");
+        let workspace = Path::new("/var/lib/backend/embedding-work");
+        let limits = ProcessLimits::new(128, 64, Duration::from_secs(2), 256)?;
+        let changed_limits = ProcessLimits::new(128, 64, Duration::from_secs(3), 256)?;
+        assert_eq!(
+            embedding_launch_configuration(program, workspace, &arguments, &first, limits),
+            embedding_launch_configuration(program, workspace, &arguments, &relocated, limits)
+        );
+        assert_ne!(
+            embedding_launch_configuration(program, workspace, &arguments, &first, limits),
+            embedding_launch_configuration(program, workspace, &arguments, &changed_mode, limits)
+        );
+        assert_ne!(
+            embedding_launch_configuration(program, workspace, &arguments, &first, limits),
+            embedding_launch_configuration(
+                program,
+                workspace,
+                &["--device=cpu".to_owned()],
+                &first,
+                limits
+            )
+        );
+        assert_ne!(
+            embedding_launch_configuration(program, workspace, &arguments, &first, limits),
+            embedding_launch_configuration(
+                Path::new("/opt/backend/other-worker"),
+                workspace,
+                &arguments,
+                &first,
+                limits
+            )
+        );
+        assert_ne!(
+            embedding_launch_configuration(program, workspace, &arguments, &first, limits),
+            embedding_launch_configuration(
+                program,
+                Path::new("/var/lib/backend/other-work"),
+                &arguments,
+                &first,
+                limits
+            )
+        );
+        assert_ne!(
+            embedding_launch_configuration(program, workspace, &arguments, &first, limits),
+            embedding_launch_configuration(program, workspace, &arguments, &first, changed_limits)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn batch_coordinate_retention_has_a_checked_hard_ceiling() {
+        assert!(check_batch_result_limit(2_048, 8_192).is_ok());
+        assert!(matches!(
+            check_batch_result_limit(2_049, 8_192),
+            Err(EmbeddingExecutableError::BatchResultLimit {
+                observed: 67_141_632,
+                maximum: MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
+            })
+        ));
+    }
+
+    #[test]
+    fn batch_activation_requires_one_maximum_text_to_fit_bem2_framing() {
+        let maximum_text_bytes = 128;
+        let bem1_extent = REQUEST_HEADER_BYTES + maximum_text_bytes;
+        assert!(batch_single_request_fits(
+            maximum_text_bytes,
+            bem1_extent + BATCH_ITEM_HEADER_BYTES
+        ));
+        assert!(!batch_single_request_fits(maximum_text_bytes, bem1_extent));
     }
 
     #[test]
@@ -2702,13 +3023,48 @@ else:
     fn inference_gate_has_a_typed_finite_wait_and_releases_its_permit()
     -> Result<(), Box<dyn std::error::Error>> {
         let gate = InferenceAdmissionGate::new(Duration::from_millis(10));
-        let permit = gate.acquire()?;
+        let permit = gate.acquire(None)?;
         assert!(matches!(
-            gate.acquire(),
+            gate.acquire(None),
             Err(EmbeddingExecutableError::InferenceAdmissionTimeout)
         ));
         drop(permit);
-        assert!(gate.acquire().is_ok());
+        assert!(gate.acquire(None).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_batch_waiter_exits_the_gate_without_waiting_for_its_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let gate = Arc::new(InferenceAdmissionGate::new(Duration::from_secs(3)));
+        let permit = gate.acquire(None)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
+        let (finished_sender, finished_receiver) = std::sync::mpsc::sync_channel(1);
+        let waiter_gate = Arc::clone(&gate);
+        let waiter_cancelled = Arc::clone(&cancelled);
+        let waiter = std::thread::spawn(move || {
+            entered_sender.send(()).expect("notify test thread entered");
+            let started = Instant::now();
+            let result = waiter_gate.acquire(Some(&waiter_cancelled)).map(drop);
+            finished_sender
+                .send((result, started.elapsed()))
+                .expect("send cancellation result");
+        });
+        entered_receiver.recv()?;
+        std::thread::sleep(Duration::from_millis(20));
+        cancelled.store(true, Ordering::Release);
+        let (result, elapsed) = finished_receiver.recv_timeout(Duration::from_millis(500))?;
+        assert!(matches!(
+            result,
+            Err(EmbeddingExecutableError::Process(ProcessError::Cancelled))
+        ));
+        assert!(elapsed < Duration::from_millis(500));
+        waiter
+            .join()
+            .map_err(|_| io::Error::other("cancelled gate waiter panicked"))?;
+        drop(permit);
+        assert!(gate.acquire(None).is_ok());
         Ok(())
     }
 }

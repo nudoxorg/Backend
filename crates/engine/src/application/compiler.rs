@@ -427,6 +427,10 @@ fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInput
 fn semantic_embedding_identity(
     identity: EmbeddingExecutionIdentity,
 ) -> Result<EmbeddingPlaneIdentity, Box<str>> {
+    let mut recipe = blake3::Hasher::new_derive_key("backend.engine.embedding-plane-launch.v1");
+    recipe.update(&identity.recipe());
+    recipe.update(&identity.launch_configuration());
+    let recipe = *recipe.finalize().as_bytes();
     let normalization = match identity.normalization() {
         EmbeddingNormalization::None => backend_semantic::ir::EmbeddingNormalization::None,
         EmbeddingNormalization::L2 => backend_semantic::ir::EmbeddingNormalization::L2,
@@ -438,7 +442,7 @@ fn semantic_embedding_identity(
         identity.dimension(),
         normalization,
         identity.executable(),
-        identity.recipe(),
+        recipe,
     )
     .map_err(|error| error.to_string().into_boxed_str())
 }
