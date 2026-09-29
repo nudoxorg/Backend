@@ -668,11 +668,14 @@ where
         current_prefix = Some(prefix);
         row_scratch.clear();
         let mut row_jumbo_scratch = 0_u64;
+        let row_sink = jumbo_sink.as_mut().map(|sink| {
+            &mut **sink as &mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>
+        });
         let tag = encoder.encode_row_with_jumbo_measured(
             reader,
             &plan,
             row.handle,
-            jumbo_sink.as_deref_mut(),
+            row_sink,
             &mut row_jumbo_scratch,
             &mut row_scratch,
         )?;

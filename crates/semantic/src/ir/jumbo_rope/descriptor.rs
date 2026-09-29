@@ -207,7 +207,7 @@ impl UntrustedJumboValueDescriptor {
 
     /// Untrusted ordered rope root bytes claimed by this descriptor.
     #[must_use]
-    pub const fn root_claim(self) -> &[u8; 32] {
+    pub const fn root_claim(&self) -> &[u8; 32] {
         &self.root
     }
 }

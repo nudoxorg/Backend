@@ -216,7 +216,7 @@ impl JumboRopeProofSpan {
 
     /// Object identity bytes claimed by the span.
     #[must_use]
-    pub const fn id(self) -> &[u8; 32] {
+    pub const fn id(&self) -> &[u8; 32] {
         &self.id
     }
 

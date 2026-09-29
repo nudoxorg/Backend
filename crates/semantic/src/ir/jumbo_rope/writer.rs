@@ -3,8 +3,9 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 use std::io::Read;
 
+use super::descriptor::empty_rope_root;
 use super::receiver::VerifiedJumboRope;
-use super::wire::{RopeObjectKind, RopeObjectRef};
+use super::wire::{RopeObjectKind, RopeObjectRef, leaf_identity};
 use super::*;
 
 const CUT_MASK: u64 = (1 << 17) - 1;

@@ -3,8 +3,10 @@ use alloc::vec::Vec;
 use core::ops::Range;
 use std::io::Write;
 
-use super::descriptor::descriptor_identity;
-use super::wire::{RopeObjectKind, RopeObjectRef, leaf_identity};
+use super::descriptor::{descriptor_identity, empty_rope_root};
+use super::wire::{
+    RopeObjectKind, RopeObjectRef, leaf_identity, validate_leaf_length, validate_ref,
+};
 use super::*;
 
 /// Complete verified descriptor token. This type can only be minted by a
