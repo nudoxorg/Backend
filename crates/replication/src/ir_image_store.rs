@@ -259,7 +259,6 @@ impl LocalSemanticImageFiles {
         create_private_directory(&target_root)?;
         let directory = target_root.join("history-views");
         create_private_directory(&directory)?;
-        set_private_directory(&directory)?;
         let commit_hex = hex(commit.as_bytes());
         for _ in 0..32 {
             let nonce = NEXT_HISTORY_VIEW_SCRATCH.fetch_add(1, Ordering::Relaxed);
@@ -931,8 +930,8 @@ fn discard_history_view_scratch(directory: &Path) -> Result<(), String> {
                 drop(lease);
                 files.push(path);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(display_io(error)),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(error)) => return Err(display_io(error)),
         }
     }
     for path in files {

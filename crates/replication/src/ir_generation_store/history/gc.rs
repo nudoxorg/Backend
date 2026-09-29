@@ -52,7 +52,7 @@ pub(super) fn decode_history_gc_state(bytes: &[u8]) -> Result<HistoryGcState, St
     })
 }
 
-pub(super) fn read_history_gc_state(target_root: &Path) -> Result<Option<HistoryGcState>, String> {
+pub(crate) fn read_history_gc_state(target_root: &Path) -> Result<Option<HistoryGcState>, String> {
     read_optional_bounded(
         &history_gc_state_path(target_root),
         MAX_HISTORY_GC_STATE_BYTES,
@@ -71,7 +71,7 @@ pub(super) fn write_history_gc_state(
         .map_err(display_io)
 }
 
-pub(super) fn history_gc_epoch_root(target_root: &Path, digest: &[u8; 32]) -> PathBuf {
+pub(crate) fn history_gc_epoch_root(target_root: &Path, digest: &[u8; 32]) -> PathBuf {
     target_root.join("history").join("gc").join(hex(digest))
 }
 
@@ -106,7 +106,7 @@ pub(super) fn ensure_marker(path: &Path) -> Result<(), String> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum HistoryReachabilityClass {
+pub(crate) enum HistoryReachabilityClass {
     Live,
     Candidate,
 }
@@ -187,7 +187,7 @@ pub(super) fn first_history_gc_todo(
     Ok(None)
 }
 
-pub(super) fn history_gc_marked(
+pub(crate) fn history_gc_marked(
     epoch_root: &Path,
     identity: HistoryCommitId,
     class: HistoryReachabilityClass,
@@ -221,7 +221,7 @@ pub(super) fn repair_history_index_tail(
     Ok(length - tail)
 }
 
-pub(super) fn history_index_id_at(
+pub(crate) fn history_index_id_at(
     index: &mut File,
     offset: u64,
     domain: &[u8],

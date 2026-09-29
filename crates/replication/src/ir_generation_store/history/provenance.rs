@@ -1,6 +1,6 @@
 // Admission provenance binds the selected-source observation to a commit.
 use super::*;
-pub(super) fn decode_hex_digest(value: &str) -> Result<[u8; 32], String> {
+pub(crate) fn decode_hex_digest(value: &str) -> Result<[u8; 32], String> {
     let mut output = [0; 32];
     for (index, bytes) in value.as_bytes().chunks_exact(2).enumerate() {
         let high = (bytes[0] as char)

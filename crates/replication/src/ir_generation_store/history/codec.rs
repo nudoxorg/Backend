@@ -1,4 +1,5 @@
 // Bounded, checksummed persistence codecs for history protocol records.
+use super::gc::repair_history_index_tail;
 use super::*;
 pub(super) fn identify_history_record(
     mut record: HistoryCommitRecord,
@@ -236,7 +237,7 @@ pub(super) fn decode_ref_catalog(bytes: &[u8]) -> Result<HistoryRefCatalog, Stri
     Ok(HistoryRefCatalog { refs })
 }
 
-pub(super) fn load_history_commit(
+pub(crate) fn load_history_commit(
     commits_root: &Path,
     identity: HistoryCommitId,
 ) -> Result<HistoryCommitRecord, String> {
@@ -250,11 +251,11 @@ pub(super) fn load_history_commit(
     Ok(record)
 }
 
-pub(super) fn history_commit_path(commits_root: &Path, identity: HistoryCommitId) -> PathBuf {
+pub(crate) fn history_commit_path(commits_root: &Path, identity: HistoryCommitId) -> PathBuf {
     commits_root.join(format!("{}.commit", hex(&identity.0)))
 }
 
-pub(super) fn history_payload_root_path(target_root: &Path, identity: HistoryCommitId) -> PathBuf {
+pub(crate) fn history_payload_root_path(target_root: &Path, identity: HistoryCommitId) -> PathBuf {
     target_root
         .join("history")
         .join("payload-roots")
@@ -359,7 +360,7 @@ pub(super) fn reserve_history_segment_mapping(
     write_history_segment_map_count(&count_path, next)
 }
 
-pub(super) fn write_history_segment_map_count(path: &Path, count: u32) -> Result<(), String> {
+pub(crate) fn write_history_segment_map_count(path: &Path, count: u32) -> Result<(), String> {
     let mut writer = Writer::new(MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES - CHECKSUM_BYTES);
     writer.header(HISTORY_SEGMENT_MAP_COUNT_TAG)?;
     writer.u32(count)?;
@@ -368,7 +369,7 @@ pub(super) fn write_history_segment_map_count(path: &Path, count: u32) -> Result
     backend_platform::durable::write_private_atomic(path, &bytes).map_err(display_io)
 }
 
-pub(super) fn decode_history_segment_map_count(bytes: &[u8]) -> Result<u32, String> {
+pub(crate) fn decode_history_segment_map_count(bytes: &[u8]) -> Result<u32, String> {
     let body = checked_body(bytes, MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES)?;
     let mut reader = Reader::new(body);
     reader.header(HISTORY_SEGMENT_MAP_COUNT_TAG)?;
@@ -444,7 +445,7 @@ pub(super) fn encode_history_segment_mapping(
     Ok(bytes)
 }
 
-pub(super) fn decode_history_segment_mapping(
+pub(crate) fn decode_history_segment_mapping(
     bytes: &[u8],
     expected_segment: backend_semantic::ir::UntrustedSemanticSegmentId,
 ) -> Result<(ObjectId, u64), String> {
@@ -508,7 +509,7 @@ struct HistoryIndexIntent {
     offset: u64,
 }
 
-pub(super) fn history_index_intent_path(target_root: &Path) -> PathBuf {
+pub(crate) fn history_index_intent_path(target_root: &Path) -> PathBuf {
     target_root.join("history").join("commit.index.intent")
 }
 
@@ -522,7 +523,7 @@ fn encode_history_index_intent(intent: HistoryIndexIntent) -> Result<Vec<u8>, St
     Ok(bytes)
 }
 
-fn decode_history_index_intent(bytes: &[u8]) -> Result<HistoryIndexIntent, String> {
+pub(crate) fn decode_history_index_intent(bytes: &[u8]) -> Result<HistoryIndexIntent, String> {
     let body = checked_body(bytes, MAX_HISTORY_INDEX_INTENT_BYTES)?;
     let mut reader = Reader::new(body);
     reader.header(HISTORY_INDEX_INTENT_TAG)?;
@@ -537,7 +538,7 @@ fn decode_history_index_intent(bytes: &[u8]) -> Result<HistoryIndexIntent, Strin
     Ok(intent)
 }
 
-pub(super) fn recover_history_index_intent(target_root: &Path) -> Result<(), String> {
+pub(crate) fn recover_history_index_intent(target_root: &Path) -> Result<(), String> {
     let intent_path = history_index_intent_path(target_root);
     let Some(bytes) = read_optional_bounded(&intent_path, MAX_HISTORY_INDEX_INTENT_BYTES)? else {
         return Ok(());
@@ -593,7 +594,7 @@ pub(super) fn append_history_tombstone(
     )
 }
 
-pub(super) fn append_history_index_entry(
+pub(crate) fn append_history_index_entry(
     index_path: &Path,
     identity: HistoryCommitId,
     domain: &[u8],

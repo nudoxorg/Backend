@@ -8,6 +8,7 @@
 
 use std::{
     fs::{self, OpenOptions},
+    io::Seek,
     path::{Path, PathBuf},
 };
 

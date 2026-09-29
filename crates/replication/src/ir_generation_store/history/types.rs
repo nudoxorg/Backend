@@ -62,8 +62,8 @@ impl From<String> for HistoryProposalError {
 /// first-parent history line. The closure contains no semantic rows; it is a
 /// FileStore reachability root over existing immutable payload objects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct HistoryPayloadRoot {
-    pub(super) closure: ClosureId,
+pub(crate) struct HistoryPayloadRoot {
+    pub(crate) closure: ClosureId,
 }
 
 /// Stable identity of a history commit. It is deliberately distinct from
@@ -76,7 +76,7 @@ pub struct HistoryCommitId([u8; 32]);
 impl HistoryCommitId {
     /// Returns the content-derived commit identity bytes.
     #[must_use]
-    pub const fn as_bytes(self) -> &[u8; 32] {
+    pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 

@@ -34,7 +34,7 @@ impl HistoryRefCatalog {
     }
 }
 
-pub(super) fn read_history_catalog_snapshot(
+pub(crate) fn read_history_catalog_snapshot(
     target_root: &Path,
 ) -> Result<(HistoryRefCatalog, [u8; 32]), String> {
     let history_root = target_root.join("history");
@@ -84,7 +84,7 @@ pub(super) fn validate_catalog_tips(
 /// History generation records are retained once the append-only index exists.
 /// Metadata reclamation is intentionally coupled to history GC, never to a
 /// current/previous cache open that cannot prove the full ref closure.
-pub(super) fn may_prune_generation_records(
+pub(crate) fn may_prune_generation_records(
     target_root: &Path,
     _target: &SemanticTargetKey,
 ) -> Result<bool, String> {
@@ -108,10 +108,10 @@ pub(super) fn may_prune_generation_records(
 }
 
 impl LocalSemanticGenerationFiles {
-    pub(super) fn require_local_cache_head_alignment(
+    pub(crate) fn require_local_cache_head_alignment(
         &self,
         target: &SemanticTargetKey,
-        cache_head: Option<super::LocalHead>,
+        cache_head: Option<super::super::LocalHead>,
         incoming_generation: LocalSemanticGenerationId,
         incoming_stamp: SelectedGenerationStamp,
         incoming_manifest_root: backend_semantic::ir::SemanticManifestRoot,
@@ -584,7 +584,7 @@ pub(super) fn generation_from_record(
     })
 }
 
-pub(super) fn validate_commit_generation(
+pub(crate) fn validate_commit_generation(
     commit: &HistoryCommitRecord,
     generation: &GenerationRecord,
 ) -> Result<(), String> {

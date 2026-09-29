@@ -13,7 +13,7 @@ use backend_semantic::ir::{SemanticDeltaCursor, SemanticManifestError};
 use backend_store::{ClosureId, ObjectId};
 
 use super::{
-    GenerationRecord, LocalSemanticGeneration, LocalSemanticGenerationFiles,
+    CHECKSUM_BYTES, GenerationRecord, LocalSemanticGeneration, LocalSemanticGenerationFiles,
     LocalSemanticGenerationId, Reader, SelectedGenerationSource, SelectedGenerationStamp,
     SemanticTargetKey, Writer, checked_body, create_private_directory, display_io,
     ensure_directory, ensure_optional_directory, ensure_regular_file, hex, load_record,
