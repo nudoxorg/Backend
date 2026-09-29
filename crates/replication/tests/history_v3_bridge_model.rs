@@ -1065,23 +1065,52 @@ fn apply_update(
         changed_tree(store, current_body.bridge_root, &changes)
             .expect("prepare typed V3 path-copy update");
     let target_root = update.target().root().to_bytes();
+    assert_ne!(
+        target_root, current_body.bridge_root,
+        "the bridge model only applies effective replacement batches"
+    );
+    assert!(
+        update.changed_nodes().len() <= MAX_CLOSURE_MEMBERS,
+        "changed frontier exceeds the bounded closure-node count"
+    );
     // A batched LazyTree update retains the changed frontier from each
     // sequential edit. Intermediate roots are durable candidates, but only
     // nodes reachable from the final root belong to its exact closure.
-    let changed_node_indices = update
-        .changed_nodes()
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (node.commitment().to_bytes(), index))
-        .collect::<BTreeMap<_, _>>();
-    let mut target_reachable_versions = BTreeSet::new();
-    let mut target_node_objects = Vec::new();
-    let mut pending_versions = vec![target_root];
-    while let Some(version) = pending_versions.pop() {
-        if !target_reachable_versions.insert(version) {
-            continue;
+    let mut changed_node_indices = Vec::new();
+    changed_node_indices
+        .try_reserve_exact(update.changed_nodes().len())
+        .expect("reserve bounded changed-node index");
+    for (index, node) in update.changed_nodes().iter().enumerate() {
+        changed_node_indices.push((node.commitment().to_bytes(), index));
+    }
+    changed_node_indices.sort_unstable_by_key(|(version, _)| *version);
+    for pair in changed_node_indices.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            assert_eq!(
+                new_node_objects[pair[0].1].id(),
+                new_node_objects[pair[1].1].id(),
+                "duplicate frontier roots must name the same physical object"
+            );
         }
-        let Some(index) = changed_node_indices.get(&version).copied() else {
+    }
+    let root_level = update.target().node().level();
+    let mut target_reachable_levels = BTreeMap::new();
+    target_reachable_levels.insert(target_root, root_level);
+    let mut target_node_objects = Vec::new();
+    target_node_objects
+        .try_reserve_exact(update.changed_nodes().len())
+        .expect("reserve bounded final-root node set");
+    let mut pending_versions = Vec::new();
+    pending_versions
+        .try_reserve(1)
+        .expect("reserve final-root traversal stack");
+    pending_versions.push((target_root, root_level));
+    while let Some((version, expected_level)) = pending_versions.pop() {
+        let changed_index = changed_node_indices
+            .binary_search_by_key(&version, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| changed_node_indices[index].1);
+        let Some(index) = changed_index else {
             // This is an unchanged base subtree. Its root remains reachable;
             // descendants were not rewritten by this path copy.
             continue;
@@ -1091,11 +1120,37 @@ fn apply_update(
             update.changed_nodes()[index].as_bytes(),
         )
         .expect("admit emitted canonical bridge node");
+        assert_eq!(
+            checked.root().to_bytes(),
+            version,
+            "emitted node bytes must prove their indexed commitment"
+        );
+        assert_eq!(
+            checked.node().level(),
+            expected_level,
+            "emitted node level must match its authenticated parent summary"
+        );
         for child in checked
             .child_summaries()
             .expect("decode emitted bridge child summaries")
         {
-            pending_versions.push(*child.commitment.as_bytes());
+            let child_version = *child.commitment.as_bytes();
+            if let Some(prior_level) = target_reachable_levels.get(&child_version) {
+                assert_eq!(
+                    *prior_level, child.level,
+                    "a repeated node at a different level is a cycle or corrupt edge"
+                );
+                continue;
+            }
+            assert!(
+                target_reachable_levels.len() < MAX_CLOSURE_MEMBERS,
+                "final-root traversal exceeds its unique-node bound"
+            );
+            target_reachable_levels.insert(child_version, child.level);
+            pending_versions
+                .try_reserve(1)
+                .expect("grow final-root traversal stack within node bound");
+            pending_versions.push((child_version, child.level));
         }
     }
 
@@ -1132,7 +1187,7 @@ fn apply_update(
         schedule(object, true);
     }
     for (version, object) in loader.loaded_frontier() {
-        if !target_reachable_versions.contains(&version) {
+        if !target_reachable_levels.contains_key(&version) {
             schedule(object, false);
         }
     }
@@ -1611,7 +1666,7 @@ fn v3_bridge_cold_admission_rejects_wrong_kind_schema_and_inexact_closures() {
     let temp = TempStore::new("negative-admission");
     let registry = registry();
     let store = temp.open_store(registry.clone());
-    let (rows, payloads) = initial_rows(&store, 32);
+    let (rows, payloads) = initial_rows(&store, 512);
     let (parent, genesis, _) =
         initialize_history(&store, &temp.path, rows.clone(), &payloads, &registry);
     let state = RelationState::<BridgeRelation>::from_entries(
@@ -1624,6 +1679,26 @@ fn v3_bridge_cold_admission_rejects_wrong_kind_schema_and_inexact_closures() {
     let full_closure = store
         .admit_closure_claim(closure_claim(&genesis))
         .expect("reopen genesis closure claim");
+    let root_node = store
+        .read_relation_node_with_children(relation_claim(&genesis.bridge_root))
+        .expect("admit genesis bridge root and child summaries");
+    let missing_relation_child = root_node
+        .children()
+        .first()
+        .expect("512 rows require a branch root in the test shape")
+        .object();
+    let without_relation_child = store
+        .read_closure(full_closure)
+        .expect("materialize genesis closure for missing-node fixture")
+        .objects()
+        .iter()
+        .filter(|object| object.id() != missing_relation_child)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        ClosureManifest::new_with_registry(without_relation_child, &registry).is_err(),
+        "a base closure missing a referenced bridge node must not be admitted"
+    );
 
     let (extra_payload, _, _) = make_payload(&store, 0, 10_000, 91);
     let mut extra_members = payloads.clone();
