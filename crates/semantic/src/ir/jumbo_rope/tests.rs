@@ -282,6 +282,117 @@ fn reader_blocks_do_not_change_content_defined_leaf_boundaries() {
 }
 
 #[test]
+fn complete_closure_rejects_noncanonical_content_defined_boundaries() {
+    let bytes = deterministic_bytes(320 * 1024, 0x8e31_2fbb);
+    let (canonical, _) = build(&bytes, JumboValueEncoding::Bytes);
+    let canonical_first_length = canonical
+        .leaves
+        .get(canonical.leaf_order.first().expect("first leaf exists"))
+        .expect("canonical first leaf exists")
+        .len();
+    let nominal_split = 160 * 1024;
+    let split = if canonical_first_length == nominal_split {
+        nominal_split + 1
+    } else {
+        nominal_split
+    };
+    assert_ne!(canonical_first_length, split);
+
+    let first_bytes = &bytes[..split];
+    let second_bytes = &bytes[split..];
+    let first_id = JumboRopeObjectId(leaf_identity(first_bytes));
+    let second_id = JumboRopeObjectId(leaf_identity(second_bytes));
+    let first = RopeObjectRef {
+        kind: RopeObjectKind::Leaf,
+        id: first_id,
+        first_leaf: 0,
+        leaf_count: 1,
+        byte_length: split as u64,
+    };
+    let second = RopeObjectRef {
+        kind: RopeObjectKind::Leaf,
+        id: second_id,
+        first_leaf: 1,
+        leaf_count: 1,
+        byte_length: (bytes.len() - split) as u64,
+    };
+    let node = JumboRopeNode::create(first, second).expect("alternate tree is structurally valid");
+    let mut objects = MemoryObjects::default();
+    objects.leaves.insert(first_id, first_bytes.to_vec());
+    objects.leaves.insert(second_id, second_bytes.to_vec());
+    objects.interiors.insert(node.id(), node.encode_wire());
+    let descriptor = UntrustedJumboValueDescriptor::from_fields(
+        [0x5a; 32],
+        JumboValueFamily::Documentation,
+        3,
+        JumboValueEncoding::Bytes,
+        bytes.len() as u64,
+        2,
+        node.id().0,
+    )
+    .check(JumboRopeLimits::default())
+    .expect("alternate descriptor has a valid structural census");
+
+    assert!(matches!(
+        descriptor.admit_stored_closure(&mut objects),
+        Err(JumboOperationError::Rope(
+            JumboRopeError::NonCanonicalLeafBoundary
+        ))
+    ));
+}
+
+#[test]
+fn complete_closure_rejects_noncanonical_interior_tree_shape() {
+    let bytes = deterministic_bytes(1_200 * 1024, 0xa492_0df1);
+    let (mut objects, written) = build(&bytes, JumboValueEncoding::Bytes);
+    assert!(objects.leaf_order.len() > 2);
+    let mut right = None;
+    for ordinal in (0..objects.leaf_order.len()).rev() {
+        let id = objects.leaf_order[ordinal];
+        let leaf_bytes = objects.leaves.get(&id).expect("canonical leaf exists");
+        let leaf = RopeObjectRef {
+            kind: RopeObjectKind::Leaf,
+            id,
+            first_leaf: ordinal as u64,
+            leaf_count: 1,
+            byte_length: leaf_bytes.len() as u64,
+        };
+        let Some(right_child) = right else {
+            right = Some(leaf);
+            continue;
+        };
+        let parent = JumboRopeNode::create(leaf, right_child)
+            .expect("right-associated tree remains structurally valid");
+        objects.interiors.insert(parent.id(), parent.encode_wire());
+        right = Some(parent.as_ref());
+    }
+    let root = right.expect("at least two leaves produce an interior root");
+    let descriptor = UntrustedJumboValueDescriptor::from_fields(
+        [0x5a; 32],
+        JumboValueFamily::Documentation,
+        3,
+        JumboValueEncoding::Bytes,
+        bytes.len() as u64,
+        objects.leaf_order.len() as u64,
+        root.id.0,
+    )
+    .check(JumboRopeLimits::default())
+    .expect("alternate tree has a valid structural census");
+    assert_ne!(
+        descriptor.root_claim(),
+        written.descriptor().root_claim(),
+        "right-associated tree differs from the writer frontier reduction"
+    );
+
+    assert!(matches!(
+        descriptor.admit_stored_closure(&mut objects),
+        Err(JumboOperationError::Rope(
+            JumboRopeError::NonCanonicalTreeShape
+        ))
+    ));
+}
+
+#[test]
 fn utf8_round_trips_when_a_codepoint_crosses_reader_blocks() {
     let mut bytes = vec![b'a'; JUMBO_ROPE_STREAM_BUFFER_BYTES - 1];
     bytes.extend_from_slice("🧠".as_bytes());

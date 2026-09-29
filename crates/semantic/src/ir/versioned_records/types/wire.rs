@@ -52,7 +52,7 @@ pub(super) fn validate_record(
     if kind != SemanticPlaneKind::Ir(SemanticIrPlane::Types) {
         return Err(SemanticPlaneRecordError::PlaneKind);
     }
-    let _ = parse_types_row(key, tag, payload)?;
+    let _ = parse_types_row_inner(key, tag, payload, usize::MAX, false)?;
     Ok(())
 }
 
@@ -64,10 +64,21 @@ pub(super) struct ParsedTypesRow {
     pub(super) declaration_references: Vec<[u8; 32]>,
 }
 
-pub(super) fn parse_types_row(
+pub(super) fn parse_types_row_with_reference_limit(
     key: [u8; 32],
     tag: u8,
     payload: &[u8],
+    maximum_references: usize,
+) -> Result<ParsedTypesRow, SemanticPlaneRecordError> {
+    parse_types_row_inner(key, tag, payload, maximum_references, true)
+}
+
+fn parse_types_row_inner(
+    key: [u8; 32],
+    tag: u8,
+    payload: &[u8],
+    maximum_references: usize,
+    collect_references: bool,
 ) -> Result<ParsedTypesRow, SemanticPlaneRecordError> {
     match tag {
         ROOT_TAG => {
@@ -89,10 +100,18 @@ pub(super) fn parse_types_row(
             }
             let mut references = Vec::new();
             if present == 1 {
-                references.push(TypesReferenceV2 {
-                    domain: TypesRowDomainV2::Type,
-                    key: target,
-                });
+                if maximum_references == 0 {
+                    return Err(SemanticPlaneRecordError::RowTooLarge);
+                }
+                if collect_references {
+                    references
+                        .try_reserve(1)
+                        .map_err(SemanticPlaneRecordError::Allocation)?;
+                    references.push(TypesReferenceV2 {
+                        domain: TypesRowDomainV2::Type,
+                        key: target,
+                    });
+                }
             }
             Ok(ParsedTypesRow {
                 domain: TypesRowDomainV2::EntityRoot,
@@ -102,7 +121,9 @@ pub(super) fn parse_types_row(
                 declaration_references: Vec::new(),
             })
         }
-        TYPE_TAG..=FREE_PREDICATES_TAG => parse_typed_node(key, tag, payload),
+        TYPE_TAG..=FREE_PREDICATES_TAG => {
+            parse_typed_node(key, tag, payload, maximum_references, collect_references)
+        }
         ATOM_TAG => {
             let mut cursor = RowCursor::new(payload);
             let bytes = cursor.bytes32()?;
@@ -119,9 +140,16 @@ pub(super) fn parse_types_row(
             })
         }
         EXTERNAL_TARGET_TAG => {
-            let (identity, references) = external_identity_from_payload(payload)?;
+            let (identity, references) = external_identity_from_payload_bounded(
+                payload,
+                maximum_references,
+                collect_references,
+            )?;
             if identity != key {
                 return Err(SemanticPlaneRecordError::RowGrammar);
+            }
+            if references.len() > maximum_references {
+                return Err(SemanticPlaneRecordError::RowTooLarge);
             }
             Ok(ParsedTypesRow {
                 domain: TypesRowDomainV2::ExternalTarget,
@@ -139,6 +167,8 @@ fn parse_typed_node(
     key: [u8; 32],
     tag: u8,
     payload: &[u8],
+    maximum_references: usize,
+    collect_references: bool,
 ) -> Result<ParsedTypesRow, SemanticPlaneRecordError> {
     let mut cursor = RowCursor::new(payload);
     let count =
@@ -150,40 +180,18 @@ fn parse_typed_node(
     if payload.len() != expected {
         return Err(SemanticPlaneRecordError::RowGrammar);
     }
-    let mut edges = Vec::new();
-    edges
-        .try_reserve_exact(count)
-        .map_err(SemanticPlaneRecordError::Allocation)?;
-    let mut previous_role = None;
-    for _ in 0..count {
-        let role = cursor.u8()?;
-        let index = cursor.u32()?;
-        let target_tag = cursor.u8()?;
-        let target: [u8; 32] = cursor
-            .take(32)?
-            .try_into()
-            .map_err(|_| SemanticPlaneRecordError::RowGrammar)?;
-        if role > 25 || target_tag > 4 {
-            return Err(SemanticPlaneRecordError::RowGrammar);
-        }
-        if let Some((prior_index, prior_role)) = previous_role {
-            if (index, role) < (prior_index, prior_role) {
-                return Err(SemanticPlaneRecordError::RowGrammar);
-            }
-        }
-        previous_role = Some((index, role));
-        edges.push(TypedWireEdge {
-            role,
-            index,
-            target_tag,
-            target,
-        });
-    }
+    let edge_bytes = cursor.take(
+        count
+            .checked_mul(38)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?,
+    )?;
     cursor.finish()?;
 
+    // The cursor decodes edges directly from the borrowed payload. Avoiding a
+    // row-sized edge table keeps validation scratch bounded by admitted refs.
     let mut references = Vec::new();
     let mut declaration_references = Vec::new();
-    let mut edges = TypedWireCursor::new(&edges);
+    let mut edges = TypedWireCursor::new(edge_bytes, count, maximum_references, collect_references);
     if tag == TYPE_TAG {
         let type_kind = edges.scalar(0, 0, |value| matches!(value, 1..=30 | 40..=49 | 60))?;
         validate_type_fields(
@@ -221,14 +229,69 @@ struct TypedWireEdge {
     target: [u8; 32],
 }
 
-struct TypedWireCursor<'edges> {
-    edges: &'edges [TypedWireEdge],
+struct TypedWireCursor<'bytes> {
+    edge_bytes: &'bytes [u8],
+    count: usize,
     position: usize,
+    previous: Option<(u32, u8)>,
+    maximum_references: usize,
+    reference_count: usize,
+    collect_references: bool,
 }
 
-impl<'edges> TypedWireCursor<'edges> {
-    const fn new(edges: &'edges [TypedWireEdge]) -> Self {
-        Self { edges, position: 0 }
+impl<'bytes> TypedWireCursor<'bytes> {
+    const fn new(
+        edge_bytes: &'bytes [u8],
+        count: usize,
+        maximum_references: usize,
+        collect_references: bool,
+    ) -> Self {
+        Self {
+            edge_bytes,
+            count,
+            position: 0,
+            previous: None,
+            maximum_references,
+            reference_count: 0,
+            collect_references,
+        }
+    }
+
+    fn edge_at_position(&self) -> Result<TypedWireEdge, SemanticPlaneRecordError> {
+        if self.position >= self.count {
+            return Err(SemanticPlaneRecordError::RowGrammar);
+        }
+        let start = self
+            .position
+            .checked_mul(38)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        let end = start
+            .checked_add(38)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        let encoded = self
+            .edge_bytes
+            .get(start..end)
+            .ok_or(SemanticPlaneRecordError::Truncated)?;
+        let role = *encoded.first().ok_or(SemanticPlaneRecordError::Truncated)?;
+        let index = u32::from_be_bytes(
+            encoded
+                .get(1..5)
+                .ok_or(SemanticPlaneRecordError::Truncated)?
+                .try_into()
+                .map_err(|_| SemanticPlaneRecordError::Truncated)?,
+        );
+        let target_tag = *encoded.get(5).ok_or(SemanticPlaneRecordError::Truncated)?;
+        let target = encoded
+            .get(6..38)
+            .ok_or(SemanticPlaneRecordError::Truncated)?
+            .try_into()
+            .map_err(|_| SemanticPlaneRecordError::Truncated)?;
+        Ok(TypedWireEdge {
+            role,
+            index,
+            target_tag,
+            target,
+        })
     }
 
     fn take(
@@ -237,15 +300,33 @@ impl<'edges> TypedWireCursor<'edges> {
         index: u32,
         target_tag: u8,
     ) -> Result<[u8; 32], SemanticPlaneRecordError> {
-        let edge = self
-            .edges
-            .get(self.position)
-            .ok_or(SemanticPlaneRecordError::RowGrammar)?;
+        let edge = self.edge_at_position()?;
+        if edge.role > 25 || edge.target_tag > 4 {
+            return Err(SemanticPlaneRecordError::RowGrammar);
+        }
+        if self.previous.is_some_and(|(prior_index, prior_role)| {
+            (edge.index, edge.role) < (prior_index, prior_role)
+        }) {
+            return Err(SemanticPlaneRecordError::RowGrammar);
+        }
         if edge.role != role || edge.index != index || edge.target_tag != target_tag {
             return Err(SemanticPlaneRecordError::RowGrammar);
         }
+        self.previous = Some((edge.index, edge.role));
         self.position += 1;
         Ok(edge.target)
+    }
+
+    fn admit_reference(&mut self) -> Result<bool, SemanticPlaneRecordError> {
+        let next = self
+            .reference_count
+            .checked_add(1)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        if next > self.maximum_references {
+            return Err(SemanticPlaneRecordError::RowTooLarge);
+        }
+        self.reference_count = next;
+        Ok(self.collect_references)
     }
 
     fn scalar(
@@ -278,10 +359,12 @@ impl<'edges> TypedWireCursor<'edges> {
         references: &mut Vec<TypesReferenceV2>,
     ) -> Result<(), SemanticPlaneRecordError> {
         let key = self.take(role, index, 0)?;
-        references
-            .try_reserve(1)
-            .map_err(SemanticPlaneRecordError::Allocation)?;
-        references.push(TypesReferenceV2 { domain, key });
+        if self.admit_reference()? {
+            references
+                .try_reserve(1)
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            references.push(TypesReferenceV2 { domain, key });
+        }
         Ok(())
     }
 
@@ -312,10 +395,12 @@ impl<'edges> TypedWireCursor<'edges> {
         references: &mut Vec<TypesReferenceV2>,
     ) -> Result<(), SemanticPlaneRecordError> {
         let key = self.take(role, index, target_tag)?;
-        references
-            .try_reserve(1)
-            .map_err(SemanticPlaneRecordError::Allocation)?;
-        references.push(TypesReferenceV2 { domain, key });
+        if self.admit_reference()? {
+            references
+                .try_reserve(1)
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            references.push(TypesReferenceV2 { domain, key });
+        }
         Ok(())
     }
 
@@ -325,19 +410,26 @@ impl<'edges> TypedWireCursor<'edges> {
         index: u32,
         declaration_references: &mut Vec<[u8; 32]>,
     ) -> Result<(), SemanticPlaneRecordError> {
-        declaration_references
-            .try_reserve(1)
-            .map_err(SemanticPlaneRecordError::Allocation)?;
-        declaration_references.push(self.take(role, index, 2)?);
+        let identity = self.take(role, index, 2)?;
+        if self.admit_reference()? {
+            declaration_references
+                .try_reserve(1)
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            declaration_references.push(identity);
+        }
         Ok(())
     }
 
-    fn peek_index(&self) -> Option<u32> {
-        self.edges.get(self.position).map(|edge| edge.index)
+    fn peek_index(&self) -> Result<Option<u32>, SemanticPlaneRecordError> {
+        if self.position == self.count {
+            Ok(None)
+        } else {
+            Ok(Some(self.edge_at_position()?.index))
+        }
     }
 
     const fn is_empty(&self) -> bool {
-        self.position == self.edges.len()
+        self.position == self.count
     }
 
     fn finish(self) -> Result<(), SemanticPlaneRecordError> {
@@ -562,7 +654,7 @@ fn validate_list_node(
     use TypesRowDomainV2::{Type, TypeParameterBounds};
     let mut expected_index = 0_u32;
     while !edges.is_empty() {
-        if edges.peek_index() != Some(expected_index) {
+        if edges.peek_index()? != Some(expected_index) {
             return Err(SemanticPlaneRecordError::RowGrammar);
         }
         match tag {
@@ -745,6 +837,14 @@ impl<'bytes> RowCursor<'bytes> {
 pub(super) fn external_identity_from_payload(
     payload: &[u8],
 ) -> Result<([u8; 32], Vec<TypesReferenceV2>), SemanticPlaneRecordError> {
+    external_identity_from_payload_bounded(payload, usize::MAX, true)
+}
+
+fn external_identity_from_payload_bounded(
+    payload: &[u8],
+    maximum_references: usize,
+    collect_references: bool,
+) -> Result<([u8; 32], Vec<TypesReferenceV2>), SemanticPlaneRecordError> {
     let mut cursor = RowCursor::new(payload);
     let mut hasher = blake3::Hasher::new();
     let mut references = Vec::new();
@@ -771,26 +871,74 @@ pub(super) fn external_identity_from_payload(
             match cursor.u8()? {
                 0 => {
                     hasher.update(&[0]);
-                    hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
-                    hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
+                    hash_external_atom_cell(
+                        &mut cursor,
+                        &mut hasher,
+                        &mut references,
+                        maximum_references,
+                        collect_references,
+                    )?;
+                    hash_external_atom_cell(
+                        &mut cursor,
+                        &mut hasher,
+                        &mut references,
+                        maximum_references,
+                        collect_references,
+                    )?;
                 }
                 1 => {
                     hasher.update(&[1]);
-                    hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
-                    hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
+                    hash_external_atom_cell(
+                        &mut cursor,
+                        &mut hasher,
+                        &mut references,
+                        maximum_references,
+                        collect_references,
+                    )?;
+                    hash_external_atom_cell(
+                        &mut cursor,
+                        &mut hasher,
+                        &mut references,
+                        maximum_references,
+                        collect_references,
+                    )?;
                 }
                 2 => {
                     hasher.update(&[2]);
-                    hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
+                    hash_external_atom_cell(
+                        &mut cursor,
+                        &mut hasher,
+                        &mut references,
+                        maximum_references,
+                        collect_references,
+                    )?;
                 }
                 3 => {
                     hasher.update(&[3]);
-                    hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
+                    hash_external_atom_cell(
+                        &mut cursor,
+                        &mut hasher,
+                        &mut references,
+                        maximum_references,
+                        collect_references,
+                    )?;
                 }
                 _ => return Err(SemanticPlaneRecordError::RowGrammar),
             }
-            hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
-            hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
+            hash_external_atom_cell(
+                &mut cursor,
+                &mut hasher,
+                &mut references,
+                maximum_references,
+                collect_references,
+            )?;
+            hash_external_atom_cell(
+                &mut cursor,
+                &mut hasher,
+                &mut references,
+                maximum_references,
+                collect_references,
+            )?;
             match cursor.u8()? {
                 0 => {
                     hasher.update(&[0]);
@@ -810,7 +958,13 @@ pub(super) fn external_identity_from_payload(
             hasher.update(&[2]);
             hasher.update(cursor.take(32)?);
             hasher.update(cursor.take(4)?);
-            hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
+            hash_external_atom_cell(
+                &mut cursor,
+                &mut hasher,
+                &mut references,
+                maximum_references,
+                collect_references,
+            )?;
         }
         _ => return Err(SemanticPlaneRecordError::RowGrammar),
     }
@@ -822,17 +976,24 @@ fn hash_external_atom_cell(
     cursor: &mut RowCursor<'_>,
     hasher: &mut blake3::Hasher,
     references: &mut Vec<TypesReferenceV2>,
+    maximum_references: usize,
+    collect_references: bool,
 ) -> Result<(), SemanticPlaneRecordError> {
     let bytes = cursor.bytes32()?;
     let length = u64::try_from(bytes.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
     hasher.update(&length.to_be_bytes());
     hasher.update(bytes);
-    references
-        .try_reserve(1)
-        .map_err(SemanticPlaneRecordError::Allocation)?;
-    references.push(TypesReferenceV2 {
-        domain: TypesRowDomainV2::Atom,
-        key: atom_key(bytes)?,
-    });
+    if collect_references {
+        if references.len() >= maximum_references {
+            return Err(SemanticPlaneRecordError::RowTooLarge);
+        }
+        references
+            .try_reserve(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        references.push(TypesReferenceV2 {
+            domain: TypesRowDomainV2::Atom,
+            key: atom_key(bytes)?,
+        });
+    }
     Ok(())
 }

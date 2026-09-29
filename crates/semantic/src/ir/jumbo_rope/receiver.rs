@@ -7,6 +7,7 @@ use super::descriptor::{descriptor_identity, empty_rope_root};
 use super::wire::{
     RopeObjectKind, RopeObjectRef, leaf_identity, validate_leaf_length, validate_ref,
 };
+use super::writer::CanonicalChunkBoundaryValidator;
 use super::*;
 
 /// Complete verified descriptor token. This type can only be minted by a
@@ -467,10 +468,30 @@ fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
     }
     let root = descriptor.root_ref()?;
     let mut stack = Vec::new();
+    const MAX_CLOSURE_STACK_ENTRIES: usize = MAX_PROOF_DEPTH + 1;
     stack
-        .try_reserve(MAX_PROOF_DEPTH)
+        .try_reserve_exact(MAX_CLOSURE_STACK_ENTRIES)
         .map_err(|_| JumboRopeError::Allocation)?;
+    if stack.capacity() > MAX_CLOSURE_STACK_ENTRIES {
+        return Err(JumboRopeError::FrontierCapacity {
+            observed: stack.capacity(),
+            maximum: MAX_CLOSURE_STACK_ENTRIES,
+        }
+        .into());
+    }
     stack.push((root, 0_usize));
+    let mut canonical_frontier = Vec::new();
+    canonical_frontier
+        .try_reserve_exact(MAX_PROOF_DEPTH)
+        .map_err(|_| JumboRopeError::Allocation)?;
+    if canonical_frontier.capacity() > MAX_PROOF_DEPTH {
+        return Err(JumboRopeError::FrontierCapacity {
+            observed: canonical_frontier.capacity(),
+            maximum: MAX_PROOF_DEPTH,
+        }
+        .into());
+    }
+    let mut canonical_chunks = CanonicalChunkBoundaryValidator::new();
     let mut next_leaf = 0_u64;
     let mut byte_offset = 0_u64;
     let mut node_count = 0_u64;
@@ -517,6 +538,25 @@ fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
                 {
                     return Err(JumboRopeError::LeafObjectCorrupt.into());
                 }
+                let is_last = next_leaf.saturating_add(1) == descriptor.leaf_count;
+                canonical_chunks.admit_leaf(bytes, is_last)?;
+                canonical_frontier.push(reference);
+                while canonical_frontier.len() >= 2 {
+                    let right_index = canonical_frontier.len() - 1;
+                    let left_index = right_index - 1;
+                    if canonical_frontier[left_index].leaf_count
+                        != canonical_frontier[right_index].leaf_count
+                    {
+                        break;
+                    }
+                    let right = canonical_frontier
+                        .pop()
+                        .ok_or(JumboRopeError::ClosureCensusMismatch)?;
+                    let left = canonical_frontier
+                        .pop()
+                        .ok_or(JumboRopeError::ClosureCensusMismatch)?;
+                    canonical_frontier.push(JumboRopeNode::create(left, right)?.as_ref());
+                }
                 if descriptor.encoding == JumboValueEncoding::Utf8 {
                     for byte in bytes.iter().copied() {
                         utf8.push(byte)?;
@@ -559,6 +599,18 @@ fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
     }
     if descriptor.encoding == JumboValueEncoding::Utf8 {
         utf8.finish()?;
+    }
+    while canonical_frontier.len() > 1 {
+        let right = canonical_frontier
+            .pop()
+            .ok_or(JumboRopeError::ClosureCensusMismatch)?;
+        let left = canonical_frontier
+            .pop()
+            .ok_or(JumboRopeError::ClosureCensusMismatch)?;
+        canonical_frontier.push(JumboRopeNode::create(left, right)?.as_ref());
+    }
+    if canonical_frontier.first().copied() != Some(root) {
+        return Err(JumboRopeError::NonCanonicalTreeShape.into());
     }
     Ok(())
 }

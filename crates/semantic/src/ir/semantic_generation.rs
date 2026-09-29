@@ -48,6 +48,19 @@ pub enum SemanticTypedPlaneVerificationTierV2 {
     LargePackage,
 }
 
+fn typed_plane_verification_limits(
+    tier: SemanticTypedPlaneVerificationTierV2,
+) -> SemanticTypedPlaneVerificationLimitsV2 {
+    match tier {
+        SemanticTypedPlaneVerificationTierV2::Standard => {
+            SemanticTypedPlaneVerificationLimitsV2::standard()
+        }
+        SemanticTypedPlaneVerificationTierV2::LargePackage => {
+            SemanticTypedPlaneVerificationLimitsV2::large_package()
+        }
+    }
+}
+
 /// Content identity of one complete normalized-reachable typed IR closure.
 ///
 /// This root commits semantic authority/profile facts and all seven complete
@@ -345,7 +358,14 @@ pub fn verify_typed_plane_content_v2_with_tier(
     exact_ordered_payloads: &[&[u8]],
     tier: SemanticTypedPlaneVerificationTierV2,
 ) -> Result<VerifiedTypedPlaneContentV2, SemanticGenerationProofError> {
-    verify_typed_plane_content_v2_with_admission(manifest, exact_ordered_payloads, tier, None)
+    let limits = typed_plane_verification_limits(tier);
+    verify_typed_plane_content_v2_with_admission(
+        manifest,
+        exact_ordered_payloads,
+        tier,
+        None,
+        limits,
+    )
 }
 
 /// Independently verifies a cold c007 manifest and its exact c004 payloads,
@@ -364,12 +384,14 @@ where
     S: JumboRopeObjectSource + ?Sized,
     S::Error: core::fmt::Display,
 {
-    let mut admission = JumboObjectClosureAdmissionV2::new(source, jumbo_limits);
+    let limits = typed_plane_verification_limits(tier);
+    let mut admission = JumboObjectClosureAdmissionV2::new(source, jumbo_limits, limits);
     verify_typed_plane_content_v2_with_admission(
         manifest,
         exact_ordered_payloads,
         tier,
         Some(&mut admission),
+        limits,
     )
 }
 
@@ -378,6 +400,7 @@ fn verify_typed_plane_content_v2_with_admission(
     exact_ordered_payloads: &[&[u8]],
     tier: SemanticTypedPlaneVerificationTierV2,
     jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
+    limits: SemanticTypedPlaneVerificationLimitsV2,
 ) -> Result<VerifiedTypedPlaneContentV2, SemanticGenerationProofError> {
     let expected_payload_count = manifest
         .resource_usage()
@@ -443,14 +466,6 @@ fn verify_typed_plane_content_v2_with_admission(
     let family_payloads: [TypedPlaneFamilyPayloadsV2<'_>; IR_FAMILY_COUNT] = family_payloads
         .try_into()
         .map_err(|_| SemanticGenerationProofError::ManifestResourcePolicy)?;
-    let limits = match tier {
-        SemanticTypedPlaneVerificationTierV2::Standard => {
-            SemanticTypedPlaneVerificationLimitsV2::standard()
-        }
-        SemanticTypedPlaneVerificationTierV2::LargePackage => {
-            SemanticTypedPlaneVerificationLimitsV2::large_package()
-        }
-    };
     let inventory = verify_semantic_typed_plane_inventory_v2_with_admission(
         manifest.build(),
         manifest.image_facts(),

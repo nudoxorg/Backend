@@ -3,8 +3,9 @@ use alloc::vec::Vec;
 use crate::ir::{SemanticIrPlane, SemanticPlaneKind, SemanticPlaneRecordError};
 
 use super::EXTERNAL_TARGET_TAG;
+use super::ROOT_TAG;
 use super::plan::TypesClosureSemantics;
-use super::wire::parse_types_row;
+use super::wire::parse_types_row_with_reference_limit;
 
 const TYPES_FAMILY_ROOT_DOMAIN: &[u8] = b"backend.semantic.ir.types-family-root.v2\0";
 
@@ -147,7 +148,18 @@ impl CheckedTypesFamilyV2 {
             if previous.is_some_and(|prior| prior >= key) {
                 return Err(SemanticPlaneRecordError::RecordOrder);
             }
-            let parsed = parse_types_row(key, tag, payload)?;
+            let remaining_references = limits
+                .max_references
+                .checked_sub(reference_count)
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            let row_owner_reference = if tag == ROOT_TAG { 1 } else { 0 };
+            let row_reference_limit = remaining_references
+                .checked_sub(row_owner_reference)
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            let row_reference_limit = usize::try_from(row_reference_limit)
+                .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+            let parsed =
+                parse_types_row_with_reference_limit(key, tag, payload, row_reference_limit)?;
             let payload_length =
                 u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
             payload_bytes = payload_bytes

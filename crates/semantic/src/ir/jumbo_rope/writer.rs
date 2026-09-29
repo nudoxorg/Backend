@@ -13,6 +13,56 @@ const GEAR_WINDOW_BYTES: usize = 64;
 const GEAR_ROLLING_BASE: u64 = 257;
 const GEAR_ROLLING_POWER: u64 = 257_u64.wrapping_pow(GEAR_WINDOW_BYTES as u32);
 
+/// Bounded checker for the writer's exact content-defined leaf decisions.
+/// Rolling state deliberately survives leaf boundaries because that is part
+/// of the canonical streaming chunker.
+pub(super) struct CanonicalChunkBoundaryValidator {
+    gear: [u64; 256],
+    window: [u8; GEAR_WINDOW_BYTES],
+    window_next: usize,
+    window_full: bool,
+    rolling: u64,
+}
+
+impl CanonicalChunkBoundaryValidator {
+    pub(super) fn new() -> Self {
+        Self {
+            gear: gear_table(),
+            window: [0; GEAR_WINDOW_BYTES],
+            window_next: 0,
+            window_full: false,
+            rolling: 0,
+        }
+    }
+
+    pub(super) fn admit_leaf(&mut self, bytes: &[u8], is_last: bool) -> Result<(), JumboRopeError> {
+        let mut cut_at_end = false;
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            update_gear_rolling_hash(
+                &self.gear,
+                &mut self.window,
+                &mut self.window_next,
+                &mut self.window_full,
+                &mut self.rolling,
+                byte,
+            );
+            let leaf_length = index + 1;
+            let reached_max = leaf_length == JUMBO_ROPE_MAX_LEAF_BYTES;
+            let target_cut =
+                leaf_length >= JUMBO_ROPE_MIN_LEAF_BYTES && (self.rolling & CUT_MASK) == 0;
+            let should_cut = reached_max || target_cut;
+            if should_cut && index + 1 != bytes.len() {
+                return Err(JumboRopeError::NonCanonicalLeafBoundary);
+            }
+            cut_at_end = should_cut;
+        }
+        if !is_last && !cut_at_end {
+            return Err(JumboRopeError::NonCanonicalLeafBoundary);
+        }
+        Ok(())
+    }
+}
+
 /// Work counters from one streaming rope write.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct JumboRopeBuildMetrics {
@@ -276,22 +326,14 @@ impl<'sink, S: JumboRopeObjectSink + ?Sized> RopeWriter<'sink, S> {
     }
 
     fn update_rolling_hash(&mut self, byte: u8) {
-        let incoming = self.gear[byte as usize];
-        self.rolling = self
-            .rolling
-            .wrapping_mul(GEAR_ROLLING_BASE)
-            .wrapping_add(incoming);
-        if self.gear_window_full {
-            let outgoing = self.gear[self.gear_window[self.gear_window_next] as usize];
-            self.rolling = self
-                .rolling
-                .wrapping_sub(outgoing.wrapping_mul(GEAR_ROLLING_POWER));
-        }
-        self.gear_window[self.gear_window_next] = byte;
-        self.gear_window_next = (self.gear_window_next + 1) % GEAR_WINDOW_BYTES;
-        if self.gear_window_next == 0 {
-            self.gear_window_full = true;
-        }
+        update_gear_rolling_hash(
+            &self.gear,
+            &mut self.gear_window,
+            &mut self.gear_window_next,
+            &mut self.gear_window_full,
+            &mut self.rolling,
+            byte,
+        );
     }
 
     fn flush_leaf(&mut self) -> Result<(), JumboOperationError<S::Error>> {
@@ -443,4 +485,27 @@ fn gear_table() -> [u64; 256] {
         let digest = hasher.finalize();
         u64::from_le_bytes(digest.as_bytes()[..8].try_into().unwrap_or([0; 8]))
     })
+}
+
+fn update_gear_rolling_hash(
+    gear: &[u64; 256],
+    window: &mut [u8; GEAR_WINDOW_BYTES],
+    window_next: &mut usize,
+    window_full: &mut bool,
+    rolling: &mut u64,
+    byte: u8,
+) {
+    let incoming = gear[byte as usize];
+    *rolling = (*rolling)
+        .wrapping_mul(GEAR_ROLLING_BASE)
+        .wrapping_add(incoming);
+    if *window_full {
+        let outgoing = gear[window[*window_next] as usize];
+        *rolling = (*rolling).wrapping_sub(outgoing.wrapping_mul(GEAR_ROLLING_POWER));
+    }
+    window[*window_next] = byte;
+    *window_next = (*window_next + 1) % GEAR_WINDOW_BYTES;
+    if *window_next == 0 {
+        *window_full = true;
+    }
 }

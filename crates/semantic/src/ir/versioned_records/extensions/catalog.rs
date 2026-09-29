@@ -198,9 +198,6 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
             row_keys
                 .try_reserve(1)
                 .map_err(SemanticPlaneRecordError::Allocation)?;
-            owners
-                .try_reserve(1)
-                .map_err(SemanticPlaneRecordError::Allocation)?;
             let key = record.key();
             if previous.is_some_and(|prior| prior >= key) {
                 return Err(SemanticPlaneRecordError::RecordOrder);
@@ -212,6 +209,10 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
                 record.tag(),
                 record.payload(),
                 &mut declaration_references,
+                limits
+                    .max_references
+                    .saturating_sub(reference_count)
+                    .saturating_sub(1), // Every extension row resolves its owner against Core.
             )?;
             let added_declaration_references = declaration_references
                 .len()
@@ -225,10 +226,6 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
                 .checked_add(added_declaration_references)
                 .and_then(|count| count.checked_add(1)) // Owner identity resolves against Core.
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
-            types_references
-                .try_reserve(parsed.references.len())
-                .map_err(SemanticPlaneRecordError::Allocation)?;
-            types_references.extend(parsed.references.iter().flatten().copied());
             reference_count = reference_count
                 .checked_add(
                     u64::try_from(row_reference_count)
@@ -238,6 +235,13 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
             if reference_count > limits.max_references {
                 return Err(SemanticPlaneRecordError::RowTooLarge);
             }
+            owners
+                .try_reserve(1)
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            types_references
+                .try_reserve(parsed.references.len())
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            types_references.extend(parsed.references.iter().flatten().copied());
             for reference in parsed.references.iter().flatten() {
                 types.require_reference(*reference)?;
             }

@@ -346,6 +346,12 @@ pub enum JumboRopeError {
     /// The verified tree does not contain the descriptor's exact census.
     #[error("rope tree does not cover the descriptor's exact leaf and byte ranges")]
     ClosureCensusMismatch,
+    /// A non-final leaf does not end at the writer's canonical CDC decision.
+    #[error("rope leaf boundary differs from the canonical content-defined chunker")]
+    NonCanonicalLeafBoundary,
+    /// Authenticated leaves do not reproduce the writer's deterministic tree shape.
+    #[error("rope tree shape differs from the canonical frontier reduction")]
+    NonCanonicalTreeShape,
 }
 
 /// I/O or object-store failure while writing, receiving, or reading a rope.

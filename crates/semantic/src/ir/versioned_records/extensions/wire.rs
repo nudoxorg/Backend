@@ -417,7 +417,7 @@ fn parse_record(
     tag: u8,
     payload: &[u8],
 ) -> Result<ParsedExtensionRecord, SemanticPlaneRecordError> {
-    parse_record_inner(kind, key, tag, payload, &mut None)
+    parse_record_inner(kind, key, tag, payload, &mut None, usize::MAX)
 }
 
 pub(super) fn parse_record_with_declarations(
@@ -426,8 +426,22 @@ pub(super) fn parse_record_with_declarations(
     tag: u8,
     payload: &[u8],
     declaration_references: &mut Vec<[u8; 32]>,
+    remaining_reference_budget: u64,
 ) -> Result<ParsedExtensionRecord, SemanticPlaneRecordError> {
-    parse_record_inner(kind, key, tag, payload, &mut Some(declaration_references))
+    let remaining_reference_budget = usize::try_from(remaining_reference_budget)
+        .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+    let maximum_declaration_references = declaration_references
+        .len()
+        .checked_add(remaining_reference_budget)
+        .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+    parse_record_inner(
+        kind,
+        key,
+        tag,
+        payload,
+        &mut Some(declaration_references),
+        maximum_declaration_references,
+    )
 }
 
 fn parse_record_inner(
@@ -436,6 +450,7 @@ fn parse_record_inner(
     tag: u8,
     payload: &[u8],
     declaration_references: &mut Option<&mut Vec<[u8; 32]>>,
+    maximum_declaration_references: usize,
 ) -> Result<ParsedExtensionRecord, SemanticPlaneRecordError> {
     let SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(profile)) = kind else {
         return Err(SemanticPlaneRecordError::RowGrammar);
@@ -536,8 +551,16 @@ fn parse_record_inner(
                 &mut references,
                 &mut next_reference,
             )?;
-            read_entity_list(&mut cursor, declaration_references)?;
-            read_entity_list(&mut cursor, declaration_references)?;
+            read_entity_list(
+                &mut cursor,
+                declaration_references,
+                maximum_declaration_references,
+            )?;
+            read_entity_list(
+                &mut cursor,
+                declaration_references,
+                maximum_declaration_references,
+            )?;
             read_reference(
                 &mut cursor,
                 TypesRowDomainV2::AtomList,
@@ -612,8 +635,16 @@ fn parse_record_inner(
                 &mut references,
                 &mut next_reference,
             )?;
-            read_entity_list(&mut cursor, declaration_references)?;
-            read_entity_list(&mut cursor, declaration_references)?;
+            read_entity_list(
+                &mut cursor,
+                declaration_references,
+                maximum_declaration_references,
+            )?;
+            read_entity_list(
+                &mut cursor,
+                declaration_references,
+                maximum_declaration_references,
+            )?;
         }
         CLANG_TAG => {
             for _ in 0..3 {
@@ -715,6 +746,7 @@ fn read_optional_u32(
 fn read_entity_list(
     cursor: &mut Cursor<'_>,
     declaration_references: &mut Option<&mut Vec<[u8; 32]>>,
+    maximum_declaration_references: usize,
 ) -> Result<(), SemanticPlaneRecordError> {
     let count = cursor.u32()?;
     if let Some(references) = declaration_references.as_deref_mut() {
@@ -723,7 +755,7 @@ fn read_entity_list(
             .len()
             .checked_add(count)
             .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
-        if total > MAX_EXTENSION_DECLARATION_REFERENCES {
+        if total > MAX_EXTENSION_DECLARATION_REFERENCES.min(maximum_declaration_references) {
             return Err(SemanticPlaneRecordError::RowTooLarge);
         }
         references
