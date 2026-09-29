@@ -40,14 +40,25 @@ pub enum RootChange<DomainTag> {
     },
 }
 
-/// Streaming linear merge cursor over two borrowed canonical row cursors.
+/// Streaming diff cursor over borrowed canonical rows.
 ///
-/// It owns no change collection. Its only state is one unconsumed borrowed
-/// canonical row from each root, so comparison remains O(1) extra memory.
+/// It owns no change collection. Distinct roots use one unconsumed row from
+/// each side; equal identities use one row cursor and still emit all
+/// `Unchanged` items. Both paths use O(1) extra memory.
 pub struct RootDiff<'older, 'newer, DomainTag> {
-    older_rows: Peekable<CanonicalRows<'older, DomainTag>>,
-    newer_rows: Peekable<CanonicalRows<'newer, DomainTag>>,
+    cursor: RootDiffCursor<'older, 'newer, DomainTag>,
     metrics: RootDiffMetrics,
+    descriptor_visits: usize,
+}
+
+enum RootDiffCursor<'older, 'newer, DomainTag> {
+    /// Equal canonical identities let the full diff preserve its per-row
+    /// `Unchanged` contract while avoiding a second root cursor and key merge.
+    Equal(CanonicalRows<'newer, DomainTag>),
+    Merge {
+        older_rows: Peekable<CanonicalRows<'older, DomainTag>>,
+        newer_rows: Peekable<CanonicalRows<'newer, DomainTag>>,
+    },
 }
 
 /// Read-only work accounting for one streaming root comparison.
@@ -55,6 +66,14 @@ pub struct RootDiff<'older, 'newer, DomainTag> {
 pub struct RootDiffMetrics {
     /// Semantic-key comparisons performed so far.
     pub comparisons: usize,
+}
+
+impl<DomainTag> RootDiff<'_, '_, DomainTag> {
+    /// Returns the number of canonical row descriptors visited so far.
+    #[must_use]
+    pub const fn descriptor_visits(&self) -> usize {
+        self.descriptor_visits
+    }
 }
 
 impl<DomainTag> Deref for RootDiff<'_, '_, DomainTag> {
@@ -67,10 +86,13 @@ impl<DomainTag> Deref for RootDiff<'_, '_, DomainTag> {
 
 /// Changed-only streaming view over a canonical root merge.
 ///
-/// Unchanged rows remain in the underlying merge for its exact linear
-/// comparison accounting, but never become output allocations or items.
+/// For distinct roots, unchanged rows remain in the underlying merge but
+/// never become output items. Equal root IDs finish immediately without
+/// visiting rows because the canonical identity already commits their
+/// complete semantic descriptors.
 pub struct ChangedRootDiff<'older, 'newer, DomainTag> {
     diff: RootDiff<'older, 'newer, DomainTag>,
+    finished: bool,
 }
 
 impl<DomainTag> Deref for ChangedRootDiff<'_, '_, DomainTag> {
@@ -81,45 +103,66 @@ impl<DomainTag> Deref for ChangedRootDiff<'_, '_, DomainTag> {
     }
 }
 
+impl<DomainTag> ChangedRootDiff<'_, '_, DomainTag> {
+    /// Returns the number of canonical row descriptors visited so far.
+    #[must_use]
+    pub const fn descriptor_visits(&self) -> usize {
+        self.diff.descriptor_visits
+    }
+}
+
 impl<DomainTag> Iterator for RootDiff<'_, '_, DomainTag> {
     type Item = RootChange<DomainTag>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match (self.older_rows.peek(), self.newer_rows.peek()) {
-            (Some(older), Some(newer)) => {
-                self.metrics.comparisons += 1;
-                match older.entry.key.cmp(&newer.entry.key) {
-                    Ordering::Less => self
-                        .older_rows
-                        .next()
-                        .map(|row| RootChange::Removed { old: row.entry }),
-                    Ordering::Greater => self
-                        .newer_rows
-                        .next()
-                        .map(|row| RootChange::Added { new: row.entry }),
-                    Ordering::Equal => {
-                        let older = self.older_rows.next();
-                        let newer = self.newer_rows.next();
-                        match (older, newer) {
-                            (Some(older), Some(newer)) => {
-                                Some(classify_same_key(older.entry, newer.entry))
+        match &mut self.cursor {
+            RootDiffCursor::Equal(rows) => match rows.next() {
+                Some(row) => {
+                    self.descriptor_visits += 1;
+                    Some(RootChange::Unchanged { entry: row.entry })
+                }
+                None => None,
+            },
+            RootDiffCursor::Merge {
+                older_rows,
+                newer_rows,
+            } => match (older_rows.peek(), newer_rows.peek()) {
+                (Some(older), Some(newer)) => {
+                    self.metrics.comparisons += 1;
+                    self.descriptor_visits += 2;
+                    match older.entry.key.cmp(&newer.entry.key) {
+                        Ordering::Less => older_rows
+                            .next()
+                            .map(|row| RootChange::Removed { old: row.entry }),
+                        Ordering::Greater => newer_rows
+                            .next()
+                            .map(|row| RootChange::Added { new: row.entry }),
+                        Ordering::Equal => {
+                            let older = older_rows.next();
+                            let newer = newer_rows.next();
+                            match (older, newer) {
+                                (Some(older), Some(newer)) => {
+                                    Some(classify_same_key(older.entry, newer.entry))
+                                }
+                                (Some(older), None) => {
+                                    Some(RootChange::Removed { old: older.entry })
+                                }
+                                (None, Some(newer)) => Some(RootChange::Added { new: newer.entry }),
+                                (None, None) => None,
                             }
-                            (Some(older), None) => Some(RootChange::Removed { old: older.entry }),
-                            (None, Some(newer)) => Some(RootChange::Added { new: newer.entry }),
-                            (None, None) => None,
                         }
                     }
                 }
-            }
-            (Some(_), None) => self
-                .older_rows
-                .next()
-                .map(|row| RootChange::Removed { old: row.entry }),
-            (None, Some(_)) => self
-                .newer_rows
-                .next()
-                .map(|row| RootChange::Added { new: row.entry }),
-            (None, None) => None,
+                (Some(_), None) => older_rows.next().map(|row| {
+                    self.descriptor_visits += 1;
+                    RootChange::Removed { old: row.entry }
+                }),
+                (None, Some(_)) => newer_rows.next().map(|row| {
+                    self.descriptor_visits += 1;
+                    RootChange::Added { new: row.entry }
+                }),
+                (None, None) => None,
+            },
         }
     }
 }
@@ -128,6 +171,9 @@ impl<DomainTag> Iterator for ChangedRootDiff<'_, '_, DomainTag> {
     type Item = RootChange<DomainTag>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
         loop {
             let change = self.diff.next()?;
             if !matches!(change, RootChange::Unchanged { .. }) {
@@ -157,16 +203,29 @@ fn classify_same_key<DomainTag>(
 }
 
 impl<DomainTag> GenerationRoot<DomainTag> {
-    /// Compares canonical rows in O(old + new) descriptor work and no payload reads.
+    /// Compares canonical rows without payload reads.
+    ///
+    /// Equal generation IDs select a single-root cursor that emits one
+    /// `Unchanged` item per canonical row. Root identity hashes the row count,
+    /// each key and parent, and each object's content ID, length, schema, and
+    /// kind. Locality and payload residence are stored separately.
     #[must_use]
     pub fn diff<'older, 'newer>(
         &'older self,
         newer: &'newer Self,
     ) -> RootDiff<'older, 'newer, DomainTag> {
+        let cursor = if self.id == newer.id {
+            RootDiffCursor::Equal(newer.canonical_rows())
+        } else {
+            RootDiffCursor::Merge {
+                older_rows: self.canonical_rows().peekable(),
+                newer_rows: newer.canonical_rows().peekable(),
+            }
+        };
         RootDiff {
-            older_rows: self.canonical_rows().peekable(),
-            newer_rows: newer.canonical_rows().peekable(),
+            cursor,
             metrics: RootDiffMetrics::default(),
+            descriptor_visits: 0,
         }
     }
 
@@ -176,8 +235,13 @@ impl<DomainTag> GenerationRoot<DomainTag> {
         &'older self,
         newer: &'newer Self,
     ) -> ChangedRootDiff<'older, 'newer, DomainTag> {
+        // GenerationRoot can only be created by the validating builder, and
+        // its ID commits the complete semantic descriptor set. Locality and
+        // payload residence are a separately bound axis, not root identity.
+        let equal_roots = self.id == newer.id;
         ChangedRootDiff {
             diff: self.diff(newer),
+            finished: equal_roots,
         }
     }
 }
