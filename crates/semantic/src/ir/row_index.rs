@@ -288,6 +288,62 @@ impl UntrustedRowPayloadIdentity {
         self.byte_len
     }
 
+    /// Encodes this untrusted payload claim in the fixed V3 row-index value
+    /// grammar. The encoding byte and tag stay explicit so cold tree admission
+    /// cannot turn a raw digest into a tagged identity or vice versa.
+    #[must_use]
+    pub fn to_fixed_wire(self) -> [u8; 42] {
+        let mut output = [0; 42];
+        match self.encoding {
+            RowPayloadEncoding::Raw => {
+                output[0] = 0;
+                output[1] = 0;
+            }
+            RowPayloadEncoding::Tagged(tag) => {
+                output[0] = 1;
+                output[1] = tag;
+            }
+        }
+        output[2..34].copy_from_slice(&self.id);
+        output[34..].copy_from_slice(&self.byte_len.to_be_bytes());
+        output
+    }
+
+    /// Reads one fixed-width V3 payload claim without admitting its digest.
+    /// The exact row bytes must still be loaded and checked with [`Self::admit`].
+    pub fn from_fixed_wire(bytes: &[u8]) -> Result<Self, StableRowIndexError> {
+        let bytes: &[u8; 42] = bytes
+            .try_into()
+            .map_err(|_| StableRowIndexError::MalformedPayloadClaim)?;
+        let encoding = match bytes[0] {
+            0 if bytes[1] == 0 => RowPayloadEncoding::Raw,
+            1 => RowPayloadEncoding::Tagged(bytes[1]),
+            _ => return Err(StableRowIndexError::MalformedPayloadClaim),
+        };
+        let id = bytes[2..34]
+            .try_into()
+            .map_err(|_| StableRowIndexError::MalformedPayloadClaim)?;
+        let byte_len = u64::from_be_bytes(
+            bytes[34..]
+                .try_into()
+                .map_err(|_| StableRowIndexError::MalformedPayloadClaim)?,
+        );
+        Ok(Self {
+            id,
+            byte_len,
+            encoding,
+        })
+    }
+
+    /// Returns the tag carried by a tagged row identity, if present.
+    #[must_use]
+    pub const fn tag(self) -> Option<u8> {
+        match self.encoding {
+            RowPayloadEncoding::Raw => None,
+            RowPayloadEncoding::Tagged(tag) => Some(tag),
+        }
+    }
+
     /// Admits the claim only when both its exact length and digest match.
     pub fn admit(self, bytes: &[u8]) -> Result<RowPayload, StableRowIndexError> {
         let actual_len = u64::try_from(bytes.len()).map_err(|_| StableRowIndexError::Overflow)?;
@@ -2037,6 +2093,9 @@ pub enum StableRowIndexError {
     /// Payload bytes did not match the claimed content identity.
     #[error("stable row payload digest did not match its claim")]
     PayloadDigestMismatch,
+    /// A fixed-width persisted row-payload claim had an invalid encoding tag.
+    #[error("stable row payload claim has a malformed encoding")]
+    MalformedPayloadClaim,
     /// Checked row, count, or resident-byte arithmetic overflowed.
     #[error("stable row index arithmetic overflow")]
     Overflow,
