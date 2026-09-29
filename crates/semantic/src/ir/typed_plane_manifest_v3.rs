@@ -18,7 +18,11 @@
 //! Cold range and closure reads have bounded logical live buffers, but this
 //! is not a low-memory verification cutover: the aggregate semantic verifier
 //! and this module's sorted bulk builder still retain O(rows) input
-//! descriptors while constructing their complete indexes.
+//! descriptors while constructing their complete indexes. In particular,
+//! the existing large-package tier allows 2,000,000 rows, so full generation
+//! admission at that limit still has a substantial row-run allocation (and
+//! may overlap it with tree construction); the cold zipper does not change
+//! that producer/aggregate memory profile.
 
 use std::{borrow::Bound, vec::Vec};
 
