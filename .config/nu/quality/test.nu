@@ -280,9 +280,10 @@ def pr-quarantine []: nothing -> list<record<filter: string, reason: string>> {
     # (Metal only; see tools/gui-harness/src/gpui_driver.rs), and its native
     # geometry and timings differ from the macOS values these tests pin.
     let linux_platform = [
-        {filter: "package(backend-facet) and (test(/^graph::gallery::adversarial::/) or test(=data::tests::harness_storms_over_the_marks_find_nothing) or test(=overlay::float::storm::float_storm_keeps_every_invariant_and_settles_to_a_fresh_boot))", reason: "pixel captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"}
+        {filter: "package(backend-facet) and (test(/^graph::gallery::/) or test(=data::tests::harness_storms_over_the_marks_find_nothing) or test(=overlay::float::storm::float_storm_keeps_every_invariant_and_settles_to_a_fresh_boot))", reason: "pixel captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"}
         {filter: "package(backend-facet) and (test(=motion::tests::a_class_change_mid_drag_springs_from_the_painted_position_and_keeps_following) or test(=graph::view::tests::brief_hover_handoff_preserves_the_stronger_departing_envelope) or test(=graph::view::tests::cold_discovery_completion_after_blur_cannot_restart_search))", reason: "exact float and native-timing values recorded on macOS (spring jumps, native input blur)"}
         {filter: "package(backend-desktop) and test(=shell::tests::native_graph_handoff_uses_the_scaled_translated_canvas_and_rejects_absent_sources)", reason: "composited bounds differ by sub-pixel snapping (734.75 vs 734.6)"}
+        {filter: "package(backend-gui-harness) and test(=session::tests::concurrent_sessions_do_not_bleed_frame_timings)", reason: "opens a real harness session, which needs the macOS offscreen renderer: 'session opens: NoRenderer'"}
     ]
     if $nu.os-info.name == "linux" { $linux_platform } else { [] }
 }

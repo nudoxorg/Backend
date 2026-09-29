@@ -452,6 +452,25 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
             expectation: SurfaceExpectation::Result("project-deleted"),
         },
         SurfaceCase {
+            // The Cargo project the process test writes before any case
+            // runs (`write_rust_project(root/cli)`); `project-tree` refuses a
+            // directory with no Cargo.toml above it.
+            command: SurfaceCommand::ProjectTree {
+                root: ProductText::new(
+                    root.join("cli")
+                        .join("rust-project")
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+                .expect("admit project root"),
+            },
+            expectation: SurfaceExpectation::Result("project-tree"),
+        },
+        SurfaceCase {
+            command: SurfaceCommand::AdvisoryRefresh,
+            expectation: SurfaceExpectation::Result("advisory-refreshed"),
+        },
+        SurfaceCase {
             command: SurfaceCommand::Tree,
             expectation: SurfaceExpectation::Result("tree"),
         },
@@ -486,17 +505,17 @@ fn assert_surface_registry_matches_cases(cases: &[SurfaceCase]) {
     let rows = registry_surface_rows();
     assert_eq!(
         COMMANDS.len(),
-        40,
+        42,
         "the closed command registry changed size"
     );
     assert_eq!(
         rows.len(),
-        28,
+        30,
         "the registry surface projection changed size"
     );
     assert_eq!(
         cases.len(),
-        28,
+        30,
         "the live SurfaceCommand matrix is incomplete"
     );
     let registry_ids = rows.iter().map(|row| row.id).collect::<BTreeSet<_>>();
@@ -812,6 +831,13 @@ fn every_surface_variant_crosses_the_real_cli_and_mcp_processes() {
 
     let cli_root = root.join("cli");
     let cli_project = write_rust_project(&cli_root);
+    // `project-tree` runs `cargo metadata --offline --locked`, which never
+    // writes a lockfile, so the project it browses carries its own.
+    std::fs::write(
+        cli_project.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"example\"\nversion = \"1.0.0\"\n",
+    )
+    .expect("write project lockfile");
     let cli_endpoint = unique_endpoint("cli");
     let cli_workspace = cli_root.join("workspace");
     std::fs::create_dir_all(&cli_workspace).expect("create CLI workspace");
