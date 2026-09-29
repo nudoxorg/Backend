@@ -357,7 +357,7 @@ fn unrelated_work_key_can_acquire_while_another_key_publishes() {
     let store = LeaseStore::open(&root).expect("store");
     let key = test_key();
     let other_key = different_stripe_key(key);
-    let lease = store
+    let mut lease = store
         .acquire(key, Duration::from_secs(30))
         .expect("first acquire")
         .expect("first lease");
