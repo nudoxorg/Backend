@@ -27,7 +27,7 @@ use backend_version::{
 
 const WARMUPS: usize = 8;
 const SAMPLES: usize = 128;
-const DIMENSIONS: [usize; 2] = [384, 1536];
+const DIMENSIONS: [usize; 4] = [64, 128, 384, 1536];
 const CANDIDATE_COUNTS: [usize; 2] = [128, 512];
 const METRICS: [Metric; 3] = [
     Metric::CosineDistance,
