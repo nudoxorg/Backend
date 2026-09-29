@@ -10,12 +10,24 @@
 //! before persisting that mapping is safe but not resumable. V2 publication
 //! remains gated on complete-family and aggregate verification elsewhere.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use backend_semantic::ir::{
-    CanonicalSemanticPlaneSegmentRef, CanonicalSemanticPlaneSegmentSink, JumboRopeLeafRef,
-    JumboRopeNode, JumboRopeObjectId, JumboRopeObjectSink, SemanticIrPlane, SemanticPlaneKind,
-    SemanticPlaneRecordError, ValidatedCanonicalSemanticPlaneSegment,
+    CanonicalPlaneEncodingMetrics, CanonicalPlaneRowEncoder, CanonicalSemanticPlaneSegmentRef,
+    CanonicalSemanticPlaneSegmentSink, CoreDeclarationRows, DocumentationRows,
+    JUMBO_ROPE_MAX_LEAF_BYTES, JumboRopeLeafRef, JumboRopeLimits, JumboRopeNode, JumboRopeObjectId,
+    JumboRopeObjectSink, JumboRopeObjectSource, LanguageExtensionRows, OccurrenceRows,
+    ROPE_NODE_WIRE_BYTES, RelationRows, SemanticBuildIdentity, SemanticGenerationProofError,
+    SemanticImageFacts, SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind,
+    SemanticPlaneRecordError, SemanticPlaneSegmentBoundaryPolicy, SemanticReader,
+    SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
+    SemanticTypedPlaneManifestV2Error, SemanticTypedPlaneSegmentClaimV2,
+    SemanticTypedPlaneVerificationTierV2, SourceProvenanceRows, TypedPlaneSegmentSourceV2,
+    TypesRows, UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2,
+    UntrustedSemanticSegmentId, ValidatedCanonicalSemanticPlaneSegment,
+    VerifiedTypedPlaneContentV2, derive_typed_plane_content_v2_from_admitted_reader,
+    stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
 };
 use backend_store::{FileStore, GcPinGuard, ObjectId, ObjectWriteReceipt, TypedObject};
 use backend_version::{ObjectKey, Schema, SchemaIdentity};
@@ -314,6 +326,99 @@ impl SemanticProducerStoreMetrics {
     }
 }
 
+/// Exact FileStore payload and envelope bytes reopened by the V3 semantic
+/// verifier after production. This measures verifier I/O only; it does not
+/// count the full reader traversal used to discover and encode canonical rows.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SemanticProducerVerifierIoMetrics {
+    segment_object_reads: u64,
+    segment_payload_bytes: u64,
+    segment_envelope_bytes: u64,
+    jumbo_leaf_object_reads: u64,
+    jumbo_interior_object_reads: u64,
+    jumbo_payload_bytes: u64,
+    jumbo_envelope_bytes: u64,
+}
+
+impl SemanticProducerVerifierIoMetrics {
+    /// Number of c004 segment FileStore reads made by semantic verification.
+    #[must_use]
+    pub const fn segment_object_reads(self) -> u64 {
+        self.segment_object_reads
+    }
+
+    /// Exact c004 payload bytes returned to semantic verification.
+    #[must_use]
+    pub const fn segment_payload_bytes(self) -> u64 {
+        self.segment_payload_bytes
+    }
+
+    /// Exact durable c004 envelope bytes reopened for semantic verification.
+    #[must_use]
+    pub const fn segment_envelope_bytes(self) -> u64 {
+        self.segment_envelope_bytes
+    }
+
+    /// Number of jumbo leaf FileStore reads made by semantic verification.
+    #[must_use]
+    pub const fn jumbo_leaf_object_reads(self) -> u64 {
+        self.jumbo_leaf_object_reads
+    }
+
+    /// Number of jumbo interior-node FileStore reads made by semantic verification.
+    #[must_use]
+    pub const fn jumbo_interior_object_reads(self) -> u64 {
+        self.jumbo_interior_object_reads
+    }
+
+    /// Exact jumbo payload bytes returned to semantic verification.
+    #[must_use]
+    pub const fn jumbo_payload_bytes(self) -> u64 {
+        self.jumbo_payload_bytes
+    }
+
+    /// Exact durable jumbo envelope bytes reopened for semantic verification.
+    #[must_use]
+    pub const fn jumbo_envelope_bytes(self) -> u64 {
+        self.jumbo_envelope_bytes
+    }
+
+    fn checked_add(self, other: Self) -> Result<Self, String> {
+        Ok(Self {
+            segment_object_reads: self
+                .segment_object_reads
+                .checked_add(other.segment_object_reads)
+                .ok_or_else(|| "semantic verifier segment read counter overflows".to_owned())?,
+            segment_payload_bytes: self
+                .segment_payload_bytes
+                .checked_add(other.segment_payload_bytes)
+                .ok_or_else(|| "semantic verifier segment payload counter overflows".to_owned())?,
+            segment_envelope_bytes: self
+                .segment_envelope_bytes
+                .checked_add(other.segment_envelope_bytes)
+                .ok_or_else(|| "semantic verifier segment envelope counter overflows".to_owned())?,
+            jumbo_leaf_object_reads: self
+                .jumbo_leaf_object_reads
+                .checked_add(other.jumbo_leaf_object_reads)
+                .ok_or_else(|| "semantic verifier jumbo leaf read counter overflows".to_owned())?,
+            jumbo_interior_object_reads: self
+                .jumbo_interior_object_reads
+                .checked_add(other.jumbo_interior_object_reads)
+                .ok_or_else(|| {
+                    "semantic verifier jumbo interior read counter overflows".to_owned()
+                })?,
+            jumbo_payload_bytes: self
+                .jumbo_payload_bytes
+                .checked_add(other.jumbo_payload_bytes)
+                .ok_or_else(|| "semantic verifier jumbo payload counter overflows".to_owned())?,
+            jumbo_envelope_bytes: self
+                .jumbo_envelope_bytes
+                .checked_add(other.jumbo_envelope_bytes)
+                .ok_or_else(|| "semantic verifier jumbo envelope counter overflows".to_owned())?,
+        })
+    }
+}
+
 /// FileStore-backed sink for borrowed stable-key SPIR segments.
 ///
 /// The sink pins garbage collection from construction through its lifetime.
@@ -580,6 +685,767 @@ impl SemanticProducerStoreMetrics {
     }
 }
 
+const TYPED_V2_FAMILY_COUNT: usize = 7;
+
+/// Explicit cut policy for every c007 typed semantic family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticTypedPlaneBoundaryPoliciesV3 {
+    /// Core declaration rows.
+    pub core: SemanticPlaneSegmentBoundaryPolicy,
+    /// Type rows.
+    pub types: SemanticPlaneSegmentBoundaryPolicy,
+    /// Canonical relation rows.
+    pub relations: SemanticPlaneSegmentBoundaryPolicy,
+    /// Source occurrence rows.
+    pub occurrences: SemanticPlaneSegmentBoundaryPolicy,
+    /// Documentation rows.
+    pub documentation: SemanticPlaneSegmentBoundaryPolicy,
+    /// Source provenance rows.
+    pub source_provenance: SemanticPlaneSegmentBoundaryPolicy,
+    /// Sparse language-extension rows for the build profile.
+    pub language_extensions: SemanticPlaneSegmentBoundaryPolicy,
+}
+
+impl SemanticTypedPlaneBoundaryPoliciesV3 {
+    /// Requires a separately selected boundary policy for all seven families.
+    #[must_use]
+    pub const fn new(
+        core: SemanticPlaneSegmentBoundaryPolicy,
+        types: SemanticPlaneSegmentBoundaryPolicy,
+        relations: SemanticPlaneSegmentBoundaryPolicy,
+        occurrences: SemanticPlaneSegmentBoundaryPolicy,
+        documentation: SemanticPlaneSegmentBoundaryPolicy,
+        source_provenance: SemanticPlaneSegmentBoundaryPolicy,
+        language_extensions: SemanticPlaneSegmentBoundaryPolicy,
+    ) -> Self {
+        Self {
+            core,
+            types,
+            relations,
+            occurrences,
+            documentation,
+            source_provenance,
+            language_extensions,
+        }
+    }
+
+    const fn as_array(self) -> [SemanticPlaneSegmentBoundaryPolicy; TYPED_V2_FAMILY_COUNT] {
+        [
+            self.core,
+            self.types,
+            self.relations,
+            self.occurrences,
+            self.documentation,
+            self.source_provenance,
+            self.language_extensions,
+        ]
+    }
+}
+
+/// One complete owner-side c007 producer result.
+///
+/// The manifest and roots were derived from seven stable-key family streams,
+/// then checked against the exact durable FileStore payloads. Keep the GC pins
+/// until the caller has placed all returned objects in a durable closure.
+pub struct ProducedSemanticTypedPlaneV3 {
+    manifest: SemanticTypedPlaneManifestV2,
+    verified_content: VerifiedTypedPlaneContentV2,
+    input_witness: SemanticInputWitness,
+    segment_admissions: Vec<DurableSemanticObjectAdmission>,
+    jumbo_admissions: Vec<DurableSemanticObjectAdmission>,
+    segment_pins: Vec<DurableSemanticObjectPin>,
+    jumbo_pin: DurableSemanticObjectPin,
+    encoding_metrics: [CanonicalPlaneEncodingMetrics; TYPED_V2_FAMILY_COUNT],
+    segment_store_metrics: [SemanticProducerStoreMetrics; TYPED_V2_FAMILY_COUNT],
+    jumbo_store_metrics: SemanticProducerStoreMetrics,
+    verifier_io_metrics: SemanticProducerVerifierIoMetrics,
+}
+
+impl ProducedSemanticTypedPlaneV3 {
+    /// Canonical c007 revision-3 manifest with computed typed roots.
+    #[must_use]
+    pub const fn manifest(&self) -> &SemanticTypedPlaneManifestV2 {
+        &self.manifest
+    }
+
+    /// Independent all-family proof for the exact bytes admitted by this pass.
+    #[must_use]
+    pub const fn verified_content(&self) -> &VerifiedTypedPlaneContentV2 {
+        &self.verified_content
+    }
+
+    /// Live owner witness used during production. It is not serialized into the
+    /// claim-only manifest and must remain available to any selection gate.
+    #[must_use]
+    pub const fn input_witness(&self) -> SemanticInputWitness {
+        self.input_witness
+    }
+
+    /// Durable segment receipts in manifest family and segment order.
+    #[must_use]
+    pub fn segment_admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        &self.segment_admissions
+    }
+
+    /// Durable rope-object receipts emitted by documentation and provenance rows.
+    #[must_use]
+    pub fn jumbo_admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        &self.jumbo_admissions
+    }
+
+    /// Per-family row, segment, hashing, and scratch counters.
+    #[must_use]
+    pub const fn encoding_metrics(
+        &self,
+    ) -> &[CanonicalPlaneEncodingMetrics; TYPED_V2_FAMILY_COUNT] {
+        &self.encoding_metrics
+    }
+
+    /// Per-family FileStore admission and physical-byte counters.
+    #[must_use]
+    pub const fn segment_store_metrics(
+        &self,
+    ) -> &[SemanticProducerStoreMetrics; TYPED_V2_FAMILY_COUNT] {
+        &self.segment_store_metrics
+    }
+
+    /// FileStore admission and physical-byte counters for all jumbo objects.
+    #[must_use]
+    pub const fn jumbo_store_metrics(&self) -> SemanticProducerStoreMetrics {
+        self.jumbo_store_metrics
+    }
+
+    /// Exact segment and jumbo envelope/payload bytes reopened by the
+    /// producer-side semantic verifier. Reader discovery work is reported by
+    /// the per-family encoding metrics and remains a complete family scan.
+    #[must_use]
+    pub const fn verifier_io_metrics(&self) -> SemanticProducerVerifierIoMetrics {
+        self.verifier_io_metrics
+    }
+
+    /// GC pins held until this complete result is dropped.
+    #[must_use]
+    pub fn segment_pins(&self) -> &[DurableSemanticObjectPin] {
+        &self.segment_pins
+    }
+
+    /// GC pin held for all emitted jumbo objects.
+    #[must_use]
+    pub const fn jumbo_pin(&self) -> &DurableSemanticObjectPin {
+        &self.jumbo_pin
+    }
+}
+
+/// Streams all seven typed semantic families from one complete reader through
+/// the existing FileStore sinks, then derives roots by verifying the exact
+/// durable payloads. The supplied witness must carry live owner-authorized
+/// complete coverage; a claim-only `Coverage::Complete` is rejected before
+/// any object is written. `policies` supplies the c007-committed boundary
+/// algorithm and byte limits independently for every family.
+///
+/// This does not select a V2 generation. The returned object keeps the live
+/// witness and durable GC pins so an owner can bind selection to read-closure
+/// evidence and publish the exact receipt set atomically.
+///
+/// Each family encoder still builds a complete row plan, collects and sorts
+/// the complete stable-key index, and encodes every canonical row. Stable-key
+/// boundaries can localize segment identity churn, but they do not avoid full
+/// reader discovery, row encoding, or BLAKE3 work for this writer.
+/// There is no changed-key frontier in this producer API, so local segment
+/// churn must not be described as incremental reader-delta execution.
+pub fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
+    store: &FileStore,
+    reader: &Reader,
+    build: SemanticBuildIdentity,
+    input_witness: SemanticInputWitness,
+    policies: SemanticTypedPlaneBoundaryPoliciesV3,
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+) -> Result<ProducedSemanticTypedPlaneV3, String> {
+    if !input_witness.coverage().is_authorized_complete() {
+        return Err(
+            "typed V2 production requires live owner-admitted complete input coverage".to_owned(),
+        );
+    }
+
+    let image_facts = reader.image_facts();
+    let policies = policies.as_array();
+    let mut segment_admissions = SemanticObjectAdmissionBuffer::default();
+    let mut jumbo_admissions = SemanticObjectAdmissionBuffer::default();
+    let mut segment_pins = Vec::new();
+    segment_pins
+        .try_reserve_exact(TYPED_V2_FAMILY_COUNT)
+        .map_err(|error| format!("reserve typed V2 segment pins: {error}"))?;
+    let mut family_descriptors = Vec::new();
+    family_descriptors
+        .try_reserve_exact(TYPED_V2_FAMILY_COUNT)
+        .map_err(|error| format!("reserve typed V2 family descriptors: {error}"))?;
+    let mut encoding_metrics = Vec::new();
+    encoding_metrics
+        .try_reserve_exact(TYPED_V2_FAMILY_COUNT)
+        .map_err(|error| format!("reserve typed V2 encoding metrics: {error}"))?;
+    let mut segment_store_metrics = Vec::new();
+    segment_store_metrics
+        .try_reserve_exact(TYPED_V2_FAMILY_COUNT)
+        .map_err(|error| format!("reserve typed V2 storage metrics: {error}"))?;
+
+    let mut jumbo_sink = FileSemanticJumboRopeSink::new(store, &mut jumbo_admissions)?;
+    produce_typed_v2_family(
+        store,
+        reader,
+        &CoreDeclarationRows,
+        SemanticIrPlane::Core,
+        policies[0],
+        input_witness,
+        &mut jumbo_sink,
+        &mut segment_admissions,
+        &mut segment_pins,
+        &mut family_descriptors,
+        &mut encoding_metrics,
+        &mut segment_store_metrics,
+    )?;
+    produce_typed_v2_family(
+        store,
+        reader,
+        &TypesRows,
+        SemanticIrPlane::Types,
+        policies[1],
+        input_witness,
+        &mut jumbo_sink,
+        &mut segment_admissions,
+        &mut segment_pins,
+        &mut family_descriptors,
+        &mut encoding_metrics,
+        &mut segment_store_metrics,
+    )?;
+    produce_typed_v2_family(
+        store,
+        reader,
+        &RelationRows,
+        SemanticIrPlane::Relations,
+        policies[2],
+        input_witness,
+        &mut jumbo_sink,
+        &mut segment_admissions,
+        &mut segment_pins,
+        &mut family_descriptors,
+        &mut encoding_metrics,
+        &mut segment_store_metrics,
+    )?;
+    produce_typed_v2_family(
+        store,
+        reader,
+        &OccurrenceRows,
+        SemanticIrPlane::Occurrences,
+        policies[3],
+        input_witness,
+        &mut jumbo_sink,
+        &mut segment_admissions,
+        &mut segment_pins,
+        &mut family_descriptors,
+        &mut encoding_metrics,
+        &mut segment_store_metrics,
+    )?;
+    produce_typed_v2_family(
+        store,
+        reader,
+        &DocumentationRows,
+        SemanticIrPlane::Documentation,
+        policies[4],
+        input_witness,
+        &mut jumbo_sink,
+        &mut segment_admissions,
+        &mut segment_pins,
+        &mut family_descriptors,
+        &mut encoding_metrics,
+        &mut segment_store_metrics,
+    )?;
+    produce_typed_v2_family(
+        store,
+        reader,
+        &SourceProvenanceRows,
+        SemanticIrPlane::SourceProvenance,
+        policies[5],
+        input_witness,
+        &mut jumbo_sink,
+        &mut segment_admissions,
+        &mut segment_pins,
+        &mut family_descriptors,
+        &mut encoding_metrics,
+        &mut segment_store_metrics,
+    )?;
+    produce_typed_v2_family(
+        store,
+        reader,
+        &LanguageExtensionRows::new(build.profile()),
+        SemanticIrPlane::LanguageExtensions(build.profile()),
+        policies[6],
+        input_witness,
+        &mut jumbo_sink,
+        &mut segment_admissions,
+        &mut segment_pins,
+        &mut family_descriptors,
+        &mut encoding_metrics,
+        &mut segment_store_metrics,
+    )?;
+
+    let jumbo_store_metrics = jumbo_sink.metrics();
+    let jumbo_pin = jumbo_sink.into_collection_pin();
+    let families: [SemanticTypedPlaneFamilyDescriptorV2; TYPED_V2_FAMILY_COUNT] =
+        family_descriptors
+            .try_into()
+            .map_err(|_| "typed V2 producer did not emit exactly seven families".to_owned())?;
+    let encoding_metrics: [CanonicalPlaneEncodingMetrics; TYPED_V2_FAMILY_COUNT] = encoding_metrics
+        .try_into()
+        .map_err(|_| "typed V2 producer did not retain seven metric records".to_owned())?;
+    let segment_store_metrics: [SemanticProducerStoreMetrics; TYPED_V2_FAMILY_COUNT] =
+        segment_store_metrics
+            .try_into()
+            .map_err(|_| "typed V2 producer did not retain seven storage records".to_owned())?;
+
+    let mut source = ProducedSegmentSource::new(store, segment_admissions.admissions())?;
+    let mut jumbo_source = ProducedJumboSource::new(store, jumbo_admissions.admissions())?;
+    let verified_content = derive_typed_plane_content_v2_from_admitted_reader(
+        build,
+        image_facts,
+        input_witness,
+        &families,
+        tier,
+        jumbo_limits,
+        &mut source,
+        &mut jumbo_source,
+    )
+    .map_err(|error: SemanticGenerationProofError| {
+        format!("verify durable typed V2 producer output: {error}")
+    })?;
+    if jumbo_source.has_unreferenced_objects() {
+        return Err("typed V2 producer emitted an unreferenced jumbo object".to_owned());
+    }
+    let verifier_io_metrics = source.io_metrics().checked_add(jumbo_source.io_metrics())?;
+
+    let input_claim = backend_semantic::ir::SemanticInputClaimV2::from_witness(&input_witness);
+    let manifest = SemanticTypedPlaneManifestV2::from_untrusted_claims(
+        build,
+        image_facts,
+        input_claim,
+        UntrustedSemanticContentRootV2::from_wire_claim(
+            *verified_content.content_root().as_bytes(),
+        ),
+        UntrustedSemanticGenerationRootV2::from_wire_claim(
+            *verified_content.generation_root().as_bytes(),
+        ),
+        families,
+    )
+    .map_err(|error: SemanticTypedPlaneManifestV2Error| {
+        format!("build canonical c007 revision-3 manifest: {error}")
+    })?;
+    if verified_content.input_claim() != input_claim {
+        return Err("typed V2 derived roots differ from the admitted input witness".to_owned());
+    }
+
+    Ok(ProducedSemanticTypedPlaneV3 {
+        manifest,
+        verified_content,
+        input_witness,
+        segment_admissions: segment_admissions.into_admissions(),
+        jumbo_admissions: jumbo_admissions.into_admissions(),
+        segment_pins,
+        jumbo_pin,
+        encoding_metrics,
+        segment_store_metrics,
+        jumbo_store_metrics,
+        verifier_io_metrics,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn produce_typed_v2_family<Reader, Encoder>(
+    store: &FileStore,
+    reader: &Reader,
+    encoder: &Encoder,
+    family: SemanticIrPlane,
+    policy: SemanticPlaneSegmentBoundaryPolicy,
+    input_witness: SemanticInputWitness,
+    jumbo_sink: &mut FileSemanticJumboRopeSink<'_, '_, SemanticObjectAdmissionBuffer>,
+    segment_admissions: &mut SemanticObjectAdmissionBuffer,
+    segment_pins: &mut Vec<DurableSemanticObjectPin>,
+    family_descriptors: &mut Vec<SemanticTypedPlaneFamilyDescriptorV2>,
+    encoding_metrics: &mut Vec<CanonicalPlaneEncodingMetrics>,
+    segment_store_metrics: &mut Vec<SemanticProducerStoreMetrics>,
+) -> Result<(), String>
+where
+    Reader: SemanticReader + ?Sized,
+    Encoder: CanonicalPlaneRowEncoder + ?Sized,
+{
+    if encoder.kind() != SemanticPlaneKind::Ir(family) {
+        return Err(format!("typed V2 encoder does not match {family:?}"));
+    }
+    let first_receipt = segment_admissions.admissions().len();
+    let mut segment_sink = FileSemanticPlaneSegmentSink::new(store, segment_admissions)?;
+    let metrics = stream_canonical_plane_family_with_jumbo_and_stable_key_anchors(
+        reader,
+        encoder,
+        input_witness,
+        policy,
+        jumbo_sink,
+        &mut segment_sink,
+    )
+    .map_err(|error| format!("stream typed V2 {family:?} family: {error:?}"))?;
+    let store_metrics = segment_sink.metrics();
+    segment_pins
+        .try_reserve(1)
+        .map_err(|error| format!("reserve typed V2 family pin: {error}"))?;
+    segment_pins.push(segment_sink.into_collection_pin());
+    let receipts = segment_admissions.admissions();
+    let claims = receipts
+        .get(first_receipt..)
+        .ok_or_else(|| "typed V2 segment receipts moved during encoding".to_owned())?;
+    let descriptor = descriptor_from_receipts(family, policy, metrics, claims)?;
+    encoding_metrics
+        .try_reserve(1)
+        .map_err(|error| format!("reserve typed V2 family metrics: {error}"))?;
+    segment_store_metrics
+        .try_reserve(1)
+        .map_err(|error| format!("reserve typed V2 FileStore metrics: {error}"))?;
+    family_descriptors
+        .try_reserve(1)
+        .map_err(|error| format!("reserve typed V2 family manifest entry: {error}"))?;
+    encoding_metrics.push(metrics);
+    segment_store_metrics.push(store_metrics);
+    family_descriptors.push(descriptor);
+    Ok(())
+}
+
+fn descriptor_from_receipts(
+    family: SemanticIrPlane,
+    policy: SemanticPlaneSegmentBoundaryPolicy,
+    metrics: CanonicalPlaneEncodingMetrics,
+    receipts: &[DurableSemanticObjectAdmission],
+) -> Result<SemanticTypedPlaneFamilyDescriptorV2, String> {
+    if u64::try_from(receipts.len()).ok() != Some(metrics.segment_count()) {
+        return Err(format!(
+            "typed V2 {family:?} segment receipt count differs from writer"
+        ));
+    }
+    let mut claims = Vec::new();
+    claims
+        .try_reserve_exact(receipts.len())
+        .map_err(|error| format!("reserve typed V2 segment claims: {error}"))?;
+    let mut rows = 0_u64;
+    for receipt in receipts {
+        let ProducedSemanticObjectIdentity::Segment {
+            family: observed_family,
+            id,
+            first_key,
+            last_key,
+            row_count,
+        } = receipt.identity()
+        else {
+            return Err("typed V2 family segment sink recorded a non-segment object".to_owned());
+        };
+        if observed_family != family {
+            return Err(format!(
+                "typed V2 {family:?} receipt contains {observed_family:?}"
+            ));
+        }
+        rows = rows
+            .checked_add(u64::from(row_count))
+            .ok_or_else(|| "typed V2 family row count overflows".to_owned())?;
+        claims.push(
+            SemanticTypedPlaneSegmentClaimV2::from_untrusted_claims(
+                first_key,
+                last_key,
+                row_count,
+                receipt.payload_bytes(),
+                UntrustedSemanticSegmentId::from_raw(*id.as_bytes()),
+            )
+            .map_err(|error| format!("invalid durable typed V2 segment receipt: {error}"))?,
+        );
+    }
+    if rows != metrics.row_count() {
+        return Err(format!(
+            "typed V2 {family:?} row receipts differ from writer count"
+        ));
+    }
+    SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
+        family,
+        metrics.row_count(),
+        policy,
+        claims,
+    )
+    .map_err(|error| format!("invalid typed V2 {family:?} family descriptor: {error}"))
+}
+
+struct ProducedSegmentSource<'store> {
+    store: &'store FileStore,
+    segments: Vec<(SemanticIrPlane, DurableSemanticObjectAdmission)>,
+    current: Vec<u8>,
+    io_metrics: SemanticProducerVerifierIoMetrics,
+}
+
+impl<'store> ProducedSegmentSource<'store> {
+    fn new(
+        store: &'store FileStore,
+        receipts: &[DurableSemanticObjectAdmission],
+    ) -> Result<Self, String> {
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(receipts.len())
+            .map_err(|error| format!("reserve typed V2 segment source map: {error}"))?;
+        for receipt in receipts {
+            let ProducedSemanticObjectIdentity::Segment { family, .. } = receipt.identity() else {
+                return Err("typed V2 segment source received a non-segment receipt".to_owned());
+            };
+            segments.push((family, *receipt));
+        }
+        Ok(Self {
+            store,
+            segments,
+            current: Vec::new(),
+            io_metrics: SemanticProducerVerifierIoMetrics::default(),
+        })
+    }
+
+    fn io_metrics(&self) -> SemanticProducerVerifierIoMetrics {
+        self.io_metrics
+    }
+}
+
+impl TypedPlaneSegmentSourceV2 for ProducedSegmentSource<'_> {
+    type Error = String;
+
+    fn segment<'source>(
+        &'source mut self,
+        index: usize,
+        claim: &SemanticTypedPlaneSegmentClaimV2,
+    ) -> Result<&'source [u8], Self::Error> {
+        let (family, receipt) =
+            self.segments.get(index).copied().ok_or_else(|| {
+                "typed V2 verifier requested an unknown produced segment".to_owned()
+            })?;
+        let ProducedSemanticObjectIdentity::Segment {
+            family: observed_family,
+            id,
+            first_key,
+            last_key,
+            row_count,
+        } = receipt.identity()
+        else {
+            return Err("typed V2 produced segment map is malformed".to_owned());
+        };
+        if family != observed_family
+            || claim.first_key() != &first_key
+            || claim.last_key() != &last_key
+            || claim.row_count() != row_count
+            || claim.id_claim().as_bytes() != id.as_bytes()
+            || claim.byte_length() != receipt.payload_bytes()
+        {
+            return Err("typed V2 manifest claim differs from durable segment receipt".to_owned());
+        }
+        let object = self
+            .store
+            .read_object(receipt.object_id())
+            .map_err(|error| format!("reopen typed V2 produced segment: {error:?}"))?;
+        if object.id() != receipt.object_id()
+            || object.schema() != ProducedSemanticObjectKind::Segment.schema_identity()
+            || object.bytes().len() as u64 != receipt.payload_bytes()
+        {
+            return Err("typed V2 produced segment envelope changed after admission".to_owned());
+        }
+        self.io_metrics.segment_object_reads = self
+            .io_metrics
+            .segment_object_reads
+            .checked_add(1)
+            .ok_or_else(|| "semantic verifier segment read counter overflows".to_owned())?;
+        self.io_metrics.segment_payload_bytes = self
+            .io_metrics
+            .segment_payload_bytes
+            .checked_add(receipt.payload_bytes())
+            .ok_or_else(|| "semantic verifier segment payload counter overflows".to_owned())?;
+        self.io_metrics.segment_envelope_bytes = self
+            .io_metrics
+            .segment_envelope_bytes
+            .checked_add(receipt.envelope_bytes())
+            .ok_or_else(|| "semantic verifier segment envelope counter overflows".to_owned())?;
+        self.current.clear();
+        self.current
+            .try_reserve_exact(object.bytes().len())
+            .map_err(|error| format!("reserve typed V2 segment read buffer: {error}"))?;
+        self.current.extend_from_slice(object.bytes());
+        Ok(&self.current)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct JumboObjectMapping {
+    object: ObjectId,
+    payload_bytes: u64,
+    envelope_bytes: u64,
+    used: bool,
+}
+
+struct ProducedJumboSource<'store> {
+    store: &'store FileStore,
+    leaves: BTreeMap<JumboRopeObjectId, JumboObjectMapping>,
+    interiors: BTreeMap<JumboRopeObjectId, JumboObjectMapping>,
+    io_metrics: SemanticProducerVerifierIoMetrics,
+}
+
+impl<'store> ProducedJumboSource<'store> {
+    fn new(
+        store: &'store FileStore,
+        receipts: &[DurableSemanticObjectAdmission],
+    ) -> Result<Self, String> {
+        let mut source = Self {
+            store,
+            leaves: BTreeMap::new(),
+            interiors: BTreeMap::new(),
+            io_metrics: SemanticProducerVerifierIoMetrics::default(),
+        };
+        for receipt in receipts {
+            let (id, map) = match receipt.identity() {
+                ProducedSemanticObjectIdentity::JumboLeaf { id, .. } => (id, &mut source.leaves),
+                ProducedSemanticObjectIdentity::JumboInterior { id, .. } => {
+                    (id, &mut source.interiors)
+                }
+                ProducedSemanticObjectIdentity::Segment { .. } => {
+                    return Err("typed V2 jumbo source received a segment receipt".to_owned());
+                }
+            };
+            if let Some(previous) = map.get(&id)
+                && (previous.object != receipt.object_id()
+                    || previous.payload_bytes != receipt.payload_bytes()
+                    || previous.envelope_bytes != receipt.envelope_bytes())
+            {
+                return Err("one jumbo identity maps to conflicting FileStore receipts".to_owned());
+            }
+            map.entry(id).or_insert(JumboObjectMapping {
+                object: receipt.object_id(),
+                payload_bytes: receipt.payload_bytes(),
+                envelope_bytes: receipt.envelope_bytes(),
+                used: false,
+            });
+        }
+        Ok(source)
+    }
+
+    fn has_unreferenced_objects(&self) -> bool {
+        self.leaves.values().any(|mapping| !mapping.used)
+            || self.interiors.values().any(|mapping| !mapping.used)
+    }
+
+    fn io_metrics(&self) -> SemanticProducerVerifierIoMetrics {
+        self.io_metrics
+    }
+
+    fn read_object(
+        &mut self,
+        object_id: ObjectId,
+        kind: ProducedSemanticObjectKind,
+        expected_payload_bytes: u64,
+        envelope_bytes: u64,
+    ) -> Result<TypedObject, String> {
+        let object = self
+            .store
+            .read_object(object_id)
+            .map_err(|error| format!("reopen typed V2 jumbo object: {error:?}"))?;
+        if object.id() != object_id
+            || object.schema() != kind.schema_identity()
+            || u64::try_from(object.bytes().len()).ok() != Some(expected_payload_bytes)
+        {
+            return Err("typed V2 jumbo envelope kind or identity changed".to_owned());
+        }
+        self.io_metrics.jumbo_payload_bytes = self
+            .io_metrics
+            .jumbo_payload_bytes
+            .checked_add(expected_payload_bytes)
+            .ok_or_else(|| "semantic verifier jumbo payload counter overflows".to_owned())?;
+        self.io_metrics.jumbo_envelope_bytes = self
+            .io_metrics
+            .jumbo_envelope_bytes
+            .checked_add(envelope_bytes)
+            .ok_or_else(|| "semantic verifier jumbo envelope counter overflows".to_owned())?;
+        match kind {
+            ProducedSemanticObjectKind::JumboLeaf => {
+                self.io_metrics.jumbo_leaf_object_reads = self
+                    .io_metrics
+                    .jumbo_leaf_object_reads
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        "semantic verifier jumbo leaf read counter overflows".to_owned()
+                    })?;
+            }
+            ProducedSemanticObjectKind::JumboInterior => {
+                self.io_metrics.jumbo_interior_object_reads = self
+                    .io_metrics
+                    .jumbo_interior_object_reads
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        "semantic verifier jumbo interior read counter overflows".to_owned()
+                    })?;
+            }
+            ProducedSemanticObjectKind::Segment => {
+                return Err("typed V2 jumbo reader received a segment kind".to_owned());
+            }
+        }
+        Ok(object)
+    }
+}
+
+impl JumboRopeObjectSource for ProducedJumboSource<'_> {
+    type Error = String;
+
+    fn read_leaf(
+        &mut self,
+        id: JumboRopeObjectId,
+        output: &mut [u8; JUMBO_ROPE_MAX_LEAF_BYTES],
+    ) -> Result<Option<usize>, Self::Error> {
+        let Some(mapping) = self.leaves.get_mut(&id).map(|mapping| {
+            mapping.used = true;
+            *mapping
+        }) else {
+            return Ok(None);
+        };
+        let object = self.read_object(
+            mapping.object,
+            ProducedSemanticObjectKind::JumboLeaf,
+            mapping.payload_bytes,
+            mapping.envelope_bytes,
+        )?;
+        let bytes = object.bytes();
+        if bytes.len() > output.len() {
+            return Ok(Some(output.len() + 1));
+        }
+        output[..bytes.len()].copy_from_slice(bytes);
+        Ok(Some(bytes.len()))
+    }
+
+    fn read_interior(
+        &mut self,
+        id: JumboRopeObjectId,
+    ) -> Result<Option<[u8; ROPE_NODE_WIRE_BYTES]>, Self::Error> {
+        let Some(mapping) = self.interiors.get_mut(&id).map(|mapping| {
+            mapping.used = true;
+            *mapping
+        }) else {
+            return Ok(None);
+        };
+        let object = self.read_object(
+            mapping.object,
+            ProducedSemanticObjectKind::JumboInterior,
+            mapping.payload_bytes,
+            mapping.envelope_bytes,
+        )?;
+        let bytes = object.bytes();
+        if bytes.len() != ROPE_NODE_WIRE_BYTES {
+            return Err("typed V2 jumbo interior has the wrong fixed length".to_owned());
+        }
+        Ok(Some(bytes.try_into().map_err(|_| {
+            "typed V2 jumbo interior has a non-canonical length".to_owned()
+        })?))
+    }
+}
+
 fn commit_and_read(
     store: &FileStore,
     object: &TypedObject,
@@ -640,19 +1506,27 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use crate::vocabulary::{LanguageProfile, RustEdition, Stage};
     use backend_semantic::ir::{
-        BorrowedTree, CanonicalPlaneSegmentBoundaryPolicy, CorePayloadHash, DeclarationFamilyId,
+        BorrowedTree, BuiltinType, ConcreteType, Confidence, CorePayloadHash, DeclarationFamilyId,
         DocInput, DocumentationRows, EntityAuthorityFacts, EntityVersion, FactAvailability, Ir,
         IrBuilder, ItemKind, JUMBO_ROPE_MAX_LEAF_BYTES, JumboRopeObjectId, JumboRopeObjectSource,
-        MAX_SEMANTIC_SEGMENT_BYTES, ParentageAuthority, ROPE_NODE_WIRE_BYTES, SemanticInputWitness,
-        SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment, TreeItemInput,
-        VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
+        LanguageExtensionInput, LinkKind, MAX_SEMANTIC_SEGMENT_BYTES, OccurrenceAuthorityFacts,
+        ParentageAuthority, ROPE_NODE_WIRE_BYTES, RustFacts, RustOwnership, SemanticImageView,
+        SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment,
+        SemanticPlaneSegmentBoundaryPolicy as CanonicalPlaneSegmentBoundaryPolicy, SourceSpan,
+        TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr, VariantFingerprint,
+        Visibility, encode_full_semantic_image, full_semantic_image_len,
         stream_canonical_plane_family_with_jumbo,
         stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
         verify_canonical_semantic_plane_segment_boundaries, verify_jumbo_plane_family_closures,
     };
     use backend_store::{ClosureCompositionBudget, ClosureMembershipChange};
-    use backend_version::ScopeRoot;
+    use backend_version::{
+        AdmittedProducerObservation, AuthorityScopeClaim, CoverageAdmissionError, CoverageWitness,
+        ObjectVersion, ProducerObservationClaims, ProducerObservationVerifier, ScopeRoot,
+        UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
+    };
 
     use super::*;
 
@@ -1069,6 +1943,349 @@ mod tests {
         let hashed_bytes = u64::try_from(base.len() + target.len())
             .expect("bounded V1 fixture byte count fits u64");
         (changed_bytes, hashed_bytes)
+    }
+
+    struct V3InputAuthority;
+
+    impl backend_version::Schema for V3InputAuthority {
+        const DOMAIN: u8 = 0x53;
+        const TYPE: u16 = 0xfffd;
+        type Value = [u8; 32];
+
+        fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+            output.extend_from_slice(value);
+        }
+    }
+
+    struct V3InputVerifier;
+
+    impl ProducerObservationVerifier for V3InputVerifier {
+        type Error = CoverageAdmissionError;
+
+        fn verify(
+            &self,
+            observation: &UntrustedProducerObservation,
+        ) -> Result<ProducerObservationClaims, Self::Error> {
+            Ok(ProducerObservationClaims::new(
+                observation.producer_identity(),
+                observation.scope_root(),
+                observation.context(),
+                *blake3::hash(observation.evidence()).as_bytes(),
+            ))
+        }
+    }
+
+    fn v3_input_witness(identity: u8) -> SemanticInputWitness {
+        let input_root = [identity; 32];
+        let scope_value = [identity.wrapping_add(1); 32];
+        let version = ObjectVersion::<V3InputAuthority>::from_value(&scope_value);
+        let scope = ScopeRoot::from_bytes(version.to_bytes());
+        let claim = AuthorityScopeClaim::from_object_version(version);
+        let producer: AdmittedProducerObservation = admit_producer_observation(
+            UntrustedProducerObservation::new(
+                [7; 32],
+                claim.scope_root(),
+                [8; 32],
+                vec![identity, identity.wrapping_add(9)],
+            ),
+            &V3InputVerifier,
+        )
+        .expect("test producer observation is admitted");
+        let witness = CoverageWitness::Complete(
+            admit_complete_scope(claim, producer).expect("test input scope matches"),
+        );
+        SemanticInputWitness::admitted(input_root, scope, witness)
+            .expect("test input witness carries live complete coverage")
+    }
+
+    fn v3_build_identity() -> SemanticBuildIdentity {
+        SemanticBuildIdentity::new(
+            [1; 32],
+            [2; 32],
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            [3; 32],
+            [4; 32],
+            [5; 32],
+            [6; 32],
+        )
+    }
+
+    fn v3_boundary_policies() -> SemanticTypedPlaneBoundaryPoliciesV3 {
+        let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("V3 fixture stable-key policy is valid");
+        SemanticTypedPlaneBoundaryPoliciesV3::new(
+            policy, policy, policy, policy, policy, policy, policy,
+        )
+    }
+
+    #[derive(Clone, Copy)]
+    enum V3FixtureShape {
+        Base,
+        RenameEarly,
+        RenameMiddle,
+        RenameTail,
+        EarlyEdit,
+        MiddleEdit,
+        TailEdit,
+        MiddleInsert,
+        MiddleDelete,
+    }
+
+    impl V3FixtureShape {
+        fn label(self) -> &'static str {
+            match self {
+                Self::Base => "base",
+                Self::RenameEarly => "rename-early",
+                Self::RenameMiddle => "rename-middle",
+                Self::RenameTail => "rename-tail",
+                Self::EarlyEdit => "early-edit",
+                Self::MiddleEdit => "middle-edit",
+                Self::TailEdit => "tail-edit",
+                Self::MiddleInsert => "middle-insert",
+                Self::MiddleDelete => "middle-delete",
+            }
+        }
+    }
+
+    fn v3_fixture(shape: V3FixtureShape) -> Ir {
+        let mut stable_keys = vec![10_u64, 20, 30, 40];
+        match shape {
+            V3FixtureShape::Base
+            | V3FixtureShape::RenameEarly
+            | V3FixtureShape::RenameMiddle
+            | V3FixtureShape::RenameTail
+            | V3FixtureShape::EarlyEdit
+            | V3FixtureShape::MiddleEdit
+            | V3FixtureShape::TailEdit => {}
+            V3FixtureShape::MiddleInsert => stable_keys.push(25),
+            V3FixtureShape::MiddleDelete => stable_keys.retain(|key| *key != 20),
+        }
+        stable_keys.sort_unstable();
+
+        let mut builder = IrBuilder::new();
+        builder
+            .set_language_profile(LanguageProfile::Rust(RustEdition::Rust2024))
+            .expect("fixture profile is valid");
+        let source_file = builder
+            .intern_atom(b"src/v3-fixture.rs")
+            .expect("source atom");
+        let semantic_type = builder
+            .intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::I32)))
+            .expect("fixture builtin type");
+        let rust_facts = RustFacts {
+            ownership: RustOwnership::Value,
+            lifetimes: builder.intern_attributes(&[]).expect("empty lifetimes"),
+            where_clauses: builder
+                .intern_type_parameters(&[])
+                .expect("empty where clauses"),
+            macros: builder.intern_attributes(&[]).expect("empty macros"),
+            const_defaults: builder
+                .intern_attributes(&[])
+                .expect("empty const defaults"),
+            free_predicates: builder
+                .intern_free_predicates(&[])
+                .expect("empty free predicates"),
+        };
+
+        let names = stable_keys
+            .iter()
+            .map(|key| {
+                let rename = matches!(
+                    (shape, *key),
+                    (V3FixtureShape::RenameEarly, 10)
+                        | (V3FixtureShape::RenameMiddle, 30)
+                        | (V3FixtureShape::RenameTail, 40)
+                );
+                if rename {
+                    format!("renamed_node_{key:02}")
+                } else {
+                    format!("node_{key:02}")
+                }
+            })
+            .collect::<Vec<_>>();
+        let documents = stable_keys
+            .iter()
+            .map(|key| {
+                if *key == 20 {
+                    // Force the ordinary documentation writer to emit a
+                    // content-defined jumbo rope and exercise its durable
+                    // leaf/interior receipt path.
+                    "semantic jumbo documentation ".repeat(1_400)
+                } else if matches!(
+                    (shape, *key),
+                    (V3FixtureShape::EarlyEdit, 10)
+                        | (V3FixtureShape::MiddleEdit, 30)
+                        | (V3FixtureShape::TailEdit, 40)
+                ) {
+                    format!("edited documentation for stable node {key}")
+                } else {
+                    format!("documentation for stable node {key}")
+                }
+            })
+            .collect::<Vec<_>>();
+        let docs = documents
+            .iter()
+            .map(|document| [DocInput::Text(document.as_str())])
+            .collect::<Vec<_>>();
+        let versions = stable_keys
+            .iter()
+            .map(|key| {
+                let mut family = [0_u8; 16];
+                family[8..].copy_from_slice(&key.to_be_bytes());
+                EntityVersion {
+                    family: DeclarationFamilyId::from_raw(family),
+                    variant: VariantFingerprint::from_raw([0x42; 16]),
+                    core_payload: CorePayloadHash::from_raw([0x43; 16]),
+                }
+            })
+            .collect::<Vec<_>>();
+        let authority = EntityAuthorityFacts {
+            parentage: ParentageAuthority::Root,
+            source: FactAvailability::Captured,
+            source_file: FactAvailability::Captured,
+            members: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            semantic_type: FactAvailability::Captured,
+            language_extension: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = stable_keys
+            .iter()
+            .enumerate()
+            .map(|(position, _)| TreeItemInput {
+                name: names[position].as_bytes(),
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: Some(semantic_type),
+                members: &[],
+                docs: &docs[position],
+                attributes: &[],
+                source: SourceSpan::new(
+                    source_file,
+                    u32::try_from(position * 32).expect("fixture source offset fits"),
+                    u32::try_from(position * 32 + 8).expect("fixture source end fits"),
+                ),
+                extension: Some(LanguageExtensionInput::Rust(&rust_facts)),
+            })
+            .collect::<Vec<_>>();
+        let links = (0..stable_keys.len().saturating_sub(1))
+            .map(|position| TreeLinkInput {
+                from: TreeEntityId::new(position),
+                target: TreeLinkTarget::Local(TreeEntityId::new(position + 1)),
+                kind: LinkKind::Calls,
+                confidence: Confidence::Compiler,
+                authority: OccurrenceAuthorityFacts {
+                    source: FactAvailability::Captured,
+                },
+                source: SourceSpan::new(
+                    source_file,
+                    u32::try_from(position * 32 + 8).expect("link source offset fits"),
+                    u32::try_from(position * 32 + 16).expect("link source end fits"),
+                ),
+            })
+            .collect::<Vec<_>>();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &links,
+            })
+            .expect("fixture seven-family borrowed tree is valid");
+        builder.finish().expect("fixture seven-family IR is valid")
+    }
+
+    fn produce_v3(
+        store: &FileStore,
+        reader: &impl SemanticReader,
+        input_identity: u8,
+    ) -> ProducedSemanticTypedPlaneV3 {
+        produce_semantic_typed_plane_v3(
+            store,
+            reader,
+            v3_build_identity(),
+            v3_input_witness(input_identity),
+            v3_boundary_policies(),
+            SemanticTypedPlaneVerificationTierV2::Standard,
+            JumboRopeLimits::default(),
+        )
+        .expect("real-reader V3 producer emits a complete verified c007 manifest")
+    }
+
+    fn v3_segment_inventory(
+        produced: &ProducedSemanticTypedPlaneV3,
+    ) -> BTreeMap<(SemanticIrPlane, [u8; 32]), u64> {
+        let mut inventory = BTreeMap::new();
+        for receipt in produced.segment_admissions() {
+            let ProducedSemanticObjectIdentity::Segment { family, id, .. } = receipt.identity()
+            else {
+                continue;
+            };
+            let previous = inventory.insert((family, *id.as_bytes()), receipt.payload_bytes());
+            assert!(
+                previous.is_none_or(|bytes| bytes == receipt.payload_bytes()),
+                "one family-scoped stable segment identity has one payload length"
+            );
+        }
+        inventory
+    }
+
+    fn v3_segment_churn(
+        base: &ProducedSemanticTypedPlaneV3,
+        target: &ProducedSemanticTypedPlaneV3,
+    ) -> (usize, usize, u64) {
+        let base = v3_segment_inventory(base);
+        let target = v3_segment_inventory(target);
+        let new_payload_bytes = target
+            .iter()
+            .filter(|(identity, _)| !base.contains_key(*identity))
+            .map(|(_, byte_length)| *byte_length)
+            .sum();
+        let new_segments = target
+            .keys()
+            .filter(|identity| !base.contains_key(*identity))
+            .count();
+        let removed_segments = base
+            .keys()
+            .filter(|identity| !target.contains_key(*identity))
+            .count();
+        (new_segments, removed_segments, new_payload_bytes)
+    }
+
+    fn cold_reverify_v3(
+        store: &FileStore,
+        produced: &ProducedSemanticTypedPlaneV3,
+    ) -> (
+        VerifiedTypedPlaneContentV2,
+        SemanticProducerVerifierIoMetrics,
+    ) {
+        let mut segment_source = ProducedSegmentSource::new(store, produced.segment_admissions())
+            .expect("cold source maps every exact segment receipt");
+        let mut jumbo_source = ProducedJumboSource::new(store, produced.jumbo_admissions())
+            .expect("cold source maps every exact rope receipt");
+        let verified =
+            backend_semantic::ir::verify_typed_plane_content_v2_with_jumbo_segment_source(
+                produced.manifest(),
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+                &mut segment_source,
+                &mut jumbo_source,
+            )
+            .expect("cold V3 consumer independently verifies every target family");
+        assert!(
+            !jumbo_source.has_unreferenced_objects(),
+            "every admitted jumbo object is reached from a verified family row"
+        );
+        assert_eq!(&verified, produced.verified_content());
+        let io_metrics = segment_source
+            .io_metrics()
+            .checked_add(jumbo_source.io_metrics())
+            .expect("bounded V3 verifier I/O counters fit u64");
+        (verified, io_metrics)
     }
 
     /// Test-only CAS membership composer. Its result is not a family or
@@ -1551,5 +2768,239 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn v3_real_reader_edit_matrix_cold_verifies_all_seven_families() {
+        let directory = TestDirectory::new();
+        let cas_path = directory.0.join("v3-cas");
+        let store =
+            FileStore::open(&cas_path, 4 * 1024 * 1024).expect("open V3 producer FileStore");
+        let base_ir = v3_fixture(V3FixtureShape::Base);
+        let base = produce_v3(&store, &base_ir, 11);
+
+        assert_eq!(base.manifest().families().len(), TYPED_V2_FAMILY_COUNT);
+        assert!(base.input_witness().coverage().is_authorized_complete());
+        assert_eq!(
+            base.manifest().input_claim(),
+            backend_semantic::ir::SemanticInputClaimV2::from_witness(&base.input_witness()),
+            "c007 retains only the deterministic claim bound to the live owner witness"
+        );
+        assert!(
+            base.manifest()
+                .families()
+                .iter()
+                .all(|family| family.row_count() > 0)
+        );
+        assert_eq!(
+            base.manifest().generation_root_claim().as_bytes(),
+            base.verified_content().generation_root().as_bytes(),
+            "c007 generation claim is derived from the exact admitted payload closure"
+        );
+        assert_eq!(
+            base.manifest().content_root_claim().as_bytes(),
+            base.verified_content().content_root().as_bytes(),
+            "c007 content claim is derived from the exact admitted payload closure"
+        );
+        assert!(base.jumbo_store_metrics().attempted_objects() > 0);
+        assert!(base.jumbo_admissions().iter().any(|receipt| matches!(
+            receipt.identity(),
+            ProducedSemanticObjectIdentity::JumboLeaf { .. }
+        )));
+        assert!(base.jumbo_admissions().iter().any(|receipt| matches!(
+            receipt.identity(),
+            ProducedSemanticObjectIdentity::JumboInterior { .. }
+        )));
+
+        for (index, family) in base.manifest().families().iter().enumerate() {
+            let encoded = base.encoding_metrics()[index];
+            let stored = base.segment_store_metrics()[index];
+            assert_eq!(encoded.row_count(), family.row_count());
+            assert_eq!(
+                encoded.segment_count(),
+                family.segments().len() as u64,
+                "family {index} segment count binds to durable receipt claims"
+            );
+            assert_eq!(
+                encoded.output_bytes(),
+                family
+                    .segments()
+                    .iter()
+                    .map(|segment| segment.byte_length())
+                    .sum::<u64>(),
+                "family {index} exact SPIR bytes bind to c007 descriptors"
+            );
+            assert_eq!(
+                stored.semantic_segment_hash_bytes(),
+                encoded.output_bytes(),
+                "family {index} durable sink validates every exact SPIR byte"
+            );
+        }
+
+        let cold_store = FileStore::open(&cas_path, 4 * 1024 * 1024)
+            .expect("cold reopen V3 FileStore for consumer proof");
+        let (base_cold, base_cold_io) = cold_reverify_v3(&cold_store, &base);
+        assert_eq!(&base_cold, base.verified_content());
+        let expected_segment_reads = (base.segment_admissions().len() as u64) * 2;
+        let expected_segment_payload_bytes = base
+            .segment_admissions()
+            .iter()
+            .map(|receipt| receipt.payload_bytes())
+            .sum::<u64>()
+            * 2;
+        let expected_segment_envelope_bytes = base
+            .segment_admissions()
+            .iter()
+            .map(|receipt| receipt.envelope_bytes())
+            .sum::<u64>()
+            * 2;
+        assert_eq!(base_cold_io.segment_object_reads(), expected_segment_reads);
+        assert_eq!(
+            base_cold_io.segment_payload_bytes(),
+            expected_segment_payload_bytes
+        );
+        assert_eq!(
+            base_cold_io.segment_envelope_bytes(),
+            expected_segment_envelope_bytes
+        );
+        assert_eq!(base_cold_io, base.verifier_io_metrics());
+        assert!(base_cold_io.jumbo_leaf_object_reads() > 0);
+        assert!(base_cold_io.jumbo_interior_object_reads() > 0);
+
+        // A separate full-image reader reconstructs the same semantics in a
+        // new residence and reruns all seven family encoders. CAS reuse must
+        // produce byte-identical c007 roots without newly stored objects.
+        let image = v1_image(&base_ir);
+        let reopened_reader = SemanticImageView::reopen(&image)
+            .expect("independent full semantic reader reopens the fixture");
+        let no_op = produce_v3(&store, &reopened_reader, 11);
+        assert_eq!(no_op.manifest(), base.manifest());
+        assert_eq!(no_op.verified_content(), base.verified_content());
+        assert_eq!(no_op.encoding_metrics(), base.encoding_metrics());
+        for stored in no_op.segment_store_metrics() {
+            assert_eq!(stored.created_objects(), 0);
+            assert_eq!(stored.reused_objects(), stored.attempted_objects());
+            assert_eq!(
+                stored.admitted_envelope_bytes(),
+                stored.cas_hit_compare_envelope_bytes()
+            );
+        }
+        assert_eq!(no_op.jumbo_store_metrics().created_objects(), 0);
+        assert_eq!(
+            no_op.jumbo_store_metrics().reused_objects(),
+            no_op.jumbo_store_metrics().attempted_objects()
+        );
+        assert_eq!(
+            no_op.jumbo_store_metrics().admitted_envelope_bytes(),
+            no_op.jumbo_store_metrics().cas_hit_compare_envelope_bytes()
+        );
+        let (no_op_cold, no_op_cold_io) = cold_reverify_v3(&cold_store, &no_op);
+        assert_eq!(no_op_cold, *base.verified_content());
+        assert_eq!(no_op_cold_io, base_cold_io);
+
+        let claim_only_store_path = directory.0.join("claim-only-cas");
+        let claim_only_store = FileStore::open(&claim_only_store_path, 4 * 1024 * 1024)
+            .expect("open claim-only rejection FileStore");
+        let claim_only =
+            SemanticInputWitness::claimed([0x31; 32], ScopeRoot::from_bytes([0x32; 32]));
+        assert!(
+            produce_semantic_typed_plane_v3(
+                &claim_only_store,
+                &base_ir,
+                v3_build_identity(),
+                claim_only,
+                v3_boundary_policies(),
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_dir(claim_only_store_path.join("objects"))
+                .expect("claim-only FileStore object directory exists")
+                .count(),
+            0,
+            "claim-only Complete is rejected before any durable segment or rope write"
+        );
+
+        for (shape, input_identity) in [
+            (V3FixtureShape::RenameEarly, 12),
+            (V3FixtureShape::RenameMiddle, 13),
+            (V3FixtureShape::RenameTail, 14),
+            (V3FixtureShape::EarlyEdit, 15),
+            (V3FixtureShape::MiddleEdit, 16),
+            (V3FixtureShape::TailEdit, 17),
+            (V3FixtureShape::MiddleInsert, 18),
+            (V3FixtureShape::MiddleDelete, 19),
+        ] {
+            let target_ir = v3_fixture(shape);
+            let target = produce_v3(&store, &target_ir, input_identity);
+            let (verified, cold_io) = cold_reverify_v3(&cold_store, &target);
+            assert_ne!(
+                verified.content_root(),
+                base_cold.content_root(),
+                "an independent reader edit changes the typed content root"
+            );
+            assert_ne!(
+                verified.generation_root(),
+                base_cold.generation_root(),
+                "the changed source admission changes the derivation root"
+            );
+            assert_eq!(target.manifest().families().len(), TYPED_V2_FAMILY_COUNT);
+            for (index, family) in target.manifest().families().iter().enumerate() {
+                assert_eq!(
+                    target.encoding_metrics()[index].row_count(),
+                    family.row_count()
+                );
+                assert_eq!(
+                    target.encoding_metrics()[index].segment_count(),
+                    family.segments().len() as u64
+                );
+                assert_eq!(
+                    target.segment_store_metrics()[index].semantic_segment_hash_bytes(),
+                    target.encoding_metrics()[index].output_bytes()
+                );
+            }
+            let (new_segments, removed_segments, new_segment_payload_bytes) =
+                v3_segment_churn(&base, &target);
+            assert!(
+                new_segments + removed_segments > 0,
+                "{} changes at least one family-scoped segment identity",
+                shape.label()
+            );
+            assert_eq!(cold_io, target.verifier_io_metrics());
+            let canonical_rows_encoded = target
+                .encoding_metrics()
+                .iter()
+                .map(|metrics| metrics.row_encode_calls())
+                .sum::<u64>();
+            let full_family_row_index_bytes = target
+                .encoding_metrics()
+                .iter()
+                .map(|metrics| metrics.row_index_capacity_bytes())
+                .sum::<u64>();
+            let encoded_spir_bytes = target
+                .encoding_metrics()
+                .iter()
+                .map(|metrics| metrics.output_bytes())
+                .sum::<u64>();
+            println!(
+                "v3 {}: canonical_rows_encoded={} full_family_row_index_capacity_bytes={} encoded_spir_payload_bytes={} new_segment_ids={} removed_segment_ids={} new_segment_payload_bytes={} verifier_segment_reads={} verifier_segment_payload_bytes={} verifier_segment_envelope_bytes={} verifier_jumbo_leaf_reads={} verifier_jumbo_interior_reads={} verifier_jumbo_payload_bytes={} verifier_jumbo_envelope_bytes={}",
+                shape.label(),
+                canonical_rows_encoded,
+                full_family_row_index_bytes,
+                encoded_spir_bytes,
+                new_segments,
+                removed_segments,
+                new_segment_payload_bytes,
+                cold_io.segment_object_reads(),
+                cold_io.segment_payload_bytes(),
+                cold_io.segment_envelope_bytes(),
+                cold_io.jumbo_leaf_object_reads(),
+                cold_io.jumbo_interior_object_reads(),
+                cold_io.jumbo_payload_bytes(),
+                cold_io.jumbo_envelope_bytes(),
+            );
+        }
     }
 }

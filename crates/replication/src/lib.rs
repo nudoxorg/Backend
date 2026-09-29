@@ -51,7 +51,9 @@ pub use ir_image_store::{SemanticImageCacheError, SemanticImageResume};
 pub use ir_producer_store::{
     DurableSemanticObjectAdmission, DurableSemanticObjectPin, FileSemanticJumboRopeSink,
     FileSemanticPlaneSegmentSink, ProducedSemanticObjectIdentity, ProducedSemanticObjectKind,
-    SemanticObjectAdmissionBuffer, SemanticObjectAdmissionSink, SemanticProducerStoreMetrics,
+    ProducedSemanticTypedPlaneV3, SemanticObjectAdmissionBuffer, SemanticObjectAdmissionSink,
+    SemanticProducerStoreMetrics, SemanticProducerVerifierIoMetrics,
+    SemanticTypedPlaneBoundaryPoliciesV3, produce_semantic_typed_plane_v3,
 };
 pub use ir_residency::*;
 pub use local_peer::*;
