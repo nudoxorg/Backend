@@ -27,6 +27,9 @@ const TRANSFER_MAGIC: &[u8; 8] = b"NDOXTR02";
 const TEMP_TTL: Duration = Duration::from_secs(15 * 60);
 const TRANSFER_OWNER_LOCK_STRIPES: usize = 256;
 const MAX_VALIDATOR_BYTES: usize = 1024;
+const MAX_CHECKPOINT_BYTES: usize =
+    8 + ID_BYTES + 1 + ID_BYTES + 8 + 8 + 2 * (2 + MAX_VALIDATOR_BYTES);
+const LEASE_MARKER_BYTES: usize = ID_BYTES + 8;
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -540,57 +543,24 @@ impl ContentAddressedStore {
         Ok(())
     }
 
-    fn publish_file(
-        &self,
-        source: &Path,
-        object: RawArchiveObjectId,
-        bytes: u64,
-    ) -> Result<ObjectAdmission, ContentStoreError> {
-        self.publish_file_with_hook(source, object, bytes, false, |_| Ok(()))
-    }
-
     fn publish_file_with_hook<F>(
         &self,
         source: &Path,
         object: RawArchiveObjectId,
         bytes: u64,
-        force_staging: bool,
         mut hook: F,
     ) -> Result<ObjectAdmission, ContentStoreError>
     where
         F: FnMut(PublishPoint) -> io::Result<()>,
     {
-        // Adapter verification runs while the bytes are private and receives
-        // their path. Recheck the closed file before trusting that path as the
-        // source of an immutable object.
+        // Producer-visible input paths are never linked into the CAS. Recheck
+        // their identity, copy into a destination sibling, then verify the
+        // exact staged bytes before no-clobber publication.
         self.verify_file_identity(source, object, bytes)?;
 
         let target = self.object_path_for(object);
         self.ensure_object_parent(&target)?;
-        let parent = target.parent().expect("object parent was ensured");
-        if force_staging {
-            return self.publish_staged_file_with_hook(source, &target, object, bytes, &mut hook);
-        }
-
-        let admission = match fs::hard_link(source, &target) {
-            Ok(()) => {
-                hook(PublishPoint::ObjectLinked)?;
-                ObjectAdmission::Published { object, bytes }
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                self.verify_file_identity(&target, object, bytes)?;
-                ObjectAdmission::Reused { object, bytes }
-            }
-            Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
-                return self
-                    .publish_staged_file_with_hook(source, &target, object, bytes, &mut hook);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        hook(PublishPoint::BeforeDirectorySync)?;
-        sync_directory(parent)?;
-        hook(PublishPoint::DirectorySynced)?;
-        Ok(admission)
+        self.publish_staged_file_with_hook(source, &target, object, bytes, &mut hook)
     }
 
     fn publish_staged_file_with_hook<F>(
@@ -613,7 +583,7 @@ impl ContentAddressedStore {
         let mut stage = DestinationStage::create(self, parent, target)?;
         hook(PublishPoint::StageCreated)?;
 
-        let mut source_file = File::open(source)?;
+        let mut source_file = open_content_file(self.root.as_ref(), source)?;
         let mut buffer = [0_u8; CHUNK_BYTES];
         let mut copied = 0_u64;
         loop {
@@ -867,21 +837,26 @@ impl ContentAddressedStore {
     /// content-addressed object root used by registry archives, then returns
     /// one canonical tree. Paths are slash-separated and traversal is
     /// deterministic, so an archive adapter can construct the identical tree
-    /// without copying or rehashing unchanged file bytes.
+    /// without copying or rehashing unchanged file bytes. The source tree must
+    /// remain stable during admission: entries are opened without following
+    /// leaf links, but ancestor traversal is still pathname-based.
     pub fn admit_directory(
         &self,
         root: impl AsRef<Path>,
         budget: ArchiveBudget,
     ) -> Result<ArchiveManifest, ContentStoreError> {
-        let root = root.as_ref();
+        let root = fs::canonicalize(root.as_ref())?;
         if !root.is_dir() {
             return Err(ContentStoreError::Io(io::Error::new(
                 io::ErrorKind::NotADirectory,
                 "source root is not a directory",
             )));
         }
+        let mut preflight = DirectoryAdmissionProgress::default();
+        preflight_directory_entries(&root, &root, budget, &mut preflight)?;
         let mut builder = ArchiveManifestBuilder::new(budget);
-        admit_directory_entries(self, root, root, &mut builder, budget.max_entry_bytes)?;
+        let mut admission = DirectoryAdmissionProgress::default();
+        admit_directory_entries(self, &root, &root, budget, &mut admission, &mut builder)?;
         builder.finish()
     }
 
@@ -892,7 +867,10 @@ impl ContentAddressedStore {
         bytes: u64,
     ) -> Result<ObjectAdmission, ContentStoreError> {
         temp.sync_close()?;
-        let admission = self.publish_file(temp.path(), object, bytes)?;
+        // Never link a producer or verifier-visible inode into the CAS. The
+        // destination sibling is a fresh inode, copied and rehashed after any
+        // adapter callback has returned, then published no-clobber.
+        let admission = self.publish_file_with_hook(temp.path(), object, bytes, |_| Ok(()))?;
         temp.preserve = false;
         Ok(admission)
     }
@@ -1037,37 +1015,139 @@ impl ContentAddressedStore {
     }
 }
 
-fn admit_directory_entries(
-    store: &ContentAddressedStore,
+#[derive(Default)]
+struct DirectoryAdmissionProgress {
+    entries: usize,
+    bytes: u64,
+}
+
+impl DirectoryAdmissionProgress {
+    fn check_file(
+        &self,
+        path: &str,
+        bytes: u64,
+        budget: ArchiveBudget,
+    ) -> Result<(), ContentStoreError> {
+        validate_archive_path(path, budget.max_path_bytes)?;
+        if bytes > budget.max_entry_bytes {
+            return Err(ContentStoreError::ArchiveBytesLimit);
+        }
+        if self.entries >= budget.max_entries {
+            return Err(ContentStoreError::ArchiveEntryLimit);
+        }
+        let total = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(ContentStoreError::ArchiveBytesLimit)?;
+        if total > budget.max_bytes {
+            return Err(ContentStoreError::ArchiveBytesLimit);
+        }
+        Ok(())
+    }
+
+    fn record_file(
+        &mut self,
+        path: &str,
+        bytes: u64,
+        budget: ArchiveBudget,
+    ) -> Result<(), ContentStoreError> {
+        self.check_file(path, bytes, budget)?;
+        self.entries += 1;
+        self.bytes += bytes;
+        Ok(())
+    }
+}
+
+fn archive_relative_path(
+    root: &Path,
+    path: &Path,
+    budget: ArchiveBudget,
+) -> Result<String, ContentStoreError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| ContentStoreError::InvalidArchivePath)?;
+    let relative = relative
+        .to_str()
+        .ok_or(ContentStoreError::InvalidArchivePath)?
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    validate_archive_path(&relative, budget.max_path_bytes)?;
+    Ok(relative)
+}
+
+fn preflight_directory_entries(
     root: &Path,
     directory: &Path,
-    builder: &mut ArchiveManifestBuilder,
-    maximum_entry_bytes: u64,
+    budget: ArchiveBudget,
+    progress: &mut DirectoryAdmissionProgress,
 ) -> Result<(), ContentStoreError> {
-    let mut children = fs::read_dir(directory)?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()?;
-    children.sort();
-    for path in children {
-        let file_type = fs::symlink_metadata(&path)?.file_type();
+    // Traversal remains path-based; this handle and each no-follow child open
+    // reject links present during the check. Concurrent ancestor replacement
+    // requires a separate descriptor-relative traversal API.
+    let _directory_handle = backend_platform::durability::open_directory_nofollow(directory)?;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            admit_directory_entries(store, root, &path, builder, maximum_entry_bytes)?;
+            backend_platform::durability::open_directory_nofollow(&path)?;
+            preflight_directory_entries(root, &path, budget, progress)?;
             continue;
         }
         if !file_type.is_file() {
             return Err(ContentStoreError::InvalidArchivePath);
         }
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|_| ContentStoreError::InvalidArchivePath)?
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "/");
-        let metadata = fs::metadata(&path)?;
-        if metadata.len() > maximum_entry_bytes {
-            return Err(ContentStoreError::ArchiveBytesLimit);
+        let relative = archive_relative_path(root, &path, budget)?;
+        let file =
+            backend_platform::durability::open_regular_file_nofollow(&path).map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    ContentStoreError::InvalidArchivePath
+                } else {
+                    ContentStoreError::Io(error)
+                }
+            })?;
+        progress.record_file(&relative, file.metadata()?.len(), budget)?;
+    }
+    Ok(())
+}
+
+fn admit_directory_entries(
+    store: &ContentAddressedStore,
+    root: &Path,
+    directory: &Path,
+    budget: ArchiveBudget,
+    progress: &mut DirectoryAdmissionProgress,
+    builder: &mut ArchiveManifestBuilder,
+) -> Result<(), ContentStoreError> {
+    // As in preflight, final components are opened no-follow. This path-based
+    // traversal does not pin every parent against concurrent replacement.
+    let _directory_handle = backend_platform::durability::open_directory_nofollow(directory)?;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            backend_platform::durability::open_directory_nofollow(&path)?;
+            admit_directory_entries(store, root, &path, budget, progress, builder)?;
+            continue;
         }
-        let mut file = File::open(&path)?;
-        let admission = store.admit_reader(None, &mut file, maximum_entry_bytes)?;
+        if !file_type.is_file() {
+            return Err(ContentStoreError::InvalidArchivePath);
+        }
+        let relative = archive_relative_path(root, &path, budget)?;
+        let mut file =
+            backend_platform::durability::open_regular_file_nofollow(&path).map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    ContentStoreError::InvalidArchivePath
+                } else {
+                    ContentStoreError::Io(error)
+                }
+            })?;
+        let length = file.metadata()?.len();
+        progress.check_file(&relative, length, budget)?;
+        let remaining_bytes = budget.max_bytes - progress.bytes;
+        let maximum = budget.max_entry_bytes.min(remaining_bytes);
+        let admission = store.admit_reader(None, &mut file, maximum)?;
+        progress.record_file(&relative, admission.bytes(), budget)?;
         builder.push_file(relative, admission.object(), admission.bytes(), 0)?;
     }
     Ok(())
@@ -1402,9 +1482,10 @@ fn write_lease_marker(
 
 fn read_lease_expiry(path: &Path) -> Option<u64> {
     let mut file = backend_platform::durability::open_regular_file_nofollow(path).ok()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    if bytes.len() < ID_BYTES + 8 {
+    let mut bytes = [0_u8; LEASE_MARKER_BYTES];
+    file.read_exact(&mut bytes).ok()?;
+    let mut extra = [0_u8; 1];
+    if file.read(&mut extra).ok()? != 0 {
         return None;
     }
     let mut expiry = [0_u8; 8];
@@ -2188,8 +2269,15 @@ fn read_checkpoint(path: &Path) -> Result<Option<TransferCheckpoint>, ContentSto
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    if file.metadata()?.len() > MAX_CHECKPOINT_BYTES as u64 {
+        return Err(ContentStoreError::TransferStateMismatch);
+    }
+    let mut bytes = Vec::with_capacity(file.metadata()?.len() as usize);
+    file.take(MAX_CHECKPOINT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_CHECKPOINT_BYTES {
+        return Err(ContentStoreError::TransferStateMismatch);
+    }
     const PREFIX: usize = 8 + ID_BYTES + 1 + ID_BYTES + 8 + 8;
     if bytes.len() < PREFIX || &bytes[..8] != TRANSFER_MAGIC {
         return Err(ContentStoreError::TransferStateMismatch);
@@ -2369,7 +2457,7 @@ mod tests {
         let mut points = Vec::new();
 
         let admission = store
-            .publish_file_with_hook(&source, object, bytes.len() as u64, true, |point| {
+            .publish_file_with_hook(&source, object, bytes.len() as u64, |point| {
                 points.push(point);
                 Ok(())
             })
@@ -2405,11 +2493,11 @@ mod tests {
     }
 
     #[test]
-    fn direct_publication_syncs_the_parent_before_returning_winner() {
+    fn publication_uses_a_private_inode_and_syncs_before_returning_winner() {
         let path = root("direct-publication-order");
         clean(&path);
         let store = ContentAddressedStore::open(&path).expect("store");
-        let bytes = b"direct hard-link publication";
+        let bytes = b"private destination-stage publication";
         let source = path.join("temps/source.part");
         let mut file = File::create(&source).expect("source");
         file.write_all(bytes).expect("source bytes");
@@ -2419,7 +2507,7 @@ mod tests {
         let mut points = Vec::new();
 
         let admission = store
-            .publish_file_with_hook(&source, object, bytes.len() as u64, false, |point| {
+            .publish_file_with_hook(&source, object, bytes.len() as u64, |point| {
                 points.push(point);
                 Ok(())
             })
@@ -2428,18 +2516,27 @@ mod tests {
         assert_eq!(
             points,
             [
+                PublishPoint::StageCreated,
+                PublishPoint::StageCopyProgress,
+                PublishPoint::StageWritten,
+                PublishPoint::StageSynced,
                 PublishPoint::ObjectLinked,
                 PublishPoint::BeforeDirectorySync,
                 PublishPoint::DirectorySynced,
             ]
         );
         assert!(admission.was_published());
+        fs::write(&source, b"mutable source inode after publish").expect("mutate source inode");
         let reopened = ContentAddressedStore::open(&path).expect("cold reopen");
         assert_eq!(
             reopened
                 .verify_object(object, bytes.len() as u64)
                 .expect("verify"),
             bytes.len() as u64
+        );
+        assert_eq!(
+            fs::read(reopened.object_path(object)).expect("published bytes"),
+            bytes
         );
         clean(&path);
     }
@@ -2472,7 +2569,7 @@ mod tests {
             let mut points = Vec::new();
 
             let error = store
-                .publish_file_with_hook(&source, object, bytes.len() as u64, true, |point| {
+                .publish_file_with_hook(&source, object, bytes.len() as u64, |point| {
                     points.push(point);
                     if point == fail_at {
                         Err(io::Error::other("simulated interruption"))
@@ -2889,6 +2986,35 @@ mod tests {
     }
 
     #[test]
+    fn oversized_checkpoint_and_lease_records_are_rejected_without_unbounded_reads() {
+        let path = root("oversized-records");
+        clean(&path);
+        fs::create_dir_all(&path).expect("record directory");
+
+        let marker = path.join("lease");
+        write_lease_marker(&marker, [7; ID_BYTES], 123).expect("valid lease marker");
+        assert_eq!(read_lease_expiry(&marker), Some(123));
+        OpenOptions::new()
+            .append(true)
+            .open(&marker)
+            .expect("open lease marker")
+            .write_all(b"x")
+            .expect("extend lease marker");
+        assert_eq!(read_lease_expiry(&marker), None);
+
+        let checkpoint = path.join("transfer.state");
+        File::create(&checkpoint)
+            .expect("oversized checkpoint")
+            .set_len(MAX_CHECKPOINT_BYTES as u64 + 1)
+            .expect("extend sparse checkpoint");
+        assert!(matches!(
+            read_checkpoint(&checkpoint),
+            Err(ContentStoreError::TransferStateMismatch)
+        ));
+        clean(&path);
+    }
+
+    #[test]
     fn digest_mismatch_is_quarantined_and_never_published() {
         let path = root("quarantine");
         clean(&path);
@@ -2924,6 +3050,108 @@ mod tests {
                 .expect("objects")
                 .count(),
             0
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn verified_reader_cannot_mutate_published_bytes_through_retained_fd() {
+        let path = root("verified-retained-fd");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"verified immutable payload";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let mut retained = None;
+        let mut verifier_path = None;
+
+        let admission = store
+            .admit_reader_verified(Some(object), &bytes[..], 1024, |temp, _, _| {
+                verifier_path = Some(temp.to_path_buf());
+                retained = Some(
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(temp)
+                        .map_err(ContentStoreError::Io)?,
+                );
+                Ok(())
+            })
+            .expect("verified admission");
+        assert!(admission.was_published());
+
+        let mut retained = retained.expect("verifier descriptor");
+        retained
+            .seek(SeekFrom::Start(0))
+            .expect("rewind retained fd");
+        retained.write_all(b"X").expect("mutate verifier inode");
+        retained.sync_all().expect("sync verifier inode mutation");
+
+        assert!(!verifier_path.expect("verifier path").exists());
+        assert_eq!(
+            store
+                .verify_object(object, 1024)
+                .expect("object remains valid"),
+            bytes.len() as u64
+        );
+        assert_eq!(
+            fs::read(store.object_path(object)).expect("published bytes"),
+            bytes
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn transfer_verifier_cannot_mutate_published_bytes_through_retained_fd() {
+        let path = root("transfer-verified-retained-fd");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"verified transfer payload";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let id = TransferId::from_parts(
+            b"retained-verifier-fd",
+            Some(object),
+            Some(bytes.len() as u64),
+        );
+        let mut transfer = store
+            .resume_or_start(id, Some(object), Some(bytes.len() as u64))
+            .expect("start transfer");
+        transfer
+            .append(&bytes[..], bytes.len() as u64)
+            .expect("append bytes");
+        let mut retained = None;
+        let mut verifier_path = None;
+
+        transfer
+            .finish_verified(|temp, _, _| {
+                verifier_path = Some(temp.to_path_buf());
+                retained = Some(
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(temp)
+                        .map_err(ContentStoreError::Io)?,
+                );
+                Ok(())
+            })
+            .expect("verified transfer finish");
+
+        let mut retained = retained.expect("verifier descriptor");
+        retained
+            .seek(SeekFrom::Start(0))
+            .expect("rewind retained fd");
+        retained.write_all(b"X").expect("mutate verifier inode");
+        retained.sync_all().expect("sync verifier inode mutation");
+
+        assert!(!verifier_path.expect("verifier path").exists());
+        assert_eq!(
+            store
+                .verify_object(object, 1024)
+                .expect("object remains valid"),
+            bytes.len() as u64
+        );
+        assert_eq!(
+            fs::read(store.object_path(object)).expect("published bytes"),
+            bytes
         );
         clean(&path);
     }
@@ -3046,7 +3274,7 @@ mod tests {
         source_file.sync_all().expect("sync child source");
         drop(source_file);
         let object = RawArchiveObjectId::from_bytes(bytes);
-        let _ = store.publish_file_with_hook(&source, object, bytes.len() as u64, true, |point| {
+        let _ = store.publish_file_with_hook(&source, object, bytes.len() as u64, |point| {
             if point == PublishPoint::StageSynced {
                 println!("ready");
                 io::stdout().flush().expect("flush child readiness");
@@ -3336,6 +3564,80 @@ mod tests {
         let manifest = builder.finish().expect("manifest");
         assert_eq!(manifest.entries().len(), 1);
         assert_eq!(manifest.bytes(), 6);
+    }
+
+    #[test]
+    fn directory_budget_preflight_publishes_no_child_objects_on_rejection() {
+        let source_root = root("tree-over-budget-source");
+        let store_root = root("tree-over-budget-store");
+        clean(&source_root);
+        clean(&store_root);
+        fs::create_dir_all(&source_root).expect("source root");
+        fs::write(source_root.join("first"), b"first").expect("first file");
+        fs::write(source_root.join("second"), b"second").expect("second file");
+        let store = ContentAddressedStore::open(&store_root).expect("store");
+        let budget = ArchiveBudget {
+            max_entries: 1,
+            ..ArchiveBudget::default()
+        };
+
+        assert!(matches!(
+            store.admit_directory(&source_root, budget),
+            Err(ContentStoreError::ArchiveEntryLimit)
+        ));
+        assert!(
+            fs::read_dir(store.root().join("objects"))
+                .expect("object root")
+                .next()
+                .is_none()
+        );
+        let byte_budget = ArchiveBudget {
+            max_bytes: 5,
+            ..ArchiveBudget::default()
+        };
+        assert!(matches!(
+            store.admit_directory(&source_root, byte_budget),
+            Err(ContentStoreError::ArchiveBytesLimit)
+        ));
+        assert!(
+            fs::read_dir(store.root().join("objects"))
+                .expect("object root after byte rejection")
+                .next()
+                .is_none()
+        );
+        clean(&source_root);
+        clean(&store_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_admission_rejects_symlink_entries() {
+        use std::os::unix::fs::symlink;
+
+        let source_root = root("tree-symlink-source");
+        let store_root = root("tree-symlink-store");
+        let external = root("tree-symlink-external");
+        clean(&source_root);
+        clean(&store_root);
+        let _ = fs::remove_file(&external);
+        fs::create_dir_all(&source_root).expect("source root");
+        fs::write(&external, b"external bytes").expect("external file");
+        symlink(&external, source_root.join("linked-file")).expect("source symlink");
+        let store = ContentAddressedStore::open(&store_root).expect("store");
+
+        assert!(matches!(
+            store.admit_directory(&source_root, ArchiveBudget::default()),
+            Err(ContentStoreError::InvalidArchivePath)
+        ));
+        assert!(
+            fs::read_dir(store.root().join("objects"))
+                .expect("object root")
+                .next()
+                .is_none()
+        );
+        clean(&source_root);
+        clean(&store_root);
+        let _ = fs::remove_file(&external);
     }
 
     #[test]
