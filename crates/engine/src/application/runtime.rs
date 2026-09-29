@@ -46,6 +46,16 @@ use thiserror::Error;
 const COMPILER_LANE_COUNT: usize = 2;
 const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
 
+fn compiler_lane_count() -> usize {
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_COMPILER_LANES")
+        .is_some_and(|value| value == "1")
+    {
+        return 1;
+    }
+    COMPILER_LANE_COUNT
+}
+
 use crate::application::compiler::{
     EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerExecution,
     MAX_PACKAGE_EMBEDDING_BYTES, MAX_PACKAGE_FRAGMENT_BYTES, MAX_PACKAGE_SEMANTIC_BYTES,
@@ -2829,8 +2839,9 @@ fn run_worker_generation(
             cancelled,
         },
     };
-    let mut lane_scratches = Vec::new();
-    for lane in 0..COMPILER_LANE_COUNT {
+    let lane_count = compiler_lane_count();
+    let mut lane_scratches = Vec::with_capacity(lane_count);
+    for lane in 0..lane_count {
         match configuration.scratch.lane_scratch() {
             Ok(scratch) => lane_scratches.push(scratch),
             Err(source) => {
@@ -2909,20 +2920,21 @@ fn run_worker_lanes(
     embedding_payload_max: usize,
     embedding_scratch_max: usize,
 ) -> WorkerDisposition {
+    let lane_count = compiler_lane_count();
     let reservation_capacity = staged_output_reservation(
         MAX_MANIFEST_ENTRIES,
         image_cap,
         embedding_payload_max,
         embedding_scratch_max,
     )
-    .unwrap_or(usize::MAX / COMPILER_LANE_COUNT);
-    let budget = StagedOutputBudget::new(reservation_capacity.saturating_mul(COMPILER_LANE_COUNT));
+    .unwrap_or(usize::MAX / lane_count);
+    let budget = StagedOutputBudget::new(reservation_capacity.saturating_mul(lane_count));
     let base_execution = compiler.execution();
     let native_root = native_work_root;
 
     thread::scope(|scope| {
-        let (completion_tx, completion_rx) = sync_channel(COMPILER_LANE_COUNT);
-        let mut lane_senders = Vec::with_capacity(COMPILER_LANE_COUNT);
+        let (completion_tx, completion_rx) = sync_channel(lane_count);
+        let mut lane_senders = Vec::with_capacity(lane_count);
         for (lane, scratch) in lane_scratches.into_iter().enumerate() {
             let (sender, receiver) = sync_channel(1);
             let execution = base_execution

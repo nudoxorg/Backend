@@ -126,6 +126,26 @@ fn available_rustc() -> PathBuf {
         .unwrap_or_else(|| panic!("the real Rust compiler is required for this process journey"))
 }
 
+fn assert_cargo_process_headroom() {
+    let output = Command::new("pgrep")
+        .args(["-x", "cargo"])
+        .output()
+        .expect("inspect machine-wide Cargo process count before cluster journey");
+    let active = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert!(
+        output.status.success() || active == 0,
+        "pgrep could not inspect machine-wide Cargo process count: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        active <= 1,
+        "cluster compiler journey requires an exclusive Cargo slot: saw {active} active Cargo processes before starting"
+    );
+}
+
 fn hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
@@ -207,6 +227,8 @@ impl CompilerProcessEnvironment {
             .env("NUDOX_CARGO", &self.cargo)
             .env("NUDOX_CARGO_HOME", &self.cargo_home)
             .env("NUDOX_CARGO_ROOT", &self.cargo_root)
+            .env("CARGO_BUILD_JOBS", "1")
+            .env("BACKEND_JOURNEY_COMPILER_LANES", "1")
             .env(
                 "BACKEND_JOURNEY_ACK_PAUSE_STATE0_MARKER",
                 &self.pause_state0_marker,
@@ -1432,6 +1454,7 @@ fn background_add_command(endpoint: &Path, workspace: &Path, project: &Path) -> 
 
 #[test]
 fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() {
+    assert_cargo_process_headroom();
     let root = FixtureRoot::new();
     let workspace = root.path().join("owner-data");
     let project = root.path().join("one-source-project");

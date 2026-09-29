@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+
+[features]
+cluster-process-journey-hooks = []
+
 [dependencies]
 backend-advisory = { path = "../advisory" }
 backend-cluster-transport = { path = "../cluster-transport" }
