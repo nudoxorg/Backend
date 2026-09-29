@@ -154,8 +154,8 @@ pub(super) fn build_tree<R: Relation, I: TreeInterner<R>>(
 }
 
 /// Builds the same canonical tree while moving a caller-owned sorted run into
-/// leaf slabs. The cut policy is evaluated before consuming each level; no
-/// duplicate row or child-handle run is retained during construction.
+/// leaf slabs. This avoids cloning payload values; a multi-leaf build still
+/// temporarily retains the source vector allocation while filling leaf slabs.
 pub(super) fn build_tree_owned<R: Relation, I: TreeInterner<R>>(
     items: Vec<Item<R>>,
     work: &mut TreeWork,
@@ -169,6 +169,9 @@ pub(super) fn build_tree_owned<R: Relation, I: TreeInterner<R>>(
 
     let boundaries = anchored_cut_points_items::<R, _>(items.iter(), DEFAULT_CUT_POLICY, 0)
         .map_err(|_| TreeError::InvalidRoot)?;
+    if boundaries.len() == 1 {
+        return make_leaf(items, interner, work);
+    }
     let mut nodes = Vec::with_capacity(boundaries.len());
     let mut rows = items.into_iter();
     let mut start = 0;
@@ -183,6 +186,9 @@ pub(super) fn build_tree_owned<R: Relation, I: TreeInterner<R>>(
 
     let mut level = 1u16;
     while nodes.len() > 1 {
+        if nodes.iter().any(|node| node.first_key().is_none()) {
+            return Err(TreeError::InvalidRoot);
+        }
         let boundaries = anchored_cut_points_children::<R, _>(
             nodes.iter().filter_map(|node| node.first_key()),
             DEFAULT_CUT_POLICY,

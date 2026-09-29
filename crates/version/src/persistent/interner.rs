@@ -101,7 +101,8 @@ impl<R: Relation> PersistentTree<R, NoInterner> {
 
     /// Builds a canonical tree by moving a caller-owned sorted run directly
     /// into immutable leaf slabs. Its root and work are identical to the
-    /// borrowed constructor, but peak memory does not include cloned rows.
+    /// borrowed constructor. Payload values are never cloned; for a single
+    /// leaf the source allocation becomes the leaf allocation directly.
     pub fn from_sorted_items_owned_with_work(
         items: Vec<(R::Key, R::Value)>,
     ) -> Result<(Self, TreeWork), TreeError> {
