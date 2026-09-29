@@ -40,6 +40,7 @@ mod semantic_image;
 pub mod semantic_render;
 mod type_facts;
 mod typed_plane_manifest_v2;
+mod typed_plane_manifest_v3;
 mod vcs;
 mod versioned;
 pub mod versioned_records;
@@ -244,6 +245,20 @@ pub use typed_plane_manifest_v2::{
     SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
     SemanticTypedPlaneManifestV2Error, SemanticTypedPlaneManifestV2ResourceUsage,
     SemanticTypedPlaneManifestV2Schema, SemanticTypedPlaneSegmentClaimV2,
+};
+pub use typed_plane_manifest_v3::{
+    LazySemanticTypedPlaneFamilyIndexV3, MAX_TYPED_PLANE_MANIFEST_V3_BYTES,
+    MAX_TYPED_PLANE_V3_CLOSURE_NODES, MAX_TYPED_PLANE_V3_CLOSURE_ROWS,
+    MAX_TYPED_PLANE_V3_NODE_BYTES, MAX_TYPED_PLANE_V3_PAGE_ROWS,
+    SEMANTIC_TYPED_PLANE_INDEX_CATALOG_V3_SCHEMA, SEMANTIC_TYPED_PLANE_MANIFEST_V3_WIRE_REVISION,
+    SemanticRowObjectIdV3, SemanticRowPayloadReferenceV3, SemanticTypedPlaneClosureLimitsV3,
+    SemanticTypedPlaneFamilyIndexV3, SemanticTypedPlaneFamilyRootV3,
+    SemanticTypedPlaneIndexCatalogV3, SemanticTypedPlaneIndexCatalogV3Schema,
+    SemanticTypedPlaneIndexClosureV3, SemanticTypedPlaneIndexEntryV3,
+    SemanticTypedPlaneIndexPageV3, SemanticTypedPlaneIndexV3, SemanticTypedPlaneIndexV3Error,
+    SemanticTypedPlaneNodeV3, SemanticTypedPlanePreparedUpdateV3, SemanticTypedPlaneRangeCursorV3,
+    SemanticTypedPlaneRowRelationV3, SemanticTypedPlaneRowTreeBuilderV3,
+    SemanticTypedPlaneRowTreeLimitsV3,
 };
 pub use vcs::{
     Delta, Diff, EntityChange, EntityChanges, EntityFacetChanges, FacetChange, FacetComparison,
