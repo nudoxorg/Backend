@@ -420,7 +420,7 @@ impl<D: JournalCodec> HashChainJournal<D> {
         self.refresh_external_with_sync(limits, visitor, File::sync_data)
     }
 
-    fn refresh_external_with_sync<F, S>(
+    pub(super) fn refresh_external_with_sync<F, S>(
         &self,
         limits: JournalLimits,
         visitor: F,
