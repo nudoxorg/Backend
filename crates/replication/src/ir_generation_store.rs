@@ -113,6 +113,7 @@ pub(super) fn trip_history_test_fault(point: HistoryTestFault) -> Result<(), Str
 mod history;
 pub(crate) use history::TypedV2HistoryLocator;
 pub(crate) use history::TypedV2HistoryPublicationAdmission;
+pub(crate) use history::TypedV2HistoryPublicationSnapshot;
 pub use history::{
     AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
     HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError,
@@ -3575,7 +3576,6 @@ mod tests {
                 .count(),
             1
         );
-        drop(closure_receipt);
         drop(range_store);
         drop(file_store);
         drop(generations);
@@ -3614,6 +3614,78 @@ mod tests {
                 .count(),
             0
         );
+
+        // A dropped live admission no longer holds the GC pin. Collection may
+        // reclaim its unreferenced closure, but a raw commit ID still cannot
+        // publish the TypedV2 root and a cold retry must fail closed.
+        let unreferenced = range_store
+            .admit_typed_v2_history_commit(
+                &generation.target,
+                &[],
+                [0x71; 32],
+                &empty_typed_v2_manifest(71),
+                closure_claim,
+                &[],
+                &[],
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+                &mut TestAuthority::new([generation.stamp, generation.stamp], [generation.image]),
+            )
+            .expect("admit an unreferenced TypedV2 commit");
+        let unreferenced_id = unreferenced.commit().identity();
+        drop(unreferenced);
+        range_store
+            .collect_garbage_with_history(&generation.target, backend_store::GcLimits::default())
+            .expect("collect the dropped receipt's unreferenced payload closure");
+        assert!(
+            file_store.open_closure_claim(closure_claim).is_err(),
+            "FileStore GC removes the unreferenced payload closure"
+        );
+        let unreferenced_branch =
+            HistoryRefName::new("unreferenced-typed-v2").expect("unreferenced branch name");
+        assert!(
+            range_store
+                .compare_and_swap_history_ref(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    unreferenced_branch.clone(),
+                    None,
+                    Some(unreferenced_id),
+                )
+                .expect_err("dropped receipt cannot authorize bare-ID publication after GC")
+                .contains("proof-bearing admission receipt")
+        );
+        assert!(
+            range_store
+                .publish_typed_v2_history_ref_cold(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    unreferenced_branch.clone(),
+                    None,
+                    unreferenced_id,
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    backend_semantic::ir::JumboRopeLimits::default(),
+                )
+                .expect_err("cold publication cannot recover a collected closure")
+                .contains("open cold typed V2 publication closure")
+        );
+        assert!(
+            range_store
+                .history_ref(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    &unreferenced_branch,
+                )
+                .expect("read ref after failed publication")
+                .is_none()
+        );
+
+        let replacement_closure = file_store
+            .begin_streaming_closure(StreamingClosureBudget::new(1, 1, 1, 16 * 1024, 1, 4 * 1024))
+            .expect("begin replacement empty V2 payload closure")
+            .seal()
+            .expect("reseal empty V2 payload closure after GC");
+        let closure_claim = ArtifactClosureClaim::from_id(replacement_closure.closure());
 
         let mut previous = None;
         let mut commits = Vec::new();
@@ -3731,22 +3803,135 @@ mod tests {
             .expect("reopen semantic adapter before cold typed V2 publication retry");
         let generations = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
             .expect("reopen generation records before cold typed V2 publication retry");
-        crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
-        range_store
-            .publish_typed_v2_history_ref_cold(
+        let cold_worker_store = FileSemanticRangeStore::open(
+            FileStore::open(&cas_root, 16 * 1024 * 1024)
+                .expect("open separate FileStore for cold publication"),
+            limits,
+        )
+        .expect("open separate history adapter for cold publication");
+        let writer_store = FileSemanticRangeStore::open(
+            FileStore::open(&cas_root, 16 * 1024 * 1024)
+                .expect("open separate FileStore for concurrent ref update"),
+            limits,
+        )
+        .expect("open separate history adapter for concurrent ref update");
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_gate = gate.clone();
+        let cold_target = generation.target.clone();
+        let cold_branch = branch.clone();
+        let cold_worker = std::thread::spawn(move || {
+            crate::ir_hydration_store::set_typed_v2_cold_publication_hook(Some(worker_gate));
+            crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
+            let result = cold_worker_store.publish_typed_v2_history_ref_cold(
+                &cold_target,
+                HistoryRefKind::Branch,
+                cold_branch,
+                Some(cold_tip),
+                cold_tip,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            );
+            let reopen_count = crate::ir_hydration_store::typed_v2_closure_reopen_count();
+            (result, reopen_count)
+        });
+        // The cold worker is paused after taking its history snapshot and
+        // releasing state.lock. An unrelated tag CAS should finish before the
+        // cold closure scan is allowed to continue.
+        gate.wait();
+        let v1_tip = generations
+            .history_ref(
                 &generation.target,
                 HistoryRefKind::Branch,
-                branch.clone(),
+                &HistoryRefName::new("local-cache").expect("local-cache ref name"),
+            )
+            .expect("read V1 ref for independent tag")
+            .expect("V1 local-cache ref exists")
+            .commit();
+        let writer_target = generation.target.clone();
+        let writer_name =
+            HistoryRefName::new("cold-scan-independent-tag").expect("independent tag name");
+        let (writer_sender, writer_receiver) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let result = writer_store.compare_and_swap_history_ref(
+                &writer_target,
+                HistoryRefKind::Tag,
+                writer_name,
+                None,
+                Some(v1_tip),
+            );
+            let _ = writer_sender.send(result);
+        });
+        let writer_completed_during_scan = writer_receiver.recv_timeout(Duration::from_secs(5));
+        let writer_finished_before_scan_resumed = writer_completed_during_scan.is_ok();
+        gate.wait();
+        let (cold_result, reopen_count) = cold_worker
+            .join()
+            .expect("cold publication worker does not panic");
+        let writer_result = match writer_completed_during_scan {
+            Ok(result) => Some(result),
+            Err(_) => writer_receiver.recv_timeout(Duration::from_secs(5)).ok(),
+        };
+        writer
+            .join()
+            .expect("independent ref writer does not panic");
+        assert!(
+            writer_finished_before_scan_resumed
+                && writer_result.as_ref().is_some_and(|result| result.is_ok()),
+            "independent history ref CAS completes while cold closure scan is paused"
+        );
+        writer_result
+            .expect("writer completed during the cold scan")
+            .expect("independent tag CAS succeeds");
+        cold_result.expect("cold retry revalidates and publishes idempotently");
+        assert!(
+            reopen_count > 0,
+            "cold publication reopens the durable FileStore closure"
+        );
+
+        // A commit locator removed while the cold payload scan is outside
+        // state.lock must be detected by the metadata revalidation before
+        // the ref CAS. Restore the immutable file afterward for later replay.
+        let locator_path =
+            locator_root.join(format!("{}.locator", super::hex(cold_tip.as_bytes())));
+        let locator_backup = locator_path.with_extension("locator.test-backup");
+        let cold_worker_store = FileSemanticRangeStore::open(
+            FileStore::open(&cas_root, 16 * 1024 * 1024)
+                .expect("open FileStore for metadata revalidation test"),
+            limits,
+        )
+        .expect("open history adapter for metadata revalidation test");
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_gate = gate.clone();
+        let cold_target = generation.target.clone();
+        let cold_branch = branch.clone();
+        let cold_worker = std::thread::spawn(move || {
+            crate::ir_hydration_store::set_typed_v2_cold_publication_hook(Some(worker_gate));
+            cold_worker_store.publish_typed_v2_history_ref_cold(
+                &cold_target,
+                HistoryRefKind::Branch,
+                cold_branch,
                 Some(cold_tip),
                 cold_tip,
                 SemanticTypedPlaneVerificationTierV2::Standard,
                 backend_semantic::ir::JumboRopeLimits::default(),
             )
-            .expect("cold retry revalidates the durable closure and commits idempotently");
-        assert!(
-            crate::ir_hydration_store::typed_v2_closure_reopen_count() > 0,
-            "cold publication reopens the durable FileStore closure"
-        );
+        });
+        gate.wait();
+        fs::rename(&locator_path, &locator_backup)
+            .expect("simulate history GC removing locator during closure scan");
+        gate.wait();
+        let metadata_result = cold_worker
+            .join()
+            .expect("metadata revalidation worker does not panic");
+        fs::rename(&locator_backup, &locator_path)
+            .expect("restore immutable history locator after revalidation test");
+        match metadata_result {
+            Ok(_) => panic!("cold publication must reject a removed locator"),
+            Err(error) => assert!(
+                error.contains("typed V2 history locator is missing"),
+                "unexpected cold metadata revalidation error: {error}"
+            ),
+        }
 
         assert_ne!(commits[0], commits[2]);
         assert!(
@@ -3808,7 +3993,6 @@ mod tests {
             .expect("collect FileStore with all V2 ancestry closures rooted");
         drop(range_store);
         drop(generations);
-        drop(closure_receipt);
 
         let reopened = FileSemanticRangeStore::open(
             FileStore::open(&cas_root, 16 * 1024 * 1024).expect("cold reopen FileStore"),

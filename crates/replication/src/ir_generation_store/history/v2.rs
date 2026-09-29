@@ -10,7 +10,7 @@
 use super::catalog::validate_history_commit_node;
 use super::codec::{
     append_commit_index, identify_history_record, prepare_history_layout,
-    write_history_payload_root,
+    read_history_payload_root, write_history_payload_root,
 };
 use super::*;
 
@@ -24,6 +24,31 @@ pub(crate) struct TypedV2HistoryLocator {
     pub(crate) manifest: Vec<u8>,
     pub(crate) segments: Vec<HistoryTypedV2SegmentObject>,
     pub(crate) jumbo: Vec<HistoryTypedV2JumboObject>,
+}
+
+/// Immutable history metadata captured before cold V2 closure verification.
+/// A caller can release the history state lock while scanning payload bytes,
+/// then compare this complete snapshot again before publishing a ref.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TypedV2HistoryPublicationSnapshot {
+    identity: HistoryCommitId,
+    claim: HistoryTypedV2RootClaim,
+    locator: TypedV2HistoryLocator,
+    payload_root: HistoryPayloadRoot,
+}
+
+impl TypedV2HistoryPublicationSnapshot {
+    pub(crate) const fn identity(&self) -> HistoryCommitId {
+        self.identity
+    }
+
+    pub(crate) const fn claim(&self) -> HistoryTypedV2RootClaim {
+        self.claim
+    }
+
+    pub(crate) fn locator(&self) -> &TypedV2HistoryLocator {
+        &self.locator
+    }
 }
 
 impl TypedV2HistoryLocator {
@@ -469,6 +494,52 @@ pub(super) fn decode_typed_v2_locator(
 }
 
 impl LocalSemanticGenerationFiles {
+    pub(crate) fn typed_v2_publication_snapshot(
+        &self,
+        target: &SemanticTargetKey,
+        identity: HistoryCommitId,
+    ) -> Result<TypedV2HistoryPublicationSnapshot, String> {
+        let commit = self.history_commit(target, identity)?;
+        let claim = commit
+            .generation_root()
+            .typed_v2_claim()
+            .ok_or_else(|| "history commit does not name a typed V2 generation".to_owned())?;
+        let locator =
+            load_typed_v2_history_locator(&self.target_root(target), identity, claim.locator())?;
+        let manifest = locator.validate()?;
+        if manifest.content_root_claim().as_bytes() != claim.content_root_claim().as_bytes()
+            || manifest.generation_root_claim().as_bytes()
+                != claim.generation_root_claim().as_bytes()
+        {
+            return Err("typed V2 commit roots differ from its cold manifest".to_owned());
+        }
+        let payload_root = read_history_payload_root(&self.target_root(target), identity)?
+            .ok_or_else(|| "typed V2 history payload root is missing".to_owned())?;
+        if payload_root.closure.as_bytes() != claim.closure().as_bytes() {
+            return Err("typed V2 history payload root differs from its commit".to_owned());
+        }
+        Ok(TypedV2HistoryPublicationSnapshot {
+            identity,
+            claim,
+            locator,
+            payload_root,
+        })
+    }
+
+    pub(crate) fn revalidate_typed_v2_publication_snapshot(
+        &self,
+        target: &SemanticTargetKey,
+        expected: &TypedV2HistoryPublicationSnapshot,
+    ) -> Result<(), String> {
+        let actual = self.typed_v2_publication_snapshot(target, expected.identity)?;
+        if actual != *expected {
+            return Err(
+                "typed V2 publication history metadata changed during cold verification".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn typed_v2_locator_identity(
         &self,
         locator: &TypedV2HistoryLocator,

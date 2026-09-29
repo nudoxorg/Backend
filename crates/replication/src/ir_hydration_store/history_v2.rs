@@ -23,6 +23,7 @@ const MAX_JUMBO_INTERIOR_BYTES: u64 = ROPE_NODE_WIRE_BYTES as u64;
 #[cfg(test)]
 thread_local! {
     static TYPED_V2_CLOSURE_REOPEN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static TYPED_V2_COLD_PUBLICATION_HOOK: std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -33,6 +34,21 @@ pub(super) fn reset_typed_v2_closure_reopen_count() {
 #[cfg(test)]
 pub(super) fn typed_v2_closure_reopen_count() -> usize {
     TYPED_V2_CLOSURE_REOPEN_COUNT.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn set_typed_v2_cold_publication_hook(hook: Option<std::sync::Arc<std::sync::Barrier>>) {
+    TYPED_V2_COLD_PUBLICATION_HOOK.with(|current| *current.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+fn wait_at_typed_v2_cold_publication_hook() {
+    let hook = TYPED_V2_COLD_PUBLICATION_HOOK.with(|current| current.borrow().clone());
+    if let Some(hook) = hook {
+        hook.wait();
+        hook.wait();
+        set_typed_v2_cold_publication_hook(None);
+    }
 }
 
 impl FileSemanticRangeStore {
@@ -205,22 +221,16 @@ impl FileSemanticRangeStore {
             .store
             .pin_garbage_collection()
             .map_err(|error| format!("pin cold typed V2 publication: {error:?}"))?;
-        let _state_lock = self.acquire_state_lock()?;
-        let commit = self.generations.history_commit(target, commit_id)?;
-        let claim = commit
-            .generation_root()
-            .typed_v2_claim()
-            .ok_or_else(|| "history commit does not name a typed V2 generation".to_owned())?;
-        let locator = self
-            .generations
-            .typed_v2_locator(target, commit_id, claim.locator())?;
+        let snapshot: crate::ir_generation_store::TypedV2HistoryPublicationSnapshot = {
+            let _state_lock = self.acquire_state_lock()?;
+            self.generations
+                .typed_v2_publication_snapshot(target, commit_id)?
+        };
+        let claim = snapshot.claim();
+        let locator = snapshot.locator();
         let manifest = locator.validate()?;
-        if manifest.content_root_claim().as_bytes() != claim.content_root_claim().as_bytes()
-            || manifest.generation_root_claim().as_bytes()
-                != claim.generation_root_claim().as_bytes()
-        {
-            return Err("typed V2 commit roots differ from its cold manifest".to_owned());
-        }
+        #[cfg(test)]
+        wait_at_typed_v2_cold_publication_hook();
         let closure = self
             .store
             .open_closure_claim(claim.closure())
@@ -252,14 +262,22 @@ impl FileSemanticRangeStore {
         }
         let proof =
             crate::ir_generation_store::TypedV2HistoryPublicationAdmission::from_cold_verification(
-                commit_id,
+                snapshot.identity(),
                 verified,
                 claim.closure(),
                 claim.locator(),
                 &gc_pin,
             );
+        let _state_lock = self.acquire_state_lock()?;
+        self.generations
+            .revalidate_typed_v2_publication_snapshot(target, &snapshot)?;
         let receipt = self.generations.compare_and_swap_typed_v2_history_ref(
-            target, kind, name, expected, commit_id, &proof,
+            target,
+            kind,
+            name,
+            expected,
+            snapshot.identity(),
+            &proof,
         )?;
         let _ = self.generations.current(target)?;
         Ok(receipt)

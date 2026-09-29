@@ -55,6 +55,11 @@ pub(crate) fn typed_v2_closure_reopen_count() -> usize {
     history_v2::typed_v2_closure_reopen_count()
 }
 
+#[cfg(test)]
+pub(crate) fn set_typed_v2_cold_publication_hook(hook: Option<Arc<std::sync::Barrier>>) {
+    history_v2::set_typed_v2_cold_publication_hook(hook);
+}
+
 const RECORD_TAG: u8 = 4;
 const MAP_TAG: u8 = 5;
 const CONTENT_MAP_TAG: u8 = 6;
