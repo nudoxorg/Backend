@@ -74,6 +74,41 @@ pub(super) fn validate_history_commit_node(
     Ok(record)
 }
 
+fn validate_history_commit_node_for_typed_v2_residency(
+    target_root: &Path,
+    target: &SemanticTargetKey,
+    commits_root: &Path,
+    identity: HistoryCommitId,
+) -> Result<HistoryCommitRecord, String> {
+    let record = load_history_commit(commits_root, identity)?;
+    if record.target != *target {
+        return Err("semantic history commit belongs to another target".to_owned());
+    }
+    let generation = load_record(target_root, record.generation, target)?;
+    validate_commit_generation(&record, &generation)?;
+
+    // Preserve the direct-parent and generation-snapshot checks used by the
+    // strict path. Only locator-body validation is delegated: the exact
+    // resident entry binds the current commit's locator ID to the bytes and
+    // semantic proof admitted earlier, and ancestors' locator bodies are not
+    // inputs to replaying this immutable generation.
+    let mut parents = Vec::new();
+    parents
+        .try_reserve_exact(record.parents.len())
+        .map_err(|_| "semantic history parent validation allocation failed".to_owned())?;
+    for parent_identity in &record.parents {
+        let parent = load_history_commit(commits_root, *parent_identity)?;
+        if parent.target != *target {
+            return Err("semantic history parent belongs to another target".to_owned());
+        }
+        let parent_generation = load_record(target_root, parent.generation, target)?;
+        validate_commit_generation(&parent, &parent_generation)?;
+        parents.push(parent);
+    }
+    validate_parent_set_with_records(&record, &parents)?;
+    Ok(record)
+}
+
 pub(super) fn validate_catalog_tips(
     target_root: &Path,
     target: &SemanticTargetKey,
@@ -405,6 +440,27 @@ impl LocalSemanticGenerationFiles {
         }))
     }
 
+    /// Reads the current named-ref tip without reopening its commit graph.
+    ///
+    /// This deliberately narrow operation is for a live, process-local
+    /// `HistoryRefAncestryProof`: that proof already records a validated
+    /// first-parent chain and is valid exactly while the named ref still has
+    /// the same content-addressed tip. Callers must still validate the proof
+    /// binding and must load the exact requested commit independently.
+    pub(crate) fn history_ref_tip(
+        &self,
+        target: &SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: &HistoryRefName,
+    ) -> Result<Option<HistoryCommitId>, String> {
+        let target_root = self.target_root(target);
+        if !ensure_optional_directory(&target_root.join("history"))? {
+            return Ok(None);
+        }
+        let (catalog, _) = read_history_catalog_snapshot(&target_root)?;
+        Ok(catalog.get(kind, name))
+    }
+
     pub(crate) fn history_commit(
         &self,
         target: &SemanticTargetKey,
@@ -412,6 +468,25 @@ impl LocalSemanticGenerationFiles {
     ) -> Result<AdmittedHistoryCommit, String> {
         let target_root = self.target_root(target);
         let record = validate_history_commit_node(
+            &target_root,
+            target,
+            &target_root.join("history").join("commits"),
+            identity,
+        )?;
+        Ok(AdmittedHistoryCommit { record })
+    }
+
+    /// Reloads a commit and its direct parent/generation bindings while
+    /// delegating only typed V2 locator validation to the caller's exact live
+    /// residency entry. Cache misses must still load and validate the current
+    /// locator and cold-verify its complete payload closure.
+    pub(crate) fn history_commit_for_typed_v2_residency(
+        &self,
+        target: &SemanticTargetKey,
+        identity: HistoryCommitId,
+    ) -> Result<AdmittedHistoryCommit, String> {
+        let target_root = self.target_root(target);
+        let record = validate_history_commit_node_for_typed_v2_residency(
             &target_root,
             target,
             &target_root.join("history").join("commits"),

@@ -1,17 +1,17 @@
 //! FileStore-backed cold replay for typed V2 history commits.
 
-use super::{FileSemanticRangeStore, IO_BUFFER_BYTES, display_error, display_io};
+use super::{display_error, display_io, FileSemanticRangeStore, IO_BUFFER_BYTES};
 
 use crate::{HistoryTypedV2JumboObject, HistoryTypedV2SegmentObject};
 use backend_semantic::ir::{
-    JUMBO_ROPE_MAX_LEAF_BYTES, JumboRopeLimits, JumboRopeObjectId, JumboRopeObjectKind,
-    JumboRopeObjectSource, MAX_SEMANTIC_SEGMENT_BYTES, ROPE_NODE_WIRE_BYTES,
-    SemanticTypedPlaneManifestV2, SemanticTypedPlaneSegmentClaimV2,
-    SemanticTypedPlaneVerificationTierV2, TypedPlaneSegmentSourceV2, VerifiedTypedPlaneContentV2,
-    verify_typed_plane_content_v2_with_jumbo_segment_source,
+    verify_typed_plane_content_v2_with_jumbo_segment_source, JumboRopeLimits, JumboRopeObjectId,
+    JumboRopeObjectKind, JumboRopeObjectSource, SemanticTypedPlaneManifestV2,
+    SemanticTypedPlaneSegmentClaimV2, SemanticTypedPlaneVerificationTierV2,
+    TypedPlaneSegmentSourceV2, VerifiedTypedPlaneContentV2, JUMBO_ROPE_MAX_LEAF_BYTES,
+    MAX_SEMANTIC_SEGMENT_BYTES, ROPE_NODE_WIRE_BYTES,
 };
 use backend_store::{
-    ArtifactClosureClaim, DurableManifest, FileStore, ObjectId, UntrustedObjectId,
+    ArtifactClosureClaim, DurableManifest, FileStore, GcPinGuard, ObjectId, UntrustedObjectId,
 };
 use backend_version::SchemaIdentity;
 use std::fs::{File, OpenOptions};
@@ -27,11 +27,17 @@ const MAX_TYPED_V2_CLOSURE_OBJECTS: usize = 200_000;
 const MAX_TYPED_V2_STANDARD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TYPED_V2_LARGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_JUMBO_INTERIOR_BYTES: u64 = ROPE_NODE_WIRE_BYTES as u64;
+mod residency;
+pub(super) use residency::{
+    TypedV2Admission, TypedV2HistoryResidencyCache, TypedV2HistoryResidencyMetrics,
+    TypedV2HistoryResidencyReplay, TypedV2HistoryResidentReplay,
+};
 
 #[cfg(test)]
 thread_local! {
     static TYPED_V2_CLOSURE_REOPEN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TYPED_V2_COLD_PUBLICATION_HOOK: std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
+    static TYPED_V2_RESIDENCY_WARM_RECHECK_HOOK: std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -56,6 +62,23 @@ fn wait_at_typed_v2_cold_publication_hook() {
         hook.wait();
         hook.wait();
         set_typed_v2_cold_publication_hook(None);
+    }
+}
+
+#[cfg(test)]
+pub(super) fn set_typed_v2_residency_warm_recheck_hook(
+    hook: Option<std::sync::Arc<std::sync::Barrier>>,
+) {
+    TYPED_V2_RESIDENCY_WARM_RECHECK_HOOK.with(|current| *current.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+fn wait_at_typed_v2_residency_warm_recheck_hook() {
+    let hook = TYPED_V2_RESIDENCY_WARM_RECHECK_HOOK.with(|current| current.borrow().clone());
+    if let Some(hook) = hook {
+        hook.wait();
+        hook.wait();
+        set_typed_v2_residency_warm_recheck_hook(None);
     }
 }
 
@@ -406,6 +429,200 @@ impl FileSemanticRangeStore {
             .with_lineage_edge_set(locator.lineage_edge_set)
             .with_gc_pin(std::sync::Arc::new(gc_pin)))
     }
+
+    /// Replays one typed V2 generation through bounded caller-owned live residency.
+    /// Every call takes a fresh FileStore GC pin, checks the process-local ancestry
+    /// proof against the current ref tip, and reloads commit plus direct-parent
+    /// generation bindings. Exact-generation hits reuse only proof and bytes
+    /// previously admitted together; a miss validates the current locator and
+    /// runs the full semantic verifier. A live cache hit deliberately reads its
+    /// immutable owned bytes even if the backing sidecar or object file was later
+    /// externally damaged; dropping/restarting the cache restores strict cold
+    /// disk validation.
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn replay_typed_v2_history_with_residency<'cache>(
+        &self,
+        cache: &'cache mut TypedV2HistoryResidencyCache,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        commit_id: crate::HistoryCommitId,
+        ancestry: &crate::HistoryRefAncestryProof,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+    ) -> Result<TypedV2HistoryResidencyReplay<'cache>, String> {
+        let gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin typed V2 resident history replay: {error:?}"))?;
+        let (commit, claim) = {
+            let _state_lock = self.acquire_state_lock()?;
+            validate_resident_ref_tip(
+                &self.generations,
+                target,
+                kind,
+                name,
+                commit_id,
+                ancestry,
+            )?;
+            let commit = self
+                .generations
+                .history_commit_for_typed_v2_residency(target, commit_id)?;
+            let claim = commit
+                .generation_root()
+                .typed_v2_claim()
+                .ok_or_else(|| "history commit does not name a typed V2 generation".to_owned())?;
+            (commit, claim)
+        };
+        let digest = typed_v2_resident_key_digest(target, commit_id, claim, tier, jumbo_limits);
+        let frequency = cache.observe(digest);
+        let key = TypedV2ResidentKey {
+            target: target.clone(),
+            commit: commit_id,
+            roots: claim,
+            tier,
+            jumbo_limits,
+        };
+
+        if let Some(index) = cache.exact_entry_index(target, commit_id, claim, tier, jumbo_limits) {
+            // The key binds the exact already-validated locator identity. The
+            // first lock check loaded the current commit and parent bindings;
+            // check the named-ref tip again immediately before returning.
+            #[cfg(test)]
+            wait_at_typed_v2_residency_warm_recheck_hook();
+            {
+                let _state_lock = self.acquire_state_lock()?;
+                validate_resident_ref_tip(
+                    &self.generations,
+                    target,
+                    kind,
+                    name,
+                    commit_id,
+                    ancestry,
+                )?;
+            }
+            cache.hits = cache.hits.saturating_add(1);
+            cache.access(index, frequency);
+            let index = cache
+                .exact_entry_index(target, commit_id, claim, tier, jumbo_limits)
+                .ok_or_else(|| "typed V2 resident entry disappeared during access".to_owned())?;
+            let entry = &cache.entries[index];
+            let payload_len = entry.members.iter().fold(0_u64, |sum, member| {
+                sum.saturating_add(member.byte_length)
+            });
+            cache.payload_bytes_served = cache.payload_bytes_served.saturating_add(payload_len);
+            return Ok(TypedV2HistoryResidencyReplay::Resident(
+                TypedV2HistoryResidentReplay {
+                    commit,
+                    manifest_bytes: &entry.manifest_bytes,
+                    proof: &entry.proof,
+                    members: &entry.members,
+                    segments: &entry.segments,
+                    jumbo: &entry.jumbo,
+                    objects: &cache.objects,
+                    lineage_edge_set: entry.lineage_edge_set.as_deref(),
+                    _gc_pin: gc_pin,
+                },
+            ));
+        }
+
+        cache.cold_misses = cache.cold_misses.saturating_add(1);
+        let locator = {
+            let _state_lock = self.acquire_state_lock()?;
+            let current = self
+                .generations
+                .typed_v2_locator(target, commit_id, claim.locator())?;
+            current
+        };
+        let manifest = locator.validate()?;
+        if manifest.content_root_claim().as_bytes() != claim.content_root_claim().as_bytes()
+            || manifest.generation_root_claim().as_bytes()
+                != claim.generation_root_claim().as_bytes()
+        {
+            return Err("typed V2 commit roots differ from its resident manifest".to_owned());
+        }
+        let closure = self
+            .store
+            .open_closure_claim(claim.closure())
+            .map_err(|error| format!("open typed V2 history closure: {error:?}"))?;
+        let mut spool = spool_typed_v2_history_closure_with_resident_objects(
+            &self.store,
+            claim.closure(),
+            &closure,
+            &locator,
+            &manifest,
+            tier,
+            Some(&cache.objects),
+            Some(&mut cache.payload_bytes_read),
+            Some(&mut cache.resident_payload_bytes_reused),
+        )?;
+        cache.note_spool_work(&spool);
+        let verified =
+            verify_typed_v2_history_content(&spool, &locator, &manifest, tier, jumbo_limits)?;
+        if !claim.content_root_claim().matches(verified.content_root())
+            || !claim
+                .generation_root_claim()
+                .matches(verified.generation_root())
+        {
+            return Err("typed V2 history commit root failed cold verification".to_owned());
+        }
+        {
+            let _state_lock = self.acquire_state_lock()?;
+            validate_resident_ref_tip(
+                &self.generations,
+                target,
+                kind,
+                name,
+                commit_id,
+                ancestry,
+            )?;
+        }
+        let cold_miss_count = cache.record_cold_miss(&key);
+        let manifest_bytes = locator.manifest.as_slice();
+        let lineage_edge_set = locator.lineage_edge_set.as_deref();
+        let admission = cache.admit(
+            key,
+            verified,
+            manifest_bytes,
+            lineage_edge_set,
+            &locator.segments,
+            &locator.jumbo,
+            &mut spool,
+            digest,
+            cold_miss_count >= 2,
+            frequency,
+        )?;
+        let index = match admission {
+            TypedV2Admission::Resident(index) => index,
+            TypedV2Admission::Rejected(verified) => {
+                return Ok(TypedV2HistoryResidencyReplay::Cold(
+                    crate::TypedV2HistoryReplay::new(commit, manifest, verified)
+                    .with_lineage_edge_set(locator.lineage_edge_set)
+                    .with_gc_pin(std::sync::Arc::new(gc_pin)),
+                ));
+            }
+        };
+        let entry = &cache.entries[index];
+        let payload_len = entry.members.iter().fold(0_u64, |sum, member| {
+            sum.saturating_add(member.byte_length)
+        });
+        cache.payload_bytes_served = cache.payload_bytes_served.saturating_add(payload_len);
+        Ok(TypedV2HistoryResidencyReplay::Resident(
+            TypedV2HistoryResidentReplay {
+                commit,
+                manifest_bytes: &entry.manifest_bytes,
+                proof: &entry.proof,
+                members: &entry.members,
+                segments: &entry.segments,
+                jumbo: &entry.jumbo,
+                objects: &cache.objects,
+                lineage_edge_set: entry.lineage_edge_set.as_deref(),
+                _gc_pin: gc_pin,
+            },
+        ))
+    }
+
 }
 
 fn spool_typed_v2_history_closure(
@@ -415,6 +632,22 @@ fn spool_typed_v2_history_closure(
     locator: &crate::ir_generation_store::TypedV2HistoryLocator,
     manifest: &SemanticTypedPlaneManifestV2,
     tier: SemanticTypedPlaneVerificationTierV2,
+) -> Result<TypedV2HistorySpool, String> {
+    spool_typed_v2_history_closure_with_resident_objects(
+        store, _claim, closure, locator, manifest, tier, None, None, None,
+    )
+}
+
+fn spool_typed_v2_history_closure_with_resident_objects(
+    store: &FileStore,
+    _claim: ArtifactClosureClaim,
+    closure: &DurableManifest,
+    locator: &crate::ir_generation_store::TypedV2HistoryLocator,
+    manifest: &SemanticTypedPlaneManifestV2,
+    tier: SemanticTypedPlaneVerificationTierV2,
+    resident_objects: Option<&[TypedV2ResidentObject]>,
+    mut payload_byte_counter: Option<&mut u64>,
+    mut resident_payload_byte_counter: Option<&mut u64>,
 ) -> Result<TypedV2HistorySpool, String> {
     let mut members: Vec<(UntrustedObjectId, u64, SchemaIdentity)> = Vec::new();
     members
@@ -461,6 +694,7 @@ fn spool_typed_v2_history_closure(
         ));
     }
     members.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+    let mapped_members_capacity = members.capacity();
     let mut unique_members: Vec<(UntrustedObjectId, u64, SchemaIdentity)> = Vec::new();
     unique_members
         .try_reserve_exact(members.len())
@@ -496,6 +730,39 @@ fn spool_typed_v2_history_closure(
         .members
         .try_reserve_exact(unique_members.len())
         .map_err(|_| "typed V2 history spool index allocation failed".to_owned())?;
+    let mut transient_high_water = locator_working_bytes(locator, manifest)
+        .saturating_add(typed_v2_capacity_bytes::<(UntrustedObjectId, u64, SchemaIdentity)>(
+            mapped_members_capacity,
+        ))
+        .saturating_add(u64::try_from(IO_BUFFER_BYTES).unwrap_or(u64::MAX));
+    transient_high_water = transient_high_water.max(
+        locator_working_bytes(locator, manifest)
+            .saturating_add(typed_v2_capacity_bytes::<(UntrustedObjectId, u64, SchemaIdentity)>(
+                mapped_members_capacity,
+            ))
+            .saturating_add(typed_v2_capacity_bytes::<(
+                UntrustedObjectId,
+                u64,
+                SchemaIdentity,
+            )>(unique_members.capacity()))
+            .saturating_add(u64::try_from(IO_BUFFER_BYTES).unwrap_or(u64::MAX)),
+    );
+    transient_high_water = transient_high_water.max(
+        locator_working_bytes(locator, manifest)
+            .saturating_add(typed_v2_capacity_bytes::<(UntrustedObjectId, u64, SchemaIdentity)>(
+                mapped_members_capacity,
+            ))
+            .saturating_add(typed_v2_capacity_bytes::<(
+                UntrustedObjectId,
+                u64,
+                SchemaIdentity,
+            )>(unique_members.capacity()))
+            .saturating_add(typed_v2_capacity_bytes::<TypedV2SpoolMember>(
+                spool.members.capacity(),
+            ))
+            .saturating_add(u64::try_from(IO_BUFFER_BYTES).unwrap_or(u64::MAX)),
+    );
+    spool.transient_working_bytes = transient_high_water;
     for (object_claim, length, schema) in &unique_members {
         let member = closure
             .admit_claim(*object_claim)
@@ -504,8 +771,35 @@ fn spool_typed_v2_history_closure(
         if member.as_bytes() != object_claim.as_bytes() {
             return Err("typed V2 history closure member differs from its locator map".to_owned());
         }
-        let (offset, admitted_id) =
-            spool.append_tentative_payload(store, *object_claim, *length, *length, *schema)?;
+        let pooled = match resident_objects {
+            Some(objects) => TypedV2HistoryResidencyCache::object_claim(
+                objects,
+                *object_claim,
+                *schema,
+                *length,
+            )?,
+            None => None,
+        };
+        let (offset, admitted_id) = if let Some((pooled_id, payload)) = pooled {
+            if pooled_id.as_bytes() != member.as_bytes() {
+                return Err("resident typed V2 object ID differs from closure member".to_owned());
+            }
+            let offset = spool.append_resident_payload(payload)?;
+            if let Some(counter) = resident_payload_byte_counter.as_deref_mut() {
+                *counter = counter.saturating_add(*length);
+            }
+            (offset, pooled_id)
+        } else {
+            let (offset, admitted_id) = spool.append_tentative_payload(
+                store,
+                *object_claim,
+                *length,
+                *length,
+                *schema,
+                payload_byte_counter.as_deref_mut(),
+            )?;
+            (offset, admitted_id)
+        };
         spool.members.push(TypedV2SpoolMember {
             id: admitted_id,
             byte_length: *length,
@@ -520,9 +814,30 @@ fn spool_typed_v2_history_closure(
     if spool.bytes_written != total_bytes || spool.members.len() != unique_members.len() {
         return Err("typed V2 history spool differs from its exact closure accounting".to_owned());
     }
+    // This field records the transient index peak even though the temporary
+    // construction vectors are dropped when this function returns.
+    spool.transient_working_bytes = transient_high_water;
     #[cfg(test)]
     TYPED_V2_CLOSURE_REOPEN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     Ok(spool)
+}
+
+fn validate_resident_ref_tip(
+    generations: &crate::ir_generation_store::LocalSemanticGenerationFiles,
+    target: &crate::SemanticTargetKey,
+    kind: crate::HistoryRefKind,
+    name: &crate::HistoryRefName,
+    ancestor: crate::HistoryCommitId,
+    proof: &crate::HistoryRefAncestryProof,
+) -> Result<(), String> {
+    if !proof.matches(target, kind, name, ancestor) {
+        return Err("history ref ancestry proof does not match the request".to_owned());
+    }
+    let tip = generations.history_ref_tip(target, kind, name)?;
+    if tip != Some(proof.ref_tip()) {
+        return Err("history reference moved since its ancestry proof was created".to_owned());
+    }
+    Ok(())
 }
 
 fn verification_byte_limit(tier: SemanticTypedPlaneVerificationTierV2) -> u64 {
@@ -530,6 +845,40 @@ fn verification_byte_limit(tier: SemanticTypedPlaneVerificationTierV2) -> u64 {
         SemanticTypedPlaneVerificationTierV2::Standard => MAX_TYPED_V2_STANDARD_BYTES,
         SemanticTypedPlaneVerificationTierV2::LargePackage => MAX_TYPED_V2_LARGE_BYTES,
     }
+}
+
+fn locator_working_bytes(
+    locator: &crate::ir_generation_store::TypedV2HistoryLocator,
+    manifest: &SemanticTypedPlaneManifestV2,
+) -> u64 {
+    let locator_bytes = u64::try_from(locator.manifest.capacity())
+        .unwrap_or(u64::MAX)
+        .saturating_add(typed_v2_capacity_bytes::<HistoryTypedV2SegmentObject>(
+            locator.segments.capacity(),
+        ))
+        .saturating_add(typed_v2_capacity_bytes::<HistoryTypedV2JumboObject>(
+            locator.jumbo.capacity(),
+        ))
+        .saturating_add(
+            locator
+                .lineage_edge_set
+                .as_ref()
+                .map_or(0, |bytes| u64::try_from(bytes.capacity()).unwrap_or(u64::MAX)),
+        );
+    let manifest_descriptors = manifest
+        .families()
+        .iter()
+        .map(|family| family.segments().len())
+        .fold(manifest.families().len(), usize::saturating_add);
+    locator_bytes.saturating_add(typed_v2_capacity_bytes::<SemanticTypedPlaneSegmentClaimV2>(
+        manifest_descriptors,
+    ))
+}
+
+fn typed_v2_capacity_bytes<T>(capacity: usize) -> u64 {
+    u64::try_from(capacity)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(u64::try_from(std::mem::size_of::<T>()).unwrap_or(u64::MAX))
 }
 
 static TYPED_V2_SPOOL_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -543,9 +892,12 @@ struct TypedV2HistorySpool {
     file: File,
     members: Vec<TypedV2SpoolMember>,
     bytes_written: u64,
+    /// High-water estimate for bounded locator/map/spool indexes plus one
+    /// fixed verifier I/O buffer while the old cache entries are still live.
+    transient_working_bytes: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct TypedV2SpoolMember {
     id: ObjectId,
     byte_length: u64,
@@ -583,6 +935,7 @@ impl TypedV2HistorySpool {
                             file,
                             members: Vec::new(),
                             bytes_written: 0,
+                            transient_working_bytes: 0,
                         });
                     }
                     #[cfg(windows)]
@@ -592,6 +945,7 @@ impl TypedV2HistorySpool {
                             file,
                             members: Vec::new(),
                             bytes_written: 0,
+                            transient_working_bytes: 0,
                         });
                     }
                     #[cfg(not(any(unix, windows)))]
@@ -601,6 +955,7 @@ impl TypedV2HistorySpool {
                             file,
                             members: Vec::new(),
                             bytes_written: 0,
+                            transient_working_bytes: 0,
                         });
                     }
                 }
@@ -618,6 +973,7 @@ impl TypedV2HistorySpool {
         expected_length: u64,
         maximum_length: u64,
         expected_schema: SchemaIdentity,
+        mut payload_byte_counter: Option<&mut u64>,
     ) -> Result<(u64, ObjectId), String> {
         let start = self.bytes_written;
         self.file
@@ -629,6 +985,11 @@ impl TypedV2HistorySpool {
                 self.file
                     .write_all(chunk)
                     .map_err(|error| backend_store::StoreError::Io(error.to_string()))?;
+                if let Some(counter) = payload_byte_counter.as_deref_mut() {
+                    *counter = counter.saturating_add(
+                        u64::try_from(chunk.len()).map_err(|_| backend_store::StoreError::Bounds)?,
+                    );
+                }
                 let advance =
                     u64::try_from(chunk.len()).map_err(|_| backend_store::StoreError::Bounds)?;
                 staged_length = staged_length
@@ -667,6 +1028,64 @@ impl TypedV2HistorySpool {
         };
         self.bytes_written = committed_end;
         Ok((start, admitted_id))
+    }
+
+    fn append_resident_payload(&mut self, payload: &[u8]) -> Result<u64, String> {
+        let start = self.bytes_written;
+        let end = start
+            .checked_add(u64::try_from(payload.len()).map_err(display_error)?)
+            .ok_or_else(|| "typed V2 history spool size overflows".to_owned())?;
+        self.file
+            .seek(SeekFrom::Start(start))
+            .map_err(|error| format!("seek typed V2 history spool append point: {error}"))?;
+        self.file
+            .write_all(payload)
+            .map_err(|error| format!("append resident typed V2 object to spool: {error}"))?;
+        self.bytes_written = end;
+        Ok(start)
+    }
+
+    fn member_payload_equals(
+        &self,
+        member: TypedV2SpoolMember,
+        expected: &[u8],
+    ) -> Result<bool, String> {
+        if u64::try_from(expected.len()).unwrap_or(u64::MAX) != member.byte_length {
+            return Ok(false);
+        }
+        let mut file = self.clone_reader()?;
+        file.seek(SeekFrom::Start(member.offset))
+            .map_err(|error| format!("seek typed V2 history spool member: {error}"))?;
+        let mut buffer = [0_u8; IO_BUFFER_BYTES];
+        let mut compared = 0_usize;
+        while compared < expected.len() {
+            let count = (expected.len() - compared).min(buffer.len());
+            file.read_exact(&mut buffer[..count])
+                .map_err(|error| format!("read typed V2 history spool member: {error}"))?;
+            if buffer[..count] != expected[compared..compared + count] {
+                return Ok(false);
+            }
+            compared += count;
+        }
+        Ok(true)
+    }
+
+    fn read_member_payload(&self, member: TypedV2SpoolMember) -> Result<Box<[u8]>, String> {
+        let length = usize::try_from(member.byte_length).map_err(display_error)?;
+        let mut payload = vec![0_u8; length].into_boxed_slice();
+        let mut file = self.clone_reader()?;
+        file.seek(SeekFrom::Start(member.offset))
+            .map_err(|error| format!("seek typed V2 history spool member: {error}"))?;
+        file.read_exact(&mut payload)
+            .map_err(|error| format!("read typed V2 history spool member: {error}"))?;
+        Ok(payload)
+    }
+
+    fn transient_working_bytes(&self) -> u64 {
+        self.transient_working_bytes.max(
+            typed_v2_capacity_bytes::<TypedV2SpoolMember>(self.members.capacity())
+                .saturating_add(u64::try_from(IO_BUFFER_BYTES).unwrap_or(u64::MAX)),
+        )
     }
 
     fn rollback_tentative_tail(&mut self, start: u64) -> Result<(), String> {
@@ -1032,14 +1451,14 @@ fn jumbo_map_order_parts(kind: JumboRopeObjectKind, id: [u8; 32]) -> (u8, [u8; 3
 mod tests {
     use super::*;
     use backend_semantic::ir::{
-        ImageProvenance, JumboRopeLimits, JumboRopeNode, JumboRopeObjectId, JumboRopeObjectKind,
-        JumboRopeObjectSink, JumboRopeWriteReceipt, JumboValueContext, JumboValueEncoding,
-        JumboValueFamily, LanguageProfile, RustEdition, SemanticBuildIdentity,
+        write_jumbo_value, ImageProvenance, JumboRopeLimits, JumboRopeNode, JumboRopeObjectId,
+        JumboRopeObjectKind, JumboRopeObjectSink, JumboRopeWriteReceipt, JumboValueContext,
+        JumboValueEncoding, JumboValueFamily, LanguageProfile, RustEdition, SemanticBuildIdentity,
         SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
         SemanticPlaneKind, SemanticPlaneSegment, SemanticPlaneSegmentBoundaryPolicy,
         SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
         SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticContentRootV2,
-        UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId, write_jumbo_value,
+        UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId,
     };
     use backend_semantic::vocabulary::Stage;
     use backend_store::{
@@ -1180,16 +1599,14 @@ mod tests {
 
     fn typed_manifest(one_segment: bool) -> SemanticTypedPlaneManifestV2 {
         let segments = if one_segment {
-            vec![
-                SemanticTypedPlaneSegmentClaimV2::from_untrusted_claims(
-                    [1; 32],
-                    [1; 32],
-                    1,
-                    1,
-                    UntrustedSemanticSegmentId::from_raw([2; 32]),
-                )
-                .expect("one canonical segment claim"),
-            ]
+            vec![SemanticTypedPlaneSegmentClaimV2::from_untrusted_claims(
+                [1; 32],
+                [1; 32],
+                1,
+                1,
+                UntrustedSemanticSegmentId::from_raw([2; 32]),
+            )
+            .expect("one canonical segment claim")]
         } else {
             Vec::new()
         };
@@ -1296,10 +1713,10 @@ mod tests {
         )
     }
 
-    fn positive_v2_input_claim() -> SemanticInputClaimV2 {
+    fn positive_v2_input_claim(seed: u8) -> SemanticInputClaimV2 {
         SemanticInputClaimV2::from_untrusted_claims(
-            [7; 32],
-            ScopeRoot::from_bytes([8; 32]),
+            [seed; 32],
+            ScopeRoot::from_bytes([seed.wrapping_add(1); 32]),
             Coverage::Complete,
         )
     }
@@ -1340,7 +1757,10 @@ mod tests {
         rows
     }
 
-    fn positive_v2_rows(jumbo: &mut PositiveJumboObjects) -> [Vec<PositiveV2Row>; 7] {
+    fn positive_v2_rows(
+        jumbo: &mut PositiveJumboObjects,
+        document_variant: u8,
+    ) -> [Vec<PositiveV2Row>; 7] {
         const CORE_DECLARATION_TAG: u8 = 1;
         const DOCUMENTATION_TAG: u8 = 2;
         const DOCUMENTATION_JUMBO_TAG: u8 = 3;
@@ -1380,7 +1800,8 @@ mod tests {
             .checked_add(1)
             .expect("jumbo documentation length fits usize");
         let mut text = Vec::with_capacity(text_length);
-        let mut text_state = 0x4d59_5df4_d0f3_3173_u64;
+        let mut text_state = 0x4d59_5df4_d0f3_3173_u64
+            ^ u64::from(document_variant).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         for _ in 0..text_length {
             text_state ^= text_state << 13;
             text_state ^= text_state >> 7;
@@ -1632,7 +2053,10 @@ mod tests {
         Ok((content_root, *generation_hasher.finalize().as_bytes()))
     }
 
-    fn positive_v2_fixture() -> (
+    fn positive_v2_fixture_with_variants(
+        input_seed: u8,
+        document_variant: u8,
+    ) -> (
         SemanticTypedPlaneManifestV2,
         crate::ir_generation_store::TypedV2HistoryLocator,
         Vec<TypedObject>,
@@ -1640,7 +2064,7 @@ mod tests {
         [u8; 32],
     ) {
         let mut jumbo = PositiveJumboObjects::default();
-        let rows = positive_v2_rows(&mut jumbo);
+        let rows = positive_v2_rows(&mut jumbo, document_variant);
         let leaf_count = jumbo
             .0
             .iter()
@@ -1702,7 +2126,7 @@ mod tests {
         jumbo_mappings.sort_unstable_by_key(|mapping| jumbo_map_order(*mapping));
 
         let build = positive_v2_build();
-        let input = positive_v2_input_claim();
+        let input = positive_v2_input_claim(input_seed);
         let (content_root, generation_root) = positive_v2_expected_roots(build, input, &rows)
             .expect("independent stable-row-index root calculation");
         let boundary_policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
@@ -1754,9 +2178,26 @@ mod tests {
         (manifest, locator, objects, content_root, generation_root)
     }
 
+    fn positive_v2_fixture() -> (
+        SemanticTypedPlaneManifestV2,
+        crate::ir_generation_store::TypedV2HistoryLocator,
+        Vec<TypedObject>,
+        [u8; 32],
+        [u8; 32],
+    ) {
+        positive_v2_fixture_with_variants(7, 0)
+    }
+
     pub(crate) fn positive_v2_history_fixture_for_test() -> PositiveV2HistoryFixture {
+        positive_v2_history_fixture_for_test_with_variants(7, 0)
+    }
+
+    pub(crate) fn positive_v2_history_fixture_for_test_with_variants(
+        input_seed: u8,
+        document_variant: u8,
+    ) -> PositiveV2HistoryFixture {
         let (manifest, locator, objects, expected_content_root, expected_generation_root) =
-            positive_v2_fixture();
+            positive_v2_fixture_with_variants(input_seed, document_variant);
         PositiveV2HistoryFixture {
             manifest,
             locator,
@@ -2077,6 +2518,7 @@ mod tests {
             file: spool_file,
             members,
             bytes_written: tier_bytes,
+            transient_working_bytes: 0,
         };
         let mut source = TypedV2SpoolSegmentSource::new(&spool, &locator, &manifest)
             .expect("construct bounded source for the full segment tier");
@@ -2298,4 +2740,7 @@ mod tests {
 }
 
 #[cfg(test)]
-pub(crate) use tests::{PositiveV2HistoryFixture, positive_v2_history_fixture_for_test};
+pub(crate) use tests::{
+    PositiveV2HistoryFixture, positive_v2_history_fixture_for_test,
+    positive_v2_history_fixture_for_test_with_variants,
+};

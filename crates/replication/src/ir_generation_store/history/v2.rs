@@ -510,6 +510,8 @@ pub(super) fn decode_typed_v2_locator(
     bytes: &[u8],
     expected: HistoryTypedV2LocatorId,
 ) -> Result<TypedV2HistoryLocator, String> {
+    #[cfg(test)]
+    super::super::count_history_locator_decode();
     let body = checked_body(bytes, MAX_HISTORY_TYPED_V2_LOCATOR_BYTES + 64)?;
     if body.len() < 32 || body[..32] != *expected.as_bytes() {
         return Err("typed V2 history locator identity differs from its filename".to_owned());

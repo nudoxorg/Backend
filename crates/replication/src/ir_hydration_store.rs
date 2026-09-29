@@ -48,8 +48,15 @@ mod history_v3;
 pub(crate) use history_v3::{
     TypedV3HistoryAdmission, TypedV3HistoryAdmissionMetrics, TypedV3HistoryGcPin,
 };
+pub use history_v2::{
+    TypedV2HistoryResidencyCache, TypedV2HistoryResidencyMetrics,
+    TypedV2HistoryResidencyReplay, TypedV2HistoryResidentReplay,
+};
 #[cfg(test)]
-pub(crate) use history_v2::{PositiveV2HistoryFixture, positive_v2_history_fixture_for_test};
+pub(crate) use history_v2::{
+    PositiveV2HistoryFixture, positive_v2_history_fixture_for_test,
+    positive_v2_history_fixture_for_test_with_variants,
+};
 
 #[cfg(test)]
 pub(crate) fn reset_typed_v2_closure_reopen_count() {
@@ -59,6 +66,11 @@ pub(crate) fn reset_typed_v2_closure_reopen_count() {
 #[cfg(test)]
 pub(crate) fn typed_v2_closure_reopen_count() -> usize {
     history_v2::typed_v2_closure_reopen_count()
+}
+
+#[cfg(test)]
+pub(crate) fn set_typed_v2_residency_warm_recheck_hook(hook: Option<Arc<std::sync::Barrier>>) {
+    history_v2::set_typed_v2_residency_warm_recheck_hook(hook);
 }
 
 #[cfg(test)]

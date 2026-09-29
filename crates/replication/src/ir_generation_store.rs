@@ -55,12 +55,19 @@ thread_local! {
 pub(super) struct HistoryReplayLoadCounts {
     pub(super) commit_decodes: usize,
     pub(super) generation_decodes: usize,
+    pub(super) locator_decodes: usize,
 }
 
 #[cfg(test)]
 thread_local! {
     static HISTORY_REPLAY_LOAD_COUNTS: Cell<HistoryReplayLoadCounts> =
-        const { Cell::new(HistoryReplayLoadCounts { commit_decodes: 0, generation_decodes: 0 }) };
+        const {
+            Cell::new(HistoryReplayLoadCounts {
+                commit_decodes: 0,
+                generation_decodes: 0,
+                locator_decodes: 0,
+            })
+        };
 }
 
 #[cfg(test)]
@@ -87,6 +94,15 @@ fn count_history_generation_decode() {
     HISTORY_REPLAY_LOAD_COUNTS.with(|counts| {
         let mut current = counts.get();
         current.generation_decodes = current.generation_decodes.saturating_add(1);
+        counts.set(current);
+    });
+}
+
+#[cfg(test)]
+fn count_history_locator_decode() {
+    HISTORY_REPLAY_LOAD_COUNTS.with(|counts| {
+        let mut current = counts.get();
+        current.locator_decodes = current.locator_decodes.saturating_add(1);
         counts.set(current);
     });
 }
@@ -4036,12 +4052,10 @@ mod tests {
             )
             .expect("cold-verify third-old V2 commit");
         assert_eq!(replay.commit().identity(), commits[0]);
-        assert!(
-            replay
-                .manifest()
-                .content_root_claim()
-                .matches(replay.content().content_root())
-        );
+        assert!(replay
+            .manifest()
+            .content_root_claim()
+            .matches(replay.content().content_root()));
         drop(replay);
 
         let _ = range_store
@@ -4210,6 +4224,45 @@ mod tests {
             commit_id
         );
 
+        let same_content_next =
+            crate::ir_hydration_store::positive_v2_history_fixture_for_test_with_variants(8, 0);
+        assert_eq!(same_content_next.expected_content_root, positive.expected_content_root);
+        assert_ne!(same_content_next.expected_generation_root, positive.expected_generation_root);
+        assert_eq!(same_content_next.objects.len(), positive.objects.len());
+        for (before, after) in positive.objects.iter().zip(&same_content_next.objects) {
+            assert_eq!(before.id(), after.id());
+            assert_eq!(before.schema(), after.schema());
+            assert_eq!(before.bytes(), after.bytes());
+        }
+        let second_admission = cold_range_store
+            .admit_typed_v2_history_commit(
+                &generation.target,
+                &[commit_id],
+                [0x72; 32],
+                &same_content_next.manifest,
+                closure_claim,
+                &same_content_next.locator.segments,
+                &same_content_next.locator.jumbo,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+                &mut TestAuthority::new([generation.stamp, generation.stamp], [generation.image]),
+            )
+            .expect("admit a second exact generation over the shared content closure");
+        let second_commit_id = second_admission.commit().identity();
+        assert_ne!(commit_id, second_commit_id);
+        drop(second_admission);
+        cold_range_store
+            .publish_typed_v2_history_ref_cold(
+                &generation.target,
+                HistoryRefKind::Branch,
+                branch.clone(),
+                Some(commit_id),
+                second_commit_id,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("advance branch to second generation with identical content bytes");
+
         let ancestry = cold_range_store
             .history_ref_ancestry_proof(
                 &generation.target,
@@ -4238,6 +4291,369 @@ mod tests {
             &positive.expected_generation_root
         );
         drop(replay);
+
+        // The nonempty fixture exercises a real seven-family closure and a
+        // >1 MiB documentation jumbo. The first request leaves a bounded ghost;
+        // a repeated cold request admits owned bytes, and the next is an exact
+        // warm hit that avoids locator decode and closure reopening.
+        let mut residency = crate::TypedV2HistoryResidencyCache::new(3 * 1024 * 1024, 8)
+            .expect("construct bounded residency for nonempty typed V2 closure");
+        crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
+        reset_history_replay_load_counts();
+        let first_miss = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut residency,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("verify nonempty generation on first cache miss");
+        assert!(matches!(
+            &first_miss,
+            crate::TypedV2HistoryResidencyReplay::Cold(_)
+        ));
+        drop(first_miss);
+        let second_miss = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut residency,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("repeat cold verification and admit nonempty generation");
+        assert!(matches!(
+            &second_miss,
+            crate::TypedV2HistoryResidencyReplay::Resident(_)
+        ));
+        if let crate::TypedV2HistoryResidencyReplay::Resident(view) = &second_miss {
+            assert_eq!(view.commit().identity(), commit_id);
+            assert_eq!(view.content().content_root().as_bytes(), &positive.expected_content_root);
+            assert_eq!(view.content().generation_root().as_bytes(), &positive.expected_generation_root);
+            assert_eq!(view.manifest_bytes(), positive.locator.manifest.as_slice());
+            assert_eq!(view.segment_objects(), positive.locator.segments.as_slice());
+            assert_eq!(view.jumbo_objects(), positive.locator.jumbo.as_slice());
+            assert_eq!(view.payload_byte_len(), payload_bytes);
+            assert!(view.payload_byte_len() > 1024 * 1024);
+            let mut expected_offset = 0_u64;
+            let mut seen_objects = 0_usize;
+            for (id, schema, offset, bytes) in view.object_payloads() {
+                assert_eq!(offset, expected_offset);
+                let original = positive
+                    .objects
+                    .iter()
+                    .find(|object| object.id() == id)
+                    .expect("resident object comes from the positive fixture");
+                assert_eq!(schema, original.schema());
+                assert_eq!(bytes, original.bytes());
+                expected_offset = expected_offset
+                    .checked_add(u64::try_from(bytes.len()).expect("payload length fits u64"))
+                    .expect("fixture offset does not overflow");
+                seen_objects += 1;
+            }
+            assert_eq!(seen_objects, object_count);
+            assert_eq!(expected_offset, payload_bytes);
+        }
+        drop(second_miss);
+        assert_eq!(history_replay_load_counts().locator_decodes, 2);
+        assert_eq!(crate::ir_hydration_store::typed_v2_closure_reopen_count(), 2);
+
+        crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
+        reset_history_replay_load_counts();
+        let warm = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut residency,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("serve exact nonempty generation from live owned bytes");
+        assert!(matches!(
+            &warm,
+            crate::TypedV2HistoryResidencyReplay::Resident(_)
+        ));
+        assert_eq!(history_replay_load_counts().locator_decodes, 0);
+        assert_eq!(crate::ir_hydration_store::typed_v2_closure_reopen_count(), 0);
+        drop(warm);
+        let metrics = residency.metrics();
+        assert!(metrics.accounted_bytes <= metrics.byte_budget);
+        assert_eq!(metrics.entries, 1);
+        assert_eq!(metrics.resident_object_bytes, payload_bytes);
+        assert!(metrics.transient_high_water_bytes > metrics.accounted_bytes);
+
+        let second_ancestry = cold_range_store
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                second_commit_id,
+            )
+            .expect("prove second exact generation is reachable");
+        let shared_generation = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut residency,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                second_commit_id,
+                &second_ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("fully reverify second generation using shared resident object bytes");
+        assert!(matches!(
+            &shared_generation,
+            crate::TypedV2HistoryResidencyReplay::Resident(_)
+        ));
+        if let crate::TypedV2HistoryResidencyReplay::Resident(view) = &shared_generation {
+            assert_eq!(view.commit().identity(), second_commit_id);
+            assert_eq!(
+                view.content().content_root().as_bytes(),
+                &same_content_next.expected_content_root
+            );
+            assert_eq!(
+                view.content().generation_root().as_bytes(),
+                &same_content_next.expected_generation_root
+            );
+            assert_eq!(view.manifest_bytes(), same_content_next.locator.manifest.as_slice());
+            assert_eq!(
+                view.segment_objects(),
+                same_content_next.locator.segments.as_slice()
+            );
+            assert_eq!(view.jumbo_objects(), same_content_next.locator.jumbo.as_slice());
+            assert_eq!(view.payload_byte_len(), payload_bytes);
+        }
+        drop(shared_generation);
+        let shared_metrics = residency.metrics();
+        assert_eq!(shared_metrics.entries, 2);
+        assert_eq!(shared_metrics.payload_bytes_read, 2 * payload_bytes);
+        assert_eq!(shared_metrics.resident_payload_bytes_reused, payload_bytes);
+        assert_eq!(shared_metrics.resident_object_bytes, payload_bytes);
+        assert_eq!(shared_metrics.generation_wide_payload_bytes, 2 * payload_bytes);
+        assert_eq!(shared_metrics.deduplicated_payload_bytes, payload_bytes);
+        assert_eq!(
+            shared_metrics.shared_object_reuses,
+            u64::try_from(object_count).expect("object count fits u64")
+        );
+        assert!(shared_metrics.accounted_bytes <= shared_metrics.byte_budget);
+
+        // Race a warm hit between its first ancestry check and its final tip
+        // check. A ref move invalidates the request; the live GC reader pin
+        // makes bounded history GC defer while the request is paused.
+        let warm_gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_gate = warm_gate.clone();
+        let worker_store = FileSemanticRangeStore::open(cold_file_store.clone(), limits)
+            .expect("open independent adapter for concurrent warm lookup");
+        let worker_target = generation.target.clone();
+        let worker_branch = branch.clone();
+        let worker_ancestry = ancestry.clone();
+        let cache_for_worker = std::mem::replace(
+            &mut residency,
+            crate::TypedV2HistoryResidencyCache::new(3 * 1024 * 1024, 8)
+                .expect("construct temporary cache while worker owns resident entry"),
+        );
+        let warm_worker = std::thread::spawn(move || {
+            let mut residency = cache_for_worker;
+            crate::ir_hydration_store::set_typed_v2_residency_warm_recheck_hook(Some(worker_gate));
+            let result = worker_store.replay_typed_v2_history_with_residency(
+                &mut residency,
+                &worker_target,
+                HistoryRefKind::Branch,
+                &worker_branch,
+                commit_id,
+                &worker_ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            );
+            let outcome = match result {
+                Ok(replay) => {
+                    let resident = matches!(
+                        &replay,
+                        crate::TypedV2HistoryResidencyReplay::Resident(_)
+                    );
+                    drop(replay);
+                    if resident {
+                        Ok(())
+                    } else {
+                        Err("warm lookup unexpectedly fell back to cold replay".to_owned())
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            (residency, outcome)
+        });
+        warm_gate.wait();
+        cold_range_store
+            .compare_and_swap_history_ref(
+                &generation.target,
+                HistoryRefKind::Branch,
+                branch.clone(),
+                Some(second_commit_id),
+                None,
+            )
+            .expect("remove branch tip between warm ancestry checks");
+        let deferred_gc = cold_range_store
+            .advance_history_gc(&generation.target)
+            .expect_err("reader pin defers history GC while warm check is paused");
+        assert!(deferred_gc.contains("shared readers hold collection pins"));
+        warm_gate.wait();
+        let (returned_cache, warm_result) = warm_worker
+            .join()
+            .expect("concurrent warm lookup worker does not panic");
+        residency = returned_cache;
+        assert!(warm_result
+            .expect_err("warm lookup rejects a moved ref tip")
+            .contains("history reference moved"));
+        cold_range_store
+            .compare_and_swap_history_ref(
+                &generation.target,
+                HistoryRefKind::Branch,
+                branch.clone(),
+                None,
+                Some(second_commit_id),
+            )
+            .expect("restore branch tip after the warm-ref race");
+
+        // A cache hit is bound to the exact previously verified locator bytes
+        // and may remain usable if its sidecar is externally replaced. A cold
+        // cache must parse that sidecar and reject the damaged envelope.
+        let generation_files = LocalSemanticGenerationFiles::open(
+            &cas_root.join("semantic-hydration"),
+        )
+        .expect("open generation records to locate locator sidecar");
+        let locator_path = generation_files
+            .target_root(&generation.target)
+            .join("history")
+            .join("typed-v2-locators")
+            .join(format!("{}.locator", super::hex(commit_id.as_bytes())));
+        let original_locator = fs::read(&locator_path).expect("read typed V2 locator bytes");
+        let mut replaced_locator = original_locator.clone();
+        *replaced_locator.last_mut().expect("locator bytes are nonempty") ^= 1;
+        fs::write(&locator_path, &replaced_locator).expect("replace locator with damaged bytes");
+        let mut cold_after_locator_replacement =
+            crate::TypedV2HistoryResidencyCache::new(3 * 1024 * 1024, 8)
+                .expect("construct cold cache for locator replacement");
+        reset_history_replay_load_counts();
+        let cold_locator_error = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut cold_after_locator_replacement,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect_err("cold cache rejects a replaced locator sidecar");
+        assert!(cold_locator_error.contains("typed V2 history locator"));
+        assert_eq!(history_replay_load_counts().locator_decodes, 1);
+        reset_history_replay_load_counts();
+        let warm_with_replaced_locator = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut residency,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("exact live entry uses its owned verified locator bytes");
+        assert!(matches!(
+            &warm_with_replaced_locator,
+            crate::TypedV2HistoryResidencyReplay::Resident(_)
+        ));
+        assert_eq!(history_replay_load_counts().locator_decodes, 0);
+        drop(warm_with_replaced_locator);
+        fs::write(&locator_path, &original_locator).expect("restore exact locator sidecar");
+
+        // Verify the physical-byte boundary too. A live cache owns bytes that
+        // were fully FileStore-verified on admission; a cold process must
+        // re-read and reject later physical-file damage.
+        let first_object = positive.objects.first().expect("positive payload closure is nonempty");
+        let object_path = cas_root
+            .join("objects")
+            .join(format!("{}.object", super::hex(first_object.id().as_bytes())));
+        let original_object = fs::read(&object_path).expect("read object before corruption");
+        let mut damaged_object = original_object.clone();
+        *damaged_object.last_mut().expect("object envelope is nonempty") ^= 0x80;
+        fs::write(&object_path, &damaged_object).expect("damage physical object bytes");
+        reset_history_replay_load_counts();
+        let warm_with_damaged_object = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut residency,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("warm cache serves its immutable verified object copy");
+        assert!(matches!(
+            &warm_with_damaged_object,
+            crate::TypedV2HistoryResidencyReplay::Resident(_)
+        ));
+        assert_eq!(history_replay_load_counts().locator_decodes, 0);
+        drop(warm_with_damaged_object);
+        let mut cold_after_object_damage =
+            crate::TypedV2HistoryResidencyCache::new(3 * 1024 * 1024, 8)
+                .expect("construct cold cache for physical-byte corruption");
+        let cold_object_error = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut cold_after_object_damage,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect_err("cold replay revalidates physical bytes after restart");
+        assert!(cold_object_error.contains("verify typed V2 history object"));
+        fs::write(&object_path, &original_object).expect("restore physical object bytes");
+
+        let pinned = cold_range_store
+            .replay_typed_v2_history_with_residency(
+                &mut residency,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("acquire resident view and fresh GC pin");
+        let pinned_gc = cold_range_store
+            .advance_history_gc(&generation.target)
+            .expect_err("resident view keeps a fresh FileStore GC lease");
+        assert!(pinned_gc.contains("shared readers hold collection pins"));
+        drop(pinned);
+        let mut progress = cold_range_store
+            .advance_history_gc(&generation.target)
+            .expect("GC resumes after resident view drops");
+        while !progress.complete() {
+            progress = cold_range_store
+                .advance_history_gc(&generation.target)
+                .expect("complete bounded history GC after pin release");
+        }
+        assert!(residency.metrics().accounted_bytes <= residency.metrics().byte_budget);
 
         cold_range_store
             .collect_garbage_with_history(&generation.target, backend_store::GcLimits::default())
@@ -4276,6 +4692,33 @@ mod tests {
             reopened_replay.content().generation_root().as_bytes(),
             &positive.expected_generation_root
         );
+        drop(reopened_replay);
+        let mut cold_restart_residency =
+            crate::TypedV2HistoryResidencyCache::new(3 * 1024 * 1024, 8)
+                .expect("construct empty residency after process-style restart");
+        assert_eq!(cold_restart_residency.metrics().entries, 0);
+        reset_history_replay_load_counts();
+        crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
+        let cold_restart = reopened
+            .replay_typed_v2_history_with_residency(
+                &mut cold_restart_residency,
+                &generation.target,
+                HistoryRefKind::Branch,
+                &branch,
+                commit_id,
+                &reopened_ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
+            )
+            .expect("cold restart verifies durable bytes rather than retaining process proof");
+        assert!(matches!(
+            &cold_restart,
+            crate::TypedV2HistoryResidencyReplay::Cold(_)
+        ));
+        assert_eq!(history_replay_load_counts().locator_decodes, 1);
+        assert_eq!(crate::ir_hydration_store::typed_v2_closure_reopen_count(), 1);
+        assert_eq!(cold_restart_residency.metrics().payload_bytes_read, payload_bytes);
+
     }
 
     #[test]
@@ -4591,6 +5034,7 @@ mod tests {
             HistoryReplayLoadCounts {
                 commit_decodes: MAX_HISTORY_REPLAY_COMMITS + 1,
                 generation_decodes: MAX_HISTORY_REPLAY_COMMITS + 1,
+                locator_decodes: 0,
             },
             "one bounded page decodes its 32 returned nodes and one validated cursor lookahead"
         );
@@ -4670,6 +5114,7 @@ mod tests {
             HistoryReplayLoadCounts {
                 commit_decodes: expected_loads,
                 generation_decodes: expected_loads,
+                locator_decodes: 0,
             },
             "full replay loads each node once plus one lookahead for every page boundary"
         );
