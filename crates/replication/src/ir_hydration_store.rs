@@ -845,9 +845,13 @@ impl FileSemanticRangeStore {
     }
 
     /// Proves that `ancestor` is on the current named ref's first-parent line.
-    /// The proof can be reused for multiple reads; a moved ref or a different
-    /// target/ref/commit invalidates it. Ancestry is checked in bounded batches
+    /// The proof can be reused for multiple reads while the current ref tip
+    /// remains identical. Retargeting away and back to the same immutable tip
+    /// preserves the proof's meaning. Ancestry is checked in bounded batches
     /// so the shared state lock is never held while scanning an unbounded line.
+    /// This reads only immutable commit/generation metadata. It does not pin
+    /// FileStore GC across the walk; a concurrent collector can prune an
+    /// unrooted record, in which case the next bounded batch fails closed.
     ///
     /// History merge commits are currently unsupported. If one is encountered,
     /// this API rejects it rather than treating second-parent reachability as
@@ -859,10 +863,29 @@ impl FileSemanticRangeStore {
         name: &crate::HistoryRefName,
         ancestor: crate::HistoryCommitId,
     ) -> Result<crate::HistoryRefAncestryProof, String> {
-        let _gc_pin = self
-            .store
-            .pin_garbage_collection()
-            .map_err(|error| format!("pin semantic history ancestry: {error:?}"))?;
+        self.history_ref_ancestry_proof_inner(target, kind, name, ancestor, || Ok(()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_ref_ancestry_proof_with_batch_hook(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        ancestor: crate::HistoryCommitId,
+        after_batch: impl FnMut() -> Result<(), String>,
+    ) -> Result<crate::HistoryRefAncestryProof, String> {
+        self.history_ref_ancestry_proof_inner(target, kind, name, ancestor, after_batch)
+    }
+
+    fn history_ref_ancestry_proof_inner(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        ancestor: crate::HistoryCommitId,
+        mut after_batch: impl FnMut() -> Result<(), String>,
+    ) -> Result<crate::HistoryRefAncestryProof, String> {
         let (tip, tip_depth, ancestor_depth) = {
             let _state_lock = self.acquire_state_lock()?;
             let reference = self
@@ -892,35 +915,38 @@ impl FileSemanticRangeStore {
         let mut cursor = tip;
         let mut remaining = tip_depth - ancestor_depth;
         while remaining != 0 {
-            let _state_lock = self.acquire_state_lock()?;
-            self.require_ancestry_ref_tip(target, kind, name, tip)?;
             let batch = remaining.min(crate::MAX_HISTORY_REPLAY_COMMITS as u32);
-            for _ in 0..batch {
-                let current = self.generations.history_commit(target, cursor)?;
-                let expected_depth = ancestor_depth
-                    .checked_add(remaining)
-                    .ok_or_else(|| "semantic history ancestry depth overflows".to_owned())?;
-                if current.first_parent_depth() != expected_depth {
-                    return Err(
-                        "semantic history first-parent depth is inconsistent during ancestry proof"
-                            .to_owned(),
-                    );
+            {
+                let _state_lock = self.acquire_state_lock()?;
+                self.require_ancestry_ref_tip(target, kind, name, tip)?;
+                for _ in 0..batch {
+                    let current = self.generations.history_commit(target, cursor)?;
+                    let expected_depth = ancestor_depth
+                        .checked_add(remaining)
+                        .ok_or_else(|| "semantic history ancestry depth overflows".to_owned())?;
+                    if current.first_parent_depth() != expected_depth {
+                        return Err(
+                            "semantic history first-parent depth is inconsistent during ancestry proof"
+                                .to_owned(),
+                        );
+                    }
+                    if current.parents().len() > 1 {
+                        return Err(
+                            "history ref ancestry only supports first-parent commits; merge history is unsupported"
+                                .to_owned(),
+                        );
+                    }
+                    let Some(parent) = current.parents().first().copied() else {
+                        return Err(
+                            "requested history commit is not reachable from the named ref's first-parent chain"
+                                .to_owned(),
+                        );
+                    };
+                    cursor = parent;
+                    remaining -= 1;
                 }
-                if current.parents().len() > 1 {
-                    return Err(
-                        "history ref ancestry only supports first-parent commits; merge history is unsupported"
-                            .to_owned(),
-                    );
-                }
-                let Some(parent) = current.parents().first().copied() else {
-                    return Err(
-                        "requested history commit is not reachable from the named ref's first-parent chain"
-                            .to_owned(),
-                    );
-                };
-                cursor = parent;
-                remaining -= 1;
             }
+            after_batch()?;
         }
 
         {

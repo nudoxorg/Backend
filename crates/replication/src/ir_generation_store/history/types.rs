@@ -296,9 +296,11 @@ impl AdmittedHistoryCommit {
 /// history ref by following first-parent links.
 ///
 /// Create this once and reuse it for materialization or segment reads. The
-/// proof is bound to its target, ref name and kind, tip, and requested commit;
-/// a ref movement invalidates it. It is process-local and must be regenerated
-/// after reopening the store.
+/// proof is bound to its target, ref name and kind, tip, and requested commit.
+/// It is valid only while the ref currently has that exact tip; retargeting
+/// away and back to the same content-addressed tip preserves the proof's
+/// meaning. It is process-local and must be regenerated after reopening the
+/// store.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryRefAncestryProof {
     target: SemanticTargetKey,

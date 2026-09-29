@@ -2951,6 +2951,99 @@ mod tests {
     }
 
     #[test]
+    fn ancestry_proof_survives_gc_and_same_tip_aba_between_bounded_batches() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let store = FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open FileStore");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let range_store = FileSemanticRangeStore::open(store, limits).expect("open range store");
+        let files = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
+            .expect("open generation files");
+        let generation = fixture(b"ancestry gc batch", 1, 137);
+        let _ = commit(&files, &generation, [generation.stamp, generation.stamp])
+            .expect("commit base generation");
+        let name = HistoryRefName::new("local-cache").expect("local-cache ref");
+        let first = files
+            .history_ref(&generation.target, HistoryRefKind::Branch, &name)
+            .expect("read first ref")
+            .expect("first ref exists")
+            .commit();
+        let mut parent = first;
+        for step in 1..=MAX_HISTORY_REPLAY_COMMITS + 1 {
+            let mut provenance = [0; 32];
+            provenance[0] = u8::try_from(step).expect("bounded fixture step");
+            parent = admit_history(&files, &generation, &[parent], provenance).identity();
+        }
+        let tip = parent;
+        range_store
+            .compare_and_swap_history_ref(
+                &generation.target,
+                HistoryRefKind::Branch,
+                name.clone(),
+                Some(first),
+                Some(tip),
+            )
+            .expect("publish long ancestry tip");
+        let unrelated = admit_history(&files, &generation, &[], [0xff; 32]).identity();
+
+        let mut gc_batches = 0;
+        let proof = range_store
+            .history_ref_ancestry_proof_with_batch_hook(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &name,
+                first,
+                || {
+                    if gc_batches == 0 {
+                        gc_batches += 1;
+                        let mut progress = range_store
+                            .advance_history_gc(&generation.target)
+                            .expect("GC acquires its exclusive lease between proof batches");
+                        while !progress.complete() {
+                            progress = range_store
+                                .advance_history_gc(&generation.target)
+                                .expect("continue bounded history GC between proof batches");
+                        }
+                        range_store
+                            .compare_and_swap_history_ref(
+                                &generation.target,
+                                HistoryRefKind::Branch,
+                                name.clone(),
+                                Some(tip),
+                                Some(unrelated),
+                            )
+                            .expect("temporarily move the ref away from the proved tip");
+                        range_store
+                            .compare_and_swap_history_ref(
+                                &generation.target,
+                                HistoryRefKind::Branch,
+                                name.clone(),
+                                Some(unrelated),
+                                Some(tip),
+                            )
+                            .expect("restore the same immutable ref tip after ABA");
+                    }
+                    Ok(())
+                },
+            )
+            .expect("proof resumes after an unpinned history-GC batch");
+        assert_eq!(gc_batches, 1, "ancestry walk crosses a batch boundary");
+        assert_eq!(proof.ref_tip(), tip);
+        assert_eq!(proof.ancestor(), first);
+        assert_eq!(
+            range_store
+                .history_ref(&generation.target, HistoryRefKind::Branch, &name)
+                .expect("read ref after interleaved GC")
+                .expect("ref remains")
+                .commit(),
+            tip
+        );
+    }
+
+    #[test]
     fn third_old_segment_replays_after_forced_file_store_gc_and_cold_reopen() {
         let directory = TestDirectory::create();
         let cas_root = directory.0.join("cas");
