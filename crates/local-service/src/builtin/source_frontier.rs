@@ -27,9 +27,10 @@ use std::sync::{Mutex, OnceLock};
 const SOURCE_FRONTIER_VERSION: u8 = 1;
 const SOURCE_FRONTIER_POLICY_IDENTITY: &str =
     "backend.local-source-frontier.v1;selection=source-selection-policy.v1;git-clean-paths.v1";
-const MAX_SOURCE_FRONTIERS: usize = 8;
+const MAX_SOURCE_FRONTIERS: usize = 8 * 1024;
 const MAX_SOURCE_FRONTIER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SOURCE_FRONTIER_CACHE_BYTES: usize = 32 * 1024 * 1024;
+const SOURCE_FRONTIER_CACHE_ENTRY_OVERHEAD_BYTES: usize = 256;
 const MAX_GIT_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GIT_POLICY_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const SOURCE_POLICY_FILE_NAMES: [&str; 4] =
@@ -116,6 +117,18 @@ fn source_frontier_cache() -> &'static Mutex<SourceFrontierCache> {
     CACHE.get_or_init(|| Mutex::new(SourceFrontierCache::default()))
 }
 
+fn source_frontier_cache_entry_charge(frontier: &SourceFrontier) -> usize {
+    let root_bytes = frontier.root.as_os_str().as_encoded_bytes().len();
+    let inline_overhead = std::mem::size_of::<SourceFrontier>()
+        .saturating_add(std::mem::size_of::<SourceFrontierKey>())
+        .saturating_add(std::mem::size_of::<(SourceFrontierKey, SourceFrontier)>());
+    frontier
+        .estimated_bytes
+        .saturating_add(SOURCE_FRONTIER_CACHE_ENTRY_OVERHEAD_BYTES.max(inline_overhead))
+        // The root path is retained in the frontier, map key, and LRU key.
+        .saturating_add(root_bytes.saturating_mul(3))
+}
+
 fn source_frontier_key(root: &Path, project: [u8; 32]) -> SourceFrontierKey {
     SourceFrontierKey {
         root: root.to_path_buf(),
@@ -135,7 +148,10 @@ fn cached_source_frontier(root: &Path, project: [u8; 32]) -> Option<SourceFronti
 }
 
 fn remember_source_frontier(frontier: SourceFrontier) {
-    if frontier.estimated_bytes > MAX_SOURCE_FRONTIER_BYTES {
+    let entry_charge = source_frontier_cache_entry_charge(&frontier);
+    if frontier.estimated_bytes > MAX_SOURCE_FRONTIER_BYTES
+        || entry_charge > MAX_SOURCE_FRONTIER_CACHE_BYTES
+    {
         return;
     }
     let key = source_frontier_key(&frontier.root, frontier.project);
@@ -143,38 +159,46 @@ fn remember_source_frontier(frontier: SourceFrontier) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(previous) = cache.entries.remove(&key) {
-        cache.bytes = cache.bytes.saturating_sub(previous.estimated_bytes);
+        cache.bytes = cache
+            .bytes
+            .saturating_sub(source_frontier_cache_entry_charge(&previous));
         cache.order.retain(|candidate| candidate != &key);
     }
     while cache.entries.len() >= MAX_SOURCE_FRONTIERS
-        || cache.bytes.saturating_add(frontier.estimated_bytes) > MAX_SOURCE_FRONTIER_CACHE_BYTES
+        || cache.bytes.saturating_add(entry_charge) > MAX_SOURCE_FRONTIER_CACHE_BYTES
     {
         let Some(evicted) = cache.order.pop_front() else {
             break;
         };
         if let Some(previous) = cache.entries.remove(&evicted) {
-            cache.bytes = cache.bytes.saturating_sub(previous.estimated_bytes);
+            cache.bytes = cache
+                .bytes
+                .saturating_sub(source_frontier_cache_entry_charge(&previous));
         }
     }
-    cache.bytes = cache.bytes.saturating_add(frontier.estimated_bytes);
+    cache.bytes = cache.bytes.saturating_add(entry_charge);
     cache.order.push_back(key.clone());
     cache.entries.insert(key, frontier);
 }
 
 #[cfg(test)]
 pub(super) fn clear_source_frontier_for(root: &Path, project: [u8; 32]) {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let key = source_frontier_key(&root, project);
     let mut cache = source_frontier_cache()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let key = source_frontier_key(root, project);
     if let Some(previous) = cache.entries.remove(&key) {
-        cache.bytes = cache.bytes.saturating_sub(previous.estimated_bytes);
+        cache.bytes = cache
+            .bytes
+            .saturating_sub(source_frontier_cache_entry_charge(&previous));
     }
     cache.order.retain(|candidate| candidate != &key);
 }
 
 #[cfg(test)]
 pub(super) fn install_source_frontier_race(root: PathBuf, path: PathBuf, bytes: Vec<u8>) {
+    let root = root.canonicalize().unwrap_or(root);
     source_frontier_races()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -183,10 +207,11 @@ pub(super) fn install_source_frontier_race(root: PathBuf, path: PathBuf, bytes: 
 
 #[cfg(test)]
 pub(super) fn trigger_source_frontier_race(root: &Path) {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mutation = source_frontier_races()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(root);
+        .remove(&root);
     if let Some((path, bytes)) = mutation {
         let _ = fs::write(path, bytes);
     }
@@ -226,13 +251,6 @@ pub(super) fn git_source_state(
         root,
         &["config", "--null", "--list", "--show-origin", "--includes"],
     )?;
-    let config_names = git_command(root, &["config", "--name-only", "--list", "--includes"])?;
-    if config_names
-        .split(|byte| *byte == b'\n')
-        .any(|name| name.eq_ignore_ascii_case(b"core.fsmonitor"))
-    {
-        return None;
-    }
     let mut git_policy = blake3::Hasher::new();
     git_policy.update(b"backend.source-frontier.git-policy.v1\0");
     if let Some(version) = git_command(root, &["--version"]) {
@@ -374,6 +392,7 @@ fn git_command(root: &Path, arguments: &[&str]) -> Option<Vec<u8>> {
         .arg(root)
         .args(arguments)
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_PAGER", "cat")
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -417,6 +436,12 @@ fn hash_git_environment(hasher: &mut blake3::Hasher) -> Option<()> {
             // or attributes source away from the ordinary repository view.
             return None;
         };
+        if name_text == "GIT_PAGER" {
+            // The Git commands below write to pipes and do not use a pager.
+            // Pinning this display-only override in `git_command` keeps it
+            // from becoming needless source-frontier cache identity.
+            continue;
+        }
         if matches!(
             name_text,
             "GIT_DIR"
@@ -492,12 +517,12 @@ fn hash_git_policy_paths(
 
 #[cfg(unix)]
 fn hash_policy_file(hasher: &mut blake3::Hasher, path: &Path) -> Option<()> {
-    use std::os::unix::fs::MetadataExt as _;
-
     hasher.update(path.as_os_str().as_encoded_bytes());
     hasher.update(&[0]);
-    let before = match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => metadata,
+    let path_before = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() || metadata.file_type().is_symlink() => {
+            metadata
+        }
         Ok(_) => return None,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             hasher.update(b"absent\0");
@@ -505,16 +530,38 @@ fn hash_policy_file(hasher: &mut blake3::Hasher, path: &Path) -> Option<()> {
         }
         Err(_) => return None,
     };
-    if before.len() > MAX_GIT_POLICY_FILE_BYTES {
+
+    let (read_path, symlink_target, canonical_target, file_before) =
+        if path_before.file_type().is_symlink() {
+            let target = fs::read_link(path).ok()?;
+            let canonical = fs::canonicalize(path).ok()?;
+            let metadata = fs::metadata(path).ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            (canonical.clone(), Some(target), Some(canonical), metadata)
+        } else {
+            (path.to_path_buf(), None, None, path_before.clone())
+        };
+    if file_before.len() > MAX_GIT_POLICY_FILE_BYTES {
         return None;
     }
-    let mut file = fs::File::open(path).ok()?;
+
+    let mut file = fs::File::open(&read_path).ok()?;
     let opened_before = file.metadata().ok()?;
-    if !opened_before.is_file() || opened_before.ino() != before.ino() {
+    if !opened_before.is_file() || !same_policy_file_revision(&opened_before, &file_before) {
         return None;
     }
-    hasher.update(b"present\0");
-    hasher.update(&before.len().to_le_bytes());
+    if let (Some(target), Some(canonical)) = (&symlink_target, &canonical_target) {
+        hasher.update(b"symlink\0");
+        hasher.update(target.as_os_str().as_encoded_bytes());
+        hasher.update(&[0]);
+        hasher.update(canonical.as_os_str().as_encoded_bytes());
+        hasher.update(&[0]);
+    } else {
+        hasher.update(b"present\0");
+    }
+    hasher.update(&file_before.len().to_le_bytes());
     let mut buffer = [0_u8; 16 * 1024];
     let mut total = 0_u64;
     loop {
@@ -523,26 +570,43 @@ fn hash_policy_file(hasher: &mut blake3::Hasher, path: &Path) -> Option<()> {
             break;
         }
         total = total.checked_add(u64::try_from(read).ok()?)?;
-        if total > MAX_GIT_POLICY_FILE_BYTES || total > before.len() {
+        if total > MAX_GIT_POLICY_FILE_BYTES || total > file_before.len() {
             return None;
         }
         hasher.update(&buffer[..read]);
     }
     let after = file.metadata().ok()?;
-    let current = fs::symlink_metadata(path).ok()?;
-    if total != before.len()
-        || after.dev() != before.dev()
-        || after.ino() != before.ino()
-        || after.ctime() != before.ctime()
-        || after.ctime_nsec() != before.ctime_nsec()
-        || current.dev() != before.dev()
-        || current.ino() != before.ino()
-        || current.ctime() != before.ctime()
-        || current.ctime_nsec() != before.ctime_nsec()
+    let path_after = fs::symlink_metadata(path).ok()?;
+    if total != file_before.len()
+        || !same_policy_file_revision(&after, &file_before)
+        || !same_policy_file_revision(&path_after, &path_before)
     {
         return None;
     }
+    if let (Some(target), Some(canonical)) = (&symlink_target, &canonical_target) {
+        if !path_after.file_type().is_symlink()
+            || fs::read_link(path).ok()?.as_os_str() != target.as_os_str()
+            || fs::canonicalize(path).ok()?.as_os_str() != canonical.as_os_str()
+            || !same_policy_file_revision(&fs::metadata(path).ok()?, &file_before)
+        {
+            return None;
+        }
+    } else if !path_after.file_type().is_file() {
+        return None;
+    }
     Some(())
+}
+
+#[cfg(unix)]
+fn same_policy_file_revision(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    left.dev() == right.dev()
+        && left.ino() == right.ino()
+        && left.len() == right.len()
+        && left.mode() == right.mode()
+        && left.ctime() == right.ctime()
+        && left.ctime_nsec() == right.ctime_nsec()
 }
 
 fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
@@ -870,4 +934,54 @@ pub(super) fn git_states_same_during_scan(before: &GitSourceState, after: &GitSo
         && before.policy_blobs == after.policy_blobs
         && before.changed_paths == after.changed_paths
         && before.untracked_paths == after.untracked_paths
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::hash_policy_file;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn policy_hash_tracks_content_through_a_symlink() -> Result<(), String> {
+        let unique = format!(
+            "backend-source-frontier-policy-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let scratch = Scratch(std::env::temp_dir().join(unique));
+        fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
+        let target = scratch.0.join("global-ignore");
+        let link = scratch.0.join("ignore-link");
+        fs::write(&target, b"ignored.rs\n").map_err(|error| error.to_string())?;
+        symlink(&target, &link).map_err(|error| error.to_string())?;
+
+        let mut before = blake3::Hasher::new();
+        hash_policy_file(&mut before, &link)
+            .ok_or_else(|| "stable symlinked policy file was rejected".to_owned())?;
+        let before = *before.finalize().as_bytes();
+
+        fs::write(&target, b"visible.rs\n").map_err(|error| error.to_string())?;
+        let mut after = blake3::Hasher::new();
+        hash_policy_file(&mut after, &link)
+            .ok_or_else(|| "updated symlinked policy file was rejected".to_owned())?;
+        assert_ne!(
+            before,
+            *after.finalize().as_bytes(),
+            "policy changes through a symlink must invalidate its witness"
+        );
+        Ok(())
+    }
 }

@@ -156,7 +156,7 @@ impl S3ClosurePublisher {
         let stored = self
             .route
             .put_pack(&pack, &upload, fence, Some(&readback))
-            .map_err(|_| PublicationError::Remote)?;
+            .map_err(PublicationError::RemoteStore)?;
         validate_stored_pack(&pack, &stored, expected_ids.len(), fence)?;
         receipts.push(PackReceiptSummary::from_pack_and_stored(
             &pack,

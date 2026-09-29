@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 
 use backend_semantic::ir::{
     GenerationId, SemanticDeltaCursor, SemanticImageIdentity, SemanticManifestError,
-    SemanticManifestRoot, SemanticPlaneCatalog, SemanticPlaneImageKey, SemanticPlaneManifest,
+    SemanticManifestRoot, SemanticPlaneCatalog, SemanticPlaneImageKey, SemanticPlaneKind,
+    SemanticPlaneManifest, SemanticPlaneRoot,
 };
 
 use crate::{SelectedGenerationSource, SelectedGenerationStamp, SemanticTargetKey};
@@ -38,6 +39,78 @@ impl LocalSemanticGenerationId {
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+/// A historical local CAS owner binding recovered from one validated local
+/// generation record.
+///
+/// This names the old selection-scoped CAS mapping only. It is not evidence
+/// that the old generation is currently selected. Consumers must freshly
+/// select the target and verify candidate bytes against its exact descriptor
+/// before exposing or adopting them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoricalSemanticPlaneBinding {
+    generation: LocalSemanticGenerationId,
+    stamp: SelectedGenerationStamp,
+    image: SemanticPlaneImageKey,
+    kind: SemanticPlaneKind,
+    manifest_root: SemanticManifestRoot,
+    plane_root: SemanticPlaneRoot,
+}
+
+impl HistoricalSemanticPlaneBinding {
+    /// Returns the checksummed local generation record that admitted this
+    /// historical CAS owner.
+    #[must_use]
+    pub const fn generation(self) -> LocalSemanticGenerationId {
+        self.generation
+    }
+
+    /// Returns the historical authority stamp used only to address its local
+    /// selection-scoped CAS mapping.
+    #[must_use]
+    pub(crate) const fn stamp(self) -> SelectedGenerationStamp {
+        self.stamp
+    }
+
+    /// Returns the image identity stored in the validated local record.
+    #[must_use]
+    pub(crate) const fn image(self) -> SemanticPlaneImageKey {
+        self.image
+    }
+
+    /// Returns the semantic plane named by this historical owner.
+    #[must_use]
+    pub(crate) const fn kind(self) -> SemanticPlaneKind {
+        self.kind
+    }
+
+    /// Returns the canonical manifest root stored in the local record.
+    #[must_use]
+    pub(crate) const fn manifest_root(self) -> SemanticManifestRoot {
+        self.manifest_root
+    }
+
+    /// Returns the canonical plane root stored in the local record.
+    #[must_use]
+    pub(crate) const fn plane_root(self) -> SemanticPlaneRoot {
+        self.plane_root
+    }
+
+    pub(crate) fn matches_manifest(
+        self,
+        manifest: &SemanticPlaneManifest,
+        kind: SemanticPlaneKind,
+    ) -> bool {
+        self.kind == kind
+            && self.manifest_root == manifest.root()
+            && self.image.manifest_root() == manifest.root()
+            && self.image.semantic_generation() == manifest.semantic_generation()
+            && self.stamp.profile() == manifest.build().profile()
+            && manifest
+                .plane(kind)
+                .is_some_and(|plane| plane.root() == self.plane_root)
     }
 }
 
@@ -127,6 +200,36 @@ impl LocalSemanticGeneration {
     #[must_use]
     pub const fn manifest(&self) -> &SemanticPlaneManifest {
         &self.manifest
+    }
+
+    /// Creates a historical CAS owner binding for a plane in this validated
+    /// local generation. The binding is suitable only for local CAS lookup;
+    /// it does not recreate the old authority's live selection capability.
+    #[must_use]
+    pub fn historical_plane_binding(
+        &self,
+        kind: SemanticPlaneKind,
+    ) -> Option<HistoricalSemanticPlaneBinding> {
+        if self.image.manifest_root() != self.manifest.root()
+            || self.image.semantic_generation() != self.manifest.semantic_generation()
+            || self.selected_stamp.profile() != self.manifest.build().profile()
+            || !self
+                .catalog
+                .entries()
+                .iter()
+                .any(|entry| entry.image() == self.image)
+        {
+            return None;
+        }
+        let plane_root = self.manifest.plane(kind)?.root();
+        Some(HistoricalSemanticPlaneBinding {
+            generation: self.identity,
+            stamp: self.selected_stamp,
+            image: self.image,
+            kind,
+            manifest_root: self.manifest.root(),
+            plane_root,
+        })
     }
 
     /// Plans a canonical manifest-segment delta from this durable base image.
@@ -910,10 +1013,17 @@ mod tests {
     use backend_semantic::ir::{
         GenerationId, LanguageProfile, RustEdition, SemanticBuildIdentity, SemanticInputWitness,
         SemanticIrPlane, SemanticPlane, SemanticPlaneCatalogEntry, SemanticPlaneKind,
-        SemanticPlaneSegment,
+        SemanticPlaneSegment, SemanticRangeRequest,
     };
     use backend_semantic::vocabulary::Stage;
+    use backend_store::FileStore;
     use backend_version::{Coverage, ScopeRoot};
+
+    use crate::{
+        AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, DurableSemanticSegmentStore,
+        FileSemanticRangeStore, IrResidencyDeltaHop, IrResidencyPath, SelectedSemanticPlane,
+        TransportLimits,
+    };
 
     use super::*;
 
@@ -1007,6 +1117,127 @@ mod tests {
             manifest,
             stamp,
         }
+    }
+
+    fn fixture_with_segments(
+        generation: u8,
+        payloads: &[&[u8]],
+        revision: u64,
+        root: u8,
+    ) -> Fixture {
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let target = SemanticTargetKey::new(
+            "pkg:cargo/tentpole-app@1.2.3",
+            "pkg:cargo/tentpole-app@1.2.3",
+            profile,
+        )
+        .expect("fixture target");
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let input = SemanticInputWitness::claimed([7; 32], ScopeRoot::from_bytes([8; 32]));
+        let segments = payloads
+            .iter()
+            .enumerate()
+            .map(|(index, payload)| {
+                let first = u8::try_from(index * 2).expect("small fixture index");
+                let last = first.checked_add(1).expect("small fixture range");
+                SemanticPlaneSegment::from_payload(kind, [first; 32], [last; 32], 1, payload)
+                    .expect("fixture segment")
+            })
+            .collect::<Vec<_>>();
+        let plane =
+            SemanticPlane::claimed(kind, segments, Coverage::Complete).expect("fixture plane");
+        let manifest = SemanticPlaneManifest::new(
+            GenerationId::from_raw([generation; 32]),
+            SemanticBuildIdentity::new(
+                [1; 32],
+                [2; 32],
+                profile,
+                Stage::LowerIr,
+                [3; 32],
+                [4; 32],
+                [5; 32],
+                [6; 32],
+            ),
+            input,
+            vec![plane],
+        )
+        .expect("fixture manifest");
+        let image = SemanticPlaneImageKey::from_manifest(0, &manifest);
+        let image_identity = SemanticImageIdentity::from_encoded_bytes(b"local generation image");
+        let manifest_length = u32::try_from(manifest.encode().expect("manifest encoding").len())
+            .expect("small manifest length");
+        let catalog = SemanticPlaneCatalog::new(vec![
+            SemanticPlaneCatalogEntry::new(image, manifest_length).expect("catalog entry"),
+        ])
+        .expect("fixture catalog");
+        let stamp = SelectedGenerationStamp::checked(
+            [9; 16],
+            profile,
+            [10; 32],
+            revision,
+            [root; 32],
+            [11; 32],
+            catalog.root(),
+        )
+        .expect("fixture selected stamp");
+        Fixture {
+            target,
+            catalog,
+            image,
+            image_identity,
+            manifest,
+            stamp,
+        }
+    }
+
+    fn select_fixture(fixture: &Fixture) -> (TestAuthority, SelectedSemanticPlane) {
+        let mut source = TestAuthority::new([fixture.stamp], [fixture.image]);
+        let selection = SelectedSemanticPlane::select(
+            &mut source,
+            &fixture.manifest,
+            fixture.image,
+            SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+        )
+        .expect("fresh selected fixture plane");
+        (source, selection)
+    }
+
+    fn persist_segment(
+        store: &mut FileSemanticRangeStore,
+        selection: SelectedSemanticPlane,
+        manifest: &SemanticPlaneManifest,
+        segment: &SemanticPlaneSegment,
+        payload: &[u8],
+    ) {
+        let request = SemanticRangeRequest {
+            manifest_root: manifest.root(),
+            plane: selection.kind(),
+            segment_id: segment.id_claim(),
+            first_key: *segment.first_key(),
+            last_key: *segment.last_key(),
+            byte_length: segment.byte_length(),
+        };
+        let byte_length = u64::try_from(payload.len()).expect("small payload length");
+        store
+            .stage_durable_range(
+                selection,
+                request,
+                ByteRange::new(0, byte_length).expect("full segment range"),
+                payload,
+            )
+            .expect("stage FileStore segment");
+        let admitted = segment
+            .admit(selection.kind(), payload)
+            .expect("fixture bytes match segment descriptor");
+        let mut admit = |bytes: &[u8]| {
+            segment
+                .admit(selection.kind(), bytes)
+                .map(|_| ())
+                .map_err(|_| crate::ReplicationError::IdentityMismatch)
+        };
+        store
+            .commit_and_read(selection, admitted, payload, &mut admit)
+            .expect("commit FileStore segment");
     }
 
     struct TestAuthority {
@@ -1193,6 +1424,195 @@ mod tests {
                 .expect_err("missing predecessor must fail closed")
                 .contains("missing record")
         );
+    }
+
+    #[test]
+    fn cold_reopened_generation_reuses_only_exact_historical_file_segments() {
+        let directory = TestDirectory::create();
+        let base = fixture_with_segments(
+            31,
+            &[
+                b"unchanged payload",
+                b"old changed payload",
+                b"deleted payload",
+            ],
+            31,
+            31,
+        );
+        let target =
+            fixture_with_segments(32, &[b"unchanged payload", b"new changed payload"], 32, 32);
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let base_segments = base.manifest.plane(kind).expect("base plane").segments();
+        let target_segments = target
+            .manifest
+            .plane(kind)
+            .expect("target plane")
+            .segments();
+        let (mut base_source, base_selection) = select_fixture(&base);
+        let (_, target_selection) = select_fixture(&target);
+        let cas_root = directory.0.join("cas");
+        let cas = FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open fixture FileStore");
+        let file_store_limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let mut store = FileSemanticRangeStore::open(cas, file_store_limits)
+            .expect("open semantic FileStore adapter");
+
+        for (segment, payload) in base_segments.iter().zip([
+            b"unchanged payload".as_slice(),
+            b"old changed payload",
+            b"deleted payload",
+        ]) {
+            persist_segment(&mut store, base_selection, &base.manifest, segment, payload);
+        }
+        let mappings_root = cas_root.join("semantic-hydration/mappings");
+        let base_mappings = fs::read_dir(&mappings_root)
+            .expect("read base selected mappings")
+            .map(|entry| entry.expect("read mapping entry").path())
+            .collect::<Vec<_>>();
+        assert_eq!(base_mappings.len(), base_segments.len());
+
+        persist_segment(
+            &mut store,
+            target_selection,
+            &target.manifest,
+            &target_segments[1],
+            b"new changed payload",
+        );
+        drop(store);
+
+        // Persist the canonical local generation record, then close both the
+        // record writer and CAS adapter so the consumer must cold-reopen it.
+        let state_root = cas_root.join("semantic-hydration");
+        let files = LocalSemanticGenerationFiles::open(&state_root).expect("open generation files");
+        let committed = files
+            .commit(
+                &base.target,
+                base.stamp,
+                &base.catalog,
+                base.image,
+                base.image_identity,
+                &base.manifest,
+                &mut base_source,
+            )
+            .expect("persist checksummed base generation");
+        assert_eq!(committed.image(), base.image);
+        drop(files);
+
+        let cas = FileStore::open(&cas_root, 16 * 1024 * 1024).expect("cold reopen FileStore");
+        let mut store = FileSemanticRangeStore::open(cas, file_store_limits)
+            .expect("cold reopen semantic FileStore adapter");
+        let reopened = store
+            .current_local_generation(&base.target)
+            .expect("reopen checksummed generation head")
+            .expect("base generation remains current locally");
+        let binding = reopened
+            .historical_plane_binding(kind)
+            .expect("cold record yields typed historical CAS owner");
+        let (mut target_source, target_selection) = select_fixture(&target);
+        let chain = [IrResidencyDeltaHop::from_historical(
+            reopened.manifest(),
+            &target.manifest,
+            binding,
+        )];
+        let mut residency = AdaptiveIrResidency::default();
+        let route = residency.prepare_delta_route(target_selection, &target.manifest, &chain);
+
+        let (unchanged_path, unchanged_id) = residency
+            .verify_segment_prepared(
+                &mut target_source,
+                target_selection,
+                &target.manifest,
+                &target_segments[0],
+                &route,
+                &mut store,
+            )
+            .expect("verify exact historical segment against fresh target");
+        let IrResidencyPath::DeltaCas(summary) = unchanged_path else {
+            panic!("exact unchanged descriptor should use the historical CAS object");
+        };
+        assert_eq!(
+            unchanged_id,
+            Some(
+                target_segments[0]
+                    .admit(kind, b"unchanged payload")
+                    .expect("target ID")
+            )
+        );
+        assert_eq!(summary.reused_segments, 1);
+        assert_eq!(summary.actions, 3);
+        assert_eq!(
+            summary.changed_bytes,
+            u64::try_from(b"new changed payload".len() + b"deleted payload".len())
+                .expect("small changed-byte total")
+        );
+
+        let (changed_path, changed_id) = residency
+            .verify_segment_prepared(
+                &mut target_source,
+                target_selection,
+                &target.manifest,
+                &target_segments[1],
+                &route,
+                &mut store,
+            )
+            .expect("verify changed segment from selected target CAS");
+        assert_eq!(
+            changed_path,
+            IrResidencyPath::PristineCas(crate::IrResidencyCasReason::SegmentChanged)
+        );
+        assert_eq!(
+            changed_id,
+            Some(
+                target_segments[1]
+                    .admit(kind, b"new changed payload")
+                    .expect("target ID")
+            )
+        );
+
+        // The historical object can be read only while the freshly selected
+        // target stays current through the streaming verification.
+        let stale =
+            fixture_with_segments(32, &[b"unchanged payload", b"new changed payload"], 33, 33);
+        let mut stale_source =
+            TestAuthority::new([target.stamp, target.stamp, stale.stamp], [target.image]);
+        let mut stale_residency = AdaptiveIrResidency::default();
+        assert!(matches!(
+            stale_residency.verify_segment_prepared(
+                &mut stale_source,
+                target_selection,
+                &target.manifest,
+                &target_segments[0],
+                &route,
+                &mut store,
+            ),
+            Err(crate::IrResidencyError::StaleSelection)
+        ));
+
+        // A corrupt base mapping must fall back to the independently verified
+        // target mapping installed by the successful first reuse.
+        for mapping in &base_mappings {
+            fs::write(mapping, b"corrupt historical mapping")
+                .expect("corrupt only predecessor mappings");
+        }
+        let mut fallback_residency = AdaptiveIrResidency::default();
+        let (fallback_path, fallback_id) = fallback_residency
+            .verify_segment_prepared(
+                &mut target_source,
+                target_selection,
+                &target.manifest,
+                &target_segments[0],
+                &route,
+                &mut store,
+            )
+            .expect("corrupt predecessor falls back to current target mapping");
+        assert_eq!(fallback_id, unchanged_id);
+        assert_eq!(
+            fallback_path,
+            IrResidencyPath::PristineCas(crate::IrResidencyCasReason::DeltaCandidateUnavailable)
+        );
+        assert_eq!(fallback_residency.metrics().unreadable_delta_candidates, 1);
     }
 
     #[test]

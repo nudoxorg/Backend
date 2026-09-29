@@ -28,7 +28,8 @@ use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
 };
 use backend_frontend_rust::legacy::{
-    RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+    RustAnalysisControl, RustAuthorityError, RustFeatureControl, RustToolchain, RustWorkspace,
+    SourceByteLimit,
 };
 use backend_frontend_typescript::legacy::{
     CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
@@ -139,7 +140,7 @@ pub struct PackageAuthorityRequest<'request, 'config> {
 /// This owner is intentionally separate from [`SemanticAuthorityInput`].
 /// Calling [`Self::input`] borrows this enum after construction, so no report
 /// pointer can outlive the transaction that owns it.
-pub enum PackageAuthorityOwner<'config> {
+pub enum PackageAuthorityOwner {
     /// C or C++ compilation with the exact selected libclang authority.
     Clang {
         /// Exact C-family profile admitted by the caller.
@@ -162,16 +163,14 @@ pub enum PackageAuthorityOwner<'config> {
         /// Report retained for the driver borrow.
         report: PythonReport,
     },
-    /// Cargo/rust-analyzer project state retained for direct driver entry.
+    /// Cargo/rust-analyzer workspace retained for package-wide driver entry.
     Rust {
         /// Exact checked profile.
         profile: LanguageProfile,
-        /// Exact Cargo project and selected crate source.
-        project: RustProject,
+        /// One analyzer database and VFS shared by all package sources.
+        workspace: RustWorkspace,
         /// Original bounded source admission policy.
         maximum_source_bytes: SourceByteLimit,
-        /// Exact caller-selected Cargo feature policy.
-        features: RustFeatureControl<'config>,
     },
     /// Go authority image owned for the driver's borrowed image input.
     Go {
@@ -198,25 +197,27 @@ pub enum PackageAuthorityOwner<'config> {
     },
 }
 
-impl PackageAuthorityOwner<'_> {
+impl PackageAuthorityOwner {
     /// Borrows this retained authority in the exact shape accepted by the
     /// driver. C/C++ use the exact retained project and selected libclang
     /// rather than an external authority image.
     #[must_use]
-    pub fn input(&self) -> SemanticAuthorityInput<'_> {
+    pub fn input<'source>(
+        &'source self,
+        source_path: &'source Path,
+    ) -> SemanticAuthorityInput<'source> {
         match self {
             Self::Clang { project, .. } => SemanticAuthorityInput::Clang { project },
             Self::TypeScript { report, .. } => SemanticAuthorityInput::TypeScript { report },
             Self::Python { report, .. } => SemanticAuthorityInput::Python { report },
             Self::Rust {
-                project,
+                workspace,
                 maximum_source_bytes,
-                features,
                 ..
-            } => SemanticAuthorityInput::Rust {
-                project,
+            } => SemanticAuthorityInput::RustWorkspace {
+                workspace,
+                source_path,
                 maximum_source_bytes: *maximum_source_bytes,
-                features: *features,
             },
             Self::Go { image, .. } => SemanticAuthorityInput::Go { image },
             Self::CSharp { image, .. } => SemanticAuthorityInput::CSharp { image },
@@ -248,14 +249,14 @@ impl PackageAuthorityOwner<'_> {
 /// or deadline won the enclosing compilation.
 pub fn enter_package_authority<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
-) -> Result<PackageAuthorityOwner<'config>, PackageAuthorityError> {
+) -> Result<PackageAuthorityOwner, PackageAuthorityError> {
     enter_package_authority_with_go_authority_witness(request, None)
 }
 
 pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
     captured_go_authority: Option<&GoPackageAuthorityWitness>,
-) -> Result<PackageAuthorityOwner<'config>, PackageAuthorityError> {
+) -> Result<PackageAuthorityOwner, PackageAuthorityError> {
     checkpoint(
         request.control,
         request.profile,
@@ -370,8 +371,8 @@ pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'confi
                         resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
                     });
                 }
-                let crate_root = match request.unit_key {
-                    CompilationUnitKeyV2::PackageRoot => request.source_path.to_path_buf(),
+                match request.unit_key {
+                    CompilationUnitKeyV2::PackageRoot => {}
                     CompilationUnitKeyV2::RustCrate { root, .. } => {
                         let selected = request.package_root.join(root.as_ref());
                         if selected != request.source_path {
@@ -379,19 +380,31 @@ pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'confi
                                 profile: request.profile,
                             });
                         }
-                        selected
                     }
                     _ => {
                         return Err(PackageAuthorityError::CompilationUnitMismatch {
                             profile: request.profile,
                         });
                     }
-                };
-                let project = RustProject::open_with_source(
+                }
+                if request.source.len() > *configuration.maximum_source_bytes as usize {
+                    return Err(PackageAuthorityError::RustProject(
+                        RustAuthorityError::SourceBudget {
+                            actual: u64::try_from(request.source.len()).unwrap_or(u64::MAX),
+                            maximum: configuration.maximum_source_bytes,
+                        },
+                    ));
+                }
+                let workspace = RustWorkspace::open_with_features(
                     request.package_root,
-                    &crate_root,
                     configuration.toolchain,
                     profile,
+                    configuration.features,
+                    RustAnalysisControl {
+                        cancelled: request.control.cancelled,
+                        maximum_source_bytes: configuration.maximum_source_bytes,
+                        deadline: request.control.deadline,
+                    },
                 )
                 .map_err(PackageAuthorityError::RustProject)?;
                 checkpoint(
@@ -401,9 +414,8 @@ pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'confi
                 )?;
                 PackageAuthorityOwner::Rust {
                     profile: request.profile,
-                    project,
+                    workspace,
                     maximum_source_bytes: configuration.maximum_source_bytes,
-                    features: configuration.features,
                 }
             }
             LanguageProfile::Go(_) => {

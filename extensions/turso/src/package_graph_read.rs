@@ -64,11 +64,12 @@ impl TursoProjection {
     /// complete neighbor set before slicing, and the continuation uses the
     /// last returned edge id as its keyset boundary.
     ///
-    /// This checks the local projection's row identities and bounded source
-    /// state, but its metadata witness alone cannot prove that no valid row
-    /// was inserted or removed. The production command adapter compares the
-    /// returned page with the resident `CheckedPackageGraphFacts` snapshot
-    /// before exposing it to clients.
+    /// A standalone Turso read is a local-cache read. It checks row identities
+    /// and bounded source state, but its metadata witness alone cannot prove
+    /// that no valid row was inserted or removed. Command-path authentication
+    /// depends on the production adapter comparing the returned page with the
+    /// resident `CheckedPackageGraphFacts` snapshot before exposing it to
+    /// clients.
     pub async fn read_package_graph_page(
         &self,
         request: &PackageGraphPageRequest,

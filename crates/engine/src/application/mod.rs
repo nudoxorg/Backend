@@ -36,8 +36,9 @@ pub use self::cluster_coordinator::{
 };
 pub use self::compiler::{
     ActivatedSemanticPackage, EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompiler,
-    MAX_PACKAGE_EMBEDDING_BYTES, PackageSemanticError, PackageSource, PackageSourceSet,
-    PackageSourceSetError, PublishedSemanticPackage, StagedEmbeddingStatus, StagedSemanticArtifact,
+    MAX_PACKAGE_EMBEDDING_BYTES, PackageSemanticError, PackageSource, PackageSourceCoverageGap,
+    PackageSourceCoverageGapCause, PackageSourceSet, PackageSourceSetError,
+    PublishedSemanticPackage, StagedEmbeddingStatus, StagedSemanticArtifact,
     StagedSemanticOutputObject, StagedSemanticPackage, StagedVersionedPlaneArtifact,
     StagedVersionedPlaneError, StagedVersionedPlaneSegment, StagedVersionedPlanes,
 };

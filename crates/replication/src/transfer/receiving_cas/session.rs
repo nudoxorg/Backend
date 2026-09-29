@@ -32,6 +32,41 @@ where
     marker: PhantomData<fn() -> C>,
 }
 
+/// Incremental admission hook for an unverified receiving-CAS payload.
+///
+/// `update` receives bounded pieces in payload order. `finish` runs only after
+/// extent chains and the complete canonical byte stream have been verified,
+/// and before the sink publishes the object.
+pub trait ReceivingCasStreamAdmission {
+    /// Checks the next bounded payload piece.
+    fn update(&mut self, bytes: &[u8]) -> Result<(), ReplicationError>;
+
+    /// Completes caller-owned admission before CAS publication.
+    fn finish(&mut self) -> Result<(), ReplicationError>;
+}
+
+struct BufferingAdmission<F> {
+    bytes: Vec<u8>,
+    admit: F,
+}
+
+impl<F> ReceivingCasStreamAdmission for BufferingAdmission<F>
+where
+    F: FnMut(&[u8]) -> Result<(), ReplicationError>,
+{
+    fn update(&mut self, bytes: &[u8]) -> Result<(), ReplicationError> {
+        self.bytes
+            .try_reserve(bytes.len())
+            .map_err(|_| ReplicationError::Backpressure)?;
+        self.bytes.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), ReplicationError> {
+        (self.admit)(&self.bytes)
+    }
+}
+
 impl<C, T: Schema> fmt::Debug for ReceivingCas<C, T>
 where
     C: ReceivingCasSink<T>,
@@ -455,9 +490,31 @@ where
     /// Returns an incomplete, corruption, identity, storage, or admission
     /// error when the staged bytes cannot be fully checked and committed.
     pub fn finish_unverified_with_admission(
+        self,
+        cas: &mut C,
+        admit: impl FnMut(&[u8]) -> Result<(), ReplicationError>,
+    ) -> Result<C::Receipt, ReplicationError> {
+        let mut admission = BufferingAdmission {
+            bytes: Vec::new(),
+            admit,
+        };
+        self.finish_unverified_with_streaming_admission(cas, &mut admission)
+    }
+
+    /// Finalizes an unverified sparse transfer after caller-owned admission
+    /// accepts its bytes incrementally. No object-sized payload allocation is
+    /// made by the receiving protocol; the sink publishes only after every
+    /// chunk chain, canonical object identity, and the admission final check
+    /// succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an incomplete, corruption, identity, storage, or admission
+    /// error when staged bytes cannot be fully checked and committed.
+    pub fn finish_unverified_with_streaming_admission(
         mut self,
         cas: &mut C,
-        mut admit: impl FnMut(&[u8]) -> Result<(), ReplicationError>,
+        admission: &mut impl ReceivingCasStreamAdmission,
     ) -> Result<C::Receipt, ReplicationError> {
         if self.unverified_request.is_none() || self.request.is_some() {
             return Err(ReplicationError::IdentityMismatch);
@@ -481,18 +538,6 @@ where
             cas.abort(session);
             return Err(error);
         }
-        let capacity = match usize::try_from(len) {
-            Ok(capacity) => capacity,
-            Err(_) => {
-                cas.abort(session);
-                return Err(ReplicationError::ObjectTooLarge);
-            }
-        };
-        let mut bytes = Vec::new();
-        if bytes.try_reserve_exact(capacity).is_err() {
-            cas.abort(session);
-            return Err(ReplicationError::Backpressure);
-        }
         let mut by_offset = self.extents.values().copied().collect::<Vec<_>>();
         by_offset.sort_unstable_by_key(|extent| extent.offset);
         let mut digest = CanonicalDigest::<T>::new(len);
@@ -503,7 +548,7 @@ where
             let read_result = cas.read_extent(&mut session, extent, &mut |piece| {
                 chunk_digest.push(piece)?;
                 digest.push(offset, piece)?;
-                bytes.extend_from_slice(piece);
+                admission.update(piece)?;
                 offset = offset
                     .checked_add(
                         u64::try_from(piece.len()).map_err(|_| ReplicationError::Overflow)?,
@@ -531,18 +576,7 @@ where
                 return Err(error);
             }
         }
-        let observed_len = match u64::try_from(bytes.len()) {
-            Ok(observed_len) => observed_len,
-            Err(_) => {
-                cas.abort(session);
-                return Err(ReplicationError::Overflow);
-            }
-        };
-        if observed_len != len {
-            cas.abort(session);
-            return Err(ReplicationError::Incomplete);
-        }
-        if let Err(error) = admit(&bytes) {
+        if let Err(error) = admission.finish() {
             cas.abort(session);
             return Err(error);
         }

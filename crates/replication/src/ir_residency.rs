@@ -19,7 +19,10 @@ use backend_semantic::ir::{
     UntrustedSemanticSegmentId,
 };
 
-use crate::{DurableSemanticRangeStore, SelectedGenerationSource, SelectedSemanticPlane};
+use crate::{
+    DurableSemanticRangeStore, HistoricalSemanticPlaneBinding, SelectedGenerationSource,
+    SelectedSemanticPlane, VerifiedLocalSemanticCas,
+};
 
 /// A cold route periodically samples a valid delta even after pristine CAS
 /// wins, so changing storage locality cannot permanently freeze the choice.
@@ -63,15 +66,21 @@ impl Default for IrResidencyLimits {
 
 /// One historical transition in a checked semantic-plane delta route.
 ///
-/// `base_selection` names the exact historical owner binding used to address
-/// its local CAS entry. It is not treated as the current authority for the
-/// target; the final target selection is freshly checked before exposure.
+/// The base binding names either a live admitted selection or a historical
+/// local CAS owner. Historical bindings address storage only; the target is
+/// freshly selected before every use.
 #[derive(Clone, Copy, Debug)]
 pub struct IrResidencyDeltaHop<'manifest> {
     base: &'manifest SemanticPlaneManifest,
     target: &'manifest SemanticPlaneManifest,
-    base_selection: SelectedSemanticPlane,
+    base_binding: IrResidencyBaseBinding,
     expected_base_root: SemanticManifestRoot,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IrResidencyBaseBinding {
+    Selected(SelectedSemanticPlane),
+    Historical(HistoricalSemanticPlaneBinding),
 }
 
 impl<'manifest> IrResidencyDeltaHop<'manifest> {
@@ -86,8 +95,25 @@ impl<'manifest> IrResidencyDeltaHop<'manifest> {
         Self {
             base,
             target,
-            base_selection,
+            base_binding: IrResidencyBaseBinding::Selected(base_selection),
             expected_base_root,
+        }
+    }
+
+    /// Binds one transition to a predecessor reopened from the checksummed
+    /// local generation record. Its selection stamp addresses historical CAS
+    /// only; the target remains freshly selected for every read.
+    #[must_use]
+    pub const fn from_historical(
+        base: &'manifest SemanticPlaneManifest,
+        target: &'manifest SemanticPlaneManifest,
+        base_binding: HistoricalSemanticPlaneBinding,
+    ) -> Self {
+        Self {
+            base,
+            target,
+            base_binding: IrResidencyBaseBinding::Historical(base_binding),
+            expected_base_root: base.root(),
         }
     }
 }
@@ -732,6 +758,233 @@ impl AdaptiveIrResidency {
             store,
             read,
         )
+    }
+
+    /// Verifies one locally present segment through a prepared route without
+    /// materializing its payload. Historical reuse is limited to exact
+    /// descriptor matches from a checksummed local generation; target
+    /// selection is freshly checked before and after every store operation.
+    pub fn verify_segment_prepared<A, C>(
+        &mut self,
+        source: &mut A,
+        selection: SelectedSemanticPlane,
+        manifest: &SemanticPlaneManifest,
+        segment: &SemanticPlaneSegment,
+        route: &PreparedIrResidencyDeltaRoute<'_>,
+        store: &mut C,
+    ) -> Result<(IrResidencyPath, Option<SemanticSegmentId>), IrResidencyError>
+    where
+        A: SelectedGenerationSource,
+        C: VerifiedLocalSemanticCas,
+    {
+        self.verify_segment_prepared_inner::<true, _, _>(
+            source, selection, manifest, segment, route, store,
+        )
+    }
+
+    /// Verifies a set of locally present segments against one selected
+    /// authority observation at the start and one at the end of the batch.
+    ///
+    /// Every segment is still checked against the exact target plane and its
+    /// own commitment. IDs are appended only while this method holds the
+    /// output borrow; if any segment fails or the final freshness check fails,
+    /// the output is restored to its original length before returning.
+    pub fn verify_segments_prepared<A, C>(
+        &mut self,
+        source: &mut A,
+        selection: SelectedSemanticPlane,
+        manifest: &SemanticPlaneManifest,
+        segments: &[SemanticPlaneSegment],
+        route: &PreparedIrResidencyDeltaRoute<'_>,
+        store: &mut C,
+        verified_ids: &mut Vec<SemanticSegmentId>,
+    ) -> Result<(), IrResidencyError>
+    where
+        A: SelectedGenerationSource,
+        C: VerifiedLocalSemanticCas,
+    {
+        let original_len = verified_ids.len();
+        let result = (|| {
+            ensure_current(source, selection)?;
+            for segment in segments {
+                let (_, id) = self.verify_segment_prepared_inner::<false, _, _>(
+                    source, selection, manifest, segment, route, store,
+                )?;
+                if let Some(id) = id {
+                    verified_ids.push(id);
+                }
+            }
+            ensure_current(source, selection)
+        })();
+        if result.is_err() {
+            verified_ids.truncate(original_len);
+        }
+        result
+    }
+
+    fn verify_segment_prepared_inner<const CHECK_CURRENT: bool, A, C>(
+        &mut self,
+        source: &mut A,
+        selection: SelectedSemanticPlane,
+        manifest: &SemanticPlaneManifest,
+        segment: &SemanticPlaneSegment,
+        route: &PreparedIrResidencyDeltaRoute<'_>,
+        store: &mut C,
+    ) -> Result<(IrResidencyPath, Option<SemanticSegmentId>), IrResidencyError>
+    where
+        A: SelectedGenerationSource,
+        C: VerifiedLocalSemanticCas,
+    {
+        let started = Instant::now();
+        validate_target(selection, manifest, segment)?;
+        if CHECK_CURRENT {
+            ensure_current(source, selection)?;
+        }
+        let planning_started = Instant::now();
+        let evaluation = route.evaluate(selection, manifest, segment);
+        let planning_ns = nanos(planning_started.elapsed());
+        let key = SegmentLookupKey::from_descriptor(selection.kind(), segment);
+        let (path, id) = match evaluation {
+            DeltaEvaluation::Eligible(summary) if summary.target_segment_reused => {
+                let choice = self.delta_choice(
+                    key,
+                    summary,
+                    planning_ns,
+                    segment.byte_length(),
+                    RouteMode::Prepared,
+                );
+                if choice == DeltaChoice::Use {
+                    if let Some((binding, base, base_segment)) =
+                        historical_delta_candidate(selection.kind(), segment, route)
+                    {
+                        match store.verify_historical_segment(
+                            binding,
+                            base,
+                            base_segment,
+                            selection,
+                            manifest,
+                            segment,
+                        ) {
+                            Ok(Some(id)) => {
+                                Self::increment(&mut self.metrics.cold_reads);
+                                Self::increment(&mut self.metrics.delta_reads);
+                                (IrResidencyPath::DeltaCas(summary), Some(id))
+                            }
+                            Ok(None) => {
+                                Self::increment(&mut self.metrics.delta_rejections);
+                                let id = self.verify_selected_cas::<CHECK_CURRENT, _, _>(
+                                    source, selection, manifest, segment, store,
+                                )?;
+                                (
+                                    IrResidencyPath::PristineCas(
+                                        IrResidencyCasReason::DeltaCandidateUnavailable,
+                                    ),
+                                    id,
+                                )
+                            }
+                            Err(_) => {
+                                Self::increment(&mut self.metrics.unreadable_delta_candidates);
+                                let id = self.verify_selected_cas::<CHECK_CURRENT, _, _>(
+                                    source, selection, manifest, segment, store,
+                                )?;
+                                (
+                                    IrResidencyPath::PristineCas(
+                                        IrResidencyCasReason::DeltaCandidateUnavailable,
+                                    ),
+                                    id,
+                                )
+                            }
+                        }
+                    } else {
+                        let id = self.verify_selected_cas::<CHECK_CURRENT, _, _>(
+                            source, selection, manifest, segment, store,
+                        )?;
+                        (
+                            IrResidencyPath::PristineCas(IrResidencyCasReason::DeltaRejected),
+                            id,
+                        )
+                    }
+                } else {
+                    let id = self.verify_selected_cas::<CHECK_CURRENT, _, _>(
+                        source, selection, manifest, segment, store,
+                    )?;
+                    (IrResidencyPath::PristineCas(choice.cas_reason()), id)
+                }
+            }
+            DeltaEvaluation::Eligible(_) => {
+                let id = self.verify_selected_cas::<CHECK_CURRENT, _, _>(
+                    source, selection, manifest, segment, store,
+                )?;
+                (
+                    IrResidencyPath::PristineCas(IrResidencyCasReason::SegmentChanged),
+                    id,
+                )
+            }
+            DeltaEvaluation::Rejected(DeltaReject::NoRoute) => {
+                let id = self.verify_selected_cas::<CHECK_CURRENT, _, _>(
+                    source, selection, manifest, segment, store,
+                )?;
+                (
+                    IrResidencyPath::PristineCas(IrResidencyCasReason::NoDeltaRoute),
+                    id,
+                )
+            }
+            DeltaEvaluation::Rejected(DeltaReject::Bound) => {
+                let id = self.verify_selected_cas::<CHECK_CURRENT, _, _>(
+                    source, selection, manifest, segment, store,
+                )?;
+                (
+                    IrResidencyPath::PristineCas(IrResidencyCasReason::DeltaBoundExceeded),
+                    id,
+                )
+            }
+            DeltaEvaluation::Rejected(DeltaReject::Claim) => {
+                Self::increment(&mut self.metrics.delta_rejections);
+                let id = self.verify_selected_cas::<CHECK_CURRENT, _, _>(
+                    source, selection, manifest, segment, store,
+                )?;
+                (
+                    IrResidencyPath::PristineCas(IrResidencyCasReason::DeltaRejected),
+                    id,
+                )
+            }
+        };
+        if CHECK_CURRENT {
+            ensure_current(source, selection)?;
+        }
+        self.observe_cold(
+            key,
+            nanos(started.elapsed()),
+            matches!(path, IrResidencyPath::DeltaCas(_)),
+            RouteMode::Prepared,
+        );
+        Ok((path, id))
+    }
+
+    fn verify_selected_cas<const CHECK_CURRENT: bool, A, C>(
+        &mut self,
+        source: &mut A,
+        selection: SelectedSemanticPlane,
+        manifest: &SemanticPlaneManifest,
+        segment: &SemanticPlaneSegment,
+        store: &mut C,
+    ) -> Result<Option<SemanticSegmentId>, IrResidencyError>
+    where
+        A: SelectedGenerationSource,
+        C: VerifiedLocalSemanticCas,
+    {
+        if CHECK_CURRENT {
+            ensure_current(source, selection)?;
+        }
+        let id = store
+            .verify_selected_segment(
+                selection,
+                request_for(selection, manifest, segment),
+                segment,
+            )
+            .map_err(|error| IrResidencyError::Storage(error.to_string()))?;
+        Self::increment(&mut self.metrics.cold_reads);
+        Ok(id)
     }
 
     fn with_segment_using_route<A, C, R, F>(
@@ -1491,64 +1744,100 @@ fn evaluate_delta_chain_into(
     for (hop_index, hop) in chain.iter().enumerate() {
         if previous_root.is_some_and(|root| root != hop.base.root())
             || hop.base.root() != hop.expected_base_root
-            || hop.base_selection.kind() != selection.kind()
-            || !selection_matches_manifest(hop.base_selection, hop.base)
-            || !delta_claims_complete(hop.base, selection.kind())
-            || !delta_claims_complete(hop.target, selection.kind())
         {
             return DeltaEvaluation::Rejected(DeltaReject::Claim);
         }
-        let mut cursor =
-            match SemanticDeltaCursor::new(hop.base, hop.target, hop.expected_base_root) {
-                Ok(cursor) => cursor,
-                Err(_) => return DeltaEvaluation::Rejected(DeltaReject::Claim),
-            };
-        loop {
-            let Some(action) = cursor.next_action() else {
-                break;
-            };
-            actions = actions.saturating_add(1);
-            if actions > limits.delta_actions {
-                return DeltaEvaluation::Rejected(DeltaReject::Bound);
-            }
-            match action {
-                SemanticDeltaAction::Reuse {
-                    plane,
-                    segment_id,
-                    segment,
-                } if plane == selection.kind() => {
-                    reused = reused.saturating_add(1);
-                    if hop_index + 1 == chain.len() {
-                        if requested.is_some_and(|requested| {
-                            segment_id.as_bytes() == requested.id_claim().as_bytes()
-                                && segment == *requested
-                        }) {
-                            final_reused = true;
-                        }
-                        if let Some(indices) = reused_target_segment_indices.as_deref_mut() {
-                            if target_segments.get(final_target_position) != Some(&segment) {
-                                return DeltaEvaluation::Rejected(DeltaReject::Claim);
+        let final_hop = hop_index + 1 == chain.len();
+        match hop.base_binding {
+            IrResidencyBaseBinding::Selected(base_selection) => {
+                if base_selection.kind() != selection.kind()
+                    || !selection_matches_manifest(base_selection, hop.base)
+                    || !delta_claims_complete(hop.base, selection.kind())
+                    || !delta_claims_complete(hop.target, selection.kind())
+                {
+                    return DeltaEvaluation::Rejected(DeltaReject::Claim);
+                }
+                let mut cursor =
+                    match SemanticDeltaCursor::new(hop.base, hop.target, hop.expected_base_root) {
+                        Ok(cursor) => cursor,
+                        Err(_) => return DeltaEvaluation::Rejected(DeltaReject::Claim),
+                    };
+                loop {
+                    let Some(action) = cursor.next_action() else {
+                        break;
+                    };
+                    actions = actions.saturating_add(1);
+                    if actions > limits.delta_actions {
+                        return DeltaEvaluation::Rejected(DeltaReject::Bound);
+                    }
+                    match action {
+                        SemanticDeltaAction::Reuse {
+                            plane,
+                            segment_id,
+                            segment,
+                        } if plane == selection.kind() => {
+                            reused = reused.saturating_add(1);
+                            if final_hop {
+                                if requested.is_some_and(|requested| {
+                                    segment_id.as_bytes() == requested.id_claim().as_bytes()
+                                        && segment == *requested
+                                }) {
+                                    final_reused = true;
+                                }
+                                if let Some(indices) = reused_target_segment_indices.as_deref_mut()
+                                {
+                                    if target_segments.get(final_target_position) != Some(&segment)
+                                    {
+                                        return DeltaEvaluation::Rejected(DeltaReject::Claim);
+                                    }
+                                    indices.push(final_target_position);
+                                }
+                                final_target_position = final_target_position.saturating_add(1);
                             }
-                            // The cursor emits target actions in manifest order,
-                            // so these indices stay sorted for later binary search.
-                            indices.push(final_target_position);
                         }
-                        final_target_position = final_target_position.saturating_add(1);
+                        SemanticDeltaAction::Fetch(request)
+                            if request.plane == selection.kind() =>
+                        {
+                            changed_bytes = changed_bytes.saturating_add(request.byte_length);
+                            if final_hop {
+                                final_target_position = final_target_position.saturating_add(1);
+                            }
+                        }
+                        SemanticDeltaAction::Remove { plane, segment }
+                            if plane == selection.kind() =>
+                        {
+                            changed_bytes = changed_bytes.saturating_add(segment.byte_length());
+                        }
+                        _ => {}
+                    }
+                    if changed_bytes > limits.delta_changed_bytes {
+                        return DeltaEvaluation::Rejected(DeltaReject::Bound);
                     }
                 }
-                SemanticDeltaAction::Fetch(request) if request.plane == selection.kind() => {
-                    changed_bytes = changed_bytes.saturating_add(request.byte_length);
-                    if hop_index + 1 == chain.len() {
-                        final_target_position = final_target_position.saturating_add(1);
-                    }
-                }
-                SemanticDeltaAction::Remove { plane, segment } if plane == selection.kind() => {
-                    changed_bytes = changed_bytes.saturating_add(segment.byte_length());
-                }
-                _ => {}
             }
-            if changed_bytes > limits.delta_changed_bytes {
-                return DeltaEvaluation::Rejected(DeltaReject::Bound);
+            IrResidencyBaseBinding::Historical(binding) => {
+                if !binding.matches_manifest(hop.base, selection.kind())
+                    || hop.target.build().profile() != selection.stamp().profile()
+                {
+                    return DeltaEvaluation::Rejected(DeltaReject::Claim);
+                }
+                if let Err(rejection) = scan_historical_descriptor_delta(
+                    hop.base,
+                    hop.target,
+                    selection.kind(),
+                    final_hop,
+                    requested,
+                    target_segments,
+                    limits,
+                    &mut actions,
+                    &mut reused,
+                    &mut changed_bytes,
+                    &mut final_reused,
+                    &mut final_target_position,
+                    reused_target_segment_indices.as_deref_mut(),
+                ) {
+                    return DeltaEvaluation::Rejected(rejection);
+                }
             }
         }
         previous_root = Some(hop.target.root());
@@ -1571,12 +1860,159 @@ fn delta_claims_complete(manifest: &SemanticPlaneManifest, kind: SemanticPlaneKi
             .is_some_and(|plane| plane.coverage().is_authorized_complete())
 }
 
+/// Plans exact local CAS reuse from a checksummed historical descriptor list.
+/// This compares descriptor claims only; it makes no statement about historic
+/// completeness or semantic input-frontier equality. Payload verification
+/// against the selected target descriptor remains mandatory at read time.
+#[allow(clippy::too_many_arguments)]
+fn scan_historical_descriptor_delta(
+    base: &SemanticPlaneManifest,
+    target: &SemanticPlaneManifest,
+    kind: SemanticPlaneKind,
+    final_hop: bool,
+    requested: Option<&SemanticPlaneSegment>,
+    target_segments: &[SemanticPlaneSegment],
+    limits: IrResidencyLimits,
+    actions: &mut usize,
+    reused: &mut usize,
+    changed_bytes: &mut u64,
+    final_reused: &mut bool,
+    final_target_position: &mut usize,
+    mut reused_target_segment_indices: Option<&mut Vec<usize>>,
+) -> Result<(), DeltaReject> {
+    let base_segments = base.plane(kind).map_or(&[][..], |plane| plane.segments());
+    let next_segments = target.plane(kind).map_or(&[][..], |plane| plane.segments());
+    let mut base_at = 0;
+    let mut target_at = 0;
+    while base_at < base_segments.len() || target_at < next_segments.len() {
+        let base_segment = base_segments.get(base_at);
+        let target_segment = next_segments.get(target_at);
+        match (base_segment, target_segment) {
+            (Some(base_segment), Some(target_segment)) => {
+                let order = base_segment
+                    .first_key()
+                    .cmp(target_segment.first_key())
+                    .then_with(|| base_segment.last_key().cmp(target_segment.last_key()));
+                match order {
+                    std::cmp::Ordering::Less => {
+                        record_historical_action(
+                            actions,
+                            changed_bytes,
+                            base_segment.byte_length(),
+                            limits,
+                        )?;
+                        base_at += 1;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        record_historical_action(
+                            actions,
+                            changed_bytes,
+                            target_segment.byte_length(),
+                            limits,
+                        )?;
+                        if final_hop {
+                            *final_target_position += 1;
+                        }
+                        target_at += 1;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        let identical = exact_segment_descriptor(base_segment, target_segment);
+                        record_historical_action(
+                            actions,
+                            changed_bytes,
+                            if identical {
+                                0
+                            } else {
+                                target_segment.byte_length()
+                            },
+                            limits,
+                        )?;
+                        if identical {
+                            *reused += 1;
+                            if final_hop {
+                                if requested.is_some_and(|requested| requested == target_segment) {
+                                    *final_reused = true;
+                                }
+                                if let Some(indices) = reused_target_segment_indices.as_deref_mut()
+                                {
+                                    if target_segments.get(*final_target_position)
+                                        != Some(target_segment)
+                                    {
+                                        return Err(DeltaReject::Claim);
+                                    }
+                                    indices.push(*final_target_position);
+                                }
+                            }
+                        }
+                        if final_hop {
+                            *final_target_position += 1;
+                        }
+                        base_at += 1;
+                        target_at += 1;
+                    }
+                }
+            }
+            (Some(base_segment), None) => {
+                record_historical_action(
+                    actions,
+                    changed_bytes,
+                    base_segment.byte_length(),
+                    limits,
+                )?;
+                base_at += 1;
+            }
+            (None, Some(target_segment)) => {
+                record_historical_action(
+                    actions,
+                    changed_bytes,
+                    target_segment.byte_length(),
+                    limits,
+                )?;
+                if final_hop {
+                    *final_target_position += 1;
+                }
+                target_at += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(())
+}
+
+fn record_historical_action(
+    actions: &mut usize,
+    changed_bytes: &mut u64,
+    changed: u64,
+    limits: IrResidencyLimits,
+) -> Result<(), DeltaReject> {
+    *actions = (*actions).saturating_add(1);
+    if *actions > limits.delta_actions {
+        return Err(DeltaReject::Bound);
+    }
+    *changed_bytes = (*changed_bytes).saturating_add(changed);
+    if *changed_bytes > limits.delta_changed_bytes {
+        return Err(DeltaReject::Bound);
+    }
+    Ok(())
+}
+
+fn exact_segment_descriptor(left: &SemanticPlaneSegment, right: &SemanticPlaneSegment) -> bool {
+    left.id_claim() == right.id_claim()
+        && left.first_key() == right.first_key()
+        && left.last_key() == right.last_key()
+        && left.row_count() == right.row_count()
+        && left.byte_length() == right.byte_length()
+}
+
 fn delta_candidate(
     kind: SemanticPlaneKind,
     requested: &SemanticPlaneSegment,
     hop: Option<IrResidencyDeltaHop<'_>>,
 ) -> Option<(SelectedSemanticPlane, SemanticRangeRequest)> {
     let hop = hop?;
+    let IrResidencyBaseBinding::Selected(base_selection) = hop.base_binding else {
+        return None;
+    };
     let base_plane = hop.base.plane(kind)?;
     let segments = base_plane.segments();
     let position =
@@ -1589,9 +2025,45 @@ fn delta_candidate(
             && candidate.byte_length() == requested.byte_length()
     })?;
     Some((
-        hop.base_selection,
-        request_for(hop.base_selection, hop.base, base_segment),
+        base_selection,
+        request_for(base_selection, hop.base, base_segment),
     ))
+}
+
+fn historical_delta_candidate<'route, 'manifest>(
+    kind: SemanticPlaneKind,
+    requested: &SemanticPlaneSegment,
+    route: &'route PreparedIrResidencyDeltaRoute<'manifest>,
+) -> Option<(
+    HistoricalSemanticPlaneBinding,
+    &'manifest SemanticPlaneManifest,
+    &'manifest SemanticPlaneSegment,
+)> {
+    let hop = route.final_hop?;
+    let IrResidencyBaseBinding::Historical(binding) = hop.base_binding else {
+        return None;
+    };
+    if binding.kind() != kind || !binding.matches_manifest(hop.base, kind) {
+        return None;
+    }
+    let target_position = route
+        .target_segments
+        .partition_point(|candidate| candidate.first_key() < requested.first_key());
+    if route.target_segments.get(target_position) != Some(requested)
+        || route
+            .reused_target_segment_indices
+            .binary_search(&target_position)
+            .is_err()
+    {
+        return None;
+    }
+    let base_segments = hop.base.plane(kind)?.segments();
+    let base_position =
+        base_segments.partition_point(|candidate| candidate.first_key() < requested.first_key());
+    let base_segment = base_segments
+        .get(base_position)
+        .filter(|candidate| exact_segment_descriptor(candidate, requested))?;
+    Some((binding, hop.base, base_segment))
 }
 
 fn validate_target(
@@ -1677,3 +2149,327 @@ fn duration_ns(duration: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod batch_verification_tests {
+    use super::*;
+    use backend_semantic::ir::{
+        GenerationId, LanguageProfile, RustEdition, SemanticBuildIdentity, SemanticInputWitness,
+        SemanticIrPlane, SemanticPlane, SemanticPlaneCatalog, SemanticPlaneCatalogEntry,
+        SemanticPlaneCoverageScope, SemanticPlaneImageKey,
+    };
+    use backend_semantic::vocabulary::Stage;
+    use backend_version::{
+        AdmittedProducerObservation, AuthorityScopeClaim, Coverage, CoverageAdmissionError,
+        CoverageWitness, ObjectVersion, ProducerObservationClaims, ProducerObservationVerifier,
+        Schema, ScopeRoot, UntrustedProducerObservation, admit_complete_scope,
+        admit_producer_observation,
+    };
+
+    use crate::{ByteRange, DurableSemanticSegmentStore, ReplicationError, SparseCoverage};
+    use crate::ir_hydration::SelectedGenerationStamp;
+
+    struct TestAuthority;
+
+    impl Schema for TestAuthority {
+        const DOMAIN: u8 = 0x53;
+        const TYPE: u16 = 0xfffe;
+        type Value = [u8; 32];
+
+        fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+            output.extend_from_slice(value);
+        }
+    }
+
+    struct TestVerifier;
+
+    impl ProducerObservationVerifier for TestVerifier {
+        type Error = CoverageAdmissionError;
+
+        fn verify(
+            &self,
+            observation: &UntrustedProducerObservation,
+        ) -> Result<ProducerObservationClaims, Self::Error> {
+            Ok(ProducerObservationClaims::new(
+                observation.producer_identity(),
+                observation.scope_root(),
+                observation.context(),
+                *blake3::hash(observation.evidence()).as_bytes(),
+            ))
+        }
+    }
+
+    fn complete_witness<T: Schema>(version: ObjectVersion<T>) -> CoverageWitness {
+        let claim = AuthorityScopeClaim::from_object_version(version);
+        let producer: AdmittedProducerObservation = admit_producer_observation(
+            UntrustedProducerObservation::new([7; 32], claim.scope_root(), [8; 32], vec![9, 10]),
+            &TestVerifier,
+        )
+        .expect("producer observation is admitted");
+        CoverageWitness::Complete(admit_complete_scope(claim, producer).expect("scope matches"))
+    }
+
+    fn test_manifest(segment_count: usize) -> SemanticPlaneManifest {
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let input = SemanticInputWitness::admitted(
+            [11; 32],
+            ScopeRoot::from_bytes(ObjectVersion::<TestAuthority>::from_value(&[12; 32]).to_bytes()),
+            complete_witness(ObjectVersion::<TestAuthority>::from_value(&[12; 32])),
+        )
+        .expect("input witness is admitted");
+        let segments = (0..segment_count)
+            .map(|index| {
+                let first = u8::try_from(index * 2).expect("fixture index fits in a byte");
+                let last = first + 1;
+                SemanticPlaneSegment::from_payload_with_witness(
+                    kind,
+                    [first; 32],
+                    [last; 32],
+                    1,
+                    &index.to_be_bytes(),
+                    input,
+                )
+                .expect("segment identity and witness")
+            })
+            .collect::<Vec<_>>();
+        let claimed =
+            SemanticPlane::claimed(kind, segments, Coverage::Complete).expect("plane claim");
+        let witness = complete_witness(ObjectVersion::<SemanticPlaneCoverageScope>::from_value(
+            &claimed.root(),
+        ));
+        let plane = SemanticPlane::admitted(kind, claimed.segments().to_vec(), witness)
+            .expect("plane witness");
+        let build = SemanticBuildIdentity::new(
+            [1; 32],
+            [2; 32],
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            [3; 32],
+            [4; 32],
+            [5; 32],
+            [6; 32],
+        );
+        SemanticPlaneManifest::new(GenerationId::from_raw([1; 32]), build, input, vec![plane])
+            .expect("semantic manifest")
+    }
+
+    struct CountedSource {
+        stamp: SelectedGenerationStamp,
+        image: SemanticPlaneImageKey,
+        current_reads: usize,
+        membership_reads: usize,
+        stale_membership_at: Option<usize>,
+    }
+
+    impl SelectedGenerationSource for CountedSource {
+        type Error = &'static str;
+
+        fn current_selected_generation(&mut self) -> Result<SelectedGenerationStamp, Self::Error> {
+            self.current_reads += 1;
+            Ok(self.stamp)
+        }
+
+        fn selected_image_is_current(
+            &mut self,
+            expected_stamp: SelectedGenerationStamp,
+            image: SemanticPlaneImageKey,
+        ) -> Result<bool, Self::Error> {
+            self.membership_reads += 1;
+            Ok(expected_stamp == self.stamp
+                && image == self.image
+                && self.stale_membership_at != Some(self.membership_reads))
+        }
+    }
+
+    fn selection_for(
+        manifest: &SemanticPlaneManifest,
+        stale_membership_at: Option<usize>,
+    ) -> (CountedSource, SelectedSemanticPlane) {
+        let image = SemanticPlaneImageKey::from_manifest(0, manifest);
+        let manifest_bytes = manifest.encode().expect("manifest encoding");
+        let entry = SemanticPlaneCatalogEntry::new(
+            image,
+            u32::try_from(manifest_bytes.len()).expect("small fixture manifest"),
+        )
+        .expect("catalog entry");
+        let catalog = SemanticPlaneCatalog::new(vec![entry]).expect("catalog");
+        let stamp = SelectedGenerationStamp::checked(
+            [1; 16],
+            manifest.build().profile(),
+            [2; 32],
+            1,
+            [3; 32],
+            [4; 32],
+            catalog.root(),
+        )
+        .expect("selected generation stamp");
+        let mut source = CountedSource {
+            stamp,
+            image,
+            current_reads: 0,
+            membership_reads: 0,
+            stale_membership_at,
+        };
+        let selection = SelectedSemanticPlane::select(
+            &mut source,
+            manifest,
+            image,
+            SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+        )
+        .expect("selected semantic plane");
+        source.current_reads = 0;
+        source.membership_reads = 0;
+        (source, selection)
+    }
+
+    #[derive(Default)]
+    struct TestCas {
+        selected_reads: usize,
+    }
+
+    impl DurableSemanticSegmentStore for TestCas {
+        type Error = &'static str;
+
+        fn commit_and_read(
+            &mut self,
+            _selection: SelectedSemanticPlane,
+            _segment: SemanticSegmentId,
+            payload: &[u8],
+            admit: &mut dyn FnMut(&[u8]) -> Result<(), ReplicationError>,
+        ) -> Result<Box<[u8]>, Self::Error> {
+            admit(payload).map_err(|_| "test payload admission failed")?;
+            Ok(payload.into())
+        }
+    }
+
+    impl DurableSemanticRangeStore for TestCas {
+        type RangeError = &'static str;
+
+        fn stage_durable_range(
+            &mut self,
+            _selection: SelectedSemanticPlane,
+            _request: SemanticRangeRequest,
+            _byte_range: ByteRange,
+            _payload: &[u8],
+        ) -> Result<SparseCoverage, Self::RangeError> {
+            Err("unused in residency batch test")
+        }
+
+        fn read_complete_segment(
+            &mut self,
+            _selection: SelectedSemanticPlane,
+            _request: SemanticRangeRequest,
+        ) -> Result<Option<Box<[u8]>>, Self::RangeError> {
+            Err("unused in residency batch test")
+        }
+
+        fn checkpoint_sparse_segment(
+            &mut self,
+            _selection: SelectedSemanticPlane,
+            _request: SemanticRangeRequest,
+        ) -> Result<Vec<u8>, Self::RangeError> {
+            Err("unused in residency batch test")
+        }
+
+        fn resume_sparse_segment(
+            &mut self,
+            _selection: SelectedSemanticPlane,
+            _request: SemanticRangeRequest,
+            _checkpoint: &[u8],
+        ) -> Result<SparseCoverage, Self::RangeError> {
+            Err("unused in residency batch test")
+        }
+
+        fn discard_sparse_segment(
+            &mut self,
+            _selection: SelectedSemanticPlane,
+            _request: SemanticRangeRequest,
+        ) -> Result<(), Self::RangeError> {
+            Err("unused in residency batch test")
+        }
+    }
+
+    impl VerifiedLocalSemanticCas for TestCas {
+        fn verify_selected_segment(
+            &mut self,
+            _selection: SelectedSemanticPlane,
+            _request: SemanticRangeRequest,
+            segment: &SemanticPlaneSegment,
+        ) -> Result<Option<SemanticSegmentId>, Self::RangeError> {
+            self.selected_reads += 1;
+            Ok(segment.admitted_id())
+        }
+
+        fn verify_historical_segment(
+            &mut self,
+            _binding: crate::HistoricalSemanticPlaneBinding,
+            _base_manifest: &SemanticPlaneManifest,
+            _base_segment: &SemanticPlaneSegment,
+            _target_selection: SelectedSemanticPlane,
+            _target_manifest: &SemanticPlaneManifest,
+            _target_segment: &SemanticPlaneSegment,
+        ) -> Result<Option<SemanticSegmentId>, Self::RangeError> {
+            Err("unused in residency batch test")
+        }
+    }
+
+    fn prepared_empty_route(
+        manifest: &SemanticPlaneManifest,
+        selection: SelectedSemanticPlane,
+    ) -> (AdaptiveIrResidency, PreparedIrResidencyDeltaRoute<'_>) {
+        let mut residency = AdaptiveIrResidency::new(IrResidencyLimits::default());
+        let route = residency.prepare_delta_route(selection, manifest, &[]);
+        (residency, route)
+    }
+
+    #[test]
+    fn batch_verification_uses_constant_source_observations() {
+        let manifest = test_manifest(64);
+        let (mut source, selection) = selection_for(&manifest, None);
+        let (mut residency, route) = prepared_empty_route(&manifest, selection);
+        let mut cas = TestCas::default();
+        let mut ids = Vec::new();
+
+        residency
+            .verify_segments_prepared(
+                &mut source,
+                selection,
+                &manifest,
+                manifest.plane(selection.kind()).expect("plane").segments(),
+                &route,
+                &mut cas,
+                &mut ids,
+            )
+            .expect("all target segments verify");
+
+        assert_eq!(ids.len(), 64);
+        assert_eq!(cas.selected_reads, 64);
+        assert_eq!(source.current_reads, 2);
+        assert_eq!(source.membership_reads, 2);
+    }
+
+    #[test]
+    fn batch_verification_discards_ids_when_final_freshness_check_fails() {
+        let manifest = test_manifest(3);
+        let (mut source, selection) = selection_for(&manifest, Some(2));
+        let (mut residency, route) = prepared_empty_route(&manifest, selection);
+        let mut cas = TestCas::default();
+        let mut ids = Vec::new();
+
+        let result = residency.verify_segments_prepared(
+            &mut source,
+            selection,
+            &manifest,
+            manifest.plane(selection.kind()).expect("plane").segments(),
+            &route,
+            &mut cas,
+            &mut ids,
+        );
+
+        assert_eq!(result, Err(IrResidencyError::StaleSelection));
+        assert!(ids.is_empty());
+        assert_eq!(cas.selected_reads, 3);
+        assert_eq!(source.current_reads, 2);
+        assert_eq!(source.membership_reads, 2);
+    }
+}

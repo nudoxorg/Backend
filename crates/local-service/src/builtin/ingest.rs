@@ -3260,6 +3260,7 @@ mod tests {
         };
         let root = &repository.0;
         let project = git_project_key(root);
+        git_test_command(root, &["config", "core.fsmonitor", "true"])?;
         let source_bytes = b"pub fn stable() -> u8 { 7 }\n";
         fs::create_dir_all(root.join("target")).map_err(|error| error.to_string())?;
         fs::write(root.join("target/generated.rs"), b"pub fn generated() {}\n")

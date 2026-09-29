@@ -2351,11 +2351,19 @@ mod tests {
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
     fn scratch() -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "backend-registry-stage-{}-{id}",
-            std::process::id()
-        ))
+        for _ in 0..64 {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "backend-registry-stage-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create isolated registry fixture directory: {error}"),
+            }
+        }
+        panic!("registry fixture directory capacity exhausted")
     }
 
     fn tar_file(name: &str, bytes: &[u8]) -> Vec<u8> {
@@ -3477,13 +3485,18 @@ mod tests {
     #[test]
     fn archive_path_traversal_is_rejected_before_writing_outside_the_jail() {
         let root = scratch();
+        let escaped_staging_path = root.join("registry-staging/outside.rs");
+        let escaped_workspace_path = root.join("outside.rs");
+        assert!(!escaped_staging_path.exists());
+        assert!(!escaped_workspace_path.exists());
         let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
         let archive = tar_file("../outside.rs", b"must not escape");
         assert!(matches!(
             stage_archive(&coordinate, &archive, &root),
             Err(RegistryAddError::UnsupportedArchive)
         ));
-        assert!(!root.parent().unwrap_or(&root).join("outside.rs").exists());
+        assert!(!escaped_staging_path.exists());
+        assert!(!escaped_workspace_path.exists());
         let _ = fs::remove_dir_all(root);
     }
 

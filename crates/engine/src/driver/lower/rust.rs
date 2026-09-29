@@ -71,12 +71,13 @@
 //! | `TUPLE_FIELD_NAMES` (256 positional spellings) | positional-name fold | a tuple field whose index has no spelling is not materialized |
 //! | computed rows (`MAX_COMPUTED_TYPE_ROWS`, 32768) | `ComputedRowCapacity` | a proven let-initializer or method-call result type beyond the cap is dropped, never truncated into a fabricated row |
 
-use std::{collections::HashMap, vec::Vec};
+use std::{collections::HashMap, path::Path, vec::Vec};
 
 use backend_frontend_rust::legacy::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
     RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
-    SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
+    RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db,
+    ra_ap_syntax,
 };
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
@@ -169,42 +170,74 @@ pub(crate) fn collect<'source>(
                 deadline: control.deadline,
             },
             features,
-            |authority| {
-                if authority.source != source {
-                    return Err(RustAuthorityError::SourceBinding {
-                        expected: source.len(),
-                        observed: authority.source.len(),
-                    });
-                }
-                let mut emitter = Emitter::new(&authority, source, facts);
-                emitter.run()?;
-                // A source whose every written item stayed out of the lane
-                // (each behind an unmet `#[cfg]` gate, an unresolved facade
-                // re-export, or a `compile_error!` stub) proved by HIR that
-                // it has no active declaration: the collected-empty product
-                // is its honest parity output, exactly the Go `doc.go` and
-                // Clang cfg-gated analogues. Only a written surface with no
-                // top-level item at all carries no proof, and stays the
-                // lane's exact typed rejection.
-                if facts.len() == 0 {
-                    let written_items = authority
-                        .root
-                        .syntax()
-                        .children()
-                        .any(|child| ast::Item::can_cast(child.kind()));
-                    if !written_items {
-                        return Err(RustAuthorityError::Admission {
-                            cause: LoweringUnsupported::NoSupportedDeclaration,
-                        });
-                    }
-                }
-                Ok(())
-            },
+            |authority| collect_authority(authority, source, facts),
         )
-        .map_err(|cause| match cause {
-            RustAuthorityError::Admission { cause } => RustCollectError::Lowering(cause),
-            cause => RustCollectError::Authority(cause),
-        })
+        .map_err(map_collect_error)
+}
+
+/// Runs the same emitter for one file in the package's borrowed analyzer session.
+pub(crate) fn collect_workspace<'source>(
+    workspace: &RustWorkspace,
+    source_path: &Path,
+    maximum_source_bytes: SourceByteLimit,
+    control: CompileControl<'_>,
+    source: &'source [u8],
+    facts: &mut FactSet<'source>,
+) -> Result<(), RustCollectError> {
+    workspace
+        .analyze_source(
+            source_path,
+            source,
+            RustAnalysisControl {
+                cancelled: control.cancelled,
+                maximum_source_bytes,
+                deadline: control.deadline,
+            },
+            |authority| collect_authority(authority, source, facts),
+        )
+        .map_err(map_collect_error)
+}
+
+fn collect_authority<'analysis, 'source>(
+    authority: RustAuthority<'analysis>,
+    source: &'source [u8],
+    facts: &mut FactSet<'source>,
+) -> Result<(), RustAuthorityError> {
+    if authority.source != source {
+        return Err(RustAuthorityError::SourceBinding {
+            expected: source.len(),
+            observed: authority.source.len(),
+        });
+    }
+    let mut emitter = Emitter::new(&authority, source, facts);
+    emitter.run()?;
+    // A source whose every written item stayed out of the lane (each behind
+    // an unmet `#[cfg]` gate, an unresolved facade re-export, or a
+    // `compile_error!` stub) proved by HIR that it has no active declaration.
+    // The collected-empty product is its honest parity output, exactly the
+    // Go `doc.go` and Clang cfg-gated analogues. Only a written surface with
+    // no top-level item at all carries no proof, and stays the lane's exact
+    // typed rejection.
+    if facts.len() == 0 {
+        let written_items = authority
+            .root
+            .syntax()
+            .children()
+            .any(|child| ast::Item::can_cast(child.kind()));
+        if !written_items {
+            return Err(RustAuthorityError::Admission {
+                cause: LoweringUnsupported::NoSupportedDeclaration,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn map_collect_error(cause: RustAuthorityError) -> RustCollectError {
+    match cause {
+        RustAuthorityError::Admission { cause } => RustCollectError::Lowering(cause),
+        cause => RustCollectError::Authority(cause),
+    }
 }
 
 /// Admits one fact, retaining the exact typed rejection on failure while

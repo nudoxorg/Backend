@@ -16,7 +16,8 @@ mod purl;
 pub use self::authority::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
     RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustInferredExpression,
-    RustMethodCall, RustProject, RustReexport, SemanticKind, SourceByteLimit, SourceOrigin,
+    RustMethodCall, RustProject, RustReexport, RustSourceScope, RustWorkspace, SemanticKind,
+    SourceByteLimit, SourceOrigin,
 };
 pub use self::purl::{RustLocatedPackage, RustPackageUrl, RustPurlError, manifest_edition};
 
@@ -40,8 +41,7 @@ pub use ra_ap_syntax;
 /// Versioned identity of the isolated Rust/Cargo child-process environment.
 /// Changing its admitted variables or path construction invalidates existing
 /// compiler authority identities even when the tool executables are unchanged.
-pub const RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
-    "rust-package-child-environment.v1";
+pub const RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "rust-package-child-environment.v1";
 
 /// Native compiler identity, Cargo cache roots, and sysroot accepted for one
 /// Rust authority transaction.
@@ -134,7 +134,10 @@ impl RustToolchain {
     /// Returns a stable, absolute search path containing only the admitted
     /// Rust and Cargo executable directories.
     pub(crate) fn authority_path(&self) -> Result<String, LoadError> {
-        let cargo = self.cargo.as_ref().ok_or(LoadError::MissingCargoConfiguration)?;
+        let cargo = self
+            .cargo
+            .as_ref()
+            .ok_or(LoadError::MissingCargoConfiguration)?;
         let cargo_home = self
             .cargo_home
             .as_ref()
@@ -142,7 +145,10 @@ impl RustToolchain {
         let mut paths = Vec::new();
         for path in [
             cargo_home.join("bin"),
-            cargo.parent().unwrap_or_else(|| std::path::Path::new("/")).to_path_buf(),
+            cargo
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("/"))
+                .to_path_buf(),
             self.tool
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("/"))

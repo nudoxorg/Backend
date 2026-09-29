@@ -1,5 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, OnceLock};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use backend_semantic::ir::{
@@ -10,6 +15,7 @@ use backend_semantic::ir::{
     SemanticSegmentId,
 };
 use backend_semantic::vocabulary::Stage;
+use backend_store::FileStore;
 use backend_version::{
     AdmittedProducerObservation, AuthorityScopeClaim, Coverage, CoverageAdmissionError,
     CoverageWitness, ObjectVersion, ProducerObservationClaims, ProducerObservationVerifier, Schema,
@@ -17,9 +23,10 @@ use backend_version::{
 };
 
 use crate::{
-    ByteRange, DurableSemanticRangeStore, DurableSemanticSegmentStore, IrResidencyCasReason,
-    IrResidencyDeltaHop, IrResidencyError, IrResidencyLimits, IrResidencyPath,
-    SelectedGenerationSource, SelectedGenerationStamp, SelectedSemanticPlane, SparseCoverage,
+    ByteRange, DurableSemanticRangeStore, DurableSemanticSegmentStore, FileSemanticRangeStore,
+    IrResidencyCasReason, IrResidencyDeltaHop, IrResidencyError, IrResidencyLimits,
+    IrResidencyPath, ReplicationError, SelectedGenerationSource, SelectedGenerationStamp,
+    SelectedSemanticPlane, SparseCoverage, TransportLimits, VerifiedLocalSemanticCas,
 };
 
 use super::AdaptiveIrResidency;
@@ -347,6 +354,27 @@ fn limits() -> IrResidencyLimits {
         delta_hops: 3,
         delta_changed_bytes: 1024,
         delta_actions: 100,
+    }
+}
+
+struct ResidencyTempDirectory(PathBuf);
+
+impl ResidencyTempDirectory {
+    fn create() -> Self {
+        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
+        let path = std::env::temp_dir().join(format!(
+            "backend-ir-residency-file-store-{}-{}",
+            std::process::id(),
+            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir_all(&path).expect("create residency FileStore fixture");
+        Self(path)
+    }
+}
+
+impl Drop for ResidencyTempDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -1126,6 +1154,164 @@ fn unreadable_historical_cas_falls_back_to_verified_target_cas() {
         IrResidencyPath::PristineCas(IrResidencyCasReason::DeltaCandidateUnavailable),
     );
     assert_eq!(store.reads, 2);
+    assert_eq!(cache.metrics().unreadable_delta_candidates, 1);
+}
+
+fn persist_file_segment(
+    store: &mut FileSemanticRangeStore,
+    selection: SelectedSemanticPlane,
+    manifest: &SemanticPlaneManifest,
+    segment: &SemanticPlaneSegment,
+    payload: &[u8],
+) {
+    let request = super::request_for(selection, manifest, segment);
+    let byte_length = u64::try_from(payload.len()).expect("small test payload length");
+    store
+        .stage_durable_range(
+            selection,
+            request,
+            ByteRange::new(0, byte_length).expect("full segment range"),
+            payload,
+        )
+        .expect("stage complete semantic segment in FileStore");
+    let mut admit = |bytes: &[u8]| {
+        segment
+            .admit(selection.kind(), bytes)
+            .map(|_| ())
+            .map_err(|_| ReplicationError::IdentityMismatch)
+    };
+    store
+        .commit_and_read(
+            selection,
+            segment.admitted_id().expect("fixture segment is admitted"),
+            payload,
+            &mut admit,
+        )
+        .expect("commit semantic segment in FileStore");
+}
+
+#[test]
+fn complete_sparse_checkpoint_is_admitted_after_reopen_before_immutable_commit() {
+    let payload = vec![0x5a; 16 * 1024 + 73];
+    let manifest = manifest(6, &payload);
+    let (_, selection) = selection_for(&manifest, 6);
+    let segment = &manifest.plane(selection.kind()).expect("plane").segments()[0];
+    let directory = ResidencyTempDirectory::create();
+    let cas_root = directory.0.join("cas");
+    let limits = TransportLimits {
+        max_chunk: 16 * 1024,
+        ..TransportLimits::default()
+    };
+    let cas = FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open fixture FileStore");
+    let mut sparse_store =
+        FileSemanticRangeStore::open(cas, limits).expect("open production semantic range store");
+    let request = super::request_for(selection, &manifest, segment);
+    let mut offset = 0_usize;
+    for chunk in payload.chunks(16 * 1024) {
+        let length = u64::try_from(chunk.len()).expect("small range length");
+        sparse_store
+            .stage_durable_range(
+                selection,
+                request,
+                ByteRange::new(u64::try_from(offset).expect("small offset"), length)
+                    .expect("range bounds"),
+                chunk,
+            )
+            .expect("persist sparse range and checkpoint");
+        offset += chunk.len();
+    }
+    // Reopening models a process exit after the final checkpoint was synced
+    // but before the immutable object and selected mapping were published.
+    drop(sparse_store);
+    let cas = FileStore::open(&cas_root, 16 * 1024 * 1024).expect("reopen fixture FileStore");
+    let mut reopened =
+        FileSemanticRangeStore::open(cas, limits).expect("reopen production range store");
+
+    assert_eq!(
+        reopened
+            .verify_selected_segment(selection, request, segment)
+            .expect("stream-admit complete sparse checkpoint"),
+        segment.admitted_id(),
+    );
+    assert_eq!(
+        reopened
+            .verify_selected_segment(selection, request, segment)
+            .expect("verify the newly published immutable CAS mapping"),
+        segment.admitted_id(),
+    );
+}
+
+#[test]
+fn unreadable_historical_file_mapping_falls_back_to_selected_file_mapping() {
+    let payload = b"same bytes in both selected generations";
+    let base = manifest(1, payload);
+    let target = manifest(2, payload);
+    let (_, base_selection) = selection_for(&base, 1);
+    let (mut target_source, target_selection) = selection_for(&target, 2);
+    let base_segment = &base
+        .plane(base_selection.kind())
+        .expect("base plane")
+        .segments()[0];
+    let target_segment = &target
+        .plane(target_selection.kind())
+        .expect("target plane")
+        .segments()[0];
+    let directory = ResidencyTempDirectory::create();
+    let cas_root = directory.0.join("cas");
+    let cas = FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open fixture FileStore");
+    let store_limits = TransportLimits {
+        max_chunk: 16 * 1024,
+        ..TransportLimits::default()
+    };
+    let mut store = FileSemanticRangeStore::open(cas, store_limits)
+        .expect("open production semantic range store");
+
+    persist_file_segment(&mut store, base_selection, &base, base_segment, payload);
+    let mappings = cas_root.join("semantic-hydration/mappings");
+    let mut mapping_paths = fs::read_dir(&mappings)
+        .expect("read historical mapping directory")
+        .map(|entry| entry.expect("read historical mapping entry").path());
+    let base_mapping = mapping_paths
+        .next()
+        .expect("historical selected mapping exists");
+    assert!(mapping_paths.next().is_none());
+    persist_file_segment(
+        &mut store,
+        target_selection,
+        &target,
+        target_segment,
+        payload,
+    );
+
+    // A malformed historical selected mapping makes the real adapter return
+    // an error while the target's independently selected mapping stays sound.
+    fs::write(&base_mapping, b"corrupt historical mapping")
+        .expect("corrupt only the historical selected mapping");
+
+    let chain = [IrResidencyDeltaHop::new(
+        &base,
+        &target,
+        base_selection,
+        base.root(),
+    )];
+    let mut cache = AdaptiveIrResidency::new(limits());
+    let (path, bytes) = cache
+        .with_segment(
+            &mut target_source,
+            target_selection,
+            &target,
+            target_segment,
+            &chain,
+            &mut store,
+            <[u8]>::to_vec,
+        )
+        .expect("read selected target after historical candidate failure");
+
+    assert_eq!(bytes, payload);
+    assert_eq!(
+        path,
+        IrResidencyPath::PristineCas(IrResidencyCasReason::DeltaCandidateUnavailable)
+    );
     assert_eq!(cache.metrics().unreadable_delta_candidates, 1);
 }
 

@@ -24,20 +24,35 @@ use sha2::{Digest, Sha256};
 use crate::{MAX_PACK_BYTES, S3Endpoint, S3ObjectRoute, S3PackRoute, S3RouteConfig};
 
 const MAX_OBJECT_BYTES: usize = MAX_PACK_BYTES as usize;
+const LOOPBACK_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Counts real HTTP operations performed by clients against [`LoopbackS3`].
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LoopbackS3Stats {
     /// Total accepted requests.
     pub requests: usize,
+    /// Requests whose headers were parsed, including those that failed later.
+    pub started_requests: usize,
+    /// Parsed requests whose response could not be written completely.
+    pub failed_requests: usize,
     /// Conditional PutObject requests.
     pub puts: usize,
     /// Full GetObject requests.
     pub full_gets: usize,
     /// Range GetObject requests.
     pub range_gets: usize,
+    /// Range requests whose headers were parsed.
+    pub started_range_gets: usize,
+    /// Parsed range requests whose response did not finish writing.
+    pub failed_range_gets: usize,
     /// Total response bytes returned by the server.
     pub response_bytes: usize,
+    /// Range header on the most recently started request.
+    pub last_range: Option<String>,
+    /// Response body size for the most recently started request.
+    pub last_response_bytes: Option<usize>,
+    /// Last loopback handler error, if a request failed.
+    pub last_error: Option<String>,
 }
 
 /// Small S3-compatible HTTP service for end-to-end route tests.
@@ -73,7 +88,30 @@ impl LoopbackS3 {
                 while !server_stopped.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            let _ = serve_one(stream, &server_objects, &server_stats);
+                            // A nonblocking listener can yield accepted sockets
+                            // that are also nonblocking on some platforms.
+                            if let Err(error) = stream.set_nonblocking(false) {
+                                let mut counters = server_stats
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                counters.failed_requests += 1;
+                                counters.last_error = Some(error.to_string());
+                                continue;
+                            }
+                            server_stats
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .last_range = None;
+                            if let Err(error) = serve_one(stream, &server_objects, &server_stats) {
+                                let mut counters = server_stats
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                counters.failed_requests += 1;
+                                if counters.last_range.is_some() {
+                                    counters.failed_range_gets += 1;
+                                }
+                                counters.last_error = Some(error.to_string());
+                            }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(2));
@@ -109,10 +147,10 @@ impl LoopbackS3 {
     /// Returns a snapshot of actual HTTP request counts.
     #[must_use]
     pub fn stats(&self) -> LoopbackS3Stats {
-        *self
-            .stats
+        self.stats
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Returns a copy of the immutable object currently held by the server.
@@ -157,8 +195,8 @@ struct Request {
 }
 
 fn read_request(stream: TcpStream) -> std::io::Result<Request> {
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(LOOPBACK_IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(LOOPBACK_IO_TIMEOUT))?;
     let writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
     let mut first = String::new();
@@ -272,6 +310,18 @@ fn serve_one(
     stats: &Mutex<LoopbackS3Stats>,
 ) -> std::io::Result<()> {
     let mut request = read_request(stream)?;
+    {
+        let mut counters = stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        counters.started_requests += 1;
+        counters.last_range = request.headers.get("range").cloned();
+        if counters.last_range.is_some() {
+            counters.started_range_gets += 1;
+        }
+        counters.last_response_bytes = None;
+        counters.last_error = None;
+    }
     if request
         .headers
         .get("expect")
@@ -345,6 +395,10 @@ fn serve_one(
     let is_put = request.method == "PUT";
     let is_range = request.headers.contains_key("range");
     let response_bytes = response.body.len();
+    stats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .last_response_bytes = Some(response_bytes);
     response.write_to(request.writer)?;
     let mut counters = stats
         .lock()

@@ -6,6 +6,41 @@ the separate `codex/index-compiler-tentpole` worktree with `nix shell
 36 GiB of RAM. The machine was not otherwise quiescent, so repeat runs and a
 base-revision comparison are required before claiming a speedup.
 
+## Live Turso ingest and physical cold restore, 2026-09-29
+
+`tests/journeys/run-live-turso-backup.sh` acquired exact public pins
+`serde@1.0.228` and `serde_json@1.0.145`, indexed their real source trees,
+then used Turso's `VACUUM INTO` for both the projection and index-authority
+databases. The restored daemon opened those physical main files without WAL
+sidecars. The harness checked the exact schema-8 projection root
+`858507FDF732B91130ABC9864C87A3C966AA8D7F55B88C2B11D59A0B06BE3709`,
+row digest, graph witness, edge-row digest, and authority rows across the
+backup/restart boundary. It found 4,355 projection rows and 17 dependency
+edges; warm and cold package search, registry search, dependencies, and
+dependents returned the pinned packages. The cold Tantivy rebuild also
+exercised distinct Go module coordinates differing only by case, which a
+folded sort key had previously collapsed.
+
+The cold-restored daemon stayed warm during 20 measured calls per path. Each
+call launched a fresh CLI process, so these timings include CLI startup and
+IPC; they are not in-process index latency. Three calls warmed each path.
+The measuring machine was also running other builds and tests.
+
+| Query path | p50 / p95 |
+| --- | ---: |
+| Tantivy package search, 20 rows | 52.296 / 56.592 ms |
+| Registry/discovery index search, 20 rows | 355.983 / 493.616 ms |
+| Forward dependencies, 15 rows | 30.050 / 35.437 ms |
+| Reverse dependents, 1 row | 29.460 / 34.575 ms |
+| Direct Turso graph forward, 2 rows | 12.156 / 13.326 ms |
+| Direct Turso graph reverse, 2 rows | 10.173 / 12.586 ms |
+
+The registry/discovery path is materially slower than package search in this
+run and remains an optimization target. These results establish a real cold
+baseline, not a before/after speedup or a large-corpus throughput claim.
+The full local evidence is under
+`.local/live-turso/20260929T025610Z-62613/artifacts/restore/`.
+
 ## Package graph projection, 2026-09-28
 
 Command: `cargo bench -p backend-extension-turso --bench package_graph --offline`.

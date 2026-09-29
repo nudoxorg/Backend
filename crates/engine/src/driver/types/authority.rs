@@ -480,6 +480,7 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
     match cause {
         backend_frontend_rust::legacy::RustAuthorityError::Workspace { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotLoaded { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::EditionMismatch { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::MissingSemanticFact { .. } => {
             AuthorityPhase::Resolve
@@ -500,6 +501,7 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         | backend_frontend_rust::legacy::RustAuthorityError::Toolchain(_)
         | backend_frontend_rust::legacy::RustAuthorityError::ProjectRoot { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::ProjectSource { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceOutsidePackage { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::MissingManifest { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotFile { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceBudget { .. }
@@ -512,11 +514,16 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
 fn rust_class(
     cause: &backend_frontend_rust::legacy::RustAuthorityError,
 ) -> AuthorityDiagnosticClass {
-    match rust_phase(cause) {
-        AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
-        AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
-        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
-        AuthorityPhase::Open | AuthorityPhase::Parse => AuthorityDiagnosticClass::Authority,
+    match cause {
+        backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. } => {
+            AuthorityDiagnosticClass::SourceScope
+        }
+        _ => match rust_phase(cause) {
+            AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
+            AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
+            AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+            AuthorityPhase::Open | AuthorityPhase::Parse => AuthorityDiagnosticClass::Authority,
+        },
     }
 }
 

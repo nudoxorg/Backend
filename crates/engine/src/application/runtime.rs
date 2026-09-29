@@ -705,14 +705,15 @@ fn compiler_unit_supported(profile: LanguageProfile, unit_key: &CompilationUnitK
 
 /// Complete fixed-cardinality semantic capability snapshot owned by one compiler runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LocalCompilerCapabilities(
-    [LocalCompilerCapability; LanguageProfile::PRODUCT_PROFILES.len()],
-);
+pub struct LocalCompilerCapabilities {
+    advertised: [LocalCompilerCapability; LanguageProfile::PRODUCT_PROFILES.len()],
+    rust_editions: [LocalCompilerCapability; 3],
+}
 
 impl LocalCompilerCapabilities {
     fn from_configuration(configuration: &LocalCompilerRuntimeConfiguration) -> Self {
         let target_platform_identity = runtime_target_platform_identity();
-        Self(LanguageProfile::PRODUCT_PROFILES.map(|profile| {
+        let capability_for_profile = |profile: LanguageProfile| {
             let language = profile.language();
             let toolchain = language.native_tool();
             let runtime = configuration
@@ -787,27 +788,34 @@ impl LocalCompilerCapabilities {
                 manifest,
                 state,
             }
-        }))
+        };
+        Self {
+            advertised: LanguageProfile::PRODUCT_PROFILES.map(capability_for_profile),
+            rust_editions: [
+                backend_semantic::vocabulary::RustEdition::Rust2015,
+                backend_semantic::vocabulary::RustEdition::Rust2018,
+                backend_semantic::vocabulary::RustEdition::Rust2021,
+            ]
+            .map(|edition| capability_for_profile(LanguageProfile::Rust(edition))),
+        }
     }
 
     /// Returns all language slots in canonical compiler order.
     #[must_use]
     pub const fn as_slice(&self) -> &[LocalCompilerCapability] {
-        &self.0
+        &self.advertised
     }
 
     /// Finds the capability that governs one profile without allocating or
     /// consulting ambient state.
     ///
-    /// The table advertises one row per product profile. A compile may name a
-    /// profile outside that set only by a language revision the row's
-    /// toolchain and package authority already serve, such as a Rust crate
-    /// whose `Cargo.toml` selects edition 2021: rustc and the Cargo project
-    /// authority are the same for every edition, so that compile is governed
-    /// by the one Rust row rather than panicking the compiler owner.
+    /// The public table advertises one current product profile per language.
+    /// Earlier Rust editions have their own exact, internally attested rows:
+    /// their environment, options, and recipe identities must bind the selected
+    /// edition instead of borrowing the Rust 2024 row.
     #[must_use]
     pub fn for_profile(&self, profile: LanguageProfile) -> LocalCompilerCapability {
-        self.0
+        self.advertised
             .iter()
             .copied()
             .find(|capability| capability.profile == profile)
@@ -815,10 +823,10 @@ impl LocalCompilerCapabilities {
                 let LanguageProfile::Rust(_) = profile else {
                     return None;
                 };
-                self.0
+                self.rust_editions
                     .iter()
                     .copied()
-                    .find(|capability| matches!(capability.profile, LanguageProfile::Rust(_)))
+                    .find(|capability| capability.profile == profile)
             })
             .expect("fixed compiler capability table governs every compiled profile")
     }

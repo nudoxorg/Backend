@@ -1558,10 +1558,19 @@ pub(crate) fn compose_owner(
     )
     .map_err(|error| ProcessError::Profile(format!("open registry owner: {error}")))?;
     if let Some(registry) = registry.as_mut() {
-        let dependency_facts = registry.dependency_facts();
+        // Opening the gateway composes its source owners lazily. Load their
+        // durable catalog before reading dependency facts so cold projection
+        // repair sees the same graph inputs as an ordinary command.
+        let catalog = registry
+            .catalog_projection()
+            .map_err(|error| {
+                ProcessError::Profile(format!(
+                    "open registry catalog for graph projection: {error}"
+                ))
+            })?;
         futures_executor::block_on(sql_projection.synchronize_package_graph(
             daemon.engine().daemon().library().view().root(),
-            &dependency_facts,
+            &catalog.dependency_facts,
         ))
         .map_err(|error| {
             ProcessError::Profile(format!("align package graph projection: {error}"))

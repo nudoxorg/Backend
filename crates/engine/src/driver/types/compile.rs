@@ -253,6 +253,12 @@ enum EnteredAuthority<'source> {
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
         features: backend_frontend_rust::legacy::RustFeatureControl<'source>,
     },
+    RustWorkspace {
+        profile: backend_semantic::vocabulary::RustEdition,
+        workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
+        source_path: &'source std::path::Path,
+        maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
+    },
     Go {
         profile: backend_semantic::vocabulary::GoVersion,
         image: &'source [u8],
@@ -446,6 +452,38 @@ impl LanguageSpec for RustSpec {
             authority.0,
             authority.1,
             authority.2,
+            prepared.permit.control(),
+            prepared.lease.bytes(),
+            facts,
+        )
+        .map_err(|cause| {
+            rust_terminal(
+                prepared.source,
+                prepared.recipe,
+                diagnostic_output,
+                is_build_script,
+                cause,
+            )
+        })
+    }
+}
+
+impl RustSpec {
+    fn collect_workspace<'source, 'cancel, 'diagnostic>(
+        workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
+        source_path: &'source std::path::Path,
+        maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        diagnostic_output: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        let is_build_script = source_path
+            .file_name()
+            .is_some_and(|name| name == "build.rs");
+        lower::rust::collect_workspace(
+            workspace,
+            source_path,
+            maximum_source_bytes,
             prepared.permit.control(),
             prepared.lease.bytes(),
             facts,
@@ -691,6 +729,19 @@ fn enter_authority<'source, 'diagnostic>(
             maximum_source_bytes,
             features,
         }),
+        (
+            LanguageProfile::Rust(profile),
+            SemanticAuthorityInput::RustWorkspace {
+                workspace,
+                source_path,
+                maximum_source_bytes,
+            },
+        ) => Ok(EnteredAuthority::RustWorkspace {
+            profile,
+            workspace,
+            source_path,
+            maximum_source_bytes,
+        }),
         (LanguageProfile::Rust(_), SemanticAuthorityInput::None) => Err(required()),
         (LanguageProfile::Go(profile), SemanticAuthorityInput::Go { image }) => {
             Ok(EnteredAuthority::Go { profile, image })
@@ -752,6 +803,19 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
             diagnostic_output,
             facts,
         )?,
+        EnteredAuthority::RustWorkspace {
+            workspace,
+            source_path,
+            maximum_source_bytes,
+            ..
+        } => RustSpec::collect_workspace(
+            workspace,
+            source_path,
+            *maximum_source_bytes,
+            prepared,
+            diagnostic_output,
+            facts,
+        )?,
         EnteredAuthority::Go { image, .. } => GoSpec::collect(image, prepared, None, facts)?,
         EnteredAuthority::Java { profile, image } => {
             JavaSpec::collect(&(*profile, *image), prepared, None, facts)?;
@@ -781,6 +845,7 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
             EnteredAuthority::Go { .. }
                 | EnteredAuthority::Clang { .. }
                 | EnteredAuthority::Rust { .. }
+                | EnteredAuthority::RustWorkspace { .. }
         )
     {
         require_facts(prepared.source, prepared.recipe, facts)?;
@@ -926,6 +991,11 @@ fn rust_authority_diagnostic<'diagnostic>(
         RustError::SourceNotLoaded { .. } => {
             let _ = message.write_str("rust-analyzer did not load the selected Cargo source.");
         }
+        RustError::DetachedSource { .. } => {
+            let _ = message.write_str(
+                "selected Rust source is cfg-inactive or detached from every active Cargo target.",
+            );
+        }
         RustError::EditionMismatch { .. } => {
             let _ = message.write_str("Cargo edition differs from the requested Rust profile.");
         }
@@ -941,7 +1011,7 @@ fn rust_authority_diagnostic<'diagnostic>(
         RustError::SourceBinding { expected, observed } => {
             let _ = write!(
                 message,
-                "Rust source binding length differs: request {expected} bytes, Cargo source {observed} bytes."
+                "Rust source differs from Cargo VFS text: request {expected} bytes, VFS {observed} bytes."
             );
         }
         RustError::Toolchain(_) => {
@@ -949,6 +1019,9 @@ fn rust_authority_diagnostic<'diagnostic>(
         }
         RustError::ProjectRoot { .. } | RustError::ProjectSource { .. } => {
             let _ = message.write_str("Rust authority could not open its selected project source.");
+        }
+        RustError::SourceOutsidePackage { .. } => {
+            let _ = message.write_str("selected Rust source is outside its Cargo package root.");
         }
         RustError::MissingManifest { .. } => {
             let _ = message.write_str("Rust authority could not find a Cargo package manifest.");

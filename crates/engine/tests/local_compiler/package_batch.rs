@@ -9,10 +9,12 @@ use backend_engine::application::{
     CompilerPackageTargetV2, DocumentationSession, LocalCompiler, LocalCompilerClient,
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerRuntimeConfiguration,
     LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout,
-    LocalRuntimePackageAuthority, LocalRuntimeToolchain, LocalToolchainSet, OwnedPackageSource,
-    OwnedPackageSourceSet, PackageSource, PackageSourceSet, StagedEmbeddingStatus,
+    LocalRuntimePackageAuthority, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    LocalToolchainSet, OwnedPackageSource, OwnedPackageSourceSet, PackageSource, PackageSourceSet,
+    StagedEmbeddingStatus,
 };
 use backend_engine::driver::{ResolvedToolchain, ToolchainSelection};
+use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
 use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompilePhase, PackageCompileRequest, PackageUrl,
 };
@@ -82,8 +84,8 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
     ];
     let package = PackageSourceSet::new(&request, &package_root, &sources)?;
     let mut staged_phases = Vec::new();
-    let staged =
-        compiler.compile_package_sources_staged(package, &mut |phase| staged_phases.push(phase))?;
+    let staged = compiler
+        .compile_package_sources_staged(package.clone(), &mut |phase| staged_phases.push(phase))?;
     assert_eq!(
         staged.embedding_status(),
         StagedEmbeddingStatus::NotConfigured
@@ -165,6 +167,120 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
     );
 
     compiler.shutdown()?;
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn rust_package_staging_keeps_detached_sources_out_of_artifact_and_coverage_accounting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let rustc = std::env::var_os("RUSTC").map_or_else(|| PathBuf::from("rustc"), PathBuf::from);
+    let rust_toolchain = RustToolchain::discover(rustc)?;
+    let version = Command::new(&rust_toolchain.tool)
+        .arg("--version")
+        .output()?;
+    if !version.status.success() {
+        return Err("rustc version probe failed".into());
+    }
+    let root = unique_directory()?;
+    let package_root = root.join("package");
+    let native_work = root.join("native-work");
+    fs::create_dir_all(package_root.join("src"))?;
+    fs::create_dir(&native_work)?;
+    fs::write(
+        package_root.join("Cargo.toml"),
+        "[package]\nname = \"package_scope_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )?;
+    let library =
+        "pub mod gated;\npub mod sibling;\npub fn active_root() -> u32 { sibling::value() }\n";
+    let gated = "#[cfg(any())] pub fn hidden() {}\n";
+    let sibling = "pub fn value() -> u32 { 42 }\n";
+    let detached = "pub fn detached() -> u32 { 0 }\n";
+    fs::write(package_root.join("src/lib.rs"), library)?;
+    fs::write(package_root.join("src/gated.rs"), gated)?;
+    fs::write(package_root.join("src/sibling.rs"), sibling)?;
+    fs::write(package_root.join("src/detached.rs"), detached)?;
+
+    let package_url = PackageUrl::try_from("pkg:cargo/package-scope-fixture@0.1.0".to_owned())
+        .map_err(|error| fixture_error(format!("package URL rejected: {error:?}")))?;
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(34),
+            profile: LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2021),
+            stage: Stage::LowerIr,
+        },
+        package_url,
+    )
+    .map_err(|error| fixture_error(format!("package profile rejected: {error:?}")))?;
+    let authority = LocalRuntimeRustAuthority {
+        toolchain: rust_toolchain.clone(),
+        maximum_source_bytes: SourceByteLimit::from(8 * 1024),
+        all_features: false,
+        no_default_features: false,
+        features: Box::new([]),
+    };
+    let configuration = LocalCompilerRuntimeConfiguration::new(
+        LocalCompilerRuntimePaths::new(root.join("artifacts"), root.join("journal"), native_work)?,
+        vec![LocalRuntimeToolchain::resolved(
+            NativeTool::Rustc,
+            rust_toolchain.tool.clone(),
+            &version.stdout,
+        )?]
+        .into_boxed_slice(),
+        Box::new([]),
+        LocalRuntimePackageAuthority {
+            rust: Some(authority),
+            ..LocalRuntimePackageAuthority::default()
+        },
+        LocalCompilerTimeout::new(Duration::from_secs(180))?,
+        PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
+        LocalCompilerScratch::with_fragment_capacity(
+            NonZeroUsize::new(16 * 1024 * 1024).ok_or("fragment capacity is zero")?,
+        )?,
+    )?;
+    let client = LocalCompilerClient::start(configuration)?;
+    let sources = vec![
+        OwnedPackageSource::new("src/detached.rs", detached)?,
+        OwnedPackageSource::new("src/gated.rs", gated)?,
+        OwnedPackageSource::new("src/lib.rs", library)?,
+        OwnedPackageSource::new("src/sibling.rs", sibling)?,
+    ]
+    .into_boxed_slice();
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+        request.clone(),
+        package_root.clone(),
+        sources.clone(),
+    )?)?;
+    assert_eq!(staged.artifacts().len(), 3);
+    assert_eq!(staged.coverage_gaps().len(), 1);
+    assert_eq!(staged.coverage_gaps()[0].relative_path(), "src/detached.rs");
+    assert_eq!(
+        staged.coverage_gaps()[0].source().byte_len as usize,
+        detached.len()
+    );
+    assert_eq!(
+        staged.input_witness().coverage().state(),
+        backend_version::Coverage::Partial
+    );
+    assert_eq!(staged.output_object_count(), 7);
+    assert_eq!(staged.versioned_planes()?.artifacts().len(), 3);
+    assert_eq!(
+        staged.embedding_status(),
+        StagedEmbeddingStatus::NotConfigured
+    );
+
+    let published = client.compile_package_sources(OwnedPackageSourceSet::new(
+        request,
+        package_root.clone(),
+        sources,
+    )?)?;
+    assert_eq!(published.images.len(), 3);
+    assert_eq!(published.coverage_gaps().len(), 1);
+    assert_eq!(
+        published.coverage_gaps()[0].relative_path(),
+        "src/detached.rs"
+    );
+    drop(client);
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -413,8 +529,8 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
     fs::write(&embedding_program, script)?;
     fs::set_permissions(&embedding_program, fs::Permissions::from_mode(0o700))?;
     let embedding_tool = ToolchainArtifact::from_path(&embedding_program, Vec::new())?;
-    let model = EmbeddingArtifact::new(Arc::from(model_bytes));
-    let tokenizer = EmbeddingArtifact::new(Arc::from(tokenizer_bytes));
+    let model = EmbeddingArtifact::new(Arc::from(&model_bytes[..]));
+    let tokenizer = EmbeddingArtifact::new(Arc::from(&tokenizer_bytes[..]));
     let embedding_spec = EmbeddingRuntimeSpecV1::new(
         model.identity().as_bytes(),
         model.identity().as_bytes(),

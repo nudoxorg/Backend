@@ -1334,12 +1334,12 @@ fn index_search_page_with_discovery_measured_snapshot(
     let mut ranked = Vec::<MergedPageSearchCandidate>::new();
     for search_hit in &acquired_page.hits {
         let key = &search_hit.key;
-        // The acquired lineage projection places this normalized lineage in
+        // The acquired lineage projection places this exact lineage in
         // the coordinate field so it remains searchable. An exact match on
         // the displayed lineage name is still name evidence, not an exact
-        // package-coordinate match; discovery uses the same name semantics.
+        // package-coordinate match; text search folds case independently.
         let evidence = if search_hit.evidence == SearchMatchEvidence::ExactCoordinate
-            && normalized_query.as_str() == acquired_lineage_search_name(key)
+            && normalized_query == unicode_lowercase(acquired_lineage_search_name(key))
         {
             SearchMatchEvidence::ExactName
         } else {
@@ -1652,7 +1652,7 @@ fn registry_search_lineage(
 }
 
 fn acquired_lineage_search_name(key: &LineageKey) -> &str {
-    let lineage = key.normalized_lineage.as_str();
+    let lineage = key.lineage.as_str();
     match key.ecosystem {
         RegistryEcosystem::Npm | RegistryEcosystem::Golang => {
             lineage.rsplit('/').next().unwrap_or(lineage)
@@ -3587,6 +3587,45 @@ mod tests {
         );
         assert_eq!(maven[0].version.as_str(), "1.10");
         assert_eq!(maven[1].version.as_str(), "1.9");
+    }
+
+    #[test]
+    fn acquired_go_lineage_groups_preserve_exact_case_and_continuation() {
+        let catalog = [
+            registry_row("pkg:golang/github.com/Sirupsen/logrus@v1.4.1", "logrus"),
+            registry_row("pkg:golang/github.com/sirupsen/logrus@v1.4.1", "logrus"),
+        ];
+        let index = catalog_search::CatalogSearchIndex::build(&catalog)
+            .expect("acquired catalog projection");
+        let all = index
+            .lineage_page_after(&catalog, "LOGRUS", 8, None)
+            .expect("case-insensitive acquired grouped search");
+        let mut lineages = all
+            .hits
+            .iter()
+            .map(|hit| hit.key.lineage.as_str())
+            .collect::<Vec<_>>();
+        lineages.sort_unstable();
+        assert_eq!(
+            lineages,
+            ["github.com/Sirupsen/logrus", "github.com/sirupsen/logrus"]
+        );
+
+        let first = index
+            .lineage_page_after(&catalog, "logrus", 1, None)
+            .expect("first acquired grouped page");
+        assert_eq!(first.hits.len(), 1);
+        let first_lineage = first.hits[0].key.lineage.clone();
+        let continuation = first.next_cursor.expect("second acquired lineage cursor");
+        let encoded = serde_json::to_vec(&continuation).expect("encode continuation");
+        let decoded: SearchContinuation =
+            serde_json::from_slice(&encoded).expect("decode continuation");
+        let second = index
+            .lineage_page_after(&catalog, "logrus", 1, Some(&decoded))
+            .expect("second acquired grouped page");
+        assert_eq!(second.hits.len(), 1);
+        assert_ne!(second.hits[0].key.lineage, first_lineage);
+        assert!(second.next_cursor.is_none());
     }
 
     #[test]

@@ -17,7 +17,8 @@ use backend_semantic::ir::{
     FacetChange, GenerationId, MAX_SEMANTIC_SEGMENT_BYTES, MappedSemanticImage, SemanticDiff,
     SemanticEntityChange, SemanticImageIdentity, SemanticLinkChangeKind, SemanticPlaneCatalog,
     SemanticPlaneImageKey, SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneSegment,
-    SemanticRangeRequest, SemanticSegmentId, SemanticSnapshot, UntrustedSemanticSegmentId,
+    SemanticRangeRequest, SemanticSegmentId, SemanticSegmentVerifier, SemanticSnapshot,
+    UntrustedSemanticSegmentId,
 };
 use backend_store::{
     ArtifactBudget, ArtifactObjectReader, FileStore, ObjectId, TypedObject, UntrustedObjectId,
@@ -29,9 +30,10 @@ use backend_version::{
 use crate::{
     AuthorityClaim, AuthorityEpoch, ByteRange, ChunkChain, ChunkParts, DurableSemanticRangeStore,
     DurableSemanticSegmentStore, Frame, ImmutableObjectSchema, ReceivingCas, ReceivingCasSink,
-    ReplicationError, SelectedSemanticPlane, SemanticImageCacheError, SparseCoverage, StagedExtent,
-    TransferId, TransportLimits, UnverifiedObjectRequest, WireReceivingCheckpoint,
-    claim_schema_object_key, claim_schema_object_version,
+    ReceivingCasStreamAdmission, ReplicationError, SelectedSemanticPlane, SemanticImageCacheError,
+    SparseCoverage, StagedExtent, TransferId, TransportLimits, UnverifiedObjectRequest,
+    VerifiedLocalSemanticCas, WireReceivingCheckpoint, claim_schema_object_key,
+    claim_schema_object_version,
 };
 
 use super::ir_hydration::SelectedGenerationStamp;
@@ -294,6 +296,40 @@ impl fmt::Debug for FileSemanticRangeStore {
     }
 }
 
+impl VerifiedLocalSemanticCas for FileSemanticRangeStore {
+    fn verify_selected_segment(
+        &mut self,
+        selection: SelectedSemanticPlane,
+        request: SemanticRangeRequest,
+        segment: &SemanticPlaneSegment,
+    ) -> Result<Option<SemanticSegmentId>, Self::RangeError> {
+        match FileSemanticRangeStore::verify_present_segment(self, selection, request, segment)? {
+            Some(id) => Ok(Some(id)),
+            None => self.verify_completed_sparse_segment(selection, request, segment),
+        }
+    }
+
+    fn verify_historical_segment(
+        &mut self,
+        binding: crate::HistoricalSemanticPlaneBinding,
+        base_manifest: &SemanticPlaneManifest,
+        base_segment: &SemanticPlaneSegment,
+        target_selection: SelectedSemanticPlane,
+        target_manifest: &SemanticPlaneManifest,
+        target_segment: &SemanticPlaneSegment,
+    ) -> Result<Option<SemanticSegmentId>, Self::RangeError> {
+        FileSemanticRangeStore::verify_historical_segment(
+            self,
+            binding,
+            base_manifest,
+            base_segment,
+            target_selection,
+            target_manifest,
+            target_segment,
+        )
+    }
+}
+
 impl FileSemanticRangeStore {
     /// Opens the semantic sparse-transfer state adjacent to the FileStore.
     /// The FileStore continues to own all completed immutable object bytes.
@@ -381,11 +417,26 @@ impl FileSemanticRangeStore {
         selection: SelectedSemanticPlane,
         segment: UntrustedSemanticSegmentId,
     ) -> PathBuf {
+        self.mapping_path_for(
+            selection.stamp(),
+            selection.image(),
+            selection.kind(),
+            segment,
+        )
+    }
+
+    fn mapping_path_for(
+        &self,
+        stamp: SelectedGenerationStamp,
+        image: SemanticPlaneImageKey,
+        kind: SemanticPlaneKind,
+        segment: UntrustedSemanticSegmentId,
+    ) -> PathBuf {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"backend.semantic.range-map-path.v1\0");
-        hash_stamp(&mut hasher, selection.stamp());
-        hash_image(&mut hasher, selection.image());
-        hash_plane(&mut hasher, selection.kind());
+        hash_stamp(&mut hasher, stamp);
+        hash_image(&mut hasher, image);
+        hash_plane(&mut hasher, kind);
         hasher.update(segment.as_bytes());
         self.state_root
             .join("mappings")
@@ -490,16 +541,35 @@ impl FileSemanticRangeStore {
         selection: SelectedSemanticPlane,
         segment: UntrustedSemanticSegmentId,
     ) -> Result<Option<VerifiedMappedSemanticSegment>, String> {
-        let selected_path = self.mapping_path(selection, segment);
+        self.open_mapped_object_for(
+            selection.stamp(),
+            selection.image(),
+            selection.kind(),
+            segment,
+        )
+    }
+
+    fn open_mapped_historical_object(
+        &self,
+        binding: crate::HistoricalSemanticPlaneBinding,
+        segment: UntrustedSemanticSegmentId,
+    ) -> Result<Option<VerifiedMappedSemanticSegment>, String> {
+        self.open_mapped_object_for(binding.stamp(), binding.image(), binding.kind(), segment)
+    }
+
+    fn open_mapped_object_for(
+        &self,
+        stamp: SelectedGenerationStamp,
+        image: SemanticPlaneImageKey,
+        kind: SemanticPlaneKind,
+        segment: UntrustedSemanticSegmentId,
+    ) -> Result<Option<VerifiedMappedSemanticSegment>, String> {
+        let selected_path = self.mapping_path_for(stamp, image, kind, segment);
         let content_path = self.content_mapping_path(segment);
         let (path, bytes, mapped_segment, claim, byte_length) = match fs::read(&selected_path) {
             Ok(bytes) => {
-                let (mapped_segment, claim, byte_length) = decode_mapping(
-                    &bytes,
-                    selection.stamp(),
-                    selection.image(),
-                    selection.kind(),
-                )?;
+                let (mapped_segment, claim, byte_length) =
+                    decode_mapping(&bytes, stamp, image, kind)?;
                 (selected_path, bytes, mapped_segment, claim, byte_length)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -611,6 +681,142 @@ impl FileSemanticRangeStore {
             request.segment_id,
             object_id,
             request.byte_length,
+        )?;
+        Ok(Some(admitted))
+    }
+
+    /// Resumes and admits a complete sparse checkpoint left after the final
+    /// range became durable but before immutable CAS publication. Admission
+    /// streams through bounded extent buffers; the selected mapping is
+    /// published only after both the transfer chain and segment commitment
+    /// pass.
+    fn verify_completed_sparse_segment(
+        &mut self,
+        selection: SelectedSemanticPlane,
+        request: SemanticRangeRequest,
+        segment: &SemanticPlaneSegment,
+    ) -> Result<Option<SemanticSegmentId>, String> {
+        self.validate_selection_request(selection, request)?;
+        if request.segment_id.as_bytes() != segment.id_claim().as_bytes()
+            || request.first_key != *segment.first_key()
+            || request.last_key != *segment.last_key()
+            || request.byte_length != segment.byte_length()
+        {
+            return Err("semantic request differs from its manifest segment".to_owned());
+        }
+
+        let _state_lock = self.acquire_state_lock()?;
+        if let Some(mut mapped) = self.open_mapped_object(selection, request.segment_id)? {
+            if mapped.byte_length() != request.byte_length {
+                return Err("mapped semantic segment has the wrong length".to_owned());
+            }
+            let mut scratch = [0_u8; IO_BUFFER_BYTES];
+            let admitted = mapped.verify_segment(request.plane, segment, &mut scratch)?;
+            let object_id = mapped.object_id();
+            self.persist_content_mapping(request.segment_id, object_id, request.byte_length)?;
+            self.persist_selected_mapping(
+                selection,
+                request.segment_id,
+                object_id,
+                request.byte_length,
+            )?;
+            return Ok(Some(admitted));
+        }
+
+        let Some(record) = self.read_record(selection, request)? else {
+            return Ok(None);
+        };
+        if !record.checkpoint.coverage.is_complete(request.byte_length) {
+            return Ok(None);
+        }
+        let (receiving, mut sink) = self.create_or_resume(selection, request, Some(record))?;
+        let mut admission =
+            SemanticSegmentStreamAdmission::new(segment.streaming_admission(request.plane));
+        let object_id =
+            match receiving.finish_unverified_with_streaming_admission(&mut sink, &mut admission) {
+                Ok(object_id) => object_id,
+                Err(error) => {
+                    self.cleanup_session(selection, request)?;
+                    return Err(display_error(error));
+                }
+            };
+        let admitted = admission
+            .admitted
+            .ok_or_else(|| "sparse semantic segment admission did not finish".to_owned())?;
+        let mut mapped = self
+            .open_mapped_object(selection, request.segment_id)?
+            .ok_or_else(|| "durable semantic segment mapping was not published".to_owned())?;
+        if mapped.object_id() != object_id || mapped.byte_length() != request.byte_length {
+            return Err("FileStore read-back differs from admitted semantic segment".to_owned());
+        }
+        let mut scratch = [0_u8; IO_BUFFER_BYTES];
+        let read_back_id = mapped.verify_segment(request.plane, segment, &mut scratch)?;
+        if read_back_id != admitted {
+            return Err("FileStore read-back changed after semantic admission".to_owned());
+        }
+        self.cleanup_session(selection, request)?;
+        Ok(Some(admitted))
+    }
+
+    /// Streams one exact predecessor CAS object, verifies it against the
+    /// freshly selected target descriptor, and publishes the existing
+    /// FileStore object under the target mapping. Historical ownership comes
+    /// from the checksummed local generation record and is never treated as a
+    /// current authority selection.
+    pub fn verify_historical_segment(
+        &mut self,
+        binding: crate::HistoricalSemanticPlaneBinding,
+        base_manifest: &SemanticPlaneManifest,
+        base_segment: &SemanticPlaneSegment,
+        target_selection: SelectedSemanticPlane,
+        target_manifest: &SemanticPlaneManifest,
+        target_segment: &SemanticPlaneSegment,
+    ) -> Result<Option<SemanticSegmentId>, String> {
+        let kind = target_selection.kind();
+        if !binding.matches_manifest(base_manifest, kind)
+            || !Self::selection_matches_manifest(target_selection, target_manifest)
+            || !Self::exact_segment_descriptor(base_segment, target_segment)
+            || !Self::manifest_contains_segment(base_manifest, kind, base_segment)
+            || !Self::manifest_contains_segment(target_manifest, kind, target_segment)
+        {
+            return Err("historical semantic segment binding differs from target".to_owned());
+        }
+        let target_request = SemanticRangeRequest {
+            manifest_root: target_manifest.root(),
+            plane: kind,
+            segment_id: target_segment.id_claim(),
+            first_key: *target_segment.first_key(),
+            last_key: *target_segment.last_key(),
+            byte_length: target_segment.byte_length(),
+        };
+        self.validate_selection_request(target_selection, target_request)?;
+        let mapped = {
+            let _state_lock = self.acquire_state_lock()?;
+            self.open_mapped_historical_object(binding, base_segment.id_claim())?
+        };
+        let Some(mut mapped) = mapped else {
+            return Ok(None);
+        };
+        if mapped.byte_length() != target_segment.byte_length() {
+            return Err("historical semantic object has the wrong length".to_owned());
+        }
+        let mut scratch = [0_u8; IO_BUFFER_BYTES];
+        let admitted = mapped.verify_segment(kind, target_segment, &mut scratch)?;
+        if admitted.as_bytes() != target_segment.id_claim().as_bytes() {
+            return Err("historical semantic object differs from the target claim".to_owned());
+        }
+        let object_id = mapped.object_id();
+        let _state_lock = self.acquire_state_lock()?;
+        self.persist_content_mapping(
+            target_request.segment_id,
+            object_id,
+            target_request.byte_length,
+        )?;
+        self.persist_selected_mapping(
+            target_selection,
+            target_request.segment_id,
+            object_id,
+            target_request.byte_length,
         )?;
         Ok(Some(admitted))
     }
@@ -1367,6 +1573,40 @@ impl DurableSemanticRangeStore for FileSemanticRangeStore {
 }
 
 impl FileSemanticRangeStore {
+    fn selection_matches_manifest(
+        selection: SelectedSemanticPlane,
+        manifest: &SemanticPlaneManifest,
+    ) -> bool {
+        let image = selection.image();
+        image.manifest_root() == manifest.root()
+            && image.semantic_generation() == manifest.semantic_generation()
+            && selection.stamp().profile() == manifest.build().profile()
+            && manifest
+                .plane(selection.kind())
+                .is_some_and(|plane| plane.root() == selection.root())
+    }
+
+    fn manifest_contains_segment(
+        manifest: &SemanticPlaneManifest,
+        kind: SemanticPlaneKind,
+        segment: &SemanticPlaneSegment,
+    ) -> bool {
+        manifest.plane(kind).is_some_and(|plane| {
+            let segments = plane.segments();
+            let position =
+                segments.partition_point(|candidate| candidate.first_key() < segment.first_key());
+            segments.get(position) == Some(segment)
+        })
+    }
+
+    fn exact_segment_descriptor(left: &SemanticPlaneSegment, right: &SemanticPlaneSegment) -> bool {
+        left.id_claim() == right.id_claim()
+            && left.first_key() == right.first_key()
+            && left.last_key() == right.last_key()
+            && left.row_count() == right.row_count()
+            && left.byte_length() == right.byte_length()
+    }
+
     fn validate_selection_request(
         &self,
         selection: SelectedSemanticPlane,
@@ -1441,6 +1681,43 @@ struct FileSparseSink {
     image: SemanticPlaneImageKey,
     selected_plane: SemanticPlaneKind,
     range_request: SemanticRangeRequest,
+}
+
+struct SemanticSegmentStreamAdmission {
+    verifier: Option<SemanticSegmentVerifier>,
+    admitted: Option<SemanticSegmentId>,
+}
+
+impl SemanticSegmentStreamAdmission {
+    fn new(verifier: SemanticSegmentVerifier) -> Self {
+        Self {
+            verifier: Some(verifier),
+            admitted: None,
+        }
+    }
+}
+
+impl ReceivingCasStreamAdmission for SemanticSegmentStreamAdmission {
+    fn update(&mut self, bytes: &[u8]) -> Result<(), ReplicationError> {
+        self.verifier
+            .as_mut()
+            .ok_or(ReplicationError::IdentityMismatch)?
+            .update(bytes)
+            .map_err(|_| ReplicationError::IdentityMismatch)
+    }
+
+    fn finish(&mut self) -> Result<(), ReplicationError> {
+        let verifier = self
+            .verifier
+            .take()
+            .ok_or(ReplicationError::IdentityMismatch)?;
+        self.admitted = Some(
+            verifier
+                .finish()
+                .map_err(|_| ReplicationError::IdentityMismatch)?,
+        );
+        Ok(())
+    }
 }
 
 impl FileSparseSink {

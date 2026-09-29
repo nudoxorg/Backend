@@ -2,22 +2,22 @@
 
 use crate::{ClientError, MAX_FRAME};
 use backend_replication::{
-    AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, DurableSemanticSegmentStore,
-    FileSemanticRangeStore, HydrationCredits, IrHydrationCursor, IrHydrationError, IrHydrationPoll,
-    IrHydrationRequest, IrHydrationTerminal, IrResidencyDeltaHop, IrResidencyError,
-    IrResidencyMetrics, IrResidencyPath, LOCAL_CONTROL_MAX_CURSOR, LOCAL_CONTROL_MAX_ERROR,
-    LocalControlClient, LocalControlError, LocalControlLimits, LocalControlRequest,
-    LocalControlResponse, LocalSemanticGeneration, PreparedIrResidencyDeltaRoute, ReplicationError,
-    SelectedGenerationSource, SelectedGenerationStamp, SelectedSemanticImageChunk,
-    SelectedSemanticImageGet, SelectedSemanticPlane, SemanticCatalogChunk, SemanticCatalogGet,
-    SemanticImageCacheError, SemanticManifestChunk, SemanticManifestGet, SemanticRangeChunk,
-    SemanticRangeClientCheckpoint, SemanticRangeClientProgress, SemanticRangeGet,
-    SemanticTargetKey, TransportLimits, VerifiedSemanticSegment, accept_semantic_range,
-    admit_semantic_catalog, admit_semantic_manifest,
+    AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, FileSemanticRangeStore,
+    HydrationCredits, IrHydrationCursor, IrHydrationError, IrHydrationPoll, IrHydrationRequest,
+    IrHydrationTerminal, IrResidencyDeltaHop, IrResidencyError, IrResidencyMetrics,
+    IrResidencyPath, LOCAL_CONTROL_MAX_CURSOR, LOCAL_CONTROL_MAX_ERROR, LocalControlClient,
+    LocalControlError, LocalControlLimits, LocalControlRequest, LocalControlResponse,
+    LocalSemanticGeneration, PreparedIrResidencyDeltaRoute, SelectedGenerationSource,
+    SelectedGenerationStamp, SelectedSemanticImageChunk, SelectedSemanticImageGet,
+    SelectedSemanticPlane, SemanticCatalogChunk, SemanticCatalogGet, SemanticImageCacheError,
+    SemanticManifestChunk, SemanticManifestGet, SemanticRangeChunk, SemanticRangeClientCheckpoint,
+    SemanticRangeClientProgress, SemanticRangeGet, SemanticTargetKey, TransportLimits,
+    VerifiedSemanticSegment, accept_semantic_range, admit_semantic_catalog,
+    admit_semantic_manifest,
 };
 use backend_semantic::ir::{
     MappedSemanticImage, SemanticPlaneCatalog, SemanticPlaneImageKey, SemanticPlaneKind,
-    SemanticPlaneManifest, SemanticPlaneSegment, SemanticRangeRequest, SemanticSegmentId,
+    SemanticPlaneManifest, SemanticPlaneSegment, SemanticSegmentId,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
@@ -1252,6 +1252,9 @@ impl LocalSemanticIndexClient {
         store: &mut FileSemanticRangeStore,
     ) -> Result<Vec<SemanticSegmentId>, ClientError> {
         let snapshot = Self::require_catalog(&self.selected_catalog)?;
+        let previous_generation = store
+            .current_local_generation(&self.target)
+            .map_err(ClientError::Io)?;
         let mut source = LocalSemanticAuthoritySource {
             authority: &mut self.authority,
             target: &self.target,
@@ -1259,6 +1262,19 @@ impl LocalSemanticIndexClient {
         };
         let selection = SelectedSemanticPlane::select(&mut source, manifest, image, kind)
             .map_err(map_hydration_error)?;
+        let chain = previous_generation
+            .as_ref()
+            .filter(|generation| generation.image() != image)
+            .and_then(|generation| {
+                generation.historical_plane_binding(kind).map(|binding| {
+                    IrResidencyDeltaHop::from_historical(generation.manifest(), manifest, binding)
+                })
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let route = self
+            .segment_residency
+            .prepare_delta_route(selection, manifest, &chain);
         let plane = manifest.plane(kind).ok_or_else(|| {
             ClientError::Protocol("requested semantic plane is absent from the manifest".to_owned())
         })?;
@@ -1266,53 +1282,17 @@ impl LocalSemanticIndexClient {
         have.try_reserve(plane.segments().len()).map_err(|_| {
             ClientError::Protocol("local semantic segment index allocation failed".to_owned())
         })?;
-        for segment in plane.segments() {
-            let request = SemanticRangeRequest {
-                manifest_root: manifest.root(),
-                plane: kind,
-                segment_id: segment.id_claim(),
-                first_key: *segment.first_key(),
-                last_key: *segment.last_key(),
-                byte_length: segment.byte_length(),
-            };
-            if let Some(admitted) = store
-                .verify_present_segment(selection, request, segment)
-                .map_err(ClientError::Io)?
-            {
-                have.push(admitted);
-                continue;
-            }
-            let payload = store
-                .read_complete_segment(selection, request)
-                .map_err(|error| ClientError::Io(error.to_string()))?;
-            if let Some(payload) = payload {
-                let admitted = segment.admit(kind, &payload).map_err(|error| {
-                    ClientError::Protocol(format!(
-                        "local semantic segment failed admission: {error}"
-                    ))
-                })?;
-                let read_back = store
-                    .commit_and_read(selection, admitted, &payload, &mut |bytes| {
-                        segment
-                            .admit(kind, bytes)
-                            .map(|_| ())
-                            .map_err(|_| ReplicationError::IdentityMismatch)
-                    })
-                    .map_err(|error| ClientError::Io(error.to_string()))?;
-                if read_back.as_ref() != payload.as_ref() {
-                    return Err(ClientError::Protocol(
-                        "local semantic CAS read-back changed after admission".to_owned(),
-                    ));
-                }
-                have.push(admitted);
-            }
-        }
-        if SelectedSemanticPlane::select(&mut source, manifest, image, kind)
-            .map_err(map_hydration_error)?
-            != selection
-        {
-            return Err(ClientError::StaleSelection);
-        }
+        self.segment_residency
+            .verify_segments_prepared(
+                &mut source,
+                selection,
+                manifest,
+                plane.segments(),
+                &route,
+                store,
+                &mut have,
+            )
+            .map_err(map_residency_error)?;
         Ok(have)
     }
 

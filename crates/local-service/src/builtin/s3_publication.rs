@@ -76,6 +76,7 @@ use signing::{aws_encode, aws_timestamp, canonical_query, hex};
 pub(super) enum PublicationError {
     Configuration,
     Remote,
+    RemoteStore(backend_store_s3::RemoteStoreError),
     RemoteHydration {
         operation: RemoteHydrationOperation,
         source: Option<backend_store_s3::RemoteStoreError>,
@@ -98,7 +99,9 @@ impl fmt::Display for PublicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Configuration => "S3 publication configuration is incomplete or invalid",
-            Self::Remote | Self::RemoteHydration { .. } => "S3 publication failed",
+            Self::Remote | Self::RemoteStore(_) | Self::RemoteHydration { .. } => {
+                "S3 publication failed"
+            }
             Self::Store => "selected closure could not be read or streamed",
             Self::Receipt => {
                 "selected closure did not match the complete set of stored S3 pack receipts"
@@ -111,6 +114,7 @@ impl fmt::Display for PublicationError {
 impl std::error::Error for PublicationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::RemoteStore(source) => Some(source),
             Self::RemoteHydration {
                 source: Some(source),
                 ..
@@ -707,26 +711,42 @@ mod tests {
         fs::create_dir_all(&scratch).expect("create owner S3 test root");
         let store =
             FileStore::open(scratch.join("cas"), 4 * 1024 * 1024).expect("open owner test CAS");
-        let payload = (0..(33 * 1024 * 1024 + 13))
-            .map(|index| u8::try_from((index * 31 + index / 5) % 251).expect("byte fits"))
+        // Segment payloads are individually bounded at 1 MiB. Keep the
+        // complete S3 object above 4 MiB by publishing several real-sized
+        // segments together instead of one oversized segment.
+        let payloads = (0..5)
+            .map(|segment| {
+                (0..backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES)
+                    .map(|index| {
+                        u8::try_from((index * 31 + index / 5 + segment * 17) % 251)
+                            .expect("byte fits")
+                    })
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
-        let key = ObjectKey::<VersionedPlaneSegmentSchema>::from_value(payload.as_slice());
-        let object = TypedObject::from_value(&key, payload.as_slice());
-        let object_id = store.write_object(&object).expect("write checked segment");
+        let payload = &payloads[0];
+        let mut changes = Vec::with_capacity(payloads.len() + 1);
+        let mut object_ids = Vec::with_capacity(payloads.len());
+        for payload in &payloads {
+            let key = ObjectKey::<VersionedPlaneSegmentSchema>::from_value(payload.as_slice());
+            let object = TypedObject::from_value(&key, payload.as_slice());
+            let object_id = store.write_object(&object).expect("write checked segment");
+            changes.push(ClosureMembershipChange::add(object_id));
+            object_ids.push(object_id);
+        }
+        let object_id = object_ids[0];
         let small_payload = b"small segment remains on the ordinary full-object path";
         let small_key = ObjectKey::<VersionedPlaneSegmentSchema>::from_value(small_payload);
         let small_object = TypedObject::from_value(&small_key, small_payload.as_slice());
         let small_object_id = store
             .write_object(&small_object)
             .expect("write checked small segment");
+        changes.push(ClosureMembershipChange::add(small_object_id));
         let pinned = store
             .compose_closure_index(
                 None,
-                &[
-                    ClosureMembershipChange::add(object_id),
-                    ClosureMembershipChange::add(small_object_id),
-                ],
-                ClosureCompositionBudget::new(4, 2, 40 * 1024 * 1024, 1024 * 1024),
+                &changes,
+                ClosureCompositionBudget::new(8, 6, 8 * 1024 * 1024, 1024 * 1024),
             )
             .expect("compose exact selected test closure");
         let closure = pinned.receipt().closure();
@@ -765,15 +785,20 @@ mod tests {
                 &store,
                 closure,
                 [0x72; 32],
-                2,
-                backend_store::ArtifactBudget::new(4, 4, 40 * 1024 * 1024, 4096, 4),
+                u64::try_from(changes.len()).expect("closure member count fits u64"),
+                backend_store::ArtifactBudget::new(8, 8, 8 * 1024 * 1024, 4096, 8),
                 publication_fence,
             )
-            .expect("publish and durably receipt the exact closure");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "publish and durably receipt the exact closure: {error:?}; loopback stats: {:?}",
+                    server.stats()
+                )
+            });
         let selected = RemoteClosureSelection {
             closure: *closure.as_bytes(),
             target_root: [0x72; 32],
-            // The test closure uses the segment as its selected member. Real
+            // The test closure uses one segment as its selected member. Real
             // compiler selections bind this field to the checked envelope ID.
             candidate_id: *object_id.as_bytes(),
             namespace_id: publication_fence.namespace_id,
@@ -911,7 +936,11 @@ mod tests {
             stats.range_gets >= 3,
             "cold owner range must fetch the root, proof page, and full verified envelope: {stats:?}"
         );
-        assert!(server.stored_object().is_some());
+        let uploaded_pack = server.stored_object().expect("loopback stored the pack");
+        assert!(
+            uploaded_pack.len() > 4 * 1024 * 1024,
+            "one real conditional PUT must carry the complete multi-segment pack"
+        );
 
         // The ordinary full-image path remains available for small loader callers.
         let hydrated = selected_publisher

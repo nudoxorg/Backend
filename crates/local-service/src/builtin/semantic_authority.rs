@@ -15,8 +15,8 @@ use super::{
 };
 use crate::compiler_trust::{TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerPolicy};
 use backend_engine::builtin::{
-    ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
-    SemanticPublicationCoverage,
+    PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    SemanticPublicationClaim, SemanticPublicationCoverage,
 };
 use backend_engine::cluster_transport::EndpointId;
 use backend_extension_turso::{
@@ -42,6 +42,7 @@ use backend_version::{
     SchemaIdentity,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -2612,6 +2613,25 @@ impl SemanticAuthority {
             .snapshot()
             .relation::<BuiltinSemanticRelation>()
             .map_err(|error| BuiltinModelError(format!("open semantic projection: {error}")))?;
+        // Check the independently persisted typed coverage against the exact
+        // selected source-count and manifest evidence used to rebuild it. A
+        // disagreement means neither projection can safely be admitted.
+        for (key, desired_record) in &desired {
+            let Some(ProductSemanticPublicationRecord::Published {
+                coverage: existing_coverage,
+                claim: existing_claim,
+            }) = relation.lookup(key).map_err(|error| {
+                BuiltinModelError(format!("read semantic publication coverage: {error}"))
+            })?
+            else {
+                continue;
+            };
+            if let ProductSemanticPublicationRecord::Published { coverage, claim } = desired_record
+                && existing_claim == *claim
+            {
+                ensure_recovered_coverage_matches(existing_coverage, *coverage)?;
+            }
+        }
         let mut changes = BTreeMap::<
             ProductSemanticPublicationKey,
             Option<ProductSemanticPublicationRecord>,
@@ -2739,19 +2759,77 @@ fn reopen_record(
         &mut fragment_slots,
     )
     .map_err(|error| BuiltinModelError(format!("validate reopened semantic manifest: {error}")))?;
+    if metadata.manifest_fragment_count() != manifest.fragment_count {
+        return Err(BuiltinModelError(
+            "reopened semantic manifest count differs from its durable metadata".to_owned(),
+        ));
+    }
     let binding = backend_engine::publication::binding::CompilationBindingView::validate(
         metadata.binding_bytes(),
     )
     .map_err(|error| BuiltinModelError(format!("validate reopened semantic binding: {error}")))?;
     let claim = SemanticPublicationClaim::admit(*manifest, *binding)
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
+    let coverage = recovered_publication_coverage(
+        selected.observation().observation().value(),
+        manifest.fragment_count,
+    )?;
     Ok((
         claim,
-        ProductSemanticPublicationRecord::Published {
-            coverage: SemanticPublicationCoverage::Complete,
-            claim,
-        },
+        ProductSemanticPublicationRecord::Published { coverage, claim },
     ))
+}
+
+/// Reconstructs project-scope coverage when an authority-selected generation
+/// has no matching workspace relation row. Turso binds the selected generation
+/// to a durable source-count observation, and its immutable compiler manifest
+/// retains the number of published source artifacts. Local selection admits
+/// gaps only after proving `artifacts + gaps == observed source count`; remote
+/// selection requires exact equality. Unknown or inconsistent counts therefore
+/// cannot safely be promoted to Complete.
+fn recovered_publication_coverage(
+    source_observation: &SourceObservationValue,
+    completed: u32,
+) -> Result<SemanticPublicationCoverage, BuiltinModelError> {
+    let SourceObservationValue::KnownCount(total) = source_observation else {
+        return Err(BuiltinModelError(
+            "selected semantic generation has no durable source-scope count; refusing to recover publication coverage"
+                .to_owned(),
+        ));
+    };
+    let total = u32::try_from(*total).map_err(|_| {
+        BuiltinModelError("selected semantic source-scope count exceeds u32".to_owned())
+    })?;
+    let completed = NonZeroU32::new(completed).ok_or_else(|| {
+        BuiltinModelError("selected semantic generation has no published artifacts".to_owned())
+    })?;
+    let total = NonZeroU32::new(total).ok_or_else(|| {
+        BuiltinModelError("selected semantic generation has an empty source scope".to_owned())
+    })?;
+    match completed.get().cmp(&total.get()) {
+        std::cmp::Ordering::Equal => Ok(SemanticPublicationCoverage::Complete),
+        std::cmp::Ordering::Less => Ok(SemanticPublicationCoverage::Partial(
+            PartialSemanticCoverage::new(completed, total)
+                .map_err(|error| BuiltinModelError(error.to_owned()))?,
+        )),
+        std::cmp::Ordering::Greater => Err(BuiltinModelError(
+            "selected semantic manifest exceeds its durable source-scope count".to_owned(),
+        )),
+    }
+}
+
+fn ensure_recovered_coverage_matches(
+    persisted: SemanticPublicationCoverage,
+    recovered: SemanticPublicationCoverage,
+) -> Result<(), BuiltinModelError> {
+    if persisted == recovered {
+        Ok(())
+    } else {
+        Err(BuiltinModelError(
+            "persisted semantic coverage differs from the selected source count and manifest"
+                .to_owned(),
+        ))
+    }
 }
 
 fn artifact_object_claim(object: &TypedObject) -> Result<ArtifactObjectClaim, BuiltinModelError> {
@@ -2830,6 +2908,51 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn recovered_coverage_uses_the_selected_source_scope_and_fails_closed() {
+        let partial = PartialSemanticCoverage::new(
+            NonZeroU32::new(3).expect("nonzero completed count"),
+            NonZeroU32::new(5).expect("nonzero source count"),
+        )
+        .expect("strictly partial coverage");
+        assert_eq!(
+            recovered_publication_coverage(&SourceObservationValue::KnownCount(5), 3)
+                .expect("derive exact partial source coverage"),
+            SemanticPublicationCoverage::Partial(partial),
+        );
+        assert_eq!(
+            recovered_publication_coverage(&SourceObservationValue::KnownCount(5), 5)
+                .expect("derive exact complete source coverage"),
+            SemanticPublicationCoverage::Complete,
+        );
+        assert!(recovered_publication_coverage(&SourceObservationValue::Unknown, 3).is_err());
+        assert!(
+            recovered_publication_coverage(
+                &SourceObservationValue::Unavailable("source count unavailable".into()),
+                3,
+            )
+            .is_err()
+        );
+        assert!(recovered_publication_coverage(&SourceObservationValue::KnownCount(3), 4).is_err());
+        assert!(recovered_publication_coverage(&SourceObservationValue::KnownCount(5), 0).is_err());
+    }
+
+    #[test]
+    fn persisted_coverage_cannot_override_selected_count_evidence() {
+        let partial = SemanticPublicationCoverage::Partial(
+            PartialSemanticCoverage::new(
+                NonZeroU32::new(3).expect("nonzero completed count"),
+                NonZeroU32::new(5).expect("nonzero source count"),
+            )
+            .expect("strictly partial coverage"),
+        );
+        assert!(
+            ensure_recovered_coverage_matches(SemanticPublicationCoverage::Complete, partial,)
+                .is_err()
+        );
+        assert!(ensure_recovered_coverage_matches(partial, partial).is_ok());
+    }
 
     struct ScratchWorkspace(std::path::PathBuf);
 

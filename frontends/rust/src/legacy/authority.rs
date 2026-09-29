@@ -4,7 +4,8 @@
 
 use std::{
     collections::HashSet,
-    fs,
+    fmt, fs,
+    io::Read,
     ops::Deref,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -17,12 +18,13 @@ use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
 };
+use ra_ap_ide_db::RootDatabase;
 use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
 use ra_ap_syntax::{
     AstNode,
     ast::{self, HasName, HasVisibility},
 };
-use ra_ap_vfs::{AbsPathBuf, VfsPath};
+use ra_ap_vfs::{AbsPathBuf, Vfs, VfsPath};
 
 use crate::legacy::{LoadError, RustToolchain};
 
@@ -31,12 +33,44 @@ use crate::legacy::{LoadError, RustToolchain};
 pub struct RustProject {
     /// Absolute Cargo package root.
     pub root: PathBuf,
-    /// Absolute crate root source selected by the caller.
+    /// Absolute Rust source selected by the caller.
     pub source_path: PathBuf,
     /// Exact native toolchain whose sysroot establishes semantic context.
     pub toolchain: RustToolchain,
     /// Closed Rust edition expected by the compile recipe.
     pub edition: RustEdition,
+}
+
+/// One loaded Cargo package graph borrowed by every source in a package compile.
+///
+/// The analyzer database and VFS stay private to this frontend owner. Callers
+/// can only enter one exact source at a time through [`Self::analyze_source`];
+/// the higher-ranked callback prevents borrowed analyzer data from being
+/// returned from that source transaction.
+pub struct RustWorkspace {
+    root: PathBuf,
+    edition: RustEdition,
+    database: RootDatabase,
+    vfs: Vfs,
+}
+
+impl fmt::Debug for RustWorkspace {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RustWorkspace")
+            .field("root", &self.root)
+            .field("edition", &self.edition)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Cargo relationship established for one selected Rust source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustSourceScope {
+    /// The selected file is the root of an active Cargo target, including build scripts.
+    CargoTargetRoot,
+    /// The selected file is an active module of a Cargo target.
+    CargoModule,
 }
 
 impl RustProject {
@@ -68,7 +102,7 @@ impl RustProject {
         Self::open_with_source(root, source_path, toolchain, edition)
     }
 
-    /// Validates a caller-selected Cargo root and exact crate-root source.
+    /// Validates a caller-selected Cargo package and exact Rust source.
     ///
     /// The driver uses this form so the source authority cannot be guessed
     /// from a package layout or filename.
@@ -76,7 +110,7 @@ impl RustProject {
     /// # Errors
     ///
     /// Returns a typed authority failure when either caller-selected path is
-    /// unavailable or the Cargo root lacks a package manifest.
+    /// unavailable or the Cargo package lacks a package manifest.
     pub fn open_with_source(
         root: impl AsRef<Path>,
         source_path: impl AsRef<Path>,
@@ -141,30 +175,87 @@ impl RustProject {
         ) -> Result<Output, RustAuthorityError>,
     ) -> Result<Output, RustAuthorityError> {
         control.check()?;
-        let source_path = &self.source_path;
-        let source_bytes = fs::metadata(source_path)
-            .map_err(|source| RustAuthorityError::SourceRead {
-                path: source_path.clone(),
+        let maximum = u64::from(*control.maximum_source_bytes);
+        let metadata =
+            fs::metadata(&self.source_path).map_err(|source| RustAuthorityError::SourceRead {
+                path: self.source_path.clone(),
                 source,
-            })?
-            .len();
-        if source_bytes > u64::from(*control.maximum_source_bytes) {
+            })?;
+        if metadata.len() > maximum {
             return Err(RustAuthorityError::SourceBudget {
-                actual: source_bytes,
+                actual: metadata.len(),
                 maximum: control.maximum_source_bytes,
             });
         }
-        let cargo = self
-            .toolchain
+        let mut source = Vec::new();
+        fs::File::open(&self.source_path)
+            .map_err(|source| RustAuthorityError::SourceRead {
+                path: self.source_path.clone(),
+                source,
+            })?
+            .take(maximum.saturating_add(1))
+            .read_to_end(&mut source)
+            .map_err(|source| RustAuthorityError::SourceRead {
+                path: self.source_path.clone(),
+                source,
+            })?;
+        if source.len() as u64 > maximum {
+            return Err(RustAuthorityError::SourceBudget {
+                actual: source.len() as u64,
+                maximum: control.maximum_source_bytes,
+            });
+        }
+        let workspace = RustWorkspace::open_with_features(
+            &self.root,
+            &self.toolchain,
+            self.edition,
+            features,
+            control,
+        )?;
+        workspace.analyze_source(&self.source_path, &source, control, lower)
+    }
+}
+
+impl RustWorkspace {
+    /// Loads one Cargo package graph under its exact toolchain, edition, and feature policy.
+    ///
+    /// No source-specific HIR is returned here. Each admitted package source
+    /// enters later through [`Self::analyze_source`] while borrowing this same
+    /// database and VFS.
+    pub fn open(
+        root: impl AsRef<Path>,
+        toolchain: &RustToolchain,
+        edition: RustEdition,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<Self, RustAuthorityError> {
+        Self::open_with_features(
+            root,
+            toolchain,
+            edition,
+            RustFeatureControl::default(),
+            control,
+        )
+    }
+
+    /// Loads one Cargo package graph with explicit Cargo feature unification controls.
+    pub fn open_with_features(
+        root: impl AsRef<Path>,
+        toolchain: &RustToolchain,
+        edition: RustEdition,
+        features: RustFeatureControl<'_>,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<Self, RustAuthorityError> {
+        control.check()?;
+        let root = RustProject::validate_root(root)?;
+        let cargo = toolchain
             .cargo
             .as_ref()
             .ok_or(LoadError::MissingCargoConfiguration)?;
-        let cargo_home = self
-            .toolchain
+        let cargo_home = toolchain
             .cargo_home
             .as_ref()
             .ok_or(LoadError::MissingCargoConfiguration)?;
-        let path = self.toolchain.authority_path()?;
+        let path = toolchain.authority_path()?;
         let extra_env = [
             (
                 "CARGO".to_owned(),
@@ -183,18 +274,18 @@ impl RustProject {
             ),
             (
                 "RUSTC".to_owned(),
-                Some(self.toolchain.tool.to_string_lossy().into_owned()),
+                Some(toolchain.tool.to_string_lossy().into_owned()),
             ),
             (
                 "RUSTUP_HOME".to_owned(),
-                self.toolchain
+                toolchain
                     .rustup_home
                     .as_ref()
                     .map(|path| path.to_string_lossy().into_owned()),
             ),
             (
                 "RUSTUP_TOOLCHAIN".to_owned(),
-                self.toolchain.rustup_toolchain.clone(),
+                toolchain.rustup_toolchain.clone(),
             ),
             ("PATH".to_owned(), Some(path)),
         ]
@@ -202,7 +293,7 @@ impl RustProject {
         .collect();
         let config = CargoConfig {
             sysroot: Some(RustLibSource::Path(AbsPathBuf::assert_utf8(
-                self.toolchain.sysroot.clone(),
+                toolchain.sysroot.clone(),
             ))),
             no_deps: false,
             metadata_extra_args: vec!["--offline".to_owned()],
@@ -219,36 +310,116 @@ impl RustProject {
             proc_macro_processes: 0,
         };
         let (database, vfs, _proc_macros) =
-            ra_ap_load_cargo::load_workspace_at(&self.root, &config, &load, &|_| {}).map_err(
+            ra_ap_load_cargo::load_workspace_at(&root, &config, &load, &|_| {}).map_err(
                 |source| RustAuthorityError::Workspace {
-                    root: self.root.clone(),
+                    root: root.clone(),
                     source,
                 },
             )?;
         control.check()?;
-        let source = fs::read(source_path).map_err(|source| RustAuthorityError::SourceRead {
-            path: source_path.clone(),
-            source,
-        })?;
+        Ok(Self {
+            root,
+            edition,
+            database,
+            vfs,
+        })
+    }
+
+    /// Runs one exact source transaction against this workspace's shared analyzer database.
+    ///
+    /// `source` is the admitted package-frontier buffer. Before HIR is exposed,
+    /// its bytes must exactly match the text rust-analyzer loaded into this
+    /// workspace's VFS. The callback cannot return a value borrowing the HIR
+    /// transaction.
+    pub fn analyze_source<Output>(
+        &self,
+        source_path: impl AsRef<Path>,
+        source: &[u8],
+        control: RustAnalysisControl<'_>,
+        lower: impl for<'analysis> FnOnce(
+            RustAuthority<'analysis>,
+        ) -> Result<Output, RustAuthorityError>,
+    ) -> Result<Output, RustAuthorityError> {
+        control.check()?;
+        if source.len() > *control.maximum_source_bytes as usize {
+            return Err(RustAuthorityError::SourceBudget {
+                actual: u64::try_from(source.len()).unwrap_or(u64::MAX),
+                maximum: control.maximum_source_bytes,
+            });
+        }
+        let requested_path = source_path.as_ref();
+        let source_path =
+            requested_path
+                .canonicalize()
+                .map_err(|source| RustAuthorityError::ProjectSource {
+                    path: requested_path.to_path_buf(),
+                    source,
+                })?;
+        if !source_path.is_file() {
+            return Err(RustAuthorityError::SourceNotFile { path: source_path });
+        }
+        if !source_path.starts_with(&self.root) {
+            return Err(RustAuthorityError::SourceOutsidePackage {
+                root: self.root.clone(),
+                path: source_path,
+            });
+        }
         let vfs_path = VfsPath::from(AbsPathBuf::assert_utf8(source_path.clone()));
-        let file_id = vfs.file_id(&vfs_path).map(|(id, _excluded)| id).ok_or(
-            RustAuthorityError::SourceNotLoaded {
-                path: source_path.clone(),
-            },
-        )?;
-        // `all_crates` is topologically ordered, so shared roots resolve to the first
-        // crate in the loader's deterministic crate-graph order.
-        let observed_edition = all_crates(&database)
-            .iter()
-            .find_map(|krate| {
-                let root_file_id = krate.root_file_id(&database);
-                (root_file_id.file_id(&database) == file_id)
-                    .then_some(root_file_id.edition(&database))
-            })
-            .ok_or_else(|| RustAuthorityError::SourceNotLoaded {
+        let file_id = self
+            .vfs
+            .file_id(&vfs_path)
+            .map(|(id, _excluded)| id)
+            .ok_or(RustAuthorityError::SourceNotLoaded {
                 path: source_path.clone(),
             })?;
-        let source_file = EditionedFileId::new(&database, file_id, observed_edition);
+        let observed_source = SourceDatabase::file_text(&self.database, file_id);
+        let observed_text = observed_source.text(&self.database);
+        if observed_text.as_bytes() != source {
+            return Err(RustAuthorityError::SourceBinding {
+                expected: source.len(),
+                observed: observed_text.len(),
+            });
+        }
+        // Cargo's VFS contains package Rust files even when cfg removes them
+        // from every active module tree. Resolve an ordinary source through
+        // its HIR module owner; use root-file identity for standalone Cargo
+        // targets such as build scripts. Never treat a merely present VFS
+        // file as a Cargo crate root.
+        let package_root = AbsPathBuf::assert_utf8(self.root.clone());
+        let semantics = Semantics::new(&self.database);
+        let crate_belongs_to_package = |krate: ra_ap_hir::Crate| {
+            let root_file = krate.root_file(&self.database);
+            self.vfs
+                .file_path(root_file)
+                .as_path()
+                .is_some_and(|path| path.starts_with(package_root.as_path()))
+        };
+        let owner = semantics
+            .file_to_module_defs(file_id)
+            .map(|module| module.krate(&self.database))
+            .find(|krate| crate_belongs_to_package(*krate))
+            // `all_crates` is topologically ordered, so shared roots resolve
+            // to the first crate in the loader's deterministic graph order.
+            .or_else(|| {
+                all_crates(&self.database)
+                    .iter()
+                    .copied()
+                    .map(ra_ap_hir::Crate::from)
+                    .find(|krate| {
+                        krate.root_file(&self.database) == file_id
+                            && crate_belongs_to_package(*krate)
+                    })
+            })
+            .ok_or_else(|| RustAuthorityError::DetachedSource {
+                path: source_path.clone(),
+            })?;
+        let source_scope = if owner.root_file(&self.database) == file_id {
+            RustSourceScope::CargoTargetRoot
+        } else {
+            RustSourceScope::CargoModule
+        };
+        let observed_edition = owner.edition(&self.database);
+        let source_file = EditionedFileId::new(&self.database, file_id, observed_edition);
         let observed = rust_edition(observed_edition);
         if observed != self.edition {
             return Err(RustAuthorityError::EditionMismatch {
@@ -257,16 +428,17 @@ impl RustProject {
             });
         }
         control.check()?;
-        ra_ap_hir_ty::next_solver::interner::attach_db(&database, || {
-            let semantics = Semantics::new(&database);
+        ra_ap_hir_ty::next_solver::interner::attach_db(&self.database, || {
+            let semantics = Semantics::new(&self.database);
             let root = semantics.parse(source_file);
             lower(RustAuthority {
-                database: &database,
+                database: &self.database,
                 semantics,
                 root,
-                source: &source,
+                source,
                 source_file,
                 edition: self.edition,
+                source_scope,
             })
         })
     }
@@ -375,6 +547,8 @@ pub struct RustAuthority<'analysis> {
     pub source_file: EditionedFileId,
     /// Compile-recipe edition cross-checked before this authority was created.
     pub edition: RustEdition,
+    /// Active Cargo relationship proven for this selected source.
+    pub source_scope: RustSourceScope,
 }
 
 impl<'analysis> RustAuthority<'analysis> {
@@ -1384,6 +1558,14 @@ pub enum RustAuthorityError {
         /// Caller-selected unusable crate root path.
         path: PathBuf,
     },
+    /// A per-source request resolved outside the workspace's exact Cargo package root.
+    #[error("selected Rust source path {path} is outside Cargo package root {root}")]
+    SourceOutsidePackage {
+        /// Exact Cargo package root loaded into this workspace.
+        root: PathBuf,
+        /// Canonical source path rejected by package containment.
+        path: PathBuf,
+    },
     /// The selected root source exceeds the caller-owned admission budget.
     #[error("Rust source is {actual} bytes, exceeding the {maximum:?}-byte authority budget")]
     SourceBudget {
@@ -1424,12 +1606,22 @@ pub enum RustAuthorityError {
         /// Exact requested source path.
         path: PathBuf,
     },
-    /// The compiler request source does not equal the selected Cargo crate root.
-    #[error("Rust request source has {expected} bytes, but Cargo crate root has {observed} bytes")]
+    /// The selected file exists in the package VFS but is outside all active Cargo targets.
+    #[error(
+        "selected Rust source is cfg-inactive or detached from every active Cargo target: {path}"
+    )]
+    DetachedSource {
+        /// Exact selected package source without active Cargo HIR ownership.
+        path: PathBuf,
+    },
+    /// The compiler request bytes differ from the exact source text in the Cargo VFS.
+    #[error(
+        "Rust request source differs from Cargo VFS text (request {expected} bytes, VFS {observed} bytes)"
+    )]
     SourceBinding {
-        /// Byte count retained by the compiler request source identity.
+        /// Byte count retained by the admitted compiler request source.
         expected: usize,
-        /// Byte count loaded by rust-analyzer from the selected Cargo root.
+        /// Byte count loaded by rust-analyzer from its package VFS.
         observed: usize,
     },
     /// A rust-analyzer byte range exceeded the supplied source buffer.

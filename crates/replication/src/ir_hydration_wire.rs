@@ -12,7 +12,8 @@ use backend_semantic::ir::{
     EmbeddingNormalization, EmbeddingPlaneIdentity, GenerationId, LanguageProfile,
     SemanticHydrationCursorToken, SemanticImageIdentity, SemanticIrPlane, SemanticManifestRoot,
     SemanticPlaneCatalog, SemanticPlaneCatalogRoot, SemanticPlaneImageKey, SemanticPlaneKind,
-    SemanticPlaneManifest, SemanticRangeRequest, UntrustedSemanticSegmentId,
+    SemanticPlaneManifest, SemanticPlaneSegment, SemanticRangeRequest, SemanticSegmentId,
+    UntrustedSemanticSegmentId,
 };
 
 use crate::{
@@ -998,6 +999,32 @@ pub trait DurableSemanticRangeStore: DurableSemanticSegmentStore {
         selection: crate::SelectedSemanticPlane,
         request: SemanticRangeRequest,
     ) -> Result<(), Self::RangeError>;
+}
+
+/// File-backed CAS operations used by local hydration to verify existing
+/// payloads without materializing them. Implementations must validate the
+/// requested descriptor and stream the bytes through the segment commitment.
+pub trait VerifiedLocalSemanticCas: DurableSemanticRangeStore {
+    /// Verifies an object already visible under the freshly selected target.
+    fn verify_selected_segment(
+        &mut self,
+        selection: crate::SelectedSemanticPlane,
+        request: SemanticRangeRequest,
+        segment: &SemanticPlaneSegment,
+    ) -> Result<Option<SemanticSegmentId>, Self::RangeError>;
+
+    /// Verifies an object under a historical local owner and publishes its
+    /// existing object mapping under the freshly selected target, without
+    /// copying payload bytes.
+    fn verify_historical_segment(
+        &mut self,
+        binding: crate::HistoricalSemanticPlaneBinding,
+        base_manifest: &SemanticPlaneManifest,
+        base_segment: &SemanticPlaneSegment,
+        target_selection: crate::SelectedSemanticPlane,
+        target_manifest: &SemanticPlaneManifest,
+        target_segment: &SemanticPlaneSegment,
+    ) -> Result<Option<SemanticSegmentId>, Self::RangeError>;
 }
 
 /// Result after a durable sparse range write or full segment admission.

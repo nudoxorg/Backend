@@ -293,6 +293,7 @@ pub(crate) enum GoldenAuthorityPhase {
 pub(crate) enum GoldenAuthorityDiagnosticClass {
     Syntax,
     Binding,
+    SourceScope,
     Type,
     Authority,
     Projection,
@@ -598,6 +599,9 @@ impl From<CompilerCause> for GoldenCompilerCause {
                     }
                     backend_semantic::vocabulary::AuthorityDiagnosticClass::Binding => {
                         GoldenAuthorityDiagnosticClass::Binding
+                    }
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::SourceScope => {
+                        GoldenAuthorityDiagnosticClass::SourceScope
                     }
                     backend_semantic::vocabulary::AuthorityDiagnosticClass::Type => {
                         GoldenAuthorityDiagnosticClass::Type

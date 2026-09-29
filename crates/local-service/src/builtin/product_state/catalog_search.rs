@@ -144,7 +144,7 @@ impl CatalogSearchIndex {
                 standing: SearchStandingEvidence::Unknown,
                 ..SearchDocumentText::default()
             };
-            let lineage = key.normalized_lineage.as_str();
+            let lineage = key.lineage.as_str();
             let name = lineage_names.get(&key).map_or(lineage, String::as_str);
             let sort_key = lineage_sort_key(&key);
             lineage_inner.add_document_with_search_text(
@@ -324,7 +324,7 @@ fn acquired_lineage_key(
             source: record.authority.map(|authority| authority.source),
         },
         ecosystem: record.ecosystem,
-        normalized_lineage: lineage.chars().flat_map(char::to_lowercase).collect(),
+        lineage,
     };
     key.admit()?;
     Ok(key)

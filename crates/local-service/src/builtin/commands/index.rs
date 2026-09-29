@@ -16,8 +16,8 @@ use backend_engine::application::{
     VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
-    ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
-    SemanticPublicationCoverage, SemanticPublicationSelection,
+    PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationSelection,
 };
 use backend_extension_turso::SourceObservationReceipt;
 use backend_library::CompileExecutionIntent;
@@ -28,6 +28,7 @@ use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::{Language, LanguageProfile};
 use backend_version::{Coverage, ScopeRoot};
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -1173,8 +1174,14 @@ fn compile_semantic_publications(
                 "locald compiler route fallback: complete workspace capture or ACK journal unavailable"
             );
         }
-        let (claim, selected) = if let Some(publication) = remote_publication {
-            publication
+        let (claim, selected, publication_coverage) = if let Some((claim, selected)) =
+            remote_publication
+        {
+            // Remote result envelopes carry semantic artifacts but no typed
+            // source-scope gaps. Remote admission therefore requires the
+            // exact complete source-identity multiset before this branch can
+            // select a generation; partial worker output is rejected there.
+            (claim, selected, SemanticPublicationCoverage::Complete)
         } else {
             // A fallback local compile uses its own fresh, Partial source
             // observation. This prevents a captured full-workspace root from
@@ -1202,14 +1209,19 @@ fn compile_semantic_publications(
             let local_compile_started = Instant::now();
             let staged = match context.compiler.compile_package_sources_staged(source_set) {
                 Ok(staged)
-                    if staged.manifest_facts().fragment_count == expected_artifacts
-                        && staged.artifacts().len() == expected_artifacts as usize =>
+                    if u32::try_from(staged.artifacts().len()).ok()
+                        == Some(staged.manifest_facts().fragment_count)
+                        && staged
+                            .artifacts()
+                            .len()
+                            .checked_add(staged.coverage_gaps().len())
+                            == Some(expected_artifacts as usize) =>
                 {
                     staged
                 }
                 Ok(_) => {
                     return Err(BuiltinModelError(
-                        "local compiler output did not contain every expected source; prior selected semantic generation was preserved"
+                        "local compiler output did not account for every expected source; prior selected semantic generation was preserved"
                             .to_owned(),
                     ));
                 }
@@ -1218,6 +1230,38 @@ fn compile_semantic_publications(
                         "local semantic compilation failed; prior selected semantic generation was preserved: {error}"
                     )));
                 }
+            };
+            let publication_coverage = if staged.coverage_gaps().is_empty() {
+                SemanticPublicationCoverage::Complete
+            } else {
+                for gap in staged.coverage_gaps() {
+                    eprintln!(
+                        "locald semantic source scope gap: path={} source={:?} bytes={} cause={:?}",
+                        gap.relative_path(),
+                        gap.source().identity,
+                        gap.source().byte_len,
+                        gap.cause(),
+                    );
+                }
+                let completed = u32::try_from(staged.artifacts().len())
+                    .ok()
+                    .and_then(NonZeroU32::new)
+                    .ok_or_else(|| {
+                        BuiltinModelError(
+                            "local compiler found no active semantic source to publish; prior selected semantic generation was preserved"
+                                .to_owned(),
+                        )
+                    })?;
+                let total = NonZeroU32::new(expected_artifacts).ok_or_else(|| {
+                    BuiltinModelError(
+                        "local compiler source scope was empty; prior selected semantic generation was preserved"
+                            .to_owned(),
+                    )
+                })?;
+                SemanticPublicationCoverage::Partial(
+                    PartialSemanticCoverage::new(completed, total)
+                        .map_err(|error| BuiltinModelError(error.to_owned()))?,
+                )
             };
             if let (Some(owner), Some((capture, work))) = (owner_cluster, captured_work.as_ref()) {
                 let elapsed_ms =
@@ -1256,7 +1300,7 @@ fn compile_semantic_publications(
                     ))
                 }
             })?;
-            publication
+            (publication.0, publication.1, publication_coverage)
         };
         match execution_route {
             SemanticExecutionRoute::RemoteSelected => {
@@ -1268,10 +1312,10 @@ fn compile_semantic_publications(
             SemanticExecutionRoute::LocalOnly => {}
         }
         let value = ProductSemanticPublicationRecord::Published {
-            // Complete here means every source artifact in this profile's
-            // declared publication scope was emitted. The input read frontier
-            // stays independently marked Partial inside the admitted claim.
-            coverage: SemanticPublicationCoverage::Complete,
+            // Package bytes remain bound by the input witness. A typed
+            // Rust scope gap downgrades publication coverage while retaining
+            // every active semantic artifact in this generation.
+            coverage: publication_coverage,
             claim,
         };
         let history_key = key.for_generation(claim.binding().identity);
@@ -3071,7 +3115,19 @@ mod compiler_input_witness_tests {
             "backend-compiler-input-witness-{}-{sequence}",
             std::process::id()
         ));
-        fs::create_dir_all(&path).expect("create compiler input witness fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            builder
+                .create(&path)
+                .expect("create private compiler input witness fixture");
+        }
+        #[cfg(not(unix))]
+        {
+            fs::create_dir(&path).expect("create compiler input witness fixture");
+        }
         path
     }
 
@@ -3112,10 +3168,12 @@ mod compiler_input_witness_tests {
                 "persist remote compiler assignment reservation: injected journal failure",
             ),
         ] {
+            let owner_endpoint =
+                backend_engine::cluster_transport::SecretKey::from_bytes(&[74; 32]).public();
             let reservation = journal
                 .lock()
                 .expect("lock pre-Offer journal")
-                .reserve_capacity([74; 32])
+                .reserve_capacity(*owner_endpoint.as_bytes())
                 .expect("reserve pre-Offer capacity");
             let reservation_lease =
                 super::super::super::pending_stored::PendingAckReservationLease::new(

@@ -33,6 +33,12 @@ for executable in "$locald" "$cli" "$turso"; do
   fi
 done
 
+# The journey owns the exact daemon PID that it later stops before restoring.
+# A CLI readiness probe must never compose a replacement daemon while the
+# explicit owner is still starting (or after it fails). A nonexistent override
+# disables that fallback without affecting attachment to the live socket.
+export BACKEND_LOCALD_BIN="$run_root/no-autostart-locald"
+
 # The pinned Nix shell puts its compiler wrappers on PATH but does not export
 # Nudox's toolchain variables. Pin those variables to the selected executables
 # explicitly so a child Cargo invocation sees the same toolchain.
@@ -122,14 +128,15 @@ wait_ready() {
   local state="$1"
   local socket="$2"
   local output="$3"
+  local log="$4"
   local attempt
   for ((attempt = 0; attempt < 90; attempt++)); do
-    if "$cli" --workspace "$state" --endpoint "$socket" --json health >"$output" 2>&1; then
-      return 0
-    fi
     if ! kill -0 "$daemon_pid" 2>/dev/null; then
-      cat "$output" >&2 || true
+      cat "$log" >&2 || true
       return 1
+    fi
+    if [[ -S "$socket" ]] && "$cli" --workspace "$state" --endpoint "$socket" --json health >"$output" 2>&1; then
+      return 0
     fi
     sleep 1
   done
@@ -153,6 +160,25 @@ index_authority_metadata() {
 
 index_authority_dump() {
   "$turso" "${turso_flags[@]}" "$1" .dump
+}
+
+index_authority_schema_objects() {
+  sql_list "$1" "SELECT type||'|'||name||'|'||tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name;"
+}
+
+# VACUUM INTO may rewrite equivalent CREATE TABLE formatting in .dump. Compare
+# the canonical multiset of row inserts and the schema object identities
+# separately, rather than treating textual SQL whitespace as database drift.
+index_authority_rows_sha() {
+  LC_ALL=C grep '^INSERT INTO ' "$1" | LC_ALL=C sort | shasum -a 256 | awk '{print $1}'
+}
+
+# Compare edge contents as well as graph metadata. The facts witness is the
+# logical authority, while this digest makes accidental loss or row mutation
+# visible in the cold restore fixture itself.
+package_graph_rows_sha() {
+  sql_list "$1" "SELECT hex(edge_id)||'|'||source||'|'||source_authority_kind||'|'||hex(source_authority_id)||'|'||target_ecosystem||'|'||target_name||'|'||requirement||'|'||coalesce(resolved,'')||'|'||scope||'|'||optional||'|'||authority||'|'||hex(frontier)||'|'||hex(provenance)||'|'||hex(facts_version) FROM backend_projection_package_edges ORDER BY edge_id;" \
+    | LC_ALL=C sort | shasum -a 256 | awk '{print $1}'
 }
 
 assert_projection_counts() {
@@ -262,25 +288,22 @@ shasum -a 256 "$cli" >"$artifacts/cli-binary-sha256.txt"
 
 owner_socket="/tmp/nudox-live-turso-$run_id.sock"
 start_daemon "$owner" "$owner_socket" "$artifacts/locald.log"
-wait_ready "$owner" "$owner_socket" "$artifacts/health-before.json"
+wait_ready "$owner" "$owner_socket" "$artifacts/health-before.json" "$artifacts/locald.log"
 
 # These are public, exact pins. An add failure is retained as evidence and
 # fails this journey: a cold owner must never hide a partially ingested source.
 capture_add "$serde_purl" serde
 capture_add "$serde_dependent_purl" "$serde_dependent_slug"
-"$cli" --workspace "$owner" --endpoint "$owner_socket" --json --limit 20 search serde \
-    >"$artifacts/search-serde.json" 2>&1 || true
-"$cli" --workspace "$owner" --endpoint "$owner_socket" --json --limit 10 index-search serde \
-    >"$artifacts/index-search-serde.json" 2>&1 || true
-"$cli" --workspace "$owner" --endpoint "$owner_socket" --json dependencies "$serde_dependent_purl" \
-    >"$artifacts/dependencies-$serde_dependent_slug.json" 2>&1 || true
-"$cli" --workspace "$owner" --endpoint "$owner_socket" --json dependents "$serde_purl" \
-    >"$artifacts/dependents-serde.json" 2>&1 || true
 
-# Wait a bounded interval for the registry acquisition and graph projection
-# writes to settle. The persisted witness, not elapsed time alone, gates backup.
+# A graph read refreshes the resident catalog and synchronizes its checked
+# facts into Turso. Acquisition is asynchronous, so keep asking the real
+# dependency surface until the persisted graph contains both pinned packages.
+# The durable witness, rather than elapsed time alone, gates backup.
 settled=0
 for ((attempt = 0; attempt < 90; attempt++)); do
+  "$cli" --workspace "$owner" --endpoint "$owner_socket" --json \
+      dependencies "$serde_dependent_purl" \
+      >"$artifacts/dependencies-settle.json" 2>&1 || true
   serde_edges="$(sql_list "$owner/projection.turso" "SELECT count(*) FROM backend_projection_package_edges WHERE source='$serde_purl';")"
   dependent_edges="$(sql_list "$owner/projection.turso" "SELECT count(*) FROM backend_projection_package_edges WHERE source='$serde_dependent_purl';")"
   reverse_edges="$(sql_list "$owner/projection.turso" "SELECT count(*) FROM backend_projection_package_edges WHERE target_name='serde';")"
@@ -299,11 +322,27 @@ if ((settled == 0)); then
   exit 1
 fi
 
+# These warm queries are part of the ingest gate. A cold query failure is only
+# meaningful when the same selected owner served the result before backup.
+"$cli" --workspace "$owner" --endpoint "$owner_socket" --json --limit 20 search serde \
+    >"$artifacts/search-serde.json" 2>&1
+"$cli" --workspace "$owner" --endpoint "$owner_socket" --json --limit 10 index-search serde \
+    >"$artifacts/index-search-serde.json" 2>&1
+"$cli" --workspace "$owner" --endpoint "$owner_socket" --json dependencies "$serde_dependent_purl" \
+    >"$artifacts/dependencies-$serde_dependent_slug.json" 2>&1
+"$cli" --workspace "$owner" --endpoint "$owner_socket" --json dependents "$serde_purl" \
+    >"$artifacts/dependents-serde.json" 2>&1
+grep -Fq "$serde_purl" "$artifacts/search-serde.json"
+grep -Fq "$serde_purl" "$artifacts/index-search-serde.json"
+grep -Fq 'serde ^1.0.220' "$artifacts/dependencies-$serde_dependent_slug.json"
+grep -Fq "$serde_dependent_name $serde_dependent_version" "$artifacts/dependents-serde.json"
+
 projection_snapshot="$artifacts/projection.turso.vacuum-into"
 authority_snapshot="$artifacts/index-authority.turso.vacuum-into"
 projection_metadata "$owner/projection.turso" >"$artifacts/projection-live-before-vacuum.txt"
 index_authority_metadata "$owner/index-authority.turso" >"$artifacts/index-authority-live-before-vacuum.txt"
 index_authority_dump "$owner/index-authority.turso" >"$artifacts/index-authority-live-before-vacuum.dump.sql"
+index_authority_schema_objects "$owner/index-authority.turso" >"$artifacts/index-authority-live-before-vacuum.objects.txt"
 capture_physical_backup "$owner/projection.turso" "$projection_snapshot" projection
 capture_physical_backup "$owner/index-authority.turso" "$authority_snapshot" index-authority
 
@@ -318,6 +357,8 @@ index_authority_metadata "$owner/index-authority.turso" >"$artifacts/index-autho
 index_authority_metadata "$authority_snapshot" >"$artifacts/index-authority-snapshot-metadata.txt"
 index_authority_dump "$owner/index-authority.turso" >"$artifacts/index-authority-live-after-vacuum.dump.sql"
 index_authority_dump "$authority_snapshot" >"$artifacts/index-authority-snapshot.dump.sql"
+index_authority_schema_objects "$owner/index-authority.turso" >"$artifacts/index-authority-live-after-vacuum.objects.txt"
+index_authority_schema_objects "$authority_snapshot" >"$artifacts/index-authority-snapshot.objects.txt"
 for metadata_file in projection-live-after-vacuum.txt projection-snapshot-metadata.txt; do
   if [[ "$(cat "$artifacts/projection-live-before-vacuum.txt")" != "$(cat "$artifacts/$metadata_file")" ]]; then
     printf 'Projection root/count/digest/facts witness drifted by %s; refusing mismatched owner restore.\n' \
@@ -332,13 +373,18 @@ for metadata_file in index-authority-live-after-vacuum.txt index-authority-snaps
     exit 1
   fi
 done
-authority_before_sha="$(shasum -a 256 "$artifacts/index-authority-live-before-vacuum.dump.sql" | awk '{print $1}')"
-authority_after_sha="$(shasum -a 256 "$artifacts/index-authority-live-after-vacuum.dump.sql" | awk '{print $1}')"
-authority_snapshot_sha="$(shasum -a 256 "$artifacts/index-authority-snapshot.dump.sql" | awk '{print $1}')"
+authority_before_sha="$(index_authority_rows_sha "$artifacts/index-authority-live-before-vacuum.dump.sql")"
+authority_after_sha="$(index_authority_rows_sha "$artifacts/index-authority-live-after-vacuum.dump.sql")"
+authority_snapshot_sha="$(index_authority_rows_sha "$artifacts/index-authority-snapshot.dump.sql")"
 printf 'before=%s\nafter=%s\nsnapshot=%s\n' "$authority_before_sha" "$authority_after_sha" \
     "$authority_snapshot_sha" >"$artifacts/index-authority-dump-sha256.txt"
 if [[ "$authority_before_sha" != "$authority_after_sha" || "$authority_before_sha" != "$authority_snapshot_sha" ]]; then
-  printf '%s\n' 'Index-authority row dump drifted across VACUUM INTO; refusing mismatched owner restore.' >&2
+  printf '%s\n' 'Index-authority rows drifted across VACUUM INTO; refusing mismatched owner restore.' >&2
+  exit 1
+fi
+if ! cmp -s "$artifacts/index-authority-live-before-vacuum.objects.txt" "$artifacts/index-authority-live-after-vacuum.objects.txt" \
+    || ! cmp -s "$artifacts/index-authority-live-before-vacuum.objects.txt" "$artifacts/index-authority-snapshot.objects.txt"; then
+  printf '%s\n' 'Index-authority schema objects drifted across VACUUM INTO; refusing mismatched owner restore.' >&2
   exit 1
 fi
 assert_projection_counts "$projection_snapshot" >"$artifacts/projection-snapshot-count-check.txt"
@@ -389,13 +435,26 @@ printf 'projection-main-only-sha256=%s\nindex-authority-main-only-sha256=%s\n' \
 
 restore_socket="/tmp/nudox-live-turso-restore-$run_id.sock"
 start_daemon "$restore_owner" "$restore_socket" "$artifacts/restore/locald.log"
-wait_ready "$restore_owner" "$restore_socket" "$artifacts/restore/health.json"
+wait_ready "$restore_owner" "$restore_socket" "$artifacts/restore/health.json" "$artifacts/restore/locald.log"
 snapshot_root="$(sql_list "$projection_snapshot" "SELECT hex(root) FROM backend_projection_meta;")"
 snapshot_rows="$(sql_list "$projection_snapshot" "SELECT count(*) FROM backend_projection_rows;")"
 restored_root="$(sql_list "$restore_owner/projection.turso" "SELECT hex(root) FROM backend_projection_meta;")"
 restored_rows="$(sql_list "$restore_owner/projection.turso" "SELECT count(*) FROM backend_projection_rows;")"
 snapshot_graph="$(sql_list "$projection_snapshot" "SELECT edge_count||'|'||hex(root)||'|'||hex(facts_witness) FROM backend_projection_package_graph_meta;")"
 restored_graph="$(sql_list "$restore_owner/projection.turso" "SELECT edge_count||'|'||hex(root)||'|'||hex(facts_witness) FROM backend_projection_package_graph_meta;")"
+projection_metadata "$restore_owner/projection.turso" >"$artifacts/restore/projection-metadata.txt"
+if ! cmp -s "$artifacts/projection-snapshot-metadata.txt" "$artifacts/restore/projection-metadata.txt"; then
+  printf '%s\n' 'Cold restore changed projection roots, row digest, edge witness, or table counts.' >&2
+  exit 1
+fi
+snapshot_graph_rows_sha="$(package_graph_rows_sha "$projection_snapshot")"
+restored_graph_rows_sha="$(package_graph_rows_sha "$restore_owner/projection.turso")"
+printf 'snapshot=%s\nrestored=%s\n' "$snapshot_graph_rows_sha" "$restored_graph_rows_sha" \
+    >"$artifacts/restore/package-graph-rows-sha256.txt"
+if [[ "$restored_graph_rows_sha" != "$snapshot_graph_rows_sha" ]]; then
+  printf '%s\n' 'Cold restore changed package graph edge rows.' >&2
+  exit 1
+fi
 snapshot_root_lc="$(printf '%s' "$snapshot_root" | tr '[:upper:]' '[:lower:]')"
 restored_root_lc="$(printf '%s' "$restored_root" | tr '[:upper:]' '[:lower:]')"
 if [[ "$restored_root_lc" != "$snapshot_root_lc" || "$restored_rows" != "$snapshot_rows" \
@@ -426,11 +485,14 @@ fi
 
 "$cli" --workspace "$restore_owner" --endpoint "$restore_socket" --json --limit 20 search serde \
     >"$artifacts/restore/search-serde.json" 2>&1
+"$cli" --workspace "$restore_owner" --endpoint "$restore_socket" --json --limit 10 index-search serde \
+    >"$artifacts/restore/index-search-serde.json" 2>&1
 "$cli" --workspace "$restore_owner" --endpoint "$restore_socket" --json dependencies "$serde_dependent_purl" \
     >"$artifacts/restore/dependencies-$serde_dependent_slug.json" 2>&1
 "$cli" --workspace "$restore_owner" --endpoint "$restore_socket" --json dependents "$serde_purl" \
     >"$artifacts/restore/dependents-serde.json" 2>&1
 grep -Fq "$serde_purl" "$artifacts/restore/search-serde.json"
+grep -Fq "$serde_purl" "$artifacts/restore/index-search-serde.json"
 grep -Fq 'serde ^1.0.220' "$artifacts/restore/dependencies-$serde_dependent_slug.json"
 grep -Fq "$serde_dependent_name $serde_dependent_version" "$artifacts/restore/dependents-serde.json"
 
