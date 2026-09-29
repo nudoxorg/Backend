@@ -110,16 +110,29 @@ impl StableRowKey {
 
 /// Content identity of a semantic row payload.
 ///
-/// Values are generated from exact bytes or admitted against exact bytes;
-/// arbitrary digest bytes cannot be converted to this type.
+/// The raw and tagged preimages have separate schema domains. This prevents
+/// `[tag, payload]` as an untagged value from aliasing a tagged row, and keeps
+/// the tag available when a persisted identity is read back and rechecked.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct RowPayloadId(ObjectVersion<SemanticRowPayloadSchema>);
+pub struct RowPayloadId(RowPayloadIdentity);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum RowPayloadIdentity {
+    Raw(ObjectVersion<SemanticRowPayloadSchema>),
+    Tagged {
+        tag: u8,
+        version: ObjectVersion<SemanticTaggedRowPayloadSchema>,
+    },
+}
 
 impl RowPayloadId {
     /// Returns the canonical payload digest bytes.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
-        self.0.as_bytes()
+        match &self.0 {
+            RowPayloadIdentity::Raw(version) => version.as_bytes(),
+            RowPayloadIdentity::Tagged { version, .. } => version.as_bytes(),
+        }
     }
 }
 
@@ -129,6 +142,21 @@ struct SemanticRowPayloadSchema;
 impl Schema for SemanticRowPayloadSchema {
     const DOMAIN: u8 = 0x53;
     const TYPE: u16 = 0xf202;
+    const VERSION: u8 = 1;
+
+    type Value = [u8];
+
+    fn encode(value: &Self::Value, out: &mut Vec<u8>) {
+        out.extend_from_slice(value);
+    }
+}
+
+/// Distinct domain for the canonical tag followed by row payload bytes.
+struct SemanticTaggedRowPayloadSchema;
+
+impl Schema for SemanticTaggedRowPayloadSchema {
+    const DOMAIN: u8 = 0x53;
+    const TYPE: u16 = 0xf203;
     const VERSION: u8 = 1;
 
     type Value = [u8];
@@ -165,15 +193,18 @@ impl RowPayload {
             .checked_add(1)
             .ok_or(StableRowIndexError::Overflow)?;
         let schema = SchemaIdentity::new(
-            SemanticRowPayloadSchema::DOMAIN,
-            SemanticRowPayloadSchema::TYPE,
-            SemanticRowPayloadSchema::VERSION,
+            SemanticTaggedRowPayloadSchema::DOMAIN,
+            SemanticTaggedRowPayloadSchema::TYPE,
+            SemanticTaggedRowPayloadSchema::VERSION,
         );
         let mut hasher = ObjectVersionHasher::new(schema, hashed_len)?;
         hasher.update(&[tag])?;
         hasher.update(bytes)?;
         Ok(Self {
-            id: RowPayloadId(hasher.finish_version::<SemanticRowPayloadSchema>()?),
+            id: RowPayloadId(RowPayloadIdentity::Tagged {
+                tag,
+                version: hasher.finish_version::<SemanticTaggedRowPayloadSchema>()?,
+            }),
             byte_len,
         })
     }
@@ -194,8 +225,12 @@ impl RowPayload {
     #[must_use]
     pub const fn claim(self) -> UntrustedRowPayloadIdentity {
         UntrustedRowPayloadIdentity {
-            id: self.id.0.to_bytes(),
+            id: *self.id.as_bytes(),
             byte_len: self.byte_len,
+            encoding: match self.id.0 {
+                RowPayloadIdentity::Raw(_) => RowPayloadEncoding::Raw,
+                RowPayloadIdentity::Tagged { tag, .. } => RowPayloadEncoding::Tagged(tag),
+            },
         }
     }
 
@@ -210,13 +245,35 @@ impl RowPayload {
 pub struct UntrustedRowPayloadIdentity {
     id: [u8; 32],
     byte_len: u64,
+    encoding: RowPayloadEncoding,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum RowPayloadEncoding {
+    Raw,
+    Tagged(u8),
 }
 
 impl UntrustedRowPayloadIdentity {
     /// Reads an identity claim from a fixed-width wire value.
     #[must_use]
     pub const fn from_raw(id: [u8; 32], byte_len: u64) -> Self {
-        Self { id, byte_len }
+        Self {
+            id,
+            byte_len,
+            encoding: RowPayloadEncoding::Raw,
+        }
+    }
+
+    /// Reads an untrusted tagged payload claim. The tag is part of the exact
+    /// hashed preimage and is rechecked before the claim is admitted.
+    #[must_use]
+    pub const fn from_tagged_raw(tag: u8, id: [u8; 32], byte_len: u64) -> Self {
+        Self {
+            id,
+            byte_len,
+            encoding: RowPayloadEncoding::Tagged(tag),
+        }
     }
 
     /// Returns the untrusted digest bytes.
@@ -237,14 +294,14 @@ impl UntrustedRowPayloadIdentity {
         if actual_len != self.byte_len {
             return Err(StableRowIndexError::PayloadLengthMismatch);
         }
-        let actual = payload_id(bytes)?;
-        if actual.as_bytes() != &self.id {
+        let actual = match self.encoding {
+            RowPayloadEncoding::Raw => RowPayload::from_bytes(bytes)?,
+            RowPayloadEncoding::Tagged(tag) => RowPayload::from_tagged_bytes(tag, bytes)?,
+        };
+        if actual.id().as_bytes() != &self.id {
             return Err(StableRowIndexError::PayloadDigestMismatch);
         }
-        Ok(RowPayload {
-            id: actual,
-            byte_len: self.byte_len,
-        })
+        Ok(actual)
     }
 }
 
@@ -256,9 +313,9 @@ fn payload_id(bytes: &[u8]) -> Result<RowPayloadId, StableRowIndexError> {
     );
     let mut hasher = ObjectVersionHasher::new(schema, bytes.len())?;
     hasher.update(bytes)?;
-    Ok(RowPayloadId(
+    Ok(RowPayloadId(RowPayloadIdentity::Raw(
         hasher.finish_version::<SemanticRowPayloadSchema>()?,
-    ))
+    )))
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -267,7 +324,7 @@ struct SemanticRowIndexRelation;
 impl Relation for SemanticRowIndexRelation {
     const DOMAIN: u8 = 0x53;
     const TYPE: u16 = 0xf201;
-    const VERSION: u8 = 1;
+    const VERSION: u8 = 2;
 
     type Key = StableRowKey;
     type Value = RowPayload;
@@ -278,6 +335,13 @@ impl Relation for SemanticRowIndexRelation {
     }
 
     fn encode_value(value: &Self::Value, out: &mut Vec<u8>) {
+        match value.id.0 {
+            RowPayloadIdentity::Raw(_) => out.push(0),
+            RowPayloadIdentity::Tagged { tag, .. } => {
+                out.push(1);
+                out.push(tag);
+            }
+        }
         out.extend_from_slice(value.id.as_bytes());
         out.extend_from_slice(&value.byte_len.to_be_bytes());
     }

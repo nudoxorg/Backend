@@ -101,6 +101,29 @@ fn payload_claim_binds_exact_length_and_preimage() {
 }
 
 #[test]
+fn tagged_payload_claim_rechecks_its_tag_and_exact_payload_after_reopen() {
+    let payload = RowPayload::from_tagged_bytes(7, b"hello").expect("tagged row");
+    let claim = payload.claim();
+    assert_eq!(claim.admit(b"hello"), Ok(payload));
+    assert_eq!(payload.verify_bytes(b"hello"), Ok(()));
+    assert_eq!(
+        UntrustedRowPayloadIdentity::from_tagged_raw(8, *payload.id().as_bytes(), 5)
+            .admit(b"hello"),
+        Err(StableRowIndexError::PayloadDigestMismatch)
+    );
+    assert_eq!(
+        UntrustedRowPayloadIdentity::from_raw(*payload.id().as_bytes(), 5).admit(b"hello"),
+        Err(StableRowIndexError::PayloadDigestMismatch)
+    );
+    assert_ne!(
+        RowPayload::from_bytes(&[7, b'h', b'e', b'l', b'l', b'o'])
+            .expect("raw row")
+            .id(),
+        payload.id()
+    );
+}
+
+#[test]
 fn builder_and_bulk_admission_reject_unsorted_and_duplicate_keys() {
     let rows = [
         (key(RowFamily::Core, 2), payload(b"two")),
@@ -770,7 +793,14 @@ fn tagged_payload_identity_commits_the_row_tag_without_copying() {
 
     assert_eq!(typed.byte_len(), 5);
     assert_ne!(typed.id(), documentation.id());
-    assert_eq!(typed.id(), materialized.id());
+    assert_ne!(typed.id(), materialized.id());
+    assert_eq!(typed.claim().admit(b"value"), Ok(typed));
+    assert_eq!(
+        materialized
+            .claim()
+            .admit(&[2, b'v', b'a', b'l', b'u', b'e']),
+        Ok(materialized)
+    );
 }
 
 #[test]
