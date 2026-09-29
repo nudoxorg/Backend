@@ -334,7 +334,7 @@ impl VerifiedCompilerInputAdmission {
         read_closure: VerifiedUnitReadClosure,
         verifier: &impl CompilerInputAdmissionVerifier,
     ) -> Result<AdmittedSemanticInputWitnessV2, CompilerInputAdmissionError> {
-        let manifest = self.manifest();
+        let manifest = self.evidence.manifest();
         let capture_identity = read_closure.capture_identity();
         if read_closure.package_target() != manifest.package_target()
             || read_closure.invocation_recipe() != manifest.invocation_recipe()
