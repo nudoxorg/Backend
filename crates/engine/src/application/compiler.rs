@@ -20,7 +20,7 @@ use crate::publication::{
     publish_semantic_bytes, semantic_generation_requirements,
 };
 use backend_compile::{
-    EmbeddingExecutable, EmbeddingExecutionIdentity, EmbeddingInvocation, EmbeddingNormalization,
+    EmbeddingCoordinates, EmbeddingExecutable, EmbeddingExecutionIdentity, EmbeddingNormalization,
     EmbeddingPurpose,
 };
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
@@ -444,17 +444,10 @@ fn semantic_embedding_identity(
 }
 
 fn stage_embedding_artifact(
-    runtime: &EmbeddingExecutable,
     identity: EmbeddingExecutionIdentity,
     relative_path: &str,
-    source: &str,
+    coordinates: &EmbeddingCoordinates,
 ) -> Result<StagedEmbeddingArtifact, Box<str>> {
-    let coordinates = runtime
-        .infer(EmbeddingInvocation {
-            purpose: EmbeddingPurpose::Document,
-            text: source,
-        })
-        .map_err(|error| error.to_string().into_boxed_str())?;
     if coordinates.purpose() != EmbeddingPurpose::Document
         || coordinates.recipe() != identity.recipe()
         || coordinates.model().as_bytes() != identity.model()
@@ -1593,6 +1586,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             });
         }
         let mut embedding_artifacts = Vec::new();
+        let mut embedding_sources = Vec::new();
         if embedding_runtime.is_some() && embedding_unavailable.is_none() {
             if let Err(error) = embedding_artifacts.try_reserve_exact(source_count) {
                 if embedding_requirement == EmbeddingRequirement::Required {
@@ -1602,6 +1596,17 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     });
                 }
                 embedding_unavailable = Some("embedding output allocation failed".into());
+            }
+            if embedding_unavailable.is_none()
+                && embedding_sources.try_reserve_exact(source_count).is_err()
+            {
+                if embedding_requirement == EmbeddingRequirement::Required {
+                    return Err(PackageSemanticError::Embedding {
+                        path: first_source.relative_path.into(),
+                        cause: "embedding input allocation failed".into(),
+                    });
+                }
+                embedding_unavailable = Some("embedding input allocation failed".into());
             }
         }
         let mut artifacts = Vec::new();
@@ -1938,25 +1943,99 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 fragment: compiled.fragment,
             });
             if embedding_unavailable.is_none()
-                && let (Some(runtime), Some(identity)) =
-                    (embedding_runtime, embedding_execution_identity)
+                && embedding_runtime.is_some()
+                && embedding_execution_identity.is_some()
             {
-                match stage_embedding_artifact(
-                    runtime,
-                    identity,
-                    source.relative_path,
-                    source.source,
+                embedding_sources.push((source.relative_path, source.source));
+            }
+        }
+        if embedding_unavailable.is_none()
+            && let (Some(runtime), Some(identity)) =
+                (embedding_runtime, embedding_execution_identity)
+            && !embedding_sources.is_empty()
+        {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(PackageSemanticError::Compile {
+                    path: embedding_sources[0].0.into(),
+                    terminal: Box::new(CompilerTerminal::PackageCancelled {
+                        target: package.package_target.target(),
+                        phase: PackageCompilePhase::Lower,
+                    }),
+                });
+            }
+            let mut texts = Vec::new();
+            if texts.try_reserve_exact(embedding_sources.len()).is_err() {
+                let cause: Box<str> = "embedding request allocation failed".into();
+                if embedding_requirement == EmbeddingRequirement::Required {
+                    return Err(PackageSemanticError::Embedding {
+                        path: embedding_sources[0].0.into(),
+                        cause,
+                    });
+                }
+                embedding_unavailable = Some(cause);
+            } else {
+                texts.extend(embedding_sources.iter().map(|(_, source)| *source));
+                match runtime.infer_batch_with_cancellation_flag(
+                    EmbeddingPurpose::Document,
+                    &texts,
+                    cancelled,
                 ) {
-                    Ok(artifact) => embedding_artifacts.push(artifact),
-                    Err(cause) if embedding_requirement == EmbeddingRequirement::Required => {
-                        return Err(PackageSemanticError::Embedding {
-                            path: source.relative_path.into(),
-                            cause,
-                        });
+                    Ok(coordinates) if coordinates.len() == embedding_sources.len() => {
+                        for ((relative_path, _), coordinates) in
+                            embedding_sources.iter().zip(&coordinates)
+                        {
+                            match stage_embedding_artifact(identity, relative_path, coordinates) {
+                                Ok(artifact) => embedding_artifacts.push(artifact),
+                                Err(cause)
+                                    if embedding_requirement == EmbeddingRequirement::Required =>
+                                {
+                                    return Err(PackageSemanticError::Embedding {
+                                        path: (*relative_path).into(),
+                                        cause,
+                                    });
+                                }
+                                Err(cause) => {
+                                    embedding_artifacts.clear();
+                                    embedding_unavailable = Some(cause);
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    Err(cause) => {
+                    Ok(coordinates) => {
+                        let cause: Box<str> = format!(
+                            "embedding batch returned {} coordinates for {} sources",
+                            coordinates.len(),
+                            embedding_sources.len()
+                        )
+                        .into();
+                        if embedding_requirement == EmbeddingRequirement::Required {
+                            return Err(PackageSemanticError::Embedding {
+                                path: embedding_sources[0].0.into(),
+                                cause,
+                            });
+                        }
                         embedding_artifacts.clear();
                         embedding_unavailable = Some(cause);
+                    }
+                    Err(_) if cancelled.load(Ordering::Acquire) => {
+                        return Err(PackageSemanticError::Compile {
+                            path: embedding_sources[0].0.into(),
+                            terminal: Box::new(CompilerTerminal::PackageCancelled {
+                                target: package.package_target.target(),
+                                phase: PackageCompilePhase::Lower,
+                            }),
+                        });
+                    }
+                    Err(error) if embedding_requirement == EmbeddingRequirement::Required => {
+                        return Err(PackageSemanticError::Embedding {
+                            path: embedding_sources[0].0.into(),
+                            cause: error.to_string().into(),
+                        });
+                    }
+                    Err(error) => {
+                        embedding_artifacts.clear();
+                        embedding_unavailable = Some(error.to_string().into());
                     }
                 }
             }

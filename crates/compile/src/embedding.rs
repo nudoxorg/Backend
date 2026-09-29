@@ -5,19 +5,20 @@
 //! limits. A runtime becomes active only after the executable answers a real self-test request.
 
 use crate::{
-    ProcessEnvironment, ProcessError, ProcessLimits, ProcessStdin, ProcessSupervisor,
+    Cancellation, ProcessEnvironment, ProcessError, ProcessLimits, ProcessStdin, ProcessSupervisor,
     ProcessTerminal, ProtocolDescriptor, SupervisedCommand, ToolchainArtifact,
 };
 #[cfg(unix)]
 use std::fs;
 use std::{
+    collections::{HashMap, VecDeque},
     fmt,
     io::{self, Read},
     num::{NonZeroU16, NonZeroU32},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -25,8 +26,17 @@ use thiserror::Error;
 
 const REQUEST_MAGIC: &[u8; 4] = b"BEM1";
 const RESPONSE_MAGIC: &[u8; 4] = b"BEC1";
+const BATCH_REQUEST_MAGIC: &[u8; 4] = b"BEM2";
+const BATCH_RESPONSE_MAGIC: &[u8; 4] = b"BEC2";
 const REQUEST_HEADER_BYTES: usize = 4 + 1 + 1 + 2 + 32 + 32 + 32 + 4;
 const RESPONSE_HEADER_BYTES: usize = 4 + 2;
+const BATCH_RESPONSE_HEADER_BYTES: usize = 4 + 2 + 4;
+const BATCH_ITEM_HEADER_BYTES: usize = 32 + 4;
+const BATCH_RESPONSE_ITEM_HEADER_BYTES: usize = 32;
+/// Maximum unique texts admitted to one external embedding batch.
+pub const MAX_EMBEDDING_BATCH_ITEMS: usize = 256;
+/// Maximum original inputs accepted by one call; duplicates are folded before dispatch.
+pub const MAX_EMBEDDING_BATCH_INPUTS: usize = 65_536;
 const RUNTIME_SPEC_MAGIC: &[u8; 4] = b"BERS";
 const RUNTIME_SPEC_VERSION: u8 = 1;
 const RUNTIME_SPEC_BYTES: usize = 4 + 1 + 32 + 32 + 32 + 32 + 2 + 1 + 4 + 32;
@@ -448,6 +458,64 @@ pub struct EmbeddingInvocation<'text> {
     pub text: &'text str,
 }
 
+/// Content identity for one exact model task and input payload.
+///
+/// The digest commits the complete activated execution identity, query/document purpose, and
+/// exact UTF-8 input bytes. It is suitable for bounded in-memory reuse; durable cache entries
+/// still need to be published as versioned semantic objects.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EmbeddingInputIdentity([u8; 32]);
+
+impl EmbeddingInputIdentity {
+    /// Derives identity from the full runtime configuration and exact invocation payload.
+    #[must_use]
+    pub fn new(execution: EmbeddingExecutionIdentity, invocation: EmbeddingInvocation<'_>) -> Self {
+        let mut configuration =
+            blake3::Hasher::new_derive_key("backend.compile.embedding-configuration.v1");
+        configuration.update(&execution.model);
+        configuration.update(&execution.model_version);
+        configuration.update(&execution.tokenizer);
+        configuration.update(&execution.executable);
+        configuration.update(&execution.recipe);
+        configuration.update(&execution.dimension.to_be_bytes());
+        configuration.update(&execution.maximum_text_bytes.to_be_bytes());
+        configuration.update(&execution.options_digest);
+        configuration.update(&[match execution.normalization {
+            EmbeddingNormalization::None => 0,
+            EmbeddingNormalization::L2 => 1,
+        }]);
+        Self::for_configuration(*configuration.finalize().as_bytes(), invocation)
+    }
+
+    /// Derives identity for another owner that has already committed its exact producer recipe.
+    #[must_use]
+    pub fn for_configuration(configuration: [u8; 32], invocation: EmbeddingInvocation<'_>) -> Self {
+        let mut hasher = blake3::Hasher::new_derive_key("backend.compile.embedding-input.v1");
+        hasher.update(&configuration);
+        hasher.update(&[match invocation.purpose {
+            EmbeddingPurpose::Query => 1,
+            EmbeddingPurpose::Document => 2,
+        }]);
+        hasher.update(invocation.text.as_bytes());
+        Self(*hasher.finalize().as_bytes())
+    }
+
+    /// Full input identity digest.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+/// Protocol selected after the activation self-test.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmbeddingBatchProtocol {
+    /// BEM2/BEC2 accepted a real bounded batch self-test.
+    BatchV2,
+    /// The executable supports only the original BEM1/BEC1 one-input protocol.
+    SingleV1,
+}
+
 /// Typed coordinates tied to the exact recipe, model, tokenizer, and task.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddingCoordinates {
@@ -456,7 +524,7 @@ pub struct EmbeddingCoordinates {
     tokenizer: EmbeddingArtifactId,
     purpose: EmbeddingPurpose,
     normalization: EmbeddingNormalization,
-    values: Box<[f32]>,
+    values: Arc<[f32]>,
 }
 
 /// Portable identity of one activated embedding invocation recipe.
@@ -840,6 +908,12 @@ impl EmbeddingCoordinates {
         &self.values
     }
 
+    /// Clones the shared immutable coordinate storage without copying its values.
+    #[must_use]
+    pub fn shared_values(&self) -> Arc<[f32]> {
+        Arc::clone(&self.values)
+    }
+
     /// Returns the exact length of the canonical versioned vector payload.
     #[must_use]
     pub fn canonical_payload_len(&self) -> usize {
@@ -883,7 +957,51 @@ pub struct EmbeddingExecutable {
     tokenizer: EmbeddingArtifact,
     artifact_workspace: EmbeddingArtifactWorkspace,
     inference_gate: InferenceAdmissionGate,
+    inference_cache: Mutex<EmbeddingInferenceCache>,
+    batch_protocol: EmbeddingBatchProtocol,
     active: bool,
+}
+
+const MAX_EMBEDDING_CACHE_COORDINATE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EMBEDDING_CACHE_ENTRIES: usize = 256;
+
+#[derive(Default)]
+struct EmbeddingInferenceCache {
+    coordinates: HashMap<EmbeddingInputIdentity, EmbeddingCoordinates>,
+    insertion_order: VecDeque<EmbeddingInputIdentity>,
+    coordinate_bytes: usize,
+}
+
+impl EmbeddingInferenceCache {
+    fn get(&self, identity: EmbeddingInputIdentity) -> Option<EmbeddingCoordinates> {
+        self.coordinates.get(&identity).cloned()
+    }
+
+    fn insert(&mut self, identity: EmbeddingInputIdentity, coordinates: &EmbeddingCoordinates) {
+        let bytes = coordinates.values.len().saturating_mul(size_of::<f32>());
+        if bytes > MAX_EMBEDDING_CACHE_COORDINATE_BYTES
+            || self.coordinates.contains_key(&identity)
+            || self.coordinates.try_reserve(1).is_err()
+            || self.insertion_order.try_reserve(1).is_err()
+        {
+            return;
+        }
+        while self.coordinates.len() >= MAX_EMBEDDING_CACHE_ENTRIES
+            || self.coordinate_bytes.saturating_add(bytes) > MAX_EMBEDDING_CACHE_COORDINATE_BYTES
+        {
+            let Some(oldest) = self.insertion_order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.coordinates.remove(&oldest) {
+                self.coordinate_bytes = self
+                    .coordinate_bytes
+                    .saturating_sub(removed.values.len().saturating_mul(size_of::<f32>()));
+            }
+        }
+        self.coordinates.insert(identity, coordinates.clone());
+        self.insertion_order.push_back(identity);
+        self.coordinate_bytes = self.coordinate_bytes.saturating_add(bytes);
+    }
 }
 
 impl fmt::Debug for EmbeddingExecutable {
@@ -946,6 +1064,12 @@ impl EmbeddingExecutable {
     #[must_use]
     pub const fn maximum_concurrent_inferences(&self) -> usize {
         1
+    }
+
+    /// Protocol admitted by the activation self-test.
+    #[must_use]
+    pub const fn batch_protocol(&self) -> EmbeddingBatchProtocol {
+        self.batch_protocol
     }
 
     /// Verifies the executable and performs one supervised inference self-test before returning an
@@ -1119,6 +1243,8 @@ impl EmbeddingExecutable {
             tokenizer,
             artifact_workspace,
             inference_gate: InferenceAdmissionGate::new(process_limits.wall_time()),
+            inference_cache: Mutex::new(EmbeddingInferenceCache::default()),
+            batch_protocol: EmbeddingBatchProtocol::SingleV1,
             active: true,
         };
         if let Err(error) = runtime.probe_ready() {
@@ -1138,11 +1264,18 @@ impl EmbeddingExecutable {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        self.infer(EmbeddingInvocation {
+        let probe = EmbeddingInvocation {
             purpose: EmbeddingPurpose::Query,
             text: "backend embedding readiness",
-        })
-        .map(|_| ())
+        };
+        let identity = EmbeddingInputIdentity::new(self.execution_identity(), probe);
+        if let Ok(coordinates) = self.run_batch_v2(&[(identity, probe.text)], probe.purpose, None) {
+            debug_assert_eq!(coordinates.len(), 1);
+            self.batch_protocol = EmbeddingBatchProtocol::BatchV2;
+            return Ok(());
+        }
+        self.batch_protocol = EmbeddingBatchProtocol::SingleV1;
+        self.infer_inner(probe, false).map(|_| ())
     }
 
     /// Executes one supervised, recipe-bound embedding request.
@@ -1155,17 +1288,296 @@ impl EmbeddingExecutable {
         &self,
         invocation: EmbeddingInvocation<'_>,
     ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
+        self.infer_inner(invocation, true)
+    }
+
+    /// Embeds many exact inputs, deduplicating by model recipe, task, and payload.
+    ///
+    /// BEM2-capable workers receive bounded microbatches through one supervised child per
+    /// microbatch. A BEM1-only worker remains supported and receives one supervised request per
+    /// unique cache miss. No coordinates from a malformed or partial batch are returned or cached.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first input, cancellation, process, protocol, dimension, numeric, or
+    /// normalization failure. Callers must discard the whole returned batch on error.
+    pub fn infer_batch(
+        &self,
+        purpose: EmbeddingPurpose,
+        texts: &[&str],
+    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        self.infer_batch_inner(purpose, texts, None)
+    }
+
+    /// Cancellation-aware form of [`Self::infer_batch`].
+    ///
+    /// The shared flag is observed before execution and while the supervised process runs. A
+    /// cancelled child is terminated and reaped before this call returns.
+    pub fn infer_batch_with_cancellation_flag(
+        &self,
+        purpose: EmbeddingPurpose,
+        texts: &[&str],
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        self.infer_batch_inner(purpose, texts, Some(cancelled))
+    }
+
+    fn infer_batch_inner(
+        &self,
+        purpose: EmbeddingPurpose,
+        texts: &[&str],
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        let _permit = self.inference_gate.acquire()?;
+        if texts.len() > MAX_EMBEDDING_BATCH_INPUTS {
+            return Err(EmbeddingExecutableError::BatchInputLimit {
+                observed: texts.len(),
+                maximum: MAX_EMBEDDING_BATCH_INPUTS,
+            });
+        }
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        check_cancelled(cancelled)?;
+        for text in texts {
+            if text.len() > self.maximum_text_bytes {
+                return Err(EmbeddingExecutableError::TextLimit {
+                    observed: text.len(),
+                    maximum: self.maximum_text_bytes,
+                });
+            }
+        }
+
+        // Cache hits are accepted only after every mutable artifact path has been checked against
+        // the activated manifest. Cache residency never becomes executable/model authority.
         self.artifact_workspace
             .verify(self.model.identity, self.tokenizer.identity)?;
+        self.executable
+            .verify_path(&self.program)
+            .map_err(EmbeddingExecutableError::Process)?;
+
+        let mut unique_inputs = Vec::<(EmbeddingInputIdentity, &str)>::new();
+        let mut unique_by_identity = HashMap::<EmbeddingInputIdentity, usize>::new();
+        unique_inputs
+            .try_reserve(texts.len())
+            .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        unique_by_identity
+            .try_reserve(texts.len())
+            .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        let mut input_indices = Vec::new();
+        input_indices
+            .try_reserve_exact(texts.len())
+            .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        for text in texts {
+            let invocation = EmbeddingInvocation { purpose, text };
+            let identity = EmbeddingInputIdentity::new(self.execution_identity(), invocation);
+            let index = if let Some(index) = unique_by_identity.get(&identity) {
+                *index
+            } else {
+                let index = unique_inputs.len();
+                unique_inputs.push((identity, text));
+                unique_by_identity.insert(identity, index);
+                index
+            };
+            input_indices.push(index);
+        }
+
+        let mut unique_results = vec![None; unique_inputs.len()];
+        let mut misses = Vec::new();
+        misses
+            .try_reserve_exact(unique_inputs.len())
+            .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        {
+            let cache = self
+                .inference_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (index, (identity, _)) in unique_inputs.iter().enumerate() {
+                if let Some(coordinates) = cache.get(*identity) {
+                    unique_results[index] = Some(coordinates);
+                } else {
+                    misses.push(index);
+                }
+            }
+        }
+
+        // Admit a whole API batch as one owner. Besides bounding external model processes, this
+        // lets concurrent callers recheck exact identities after the prior owner's transactional
+        // cache commit, so simultaneous duplicate cold requests share one inference batch.
+        let _permit = if misses.is_empty() {
+            None
+        } else {
+            Some(self.inference_gate.acquire()?)
+        };
+        if _permit.is_some() {
+            check_cancelled(cancelled)?;
+            self.artifact_workspace
+                .verify(self.model.identity, self.tokenizer.identity)?;
+            self.executable
+                .verify_path(&self.program)
+                .map_err(EmbeddingExecutableError::Process)?;
+
+            let mut still_missing = Vec::new();
+            still_missing
+                .try_reserve_exact(misses.len())
+                .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+            let cache = self
+                .inference_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for index in misses.drain(..) {
+                let (identity, _) = unique_inputs[index];
+                if let Some(coordinates) = cache.get(identity) {
+                    unique_results[index] = Some(coordinates);
+                } else {
+                    still_missing.push(index);
+                }
+            }
+            misses = still_missing;
+        }
+
+        if self.batch_protocol == EmbeddingBatchProtocol::SingleV1 {
+            for index in misses {
+                check_cancelled(cancelled)?;
+                let (_, text) = unique_inputs[index];
+                unique_results[index] = Some(self.infer_inner_admitted(
+                    EmbeddingInvocation { purpose, text },
+                    false,
+                    cancelled,
+                )?);
+            }
+        } else {
+            let mut cursor = 0;
+            while cursor < misses.len() {
+                check_cancelled(cancelled)?;
+                let first_index = misses[cursor];
+                let first = unique_inputs[first_index];
+                if !self.batch_request_fits(&[first]) {
+                    // A single long input can fit the legacy framing even when its BEM2 identity
+                    // tag would exceed the independent request/output bounds.
+                    unique_results[first_index] = Some(self.infer_inner_admitted(
+                        EmbeddingInvocation {
+                            purpose,
+                            text: first.1,
+                        },
+                        false,
+                        cancelled,
+                    )?);
+                    cursor += 1;
+                    continue;
+                }
+                let mut end = cursor + 1;
+                while end < misses.len() && end - cursor < MAX_EMBEDDING_BATCH_ITEMS {
+                    let candidate_end = end + 1;
+                    let candidate = misses[cursor..candidate_end]
+                        .iter()
+                        .map(|index| unique_inputs[*index])
+                        .collect::<Vec<_>>();
+                    if !self.batch_request_fits(&candidate) {
+                        break;
+                    }
+                    end = candidate_end;
+                }
+                let batch = misses[cursor..end]
+                    .iter()
+                    .map(|index| unique_inputs[*index])
+                    .collect::<Vec<_>>();
+                let coordinates = self.run_batch_v2_admitted(&batch, purpose, cancelled)?;
+                check_cancelled(cancelled)?;
+                if coordinates.len() != batch.len() {
+                    return Err(EmbeddingExecutableError::BatchResponseCount {
+                        expected: batch.len(),
+                        observed: coordinates.len(),
+                    });
+                }
+                for (index, coordinates) in misses[cursor..end].iter().zip(coordinates) {
+                    unique_results[*index] = Some(coordinates);
+                }
+                cursor = end;
+            }
+        }
+
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(input_indices.len())
+            .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        for index in input_indices {
+            output.push(
+                unique_results[index]
+                    .as_ref()
+                    .cloned()
+                    .ok_or(EmbeddingExecutableError::Protocol)?,
+            );
+        }
+        check_cancelled(cancelled)?;
+        // Treat the whole API call transactionally. If a later microbatch fails, no earlier
+        // result from this call becomes a warm-cache hit on retry.
+        let mut cache = self
+            .inference_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for ((identity, _), coordinates) in unique_inputs.iter().zip(&unique_results) {
+            if let Some(coordinates) = coordinates {
+                cache.insert(*identity, coordinates);
+            }
+        }
+        Ok(output)
+    }
+
+    fn infer_inner(
+        &self,
+        invocation: EmbeddingInvocation<'_>,
+        use_cache: bool,
+    ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
+        self.infer_inner_with_cancellation_flag(invocation, use_cache, None)
+    }
+
+    fn infer_inner_with_cancellation_flag(
+        &self,
+        invocation: EmbeddingInvocation<'_>,
+        use_cache: bool,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
+        if !self.active {
+            return Err(EmbeddingExecutableError::Revoked);
+        }
+        check_cancelled(cancelled)?;
+        let _permit = self.inference_gate.acquire()?;
+        self.infer_inner_admitted(invocation, use_cache, cancelled)
+    }
+
+    fn infer_inner_admitted(
+        &self,
+        invocation: EmbeddingInvocation<'_>,
+        use_cache: bool,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
+        if !self.active {
+            return Err(EmbeddingExecutableError::Revoked);
+        }
+        check_cancelled(cancelled)?;
+        self.artifact_workspace
+            .verify(self.model.identity, self.tokenizer.identity)?;
+        self.executable
+            .verify_path(&self.program)
+            .map_err(EmbeddingExecutableError::Process)?;
         if invocation.text.len() > self.maximum_text_bytes {
             return Err(EmbeddingExecutableError::TextLimit {
                 observed: invocation.text.len(),
                 maximum: self.maximum_text_bytes,
             });
+        }
+        let input_identity = EmbeddingInputIdentity::new(self.execution_identity(), invocation);
+        if use_cache
+            && let Some(coordinates) = self
+                .inference_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(input_identity)
+        {
+            return Ok(coordinates);
         }
         let request = self.encode_request(invocation)?;
         let command = SupervisedCommand::for_authority_with_artifact(
@@ -1180,13 +1592,19 @@ impl EmbeddingExecutable {
             self.process_limits,
         )
         .map_err(EmbeddingExecutableError::Process)?;
-        let receipt = ProcessSupervisor::new(command)
-            .run()
-            .map_err(EmbeddingExecutableError::Process)?;
+        let receipt = run_supervised_command(command, cancelled)?;
+        check_cancelled(cancelled)?;
         if receipt.terminal() != ProcessTerminal::Success || !receipt.reaped() {
             return Err(EmbeddingExecutableError::Terminal(receipt.terminal()));
         }
-        self.decode_response(invocation.purpose, receipt.stdout())
+        let coordinates = self.decode_response(invocation.purpose, receipt.stdout())?;
+        if use_cache {
+            self.inference_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(input_identity, &coordinates);
+        }
+        Ok(coordinates)
     }
 
     /// Revokes this active runtime. Further requests fail before process creation.
@@ -1224,6 +1642,223 @@ impl EmbeddingExecutable {
         output.extend_from_slice(&text_len.to_be_bytes());
         output.extend_from_slice(invocation.text.as_bytes());
         Ok(output)
+    }
+
+    fn batch_request_fits(&self, batch: &[(EmbeddingInputIdentity, &str)]) -> bool {
+        if batch.is_empty() || batch.len() > MAX_EMBEDDING_BATCH_ITEMS {
+            return false;
+        }
+        let Some(request_bytes) =
+            batch
+                .iter()
+                .try_fold(REQUEST_HEADER_BYTES, |total, (_, text)| {
+                    if text.len() > self.maximum_text_bytes || u32::try_from(text.len()).is_err() {
+                        None
+                    } else {
+                        total
+                            .checked_add(BATCH_ITEM_HEADER_BYTES)?
+                            .checked_add(text.len())
+                    }
+                })
+        else {
+            return false;
+        };
+        let Some(vector_bytes) = usize::from(self.dimensions.get())
+            .checked_mul(size_of::<f32>())
+            .and_then(|bytes| bytes.checked_add(BATCH_RESPONSE_ITEM_HEADER_BYTES))
+        else {
+            return false;
+        };
+        let Some(response_bytes) = batch
+            .len()
+            .checked_mul(vector_bytes)
+            .and_then(|bytes| bytes.checked_add(BATCH_RESPONSE_HEADER_BYTES))
+        else {
+            return false;
+        };
+        request_bytes <= self.process_limits.input_bytes()
+            && response_bytes <= self.process_limits.stdout()
+            && response_bytes <= self.process_limits.output_bytes()
+    }
+
+    fn encode_batch_request(
+        &self,
+        batch: &[(EmbeddingInputIdentity, &str)],
+        purpose: EmbeddingPurpose,
+    ) -> Result<Vec<u8>, EmbeddingExecutableError> {
+        if !self.batch_request_fits(batch) {
+            return Err(EmbeddingExecutableError::BatchRequestExtent);
+        }
+        let request_bytes = batch
+            .iter()
+            .try_fold(REQUEST_HEADER_BYTES, |total, (_, text)| {
+                total
+                    .checked_add(BATCH_ITEM_HEADER_BYTES)
+                    .and_then(|bytes| bytes.checked_add(text.len()))
+            })
+            .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+        let count =
+            u32::try_from(batch.len()).map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(request_bytes)
+            .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        output.extend_from_slice(BATCH_REQUEST_MAGIC);
+        output.push(match purpose {
+            EmbeddingPurpose::Query => 1,
+            EmbeddingPurpose::Document => 2,
+        });
+        output.push(match self.normalization {
+            EmbeddingNormalization::None => 0,
+            EmbeddingNormalization::L2 => 1,
+        });
+        output.extend_from_slice(&self.dimensions.get().to_be_bytes());
+        output.extend_from_slice(&self.recipe);
+        output.extend_from_slice(&self.model.identity.as_bytes());
+        output.extend_from_slice(&self.tokenizer.identity.as_bytes());
+        output.extend_from_slice(&count.to_be_bytes());
+        for (identity, text) in batch {
+            let text_len = u32::try_from(text.len())
+                .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+            output.extend_from_slice(&identity.as_bytes());
+            output.extend_from_slice(&text_len.to_be_bytes());
+            output.extend_from_slice(text.as_bytes());
+        }
+        Ok(output)
+    }
+
+    fn run_batch_v2(
+        &self,
+        batch: &[(EmbeddingInputIdentity, &str)],
+        purpose: EmbeddingPurpose,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        if !self.active {
+            return Err(EmbeddingExecutableError::Revoked);
+        }
+        check_cancelled(cancelled)?;
+        let _permit = self.inference_gate.acquire()?;
+        self.run_batch_v2_admitted(batch, purpose, cancelled)
+    }
+
+    fn run_batch_v2_admitted(
+        &self,
+        batch: &[(EmbeddingInputIdentity, &str)],
+        purpose: EmbeddingPurpose,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        if !self.active {
+            return Err(EmbeddingExecutableError::Revoked);
+        }
+        check_cancelled(cancelled)?;
+        self.artifact_workspace
+            .verify(self.model.identity, self.tokenizer.identity)?;
+        self.executable
+            .verify_path(&self.program)
+            .map_err(EmbeddingExecutableError::Process)?;
+        let request = self.encode_batch_request(batch, purpose)?;
+        let command = SupervisedCommand::for_authority_with_artifact(
+            self.program.clone(),
+            self.arguments.clone(),
+            self.environment.clone(),
+            self.workspace.clone(),
+            ProcessStdin::bytes(request),
+            self.executable.clone(),
+            None,
+            ProtocolDescriptor::cold(),
+            self.process_limits,
+        )
+        .map_err(EmbeddingExecutableError::Process)?;
+        let receipt = run_supervised_command(command, cancelled)?;
+        check_cancelled(cancelled)?;
+        if receipt.terminal() != ProcessTerminal::Success || !receipt.reaped() {
+            return Err(EmbeddingExecutableError::Terminal(receipt.terminal()));
+        }
+        self.decode_batch_response(batch, purpose, receipt.stdout())
+    }
+
+    fn decode_batch_response(
+        &self,
+        batch: &[(EmbeddingInputIdentity, &str)],
+        purpose: EmbeddingPurpose,
+        bytes: &[u8],
+    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        let Some(header) = bytes.get(..BATCH_RESPONSE_HEADER_BYTES) else {
+            return Err(EmbeddingExecutableError::Protocol);
+        };
+        if &header[..4] != BATCH_RESPONSE_MAGIC {
+            return Err(EmbeddingExecutableError::Protocol);
+        }
+        let dimensions = u16::from_be_bytes([header[4], header[5]]);
+        if dimensions != self.dimensions.get() {
+            return Err(EmbeddingExecutableError::Dimension {
+                expected: self.dimensions.get(),
+                observed: dimensions,
+            });
+        }
+        let observed_count = u32::from_be_bytes([header[6], header[7], header[8], header[9]]);
+        let expected_count =
+            u32::try_from(batch.len()).map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        if observed_count != expected_count {
+            return Err(EmbeddingExecutableError::BatchResponseCount {
+                expected: batch.len(),
+                observed: usize::try_from(observed_count).unwrap_or(usize::MAX),
+            });
+        }
+        let vector_bytes = usize::from(dimensions)
+            .checked_mul(size_of::<f32>())
+            .and_then(|extent| extent.checked_add(BATCH_RESPONSE_ITEM_HEADER_BYTES))
+            .ok_or(EmbeddingExecutableError::Protocol)?;
+        let expected_bytes = batch
+            .len()
+            .checked_mul(vector_bytes)
+            .and_then(|extent| extent.checked_add(BATCH_RESPONSE_HEADER_BYTES))
+            .ok_or(EmbeddingExecutableError::Protocol)?;
+        if bytes.len() != expected_bytes {
+            return Err(EmbeddingExecutableError::Protocol);
+        }
+        let mut coordinates = Vec::new();
+        coordinates
+            .try_reserve_exact(batch.len())
+            .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+        let mut offset = BATCH_RESPONSE_HEADER_BYTES;
+        for (index, (identity, _)) in batch.iter().enumerate() {
+            let item_header = &bytes[offset..offset + BATCH_RESPONSE_ITEM_HEADER_BYTES];
+            if item_header != identity.as_bytes() {
+                return Err(EmbeddingExecutableError::BatchResponseIdentity { index });
+            }
+            offset += BATCH_RESPONSE_ITEM_HEADER_BYTES;
+            let values_end = offset
+                .checked_add(usize::from(dimensions) * size_of::<f32>())
+                .ok_or(EmbeddingExecutableError::Protocol)?;
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(usize::from(dimensions))
+                .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+            for encoded in bytes[offset..values_end].chunks_exact(size_of::<f32>()) {
+                let value = f32::from_le_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
+                if !value.is_finite() {
+                    return Err(EmbeddingExecutableError::NonFinite);
+                }
+                values.push(value);
+            }
+            if self.normalization == EmbeddingNormalization::L2 {
+                let norm_squared = values.iter().map(|value| value * value).sum::<f32>();
+                if (norm_squared - 1.0).abs() > 0.001 {
+                    return Err(EmbeddingExecutableError::Normalization { norm_squared });
+                }
+            }
+            coordinates.push(EmbeddingCoordinates {
+                recipe: self.recipe,
+                model: self.model.identity,
+                tokenizer: self.tokenizer.identity,
+                purpose,
+                normalization: self.normalization,
+                values: Arc::from(values.into_boxed_slice()),
+            });
+            offset = values_end;
+        }
+        Ok(coordinates)
     }
 
     fn decode_response(
@@ -1271,7 +1906,7 @@ impl EmbeddingExecutable {
             tokenizer: self.tokenizer.identity,
             purpose,
             normalization: self.normalization,
-            values: values.into_boxed_slice(),
+            values: Arc::from(values.into_boxed_slice()),
         })
     }
 }
@@ -1310,8 +1945,17 @@ pub enum EmbeddingExecutableError {
         /// Configured independent text bound.
         maximum: usize,
     },
+    /// One batch contained more original inputs than the call bound permits.
+    BatchInputLimit {
+        /// Number of supplied inputs.
+        observed: usize,
+        /// Maximum admitted inputs.
+        maximum: usize,
+    },
     /// Request header/text extent cannot be represented or exceeds the process input bound.
     RequestExtent,
+    /// Batch request, response, or scratch extent cannot be represented or exceeds its bound.
+    BatchRequestExtent,
     /// Expected response extent overflowed its fixed-dimension representation.
     ResponseExtent,
     /// Process output limits cannot retain one exact-dimension response.
@@ -1328,6 +1972,18 @@ pub enum EmbeddingExecutableError {
         expected: u16,
         /// Dimension declared by the process response.
         observed: u16,
+    },
+    /// Batch response did not contain exactly the expected number of vectors.
+    BatchResponseCount {
+        /// Number requested.
+        expected: usize,
+        /// Number returned.
+        observed: usize,
+    },
+    /// Batch response returned a different content/version identity at this position.
+    BatchResponseIdentity {
+        /// Zero-based response position.
+        index: usize,
     },
     /// Response contained NaN or infinity.
     NonFinite,
@@ -1349,6 +2005,45 @@ impl fmt::Display for EmbeddingExecutableError {
 }
 
 impl std::error::Error for EmbeddingExecutableError {}
+
+fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), EmbeddingExecutableError> {
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(EmbeddingExecutableError::Process(ProcessError::Cancelled));
+    }
+    Ok(())
+}
+
+fn run_supervised_command(
+    command: SupervisedCommand,
+    cancelled: Option<&AtomicBool>,
+) -> Result<crate::ProcessReceipt, EmbeddingExecutableError> {
+    let Some(cancelled) = cancelled else {
+        return ProcessSupervisor::new(command)
+            .run()
+            .map_err(EmbeddingExecutableError::Process);
+    };
+    check_cancelled(Some(cancelled))?;
+    let (cancellation, handle) = Cancellation::new();
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let monitor = scope.spawn(|| {
+            while !finished.load(Ordering::Acquire) {
+                if cancelled.load(Ordering::Acquire) {
+                    handle.cancel();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let result = ProcessSupervisor::new(command).run_with_cancellation(&cancellation);
+        finished.store(true, Ordering::Release);
+        if monitor.join().is_err() && result.is_ok() {
+            return Err(ProcessError::Io);
+        }
+        result
+    })
+    .map_err(EmbeddingExecutableError::Process)
+}
 
 #[cfg(all(test, unix))]
 mod tests {
@@ -1384,12 +2079,17 @@ mod tests {
         let executable = root.join("fixture.py");
         let script = format!(
             r#"#!/usr/bin/env python3
-import json, math, os, struct, sys
+import json, math, os, struct, sys, time
 EXPECTED_MODEL = bytes.fromhex("{}")
 EXPECTED_TOKENIZER = bytes.fromhex("{}")
 EXPECTED_MODEL_ID = "{}"
 EXPECTED_TOKENIZER_ID = "{}"
 counter = os.environ.get("BACKEND_EMBEDDING_ACTIVE_COUNTER")
+call_counter = os.environ.get("BACKEND_EMBEDDING_CALL_COUNTER")
+fault_file = os.environ.get("BACKEND_EMBEDDING_FAULT_FILE")
+if call_counter:
+    with open(call_counter, "a") as output:
+        output.write("call\n")
 if counter:
     import fcntl, time
     def update_counter(delta):
@@ -1413,36 +2113,68 @@ tokenizer_bytes = open(os.environ["BACKEND_EMBEDDING_TOKENIZER_FILE"], "rb").rea
 if model_bytes != EXPECTED_MODEL or tokenizer_bytes != EXPECTED_TOKENIZER:
     sys.exit(71)
 frame = sys.stdin.buffer.read()
-if len(frame) < 108 or frame[:4] != b"BEM1":
+if len(frame) < 108 or frame[:4] not in (b"BEM1", b"BEM2"):
     sys.exit(72)
 if frame[40:72].hex() != EXPECTED_MODEL_ID or frame[72:104].hex() != EXPECTED_TOKENIZER_ID:
     sys.exit(73)
-text_length = struct.unpack(">I", frame[104:108])[0]
-text = frame[108:]
-if len(text) != text_length or frame[6:8] == b"\x00\x00":
+batch = frame[:4] == b"BEM2"
+items = []
+if batch:
+    count = struct.unpack(">I", frame[104:108])[0]
+    offset = 108
+    for _ in range(count):
+        identity = frame[offset:offset + 32]
+        text_length = struct.unpack(">I", frame[offset + 32:offset + 36])[0]
+        offset += 36
+        text = frame[offset:offset + text_length]
+        if len(text) != text_length:
+            sys.exit(74)
+        items.append((identity, text))
+        offset += text_length
+    if offset != len(frame):
+        sys.exit(74)
+else:
+    text_length = struct.unpack(">I", frame[104:108])[0]
+    text = frame[108:]
+    if len(text) != text_length:
+        sys.exit(74)
+    items.append((None, text))
+if frame[6:8] == b"\x00\x00":
     sys.exit(74)
 dimension = struct.unpack(">H", frame[6:8])[0]
 normalization = frame[5]
 model = json.loads(model_bytes)
 tokenizer = json.loads(tokenizer_bytes)
-text = text.decode("utf-8")
-if tokenizer.get("lowercase"):
-    text = text.lower()
-tokens = text.split()
-if not tokens:
-    sys.exit(75)
-vectors = [model.get(token, model["<unk>"]) for token in tokens]
-if any(len(vector) != dimension for vector in vectors):
-    sys.exit(76)
-values = [sum(vector[index] for vector in vectors) / len(vectors) for index in range(dimension)]
-if normalization == 1:
-    norm = math.sqrt(sum(value * value for value in values))
-    if norm == 0:
+encoded_vectors = []
+for identity, raw_text in items:
+    text = raw_text.decode("utf-8")
+    if tokenizer.get("lowercase"):
+        text = text.lower()
+    tokens = text.split()
+    if not tokens:
         sys.exit(77)
-    values = [value / norm for value in values]
+    vectors = [model.get(token, model["<unk>"]) for token in tokens]
+    if any(len(vector) != dimension for vector in vectors):
+        sys.exit(76)
+    values = [sum(vector[index] for vector in vectors) / len(vectors) for index in range(dimension)]
+    if normalization == 1:
+        norm = math.sqrt(sum(value * value for value in values))
+        if norm == 0:
+            sys.exit(77)
+        values = [value / norm for value in values]
+    encoded_vectors.append((identity, struct.pack("<" + "f" * dimension, *values)))
 if counter:
     update_counter(-1)
-sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<" + "f" * dimension, *values))
+if batch:
+    fault = open(fault_file).read().strip() if fault_file else ""
+    response_count = len(encoded_vectors) - 1 if fault == "partial" and encoded_vectors else len(encoded_vectors)
+    sys.stdout.buffer.write(b"BEC2" + struct.pack(">HI", dimension, response_count))
+    for index, (identity, vector) in enumerate(encoded_vectors[:response_count]):
+        if fault == "identity" and index == 0:
+            identity = bytes([identity[0] ^ 1]) + identity[1:]
+        sys.stdout.buffer.write(identity + vector)
+else:
+    sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + encoded_vectors[0][1])
 "#,
             hex(MODEL_BYTES),
             hex(TOKENIZER_BYTES),
@@ -1458,6 +2190,30 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
         counter: Option<&Path>,
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
     {
+        runtime_with_counters(counter, None)
+    }
+
+    fn runtime_with_call_counter(
+        counter: &Path,
+    ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
+    {
+        runtime_with_counters(None, Some(counter))
+    }
+
+    fn runtime_with_counters(
+        counter: Option<&Path>,
+        call_counter: Option<&Path>,
+    ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
+    {
+        runtime_with_fault_file(counter, call_counter, None)
+    }
+
+    fn runtime_with_fault_file(
+        counter: Option<&Path>,
+        call_counter: Option<&Path>,
+        fault_file: Option<&Path>,
+    ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
+    {
         let (root, program) = fixture()?;
         let artifact = ToolchainArtifact::from_path(&program, Vec::new())?;
         let mut environment = vec![("PATH".into(), "/usr/bin:/bin".into())];
@@ -1467,9 +2223,21 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
                 counter.to_string_lossy().into_owned(),
             ));
         }
+        if let Some(call_counter) = call_counter {
+            environment.push((
+                "BACKEND_EMBEDDING_CALL_COUNTER".into(),
+                call_counter.to_string_lossy().into_owned(),
+            ));
+        }
+        if let Some(fault_file) = fault_file {
+            environment.push((
+                "BACKEND_EMBEDDING_FAULT_FILE".into(),
+                fault_file.to_string_lossy().into_owned(),
+            ));
+        }
         let environment = ProcessEnvironment::new(environment)?;
-        let limits =
-            ProcessLimits::new(64, 64, Duration::from_secs(2), 128)?.with_input_bytes_limit(512)?;
+        let limits = ProcessLimits::new(128, 64, Duration::from_secs(2), 256)?
+            .with_input_bytes_limit(512)?;
         let model = EmbeddingArtifact::new(Arc::from(MODEL_BYTES));
         let tokenizer = EmbeddingArtifact::new(Arc::from(TOKENIZER_BYTES));
         let spec = EmbeddingRuntimeSpecV1::new(
@@ -1496,15 +2264,15 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
         Ok((root, spec, runtime))
     }
 
-    fn runtime(
-    ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
+    fn runtime()
+    -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
     {
         runtime_with_counter(None)
     }
 
     #[test]
-    fn active_external_model_returns_typed_query_and_document_coordinates(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn active_external_model_returns_typed_query_and_document_coordinates()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (root, spec, runtime) = runtime()?;
         let query = runtime.infer(EmbeddingInvocation {
             purpose: EmbeddingPurpose::Query,
@@ -1556,6 +2324,264 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
     }
 
     #[test]
+    fn exact_input_cache_reuses_coordinates_and_keeps_probe_uncached()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter_root = std::env::temp_dir().join(format!(
+            "backend-embedding-call-count-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&counter_root)?;
+        fs::set_permissions(&counter_root, fs::Permissions::from_mode(0o700))?;
+        let counter = counter_root.join("calls.txt");
+        let (root, _, mut runtime) = runtime_with_call_counter(&counter)?;
+        let document = EmbeddingInvocation {
+            purpose: EmbeddingPurpose::Document,
+            text: "alpha",
+        };
+        let query = EmbeddingInvocation {
+            purpose: EmbeddingPurpose::Query,
+            text: "alpha",
+        };
+        let document_identity = EmbeddingInputIdentity::new(runtime.execution_identity(), document);
+        let query_identity = EmbeddingInputIdentity::new(runtime.execution_identity(), query);
+        assert_ne!(document_identity, query_identity);
+        assert_ne!(
+            document_identity,
+            EmbeddingInputIdentity::new(
+                runtime.execution_identity(),
+                EmbeddingInvocation {
+                    purpose: EmbeddingPurpose::Document,
+                    text: "beta",
+                }
+            )
+        );
+        let mut changed_configuration = runtime.execution_identity();
+        changed_configuration.options_digest = [0xA4; 32];
+        assert_ne!(
+            document_identity,
+            EmbeddingInputIdentity::new(changed_configuration, document)
+        );
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 1); // activation probe
+
+        let cold_started = Instant::now();
+        let cold = runtime.infer(document)?;
+        let cold_elapsed = cold_started.elapsed();
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
+
+        let warm_started = Instant::now();
+        let warm = runtime.infer(document)?;
+        let warm_elapsed = warm_started.elapsed();
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
+        assert!(Arc::ptr_eq(&cold.values, &warm.values));
+        assert_eq!(cold.values(), warm.values());
+
+        runtime.infer(query)?;
+        runtime.infer(EmbeddingInvocation {
+            purpose: EmbeddingPurpose::Document,
+            text: "beta",
+        })?;
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 4);
+        runtime.probe_ready()?;
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 5);
+        eprintln!(
+            "embedding fixture: cold inference={}ms, exact cache hit={}us; one process avoided",
+            cold_elapsed.as_millis(),
+            warm_elapsed.as_micros()
+        );
+
+        drop(runtime);
+        fs::remove_dir_all(root)?;
+        fs::remove_dir_all(counter_root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn batch_deduplicates_exact_documents_and_saves_a_supervised_process()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter_root = std::env::temp_dir().join(format!(
+            "backend-embedding-batch-count-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&counter_root)?;
+        fs::set_permissions(&counter_root, fs::Permissions::from_mode(0o700))?;
+        let counter = counter_root.join("calls.txt");
+        let (root, _, runtime) = runtime_with_call_counter(&counter)?;
+        assert_eq!(runtime.batch_protocol(), EmbeddingBatchProtocol::BatchV2);
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 1); // activation probe
+
+        let cold_started = Instant::now();
+        let cold = runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "alpha", "beta"])?;
+        let cold_elapsed = cold_started.elapsed();
+        assert_eq!(cold.len(), 3);
+        assert!(Arc::ptr_eq(&cold[0].values, &cold[1].values));
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
+
+        let warm_started = Instant::now();
+        let warm = runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "alpha", "beta"])?;
+        let warm_elapsed = warm_started.elapsed();
+        assert!(Arc::ptr_eq(&cold[0].values, &warm[0].values));
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
+        eprintln!(
+            "embedding batch fixture: 3 inputs / 2 unique -> 1 supervised call; cold={}us, exact cache hit={}us; avoids 2 single-item calls",
+            cold_elapsed.as_micros(),
+            warm_elapsed.as_micros()
+        );
+
+        drop(runtime);
+        fs::remove_dir_all(root)?;
+        fs::remove_dir_all(counter_root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_duplicate_batches_reuse_the_owner_transaction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter_root = std::env::temp_dir().join(format!(
+            "backend-embedding-concurrent-batch-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&counter_root)?;
+        fs::set_permissions(&counter_root, fs::Permissions::from_mode(0o700))?;
+        let active = counter_root.join("active.txt");
+        let calls = counter_root.join("calls.txt");
+        let (root, _, runtime) = runtime_with_counters(Some(&active), Some(&calls))?;
+        assert_eq!(fs::read_to_string(&calls)?.lines().count(), 1); // activation probe
+
+        let runtime = Arc::new(runtime);
+        let start = Arc::new(std::sync::Barrier::new(9));
+        let mut callers = Vec::new();
+        for _ in 0..8 {
+            let runtime = Arc::clone(&runtime);
+            let start = Arc::clone(&start);
+            callers.push(std::thread::spawn(move || {
+                start.wait();
+                runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "beta"])
+            }));
+        }
+        start.wait();
+        let mut shared = None;
+        for caller in callers {
+            let coordinates = caller
+                .join()
+                .map_err(|_| io::Error::other("concurrent embedding caller panicked"))??;
+            assert_eq!(coordinates.len(), 2);
+            if let Some(expected) = shared.as_ref() {
+                assert!(Arc::ptr_eq(expected, &coordinates[0].values));
+                assert!(Arc::ptr_eq(expected, &coordinates[1].values));
+            } else {
+                shared = Some(Arc::clone(&coordinates[0].values));
+            }
+        }
+        assert_eq!(fs::read_to_string(&calls)?.lines().count(), 2); // one cold batch
+        let active_state = fs::read_to_string(&active)?;
+        let observed = active_state
+            .split_whitespace()
+            .map(str::parse::<usize>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(observed.as_slice(), [0, 1]);
+
+        drop(runtime);
+        fs::remove_dir_all(root)?;
+        fs::remove_file(counter_root.join("active.txt.lock"))?;
+        fs::remove_dir(counter_root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn partial_and_reordered_batch_responses_are_rejected_without_cache_fill()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter_root = std::env::temp_dir().join(format!(
+            "backend-embedding-batch-fault-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&counter_root)?;
+        fs::set_permissions(&counter_root, fs::Permissions::from_mode(0o700))?;
+        let counter = counter_root.join("calls.txt");
+        let fault_file = counter_root.join("fault.txt");
+        fs::write(&fault_file, "ok")?;
+        let (root, _, runtime) = runtime_with_fault_file(None, Some(&counter), Some(&fault_file))?;
+        assert_eq!(runtime.batch_protocol(), EmbeddingBatchProtocol::BatchV2);
+
+        fs::write(&fault_file, "partial")?;
+        assert!(matches!(
+            runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "beta"]),
+            Err(EmbeddingExecutableError::BatchResponseCount {
+                expected: 2,
+                observed: 1
+            })
+        ));
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
+
+        fs::write(&fault_file, "identity")?;
+        assert!(matches!(
+            runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "beta"]),
+            Err(EmbeddingExecutableError::BatchResponseIdentity { index: 0 })
+        ));
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 3);
+
+        fs::write(&fault_file, "ok")?;
+        runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "beta"])?;
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 4);
+        drop(runtime);
+        fs::remove_dir_all(root)?;
+        fs::remove_dir_all(counter_root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_terminates_and_reaps_a_supervised_batch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter_root = std::env::temp_dir().join(format!(
+            "backend-embedding-batch-cancel-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&counter_root)?;
+        fs::set_permissions(&counter_root, fs::Permissions::from_mode(0o700))?;
+        let counter = counter_root.join("calls.txt");
+        let (root, _, runtime) =
+            runtime_with_counters(Some(&counter_root.join("active.txt")), Some(&counter))?;
+        assert_eq!(runtime.batch_protocol(), EmbeddingBatchProtocol::BatchV2);
+        let runtime = Arc::new(runtime);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_runtime = Arc::clone(&runtime);
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker = std::thread::spawn(move || {
+            worker_runtime.infer_batch_with_cancellation_flag(
+                EmbeddingPurpose::Document,
+                &["alpha", "beta"],
+                &worker_cancelled,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while fs::read_to_string(&counter)?.lines().count() < 2 {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "batch did not start").into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            worker
+                .join()
+                .map_err(|_| io::Error::other("batch caller panicked"))?,
+            Err(EmbeddingExecutableError::Process(ProcessError::Cancelled))
+        ));
+        let recovered = runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "beta"])?;
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 3); // probe, cancelled, retry
+
+        drop(runtime);
+        fs::remove_dir_all(root)?;
+        fs::remove_dir_all(counter_root)?;
+        Ok(())
+    }
+
+    #[test]
     fn revocation_and_text_bounds_fail_before_execution() -> Result<(), Box<dyn std::error::Error>>
     {
         let (root, _, mut runtime) = runtime()?;
@@ -1582,12 +2608,14 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
             })
         ));
         fs::write(runtime.artifact_workspace.tokenizer_path(), TOKENIZER_BYTES)?;
-        assert!(runtime
-            .infer(EmbeddingInvocation {
-                purpose: EmbeddingPurpose::Query,
-                text: "alpha"
-            })
-            .is_ok());
+        assert!(
+            runtime
+                .infer(EmbeddingInvocation {
+                    purpose: EmbeddingPurpose::Query,
+                    text: "alpha"
+                })
+                .is_ok()
+        );
         runtime.revoke();
         assert!(matches!(
             runtime.infer(EmbeddingInvocation {
@@ -1602,8 +2630,8 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
     }
 
     #[test]
-    fn shared_inference_gate_bounds_child_processes_and_releases_after_failure(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn shared_inference_gate_bounds_child_processes_and_releases_after_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let counter_root = std::env::temp_dir().join(format!(
             "backend-embedding-sentinel-{}-{stamp}",
@@ -1653,12 +2681,14 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
             })
         ));
         fs::write(runtime.artifact_workspace.tokenizer_path(), TOKENIZER_BYTES)?;
-        assert!(runtime
-            .infer(EmbeddingInvocation {
-                purpose: EmbeddingPurpose::Query,
-                text: "alpha"
-            })
-            .is_ok());
+        assert!(
+            runtime
+                .infer(EmbeddingInvocation {
+                    purpose: EmbeddingPurpose::Query,
+                    text: "alpha"
+                })
+                .is_ok()
+        );
 
         drop(runtime);
         fs::remove_dir_all(root)?;
@@ -1669,8 +2699,8 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
     }
 
     #[test]
-    fn inference_gate_has_a_typed_finite_wait_and_releases_its_permit(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn inference_gate_has_a_typed_finite_wait_and_releases_its_permit()
+    -> Result<(), Box<dyn std::error::Error>> {
         let gate = InferenceAdmissionGate::new(Duration::from_millis(10));
         let permit = gate.acquire()?;
         assert!(matches!(
