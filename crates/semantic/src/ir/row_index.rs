@@ -1118,27 +1118,47 @@ impl StableRowIndexChange {
     }
 }
 
-/// A raw changed row payload supplied to the owner-specific edit scratch.
-#[derive(Clone, Copy, Debug)]
+/// Action for one raw row in a sparse payload update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StableRowPayloadAction<'bytes> {
+    /// Inserts or replaces a row with its canonical record tag and exact payload.
+    Put { tag: u8, payload: &'bytes [u8] },
+    /// Removes the row if it is present.
+    Delete,
+    /// Declares that this frontier entry leaves the row unchanged.
+    Unchanged,
+}
+
+/// One ordered raw row action supplied to the owner-specific edit scratch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StableRowPayloadChange<'bytes> {
     key: StableRowKey,
-    after: Option<Option<&'bytes [u8]>>,
+    action: StableRowPayloadAction<'bytes>,
 }
 
 impl<'bytes> StableRowPayloadChange<'bytes> {
-    /// Creates an insert/replacement from exact row bytes or a deletion.
+    /// Creates one explicit insert, replacement, delete, or unchanged action.
     #[must_use]
-    pub const fn new(key: StableRowKey, after: Option<&'bytes [u8]>) -> Self {
-        Self {
-            key,
-            after: Some(after),
-        }
+    pub const fn new(key: StableRowKey, action: StableRowPayloadAction<'bytes>) -> Self {
+        Self { key, action }
+    }
+
+    /// Creates an insert/replacement from an exact tagged row payload.
+    #[must_use]
+    pub const fn put(key: StableRowKey, tag: u8, payload: &'bytes [u8]) -> Self {
+        Self::new(key, StableRowPayloadAction::Put { tag, payload })
+    }
+
+    /// Creates a deletion.
+    #[must_use]
+    pub const fn delete(key: StableRowKey) -> Self {
+        Self::new(key, StableRowPayloadAction::Delete)
     }
 
     /// Creates an explicit unchanged frontier entry without row bytes.
     #[must_use]
     pub const fn unchanged(key: StableRowKey) -> Self {
-        Self { key, after: None }
+        Self::new(key, StableRowPayloadAction::Unchanged)
     }
 }
 
@@ -1147,7 +1167,7 @@ impl<'bytes> StableRowPayloadChange<'bytes> {
 pub struct StableRowIndexUpdateWork {
     /// Existing persistent-tree update counters.
     pub tree: TreeWork,
-    /// Exact payload bytes hashed by `prepare_payload_update`.
+    /// Exact tagged row bytes hashed by `prepare_payload_update`, including one tag byte per put.
     pub row_payload_hash_bytes: u64,
     /// Number of input records that changed their committed value or presence.
     pub changed_keys: u64,
@@ -1213,9 +1233,16 @@ impl StableRowIndex {
         self.prepare_tree_changes(changed, 0)
     }
 
-    /// Hashes only payloads explicitly included in a complete producer
-    /// frontier, then prepares the path-copy update. Empty/no-op frontiers
-    /// hash zero row bytes.
+    /// Hashes only tagged payloads explicitly included in the caller-supplied
+    /// sparse frontier, then prepares the path-copy update. Empty frontiers
+    /// and `Unchanged` actions hash zero row bytes; each `Put` hashes its
+    /// payload and tag even when its identity already matches. Keys must be
+    /// strictly increasing.
+    ///
+    /// Ordering does not prove that the frontier is complete: the caller is
+    /// responsible for including every changed row. At present, V2 aggregate
+    /// admission builds its index from all decoded seven-family records. No
+    /// production call site currently supplies a frontier to this API.
     pub fn prepare_payload_update(
         &self,
         changes: &[StableRowPayloadChange<'_>],
@@ -1232,17 +1259,23 @@ impl StableRowIndex {
             .map_err(|_| StableRowIndexError::Allocation)?;
         let mut hashed_bytes = 0_u64;
         for change in changes {
-            let Some(after_bytes) = change.after else {
-                continue;
-            };
-            let after = if let Some(bytes) = after_bytes {
-                let payload = RowPayload::from_bytes(bytes)?;
-                hashed_bytes = hashed_bytes
-                    .checked_add(payload.byte_len)
-                    .ok_or(StableRowIndexError::Overflow)?;
-                Some(payload)
-            } else {
-                None
+            let after = match change.action {
+                StableRowPayloadAction::Put {
+                    tag,
+                    payload: bytes,
+                } => {
+                    let payload = RowPayload::from_tagged_bytes(tag, bytes)?;
+                    let tagged_len = payload
+                        .byte_len
+                        .checked_add(1)
+                        .ok_or(StableRowIndexError::Overflow)?;
+                    hashed_bytes = hashed_bytes
+                        .checked_add(tagged_len)
+                        .ok_or(StableRowIndexError::Overflow)?;
+                    Some(payload)
+                }
+                StableRowPayloadAction::Delete => None,
+                StableRowPayloadAction::Unchanged => continue,
             };
             if self.tree.get(&change.key).copied() == after {
                 continue;

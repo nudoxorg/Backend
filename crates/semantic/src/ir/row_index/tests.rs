@@ -139,15 +139,15 @@ fn batch_update_handles_insert_replace_delete_and_reuses_unchanged_nodes() {
     ];
     let base = StableRowIndex::from_sorted_rows(&initial).expect("valid index");
     let changes = [
-        StableRowPayloadChange::new(key(RowFamily::Core, 2), Some(b"two")),
-        StableRowPayloadChange::new(key(RowFamily::Core, 3), Some(b"new three")),
-        StableRowPayloadChange::new(key(RowFamily::Core, 5), None),
+        StableRowPayloadChange::put(key(RowFamily::Core, 2), 2, b"two"),
+        StableRowPayloadChange::put(key(RowFamily::Core, 3), 2, b"new three"),
+        StableRowPayloadChange::delete(key(RowFamily::Core, 5)),
     ];
     let prepared = base
         .prepare_payload_update(&changes)
         .expect("valid sorted changes");
     assert_eq!(prepared.work().changed_keys, 3);
-    assert_eq!(prepared.work().row_payload_hash_bytes, 3 + 9);
+    assert_eq!(prepared.work().row_payload_hash_bytes, 3 + 1 + 9 + 1);
     let next = prepared.commit();
 
     assert_eq!(next.get(&key(RowFamily::Core, 1)), Some(payload(b"one")));
@@ -224,6 +224,90 @@ fn no_op_frontier_reuses_the_root_and_hashes_zero_payload_bytes() {
     assert_eq!(unchanged.work().changed_keys, 0);
     assert_eq!(unchanged.work().row_payload_hash_bytes, 0);
     assert_eq!(unchanged.work().tree, TreeWork::default());
+}
+
+#[test]
+fn sparse_tagged_update_matches_full_seven_family_rebuild() {
+    let mut before_records = Vec::new();
+    let mut after_records = Vec::new();
+    for family in RowFamily::ALL {
+        for ordinal in 0..4 {
+            let stable_key = key(family, ordinal);
+            let tag = family
+                .code()
+                .wrapping_add(u8::try_from(ordinal).expect("small ordinal"));
+            let bytes = [
+                family.code(),
+                u8::try_from(ordinal).expect("small ordinal"),
+                0xa5,
+            ];
+            before_records.push((
+                stable_key,
+                RowPayload::from_tagged_bytes(tag, &bytes).expect("valid tagged payload"),
+            ));
+            if !(family == RowFamily::Types && ordinal == 1)
+                && !(family == RowFamily::Occurrences && ordinal == 2)
+            {
+                let (after_tag, after_bytes) = if family == RowFamily::Types && ordinal == 3 {
+                    (0x71, [0xde, 0xad, 0x01])
+                } else {
+                    (tag, bytes)
+                };
+                after_records.push((
+                    stable_key,
+                    RowPayload::from_tagged_bytes(after_tag, &after_bytes)
+                        .expect("valid tagged payload"),
+                ));
+            }
+        }
+    }
+    let base = StableRowIndex::from_sorted_rows(&before_records).expect("seven-family base");
+    let changes = [
+        StableRowPayloadChange::delete(key(RowFamily::Types, 1)),
+        StableRowPayloadChange::put(key(RowFamily::Types, 3), 0x71, &[0xde, 0xad, 0x01]),
+        StableRowPayloadChange::delete(key(RowFamily::Occurrences, 2)),
+    ];
+
+    let sparse = base
+        .prepare_payload_update(&changes)
+        .expect("ordered sparse tagged update")
+        .commit();
+    let rebuilt = StableRowIndex::from_sorted_rows(&after_records).expect("full tagged rebuild");
+
+    assert_eq!(sparse.root(), rebuilt.root());
+    assert_eq!(sparse.row_count(), rebuilt.row_count());
+    assert_eq!(
+        sparse.get(&key(RowFamily::Types, 3)),
+        Some(RowPayload::from_tagged_bytes(0x71, &[0xde, 0xad, 0x01]).expect("tagged payload"))
+    );
+    assert_eq!(
+        base.get(&key(RowFamily::Types, 3)),
+        Some(RowPayload::from_tagged_bytes(5, &[2, 3, 0xa5]).expect("old tagged payload"))
+    );
+    assert_eq!(sparse.get(&key(RowFamily::Types, 1)), None);
+    assert_eq!(sparse.get(&key(RowFamily::Occurrences, 2)), None);
+}
+
+#[test]
+fn payload_update_rejects_unsorted_and_duplicate_actions() {
+    let index = StableRowIndex::from_sorted_rows(&fixture_rows(8)).expect("valid index");
+    let unsorted = [
+        StableRowPayloadChange::put(key(RowFamily::Core, 2), 1, b"two"),
+        StableRowPayloadChange::delete(key(RowFamily::Core, 1)),
+    ];
+    assert_eq!(
+        index.prepare_payload_update(&unsorted).err(),
+        Some(StableRowIndexError::UnsortedOrDuplicate)
+    );
+
+    let duplicate = [
+        StableRowPayloadChange::delete(key(RowFamily::Core, 2)),
+        StableRowPayloadChange::put(key(RowFamily::Core, 2), 1, b"replacement"),
+    ];
+    assert_eq!(
+        index.prepare_payload_update(&duplicate).err(),
+        Some(StableRowIndexError::UnsortedOrDuplicate)
+    );
 }
 
 #[test]

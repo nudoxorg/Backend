@@ -10,6 +10,7 @@ use backend_semantic::ir::row_index::{
 
 const ROWS: usize = 16_384;
 const PAYLOAD_BYTES: usize = 128;
+const ROW_TAG: u8 = 1;
 const CASES: [usize; 4] = [0, 1, 8, 64];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -69,7 +70,7 @@ fn run_case(
     let changes = changed_at
         .iter()
         .zip(&changed_payloads)
-        .map(|(row, bytes)| StableRowPayloadChange::new(keys[*row], Some(bytes)))
+        .map(|(row, bytes)| StableRowPayloadChange::put(keys[*row], ROW_TAG, bytes))
         .collect::<Vec<_>>();
 
     let update_start = Instant::now();
@@ -94,9 +95,14 @@ fn run_case(
         let mut hash_bytes = 0_u64;
         for (key, bytes) in keys.iter().copied().zip(&target_payloads) {
             hash_bytes = hash_bytes
-                .checked_add(u64::try_from(bytes.len()).map_err(|_| StableRowIndexError::Overflow)?)
+                .checked_add(
+                    u64::try_from(bytes.len())
+                        .map_err(|_| StableRowIndexError::Overflow)?
+                        .checked_add(1)
+                        .ok_or(StableRowIndexError::Overflow)?,
+                )
                 .ok_or(StableRowIndexError::Overflow)?;
-            rows.push((key, RowPayload::from_bytes(bytes)?));
+            rows.push((key, RowPayload::from_tagged_bytes(ROW_TAG, bytes)?));
         }
         let (next, work) = StableRowIndex::from_sorted_rows_measured(&rows)?;
         rebuilt = Some(next);
@@ -136,6 +142,6 @@ fn records(
     keys.iter()
         .copied()
         .zip(payloads)
-        .map(|(key, bytes)| Ok((key, RowPayload::from_bytes(bytes)?)))
+        .map(|(key, bytes)| Ok((key, RowPayload::from_tagged_bytes(ROW_TAG, bytes)?)))
         .collect()
 }
