@@ -129,7 +129,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     println!(
-        "verified_object_read limitations first_read_is_not_a_cold_page_cache_measurement=true producer_copy_bytes_are_the_explicit_owned_bytes_to_vec_step=payload_length borrowed_payload_copy_bytes=0"
+        "verified_object_read limitations first_read_is_not_a_cold_page_cache_measurement=true owned_decode_payload_copy_bytes=payload_length explicit_producer_copy_bytes=owned_bytes_to_vec_step borrowed_total_payload_copy_bytes=0"
     );
     Ok(())
 }
@@ -297,8 +297,14 @@ fn report(
     } else {
         0
     };
+    let decode_copy = if matches!(mode, ReadMode::Owned | ReadMode::OwnedThenPayloadCopy) {
+        size
+    } else {
+        0
+    };
+    let total_payload_copies = decode_copy + explicit_copy;
     println!(
-        "verified_object_read sample={} payload_bytes={size} envelope_bytes={envelope_bytes} mode={} first_read_ns={first_read_ns} warm_p50_ns={p50} warm_p95_ns={p95} warm_p99_ns={p99} allocations={} allocated_bytes={} max_live_allocated_bytes={} explicit_producer_payload_copy_bytes={explicit_copy} rss_before_bytes={} rss_peak_sampled_bytes={} rss_after_bytes={}",
+        "verified_object_read sample={} payload_bytes={size} envelope_bytes={envelope_bytes} mode={} first_read_ns={first_read_ns} warm_p50_ns={p50} warm_p95_ns={p95} warm_p99_ns={p99} allocations={} allocated_bytes={} max_live_allocated_bytes={} owned_decode_payload_copy_bytes={decode_copy} explicit_producer_payload_copy_bytes={explicit_copy} total_payload_copy_bytes={total_payload_copies} rss_before_bytes={} rss_peak_sampled_bytes={} rss_after_bytes={}",
         latencies.len(),
         mode.label(),
         allocation.count_total,
