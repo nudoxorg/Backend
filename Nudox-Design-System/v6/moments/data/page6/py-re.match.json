@@ -1,0 +1,658 @@
+{
+"id":"py-re.match",
+"lang":"python",
+"pkg":"re",
+"version":"3.14 stdlib",
+"path":[
+"re"
+],
+"name":"match",
+"kind":"function",
+"summary":"Try to apply the pattern at the start of the string, returning a Match object, or None if no match was found.",
+"docs":[
+{
+"k":"p",
+"t":"Try to apply the pattern at the start of the string, returning a Match object, or None if no match was found."
+}
+],
+"source":{
+"file":"re/__init__.py",
+"line":164
+},
+"decl":"def match(pattern, string, flags=0):",
+"sig":{
+"ins":[
+{
+"name":"pattern",
+"type":{
+"text":"",
+"word":"a pattern",
+"known":"docs"
+},
+"doc":"a regular expression, text or compiled"
+},
+{
+"name":"string",
+"type":{
+"text":"",
+"word":"text or bytes",
+"known":"docs",
+"gen":"AnyStr"
+},
+"doc":"what to look at"
+},
+{
+"name":"flags",
+"type":{
+"text":"",
+"word":"flags",
+"known":"code"
+},
+"opt":true,
+"dflt":"0"
+}
+],
+"out":{
+"type":{
+"text":"",
+"word":"a Match",
+"link":"Match",
+"known":"docs"
+},
+"none":{
+"when":"if the pattern doesn't match at the start",
+"known":"docs"
+},
+"fails":{
+"type":{
+"text":"re.error",
+"word":"re.error",
+"known":"code"
+},
+"when":"if the pattern itself is invalid",
+"kinds":[]
+}
+},
+"generics":[
+{
+"name":"AnyStr",
+"role":"through",
+"bounds":[
+{
+"name":"str | bytes",
+"word":"text or bytes"
+}
+],
+"says":"Text in, text out; bytes in, bytes out.",
+"known":"docs"
+}
+]
+},
+"uses":[
+{
+"pkg":"_pylong",
+"dir":"",
+"file":".",
+"line":405,
+"text":"m = re.match(r'\\s*([+-]?)([0-9_]+)\\s*', s)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"configparser",
+"dir":"",
+"file":".",
+"line":1232,
+"text":"if re.match(self.SECTCRE, key):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"ctypes",
+"dir":"",
+"file":"_aix.py",
+"line":90,
+"text":"if re.match(\"[0-9]\", line):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"doctest",
+"dir":"",
+"file":".",
+"line":748,
+"text":"if len(want_lines) > 1 and re.match(r' *$', want_lines[-1]):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"idlelib",
+"dir":"",
+"file":"format.py",
+"line":181,
+"text":"return re.match(r\"^\\s*$\", line)is not None",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"idlelib",
+"dir":"",
+"file":"format.py",
+"line":185,
+"text":"return re.match(r\"^([ \\t]*)\", line).group()",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"idlelib",
+"dir":"",
+"file":"format.py",
+"line":194,
+"text":"m = re.match(r\"^([ \\t]*#*)\", line)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"idlelib",
+"dir":"",
+"file":"pyparse.py",
+"line":544,
+"text":"found = re.match(r\"\\s*\\\\\", code[i:endpos])is None",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"idlelib",
+"dir":"",
+"file":"zoomheight.py",
+"line":112,
+"text":"m = re.match(r\"(\\d+)x(\\d+)\\+(-?\\d+)\\+(-?\\d+)\", geom)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"idlelib",
+"dir":"",
+"file":"editor.py",
+"line":1074,
+"text":"m = re.match(r\"(\\d+)x(\\d+)\\+(-?\\d+)\\+(-?\\d+)\", geom)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"imaplib",
+"dir":"",
+"file":".",
+"line":2058,
+"text":"mo = re.match(r'.*\"([^\"]+)\"$', ml)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pickletools",
+"dir":"",
+"file":".",
+"line":2228,
+"text":"if not re.match(\"[A-Z][A-Z0-9_]+$\", name):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pydoc",
+"dir":"",
+"file":".",
+"line":231,
+"text":"m = re.match(r'\\(\\w+(?:(?=\\))|,\\s*(?:/(?:(?=\\))|,\\s*))?)', argspec)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"rlcompleter",
+"dir":"",
+"file":".",
+"line":153,
+"text":"m = re.match(r\"(\\w+(\\.\\w+)*)\\.(\\w*)\", text)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"smtplib",
+"dir":"",
+"file":".",
+"line":492,
+"text":"m = re.match(r'(?P<feature>[A-Za-z0-9][A-Za-z0-9\\-]*) ?', each)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"sysconfig",
+"dir":"",
+"file":"__main__.py",
+"line":49,
+"text":"m = re.match(_variable_rx, line)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"test",
+"dir":"",
+"file":"test_gdb/util.py",
+"line":284,
+"text":"m = re.match(pattern, actual, re.DOTALL)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"test",
+"dir":"",
+"file":"support/warnings_helper.py",
+"line":177,
+"text":"if ( re.match(msg, str(warning), re.I)and",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"test",
+"dir":"",
+"file":"support/os_helper.py",
+"line":243,
+"text":"m = re.match(r\"2.6.(\\d{1,2})\", kernel_version)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"test",
+"dir":"",
+"file":"support/__init__.py",
+"line":1132,
+"text":"m = re.match(r'(\\d+(?:\\.\\d+)?) (K|M|G|T)b?$', limit, re.IGNORECASE | re.VERBOSE)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"urllib",
+"dir":"",
+"file":"request.py",
+"line":1984,
+"text":"m = re.match(r\"(\\d+(?:\\.\\d+)*)(/\\d+)?\", value)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"urllib",
+"dir":"",
+"file":"request.py",
+"line":2095,
+"text":"if not re.match('(?:[^/:]+)://', address):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"urllib",
+"dir":"",
+"file":"parse.py",
+"line":465,
+"text":"if not re.match(r\"\\A[vV][a-fA-F0-9]+\\..+\\z\", hostname):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"xml",
+"dir":"",
+"file":"etree/ElementPath.py",
+"line":269,
+"text":"if signature == \"-\" and not re.match(r\"\\-?\\d+$\", predicate[0]):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"xml",
+"dir":"",
+"file":"etree/ElementPath.py",
+"line":279,
+"text":"and not re.match(r\"\\-?\\d+$\", predicate[0])):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"xml",
+"dir":"",
+"file":"etree/ElementTree.py",
+"line":1004,
+"text":"if re.match(r\"ns\\d+$\", prefix):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_internal/exceptions.py",
+"line":47,
+"text":"return re.match(r\"^[a-z]+(-[a-z]+)*$\", s)is not None",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_internal/cli/cmdoptions.py",
+"line":507,
+"text":"match = re.match(r\"^P(\\d+)D$\", value, re.ASCII)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_internal/operations/install/wheel.py",
+"line":313,
+"text":"pip_ep = [k for k in console if re.match(r\"pip(\\d+(\\.\\d+)?)?$\", k)]",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_internal/operations/install/wheel.py",
+"line":326,
+"text":"k for k in console if re.match(r\"easy_install(-\\d+\\.\\d+)?$\", k)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_internal/req/constructors.py",
+"line":58,
+"text":"m = re.match(r\"^(.+)(\\[[^\\]]+\\])$\", path)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_internal/vcs/git.py",
+"line":436,
+"text":"if re.match(r\"\\w+://\", url):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_internal/metadata/base.py",
+"line":619,
+"text":"project_name_valid = re.match( r\"^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$\", dist.canonical_name, flags=re.IGNORECASE, )",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_vendor/packaging/tags.py",
+"line":262,
+"text":"m = re.match(r\"cp\\d+(.*)\", abis[0])",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_vendor/packaging/_musllinux.py",
+"line":27,
+"text":"m = re.match(r\"Version (\\d+)\\.(\\d+)\", lines[1])",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_vendor/packaging/utils.py",
+"line":217,
+"text":"if \"__\" in name_part or re.match(r\"^[\\w\\d._]*$\", name_part, re.UNICODE)is None:",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_vendor/packaging/_manylinux.py",
+"line":162,
+"text":"m = re.match(r\"(?P<major>[0-9]+)\\.(?P<minor>[0-9]+)\", version_str)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_vendor/distlib/util.py",
+"line":870,
+"text":"m = re.match(re.escape(project_name) + r'\\b', filename)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_vendor/requests/utils.py",
+"line":133,
+"text":"if re.match(test, host, re.I):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_vendor/pyproject_hooks/_in_process/_in_process.py",
+"line":219,
+"text":"m = re.match(r\"[^/\\\\]+-[^/\\\\]+\\.dist-info/\", path)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"pip",
+"dir":"",
+"file":"_vendor/urllib3/util/retry.py",
+"line":331,
+"text":"if re.match(r\"^\\s*[0-9]+\\s*$\", retry_after):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"minit.py",
+"line":84,
+"text":"if not re.match('[a-zA-Z_][a-zA-Z0-9]*', options.name)and sample:",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"rewriter.py",
+"line":283,
+"text":"return re.match(regex, node.value)is not None",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"rewriter.py",
+"line":307,
+"text":"return re.match(regex, node.value)is not None",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"interpreter/interpreter.py",
+"line":1588,
+"text":"(self.how == 're' and not re.match(self.msg, msg)):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"linkers/detect.py",
+"line":176,
+"text":"linker_cmd = re.match(r'.*\\n(.*?)\\nlld-link: ', e, re.DOTALL).group(1)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"backend/vs2010backend.py",
+"line":104,
+"text":"return re.match(r'Gaming\\.(Desktop|Xbox.XboxOne|Xbox.Scarlett)\\.x64', platform, re.IGNORECASE)is not None",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"backend/ninjabackend.py",
+"line":195,
+"text":"varp = mesonlib.unwrap( re.match(r'\\$\\{?(\\w*)\\}?', c))",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"compilers/mixins/compcert.py",
+"line":80,
+"text":"if re.match(ptrn, arg):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"mesonbuild",
+"dir":"",
+"file":"modules/cmake.py",
+"line":409,
+"text":"if re.match('^(/usr)?/lib(64)?/.+', abs_install_dir):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"GimpPaletteFile.py",
+"line":48,
+"text":"if re.match(rb\"\\w+:|#\", s):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":53,
+"text":"if re.match(\"#[a-f0-9]{3}$\", color):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":56,
+"text":"if re.match(\"#[a-f0-9]{4}$\", color):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":64,
+"text":"if re.match(\"#[a-f0-9]{6}$\", color):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":67,
+"text":"if re.match(\"#[a-f0-9]{8}$\", color):",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":75,
+"text":"m = re.match(r\"rgb\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)$\", color)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":79,
+"text":"m = re.match(r\"rgb\\(\\s*(\\d+)%\\s*,\\s*(\\d+)%\\s*,\\s*(\\d+)%\\s*\\)$\", color)",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":87,
+"text":"m = re.match( r\"hsl\\(\\s*(\\d+\\.?\\d*)\\s*,\\s*(\\d+\\.?\\d*)%\\s*,\\s*(\\d+\\.?\\d*)%\\s*\\)$\", color )",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":104,
+"text":"m = re.match( r\"hs[bv]\\(\\s*(\\d+\\.?\\d*)\\s*,\\s*(\\d+\\.?\\d*)%\\s*,\\s*(\\d+\\.?\\d*)%\\s*\\)$\", color )",
+"tag":"calls",
+"ctx":"code"
+},
+{
+"pkg":"PIL",
+"dir":"",
+"file":"ImageColor.py",
+"line":121,
+"text":"m = re.match(r\"rgba\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)$\", color)",
+"tag":"calls",
+"ctx":"code"
+}
+],
+"workspace":"the Python 3.14 stdlib and site-packages (no Python in your workspace)",
+"siblings":[
+{
+"name":"search",
+"differs":"anywhere in the string",
+"kind":"fn",
+"none":true
+},
+{
+"name":"fullmatch",
+"differs":"the whole string",
+"kind":"fn",
+"none":true
+},
+{
+"name":"compile",
+"differs":"keep the pattern",
+"kind":"fn"
+}
+],
+"facts":"The stdlib ships no type hints for re. Its types come from its docstring (docs) and its code.",
+"history":{
+"releases":[],
+"same":true
+}
+}

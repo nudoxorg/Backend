@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Moments</title>
+<link rel="stylesheet" href="../../v5/page/page.css">
+<style>
+body { background: #000; padding: 32px 40px 80px; }
+h1 { margin: 0; font: 700 40px/44px var(--display); letter-spacing: -.03em; color: var(--ink0); }
+.lede { margin: 6px 0 26px; font: italic 400 19px/27px var(--serif); color: var(--ink2); max-width: 60em; }
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+a.card { display: block; text-decoration: none; background: var(--g2); box-shadow: inset 0 0 0 1px var(--line2); padding: 12px; clip-path: polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%); transition: box-shadow 160ms, transform 200ms; }
+a.card:hover { box-shadow: inset 0 0 0 1px var(--peri); transform: translateY(-2px); }
+a.card img { width: 100%; display: block; aspect-ratio: 16/10; object-fit: cover; object-position: top; background: #05080f; }
+a.card b { display: block; margin-top: 10px; font: 600 15px var(--display); color: var(--ink0); }
+a.card span { display: block; margin-top: 4px; font: 400 12.5px/18px var(--ui); color: var(--ink3); }
+h2 { font: 600 13px var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--ink3); margin: 34px 0 12px; }
+</style></head><body>
+<h1>Moments</h1>
+<div class="lede">Browse, meet, add and hop, on this repository's real dependencies (1,350 packages from Cargo.lock; surfaces, release dates, licences and heads-ups read from the crates on disk). Every view is live: hover, click, scrub, type.</div>
+<h2>Meet a package</h2>
+<div class="grid">
+<a class="card" href="Moments.html?v=package&p=tokio"><img src="stills/p4-tokio.png"><b>The package page</b><span>The crest (licence, heads-up stack, weight iceberg, advisories), one release ticker, feature switches, and the shingles as its intro.</span></a>
+<a class="card" href="Moments.html?v=package&p=tokio&feat=full&scrollto=.fbar"><img src="stills/p4-feat.png"><b>Features, with locks</b><span>Turn on <i>full</i> and the eleven features it needs snap on and lock; the bar says what they pull in.</span></a>
+<a class="card" href="Moments.html?v=package&p=tokio&mod=sync::mpsc"><img src="stills/p4-mod.png"><b>A module of its own</b><span>A big module opens as a page: its own description, its symbols as cards with badges instead of code.</span></a>
+<a class="card" href="Moments.html?v=package&p=toml&at=1.1.6%2Bspec-1.1.0"><img src="stills/p3-past.png"><b>Back (or forward) in time</b><span>Scrub the ticker: the page reads the package at that release, warmer, with what changed and what it means for you.</span></a>
+<a class="card" href="Moments.html?v=package&p=toml&scrollto=.terr3"><img src="stills/p4-toml.png"><b>The shingles</b><span>Every public name at a glance; each module says how much of it you use and what it's made of.</span></a>
+<a class="card" href="Moments.html?v=symbol&p=toml&s=Value&mod=value"><img src="stills/sym-value.png"><b>Symbol pages</b><span>A card opens into its page: what makes one on the left, what it does on the right, its cases below, and at the centre your code and it: a reach bar you can scrub and decks of your real call sites.</span></a>
+</div>
+<h2>The symbol page · what ships</h2>
+<div class="grid">
+<a class="card" href="Moments.html?v=symbol6&id=rs-from_str"><img src="stills/s6-fromstr.png"><b>A function</b><span>serde_json::from_str: its call as a rail of ports ending in what it gives, or fails with (coral). The docs; when it fails, and which kinds; every place your packages call it, with what T is there.</span></a>
+<a class="card" href="Moments.html?v=symbol6&id=rs-from_str&card=gen:T"><img src="stills/s6-card.png"><b>Hover the generic</b><span>T's card: what it must be (Deserialize), what your workspace chooses for it and where. Click a type to see those places.</span></a>
+<a class="card" href="Moments.html?v=symbol6&id=rs-Value"><img src="stills/s6-value.png"><b>An enum</b><span>serde_json::Value as a fork: one of six, the nesting cases marked. Its methods by what they do with it, the ones your code uses first.</span></a>
+<a class="card" href="Moments.html?v=symbol6&id=rs-AllocationInfo"><img src="stills/s6-alloc.png"><b>A struct</b><span>A bracket of fields, each with its plain type, its doc, and how often your code reads it.</span></a>
+<a class="card" href="Moments.html?v=symbol6&id=js-which.sync&opts=opt"><img src="stills/s6-which.png"><b>JavaScript, no types</b><span>which.sync: types read from its code (dotted), its options folded, and the two that change what it gives.</span></a>
+</div>
+<h2>The symbol page, redrawn · across languages</h2>
+<div class="grid">
+<a class="card" href="Moments.html?v=symbol5&id=rs-serde_json-from_str"><img src="stills/s5-fromstr.png"><b>A function page, dense</b><span>serde_json::from_str: the plate and its family on top, then all 830 call sites on this machine as a word tree, what callers choose for T, and a concordance aligned on the call.</span></a>
+<a class="card" href="Moments.html?v=symbol5"><img src="stills/s5-value.png"><b>The ledger</b><span>toml::Value, the same data as the old fan: where it comes from and where it goes as two dense columns meeting at a spine, each member weighted by your code's use; then who reaches which part of it, as a matrix.</span></a>
+<a class="card" href="Moments.html?v=symbol5&id=py-re-match"><img src="stills/s5-rematch.png"><b>Python, with no types</b><span>re.match: facts graded by how we know them (in its docs, in its code). Maybe-nothing is an exit, and the tree shows how callers check it; in the stdlib's tests, 165 read .group() unchecked.</span></a>
+<a class="card" href="Lab.html?only=plate"><img src="stills/lab-plate.png"><b>The plate, in five languages</b><span>One shape for Rust, Go, TypeScript, JavaScript and Python: ports, exits for nothing, failure and later, threads for generics (you choose, must be, passes through, turns into), each fact with its source line.</span></a>
+<a class="card" href="Lab.html?only=plate&id=js-which&k=js-which:nothrow,all"><img src="stills/lab-knob.png"><b>Knobs change the shape</b><span>Plain JavaScript: which.sync's nothrow turns the throw exit into a null exit, and all turns one path into many. Options that change the shape are switches on the plate.</span></a>
+<a class="card" href="Lab.html?only=plate&id=ts-zod-parse&s=ts-zod-parse:safeParseAsync"><img src="stills/lab-family.png"><b>The family</b><span>Siblings laid out by what differs: zod's parse / safeParse × now / later. Hover a cell and the plate becomes it; only what changed moves.</span></a>
+<a class="card" href="Lab.html?only=ways"><img src="stills/lab-ways.png"><b>The ways</b><span>Highly used names as double word trees: what callers do before and after, coloured by consequence, in code vs in tests. from_str, re.match, testify's assert.Equal, Effect.map, subprocess.run.</span></a>
+<a class="card" href="Lab.html?only=crowd"><img src="stills/lab-crowd.png"><b>The crowd</b><span>serde::Serialize: 8.3k implementors in 343 crates as one territory, derive vs by hand, your 19 crates as their own region.</span></a>
+</div>
+<h2>Browse, discover, add</h2>
+<div class="grid">
+<a class="card" href="Moments.html?v=browse&hover=tokio"><img src="stills/browse-peek.png"><b>The Library as strata</b><span>Your crates, what they rest on, and everything beneath as roots; hover for the legit card; colour the whole library by one question.</span></a>
+<a class="card" href="Moments.html?v=discover"><img src="stills/disc.png"><b>Discover</b><span>The registry by aisle, what you already have at each aisle's head, and Add in place: the card flies into your project's dock.</span></a>
+<a class="card" href="Moments.html?v=add&lift=1"><img src="stills/add-nest.png"><b>Play a card</b><span>The hand: lifting a card draws what it would connect to; playing it makes room, lands, and settles what it brings.</span></a>
+</div>
+<h2>Hop</h2>
+<div class="grid">
+<a class="card" href="Moments.html?v=graph&p=toml&to=toml_edit&after=900"><img src="stills/hopx-3400.png"><b>The relay</b><span>What it rests on at left, who uses it at right; a hop slides the relay one column and arrives through the relation: how toml uses toml_edit, in toml's own lines.</span></a>
+<a class="card" href="Moments.html?v=package&p=toml_edit&pv=indexmap,hashbrown"><img src="stills/pv-chain.png"><b>Previews that nest</b><span>Any package name is a preview; names inside a preview open the next one beside it.</span></a>
+<a class="card" href="Moments.html?v=browse&scroll=700&at=560,1180"><img src="stills/browse-beneath.png"><b>The lens and the core</b><span>Over the dense layers a loupe reads names for you; anything deep draws one line up to the crate of yours that pulls it in.</span></a>
+</div>
+</body></html>

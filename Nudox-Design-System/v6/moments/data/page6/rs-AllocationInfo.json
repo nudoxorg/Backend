@@ -1,0 +1,642 @@
+{
+"id":"rs-AllocationInfo",
+"lang":"rust",
+"pkg":"allocation-counter",
+"version":"0.8.1",
+"path":[
+"allocation_counter"
+],
+"name":"AllocationInfo",
+"kind":"struct",
+"summary":"The allocation information obtained by a [measure()] call.",
+"docs":[
+{
+"k":"p",
+"t":"The allocation information obtained by a [measure()] call."
+}
+],
+"source":{
+"file":"src/lib.rs",
+"line":84
+},
+"decl":"pub struct AllocationInfo",
+"shape":{
+"kind":"holds",
+"fields":[
+{
+"name":"count_total",
+"type":{
+"text":"u64",
+"word":"a count"
+},
+"doc":"The total number of allocations made during a [measure()] call.",
+"more":"",
+"yours":10
+},
+{
+"name":"count_current",
+"type":{
+"text":"i64",
+"word":"an integer"
+},
+"doc":"The current (net result) number of allocations during a [measure()] call.",
+"more":"A non-zero value of this field means that the function did not deallocate all allocations, as shown below.",
+"yours":7
+},
+{
+"name":"count_max",
+"type":{
+"text":"u64",
+"word":"a count"
+},
+"doc":"The max number of allocations held during a point in time during a [measure()] call.",
+"more":"",
+"yours":5
+},
+{
+"name":"bytes_total",
+"type":{
+"text":"u64",
+"word":"a count"
+},
+"doc":"The total amount of bytes allocated during a [measure()] call.",
+"more":"",
+"yours":5
+},
+{
+"name":"bytes_current",
+"type":{
+"text":"i64",
+"word":"an integer"
+},
+"doc":"The current (net result) amount of bytes allocated during a [measure()] call.",
+"more":"A non-zero value of this field means that not all memory was deallocated, as shown below.",
+"yours":2
+},
+{
+"name":"bytes_max",
+"type":{
+"text":"u64",
+"word":"a count"
+},
+"doc":"The max amount of bytes allocated at one time during a [measure()] call.",
+"more":"",
+"yours":3
+}
+],
+"hidden":0
+},
+"groups":[
+{
+"verb":"makes",
+"items":[
+{
+"name":"measure",
+"doc":"Run a closure and count its allocations.",
+"sig":{
+"ins":[
+{
+"name":"run",
+"type":{
+"text":"F",
+"word":"a function"
+}
+}
+],
+"out":{
+"type":{
+"text":"AllocationInfo",
+"word":"AllocationInfo"
+}
+}
+},
+"yours":0
+},
+{
+"name":"default",
+"doc":"All zeros.",
+"trait":true
+}
+]
+}
+],
+"implements":[
+{
+"name":"Clone",
+"how":"derive"
+},
+{
+"name":"Copy",
+"how":"derive"
+},
+{
+"name":"Default",
+"how":"derive"
+},
+{
+"name":"Debug",
+"how":"derive"
+},
+{
+"name":"PartialEq",
+"how":"derive"
+},
+{
+"name":"Eq",
+"how":"derive"
+},
+{
+"name":"Hash",
+"how":"derive"
+}
+],
+"uses":[
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"benches/compiler_input_tree_v2.rs",
+"line":29,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"tests/build.rs",
+"line":8,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"tests/compiler_snapshot/journey.rs",
+"line":16,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"extension-trustfall",
+"dir":"extensions/trustfall",
+"file":"src/server/graph.rs",
+"line":1291,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/compiler_diagnostic_allocation.rs",
+"line":8,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/source.rs",
+"line":8,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/graph_vector_allocation.rs",
+"line":11,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/graph_vector_vector_segment.rs",
+"line":7,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/index_vocabulary.rs",
+"line":6,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":3,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/measure.rs",
+"line":9,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"src/journal/publication/owner/tests.rs",
+"line":7,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"src/memory/tests.rs",
+"line":7,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/allocation.rs",
+"line":6,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/durable_publisher.rs",
+"line":12,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/header_allocation.rs",
+"line":6,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/index_allocation.rs",
+"line":9,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/journal_allocation.rs",
+"line":6,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/view.rs",
+"line":9,
+"text":"use allocation_counter::{AllocationInfo, measure};",
+"tag":"imports"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/measure.rs",
+"line":68,
+"text":"count_total: info.count_total,",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/measure.rs",
+"line":69,
+"text":"count_current: info.count_current,",
+"tag":"reads",
+"member":"count_current",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/measure.rs",
+"line":70,
+"text":"count_max: info.count_max,",
+"tag":"reads",
+"member":"count_max",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/measure.rs",
+"line":71,
+"text":"bytes_total: info.bytes_total,",
+"tag":"reads",
+"member":"bytes_total",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/measure.rs",
+"line":72,
+"text":"bytes_current: info.bytes_current,",
+"tag":"reads",
+"member":"bytes_current",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/measure.rs",
+"line":73,
+"text":"bytes_max: info.bytes_max,",
+"tag":"reads",
+"member":"bytes_max",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/source.rs",
+"line":53,
+"text":"allocations.count_total <= 1",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/source.rs",
+"line":54,
+"text":"&& allocations.count_current <= 1",
+"tag":"reads",
+"member":"count_current",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/source.rs",
+"line":55,
+"text":"&& allocations.count_max <= 1,",
+"tag":"reads",
+"member":"count_max",
+"approx":true
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":418,
+"text":"assert_eq!(one.count_current, 0);",
+"tag":"reads",
+"member":"count_current",
+"approx":true
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":419,
+"text":"assert_eq!(sixty_four.count_current, 0);",
+"tag":"reads",
+"member":"count_current",
+"approx":true
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":421,
+"text":"sixty_four.count_total, one.count_total,",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":424,
+"text":"assert!(one.count_total <= 16, \"{one:?}\");",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":426,
+"text":"sixty_four.count_total <= one.count_total.saturating_add(2),",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":430,
+"text":"sixty_four.bytes_total <= one.bytes_total.saturating_mul(128),",
+"tag":"reads",
+"member":"bytes_total",
+"approx":true
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":467,
+"text":"assert_eq!(reservation.count_total, 2, \"{reservation:?}\");",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"tests/semantic_ir.rs",
+"line":468,
+"text":"assert_eq!(reservation.bytes_total, 1_536, \"{reservation:?}\");",
+"tag":"reads",
+"member":"bytes_total",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/compiler_diagnostic_allocation.rs",
+"line":180,
+"text":"if diagnostic_allocations.count_total != 1",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/compiler_diagnostic_allocation.rs",
+"line":181,
+"text":"|| diagnostic_allocations.count_current != 1",
+"tag":"reads",
+"member":"count_current",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/compiler_diagnostic_allocation.rs",
+"line":182,
+"text":"|| diagnostic_allocations.count_max != 1",
+"tag":"reads",
+"member":"count_max",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/compiler_diagnostic_allocation.rs",
+"line":207,
+"text":"if diagnostic_deallocations.count_total != 0",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/compiler_diagnostic_allocation.rs",
+"line":208,
+"text":"|| diagnostic_deallocations.count_current != -1",
+"tag":"reads",
+"member":"count_current",
+"approx":true
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"tests/compiler_diagnostic_allocation.rs",
+"line":209,
+"text":"|| diagnostic_deallocations.count_max != 0",
+"tag":"reads",
+"member":"count_max",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/journal_allocation.rs",
+"line":126,
+"text":"allocations.count_total, SYNC_CHANNEL_COUNT,",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/journal_allocation.rs",
+"line":130,
+"text":"allocations.bytes_total, SYNC_CHANNEL_BYTES,",
+"tag":"reads",
+"member":"bytes_total",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/journal_allocation.rs",
+"line":133,
+"text":"assert_eq!(allocations.count_max, SYNC_CHANNEL_COUNT);",
+"tag":"reads",
+"member":"count_max",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/journal_allocation.rs",
+"line":134,
+"text":"assert_eq!(allocations.bytes_max, SYNC_CHANNEL_BYTES);",
+"tag":"reads",
+"member":"bytes_max",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/journal_allocation.rs",
+"line":135,
+"text":"assert_eq!(allocations.count_current, 0);",
+"tag":"reads",
+"member":"count_current",
+"approx":true
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"tests/journal_allocation.rs",
+"line":136,
+"text":"assert_eq!(allocations.bytes_current, 0);",
+"tag":"reads",
+"member":"bytes_current",
+"approx":true
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"benches/compiler_input_tree_v2.rs",
+"line":528,
+"text":"allocation_count: allocation.count_total,",
+"tag":"reads",
+"member":"count_total",
+"approx":true
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"benches/compiler_input_tree_v2.rs",
+"line":529,
+"text":"allocated_bytes: allocation.bytes_total,",
+"tag":"reads",
+"member":"bytes_total",
+"approx":true
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"benches/compiler_input_tree_v2.rs",
+"line":530,
+"text":"max_live_bytes_allocated_inside_closure: allocation.bytes_max,",
+"tag":"reads",
+"member":"bytes_max",
+"approx":true
+}
+],
+"siblings":[
+{
+"name":"measure",
+"differs":"the function that fills one",
+"kind":"fn"
+}
+],
+"history":{
+"releases":[
+{
+"v":"0.8.1"
+}
+],
+"same":true
+}
+}

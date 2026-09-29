@@ -1,0 +1,4283 @@
+{
+"id":"rs-Serialize",
+"lang":"rust",
+"pkg":"serde",
+"version":"1.0.229",
+"path":[
+"serde"
+],
+"name":"Serialize",
+"kind":"trait",
+"summary":"A **data structure** that can be serialized into any data format supported by Serde.",
+"docs":[
+{
+"k":"p",
+"t":"A **data structure** that can be serialized into any data format supported by Serde."
+},
+{
+"k":"p",
+"t":"Serde provides `Serialize` implementations for many Rust primitive and standard library types. The complete list is [here][crate::ser]. All of these can be serialized using Serde out of the box."
+},
+{
+"k":"p",
+"t":"Additionally, Serde provides a procedural macro called `serde_derive` to automatically generate `Serialize` implementations for structs and enums in your program. See the [derive section of the manual] for how to use this."
+},
+{
+"k":"p",
+"t":"In rare cases it may be necessary to implement `Serialize` manually for some type in your program. See the [Implementing `Serialize`] section of the manual for more about this."
+},
+{
+"k":"p",
+"t":"Third-party crates may provide `Serialize` implementations for types that they expose. For example the `linked-hash-map` crate provides a `LinkedHashMap<K, V>` type that is serializable by Serde because the crate provides an implementation of `Serialize` for it."
+}
+],
+"source":{
+"file":"src/ser/mod.rs",
+"line":234
+},
+"decl":"pub trait Serialize",
+"required":[
+{
+"name":"serialize",
+"sig":{
+"ins":[
+{
+"name":"serializer",
+"type":{
+"text":"S",
+"word":"S",
+"gen":"S"
+}
+}
+],
+"out":{
+"type":{
+"text":"S::Ok",
+"word":"Ok",
+"link":"Ok"
+},
+"fails":{
+"type":{
+"text":"S::Error",
+"word":"Error",
+"link":"Error"
+}
+}
+},
+"generics":[
+{
+"name":"S",
+"role":"through",
+"bounds":[
+{
+"text":"Serializer",
+"word":"Serializer",
+"name":"Serializer"
+}
+],
+"in":[
+"serializer"
+],
+"out":true
+}
+],
+"recv":{
+"how":"reads"
+}
+},
+"doc":"Serialize this value into the given Serde serializer."
+}
+],
+"provided":[],
+"implementors":{
+"total":8322,
+"crates":343,
+"derived":83
+},
+"uses":[
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":69,
+"text":"#[derive(\u2026 Serialize \u2026)] RegistryAuthorityId",
+"tag":"derives",
+"type":"RegistryAuthorityId"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":92,
+"text":"#[derive(\u2026 Serialize \u2026)] PackageGraphSourceAuthority",
+"tag":"derives",
+"type":"PackageGraphSourceAuthority"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":145,
+"text":"#[derive(\u2026 Serialize \u2026)] PackageGraphSourceKey",
+"tag":"derives",
+"type":"PackageGraphSourceKey"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":245,
+"text":"#[derive(\u2026 Serialize \u2026)] DependencyAuthority",
+"tag":"derives",
+"type":"DependencyAuthority"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":259,
+"text":"#[derive(\u2026 Serialize \u2026)] DependencyScope",
+"tag":"derives",
+"type":"DependencyScope"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":323,
+"text":"#[derive(\u2026 Serialize \u2026)] PackageDependencyTarget",
+"tag":"derives",
+"type":"PackageDependencyTarget"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":365,
+"text":"#[derive(\u2026 Serialize \u2026)] DependencyEvidence",
+"tag":"derives",
+"type":"DependencyEvidence"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":377,
+"text":"#[derive(\u2026 Serialize \u2026)] PackageDependencyRecord",
+"tag":"derives",
+"type":"PackageDependencyRecord"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":584,
+"text":"#[derive(\u2026 Serialize \u2026)] DependencyFacts",
+"tag":"derives",
+"type":"DependencyFacts"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"command.rs",
+"line":15,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticSearchReason",
+"tag":"derives",
+"type":"SemanticSearchReason"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"command.rs",
+"line":37,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticSearchStatus",
+"tag":"derives",
+"type":"SemanticSearchStatus"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"forge_identity.rs",
+"line":65,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeProvider",
+"tag":"derives",
+"type":"ForgeProvider"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"forge_identity.rs",
+"line":107,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeObjectId",
+"tag":"derives",
+"type":"ForgeObjectId"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"forge_identity.rs",
+"line":177,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeHashAlgorithm",
+"tag":"derives",
+"type":"ForgeHashAlgorithm"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"forge_identity.rs",
+"line":187,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeRefName",
+"tag":"derives",
+"type":"ForgeRefName"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"forge_identity.rs",
+"line":235,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeRevision",
+"tag":"derives",
+"type":"ForgeRevision"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"forge_identity.rs",
+"line":288,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeCoordinate",
+"tag":"derives",
+"type":"ForgeCoordinate"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"forge_identity.rs",
+"line":589,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeUnavailableReason",
+"tag":"derives",
+"type":"ForgeUnavailableReason"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":22,
+"text":"#[derive(\u2026 Serialize \u2026)] ProductText",
+"tag":"derives",
+"type":"ProductText"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":79,
+"text":"#[derive(\u2026 Serialize \u2026)] PackageReference",
+"tag":"derives",
+"type":"PackageReference"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":116,
+"text":"#[derive(\u2026 Serialize \u2026)] ProjectName",
+"tag":"derives",
+"type":"ProjectName"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":153,
+"text":"#[derive(\u2026 Serialize \u2026)] ProjectId",
+"tag":"derives",
+"type":"ProjectId"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":170,
+"text":"#[derive(\u2026 Serialize \u2026)] ProjectSelector",
+"tag":"derives",
+"type":"ProjectSelector"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":199,
+"text":"#[derive(\u2026 Serialize \u2026)] TreeNodeId",
+"tag":"derives",
+"type":"TreeNodeId"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":216,
+"text":"#[derive(\u2026 Serialize \u2026)] TreeOpener",
+"tag":"derives",
+"type":"TreeOpener"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":228,
+"text":"#[derive(\u2026 Serialize \u2026)] TreeSubject",
+"tag":"derives",
+"type":"TreeSubject"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":244,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticLanguageProfile",
+"tag":"derives",
+"type":"SemanticLanguageProfile"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":314,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticGenerationId",
+"tag":"derives",
+"type":"SemanticGenerationId"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":333,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticVersionRecord",
+"tag":"derives",
+"type":"SemanticVersionRecord"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":369,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticVersionFreshness",
+"tag":"derives",
+"type":"SemanticVersionFreshness"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":404,
+"text":"#[derive(\u2026 Serialize \u2026)] SurfaceCommand",
+"tag":"derives",
+"type":"SurfaceCommand"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":651,
+"text":"#[derive(\u2026 Serialize \u2026)] DeclarationRecord",
+"tag":"derives",
+"type":"DeclarationRecord"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":663,
+"text":"#[derive(\u2026 Serialize \u2026)] DeclarationChange",
+"tag":"derives",
+"type":"DeclarationChange"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":678,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticDeclarationIdentity",
+"tag":"derives",
+"type":"SemanticDeclarationIdentity"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":688,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticLinkKind",
+"tag":"derives",
+"type":"SemanticLinkKind"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":716,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticConfidence",
+"tag":"derives",
+"type":"SemanticConfidence"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":732,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticLinkTarget",
+"tag":"derives",
+"type":"SemanticLinkTarget"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":764,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticSourceSpan",
+"tag":"derives",
+"type":"SemanticSourceSpan"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":776,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticLinkEvidence",
+"tag":"derives",
+"type":"SemanticLinkEvidence"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"surface.rs",
+"line":789,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticLinkDelta",
+"tag":"derives",
+"type":"SemanticLinkDelta"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":182,
+"text":"impl Serialize for SharedStr",
+"tag":"implements",
+"type":"SharedStr"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":205,
+"text":"#[derive(\u2026 Serialize \u2026)] Gen",
+"tag":"derives",
+"type":"Gen"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":209,
+"text":"#[derive(\u2026 Serialize \u2026)] GenerationId",
+"tag":"derives",
+"type":"GenerationId"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":217,
+"text":"#[derive(\u2026 Serialize \u2026)] SectionId",
+"tag":"derives",
+"type":"SectionId"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":224,
+"text":"#[derive(\u2026 Serialize \u2026)] SearchSectionId",
+"tag":"derives",
+"type":"SearchSectionId"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":238,
+"text":"#[derive(\u2026 Serialize \u2026)] Provenance",
+"tag":"derives",
+"type":"Provenance"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":285,
+"text":"impl Serialize for KindTag",
+"tag":"implements",
+"type":"KindTag"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":373,
+"text":"impl Serialize for SigToken",
+"tag":"implements",
+"type":"SigToken"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":457,
+"text":"#[derive(\u2026 Serialize \u2026)] CrumbRef",
+"tag":"derives",
+"type":"CrumbRef"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":477,
+"text":"#[derive(\u2026 Serialize \u2026)] SectionKind",
+"tag":"derives",
+"type":"SectionKind"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":502,
+"text":"#[derive(\u2026 Serialize \u2026)] SizeHint",
+"tag":"derives",
+"type":"SizeHint"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":517,
+"text":"#[derive(\u2026 Serialize \u2026)] SectionPlan",
+"tag":"derives",
+"type":"SectionPlan"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":534,
+"text":"#[derive(\u2026 Serialize \u2026)] CalloutLevel",
+"tag":"derives",
+"type":"CalloutLevel"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":553,
+"text":"#[derive(\u2026 Serialize \u2026)] LangId",
+"tag":"derives",
+"type":"LangId"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":563,
+"text":"#[derive(\u2026 Serialize \u2026)] LinkTarget",
+"tag":"derives",
+"type":"LinkTarget"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":581,
+"text":"#[derive(\u2026 Serialize \u2026)] InlineRun",
+"tag":"derives",
+"type":"InlineRun"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":611,
+"text":"#[derive(\u2026 Serialize \u2026)] ProseBlock",
+"tag":"derives",
+"type":"ProseBlock"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":637,
+"text":"#[derive(\u2026 Serialize \u2026)] MemberRow",
+"tag":"derives",
+"type":"MemberRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":657,
+"text":"#[derive(\u2026 Serialize \u2026)] FieldRow",
+"tag":"derives",
+"type":"FieldRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":682,
+"text":"#[derive(\u2026 Serialize \u2026)] RenderSection",
+"tag":"derives",
+"type":"RenderSection"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":748,
+"text":"#[derive(\u2026 Serialize \u2026)] HighlightSpan",
+"tag":"derives",
+"type":"HighlightSpan"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":766,
+"text":"#[derive(\u2026 Serialize \u2026)] SymbolHead",
+"tag":"derives",
+"type":"SymbolHead"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":839,
+"text":"#[derive(\u2026 Serialize \u2026)] HitRow",
+"tag":"derives",
+"type":"HitRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":862,
+"text":"#[derive(\u2026 Serialize \u2026)] RefRow",
+"tag":"derives",
+"type":"RefRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":875,
+"text":"#[derive(\u2026 Serialize \u2026)] RefsPage",
+"tag":"derives",
+"type":"RefsPage"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":884,
+"text":"#[derive(\u2026 Serialize \u2026)] ImplRow",
+"tag":"derives",
+"type":"ImplRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":928,
+"text":"#[derive(\u2026 Serialize \u2026)] ImplsPage",
+"tag":"derives",
+"type":"ImplsPage"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":951,
+"text":"#[derive(\u2026 Serialize \u2026)] VersionRow",
+"tag":"derives",
+"type":"VersionRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":987,
+"text":"#[derive(\u2026 Serialize \u2026)] VersionList",
+"tag":"derives",
+"type":"VersionList"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1093,
+"text":"#[derive(\u2026 Serialize \u2026)] TimelineChange",
+"tag":"derives",
+"type":"TimelineChange"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1133,
+"text":"#[derive(\u2026 Serialize \u2026)] TimelineRow",
+"tag":"derives",
+"type":"TimelineRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1183,
+"text":"#[derive(\u2026 Serialize \u2026)] Timeline",
+"tag":"derives",
+"type":"Timeline"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1216,
+"text":"#[derive(\u2026 Serialize \u2026)] KeyTierLabel",
+"tag":"derives",
+"type":"KeyTierLabel"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1264,
+"text":"#[derive(\u2026 Serialize \u2026)] DiffVerdict",
+"tag":"derives",
+"type":"DiffVerdict"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1336,
+"text":"#[derive(\u2026 Serialize \u2026)] DiffRow",
+"tag":"derives",
+"type":"DiffRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1387,
+"text":"#[derive(\u2026 Serialize \u2026)] PackageDiff",
+"tag":"derives",
+"type":"PackageDiff"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1440,
+"text":"#[derive(\u2026 Serialize \u2026)] QueryRow",
+"tag":"derives",
+"type":"QueryRow"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1457,
+"text":"#[derive(\u2026 Serialize \u2026)] KeyTierName",
+"tag":"derives",
+"type":"KeyTierName"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1504,
+"text":"#[derive(\u2026 Serialize \u2026)] KeyStaleness",
+"tag":"derives",
+"type":"KeyStaleness"
+},
+{
+"pkg":"nudox-engine",
+"dir":"",
+"file":"workspace/nudox-engine/src/wire/mod.rs",
+"line":1523,
+"text":"#[derive(\u2026 Serialize \u2026)] QueryErrorPosition",
+"tag":"derives",
+"type":"QueryErrorPosition"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/runtime/snapshot.rs",
+"line":47,
+"text":"#[derive(\u2026 Serialize \u2026)] SnapRoot",
+"tag":"derives",
+"type":"SnapRoot"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/runtime/snapshot.rs",
+"line":213,
+"text":"#[derive(\u2026 Serialize \u2026)] Table",
+"tag":"derives",
+"type":"Table"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/runtime/snapshot.rs",
+"line":219,
+"text":"#[derive(\u2026 Serialize \u2026)] Section",
+"tag":"derives",
+"type":"Section"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":27,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedHeld",
+"tag":"derives",
+"type":"PersistedHeld"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":43,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedShelfItem",
+"tag":"derives",
+"type":"PersistedShelfItem"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":72,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedProjectPhase",
+"tag":"derives",
+"type":"PersistedProjectPhase"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":116,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedAppearance",
+"tag":"derives",
+"type":"PersistedAppearance"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":128,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedDensity",
+"tag":"derives",
+"type":"PersistedDensity"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":140,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedMotion",
+"tag":"derives",
+"type":"PersistedMotion"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":152,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedContrast",
+"tag":"derives",
+"type":"PersistedContrast"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":162,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedPrivacy",
+"tag":"derives",
+"type":"PersistedPrivacy"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":172,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedServiceMode",
+"tag":"derives",
+"type":"PersistedServiceMode"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":212,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedDesktopState",
+"tag":"derives",
+"type":"PersistedDesktopState"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":311,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedRoute",
+"tag":"derives",
+"type":"PersistedRoute"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/persistence.rs",
+"line":376,
+"text":"#[derive(\u2026 Serialize \u2026)] PersistedPackageLane",
+"tag":"derives",
+"type":"PersistedPackageLane"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/local_package/readme.rs",
+"line":17,
+"text":"#[derive(\u2026 Serialize \u2026)] ReadmeBlock",
+"tag":"derives",
+"type":"ReadmeBlock"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":11,
+"text":"#[derive(\u2026 Serialize \u2026)] SymbolPage",
+"tag":"derives",
+"type":"SymbolPage"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":37,
+"text":"#[derive(\u2026 Serialize \u2026)] SignatureText",
+"tag":"derives",
+"type":"SignatureText"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":59,
+"text":"#[derive(\u2026 Serialize \u2026)] TokenClass",
+"tag":"derives",
+"type":"TokenClass"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":80,
+"text":"#[derive(\u2026 Serialize \u2026)] SignatureToken",
+"tag":"derives",
+"type":"SignatureToken"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":91,
+"text":"#[derive(\u2026 Serialize \u2026)] SymbolLink",
+"tag":"derives",
+"type":"SymbolLink"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":100,
+"text":"#[derive(\u2026 Serialize \u2026)] DocFragment",
+"tag":"derives",
+"type":"DocFragment"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":140,
+"text":"#[derive(\u2026 Serialize \u2026)] DocSections",
+"tag":"derives",
+"type":"DocSections"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":149,
+"text":"#[derive(\u2026 Serialize \u2026)] DocSection",
+"tag":"derives",
+"type":"DocSection"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":163,
+"text":"#[derive(\u2026 Serialize \u2026)] DocEntry",
+"tag":"derives",
+"type":"DocEntry"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":172,
+"text":"#[derive(\u2026 Serialize \u2026)] SourceSite",
+"tag":"derives",
+"type":"SourceSite"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":181,
+"text":"#[derive(\u2026 Serialize \u2026)] SourceLocation",
+"tag":"derives",
+"type":"SourceLocation"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":190,
+"text":"#[derive(\u2026 Serialize \u2026)] Excerpt",
+"tag":"derives",
+"type":"Excerpt"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":201,
+"text":"#[derive(\u2026 Serialize \u2026)] Receiver",
+"tag":"derives",
+"type":"Receiver"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":230,
+"text":"#[derive(\u2026 Serialize \u2026)] Member",
+"tag":"derives",
+"type":"Member"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":245,
+"text":"#[derive(\u2026 Serialize \u2026)] MethodGroup",
+"tag":"derives",
+"type":"MethodGroup"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":254,
+"text":"#[derive(\u2026 Serialize \u2026)] Members",
+"tag":"derives",
+"type":"Members"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":287,
+"text":"#[derive(\u2026 Serialize \u2026)] RelationKind",
+"tag":"derives",
+"type":"RelationKind"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":296,
+"text":"#[derive(\u2026 Serialize \u2026)] Arrival",
+"tag":"derives",
+"type":"Arrival"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":309,
+"text":"#[derive(\u2026 Serialize \u2026)] Relation",
+"tag":"derives",
+"type":"Relation"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":328,
+"text":"#[derive(\u2026 Serialize \u2026)] Rose",
+"tag":"derives",
+"type":"Rose"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":343,
+"text":"#[derive(\u2026 Serialize \u2026)] ReferenceScope",
+"tag":"derives",
+"type":"ReferenceScope"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":356,
+"text":"#[derive(\u2026 Serialize \u2026)] FileSpan",
+"tag":"derives",
+"type":"FileSpan"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":365,
+"text":"#[derive(\u2026 Serialize \u2026)] ReferenceSite",
+"tag":"derives",
+"type":"ReferenceSite"
+},
+{
+"pkg":"desktop",
+"dir":"apps/desktop",
+"file":"src/model/pages/symbol.rs",
+"line":380,
+"text":"#[derive(\u2026 Serialize \u2026)] OutlinePosition",
+"tag":"derives",
+"type":"OutlinePosition"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":21,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticRole",
+"tag":"derives",
+"type":"SemanticRole"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":69,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticState",
+"tag":"derives",
+"type":"SemanticState"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":93,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticSource",
+"tag":"derives",
+"type":"SemanticSource"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":102,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticBounds",
+"tag":"derives",
+"type":"SemanticBounds"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":146,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticRelations",
+"tag":"derives",
+"type":"SemanticRelations"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":166,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticAnnouncement",
+"tag":"derives",
+"type":"SemanticAnnouncement"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":177,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticNode",
+"tag":"derives",
+"type":"SemanticNode"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":313,
+"text":"#[derive(\u2026 Serialize \u2026)] SemanticProbe",
+"tag":"derives",
+"type":"SemanticProbe"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":14,
+"text":"#[derive(\u2026 Serialize \u2026)] FrameArtifact",
+"tag":"derives",
+"type":"FrameArtifact"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":39,
+"text":"#[derive(\u2026 Serialize \u2026)] CropRect",
+"tag":"derives",
+"type":"CropRect"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":78,
+"text":"#[derive(\u2026 Serialize \u2026)] CropArtifact",
+"tag":"derives",
+"type":"CropArtifact"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":93,
+"text":"#[derive(\u2026 Serialize \u2026)] CaptureManifest",
+"tag":"derives",
+"type":"CaptureManifest"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":138,
+"text":"#[derive(\u2026 Serialize \u2026)] CaptureProvenance",
+"tag":"derives",
+"type":"CaptureProvenance"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":165,
+"text":"#[derive(\u2026 Serialize \u2026)] FrameSequenceMetadata",
+"tag":"derives",
+"type":"FrameSequenceMetadata"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":182,
+"text":"#[derive(\u2026 Serialize \u2026)] RunManifest",
+"tag":"derives",
+"type":"RunManifest"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":199,
+"text":"#[derive(\u2026 Serialize \u2026)] VerificationReport",
+"tag":"derives",
+"type":"VerificationReport"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/lib.rs",
+"line":193,
+"text":"#[derive(\u2026 Serialize \u2026)] Viewport",
+"tag":"derives",
+"type":"Viewport"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/lib.rs",
+"line":306,
+"text":"#[derive(\u2026 Serialize \u2026)] CaptureConfig",
+"tag":"derives",
+"type":"CaptureConfig"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/lib.rs",
+"line":398,
+"text":"#[derive(\u2026 Serialize \u2026)] AnimationFrame",
+"tag":"derives",
+"type":"AnimationFrame"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":43,
+"text":"#[derive(\u2026 Serialize \u2026)] DesignContract",
+"tag":"derives",
+"type":"DesignContract"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":67,
+"text":"#[derive(\u2026 Serialize \u2026)] ReferenceMetadata",
+"tag":"derives",
+"type":"ReferenceMetadata"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":84,
+"text":"#[derive(\u2026 Serialize \u2026)] ReferenceArtifact",
+"tag":"derives",
+"type":"ReferenceArtifact"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":97,
+"text":"#[derive(\u2026 Serialize \u2026)] DesignArtifact",
+"tag":"derives",
+"type":"DesignArtifact"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":116,
+"text":"#[derive(\u2026 Serialize \u2026)] Artboard",
+"tag":"derives",
+"type":"Artboard"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":130,
+"text":"#[derive(\u2026 Serialize \u2026)] DesignSemantics",
+"tag":"derives",
+"type":"DesignSemantics"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":156,
+"text":"#[derive(\u2026 Serialize \u2026)] TokenDeclaration",
+"tag":"derives",
+"type":"TokenDeclaration"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":169,
+"text":"#[derive(\u2026 Serialize \u2026)] StyleDeclaration",
+"tag":"derives",
+"type":"StyleDeclaration"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":182,
+"text":"#[derive(\u2026 Serialize \u2026)] SvgGlyph",
+"tag":"derives",
+"type":"SvgGlyph"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":199,
+"text":"#[derive(\u2026 Serialize \u2026)] CaptureMatrix",
+"tag":"derives",
+"type":"CaptureMatrix"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/state.rs",
+"line":15,
+"text":"#[derive(\u2026 Serialize \u2026)] PageState",
+"tag":"derives",
+"type":"PageState"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/state.rs",
+"line":85,
+"text":"#[derive(\u2026 Serialize \u2026)] OverlayState",
+"tag":"derives",
+"type":"OverlayState"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/state.rs",
+"line":270,
+"text":"#[derive(\u2026 Serialize \u2026)] GuiState",
+"tag":"derives",
+"type":"GuiState"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/script.rs",
+"line":46,
+"text":"#[derive(\u2026 Serialize \u2026)] Button",
+"tag":"derives",
+"type":"Button"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/script.rs",
+"line":78,
+"text":"#[derive(\u2026 Serialize \u2026)] Mods",
+"tag":"derives",
+"type":"Mods"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/script.rs",
+"line":172,
+"text":"#[derive(\u2026 Serialize \u2026)] Act",
+"tag":"derives",
+"type":"Act"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/script.rs",
+"line":425,
+"text":"#[derive(\u2026 Serialize \u2026)] Event",
+"tag":"derives",
+"type":"Event"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/script.rs",
+"line":434,
+"text":"#[derive(\u2026 Serialize \u2026)] Script",
+"tag":"derives",
+"type":"Script"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/input.rs",
+"line":12,
+"text":"#[derive(\u2026 Serialize \u2026)] InputStep",
+"tag":"derives",
+"type":"InputStep"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/input.rs",
+"line":186,
+"text":"#[derive(\u2026 Serialize \u2026)] ImeOperation",
+"tag":"derives",
+"type":"ImeOperation"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/input.rs",
+"line":216,
+"text":"#[derive(\u2026 Serialize \u2026)] ImeObservation",
+"tag":"derives",
+"type":"ImeObservation"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":34,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlRole",
+"tag":"derives",
+"type":"ControlRole"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":45,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlOffer",
+"tag":"derives",
+"type":"ControlOffer"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":77,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlAccept",
+"tag":"derives",
+"type":"ControlAccept"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":86,
+"text":"#[derive(\u2026 Serialize \u2026)] WorkerRejectReason",
+"tag":"derives",
+"type":"WorkerRejectReason"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":107,
+"text":"#[derive(\u2026 Serialize \u2026)] WorkerReject",
+"tag":"derives",
+"type":"WorkerReject"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":118,
+"text":"#[derive(\u2026 Serialize \u2026)] ExecutionFailureReason",
+"tag":"derives",
+"type":"ExecutionFailureReason"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":138,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlExecutionFailed",
+"tag":"derives",
+"type":"ControlExecutionFailed"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":149,
+"text":"#[derive(\u2026 Serialize \u2026)] CancelReason",
+"tag":"derives",
+"type":"CancelReason"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":162,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlCancel",
+"tag":"derives",
+"type":"ControlCancel"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":174,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultReceipt",
+"tag":"derives",
+"type":"ControlResultReceipt"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":194,
+"text":"#[derive(\u2026 Serialize \u2026)] ResultRejectReason",
+"tag":"derives",
+"type":"ResultRejectReason"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":210,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultAck",
+"tag":"derives",
+"type":"ControlResultAck"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":259,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultRetired",
+"tag":"derives",
+"type":"ControlResultRetired"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":349,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultRetirementConfirm",
+"tag":"derives",
+"type":"ControlResultRetirementConfirm"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":440,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultRetirementApplied",
+"tag":"derives",
+"type":"ControlResultRetirementApplied"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":534,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultRecoveryQuery",
+"tag":"derives",
+"type":"ControlResultRecoveryQuery"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":572,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultRecoveryState",
+"tag":"derives",
+"type":"ControlResultRecoveryState"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":590,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultRecoveryCapacity",
+"tag":"derives",
+"type":"ControlResultRecoveryCapacity"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":616,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlResultRecoveryStatus",
+"tag":"derives",
+"type":"ControlResultRecoveryStatus"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":723,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlNoResultRetireThrough",
+"tag":"derives",
+"type":"ControlNoResultRetireThrough"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":798,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlNoResultRetirementApplied",
+"tag":"derives",
+"type":"ControlNoResultRetirementApplied"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":873,
+"text":"#[derive(\u2026 Serialize \u2026)] ResultAckDisposition",
+"tag":"derives",
+"type":"ResultAckDisposition"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":952,
+"text":"#[derive(\u2026 Serialize \u2026)] GrantDirection",
+"tag":"derives",
+"type":"GrantDirection"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":961,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlGrantPage",
+"tag":"derives",
+"type":"ControlGrantPage"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":976,
+"text":"#[derive(\u2026 Serialize \u2026)] ControlMessage",
+"tag":"derives",
+"type":"ControlMessage"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":112,
+"text":"#[derive(\u2026 Serialize \u2026)] BlobHash",
+"tag":"derives",
+"type":"BlobHash"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":120,
+"text":"#[derive(\u2026 Serialize \u2026)] StoreObjectMapping",
+"tag":"derives",
+"type":"StoreObjectMapping"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":202,
+"text":"#[derive(\u2026 Serialize \u2026)] AssignmentScope",
+"tag":"derives",
+"type":"AssignmentScope"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":291,
+"text":"#[derive(\u2026 Serialize \u2026)] TransferScope",
+"tag":"derives",
+"type":"TransferScope"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":420,
+"text":"#[derive(\u2026 Serialize \u2026)] ChunkRange",
+"tag":"derives",
+"type":"ChunkRange"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":443,
+"text":"#[derive(\u2026 Serialize \u2026)] CapabilityClaims",
+"tag":"derives",
+"type":"CapabilityClaims"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":466,
+"text":"#[derive(\u2026 Serialize \u2026)] Capability",
+"tag":"derives",
+"type":"Capability"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":1150,
+"text":"#[derive(\u2026 Serialize \u2026)] StoreBlobMappingRecord",
+"tag":"derives",
+"type":"StoreBlobMappingRecord"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":1933,
+"text":"#[derive(\u2026 Serialize \u2026)] ResumeState",
+"tag":"derives",
+"type":"ResumeState"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":2402,
+"text":"#[derive(\u2026 Serialize \u2026)] RejectCode",
+"tag":"derives",
+"type":"RejectCode"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":3196,
+"text":"#[derive(\u2026 Serialize \u2026)] RangeRequest",
+"tag":"derives",
+"type":"RangeRequest"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":3202,
+"text":"#[derive(\u2026 Serialize \u2026)] RangeAck",
+"tag":"derives",
+"type":"RangeAck"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":3209,
+"text":"#[derive(\u2026 Serialize \u2026)] RangeReceipt",
+"tag":"derives",
+"type":"RangeReceipt"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":3216,
+"text":"#[derive(\u2026 Serialize \u2026)] WireReply",
+"tag":"derives",
+"type":"WireReply"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/probe.rs",
+"line":38,
+"text":"#[derive(\u2026 Serialize \u2026)] CompilerProbeIdentity",
+"tag":"derives",
+"type":"CompilerProbeIdentity"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1013,
+"text":"#[derive(\u2026 Serialize \u2026)] Distance",
+"tag":"derives",
+"type":"Distance"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1030,
+"text":"#[derive(\u2026 Serialize \u2026)] CollectionCreate",
+"tag":"derives",
+"type":"CollectionCreate"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1034,
+"text":"#[derive(\u2026 Serialize \u2026)] VectorConfig",
+"tag":"derives",
+"type":"VectorConfig"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1061,
+"text":"#[derive(\u2026 Serialize \u2026)] UpsertRequest",
+"tag":"derives",
+"type":"UpsertRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1065,
+"text":"#[derive(\u2026 Serialize \u2026)] UpsertPoint",
+"tag":"derives",
+"type":"UpsertPoint"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1071,
+"text":"#[derive(\u2026 Serialize \u2026)] DeleteRequest",
+"tag":"derives",
+"type":"DeleteRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1075,
+"text":"#[derive(\u2026 Serialize \u2026)] RetrieveRequest",
+"tag":"derives",
+"type":"RetrieveRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1098,
+"text":"#[derive(\u2026 Serialize \u2026)] CountRequest",
+"tag":"derives",
+"type":"CountRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1112,
+"text":"#[derive(\u2026 Serialize \u2026)] QueryRequest",
+"tag":"derives",
+"type":"QueryRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1122,
+"text":"#[derive(\u2026 Serialize \u2026)] SearchParams",
+"tag":"derives",
+"type":"SearchParams"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1140,
+"text":"#[derive(\u2026 Serialize \u2026)] PointPayload",
+"tag":"derives",
+"type":"PointPayload"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1288,
+"text":"#[derive(\u2026 Serialize \u2026)] BindingFilter",
+"tag":"derives",
+"type":"BindingFilter"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1292,
+"text":"#[derive(\u2026 Serialize \u2026)] FilterCondition",
+"tag":"derives",
+"type":"FilterCondition"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1297,
+"text":"#[derive(\u2026 Serialize \u2026)] FilterMatch",
+"tag":"derives",
+"type":"FilterMatch"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1327,
+"text":"#[derive(\u2026 Serialize \u2026)] PhysicalPointId",
+"tag":"derives",
+"type":"PhysicalPointId"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1393,
+"text":"#[derive(\u2026 Serialize \u2026)] PayloadBatchRequest",
+"tag":"derives",
+"type":"PayloadBatchRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1398,
+"text":"#[derive(\u2026 Serialize \u2026)] PayloadOperation",
+"tag":"derives",
+"type":"PayloadOperation"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":1403,
+"text":"#[derive(\u2026 Serialize \u2026)] SetPayload",
+"tag":"derives",
+"type":"SetPayload"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/contract.rs",
+"line":287,
+"text":"#[derive(\u2026 Serialize \u2026)] PayloadField",
+"tag":"derives",
+"type":"PayloadField"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/contract.rs",
+"line":350,
+"text":"#[derive(\u2026 Serialize \u2026)] PayloadIndexKind",
+"tag":"derives",
+"type":"PayloadIndexKind"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":29,
+"text":"#[derive(\u2026 Serialize \u2026)] CollectionMetric",
+"tag":"derives",
+"type":"CollectionMetric"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":57,
+"text":"#[derive(\u2026 Serialize \u2026)] PayloadMetric",
+"tag":"derives",
+"type":"PayloadMetric"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":86,
+"text":"#[derive(\u2026 Serialize \u2026)] CollectionRequest",
+"tag":"derives",
+"type":"CollectionRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":93,
+"text":"#[derive(\u2026 Serialize \u2026)] VectorConfig",
+"tag":"derives",
+"type":"VectorConfig"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":113,
+"text":"#[derive(\u2026 Serialize \u2026)] PayloadIndexRequest",
+"tag":"derives",
+"type":"PayloadIndexRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":133,
+"text":"#[derive(\u2026 Serialize \u2026)] UpsertPoint",
+"tag":"derives",
+"type":"UpsertPoint"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":147,
+"text":"impl Serialize for UpsertRequest",
+"tag":"implements",
+"type":"UpsertRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":159,
+"text":"impl Serialize for UpsertPoints",
+"tag":"implements",
+"type":"UpsertPoints"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":175,
+"text":"#[derive(\u2026 Serialize \u2026)] RetrieveRequest",
+"tag":"derives",
+"type":"RetrieveRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":193,
+"text":"#[derive(\u2026 Serialize \u2026)] DeleteRequest",
+"tag":"derives",
+"type":"DeleteRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":207,
+"text":"#[derive(\u2026 Serialize \u2026)] QueryRequest",
+"tag":"derives",
+"type":"QueryRequest"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":217,
+"text":"#[derive(\u2026 Serialize \u2026)] ExactParams",
+"tag":"derives",
+"type":"ExactParams"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":248,
+"text":"impl Serialize for IdentityPayload",
+"tag":"implements",
+"type":"IdentityPayload"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":271,
+"text":"#[derive(\u2026 Serialize \u2026)] IdentityFilter",
+"tag":"derives",
+"type":"IdentityFilter"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":278,
+"text":"#[derive(\u2026 Serialize \u2026)] MinimumShould",
+"tag":"derives",
+"type":"MinimumShould"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":284,
+"text":"#[derive(\u2026 Serialize \u2026)] MatchCondition",
+"tag":"derives",
+"type":"MatchCondition"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":290,
+"text":"#[derive(\u2026 Serialize \u2026)] MatchValue",
+"tag":"derives",
+"type":"MatchValue"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":353,
+"text":"impl Serialize for MatchScalar",
+"tag":"implements",
+"type":"MatchScalar"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":370,
+"text":"impl Serialize for Coordinates",
+"tag":"implements",
+"type":"Coordinates"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/wire/request.rs",
+"line":394,
+"text":"impl Serialize for Hex",
+"tag":"implements",
+"type":"Hex"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/policy.rs",
+"line":11,
+"text":"#[derive(\u2026 Serialize \u2026)] OfflinePolicy",
+"tag":"derives",
+"type":"OfflinePolicy"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/policy.rs",
+"line":23,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryCoverage",
+"tag":"derives",
+"type":"AdvisoryCoverage"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/policy.rs",
+"line":36,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryObservation",
+"tag":"derives",
+"type":"AdvisoryObservation"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/policy.rs",
+"line":55,
+"text":"#[derive(\u2026 Serialize \u2026)] OverrideEvidence",
+"tag":"derives",
+"type":"OverrideEvidence"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/policy.rs",
+"line":68,
+"text":"#[derive(\u2026 Serialize \u2026)] PolicyReason",
+"tag":"derives",
+"type":"PolicyReason"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/policy.rs",
+"line":87,
+"text":"#[derive(\u2026 Serialize \u2026)] AcquisitionDecision",
+"tag":"derives",
+"type":"AcquisitionDecision"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/journal.rs",
+"line":9,
+"text":"#[derive(\u2026 Serialize \u2026)] WithdrawalRecord",
+"tag":"derives",
+"type":"WithdrawalRecord"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/journal.rs",
+"line":18,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryDelta",
+"tag":"derives",
+"type":"AdvisoryDelta"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/journal.rs",
+"line":49,
+"text":"#[derive(\u2026 Serialize \u2026)] SyncMode",
+"tag":"derives",
+"type":"SyncMode"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/journal.rs",
+"line":58,
+"text":"#[derive(\u2026 Serialize \u2026)] FeedFreshness",
+"tag":"derives",
+"type":"FeedFreshness"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/journal.rs",
+"line":71,
+"text":"#[derive(\u2026 Serialize \u2026)] Checkpoint",
+"tag":"derives",
+"type":"Checkpoint"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/journal.rs",
+"line":95,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryJournal",
+"tag":"derives",
+"type":"AdvisoryJournal"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/authority.rs",
+"line":253,
+"text":"#[derive(\u2026 Serialize \u2026)] AuthorityAvailability",
+"tag":"derives",
+"type":"AuthorityAvailability"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/authority.rs",
+"line":264,
+"text":"#[derive(\u2026 Serialize \u2026)] AuthorityFrontier",
+"tag":"derives",
+"type":"AuthorityFrontier"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/authority.rs",
+"line":289,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryAuthority",
+"tag":"derives",
+"type":"AdvisoryAuthority"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/wire.rs",
+"line":18,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisorySurfaceDto",
+"tag":"derives",
+"type":"AdvisorySurfaceDto"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/wire.rs",
+"line":57,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryDecisionDto",
+"tag":"derives",
+"type":"AdvisoryDecisionDto"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/wire.rs",
+"line":136,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryPackageDto",
+"tag":"derives",
+"type":"AdvisoryPackageDto"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":11,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisorySchema",
+"tag":"derives",
+"type":"AdvisorySchema"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":19,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisorySource",
+"tag":"derives",
+"type":"AdvisorySource"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":30,
+"text":"#[derive(\u2026 Serialize \u2026)] NativeAdvisoryId",
+"tag":"derives",
+"type":"NativeAdvisoryId"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":49,
+"text":"#[derive(\u2026 Serialize \u2026)] CanonicalAdvisoryId",
+"tag":"derives",
+"type":"CanonicalAdvisoryId"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":53,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryKey",
+"tag":"derives",
+"type":"AdvisoryKey"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":62,
+"text":"#[derive(\u2026 Serialize \u2026)] Alias",
+"tag":"derives",
+"type":"Alias"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":71,
+"text":"#[derive(\u2026 Serialize \u2026)] PackageIdentity",
+"tag":"derives",
+"type":"PackageIdentity"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":83,
+"text":"#[derive(\u2026 Serialize \u2026)] VersionSyntax",
+"tag":"derives",
+"type":"VersionSyntax"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":100,
+"text":"#[derive(\u2026 Serialize \u2026)] VersionEvent",
+"tag":"derives",
+"type":"VersionEvent"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":110,
+"text":"#[derive(\u2026 Serialize \u2026)] VersionEventKind",
+"tag":"derives",
+"type":"VersionEventKind"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":123,
+"text":"#[derive(\u2026 Serialize \u2026)] AffectedRange",
+"tag":"derives",
+"type":"AffectedRange"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":134,
+"text":"#[derive(\u2026 Serialize \u2026)] VersionMatcher",
+"tag":"derives",
+"type":"VersionMatcher"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":161,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryCategory",
+"tag":"derives",
+"type":"AdvisoryCategory"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":177,
+"text":"#[derive(\u2026 Serialize \u2026)] SeverityLevel",
+"tag":"derives",
+"type":"SeverityLevel"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":192,
+"text":"#[derive(\u2026 Serialize \u2026)] Severity",
+"tag":"derives",
+"type":"Severity"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":203,
+"text":"#[derive(\u2026 Serialize \u2026)] Reference",
+"tag":"derives",
+"type":"Reference"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":212,
+"text":"#[derive(\u2026 Serialize \u2026)] MalwareCoverage",
+"tag":"derives",
+"type":"MalwareCoverage"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":221,
+"text":"#[derive(\u2026 Serialize \u2026)] Evidence",
+"tag":"derives",
+"type":"Evidence"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":233,
+"text":"#[derive(\u2026 Serialize \u2026)] EvidenceKind",
+"tag":"derives",
+"type":"EvidenceKind"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":245,
+"text":"#[derive(\u2026 Serialize \u2026)] FreshnessState",
+"tag":"derives",
+"type":"FreshnessState"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":260,
+"text":"#[derive(\u2026 Serialize \u2026)] AdvisoryStatus",
+"tag":"derives",
+"type":"AdvisoryStatus"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":287,
+"text":"#[derive(\u2026 Serialize \u2026)] Advisory",
+"tag":"derives",
+"type":"Advisory"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":432,
+"text":"#[derive(\u2026 Serialize \u2026)] BudgetEnvelope",
+"tag":"derives",
+"type":"BudgetEnvelope"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":443,
+"text":"#[derive(\u2026 Serialize \u2026)] BudgetMetadata",
+"tag":"derives",
+"type":"BudgetMetadata"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":500,
+"text":"#[derive(\u2026 Serialize \u2026)] SummaryPageDto",
+"tag":"derives",
+"type":"SummaryPageDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":508,
+"text":"#[derive(\u2026 Serialize \u2026)] SummaryRecordDto",
+"tag":"derives",
+"type":"SummaryRecordDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":523,
+"text":"#[derive(\u2026 Serialize \u2026)] SummaryRecordsDto",
+"tag":"derives",
+"type":"SummaryRecordsDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":532,
+"text":"#[derive(\u2026 Serialize \u2026)] SummaryShelfEntryDto",
+"tag":"derives",
+"type":"SummaryShelfEntryDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":543,
+"text":"#[derive(\u2026 Serialize \u2026)] SummaryShelfDto",
+"tag":"derives",
+"type":"SummaryShelfDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":549,
+"text":"#[derive(\u2026 Serialize \u2026)] SummaryOutlineDto",
+"tag":"derives",
+"type":"SummaryOutlineDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":558,
+"text":"#[derive(\u2026 Serialize \u2026)] SummaryStatusDto",
+"tag":"derives",
+"type":"SummaryStatusDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":570,
+"text":"#[derive(\u2026 Serialize \u2026)] SummaryProductDto",
+"tag":"derives",
+"type":"SummaryProductDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":71,
+"text":"#[derive(\u2026 Serialize \u2026)] IdentityDto",
+"tag":"derives",
+"type":"IdentityDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":133,
+"text":"#[derive(\u2026 Serialize \u2026)] SignatureTokenDto",
+"tag":"derives",
+"type":"SignatureTokenDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":169,
+"text":"#[derive(\u2026 Serialize \u2026)] CoverageDto",
+"tag":"derives",
+"type":"CoverageDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":225,
+"text":"#[derive(\u2026 Serialize \u2026)] FaultDto",
+"tag":"derives",
+"type":"FaultDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":265,
+"text":"#[derive(\u2026 Serialize \u2026)] PageDto",
+"tag":"derives",
+"type":"PageDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":301,
+"text":"#[derive(\u2026 Serialize \u2026)] MemberGroupDto",
+"tag":"derives",
+"type":"MemberGroupDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":310,
+"text":"#[derive(\u2026 Serialize \u2026)] RelationGroupDto",
+"tag":"derives",
+"type":"RelationGroupDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":319,
+"text":"#[derive(\u2026 Serialize \u2026)] SourceDto",
+"tag":"derives",
+"type":"SourceDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":414,
+"text":"#[derive(\u2026 Serialize \u2026)] RecordDto",
+"tag":"derives",
+"type":"RecordDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":455,
+"text":"#[derive(\u2026 Serialize \u2026)] RecordListDto",
+"tag":"derives",
+"type":"RecordListDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":492,
+"text":"#[derive(\u2026 Serialize \u2026)] ShelfEntryDto",
+"tag":"derives",
+"type":"ShelfEntryDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":511,
+"text":"#[derive(\u2026 Serialize \u2026)] LanguageCountDto",
+"tag":"derives",
+"type":"LanguageCountDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":545,
+"text":"#[derive(\u2026 Serialize \u2026)] ShelfDto",
+"tag":"derives",
+"type":"ShelfDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":565,
+"text":"#[derive(\u2026 Serialize \u2026)] OutlineNodeDto",
+"tag":"derives",
+"type":"OutlineNodeDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":599,
+"text":"#[derive(\u2026 Serialize \u2026)] OutlineDto",
+"tag":"derives",
+"type":"OutlineDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":628,
+"text":"#[derive(\u2026 Serialize \u2026)] StatusDto",
+"tag":"derives",
+"type":"StatusDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":658,
+"text":"#[derive(\u2026 Serialize \u2026)] CapabilitiesDto",
+"tag":"derives",
+"type":"CapabilitiesDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":677,
+"text":"#[derive(\u2026 Serialize \u2026)] ReasonDto",
+"tag":"derives",
+"type":"ReasonDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":721,
+"text":"#[derive(\u2026 Serialize \u2026)] ProductDto",
+"tag":"derives",
+"type":"ProductDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":739,
+"text":"#[derive(\u2026 Serialize \u2026)] ProductIndexSearchPageDto",
+"tag":"derives",
+"type":"ProductIndexSearchPageDto"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":753,
+"text":"#[derive(\u2026 Serialize \u2026)] ProductRecordDto",
+"tag":"derives",
+"type":"ProductRecordDto"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/output.rs",
+"line":12,
+"text":"#[derive(\u2026 Serialize \u2026)] CapacityPlan",
+"tag":"derives",
+"type":"CapacityPlan"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":11,
+"text":"#[derive(\u2026 Serialize \u2026)] CapacityInput",
+"tag":"derives",
+"type":"CapacityInput"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":27,
+"text":"#[derive(\u2026 Serialize \u2026)] Tier",
+"tag":"derives",
+"type":"Tier"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":38,
+"text":"#[derive(\u2026 Serialize \u2026)] CompilerInput",
+"tag":"derives",
+"type":"CompilerInput"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":51,
+"text":"#[derive(\u2026 Serialize \u2026)] IndexInput",
+"tag":"derives",
+"type":"IndexInput"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":74,
+"text":"#[derive(\u2026 Serialize \u2026)] EmbeddingInput",
+"tag":"derives",
+"type":"EmbeddingInput"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":102,
+"text":"#[derive(\u2026 Serialize \u2026)] EmbeddingProvider",
+"tag":"derives",
+"type":"EmbeddingProvider"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":117,
+"text":"#[derive(\u2026 Serialize \u2026)] FailureDomainInput",
+"tag":"derives",
+"type":"FailureDomainInput"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":127,
+"text":"#[derive(\u2026 Serialize \u2026)] Count",
+"tag":"derives",
+"type":"Count"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":132,
+"text":"#[derive(\u2026 Serialize \u2026)] Bytes",
+"tag":"derives",
+"type":"Bytes"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":137,
+"text":"#[derive(\u2026 Serialize \u2026)] Millis",
+"tag":"derives",
+"type":"Millis"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":142,
+"text":"#[derive(\u2026 Serialize \u2026)] PerMille",
+"tag":"derives",
+"type":"PerMille"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":14,
+"text":"#[derive(\u2026 Serialize \u2026)] CacheMode",
+"tag":"derives",
+"type":"CacheMode"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":24,
+"text":"#[derive(\u2026 Serialize \u2026)] Stage",
+"tag":"derives",
+"type":"Stage"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":126,
+"text":"#[derive(\u2026 Serialize \u2026)] Metric",
+"tag":"derives",
+"type":"Metric"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":136,
+"text":"#[derive(\u2026 Serialize \u2026)] MetricUnavailable",
+"tag":"derives",
+"type":"MetricUnavailable"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":147,
+"text":"#[derive(\u2026 Serialize \u2026)] Allocations",
+"tag":"derives",
+"type":"Allocations"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":164,
+"text":"#[derive(\u2026 Serialize \u2026)] StageSample",
+"tag":"derives",
+"type":"StageSample"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":197,
+"text":"#[derive(\u2026 Serialize \u2026)] Machine",
+"tag":"derives",
+"type":"Machine"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":221,
+"text":"#[derive(\u2026 Serialize \u2026)] MachineText",
+"tag":"derives",
+"type":"MachineText"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":231,
+"text":"#[derive(\u2026 Serialize \u2026)] MachineNumber",
+"tag":"derives",
+"type":"MachineNumber"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":241,
+"text":"#[derive(\u2026 Serialize \u2026)] MachineProbeUnavailable",
+"tag":"derives",
+"type":"MachineProbeUnavailable"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":256,
+"text":"#[derive(\u2026 Serialize \u2026)] BenchmarkResult",
+"tag":"derives",
+"type":"BenchmarkResult"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":271,
+"text":"#[derive(\u2026 Serialize \u2026)] Configuration",
+"tag":"derives",
+"type":"Configuration"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":287,
+"text":"#[derive(\u2026 Serialize \u2026)] UnavailableCapability",
+"tag":"derives",
+"type":"UnavailableCapability"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"tests/use_case_support/mod.rs",
+"line":21,
+"text":"#[derive(\u2026 Serialize \u2026)] UseCaseReport",
+"tag":"derives",
+"type":"UseCaseReport"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/protocol.rs",
+"line":6,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeDelegationRequest",
+"tag":"derives",
+"type":"ForgeDelegationRequest"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/facts.rs",
+"line":5,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeResolution",
+"tag":"derives",
+"type":"ForgeResolution"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/facts.rs",
+"line":114,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeFact",
+"tag":"derives",
+"type":"ForgeFact"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/facts.rs",
+"line":124,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeRepositoryMetadata",
+"tag":"derives",
+"type":"ForgeRepositoryMetadata"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/service.rs",
+"line":5,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeJournalRecord",
+"tag":"derives",
+"type":"ForgeJournalRecord"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/service.rs",
+"line":23,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeJournalEntry",
+"tag":"derives",
+"type":"ForgeJournalEntry"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/service.rs",
+"line":31,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeJournalEvent",
+"tag":"derives",
+"type":"ForgeJournalEvent"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/model.rs",
+"line":22,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeRejectReason",
+"tag":"derives",
+"type":"ForgeRejectReason"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/model.rs",
+"line":42,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgePackageManifest",
+"tag":"derives",
+"type":"ForgePackageManifest"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/model.rs",
+"line":252,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeReceipt",
+"tag":"derives",
+"type":"ForgeReceipt"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/transport/mod.rs",
+"line":6,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeArchiveFormat",
+"tag":"derives",
+"type":"ForgeArchiveFormat"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":29,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoverySourceIdentity",
+"tag":"derives",
+"type":"DiscoverySourceIdentity"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":65,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryCursor",
+"tag":"derives",
+"type":"DiscoveryCursor"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":102,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryObservedAt",
+"tag":"derives",
+"type":"DiscoveryObservedAt"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":121,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryCompleteness",
+"tag":"derives",
+"type":"DiscoveryCompleteness"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":135,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryStanding",
+"tag":"derives",
+"type":"DiscoveryStanding"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":152,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryFacet",
+"tag":"derives",
+"type":"DiscoveryFacet"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":169,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryAdvisory",
+"tag":"derives",
+"type":"DiscoveryAdvisory"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":188,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryMetadata",
+"tag":"derives",
+"type":"DiscoveryMetadata"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":288,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryFact",
+"tag":"derives",
+"type":"DiscoveryFact"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":304,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryBatch",
+"tag":"derives",
+"type":"DiscoveryBatch"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":468,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryPackageRetraction",
+"tag":"derives",
+"type":"DiscoveryPackageRetraction"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":120,
+"text":"#[derive(\u2026 Serialize \u2026)] Stats",
+"tag":"derives",
+"type":"Stats"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":158,
+"text":"#[derive(\u2026 Serialize \u2026)] Hardware",
+"tag":"derives",
+"type":"Hardware"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":170,
+"text":"#[derive(\u2026 Serialize \u2026)] Toolchain",
+"tag":"derives",
+"type":"Toolchain"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":177,
+"text":"#[derive(\u2026 Serialize \u2026)] Correctness",
+"tag":"derives",
+"type":"Correctness"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":183,
+"text":"#[derive(\u2026 Serialize \u2026)] IngestMeasurement",
+"tag":"derives",
+"type":"IngestMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":203,
+"text":"#[derive(\u2026 Serialize \u2026)] DeltaMeasurement",
+"tag":"derives",
+"type":"DeltaMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":225,
+"text":"#[derive(\u2026 Serialize \u2026)] SearchMeasurement",
+"tag":"derives",
+"type":"SearchMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":243,
+"text":"#[derive(\u2026 Serialize \u2026)] CatalogMeasurement",
+"tag":"derives",
+"type":"CatalogMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":258,
+"text":"#[derive(\u2026 Serialize \u2026)] SurfaceMeasurement",
+"tag":"derives",
+"type":"SurfaceMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":273,
+"text":"#[derive(\u2026 Serialize \u2026)] AcquisitionMeasurement",
+"tag":"derives",
+"type":"AcquisitionMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":298,
+"text":"#[derive(\u2026 Serialize \u2026)] GuiMeasurement",
+"tag":"derives",
+"type":"GuiMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":318,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoveryMeasurement",
+"tag":"derives",
+"type":"DiscoveryMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":336,
+"text":"#[derive(\u2026 Serialize \u2026)] LifecycleMeasurement",
+"tag":"derives",
+"type":"LifecycleMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":347,
+"text":"#[derive(\u2026 Serialize \u2026)] ParityMeasurement",
+"tag":"derives",
+"type":"ParityMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":360,
+"text":"#[derive(\u2026 Serialize \u2026)] ThroughputMeasurement",
+"tag":"derives",
+"type":"ThroughputMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":372,
+"text":"#[derive(\u2026 Serialize \u2026)] ComparisonMeasurement",
+"tag":"derives",
+"type":"ComparisonMeasurement"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":390,
+"text":"#[derive(\u2026 Serialize \u2026)] Report",
+"tag":"derives",
+"type":"Report"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":417,
+"text":"#[derive(\u2026 Serialize \u2026)] BuildMetadata",
+"tag":"derives",
+"type":"BuildMetadata"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":426,
+"text":"#[derive(\u2026 Serialize \u2026)] GateSummary",
+"tag":"derives",
+"type":"GateSummary"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":438,
+"text":"#[derive(\u2026 Serialize \u2026)] CorpusDescription",
+"tag":"derives",
+"type":"CorpusDescription"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/discovery.rs",
+"line":1865,
+"text":"#[derive(\u2026 Serialize \u2026)] JournalTransaction",
+"tag":"derives",
+"type":"JournalTransaction"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/query/remote.rs",
+"line":974,
+"text":"#[derive(\u2026 Serialize \u2026)] EmbeddingTreatment",
+"tag":"derives",
+"type":"EmbeddingTreatment"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/query/remote.rs",
+"line":980,
+"text":"#[derive(\u2026 Serialize \u2026)] EmbeddingRequest",
+"tag":"derives",
+"type":"EmbeddingRequest"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/product_state.rs",
+"line":55,
+"text":"#[derive(\u2026 Serialize \u2026)] StoredState",
+"tag":"derives",
+"type":"StoredState"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/product_state.rs",
+"line":68,
+"text":"#[derive(\u2026 Serialize \u2026)] IndexSearchCursorState",
+"tag":"derives",
+"type":"IndexSearchCursorState"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/discovery_search.rs",
+"line":56,
+"text":"#[derive(\u2026 Serialize \u2026)] LineageSearchSource",
+"tag":"derives",
+"type":"LineageSearchSource"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/discovery_search.rs",
+"line":76,
+"text":"#[derive(\u2026 Serialize \u2026)] LineageKey",
+"tag":"derives",
+"type":"LineageKey"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/discovery_search.rs",
+"line":104,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoverySearchPosition",
+"tag":"derives",
+"type":"DiscoverySearchPosition"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/discovery_search.rs",
+"line":113,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoverySearchSource",
+"tag":"derives",
+"type":"DiscoverySearchSource"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/discovery_search.rs",
+"line":144,
+"text":"#[derive(\u2026 Serialize \u2026)] ForgeSearchSourceIdentity",
+"tag":"derives",
+"type":"ForgeSearchSourceIdentity"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/discovery_search.rs",
+"line":487,
+"text":"#[derive(\u2026 Serialize \u2026)] SearchContinuation",
+"tag":"derives",
+"type":"SearchContinuation"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/discovery_search.rs",
+"line":561,
+"text":"#[derive(\u2026 Serialize \u2026)] DiscoverySearchCursor",
+"tag":"derives",
+"type":"DiscoverySearchCursor"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":26,
+"text":"#[derive(\u2026 Serialize \u2026)] AllocationMeasurement",
+"tag":"derives",
+"type":"AllocationMeasurement"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":34,
+"text":"#[derive(\u2026 Serialize \u2026)] Refusal",
+"tag":"derives",
+"type":"Refusal"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":41,
+"text":"#[derive(\u2026 Serialize \u2026)] QueryPageFixture",
+"tag":"derives",
+"type":"QueryPageFixture"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":49,
+"text":"#[derive(\u2026 Serialize \u2026)] QueryRowFixture",
+"tag":"derives",
+"type":"QueryRowFixture"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":55,
+"text":"#[derive(\u2026 Serialize \u2026)] GraphQueryFixture",
+"tag":"derives",
+"type":"GraphQueryFixture"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":145,
+"text":"#[derive(\u2026 Serialize \u2026)] ToolMatrixMeasurement",
+"tag":"derives",
+"type":"ToolMatrixMeasurement"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":522,
+"text":"#[derive(\u2026 Serialize \u2026)] RefusalMeasurement",
+"tag":"derives",
+"type":"RefusalMeasurement"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":556,
+"text":"#[derive(\u2026 Serialize \u2026)] Measurement",
+"tag":"derives",
+"type":"Measurement"
+},
+{
+"pkg":"store-s3",
+"dir":"crates/store-s3",
+"file":"src/lib.rs",
+"line":66,
+"text":"#[derive(\u2026 Serialize \u2026)] WorkFence",
+"tag":"derives",
+"type":"WorkFence"
+},
+{
+"pkg":"store-s3",
+"dir":"crates/store-s3",
+"file":"src/lib.rs",
+"line":220,
+"text":"#[derive(\u2026 Serialize \u2026)] UploadCapability",
+"tag":"derives",
+"type":"UploadCapability"
+},
+{
+"pkg":"store-s3",
+"dir":"crates/store-s3",
+"file":"src/lib.rs",
+"line":282,
+"text":"#[derive(\u2026 Serialize \u2026)] AllowedRange",
+"tag":"derives",
+"type":"AllowedRange"
+},
+{
+"pkg":"store-s3",
+"dir":"crates/store-s3",
+"file":"src/lib.rs",
+"line":291,
+"text":"#[derive(\u2026 Serialize \u2026)] ReadCapability",
+"tag":"derives",
+"type":"ReadCapability"
+},
+{
+"pkg":"store-s3",
+"dir":"crates/store-s3",
+"file":"src/pack.rs",
+"line":438,
+"text":"#[derive(\u2026 Serialize \u2026)] PackUploadCapability",
+"tag":"derives",
+"type":"PackUploadCapability"
+},
+{
+"pkg":"store-s3",
+"dir":"crates/store-s3",
+"file":"src/pack.rs",
+"line":506,
+"text":"#[derive(\u2026 Serialize \u2026)] PackReadCapability",
+"tag":"derives",
+"type":"PackReadCapability"
+},
+{
+"pkg":"mcp",
+"dir":"apps/mcp",
+"file":"src/jsonrpc.rs",
+"line":1194,
+"text":"impl Serialize for GraphPageBody",
+"tag":"implements",
+"type":"GraphPageBody"
+},
+{
+"pkg":"mcp",
+"dir":"apps/mcp",
+"file":"src/jsonrpc.rs",
+"line":1210,
+"text":"impl Serialize for GraphRows",
+"tag":"implements",
+"type":"GraphRows"
+},
+{
+"pkg":"mcp",
+"dir":"apps/mcp",
+"file":"src/jsonrpc.rs",
+"line":1225,
+"text":"impl Serialize for GraphRow",
+"tag":"implements",
+"type":"GraphRow"
+},
+{
+"pkg":"mcp",
+"dir":"apps/mcp",
+"file":"src/jsonrpc.rs",
+"line":1240,
+"text":"impl Serialize for GraphValueRef",
+"tag":"implements",
+"type":"GraphValueRef"
+},
+{
+"pkg":"mcp",
+"dir":"apps/mcp",
+"file":"src/jsonrpc.rs",
+"line":1293,
+"text":"#[derive(\u2026 Serialize \u2026)] SurfaceBody",
+"tag":"derives",
+"type":"SurfaceBody"
+},
+{
+"pkg":"mcp",
+"dir":"apps/mcp",
+"file":"src/jsonrpc/resources.rs",
+"line":256,
+"text":"#[derive(\u2026 Serialize \u2026)] ResourceBody",
+"tag":"derives",
+"type":"ResourceBody"
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"src/vocabulary/package.rs",
+"line":148,
+"text":"#[derive(\u2026 Serialize \u2026)] PackageUrl",
+"tag":"derives",
+"type":"PackageUrl"
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"src/vocabulary/authority.rs",
+"line":23,
+"text":"#[derive(\u2026 Serialize \u2026)] RegistryEcosystem",
+"tag":"derives",
+"type":"RegistryEcosystem"
+},
+{
+"pkg":"platform",
+"dir":"crates/platform",
+"file":"native_path.rs",
+"line":10,
+"text":"#[derive(\u2026 Serialize \u2026)] NativePathWire",
+"tag":"derives",
+"type":"NativePathWire"
+},
+{
+"pkg":"control",
+"dir":"tools/control",
+"file":"src/wire.rs",
+"line":98,
+"text":"#[derive(\u2026 Serialize \u2026)] WireWorkKey",
+"tag":"derives",
+"type":"WireWorkKey"
+},
+{
+"pkg":"journeys",
+"dir":"tests/journeys",
+"file":"tests/restart_persistence.rs",
+"line":82,
+"text":"#[derive(\u2026 Serialize \u2026)] Observation",
+"tag":"derives",
+"type":"Observation"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/authority.rs",
+"line":18,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/journal.rs",
+"line":3,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/model.rs",
+"line":6,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/policy.rs",
+"line":1,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"advisory",
+"dir":"crates/advisory",
+"file":"src/wire.rs",
+"line":1,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/control.rs",
+"line":7,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/lib.rs",
+"line":45,
+"text":"use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};",
+"tag":"asks for"
+},
+{
+"pkg":"cluster-transport",
+"dir":"crates/cluster-transport",
+"file":"src/probe.rs",
+"line":14,
+"text":"use serde::{Deserialize, Serialize, de::DeserializeOwned};",
+"tag":"asks for"
+},
+{
+"pkg":"control",
+"dir":"tools/control",
+"file":"src/wire.rs",
+"line":8,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/forge/mod.rs",
+"line":30,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/discovery.rs",
+"line":10,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"src/registry/wire.rs",
+"line":377,
+"text":"fn put_json<T: serde::Serialize>(out: &mut Vec<u8>, value: &T) {",
+"tag":"asks for"
+},
+{
+"pkg":"engine",
+"dir":"crates/engine",
+"file":"tests/use_case_support/mod.rs",
+"line":14,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/http.rs",
+"line":13,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/adapter.rs",
+"line":6,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/contract.rs",
+"line":13,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"extension-qdrant",
+"dir":"extensions/qdrant",
+"file":"src/server/transport.rs",
+"line":8,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/artifact.rs",
+"line":6,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/conformance.rs",
+"line":15,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/design_contract.rs",
+"line":12,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/diff.rs",
+"line":4,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/input.rs",
+"line":4,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/journey.rs",
+"line":8,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/lib.rs",
+"line":26,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/script.rs",
+"line":40,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/semantics.rs",
+"line":10,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"gui-harness",
+"dir":"tools/gui-harness",
+"file":"src/state.rs",
+"line":8,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"browse/roles.rs",
+"line":12,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"browse/tree.rs",
+"line":8,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"command.rs",
+"line":9,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"forge_identity.rs",
+"line":1,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"package_graph.rs",
+"line":11,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"protocol/field.rs",
+"line":8,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"protocol/json/wire/adaptive.rs",
+"line":8,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"protocol/json/wire/application.rs",
+"line":11,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"library",
+"dir":"crates/library",
+"file":"protocol/json/wire/compiler/authority.rs",
+"line":15,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/discovery_search.rs",
+"line":13,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/builtin/product_state.rs",
+"line":37,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/discovery.rs",
+"line":23,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"local-service",
+"dir":"crates/local-service",
+"file":"src/query/remote.rs",
+"line":13,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"mcp",
+"dir":"apps/mcp",
+"file":"src/jsonrpc/resources.rs",
+"line":21,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"performance-tests",
+"dir":"tests/performance",
+"file":"src/bin/integrated.rs",
+"line":45,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"platform",
+"dir":"crates/platform",
+"file":"native_path.rs",
+"line":3,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"budget.rs",
+"line":8,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"present",
+"dir":"crates/present",
+"file":"dto.rs",
+"line":12,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"src/vocabulary/authority.rs",
+"line":4,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"semantic",
+"dir":"crates/semantic",
+"file":"src/vocabulary/package.rs",
+"line":11,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"benches/capacity_planning/model.rs",
+"line":6,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/input.rs",
+"line":6,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"store",
+"dir":"crates/store",
+"file":"examples/capacity_worksheet/capacity/output.rs",
+"line":6,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+},
+{
+"pkg":"store-s3",
+"dir":"crates/store-s3",
+"file":"src/lib.rs",
+"line":48,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"store-s3",
+"dir":"crates/store-s3",
+"file":"src/pack.rs",
+"line":23,
+"text":"use serde::{Deserialize, Serialize};",
+"tag":"asks for"
+},
+{
+"pkg":"token-budget",
+"dir":"tools/token-budget",
+"file":"src/main.rs",
+"line":17,
+"text":"use serde::Serialize;",
+"tag":"asks for"
+}
+],
+"siblings":[
+{
+"name":"Deserialize",
+"differs":"the other way",
+"kind":"trait"
+},
+{
+"name":"Serializer",
+"differs":"a format writes this",
+"kind":"trait"
+}
+],
+"history":{
+"releases":[],
+"same":true
+}
+}
