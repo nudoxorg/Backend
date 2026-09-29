@@ -1,7 +1,7 @@
 //! The store adapter for the shared persistent canonical tree.
 
 use crate::{Arc, Hash, HashMap, Mutex, RawRelation, StoreError};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::MutexGuard};
 
 /// One checked canonical node retained by an [`OrderedMap`](super::OrderedMap).
 pub(crate) type Node = backend_version::TreeNodeHandle<RawRelation>;
@@ -47,9 +47,7 @@ impl StoreCas {
         let mut total = 0;
         let mut live = 0;
         for shard in &self.shards {
-            let Ok(shard) = shard.lock() else {
-                continue;
-            };
+            let shard = lock_shard(shard);
             total += shard.entries.len();
             live += shard
                 .entries
@@ -67,9 +65,7 @@ impl StoreCas {
     pub(crate) fn reap_stale(&self) -> usize {
         let mut removed = 0;
         for shard in &self.shards {
-            let Ok(mut shard) = shard.lock() else {
-                continue;
-            };
+            let mut shard = lock_shard(shard);
             let before = shard.entries.len();
             shard.entries.retain(|_, weak| weak.upgrade().is_some());
             removed += before - shard.entries.len();
@@ -88,7 +84,7 @@ impl StoreCas {
     pub(crate) fn reap_visits(&self) -> usize {
         self.shards
             .iter()
-            .filter_map(|shard| shard.lock().ok())
+            .map(lock_shard)
             .map(|shard| shard.reap_visits)
             .sum()
     }
@@ -110,9 +106,7 @@ impl backend_version::TreeInterner<RawRelation> for StoreInterner {
     fn intern(&self, node: Node) -> Node {
         let hash = node.id().to_bytes();
         let shard_index = usize::from(hash[0]) & SHARD_MASK;
-        let Ok(mut shard) = self.cas.shards[shard_index].lock() else {
-            return node;
-        };
+        let mut shard = lock_shard(&self.cas.shards[shard_index]);
 
         reap(&mut shard);
         if let Some(existing) = shard
@@ -126,6 +120,28 @@ impl backend_version::TreeInterner<RawRelation> for StoreInterner {
             shard.reap_queue.push_back(hash);
         }
         node
+    }
+}
+
+// The interner is a disposable weak cache, not the authoritative tree. A
+// panicking user of a shard may have interrupted its queue update: discard
+// that shard on poison, then resume with an internally consistent empty cache.
+fn lock_shard(shard: &Mutex<Shard>) -> MutexGuard<'_, Shard> {
+    match shard.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            guard.entries.clear();
+            guard.reap_queue.clear();
+            #[cfg(test)]
+            {
+                guard.reap_visits = 0;
+            }
+            // The authoritative tree remains intact; the next reader sees an
+            // ordinary empty cache instead of repeatedly recovering poison.
+            shard.clear_poison();
+            guard
+        }
     }
 }
 
