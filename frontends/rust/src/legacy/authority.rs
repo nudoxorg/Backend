@@ -3,7 +3,7 @@
 //! Never renders, copies, or serializes semantic facts before the shared IR lowerer consumes them.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt, fs,
     io::Read,
     ops::Deref,
@@ -13,12 +13,14 @@ use std::{
 };
 
 use backend_semantic::vocabulary::{RustEdition, Stage};
-use ra_ap_base_db::{EditionedFileId, SourceDatabase, all_crates};
+use ra_ap_base_db::{
+    EditionedFileId, FileSet, SourceDatabase, SourceRoot, SourceRootId, all_crates,
+};
 use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
 };
-use ra_ap_ide_db::{ChangeWithProcMacros, RootDatabase};
+use ra_ap_ide_db::{ChangeWithProcMacros, LibraryRoots, LocalRoots, RootDatabase};
 use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
 use ra_ap_syntax::{
     AstNode,
@@ -30,6 +32,9 @@ use crate::legacy::{LoadError, RustToolchain};
 
 /// Largest sorted package source path set admitted by one Rust authority lane.
 pub const MAX_RUST_WORKSPACE_SESSION_SOURCES: usize = 100_000;
+
+/// Maximum RA source-root path entries copied while applying one create/delete frontier.
+const MAX_RUST_WORKSPACE_ROOT_MEMBERSHIP_FILES: usize = 250_000;
 
 /// Caller-owned Cargo root selected for one semantic authority transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +60,7 @@ pub struct RustWorkspace {
     edition: RustEdition,
     database: RootDatabase,
     vfs: Vfs,
+    selected_source_paths: HashMap<PathBuf, PathBuf>,
 }
 
 impl fmt::Debug for RustWorkspace {
@@ -67,10 +73,12 @@ impl fmt::Debug for RustWorkspace {
     }
 }
 
-/// One existing package path and exact buffer admitted into a Rust workspace operation.
+/// One package path and exact buffer in the complete current Rust source frontier.
 ///
-/// This can carry an unsaved replacement for an existing disk file. New unsaved
-/// files and deletions are not admitted by the current Cargo VFS boundary.
+/// The path may name a new editor buffer that does not exist on disk. Omitted
+/// package-local `.rs` paths are removed from the operation's RA source root,
+/// so this slice is a full current-state snapshot rather than a list of only
+/// changed files.
 #[derive(Clone, Copy, Debug)]
 pub struct RustWorkspaceFile<'source> {
     /// Normalized path relative to the admitted Cargo package root.
@@ -106,8 +114,35 @@ struct RustWorkspaceFeatureKey {
     features: Box<[String]>,
 }
 
+/// Resolves existing path components while retaining a safe canonical spelling
+/// for any missing suffix created by an unsaved editor buffer.
+fn resolve_package_source_path(
+    root: &Path,
+    requested_path: &Path,
+) -> Result<(PathBuf, bool), std::io::Error> {
+    let relative = requested_path
+        .strip_prefix(root)
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let mut resolved = root.to_path_buf();
+    let mut exists = true;
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        };
+        resolved.push(component);
+        if exists {
+            match fs::symlink_metadata(&resolved) {
+                Ok(_) => resolved = fs::canonicalize(&resolved)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => exists = false,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok((resolved, exists))
+}
+
 impl RustWorkspaceSessionKey {
-    /// Creates a key from the exact authority, environment, target, and source path set.
+    /// Creates a key from the exact authority, environment, target, and current source path set.
     ///
     /// Paths are relative to `root` and must be normalized and strictly ordered.
     pub fn new(
@@ -131,6 +166,7 @@ impl RustWorkspaceSessionKey {
         }
         let mut previous: Option<&Path> = None;
         let mut canonical_source_paths = Vec::with_capacity(source_paths.len());
+        let mut distinct_canonical_paths = HashSet::with_capacity(source_paths.len());
         for path in source_paths {
             if !is_normalized_relative_path(path)
                 || previous.is_some_and(|previous| previous >= path.as_path())
@@ -138,13 +174,14 @@ impl RustWorkspaceSessionKey {
                 return Err(RustAuthorityError::SessionSourcePath { path: path.clone() });
             }
             let requested_path = root.join(path);
-            let canonical = requested_path.canonicalize().map_err(|source| {
-                RustAuthorityError::ProjectSource {
-                    path: requested_path,
-                    source,
-                }
-            })?;
-            if !canonical.is_file() {
+            let (canonical, exists) =
+                resolve_package_source_path(&root, &requested_path).map_err(|source| {
+                    RustAuthorityError::ProjectSource {
+                        path: requested_path.clone(),
+                        source,
+                    }
+                })?;
+            if exists && !canonical.is_file() {
                 return Err(RustAuthorityError::SourceNotFile { path: canonical });
             }
             if !canonical.starts_with(&root) {
@@ -152,6 +189,9 @@ impl RustWorkspaceSessionKey {
                     root: root.clone(),
                     path: canonical,
                 });
+            }
+            if !distinct_canonical_paths.insert(canonical.clone()) {
+                return Err(RustAuthorityError::SessionSourcePath { path: path.clone() });
             }
             canonical_source_paths.push(canonical);
             previous = Some(path);
@@ -217,6 +257,12 @@ pub struct RustWorkspaceSessionStats {
     pub workspace_reuse_disabled_requests: u64,
     /// Source texts changed in the rust-analyzer database.
     pub source_updates: u64,
+    /// New source paths added to this operation's RA VFS and source root.
+    pub overlay_sources_added: u64,
+    /// Disk-visible package Rust paths removed from this operation's RA source root.
+    pub overlay_sources_removed: u64,
+    /// RA source-root path entries copied when membership changes.
+    pub overlay_root_entries_rebuilt: u64,
     /// Admitted source texts already current in the rust-analyzer database.
     pub unchanged_sources: u64,
     /// Package operations that failed and discarded their in-progress workspace.
@@ -306,18 +352,29 @@ impl RustWorkspaceSessionLane {
         })?;
         self.stats.workspace_loads = self.stats.workspace_loads.saturating_add(1);
         let update_started = Instant::now();
-        let changed_sources = vec![true; files.len()];
-        let result =
-            workspace.apply_source_frontier(files, key.source_paths(), &changed_sources, control);
+        let result = workspace.apply_source_frontier(files, &key, control);
         self.stats.source_update_nanos = self
             .stats
             .source_update_nanos
             .saturating_add(elapsed_nanos(update_started));
-        let (updated, unchanged) = result.map_err(|error| {
-            self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
-            error
-        })?;
+        let (updated, unchanged, added, removed, root_entries_rebuilt) =
+            result.map_err(|error| {
+                self.stats.failed_transactions = self.stats.failed_transactions.saturating_add(1);
+                error
+            })?;
         self.stats.source_updates = self.stats.source_updates.saturating_add(updated as u64);
+        self.stats.overlay_sources_added = self
+            .stats
+            .overlay_sources_added
+            .saturating_add(added as u64);
+        self.stats.overlay_sources_removed = self
+            .stats
+            .overlay_sources_removed
+            .saturating_add(removed as u64);
+        self.stats.overlay_root_entries_rebuilt = self
+            .stats
+            .overlay_root_entries_rebuilt
+            .saturating_add(root_entries_rebuilt as u64);
         self.stats.unchanged_sources = self
             .stats
             .unchanged_sources
@@ -639,6 +696,7 @@ impl RustWorkspace {
             edition,
             database,
             vfs,
+            selected_source_paths: HashMap::new(),
         })
     }
 
@@ -665,14 +723,45 @@ impl RustWorkspace {
             });
         }
         let requested_path = source_path.as_ref();
-        let source_path =
-            requested_path
-                .canonicalize()
-                .map_err(|source| RustAuthorityError::ProjectSource {
+        let relative_path = requested_path.strip_prefix(&self.root).ok();
+        let (source_path, exists) = if let Some(relative_path) = relative_path {
+            if !is_normalized_relative_path(relative_path) {
+                return Err(RustAuthorityError::SessionSourcePath {
+                    path: relative_path.to_path_buf(),
+                });
+            }
+            if let Some(source_path) = self.selected_source_paths.get(relative_path) {
+                (source_path.clone(), false)
+            } else {
+                resolve_package_source_path(&self.root, requested_path).map_err(|source| {
+                    RustAuthorityError::ProjectSource {
+                        path: requested_path.to_path_buf(),
+                        source,
+                    }
+                })?
+            }
+        } else {
+            let canonical = requested_path.canonicalize().map_err(|source| {
+                RustAuthorityError::ProjectSource {
                     path: requested_path.to_path_buf(),
                     source,
-                })?;
-        if !source_path.is_file() {
+                }
+            })?;
+            if !canonical.starts_with(&self.root) {
+                return Err(RustAuthorityError::SourceOutsidePackage {
+                    root: self.root.clone(),
+                    path: canonical,
+                });
+            }
+            let selected = self
+                .selected_source_paths
+                .values()
+                .find(|selected| **selected == canonical)
+                .cloned()
+                .unwrap_or(canonical);
+            (selected, true)
+        };
+        if exists && !source_path.is_file() {
             return Err(RustAuthorityError::SourceNotFile { path: source_path });
         }
         if !source_path.starts_with(&self.root) {
@@ -764,15 +853,13 @@ impl RustWorkspace {
         &mut self,
         files: &[RustWorkspaceFile<'_>],
         key: &RustWorkspaceSessionKey,
-        changed_sources: &[bool],
         control: RustAnalysisControl<'_>,
-    ) -> Result<(usize, usize), RustAuthorityError> {
-        if files.len() != key.source_paths.len() || changed_sources.len() != files.len() {
+    ) -> Result<(usize, usize, usize, usize, usize), RustAuthorityError> {
+        if files.len() != key.source_paths.len() {
             return Err(RustAuthorityError::SessionFrontierMismatch);
         }
-        let mut change = ChangeWithProcMacros::default();
-        let mut updated = 0_usize;
-        let mut unchanged = 0_usize;
+        let mut desired_paths = HashSet::with_capacity(files.len());
+        let mut loaded_source_roots = HashSet::new();
         for (index, (file, expected_path)) in files.iter().zip(key.source_paths.iter()).enumerate()
         {
             control.check()?;
@@ -790,17 +877,15 @@ impl RustWorkspace {
                 });
             }
             let requested_path = self.root.join(file.relative_path);
-            let source_path = key.canonical_source_paths[index].clone();
-            if !source_path.is_file() {
+            let (source_path, exists) = resolve_package_source_path(&self.root, &requested_path)
+                .map_err(|source| RustAuthorityError::ProjectSource {
+                    path: requested_path.clone(),
+                    source,
+                })?;
+            if exists && !source_path.is_file() {
                 return Err(RustAuthorityError::SourceNotFile { path: source_path });
             }
-            let canonical_now = requested_path.canonicalize().map_err(|source| {
-                RustAuthorityError::ProjectSource {
-                    path: requested_path,
-                    source,
-                }
-            })?;
-            if canonical_now != source_path {
+            if source_path != key.canonical_source_paths[index] {
                 return Err(RustAuthorityError::SessionSourcePath {
                     path: file.relative_path.to_path_buf(),
                 });
@@ -811,24 +896,135 @@ impl RustWorkspace {
                     path: source_path,
                 });
             }
+            if !desired_paths.insert(source_path.clone()) {
+                return Err(RustAuthorityError::SessionSourcePath {
+                    path: file.relative_path.to_path_buf(),
+                });
+            }
+            let vfs_path = VfsPath::from(AbsPathBuf::assert_utf8(source_path));
+            if let Some((file_id, excluded)) = self.vfs.file_id(&vfs_path) {
+                if excluded == FileExcluded::Yes {
+                    return Err(RustAuthorityError::SourceNotLoaded {
+                        path: requested_path,
+                    });
+                }
+                loaded_source_roots.insert(
+                    self.database
+                        .file_source_root(file_id)
+                        .source_root_id(&self.database),
+                );
+            }
+        }
+
+        let local_roots = LocalRoots::get(&self.database).roots(&self.database);
+        let target_source_root = if loaded_source_roots.len() == 1 {
+            *loaded_source_roots
+                .iter()
+                .next()
+                .expect("one loaded source root was checked")
+        } else if loaded_source_roots.len() > 1 {
+            return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+        } else {
+            let mut package_roots = HashSet::new();
+            for (file_id, vfs_path) in self.vfs.iter() {
+                control.check()?;
+                let Some(path) = vfs_path.as_path() else {
+                    continue;
+                };
+                let path = Path::new(path.as_str());
+                if path.starts_with(&self.root) && path.extension().is_some_and(|ext| ext == "rs") {
+                    let source_root = self
+                        .database
+                        .file_source_root(file_id)
+                        .source_root_id(&self.database);
+                    if local_roots.contains(&source_root) {
+                        package_roots.insert(source_root);
+                    }
+                }
+            }
+            if package_roots.len() != 1 {
+                return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+            }
+            *package_roots
+                .iter()
+                .next()
+                .expect("one package source root was checked")
+        };
+        if !local_roots.contains(&target_source_root) {
+            return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+        }
+
+        let mut removed_paths = Vec::new();
+        for (file_id, vfs_path) in self.vfs.iter() {
+            control.check()?;
+            let Some(path) = vfs_path.as_path() else {
+                continue;
+            };
+            let path = Path::new(path.as_str());
+            if !path.starts_with(&self.root)
+                || !path.extension().is_some_and(|extension| extension == "rs")
+                || desired_paths.contains(path)
+            {
+                continue;
+            }
+            let source_root = self
+                .database
+                .file_source_root(file_id)
+                .source_root_id(&self.database);
+            if source_root == target_source_root {
+                removed_paths.push((file_id, vfs_path.clone()));
+            }
+        }
+        let removed_ids = removed_paths
+            .iter()
+            .map(|(file_id, _)| *file_id)
+            .collect::<HashSet<_>>();
+
+        let mut change = ChangeWithProcMacros::default();
+        let mut updated = 0_usize;
+        let mut unchanged = 0_usize;
+        let mut added_ids = Vec::new();
+        let mut added = 0_usize;
+        for (index, file) in files.iter().enumerate() {
+            control.check()?;
+            let source_path = &key.canonical_source_paths[index];
             let Some(path_text) = source_path.to_str() else {
                 return Err(RustAuthorityError::SessionSourcePath {
                     path: file.relative_path.to_path_buf(),
                 });
             };
-            if !changed_sources[index] {
-                unchanged = unchanged.saturating_add(1);
-                continue;
-            }
             let vfs_path = VfsPath::from(AbsPathBuf::assert_utf8(PathBuf::from(path_text)));
-            let (file_id, excluded) =
-                self.vfs
-                    .file_id(&vfs_path)
-                    .ok_or_else(|| RustAuthorityError::SourceNotLoaded {
-                        path: source_path.clone(),
-                    })?;
-            if excluded == FileExcluded::Yes {
-                return Err(RustAuthorityError::SourceNotLoaded { path: source_path });
+            let (file_id, newly_added) =
+                if let Some((file_id, excluded)) = self.vfs.file_id(&vfs_path) {
+                    if excluded == FileExcluded::Yes {
+                        return Err(RustAuthorityError::SourceNotLoaded {
+                            path: source_path.clone(),
+                        });
+                    }
+                    let source_root = self
+                        .database
+                        .file_source_root(file_id)
+                        .source_root_id(&self.database);
+                    if source_root != target_source_root {
+                        return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+                    }
+                    (file_id, false)
+                } else {
+                    self.vfs
+                        .set_file_contents(vfs_path.clone(), Some(file.source.as_bytes().to_vec()));
+                    let Some((file_id, FileExcluded::No)) = self.vfs.file_id(&vfs_path) else {
+                        return Err(RustAuthorityError::SourceNotLoaded {
+                            path: source_path.clone(),
+                        });
+                    };
+                    added_ids.push((file_id, vfs_path.clone()));
+                    added = added.saturating_add(1);
+                    (file_id, true)
+                };
+            if newly_added {
+                change.change_file(file_id, Some(file.source.to_owned()));
+                updated = updated.saturating_add(1);
+                continue;
             }
             let observed = SourceDatabase::file_text(&self.database, file_id);
             let observed_text = observed.text(&self.database);
@@ -839,12 +1035,77 @@ impl RustWorkspace {
                 updated = updated.saturating_add(1);
             }
         }
+        for (_, vfs_path) in &removed_paths {
+            control.check()?;
+            self.vfs.set_file_contents(vfs_path.clone(), None);
+        }
+        let removed = removed_paths.len();
+        let membership_changed = added != 0 || removed != 0;
+        let mut root_entries_rebuilt = 0_usize;
+        if membership_changed {
+            let mut roots = Vec::new();
+            let local_root_ids = LocalRoots::get(&self.database).roots(&self.database);
+            let library_root_ids = LibraryRoots::get(&self.database).roots(&self.database);
+            let all_root_ids = local_root_ids
+                .iter()
+                .chain(library_root_ids.iter())
+                .copied()
+                .collect::<HashSet<_>>();
+            let Some(max_root_id) = all_root_ids.iter().map(|id| id.0).max() else {
+                return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+            };
+            if all_root_ids.len() != max_root_id as usize + 1 {
+                return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+            }
+            roots.reserve(max_root_id as usize + 1);
+            for raw_id in 0..=max_root_id {
+                control.check()?;
+                let root_id = SourceRootId(raw_id);
+                let old_root = self
+                    .database
+                    .source_root(root_id)
+                    .source_root(&self.database);
+                let mut file_set = FileSet::default();
+                for file_id in old_root.iter() {
+                    control.check()?;
+                    if removed_ids.contains(&file_id) {
+                        continue;
+                    }
+                    let Some(path) = old_root.path_for_file(&file_id) else {
+                        return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+                    };
+                    file_set.insert(file_id, path.clone());
+                    root_entries_rebuilt = root_entries_rebuilt.saturating_add(1);
+                    if root_entries_rebuilt > MAX_RUST_WORKSPACE_ROOT_MEMBERSHIP_FILES {
+                        return Err(RustAuthorityError::SessionSourceRootLimit {
+                            maximum: MAX_RUST_WORKSPACE_ROOT_MEMBERSHIP_FILES,
+                        });
+                    }
+                }
+                if root_id == target_source_root {
+                    for (file_id, path) in &added_ids {
+                        file_set.insert(*file_id, path.clone());
+                    }
+                }
+                roots.push(if old_root.is_library {
+                    SourceRoot::new_library(file_set)
+                } else {
+                    SourceRoot::new_local(file_set)
+                });
+            }
+            change.set_roots(roots);
+        }
         control.check()?;
-        if updated != 0 {
+        if updated != 0 || membership_changed {
             self.database.apply_change(change);
         }
         control.check()?;
-        Ok((updated, unchanged))
+        self.selected_source_paths = files
+            .iter()
+            .zip(key.canonical_source_paths.iter())
+            .map(|(file, path)| (file.relative_path.to_path_buf(), path.clone()))
+            .collect();
+        Ok((updated, unchanged, added, removed, root_entries_rebuilt))
     }
 }
 
@@ -1998,6 +2259,15 @@ pub enum RustAuthorityError {
     /// A workspace request disagreed with the exact keyed source path set.
     #[error("Rust workspace source path set does not match its operation key")]
     SessionFrontierMismatch,
+    /// The loaded RA database did not provide one local source root for this package snapshot.
+    #[error("rust-analyzer package source root could not be identified unambiguously")]
+    SessionSourceRootAmbiguous,
+    /// Rebuilding RA root membership would exceed the bounded path-copy budget.
+    #[error("Rust workspace source-root update exceeds the {maximum}-file membership limit")]
+    SessionSourceRootLimit {
+        /// Largest number of source-root members copied by one operation.
+        maximum: usize,
+    },
     /// A workspace source path is not an admitted normalized package path.
     #[error("Rust workspace session rejected source path {path}")]
     SessionSourcePath {

@@ -17,7 +17,7 @@ use ra_ap_syntax::AstNode;
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn workspace_lane_reloads_for_nested_module_and_discards_failed_transaction()
+fn workspace_lane_applies_editor_frontier_and_discards_failed_transaction()
 -> Result<(), Box<dyn std::error::Error>> {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -42,7 +42,7 @@ fn workspace_lane_reloads_for_nested_module_and_discards_failed_transaction()
         let source_paths = [PathBuf::from("src/lib.rs"), PathBuf::from("src/sibling.rs")];
         let overlay_sibling = "pub fn value() -> u8 { 2 }\n";
         let failed_sibling = "pub fn value() -> u8 { 3 }\n";
-        let make_key = || {
+        let make_key = |source_paths: &[PathBuf]| {
             RustWorkspaceSessionKey::new(
                 &root,
                 &toolchain,
@@ -53,49 +53,20 @@ fn workspace_lane_reloads_for_nested_module_and_discards_failed_transaction()
                 Some([2; 32]),
                 Some([3; 32]),
                 [4; 32],
-                &source_paths,
+                source_paths,
             )
         };
-        let original_key = make_key()?;
-        let missing_source_paths = [
+        let original_key = make_key(&source_paths)?;
+        let unsaved_source_paths = [
+            PathBuf::from("src/foo/bar.rs"),
             PathBuf::from("src/lib.rs"),
-            PathBuf::from("src/not-created.rs"),
+            PathBuf::from("src/sibling.rs"),
         ];
-        assert!(
-            RustWorkspaceSessionKey::new(
-                &root,
-                &toolchain,
-                RustEdition::Rust2024,
-                Stage::LowerIr,
-                RustFeatureControl::default(),
-                Some([1; 32]),
-                Some([2; 32]),
-                Some([3; 32]),
-                [4; 32],
-                &missing_source_paths,
-            )
-            .is_err()
-        );
-        fs::write(root.join("src/sibling_renamed.rs"), disk_sibling)?;
-        let renamed_source_paths = [
-            PathBuf::from("src/lib.rs"),
-            PathBuf::from("src/sibling_renamed.rs"),
-        ];
-        let renamed_key = RustWorkspaceSessionKey::new(
-            &root,
-            &toolchain,
-            RustEdition::Rust2024,
-            Stage::LowerIr,
-            RustFeatureControl::default(),
-            Some([1; 32]),
-            Some([2; 32]),
-            Some([3; 32]),
-            [4; 32],
-            &renamed_source_paths,
-        )?;
+        assert!(!root.join("src/foo/bar.rs").exists());
+        let unsaved_key = make_key(&unsaved_source_paths)?;
         assert_ne!(
-            original_key, renamed_key,
-            "a source rename must change the session key"
+            original_key, unsaved_key,
+            "an unsaved source addition must change the operation key"
         );
         let running = AtomicBool::new(false);
         let control = || RustAnalysisControl {
@@ -103,45 +74,111 @@ fn workspace_lane_reloads_for_nested_module_and_discards_failed_transaction()
             maximum_source_bytes: SourceByteLimit::from(8_192),
             deadline: Instant::now() + Duration::from_secs(180),
         };
-        let package_frontier = |sibling: &str| {
-            [
-                RustWorkspaceFile {
-                    relative_path: Path::new("src/lib.rs"),
-                    source: root_source,
-                },
-                RustWorkspaceFile {
-                    relative_path: Path::new("src/sibling.rs"),
-                    source: sibling,
-                },
-            ]
+        let package_frontier = |root_source: &str, sibling: &str, extra: Option<(&Path, &str)>| {
+            let mut files = Vec::new();
+            if let Some((relative_path, source)) = extra {
+                files.push(RustWorkspaceFile {
+                    relative_path,
+                    source,
+                });
+            }
+            files.push(RustWorkspaceFile {
+                relative_path: Path::new("src/lib.rs"),
+                source: root_source,
+            });
+            files.push(RustWorkspaceFile {
+                relative_path: Path::new("src/sibling.rs"),
+                source: sibling,
+            });
+            files
+        };
+        let key_for = |files: &[RustWorkspaceFile<'_>]| {
+            let paths = files
+                .iter()
+                .map(|file| file.relative_path.to_path_buf())
+                .collect::<Vec<_>>();
+            make_key(&paths)
         };
 
         let mut lane = RustWorkspaceSessionLane::default();
-        let initial = package_frontier(disk_sibling);
+        let initial = package_frontier(root_source, disk_sibling, None);
         {
-            let lease = lane.begin(make_key()?, &initial, control())?;
+            let lease = lane.begin(key_for(&initial)?, &initial, control())?;
             let unresolved =
                 nested_module_resolves(lease.workspace(), &root, root_source, control())?;
             assert!(!unresolved, "the nested module is absent on the first load");
             lease.commit();
         }
-        fs::write(root.join("src/foo/bar.rs"), "pub fn value() -> u8 { 9 }\n")?;
+        let unsaved_module = "pub fn value() -> u8 { 9 }\n";
         {
-            // The package frontier is identical. A nested file appeared below
-            // an existing, previously empty directory after the prior load.
-            let unchanged_frontier = package_frontier(disk_sibling);
-            let lease = lane.begin(make_key()?, &unchanged_frontier, control())?;
+            // The exact current source frontier contains a module buffer that
+            // has never existed on disk. RA must admit the FileId and source
+            // root membership before resolving the parent module declaration.
+            let current = package_frontier(
+                root_source,
+                disk_sibling,
+                Some((Path::new("src/foo/bar.rs"), unsaved_module)),
+            );
+            let lease = lane.begin(key_for(&current)?, &current, control())?;
             assert!(
                 nested_module_resolves(lease.workspace(), &root, root_source, control())?,
-                "a fresh workspace must see a newly created nested module"
+                "RA must resolve the current unsaved nested module buffer"
+            );
+            let observed = lease.workspace().analyze_source(
+                root.join("src/foo/bar.rs"),
+                unsaved_module.as_bytes(),
+                control(),
+                |authority| Ok(authority.source == unsaved_module.as_bytes()),
+            )?;
+            assert!(
+                observed,
+                "the unsaved module must be bound to its exact buffer"
+            );
+            assert!(!root.join("src/foo/bar.rs").exists());
+            lease.commit();
+        }
+
+        // The disk still contains a module file, but it was removed from the
+        // selected current frontier. Its old FileId must leave the source root.
+        fs::write(root.join("src/foo/bar.rs"), unsaved_module)?;
+        assert!(root.join("src/foo/bar.rs").exists());
+        {
+            let current = package_frontier(root_source, disk_sibling, None);
+            let lease = lane.begin(key_for(&current)?, &current, control())?;
+            assert!(
+                !nested_module_resolves(lease.workspace(), &root, root_source, control())?,
+                "a deleted module must no longer resolve through stale disk state"
             );
             lease.commit();
         }
-        assert_eq!(lane.stats().workspace_loads, 2);
-        assert_eq!(lane.stats().workspace_reuses, 0);
+
+        // A rename is the same atomic current-state update: remove the old
+        // path and add the new unsaved path before HIR sees the parent module.
+        let renamed_root_source = concat!(
+            "mod sibling;\n",
+            "mod foo { mod baz; pub fn value() -> u8 { baz::value() } }\n",
+            "pub fn value() -> u8 { sibling::value().wrapping_add(foo::value()) }\n",
+        );
+        let renamed_module = "pub fn value() -> u8 { 11 }\n";
         {
-            let changed = package_frontier(overlay_sibling);
-            let lease = lane.begin(make_key()?, &changed, control())?;
+            let current = package_frontier(
+                renamed_root_source,
+                disk_sibling,
+                Some((Path::new("src/foo/baz.rs"), renamed_module)),
+            );
+            let lease = lane.begin(key_for(&current)?, &current, control())?;
+            assert!(
+                nested_module_resolves(lease.workspace(), &root, renamed_root_source, control(),)?,
+                "a renamed module must resolve from the current package frontier"
+            );
+            assert!(!root.join("src/foo/baz.rs").exists());
+            assert!(root.join("src/foo/bar.rs").exists());
+            lease.commit();
+        }
+
+        {
+            let changed = package_frontier(root_source, overlay_sibling, None);
+            let lease = lane.begin(key_for(&changed)?, &changed, control())?;
             let observed = lease.workspace().analyze_source(
                 root.join("src/sibling.rs"),
                 overlay_sibling.as_bytes(),
@@ -152,17 +189,18 @@ fn workspace_lane_reloads_for_nested_module_and_discards_failed_transaction()
             lease.commit();
         }
         {
-            let unchanged = package_frontier(overlay_sibling);
-            lane.begin(make_key()?, &unchanged, control())?.commit();
+            let unchanged = package_frontier(root_source, overlay_sibling, None);
+            lane.begin(key_for(&unchanged)?, &unchanged, control())?
+                .commit();
         }
         {
-            let failed = package_frontier(failed_sibling);
-            let _dropped_lease = lane.begin(make_key()?, &failed, control())?;
+            let failed = package_frontier(root_source, failed_sibling, None);
+            let _dropped_lease = lane.begin(key_for(&failed)?, &failed, control())?;
             // Dropping an uncommitted lease discards its mutated RA database.
         }
         {
-            let retry = package_frontier(failed_sibling);
-            let lease = lane.begin(make_key()?, &retry, control())?;
+            let retry = package_frontier(root_source, failed_sibling, None);
+            let lease = lane.begin(key_for(&retry)?, &retry, control())?;
             let observed = lease.workspace().analyze_source(
                 root.join("src/sibling.rs"),
                 failed_sibling.as_bytes(),
@@ -180,16 +218,23 @@ fn workspace_lane_reloads_for_nested_module_and_discards_failed_transaction()
                 root.join("Cargo.toml"),
                 "[package]\nname = \"session_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[package.metadata]\nrevision = \"changed\"\n",
             )?;
-            let dependency_changed = package_frontier(failed_sibling);
-            lane.begin(make_key()?, &dependency_changed, control())?
-                .commit();
+            let dependency_changed = package_frontier(root_source, failed_sibling, None);
+            lane.begin(
+                key_for(&dependency_changed)?,
+                &dependency_changed,
+                control(),
+            )?
+            .commit();
         }
 
         let stats = lane.stats();
-        assert_eq!(stats.workspace_loads, 7);
+        assert_eq!(stats.workspace_loads, 9);
         assert_eq!(stats.workspace_reuses, 0);
-        assert_eq!(stats.workspace_reuse_disabled_requests, 7);
-        assert_eq!(stats.source_updates, 5);
+        assert_eq!(stats.workspace_reuse_disabled_requests, 9);
+        assert_eq!(stats.source_updates, 8);
+        assert_eq!(stats.overlay_sources_added, 2);
+        assert_eq!(stats.overlay_sources_removed, 7);
+        assert!(stats.overlay_root_entries_rebuilt > 0);
         assert_eq!(stats.failed_transactions, 1);
         assert!(stats.workspace_load_nanos > 0);
         assert!(stats.source_update_nanos > 0);
