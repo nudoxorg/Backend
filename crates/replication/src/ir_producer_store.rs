@@ -28,7 +28,9 @@ use backend_semantic::ir::{
     UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId,
     ValidatedCanonicalSemanticPlaneSegment, VerifiedTypedPlaneContentV2,
     derive_typed_plane_content_v2_from_admitted_reader,
-    stream_canonical_plane_family_with_jumbo_and_stable_key_anchors, typed_plane_work_limits_v2,
+    stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
+    stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits,
+    typed_plane_work_limits_v2,
 };
 use backend_store::{FileStore, GcPinGuard, ObjectId, ObjectWriteReceipt, TypedObject};
 use backend_version::{ObjectKey, Schema, SchemaIdentity};
@@ -510,7 +512,7 @@ impl SemanticObjectAdmissionSink for V3JumboAdmissionBuilder {
                 return Err("jumbo receipt reservation is already active".to_owned());
             }
             let previous_value = self.active_value;
-            let mut next_value = previous_value;
+            let next_value;
             match identity {
                 ProducedSemanticObjectIdentity::JumboLeaf {
                     ordinal,
@@ -534,7 +536,6 @@ impl SemanticObjectAdmissionSink for V3JumboAdmissionBuilder {
                             total_read_bytes_start: self.total_read_bytes,
                             ..ActiveJumboValue::default()
                         };
-                        next_value = Some(fresh);
                         fresh
                     } else {
                         previous_value.ok_or_else(|| "jumbo leaf has no active value".to_owned())?
