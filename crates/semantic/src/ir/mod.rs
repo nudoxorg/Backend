@@ -220,13 +220,16 @@ pub use versioned_records::{
     CanonicalSemanticPlaneKeySink, CanonicalSemanticPlaneRecordCursor,
     CanonicalSemanticPlaneRecordView, CanonicalSemanticPlaneRowKey,
     CanonicalSemanticPlaneSegmentPayload, CanonicalSemanticPlaneSegmentRef,
-    CanonicalSemanticPlaneSegmentSink, CanonicalSemanticPlaneSegmentView, CoreDeclarationRows,
-    DocumentationRows, MeasuredCanonicalPlaneEncoding, OccurrenceHandle, OccurrenceRows,
+    CanonicalSemanticPlaneSegmentSink, CanonicalSemanticPlaneSegmentView,
+    CheckedLanguageExtensionFamilyV2, CoreDeclarationRows, DocumentationRows,
+    LanguageExtensionRows, MeasuredCanonicalPlaneEncoding, OccurrenceHandle, OccurrenceRows,
     RelationRows, SemanticPlaneRecordError, SourceProvenanceHandle, SourceProvenanceRows,
     TypedRecordPlan, TypesRows, declaration_plane_key, decode_semantic_plane_segment,
     encode_canonical_plane_family,
     encode_canonical_plane_family_measured, encode_declaration_planes,
-    stream_canonical_plane_family, verify_semantic_plane_family_against_reader,
+    encode_language_extension_plane, stream_canonical_plane_family,
+    validate_language_extension_family_v2, verify_language_extension_plane_against_reader,
+    verify_semantic_plane_family_against_reader,
 };
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{

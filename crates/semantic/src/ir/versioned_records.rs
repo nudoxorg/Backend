@@ -24,12 +24,17 @@ const RECORD_HEADER_BYTES: usize = 32 + 1 + 4;
 const INITIAL_PREFIX_BITS: u16 = 8;
 
 mod declarations;
+mod extensions;
 mod occurrences;
 mod relations;
 mod source_provenance;
 mod types;
 mod wire;
 pub use declarations::{CoreDeclarationRows, DocumentationRows, encode_declaration_planes};
+pub use extensions::{
+    CheckedLanguageExtensionFamilyV2, LanguageExtensionRows, encode_language_extension_plane,
+    validate_language_extension_family_v2, verify_language_extension_plane_against_reader,
+};
 pub use occurrences::{OccurrenceHandle, OccurrenceRows};
 pub use relations::RelationRows;
 pub use source_provenance::{SourceProvenanceHandle, SourceProvenanceRows};
@@ -1016,6 +1021,9 @@ fn validate_record(
         }
         SemanticPlaneKind::Ir(SemanticIrPlane::Types) => {
             types::validate_record(kind, key, tag, payload)
+        }
+        SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(_)) => {
+            extensions::validate_record(kind, key, tag, payload)
         }
         _ => Err(SemanticPlaneRecordError::UnsupportedFamily),
     }
