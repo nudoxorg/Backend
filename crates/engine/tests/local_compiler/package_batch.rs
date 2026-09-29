@@ -473,7 +473,7 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
             MAX_SEMANTIC_SEGMENT_BYTES,
             &mut sink,
         )
-    })?;
+    });
     assert!(matches!(
         failed_stream,
         Err(
