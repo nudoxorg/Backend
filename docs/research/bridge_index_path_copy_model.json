@@ -1,0 +1,59 @@
+{
+  "model": {
+    "c005_bytes": 7078314,
+    "c005_fixed_bytes": 426,
+    "cut_policy": [
+      64,
+      256,
+      1024
+    ],
+    "hash_stand_in": "SHA-256 for BLAKE3; encoded widths exact for modeled types",
+    "jumbo_objects": 0,
+    "key_bytes": 32,
+    "rows": 65536,
+    "segment_bridge_record_bytes": 72,
+    "update_shape": "one remove and one insert per logical segment replacement, sequential sorted TreeChange operations",
+    "value_bytes": 40
+  },
+  "scenarios": [
+    {
+      "c005_canonical_bytes_per_commit": 7078314,
+      "current_c005_plus_locator_bytes": 18875306,
+      "flat_bridge_bytes_per_commit": 4718592,
+      "logical_replacements": 1,
+      "mean_bytes_per_logical_replacement": 204968,
+      "mean_nodes_per_logical_replacement": 8.0,
+      "path_copy_canonical_bytes_touched": 204968,
+      "path_copy_locator_bytes_if_manifest_is_referenced": 7283424,
+      "path_copy_locator_bytes_if_manifest_remains_inline": 14361722,
+      "path_copy_nodes_touched": 8,
+      "single_key_changes": 2
+    },
+    {
+      "c005_canonical_bytes_per_commit": 7078314,
+      "current_c005_plus_locator_bytes": 18875306,
+      "flat_bridge_bytes_per_commit": 4718592,
+      "logical_replacements": 10,
+      "mean_bytes_per_logical_replacement": 103326,
+      "mean_nodes_per_logical_replacement": 6.1,
+      "path_copy_canonical_bytes_touched": 1033264,
+      "path_copy_locator_bytes_if_manifest_is_referenced": 8111720,
+      "path_copy_locator_bytes_if_manifest_remains_inline": 15190018,
+      "path_copy_nodes_touched": 61,
+      "single_key_changes": 20
+    },
+    {
+      "c005_canonical_bytes_per_commit": 7078314,
+      "current_c005_plus_locator_bytes": 18875306,
+      "flat_bridge_bytes_per_commit": 4718592,
+      "logical_replacements": 100,
+      "mean_bytes_per_logical_replacement": 106170,
+      "mean_nodes_per_logical_replacement": 6.27,
+      "path_copy_canonical_bytes_touched": 10617024,
+      "path_copy_locator_bytes_if_manifest_is_referenced": 17695480,
+      "path_copy_locator_bytes_if_manifest_remains_inline": 24773778,
+      "path_copy_nodes_touched": 627,
+      "single_key_changes": 200
+    }
+  ]
+}
