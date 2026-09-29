@@ -24,6 +24,15 @@ fn workspace_lane_applies_editor_frontier_and_discards_failed_transaction()
     let root =
         std::env::temp_dir().join(format!("backend-rust-workspace-session-{nonce}-{sequence}"));
     fs::create_dir_all(root.join("src/foo"))?;
+    #[cfg(unix)]
+    let source_path_alias = {
+        use std::os::unix::fs::symlink;
+        let alias = root.with_extension("alias");
+        symlink(&root, &alias)?;
+        alias
+    };
+    #[cfg(not(unix))]
+    let source_path_alias = root.clone();
     fs::write(
         root.join("Cargo.toml"),
         "[package]\nname = \"session_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
@@ -125,7 +134,7 @@ fn workspace_lane_applies_editor_frontier_and_discards_failed_transaction()
                 "RA must resolve the current unsaved nested module buffer"
             );
             let observed = lease.workspace().analyze_source(
-                root.join("src/foo/bar.rs"),
+                source_path_alias.join("src/foo/bar.rs"),
                 unsaved_module.as_bytes(),
                 control(),
                 |authority| Ok(authority.source == unsaved_module.as_bytes()),
@@ -241,6 +250,8 @@ fn workspace_lane_applies_editor_frontier_and_discards_failed_transaction()
         Ok::<(), Box<dyn std::error::Error>>(())
     })();
 
+    #[cfg(unix)]
+    fs::remove_file(&source_path_alias)?;
     fs::remove_dir_all(&root)?;
     outcome
 }

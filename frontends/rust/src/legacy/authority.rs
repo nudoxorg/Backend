@@ -141,6 +141,42 @@ fn resolve_package_source_path(
     Ok((resolved, exists))
 }
 
+/// Canonicalizes an absolute editor path while preserving any missing suffix.
+///
+/// This also resolves aliases in an existing package-root prefix (for example,
+/// `/var/...` versus `/private/var/...` on macOS) before matching a virtual
+/// path against the selected source frontier.
+fn resolve_absolute_source_path(requested_path: &Path) -> Result<(PathBuf, bool), std::io::Error> {
+    if !requested_path.is_absolute() {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    let mut resolved = PathBuf::new();
+    let mut exists = true;
+    for component in requested_path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            std::path::Component::RootDir => resolved.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+            }
+            std::path::Component::Normal(component) => {
+                resolved.push(component);
+                if exists {
+                    match fs::symlink_metadata(&resolved) {
+                        Ok(_) => resolved = fs::canonicalize(&resolved)?,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            exists = false;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+    }
+    Ok((resolved, exists))
+}
+
 impl RustWorkspaceSessionKey {
     /// Creates a key from the exact authority, environment, target, and current source path set.
     ///
@@ -741,11 +777,16 @@ impl RustWorkspace {
                 })?
             }
         } else {
-            let canonical = requested_path.canonicalize().map_err(|source| {
-                RustAuthorityError::ProjectSource {
-                    path: requested_path.to_path_buf(),
-                    source,
-                }
+            let (canonical, exists) = if requested_path.is_absolute() {
+                resolve_absolute_source_path(requested_path)
+            } else {
+                requested_path
+                    .canonicalize()
+                    .map(|canonical| (canonical, true))
+            }
+            .map_err(|source| RustAuthorityError::ProjectSource {
+                path: requested_path.to_path_buf(),
+                source,
             })?;
             if !canonical.starts_with(&self.root) {
                 return Err(RustAuthorityError::SourceOutsidePackage {
@@ -753,13 +794,16 @@ impl RustWorkspace {
                     path: canonical,
                 });
             }
+            if exists && !canonical.is_file() {
+                return Err(RustAuthorityError::SourceNotFile { path: canonical });
+            }
             let selected = self
                 .selected_source_paths
                 .values()
                 .find(|selected| **selected == canonical)
                 .cloned()
                 .unwrap_or(canonical);
-            (selected, true)
+            (selected, exists)
         };
         if exists && !source_path.is_file() {
             return Err(RustAuthorityError::SourceNotFile { path: source_path });
