@@ -34,6 +34,7 @@ pub mod semantic_render;
 mod type_facts;
 mod vcs;
 mod versioned;
+pub mod versioned_records;
 mod view;
 mod wire;
 
@@ -213,6 +214,17 @@ pub use versioned::{
     SemanticSegmentId, SemanticSegmentVerifier, UntrustedSemanticSegmentId,
     VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA, VersionedPlaneManifestSchema,
     VersionedPlaneSegmentSchema,
+};
+pub use versioned_records::{
+    CanonicalPlaneEncodingMetrics, CanonicalPlaneRowEncoder, CanonicalPlaneStreamError,
+    CanonicalSemanticPlaneKeySink, CanonicalSemanticPlaneRecordCursor,
+    CanonicalSemanticPlaneRecordView, CanonicalSemanticPlaneRowKey,
+    CanonicalSemanticPlaneSegmentPayload, CanonicalSemanticPlaneSegmentRef,
+    CanonicalSemanticPlaneSegmentSink, CanonicalSemanticPlaneSegmentView, CoreDeclarationRows,
+    DocumentationRows, MeasuredCanonicalPlaneEncoding, SemanticPlaneRecordError,
+    declaration_plane_key, decode_semantic_plane_segment, encode_canonical_plane_family,
+    encode_canonical_plane_family_measured, encode_declaration_planes,
+    stream_canonical_plane_family, verify_semantic_plane_family_against_reader,
 };
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{

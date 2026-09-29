@@ -534,6 +534,21 @@ impl SemanticInputWitness {
             && other.coverage.status().is_authorized_complete()
     }
 
+    /// Commits deterministic input/read-frontier claims for typed semantic
+    /// generation V2. Producer/context/evidence attestations are admission
+    /// provenance and deliberately stay outside content identity. Callers
+    /// must separately require a live complete witness.
+    #[must_use]
+    pub fn generation_root_commitment_v2(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.semantic.input-read-claims.v2\0");
+        hasher.update(&self.input_root);
+        hasher.update(self.read_manifest.as_bytes());
+        hasher.update(&[coverage_code(self.coverage.state)]);
+        hasher.update(self.coverage.scope.as_bytes());
+        *hasher.finalize().as_bytes()
+    }
+
     #[must_use]
     pub const fn input_root(&self) -> &[u8; 32] {
         &self.input_root
@@ -1869,11 +1884,10 @@ impl<'base, 'target> SemanticDeltaCursor<'base, 'target> {
                                     && target_plane.coverage.status().is_authorized_complete();
                             if self.may_reuse
                                 && plane_complete
-                                && base_segment.id_claim == target_segment.id_claim
+                                && same_segment_claim(base_segment, target_segment)
                                 && base_segment.admitted_id.is_some()
-                                && base_segment
-                                    .input
-                                    .same_admitted_frontier(&target_segment.input)
+                                && base_segment.input.coverage().is_authorized_complete()
+                                && target_segment.input.coverage().is_authorized_complete()
                             {
                                 let Some(segment_id) = base_segment.admitted_id else {
                                     return Some(SemanticDeltaAction::Fetch(range_request(
@@ -1926,6 +1940,17 @@ fn segment_order(
         .cmp(&right_plane)
         .then_with(|| left.first_key.cmp(&right.first_key))
         .then_with(|| left.last_key.cmp(&right.last_key))
+}
+
+/// Segment IDs bind the exact range and bytes. Each side still needs its own
+/// complete input witness, but the package-wide frontiers may differ when an
+/// unrelated input changed.
+fn same_segment_claim(left: &SemanticPlaneSegment, right: &SemanticPlaneSegment) -> bool {
+    left.first_key == right.first_key
+        && left.last_key == right.last_key
+        && left.row_count == right.row_count
+        && left.byte_length == right.byte_length
+        && left.id_claim == right.id_claim
 }
 
 fn positioned_segment(
@@ -2889,6 +2914,30 @@ mod tests {
     }
 
     #[test]
+    fn v2_input_commitment_binds_deterministic_claims_but_not_admission_state() {
+        let admitted = input(210);
+        let same = input(210);
+        let changed_root = input(211);
+        let claimed =
+            SemanticInputWitness::claimed(*admitted.input_root(), admitted.read_manifest_root());
+
+        assert_eq!(
+            admitted.generation_root_commitment_v2(),
+            same.generation_root_commitment_v2()
+        );
+        assert_ne!(
+            admitted.generation_root_commitment_v2(),
+            changed_root.generation_root_commitment_v2()
+        );
+        assert_eq!(
+            admitted.generation_root_commitment_v2(),
+            claimed.generation_root_commitment_v2()
+        );
+        assert!(admitted.coverage().is_authorized_complete());
+        assert!(!claimed.coverage().is_authorized_complete());
+    }
+
+    #[test]
     fn semantic_generation_is_independent_of_and_committed_by_manifest_root() {
         let ir = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
         let input = input(202);
@@ -2917,6 +2966,7 @@ mod tests {
     fn one_edit_fetches_only_the_changed_stable_range() {
         let ir = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
         let unchanged_reads = input(101);
+        let unchanged_target_reads = input(104);
         let old_reads = input(102);
         let edited_reads = input(103);
         let base = manifest(
@@ -2936,17 +2986,64 @@ mod tests {
             vec![plane(
                 ir,
                 vec![
-                    segment_with_input(ir, 1, b"unchanged", unchanged_reads),
+                    segment_with_input(ir, 1, b"unchanged", unchanged_target_reads),
                     segment_with_input(ir, 3, b"edited", edited_reads),
                 ],
             )],
         );
         let mut delta =
             SemanticDeltaCursor::new(&base, &target, base.root()).expect("base root is exact");
+        let Some(SemanticDeltaAction::Reuse {
+            segment_id,
+            segment,
+            ..
+        }) = delta.next_action()
+        else {
+            panic!("identical stable-key bytes should reuse across complete input roots");
+        };
+        assert_eq!(
+            segment_id,
+            base.planes()[0].segments()[0].admitted_id().unwrap()
+        );
+        assert_eq!(
+            segment.id_claim(),
+            base.planes()[0].segments()[0].id_claim()
+        );
+        assert!(
+            !base.planes()[0].segments()[0]
+                .input_witness()
+                .same_admitted_frontier(&target.planes()[0].segments()[0].input_witness())
+        );
         assert!(matches!(
             delta.next_action(),
-            Some(SemanticDeltaAction::Reuse { .. })
+            Some(SemanticDeltaAction::Fetch(_))
         ));
+        assert_eq!(delta.next_action(), None);
+    }
+
+    #[test]
+    fn partial_segment_input_witness_never_authorizes_reuse() {
+        let ir = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let base = manifest(
+            build(1),
+            input(31),
+            vec![plane(
+                ir,
+                vec![segment_with_input(ir, 1, b"same", input(32))],
+            )],
+        );
+        let partial_segment_input =
+            SemanticInputWitness::claimed([33; 32], ScopeRoot::from_bytes([34; 32]));
+        let target = manifest(
+            build(1),
+            input(35),
+            vec![plane(
+                ir,
+                vec![segment_with_input(ir, 1, b"same", partial_segment_input)],
+            )],
+        );
+        let mut delta = SemanticDeltaCursor::new(&base, &target, base.root())
+            .expect("both package input closures are admitted");
         assert!(matches!(
             delta.next_action(),
             Some(SemanticDeltaAction::Fetch(_))
