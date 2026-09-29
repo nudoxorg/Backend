@@ -235,6 +235,7 @@ fn two_root_diff_matches_btree_map_oracle_for_insert_delete_replace() {
 
     let before_map: BTreeMap<_, _> = before
         .range(StableRowRange::new(None, None).expect("unbounded range"))
+        .expect("valid complete range")
         .map(|entry| (*entry.key, *entry.payload))
         .collect();
     let mut expected = Vec::new();
@@ -256,6 +257,7 @@ fn two_root_diff_matches_btree_map_oracle_for_insert_delete_replace() {
 
     let after_map: BTreeMap<_, _> = after
         .range(StableRowRange::new(None, None).expect("unbounded range"))
+        .expect("valid complete range")
         .map(|entry| (*entry.key, *entry.payload))
         .collect();
     assert_eq!(after_map, oracle);
