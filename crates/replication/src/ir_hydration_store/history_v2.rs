@@ -567,7 +567,7 @@ impl TypedV2HistorySpool {
         Ok(start)
     }
 
-    fn member(&self, object: ObjectId) -> Option<TypedV2SpoolMember> {
+    fn member(&self, object: UntrustedObjectId) -> Option<TypedV2SpoolMember> {
         self.members
             .binary_search_by(|member| member.id.as_bytes().cmp(object.as_bytes()))
             .ok()
@@ -634,8 +634,7 @@ impl TypedV2SpoolSegmentSource {
                     .and_then(|index| locator.segments.get(index))
                     .copied()
                     .ok_or_else(|| "typed V2 admitted segment mapping disappeared".to_owned())?;
-                let object = ObjectId::from_bytes(*mapped.object().as_bytes());
-                let member = spool.member(object).ok_or_else(|| {
+                let member = spool.member(mapped.object()).ok_or_else(|| {
                     "typed V2 segment is absent from the verified spool".to_owned()
                 })?;
                 if member.schema != crate::ProducedSemanticObjectKind::Segment.schema_identity()
@@ -648,7 +647,7 @@ impl TypedV2SpoolSegmentSource {
                 }
                 segments.push(AdmittedTypedV2HistorySegment {
                     claim: *claim,
-                    object,
+                    object: member.id,
                     byte_length: member.byte_length,
                     spool_offset: member.offset,
                 });
@@ -775,11 +774,9 @@ impl<'a> HistoryJumboSource<'a> {
             .map_err(|_| "typed V2 jumbo usage map allocation failed".to_owned())?;
         used.resize(mappings.len(), false);
         for mapping in mappings {
-            let member = spool
-                .member(ObjectId::from_bytes(*mapping.object().as_bytes()))
-                .ok_or_else(|| {
-                    "typed V2 jumbo object is absent from the verified spool".to_owned()
-                })?;
+            let member = spool.member(mapping.object()).ok_or_else(|| {
+                "typed V2 jumbo object is absent from the verified spool".to_owned()
+            })?;
             if member.byte_length != mapping.byte_length()
                 || member.schema != jumbo_schema_identity(mapping.kind())
             {
@@ -813,10 +810,9 @@ impl<'a> HistoryJumboSource<'a> {
         if mapping.byte_length() == 0 || mapping.byte_length() > maximum_length {
             return Err("typed V2 history rope object exceeds its kind bound".to_owned());
         }
-        let object = ObjectId::from_bytes(*mapping.object().as_bytes());
         let member = self
             .spool_members
-            .binary_search_by(|member| member.id.as_bytes().cmp(object.as_bytes()))
+            .binary_search_by(|member| member.id.as_bytes().cmp(mapping.object().as_bytes()))
             .ok()
             .and_then(|index| self.spool_members.get(index))
             .copied()
