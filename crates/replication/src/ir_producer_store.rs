@@ -23,11 +23,12 @@ use backend_semantic::ir::{
     SemanticPlaneRecordError, SemanticPlaneSegmentBoundaryPolicy, SemanticReader,
     SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
     SemanticTypedPlaneManifestV2Error, SemanticTypedPlaneSegmentClaimV2,
-    SemanticTypedPlaneVerificationTierV2, SourceProvenanceRows, TypedPlaneSegmentSourceV2,
-    TypesRows, UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2,
-    UntrustedSemanticSegmentId, ValidatedCanonicalSemanticPlaneSegment,
-    VerifiedTypedPlaneContentV2, derive_typed_plane_content_v2_from_admitted_reader,
-    stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
+    SemanticTypedPlaneVerificationTierV2, SemanticTypedPlaneWorkLimitsV2, SourceProvenanceRows,
+    TypedPlaneSegmentSourceV2, TypesRows, UntrustedSemanticContentRootV2,
+    UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId,
+    ValidatedCanonicalSemanticPlaneSegment, VerifiedTypedPlaneContentV2,
+    derive_typed_plane_content_v2_from_admitted_reader,
+    stream_canonical_plane_family_with_jumbo_and_stable_key_anchors, typed_plane_work_limits_v2,
 };
 use backend_store::{FileStore, GcPinGuard, ObjectId, ObjectWriteReceipt, TypedObject};
 use backend_version::{ObjectKey, Schema, SchemaIdentity};
@@ -188,6 +189,20 @@ pub trait SemanticObjectAdmissionSink {
     /// Failure while recording a completed durable admission.
     type Error: fmt::Display;
 
+    /// Checks and reserves one upcoming receipt before its immutable object is
+    /// written. Implementations may reject a producer budget here. The
+    /// default preserves compatibility for sinks that cannot preflight.
+    fn prepare_admission(
+        &mut self,
+        _identity: ProducedSemanticObjectIdentity,
+        _payload_bytes: u64,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Releases a preflight reservation when the object write itself fails.
+    fn cancel_admission(&mut self) {}
+
     /// Records one immutable object receipt.
     fn record_admission(
         &mut self,
@@ -234,6 +249,461 @@ impl SemanticObjectAdmissionSink for SemanticObjectAdmissionBuffer {
             .map_err(|error| format!("reserve semantic object receipt: {error}"))?;
         self.admissions.push(admission);
         Ok(())
+    }
+}
+
+/// A receipt sink whose allocation and object work are capped by the same
+/// workload limits used by cold V2 verification.
+struct V3SegmentAdmissionBuilder {
+    limits: SemanticTypedPlaneWorkLimitsV2,
+    admissions: Vec<DurableSemanticObjectAdmission>,
+    total_bytes: u64,
+    total_rows: u64,
+    poisoned: bool,
+    pending: Option<(ProducedSemanticObjectIdentity, u64)>,
+}
+
+impl V3SegmentAdmissionBuilder {
+    fn new(limits: SemanticTypedPlaneWorkLimitsV2) -> Self {
+        Self {
+            limits,
+            admissions: Vec::new(),
+            total_bytes: 0,
+            total_rows: 0,
+            poisoned: false,
+            pending: None,
+        }
+    }
+
+    fn admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        &self.admissions
+    }
+
+    fn into_admissions(self) -> Vec<DurableSemanticObjectAdmission> {
+        self.admissions
+    }
+
+    fn remaining_rows(&self) -> u64 {
+        self.limits.max_total_rows().saturating_sub(self.total_rows)
+    }
+}
+
+impl SemanticObjectAdmissionSink for V3SegmentAdmissionBuilder {
+    type Error = String;
+
+    fn prepare_admission(
+        &mut self,
+        identity: ProducedSemanticObjectIdentity,
+        payload_bytes: u64,
+    ) -> Result<(), Self::Error> {
+        if self.poisoned {
+            return Err("segment receipt builder cannot continue after a sink error".to_owned());
+        }
+        let result = (|| {
+            if self.pending.is_some() {
+                return Err("segment receipt reservation is already active".to_owned());
+            }
+            let ProducedSemanticObjectIdentity::Segment { row_count, .. } = identity else {
+                return Err("segment sink received a non-segment identity".to_owned());
+            };
+            let next_bytes = self
+                .total_bytes
+                .checked_add(payload_bytes)
+                .ok_or_else(|| "typed V2 segment bytes overflow".to_owned())?;
+            let next_rows = self
+                .total_rows
+                .checked_add(u64::from(row_count))
+                .ok_or_else(|| "typed V2 segment rows overflow".to_owned())?;
+            if self.admissions.len() >= self.limits.max_segments()
+                || next_bytes > self.limits.max_total_bytes()
+                || next_rows > self.limits.max_total_rows()
+            {
+                return Err("typed V2 segment budget exceeded before storage write".to_owned());
+            }
+            self.admissions
+                .try_reserve(1)
+                .map_err(|error| format!("reserve typed V2 segment receipt: {error}"))?;
+            self.pending = Some((identity, payload_bytes));
+            Ok(())
+        })();
+        if result.is_err() {
+            self.pending = None;
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn cancel_admission(&mut self) {
+        self.pending = None;
+        self.poisoned = true;
+    }
+
+    fn record_admission(
+        &mut self,
+        admission: DurableSemanticObjectAdmission,
+    ) -> Result<(), Self::Error> {
+        if self.poisoned {
+            return Err("segment receipt builder cannot continue after a sink error".to_owned());
+        }
+        let result = (|| {
+            let (identity, payload_bytes) = self
+                .pending
+                .take()
+                .ok_or_else(|| "segment receipt has no matching reservation".to_owned())?;
+            if identity != admission.identity() || payload_bytes != admission.payload_bytes() {
+                return Err("segment receipt differs from its reservation".to_owned());
+            }
+            let ProducedSemanticObjectIdentity::Segment { row_count, .. } = identity else {
+                return Err("segment receipt reservation has a non-segment identity".to_owned());
+            };
+            self.total_bytes += payload_bytes;
+            self.total_rows += u64::from(row_count);
+            self.admissions.push(admission);
+            Ok(())
+        })();
+        if result.is_err() {
+            self.pending = None;
+            self.poisoned = true;
+        }
+        result
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ActiveJumboValue {
+    value_bytes: u64,
+    leaves: u64,
+    interiors: u64,
+    admissions_start: usize,
+    total_value_bytes_start: u64,
+    total_leaves_start: u64,
+    total_object_reads_start: u64,
+    total_read_bytes_start: u64,
+}
+
+/// Jumbo receipt sink that reserves receipt capacity and cold-read work before
+/// a leaf or interior object reaches FileStore.
+struct V3JumboAdmissionBuilder {
+    work_limits: SemanticTypedPlaneWorkLimitsV2,
+    rope_limits: JumboRopeLimits,
+    admissions: Vec<DurableSemanticObjectAdmission>,
+    total_value_bytes: u64,
+    total_leaves: u64,
+    total_object_reads: u64,
+    total_read_bytes: u64,
+    active_value: Option<ActiveJumboValue>,
+    poisoned: bool,
+    pending: Option<(ProducedSemanticObjectIdentity, u64)>,
+}
+
+/// Per-run ceilings sourced from the exact verifier tier and the caller's
+/// accepted per-rope policy.
+#[derive(Clone, Copy)]
+struct V3ProductionBudget {
+    work_limits: SemanticTypedPlaneWorkLimitsV2,
+    rope_limits: JumboRopeLimits,
+}
+
+impl V3ProductionBudget {
+    fn new(
+        tier: SemanticTypedPlaneVerificationTierV2,
+        rope_limits: JumboRopeLimits,
+    ) -> Result<Self, String> {
+        if rope_limits.max_admissible_leaf_count() == 0 {
+            return Err("typed V3 jumbo limits admit no leaf receipts".to_owned());
+        }
+        Ok(Self {
+            work_limits: typed_plane_work_limits_v2(tier),
+            rope_limits,
+        })
+    }
+
+    fn segment_admissions(self) -> V3SegmentAdmissionBuilder {
+        V3SegmentAdmissionBuilder::new(self.work_limits)
+    }
+
+    fn jumbo_admissions(self) -> Result<V3JumboAdmissionBuilder, String> {
+        V3JumboAdmissionBuilder::new(self.work_limits, self.rope_limits)
+    }
+}
+
+impl V3JumboAdmissionBuilder {
+    fn new(
+        work_limits: SemanticTypedPlaneWorkLimitsV2,
+        rope_limits: JumboRopeLimits,
+    ) -> Result<Self, String> {
+        if rope_limits.max_admissible_leaf_count() == 0 {
+            return Err("typed V3 jumbo limits admit no leaf receipts".to_owned());
+        }
+        Ok(Self {
+            work_limits,
+            rope_limits,
+            admissions: Vec::new(),
+            total_value_bytes: 0,
+            total_leaves: 0,
+            total_object_reads: 0,
+            total_read_bytes: 0,
+            active_value: None,
+            poisoned: false,
+            pending: None,
+        })
+    }
+
+    fn admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        &self.admissions
+    }
+
+    fn into_admissions(self) -> Vec<DurableSemanticObjectAdmission> {
+        self.admissions
+    }
+
+    fn reserve_receipt(&mut self) -> Result<(), String> {
+        self.admissions
+            .try_reserve(1)
+            .map_err(|error| format!("reserve typed V3 jumbo receipt: {error}"))
+    }
+
+    fn rollback_active_value(&mut self) {
+        if let Some(active) = self.active_value.take() {
+            self.admissions.truncate(active.admissions_start);
+            self.total_value_bytes = active.total_value_bytes_start;
+            self.total_leaves = active.total_leaves_start;
+            self.total_object_reads = active.total_object_reads_start;
+            self.total_read_bytes = active.total_read_bytes_start;
+        }
+        self.poisoned = true;
+    }
+
+    fn check_global_jumbo_budget(
+        &self,
+        total_value_bytes: u64,
+        total_leaves: u64,
+        total_object_reads: u64,
+        total_read_bytes: u64,
+    ) -> Result<(), String> {
+        if total_value_bytes > self.work_limits.max_total_jumbo_value_bytes()
+            || total_leaves > self.work_limits.max_total_jumbo_leaves()
+            || total_object_reads > self.work_limits.max_total_jumbo_object_reads()
+            || total_read_bytes > self.work_limits.max_total_jumbo_read_bytes()
+        {
+            return Err("typed V2 jumbo verifier budget exceeded before storage write".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl SemanticObjectAdmissionSink for V3JumboAdmissionBuilder {
+    type Error = String;
+
+    fn prepare_admission(
+        &mut self,
+        identity: ProducedSemanticObjectIdentity,
+        payload_bytes: u64,
+    ) -> Result<(), Self::Error> {
+        if self.poisoned {
+            return Err(
+                "jumbo receipt builder cannot continue after a failed object write".to_owned(),
+            );
+        }
+        let result = (|| {
+            if self.pending.is_some() {
+                return Err("jumbo receipt reservation is already active".to_owned());
+            }
+            let previous_value = self.active_value;
+            let mut next_value = previous_value;
+            match identity {
+                ProducedSemanticObjectIdentity::JumboLeaf {
+                    ordinal,
+                    byte_offset,
+                    ..
+                } => {
+                    let before = if ordinal == 0 {
+                        if let Some(previous) = previous_value {
+                            if previous.leaves == 0
+                                || previous.interiors.saturating_add(1) != previous.leaves
+                            {
+                                return Err("previous jumbo value receipt sequence is incomplete"
+                                    .to_owned());
+                            }
+                        }
+                        let fresh = ActiveJumboValue {
+                            admissions_start: self.admissions.len(),
+                            total_value_bytes_start: self.total_value_bytes,
+                            total_leaves_start: self.total_leaves,
+                            total_object_reads_start: self.total_object_reads,
+                            total_read_bytes_start: self.total_read_bytes,
+                            ..ActiveJumboValue::default()
+                        };
+                        next_value = Some(fresh);
+                        fresh
+                    } else {
+                        previous_value.ok_or_else(|| "jumbo leaf has no active value".to_owned())?
+                    };
+                    if ordinal != before.leaves || byte_offset != before.value_bytes {
+                        return Err(
+                            "jumbo leaf ordinal or byte offset is not contiguous".to_owned()
+                        );
+                    }
+                    let value_bytes = before
+                        .value_bytes
+                        .checked_add(payload_bytes)
+                        .ok_or_else(|| "jumbo value byte count overflows".to_owned())?;
+                    if payload_bytes == 0 || payload_bytes > JUMBO_ROPE_MAX_LEAF_BYTES as u64 {
+                        return Err(
+                            "jumbo leaf payload length is outside the writer bound".to_owned()
+                        );
+                    }
+                    let leaves = before
+                        .leaves
+                        .checked_add(1)
+                        .ok_or_else(|| "jumbo leaf count overflows".to_owned())?;
+                    if value_bytes > self.rope_limits.max_value_bytes
+                        || leaves > self.rope_limits.max_admissible_leaf_count()
+                    {
+                        return Err(
+                            "caller jumbo rope limits exceeded before storage write".to_owned()
+                        );
+                    }
+                    let projected_value = ActiveJumboValue {
+                        value_bytes,
+                        leaves,
+                        interiors: before.interiors,
+                        ..before
+                    };
+                    let current_reads = self
+                        .total_object_reads
+                        .checked_add(1)
+                        .ok_or_else(|| "jumbo object read count overflows".to_owned())?;
+                    // RopeWriter combines exactly two spans per interior node and
+                    // finishes by reducing the frontier to one root. Thus a
+                    // completed N-leaf rope has exactly N-1 interior objects;
+                    // this is the exact count still required if the current
+                    // prefix ended here, not a fanout-based upper bound.
+                    let nodes_for_projected_prefix = leaves
+                        .checked_sub(1)
+                        .ok_or_else(|| "jumbo leaf count is invalid".to_owned())?;
+                    let future_nodes = nodes_for_projected_prefix
+                        .checked_sub(before.interiors)
+                        .ok_or_else(|| "jumbo interior count exceeds its binary tree".to_owned())?;
+                    let projected_reads = current_reads
+                        .checked_add(future_nodes)
+                        .ok_or_else(|| "jumbo projected object reads overflow".to_owned())?;
+                    let projected_read_bytes = self
+                        .total_read_bytes
+                        .checked_add(payload_bytes)
+                        .and_then(|bytes| {
+                            future_nodes
+                                .checked_mul(ROPE_NODE_WIRE_BYTES as u64)
+                                .and_then(|nodes| bytes.checked_add(nodes))
+                        })
+                        .ok_or_else(|| "jumbo projected read bytes overflow".to_owned())?;
+                    self.check_global_jumbo_budget(
+                        self.total_value_bytes
+                            .checked_add(payload_bytes)
+                            .ok_or_else(|| "jumbo value bytes overflow".to_owned())?,
+                        self.total_leaves
+                            .checked_add(1)
+                            .ok_or_else(|| "jumbo leaf count overflows".to_owned())?,
+                        projected_reads,
+                        projected_read_bytes,
+                    )?;
+                    next_value = Some(projected_value);
+                }
+                ProducedSemanticObjectIdentity::JumboInterior {
+                    first_leaf,
+                    leaf_count,
+                    ..
+                } => {
+                    let before = previous_value
+                        .ok_or_else(|| "jumbo interior has no active value".to_owned())?;
+                    if before.leaves == 0
+                        || payload_bytes != ROPE_NODE_WIRE_BYTES as u64
+                        || before.interiors >= before.leaves.saturating_sub(1)
+                        || before.interiors
+                            >= self
+                                .rope_limits
+                                .max_admissible_leaf_count()
+                                .saturating_sub(1)
+                        || leaf_count == 0
+                        || first_leaf
+                            .checked_add(leaf_count)
+                            .is_none_or(|end| end > before.leaves)
+                    {
+                        return Err("jumbo interior receipt is outside its active value".to_owned());
+                    }
+                    self.check_global_jumbo_budget(
+                        self.total_value_bytes,
+                        self.total_leaves,
+                        self.total_object_reads
+                            .checked_add(1)
+                            .ok_or_else(|| "jumbo object read count overflows".to_owned())?,
+                        self.total_read_bytes
+                            .checked_add(payload_bytes)
+                            .ok_or_else(|| "jumbo read bytes overflow".to_owned())?,
+                    )?;
+                    next_value = Some(ActiveJumboValue {
+                        interiors: before
+                            .interiors
+                            .checked_add(1)
+                            .ok_or_else(|| "jumbo interior count overflows".to_owned())?,
+                        ..before
+                    });
+                }
+                ProducedSemanticObjectIdentity::Segment { .. } => {
+                    return Err("jumbo sink received a segment identity".to_owned());
+                }
+            }
+            self.reserve_receipt()?;
+            self.active_value = next_value;
+            self.pending = Some((identity, payload_bytes));
+            Ok(())
+        })();
+        if result.is_err() {
+            self.pending = None;
+            self.rollback_active_value();
+        }
+        result
+    }
+
+    fn cancel_admission(&mut self) {
+        self.pending = None;
+        self.rollback_active_value();
+    }
+
+    fn record_admission(
+        &mut self,
+        admission: DurableSemanticObjectAdmission,
+    ) -> Result<(), Self::Error> {
+        if self.poisoned {
+            return Err("jumbo receipt builder cannot continue after a sink error".to_owned());
+        }
+        let result = (|| {
+            let Some((identity, payload_bytes)) = self.pending.take() else {
+                return Err("jumbo receipt has no matching reservation".to_owned());
+            };
+            if identity != admission.identity() || payload_bytes != admission.payload_bytes() {
+                return Err("jumbo receipt differs from its reservation".to_owned());
+            }
+            match identity {
+                ProducedSemanticObjectIdentity::JumboLeaf { .. } => {
+                    self.total_value_bytes += payload_bytes;
+                    self.total_leaves += 1;
+                }
+                ProducedSemanticObjectIdentity::JumboInterior { .. } => {}
+                ProducedSemanticObjectIdentity::Segment { .. } => {
+                    return Err("jumbo receipt reservation has a segment identity".to_owned());
+                }
+            }
+            self.total_object_reads += 1;
+            self.total_read_bytes += payload_bytes;
+            self.admissions.push(admission);
+            Ok(())
+        })();
+        if result.is_err() {
+            self.pending = None;
+            self.rollback_active_value();
+        }
+        result
     }
 }
 
@@ -429,6 +899,7 @@ impl SemanticProducerVerifierIoMetrics {
 pub struct FileSemanticPlaneSegmentSink<'store, 'receipts, Receipts: ?Sized> {
     store: &'store FileStore,
     receipts: &'receipts mut Receipts,
+    maximum_inline_row_bytes: usize,
     metrics: SemanticProducerStoreMetrics,
     gc_pin: GcPinGuard,
 }
@@ -441,12 +912,32 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
         store: &'store FileStore,
         receipts: &'receipts mut Receipts,
     ) -> Result<Self, String> {
+        Self::new_with_row_limit(
+            store,
+            receipts,
+            backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+        )
+    }
+
+    /// Starts a segment sink with the manifest family's canonical inline-row
+    /// threshold, including policy-aware jumbo rows.
+    pub fn new_with_row_limit(
+        store: &'store FileStore,
+        receipts: &'receipts mut Receipts,
+        maximum_inline_row_bytes: usize,
+    ) -> Result<Self, String> {
+        if maximum_inline_row_bytes == 0
+            || maximum_inline_row_bytes > backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES
+        {
+            return Err("semantic producer row limit is outside the supported range".to_owned());
+        }
         let gc_pin = store
             .pin_garbage_collection()
             .map_err(|error| format!("pin semantic producer segments against GC: {error:?}"))?;
         Ok(Self {
             store,
             receipts,
+            maximum_inline_row_bytes,
             metrics: SemanticProducerStoreMetrics::default(),
             gc_pin,
         })
@@ -474,10 +965,6 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
         segment: ValidatedCanonicalSemanticPlaneSegment<'_>,
     ) -> Result<(), SemanticPlaneRecordError> {
         let payload = segment.bytes();
-        let key = ObjectKey::<SemanticSegmentPayload>::from_value(payload);
-        let object = TypedObject::from_value(&key, payload);
-        let admitted = commit_and_read(self.store, &object, payload)
-            .map_err(SemanticPlaneRecordError::JumboObjectStore)?;
         let byte_length =
             u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
         let identity = ProducedSemanticObjectIdentity::Segment {
@@ -490,6 +977,18 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
             last_key: segment.last_key(),
             row_count: segment.row_count(),
         };
+        self.receipts
+            .prepare_admission(identity, byte_length)
+            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
+        let key = ObjectKey::<SemanticSegmentPayload>::from_value(payload);
+        let object = TypedObject::from_value(&key, payload);
+        let admitted = match commit_and_read(self.store, &object, payload) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                self.receipts.cancel_admission();
+                return Err(SemanticPlaneRecordError::JumboObjectStore(error));
+            }
+        };
         let receipt = DurableSemanticObjectAdmission {
             identity,
             object_id: admitted.id(),
@@ -497,11 +996,19 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
             envelope_bytes: admitted.bytes(),
             created: admitted.created(),
         };
-        self.receipts
-            .record_admission(receipt)
-            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
-        self.metrics
-            .record(admitted, byte_length, byte_length, 0, 0)?;
+        if let Err(error) = self.receipts.record_admission(receipt) {
+            self.receipts.cancel_admission();
+            return Err(SemanticPlaneRecordError::JumboObjectStore(
+                error.to_string(),
+            ));
+        }
+        if let Err(error) = self
+            .metrics
+            .record(admitted, byte_length, byte_length, 0, 0)
+        {
+            self.receipts.cancel_admission();
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -515,7 +1022,7 @@ impl<Receipts: SemanticObjectAdmissionSink + ?Sized> CanonicalSemanticPlaneSegme
         &mut self,
         segment: CanonicalSemanticPlaneSegmentRef<'_>,
     ) -> Result<(), Self::Error> {
-        self.persist_validated(segment.validate()?)
+        self.persist_validated(segment.validate_with_row_limit(self.maximum_inline_row_bytes)?)
     }
 }
 
@@ -574,53 +1081,93 @@ impl<Receipts: SemanticObjectAdmissionSink + ?Sized> JumboRopeObjectSink
 
     fn write_leaf(&mut self, leaf: JumboRopeLeafRef<'_>) -> Result<(), Self::Error> {
         let payload = leaf.bytes();
-        let key = ObjectKey::<SemanticJumboLeafPayload>::from_value(payload);
-        let object = TypedObject::from_value(&key, payload);
-        let admitted = commit_and_read(self.store, &object, payload)
-            .map_err(SemanticPlaneRecordError::JumboObjectStore)?;
         let byte_length =
             u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
+        let identity = ProducedSemanticObjectIdentity::JumboLeaf {
+            id: leaf.id(),
+            ordinal: leaf.ordinal(),
+            byte_offset: leaf.byte_offset(),
+        };
         self.receipts
+            .prepare_admission(identity, byte_length)
+            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
+        let key = ObjectKey::<SemanticJumboLeafPayload>::from_value(payload);
+        let object = TypedObject::from_value(&key, payload);
+        let admitted = match commit_and_read(self.store, &object, payload) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                self.receipts.cancel_admission();
+                return Err(SemanticPlaneRecordError::JumboObjectStore(error));
+            }
+        };
+        if let Err(error) = self
+            .receipts
             .record_admission(DurableSemanticObjectAdmission {
-                identity: ProducedSemanticObjectIdentity::JumboLeaf {
-                    id: leaf.id(),
-                    ordinal: leaf.ordinal(),
-                    byte_offset: leaf.byte_offset(),
-                },
+                identity,
                 object_id: admitted.id(),
                 payload_bytes: byte_length,
                 envelope_bytes: admitted.bytes(),
                 created: admitted.created(),
             })
-            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
-        self.metrics
-            .record(admitted, byte_length, 0, byte_length, 0)?;
+        {
+            self.receipts.cancel_admission();
+            return Err(SemanticPlaneRecordError::JumboObjectStore(
+                error.to_string(),
+            ));
+        }
+        if let Err(error) = self
+            .metrics
+            .record(admitted, byte_length, 0, byte_length, 0)
+        {
+            self.receipts.cancel_admission();
+            return Err(error);
+        }
         Ok(())
     }
 
     fn write_interior(&mut self, node: &JumboRopeNode) -> Result<(), Self::Error> {
         let payload = node.encode_wire();
-        let key = ObjectKey::<SemanticJumboInteriorPayload>::from_value(payload.as_slice());
-        let object = TypedObject::from_value(&key, payload.as_slice());
-        let admitted = commit_and_read(self.store, &object, payload.as_slice())
-            .map_err(SemanticPlaneRecordError::JumboObjectStore)?;
         let byte_length =
             u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
+        let identity = ProducedSemanticObjectIdentity::JumboInterior {
+            id: node.id(),
+            first_leaf: node.first_leaf(),
+            leaf_count: node.leaf_count(),
+        };
         self.receipts
+            .prepare_admission(identity, byte_length)
+            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
+        let key = ObjectKey::<SemanticJumboInteriorPayload>::from_value(payload.as_slice());
+        let object = TypedObject::from_value(&key, payload.as_slice());
+        let admitted = match commit_and_read(self.store, &object, payload.as_slice()) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                self.receipts.cancel_admission();
+                return Err(SemanticPlaneRecordError::JumboObjectStore(error));
+            }
+        };
+        if let Err(error) = self
+            .receipts
             .record_admission(DurableSemanticObjectAdmission {
-                identity: ProducedSemanticObjectIdentity::JumboInterior {
-                    id: node.id(),
-                    first_leaf: node.first_leaf(),
-                    leaf_count: node.leaf_count(),
-                },
+                identity,
                 object_id: admitted.id(),
                 payload_bytes: byte_length,
                 envelope_bytes: admitted.bytes(),
                 created: admitted.created(),
             })
-            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
-        self.metrics
-            .record(admitted, byte_length, 0, 0, byte_length)?;
+        {
+            self.receipts.cancel_admission();
+            return Err(SemanticPlaneRecordError::JumboObjectStore(
+                error.to_string(),
+            ));
+        }
+        if let Err(error) = self
+            .metrics
+            .record(admitted, byte_length, 0, 0, byte_length)
+        {
+            self.receipts.cancel_admission();
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -853,7 +1400,7 @@ impl ProducedSemanticTypedPlaneV3 {
 /// reader discovery, row encoding, or BLAKE3 work for this writer.
 /// There is no changed-key frontier in this producer API, so local segment
 /// churn must not be described as incremental reader-delta execution.
-pub fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
+pub(crate) fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
     store: &FileStore,
     reader: &Reader,
     build: SemanticBuildIdentity,
@@ -868,10 +1415,15 @@ pub fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
         );
     }
 
+    // The producer remains crate-internal until an owner-bound admission type
+    // couples this reader to its witness. Coverage authority alone does not
+    // prove that the independently supplied reader is the admitted input.
+    let budget = V3ProductionBudget::new(tier, jumbo_limits)?;
+
     let image_facts = reader.image_facts();
     let policies = policies.as_array();
-    let mut segment_admissions = SemanticObjectAdmissionBuffer::default();
-    let mut jumbo_admissions = SemanticObjectAdmissionBuffer::default();
+    let mut segment_admissions = budget.segment_admissions();
+    let mut jumbo_admissions = budget.jumbo_admissions()?;
     let mut segment_pins = Vec::new();
     segment_pins
         .try_reserve_exact(TYPED_V2_FAMILY_COUNT)
@@ -890,104 +1442,39 @@ pub fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
         .map_err(|error| format!("reserve typed V2 storage metrics: {error}"))?;
 
     let mut jumbo_sink = FileSemanticJumboRopeSink::new(store, &mut jumbo_admissions)?;
-    produce_typed_v2_family(
+    let mut pass = TypedPlaneProductionPass {
         store,
         reader,
-        &CoreDeclarationRows,
-        SemanticIrPlane::Core,
-        policies[0],
         input_witness,
-        &mut jumbo_sink,
-        &mut segment_admissions,
-        &mut segment_pins,
-        &mut family_descriptors,
-        &mut encoding_metrics,
-        &mut segment_store_metrics,
-    )?;
-    produce_typed_v2_family(
-        store,
-        reader,
-        &TypesRows,
-        SemanticIrPlane::Types,
-        policies[1],
-        input_witness,
-        &mut jumbo_sink,
-        &mut segment_admissions,
-        &mut segment_pins,
-        &mut family_descriptors,
-        &mut encoding_metrics,
-        &mut segment_store_metrics,
-    )?;
-    produce_typed_v2_family(
-        store,
-        reader,
-        &RelationRows,
-        SemanticIrPlane::Relations,
-        policies[2],
-        input_witness,
-        &mut jumbo_sink,
-        &mut segment_admissions,
-        &mut segment_pins,
-        &mut family_descriptors,
-        &mut encoding_metrics,
-        &mut segment_store_metrics,
-    )?;
-    produce_typed_v2_family(
-        store,
-        reader,
-        &OccurrenceRows,
-        SemanticIrPlane::Occurrences,
-        policies[3],
-        input_witness,
-        &mut jumbo_sink,
-        &mut segment_admissions,
-        &mut segment_pins,
-        &mut family_descriptors,
-        &mut encoding_metrics,
-        &mut segment_store_metrics,
-    )?;
-    produce_typed_v2_family(
-        store,
-        reader,
+        jumbo_sink: &mut jumbo_sink,
+        jumbo_limits,
+        work_limits: budget.work_limits,
+        segment_admissions: &mut segment_admissions,
+        segment_pins: &mut segment_pins,
+        family_descriptors: &mut family_descriptors,
+        encoding_metrics: &mut encoding_metrics,
+        segment_store_metrics: &mut segment_store_metrics,
+    };
+    pass.produce_family(&CoreDeclarationRows, SemanticIrPlane::Core, policies[0])?;
+    pass.produce_family(&TypesRows, SemanticIrPlane::Types, policies[1])?;
+    pass.produce_family(&RelationRows, SemanticIrPlane::Relations, policies[2])?;
+    pass.produce_family(&OccurrenceRows, SemanticIrPlane::Occurrences, policies[3])?;
+    pass.produce_family(
         &DocumentationRows,
         SemanticIrPlane::Documentation,
         policies[4],
-        input_witness,
-        &mut jumbo_sink,
-        &mut segment_admissions,
-        &mut segment_pins,
-        &mut family_descriptors,
-        &mut encoding_metrics,
-        &mut segment_store_metrics,
     )?;
-    produce_typed_v2_family(
-        store,
-        reader,
+    pass.produce_family(
         &SourceProvenanceRows,
         SemanticIrPlane::SourceProvenance,
         policies[5],
-        input_witness,
-        &mut jumbo_sink,
-        &mut segment_admissions,
-        &mut segment_pins,
-        &mut family_descriptors,
-        &mut encoding_metrics,
-        &mut segment_store_metrics,
     )?;
-    produce_typed_v2_family(
-        store,
-        reader,
+    pass.produce_family(
         &LanguageExtensionRows::new(build.profile()),
         SemanticIrPlane::LanguageExtensions(build.profile()),
         policies[6],
-        input_witness,
-        &mut jumbo_sink,
-        &mut segment_admissions,
-        &mut segment_pins,
-        &mut family_descriptors,
-        &mut encoding_metrics,
-        &mut segment_store_metrics,
     )?;
+    drop(pass);
 
     let jumbo_store_metrics = jumbo_sink.metrics();
     let jumbo_pin = jumbo_sink.into_collection_pin();
@@ -1058,62 +1545,75 @@ pub fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn produce_typed_v2_family<Reader, Encoder>(
-    store: &FileStore,
-    reader: &Reader,
-    encoder: &Encoder,
-    family: SemanticIrPlane,
-    policy: SemanticPlaneSegmentBoundaryPolicy,
+struct TypedPlaneProductionPass<'pass, 'store, 'receipts, Reader: ?Sized> {
+    store: &'pass FileStore,
+    reader: &'pass Reader,
     input_witness: SemanticInputWitness,
-    jumbo_sink: &mut FileSemanticJumboRopeSink<'_, '_, SemanticObjectAdmissionBuffer>,
-    segment_admissions: &mut SemanticObjectAdmissionBuffer,
-    segment_pins: &mut Vec<DurableSemanticObjectPin>,
-    family_descriptors: &mut Vec<SemanticTypedPlaneFamilyDescriptorV2>,
-    encoding_metrics: &mut Vec<CanonicalPlaneEncodingMetrics>,
-    segment_store_metrics: &mut Vec<SemanticProducerStoreMetrics>,
-) -> Result<(), String>
-where
-    Reader: SemanticReader + ?Sized,
-    Encoder: CanonicalPlaneRowEncoder + ?Sized,
-{
-    if encoder.kind() != SemanticPlaneKind::Ir(family) {
-        return Err(format!("typed V2 encoder does not match {family:?}"));
+    jumbo_sink: &'pass mut FileSemanticJumboRopeSink<'store, 'receipts, V3JumboAdmissionBuilder>,
+    jumbo_limits: JumboRopeLimits,
+    work_limits: SemanticTypedPlaneWorkLimitsV2,
+    segment_admissions: &'pass mut V3SegmentAdmissionBuilder,
+    segment_pins: &'pass mut Vec<DurableSemanticObjectPin>,
+    family_descriptors: &'pass mut Vec<SemanticTypedPlaneFamilyDescriptorV2>,
+    encoding_metrics: &'pass mut Vec<CanonicalPlaneEncodingMetrics>,
+    segment_store_metrics: &'pass mut Vec<SemanticProducerStoreMetrics>,
+}
+
+impl<Reader: SemanticReader + ?Sized> TypedPlaneProductionPass<'_, '_, '_, Reader> {
+    fn produce_family<Encoder: CanonicalPlaneRowEncoder + ?Sized>(
+        &mut self,
+        encoder: &Encoder,
+        family: SemanticIrPlane,
+        policy: SemanticPlaneSegmentBoundaryPolicy,
+    ) -> Result<(), String> {
+        if encoder.kind() != SemanticPlaneKind::Ir(family) {
+            return Err(format!("typed V2 encoder does not match {family:?}"));
+        }
+        let first_receipt = self.segment_admissions.admissions().len();
+        let remaining_rows = self.segment_admissions.remaining_rows();
+        let mut segment_sink = FileSemanticPlaneSegmentSink::new_with_row_limit(
+            self.store,
+            self.segment_admissions,
+            policy.maximum_bytes(),
+        )?;
+        let metrics = stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits(
+            self.reader,
+            encoder,
+            self.input_witness,
+            policy,
+            remaining_rows,
+            self.work_limits.max_total_rows(),
+            self.work_limits.max_references(),
+            self.jumbo_limits,
+            self.jumbo_sink,
+            &mut segment_sink,
+        )
+        .map_err(|error| format!("stream typed V2 {family:?} family: {error:?}"))?;
+        let store_metrics = segment_sink.metrics();
+        self.segment_pins
+            .try_reserve(1)
+            .map_err(|error| format!("reserve typed V2 family pin: {error}"))?;
+        self.segment_pins.push(segment_sink.into_collection_pin());
+        let claims = self
+            .segment_admissions
+            .admissions()
+            .get(first_receipt..)
+            .ok_or_else(|| "typed V2 segment receipts moved during encoding".to_owned())?;
+        let descriptor = descriptor_from_receipts(family, policy, metrics, claims)?;
+        self.encoding_metrics
+            .try_reserve(1)
+            .map_err(|error| format!("reserve typed V2 family metrics: {error}"))?;
+        self.segment_store_metrics
+            .try_reserve(1)
+            .map_err(|error| format!("reserve typed V2 FileStore metrics: {error}"))?;
+        self.family_descriptors
+            .try_reserve(1)
+            .map_err(|error| format!("reserve typed V2 family manifest entry: {error}"))?;
+        self.encoding_metrics.push(metrics);
+        self.segment_store_metrics.push(store_metrics);
+        self.family_descriptors.push(descriptor);
+        Ok(())
     }
-    let first_receipt = segment_admissions.admissions().len();
-    let mut segment_sink = FileSemanticPlaneSegmentSink::new(store, segment_admissions)?;
-    let metrics = stream_canonical_plane_family_with_jumbo_and_stable_key_anchors(
-        reader,
-        encoder,
-        input_witness,
-        policy,
-        jumbo_sink,
-        &mut segment_sink,
-    )
-    .map_err(|error| format!("stream typed V2 {family:?} family: {error:?}"))?;
-    let store_metrics = segment_sink.metrics();
-    segment_pins
-        .try_reserve(1)
-        .map_err(|error| format!("reserve typed V2 family pin: {error}"))?;
-    segment_pins.push(segment_sink.into_collection_pin());
-    let receipts = segment_admissions.admissions();
-    let claims = receipts
-        .get(first_receipt..)
-        .ok_or_else(|| "typed V2 segment receipts moved during encoding".to_owned())?;
-    let descriptor = descriptor_from_receipts(family, policy, metrics, claims)?;
-    encoding_metrics
-        .try_reserve(1)
-        .map_err(|error| format!("reserve typed V2 family metrics: {error}"))?;
-    segment_store_metrics
-        .try_reserve(1)
-        .map_err(|error| format!("reserve typed V2 FileStore metrics: {error}"))?;
-    family_descriptors
-        .try_reserve(1)
-        .map_err(|error| format!("reserve typed V2 family manifest entry: {error}"))?;
-    encoding_metrics.push(metrics);
-    segment_store_metrics.push(store_metrics);
-    family_descriptors.push(descriptor);
-    Ok(())
 }
 
 fn descriptor_from_receipts(
@@ -1176,31 +1676,26 @@ fn descriptor_from_receipts(
     .map_err(|error| format!("invalid typed V2 {family:?} family descriptor: {error}"))
 }
 
-struct ProducedSegmentSource<'store> {
+struct ProducedSegmentSource<'store, 'receipts> {
     store: &'store FileStore,
-    segments: Vec<(SemanticIrPlane, DurableSemanticObjectAdmission)>,
+    segments: &'receipts [DurableSemanticObjectAdmission],
     current: Vec<u8>,
     io_metrics: SemanticProducerVerifierIoMetrics,
 }
 
-impl<'store> ProducedSegmentSource<'store> {
+impl<'store, 'receipts> ProducedSegmentSource<'store, 'receipts> {
     fn new(
         store: &'store FileStore,
-        receipts: &[DurableSemanticObjectAdmission],
+        receipts: &'receipts [DurableSemanticObjectAdmission],
     ) -> Result<Self, String> {
-        let mut segments = Vec::new();
-        segments
-            .try_reserve_exact(receipts.len())
-            .map_err(|error| format!("reserve typed V2 segment source map: {error}"))?;
         for receipt in receipts {
-            let ProducedSemanticObjectIdentity::Segment { family, .. } = receipt.identity() else {
+            let ProducedSemanticObjectIdentity::Segment { .. } = receipt.identity() else {
                 return Err("typed V2 segment source received a non-segment receipt".to_owned());
             };
-            segments.push((family, *receipt));
         }
         Ok(Self {
             store,
-            segments,
+            segments: receipts,
             current: Vec::new(),
             io_metrics: SemanticProducerVerifierIoMetrics::default(),
         })
@@ -1211,7 +1706,7 @@ impl<'store> ProducedSegmentSource<'store> {
     }
 }
 
-impl TypedPlaneSegmentSourceV2 for ProducedSegmentSource<'_> {
+impl TypedPlaneSegmentSourceV2 for ProducedSegmentSource<'_, '_> {
     type Error = String;
 
     fn segment<'source>(
@@ -1219,7 +1714,7 @@ impl TypedPlaneSegmentSourceV2 for ProducedSegmentSource<'_> {
         index: usize,
         claim: &SemanticTypedPlaneSegmentClaimV2,
     ) -> Result<&'source [u8], Self::Error> {
-        let (family, receipt) =
+        let receipt =
             self.segments.get(index).copied().ok_or_else(|| {
                 "typed V2 verifier requested an unknown produced segment".to_owned()
             })?;
@@ -1233,8 +1728,7 @@ impl TypedPlaneSegmentSourceV2 for ProducedSegmentSource<'_> {
         else {
             return Err("typed V2 produced segment map is malformed".to_owned());
         };
-        if family != observed_family
-            || claim.first_key() != &first_key
+        if claim.first_key() != &first_key
             || claim.last_key() != &last_key
             || claim.row_count() != row_count
             || claim.id_claim().as_bytes() != id.as_bytes()
@@ -1510,15 +2004,17 @@ mod tests {
         BorrowedTree, BuiltinType, ConcreteType, Confidence, CorePayloadHash, DeclarationFamilyId,
         DocInput, DocumentationRows, EntityAuthorityFacts, EntityVersion, FactAvailability, Ir,
         IrBuilder, ItemKind, JUMBO_ROPE_MAX_LEAF_BYTES, JumboRopeObjectId, JumboRopeObjectSource,
-        LanguageExtensionInput, LinkKind, MAX_SEMANTIC_SEGMENT_BYTES, OccurrenceAuthorityFacts,
-        ParentageAuthority, ROPE_NODE_WIRE_BYTES, RustFacts, RustOwnership, SemanticImageView,
-        SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment,
+        JumboValueContext, JumboValueEncoding, JumboValueFamily, LanguageExtensionInput, LinkKind,
+        MAX_SEMANTIC_SEGMENT_BYTES, OccurrenceAuthorityFacts, ParentageAuthority,
+        ROPE_NODE_WIRE_BYTES, RustFacts, RustOwnership, SemanticImageView, SemanticInputWitness,
+        SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment,
         SemanticPlaneSegmentBoundaryPolicy as CanonicalPlaneSegmentBoundaryPolicy, SourceSpan,
         TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr, VariantFingerprint,
         Visibility, encode_full_semantic_image, full_semantic_image_len,
         stream_canonical_plane_family_with_jumbo,
         stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
         verify_canonical_semantic_plane_segment_boundaries, verify_jumbo_plane_family_closures,
+        write_jumbo_value,
     };
     use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
     use backend_store::{ClosureCompositionBudget, ClosureMembershipChange};
@@ -1572,6 +2068,176 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn v3_jumbo_budget_rejects_before_a_store_write() {
+        let directory = TestDirectory::new();
+        let cas_path = directory.0.join("budget-cas");
+        let store =
+            FileStore::open(&cas_path, 4 * 1024 * 1024).expect("open V3 budget test FileStore");
+        let work_limits =
+            typed_plane_work_limits_v2(SemanticTypedPlaneVerificationTierV2::Standard);
+        let mut receipts = V3JumboAdmissionBuilder::new(work_limits, JumboRopeLimits::default())
+            .expect("default caller jumbo policy is valid");
+        receipts.total_object_reads = work_limits.max_total_jumbo_object_reads();
+        let mut sink = FileSemanticJumboRopeSink::new(&store, &mut receipts)
+            .expect("pin budget test jumbo writer against GC");
+        let context = JumboValueContext::new(
+            [0x55; 32],
+            JumboValueFamily::Documentation,
+            0,
+            JumboValueEncoding::Bytes,
+        );
+        let result = write_jumbo_value(
+            context,
+            b"a value which must be refused before its leaf is committed",
+            JumboRopeLimits::default(),
+            &mut sink,
+        );
+        assert!(result.is_err(), "the full read budget rejects the leaf");
+        assert!(
+            write_jumbo_value(
+                JumboValueContext::new(
+                    [0x56; 32],
+                    JumboValueFamily::Documentation,
+                    0,
+                    JumboValueEncoding::Bytes,
+                ),
+                b"a second value must not publish after the sink error",
+                JumboRopeLimits::default(),
+                &mut sink,
+            )
+            .is_err(),
+            "a preflight sink error poisons the builder before another FileStore write"
+        );
+        drop(sink);
+        assert!(receipts.admissions().is_empty());
+        assert_eq!(
+            fs::read_dir(cas_path.join("objects"))
+                .expect("FileStore object directory exists")
+                .count(),
+            0,
+            "preflight rejection leaves no immutable object behind"
+        );
+    }
+
+    #[test]
+    fn v3_jumbo_failed_write_rolls_back_only_the_active_value_and_poisons_builder() {
+        let directory = TestDirectory::new();
+        let cas_path = directory.0.join("rollback-cas");
+        let store =
+            FileStore::open(&cas_path, 4 * 1024 * 1024).expect("open V3 rollback test FileStore");
+        let work_limits =
+            typed_plane_work_limits_v2(SemanticTypedPlaneVerificationTierV2::Standard);
+        let mut receipts = V3JumboAdmissionBuilder::new(work_limits, JumboRopeLimits::default())
+            .expect("default caller jumbo policy is valid");
+        let context = JumboValueContext::new(
+            [0x61; 32],
+            JumboValueFamily::Documentation,
+            0,
+            JumboValueEncoding::Bytes,
+        );
+        {
+            let mut sink = FileSemanticJumboRopeSink::new(&store, &mut receipts)
+                .expect("pin rollback test jumbo writer against GC");
+            write_jumbo_value(context, b"x", JumboRopeLimits::default(), &mut sink)
+                .expect("admit one complete baseline value");
+        }
+        let completed = receipts.admissions()[0];
+        let ProducedSemanticObjectIdentity::JumboLeaf { id, .. } = completed.identity() else {
+            panic!("one-byte value is represented by one leaf");
+        };
+
+        // Start an identical value, then fail the second leaf write. The
+        // failed value's first leaf must be rolled back while the prior
+        // completed value remains accounted for.
+        let first_leaf = ProducedSemanticObjectIdentity::JumboLeaf {
+            id,
+            ordinal: 0,
+            byte_offset: 0,
+        };
+        receipts
+            .prepare_admission(first_leaf, completed.payload_bytes())
+            .expect("reserve first leaf of next value");
+        receipts
+            .record_admission(completed)
+            .expect("record first leaf of next value");
+        receipts
+            .prepare_admission(
+                ProducedSemanticObjectIdentity::JumboLeaf {
+                    id,
+                    ordinal: 1,
+                    byte_offset: 1,
+                },
+                1,
+            )
+            .expect("reserve second leaf before simulated FileStore failure");
+        receipts.cancel_admission();
+
+        assert!(receipts.active_value.is_none());
+        assert!(receipts.poisoned);
+        assert_eq!(receipts.admissions().len(), 1);
+        assert_eq!(receipts.total_value_bytes, 1);
+        assert_eq!(receipts.total_leaves, 1);
+        assert_eq!(receipts.total_object_reads, 1);
+        assert_eq!(receipts.total_read_bytes, 1);
+        assert!(
+            receipts
+                .prepare_admission(first_leaf, completed.payload_bytes())
+                .is_err(),
+            "a failed value cannot leak its partial receipts into a new value"
+        );
+    }
+
+    #[test]
+    fn v3_jumbo_receipt_mismatch_poisons_builder_before_another_value() {
+        let directory = TestDirectory::new();
+        let cas_path = directory.0.join("receipt-mismatch-cas");
+        let store = FileStore::open(&cas_path, 4 * 1024 * 1024)
+            .expect("open V3 receipt mismatch test FileStore");
+        let work_limits =
+            typed_plane_work_limits_v2(SemanticTypedPlaneVerificationTierV2::Standard);
+        let mut receipts = V3JumboAdmissionBuilder::new(work_limits, JumboRopeLimits::default())
+            .expect("default caller jumbo policy is valid");
+        let context = JumboValueContext::new(
+            [0x62; 32],
+            JumboValueFamily::Documentation,
+            0,
+            JumboValueEncoding::Bytes,
+        );
+        {
+            let mut sink = FileSemanticJumboRopeSink::new(&store, &mut receipts)
+                .expect("pin receipt mismatch writer against GC");
+            write_jumbo_value(context, b"x", JumboRopeLimits::default(), &mut sink)
+                .expect("admit one complete value");
+        }
+        let prior = receipts.admissions()[0];
+        let ProducedSemanticObjectIdentity::JumboLeaf { id, .. } = prior.identity() else {
+            panic!("one-byte value is represented by one leaf");
+        };
+        receipts
+            .prepare_admission(
+                ProducedSemanticObjectIdentity::JumboLeaf {
+                    id,
+                    ordinal: 1,
+                    byte_offset: 1,
+                },
+                1,
+            )
+            .expect("reserve a later leaf in the active value");
+        assert!(receipts.record_admission(prior).is_err());
+
+        assert!(receipts.poisoned);
+        assert!(receipts.active_value.is_none());
+        assert!(receipts.admissions().is_empty());
+        assert_eq!(receipts.total_object_reads, 0);
+        assert!(
+            receipts
+                .prepare_admission(prior.identity(), prior.payload_bytes())
+                .is_err(),
+            "a mismatched receipt cannot be followed by another value"
+        );
     }
 
     struct CapturedSegmentSink<'store, 'receipts> {

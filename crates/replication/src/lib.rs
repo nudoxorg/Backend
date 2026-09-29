@@ -62,7 +62,7 @@ pub use ir_producer_store::{
     FileSemanticPlaneSegmentSink, ProducedSemanticObjectIdentity, ProducedSemanticObjectKind,
     ProducedSemanticTypedPlaneV3, SemanticObjectAdmissionBuffer, SemanticObjectAdmissionSink,
     SemanticProducerStoreMetrics, SemanticProducerVerifierIoMetrics,
-    SemanticTypedPlaneBoundaryPoliciesV3, produce_semantic_typed_plane_v3,
+    SemanticTypedPlaneBoundaryPoliciesV3,
 };
 pub use ir_residency::*;
 pub use local_peer::*;
