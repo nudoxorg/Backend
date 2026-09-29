@@ -18,7 +18,10 @@ impl S3ClosurePublisher {
             if recovered == *receipt {
                 File::open(&target)
                     .and_then(|file| file.sync_all())
-                    .and_then(|()| File::open(&self.receipt_root)?.sync_all())
+                    .and_then(|()| {
+                        backend_platform::durability::open_directory(&self.receipt_root)?
+                            .sync_all()
+                    })
                     .map_err(|_| PublicationError::ReceiptIo)?;
                 return Ok(());
             }
@@ -49,7 +52,7 @@ impl S3ClosurePublisher {
                 Err(_) => return Err(PublicationError::ReceiptIo),
             }
             fs::remove_file(&temp).map_err(|_| PublicationError::ReceiptIo)?;
-            File::open(&self.receipt_root)
+            backend_platform::durability::open_directory(&self.receipt_root)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|_| PublicationError::ReceiptIo)?;
             Ok(())

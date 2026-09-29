@@ -828,7 +828,11 @@ mod imp {
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(StoreError::Corrupt);
         }
-        File::open(path).map_err(|error| io_error(&error))
+        // `File::open` on a directory calls `CreateFileW` without
+        // `FILE_FLAG_BACKUP_SEMANTICS` and always fails closed with
+        // ERROR_ACCESS_DENIED on Windows; backend_platform's open_directory
+        // is the portable replacement (plain File::open on Unix).
+        backend_platform::durability::open_directory(path).map_err(|error| io_error(&error))
     }
 
     fn ensure_directory(path: &Path) -> Result<File, StoreError> {
@@ -1081,7 +1085,7 @@ mod imp {
         let destination = store.object_path(id);
         match fs::hard_link(&staged_path, &destination) {
             Ok(()) => {
-                fs::File::open(&objects)
+                backend_platform::durability::open_directory(&objects)
                     .and_then(|directory| directory.sync_all())
                     .map_err(|error| io_error(&error))?;
                 super::wait_test_link_barrier();
@@ -1138,7 +1142,7 @@ mod imp {
             Err(error) => return Err(io_error(&error)),
         };
         if created {
-            fs::File::open(store.root.join("closures"))
+            backend_platform::durability::open_directory(&store.root.join("closures"))
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| io_error(&error))?;
             super::wait_test_link_barrier();
