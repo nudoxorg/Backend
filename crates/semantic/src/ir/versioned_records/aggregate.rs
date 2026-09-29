@@ -2242,7 +2242,7 @@ fn decode_core(
     reference_scratch: &mut AggregateReferenceScratchV2,
 ) -> Result<CoreFamilyFacts, SemanticTypedPlaneInventoryV2Error> {
     let mut facts = CoreFamilyFacts::default();
-    for segment in segments {
+    for (segment_index, segment) in segments.iter().enumerate() {
         for record in segment.records() {
             if record.tag() != CORE_DECLARATION_TAG {
                 return Err(SemanticPlaneRecordError::RowGrammar.into());
@@ -2294,7 +2294,11 @@ fn decode_core(
                 let _ = cursor.bytes32()?;
             }
             if !cursor.is_empty() || identity != record.key() {
-                return Err(SemanticPlaneRecordError::StableKeyMismatch.into());
+                return Err(SemanticTypedPlaneInventoryV2Error::RowIdentityMismatch {
+                    family: SemanticIrPlane::Core,
+                    index: segment_index,
+                    key: record.key(),
+                });
             }
             if availability[7] {
                 try_push(&mut facts.captured_extension_owners, identity)?;
@@ -2323,7 +2327,7 @@ fn decode_documentation(
 ) -> Result<DocumentationFamilyFacts, SemanticTypedPlaneInventoryV2Error> {
     let mut facts = DocumentationFamilyFacts::default();
     let mut observed_jumbo_rows = 0_usize;
-    for segment in segments {
+    for (segment_index, segment) in segments.iter().enumerate() {
         for record in segment.records() {
             let mut cursor = Cursor::new(record.payload());
             let identity = identity_key(read_identity(&mut cursor)?);
@@ -2390,7 +2394,11 @@ fn decode_documentation(
                 _ => return Err(SemanticPlaneRecordError::RowGrammar.into()),
             }
             if !cursor.is_empty() || identity != record.key() {
-                return Err(SemanticPlaneRecordError::StableKeyMismatch.into());
+                return Err(SemanticTypedPlaneInventoryV2Error::RowIdentityMismatch {
+                    family: SemanticIrPlane::Documentation,
+                    index: segment_index,
+                    key: record.key(),
+                });
             }
             reference_scratch.try_push(&mut facts.declarations, (identity, available))?;
         }
@@ -2430,7 +2438,7 @@ fn decode_source_provenance(
     maximum_inline_row_bytes: usize,
 ) -> Result<SourceFamilyFacts, SemanticTypedPlaneInventoryV2Error> {
     let mut facts = SourceFamilyFacts::default();
-    for segment in segments {
+    for (segment_index, segment) in segments.iter().enumerate() {
         for record in segment.records() {
             let mut cursor = Cursor::new(record.payload());
             match record.tag() {
@@ -2454,7 +2462,11 @@ fn decode_source_provenance(
                         }
                     }
                     if !cursor.is_empty() || identity != record.key() {
-                        return Err(SemanticPlaneRecordError::StableKeyMismatch.into());
+                        return Err(SemanticTypedPlaneInventoryV2Error::RowIdentityMismatch {
+                            family: SemanticIrPlane::SourceProvenance,
+                            index: segment_index,
+                            key: record.key(),
+                        });
                     }
                     reference_scratch.try_push(&mut facts.declaration_keys, identity)?;
                     reference_scratch
@@ -2487,7 +2499,11 @@ fn decode_source_provenance(
                         }
                     }
                     if !cursor.is_empty() || relation_source_row_key(relation) != record.key() {
-                        return Err(SemanticPlaneRecordError::StableKeyMismatch.into());
+                        return Err(SemanticTypedPlaneInventoryV2Error::RowIdentityMismatch {
+                            family: SemanticIrPlane::SourceProvenance,
+                            index: segment_index,
+                            key: record.key(),
+                        });
                     }
                     reference_scratch.try_push(&mut facts.relation_keys, relation)?;
                 }
