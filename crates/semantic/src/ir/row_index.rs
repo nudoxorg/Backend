@@ -11,8 +11,8 @@ use std::{mem::size_of, ops::Bound, sync::Arc};
 
 use backend_version::{
     ObjectVersion, ObjectVersionHasher, PersistentTree, Relation, RuntimeIdentityError, Schema,
-    SchemaIdentity, StateRoot, TreeChange, TreeError, TreeNodeHandle, TreeNodeView, TreeRangeIter,
-    TreeWork,
+    SchemaIdentity, StateRoot, TreeChange, TreeError, TreeNodeChildren, TreeNodeHandle,
+    TreeNodeView, TreeRangeIter, TreeWork,
 };
 use thiserror::Error;
 
@@ -686,6 +686,9 @@ pub struct StableRowIndexDiffWork {
     /// Payload bodies decoded while diffing. This is always zero because the
     /// diff borrows already typed in-memory index values.
     pub decoded_rows: u64,
+    /// Largest combined child-iterator stack capacity used by a divergent
+    /// run merge. Row-reference buffers are never materialized.
+    pub peak_run_cursor_scratch_bytes: u64,
 }
 
 /// Ordered diff whose payload references borrow the two immutable roots.
@@ -755,6 +758,15 @@ impl StableRowIndexDiffCounter {
             .ok_or(StableRowIndexError::Overflow)?;
         Ok(())
     }
+
+    fn traversed_nodes(&mut self, count: u64) -> Result<(), StableRowIndexError> {
+        self.work.visited_nodes = self
+            .work
+            .visited_nodes
+            .checked_add(count)
+            .ok_or(StableRowIndexError::Overflow)?;
+        Ok(())
+    }
 }
 
 fn diff_node<'before, 'after>(
@@ -769,14 +781,7 @@ fn diff_node<'before, 'after>(
         return counter.skipped_subtree();
     }
     if before.is_empty() || after.is_empty() {
-        let before_rows = collect_run_rows(&[before], counter)?;
-        let after_rows = collect_run_rows(&[after], counter)?;
-        return diff_rows(
-            before_rows.iter().copied(),
-            after_rows.iter().copied(),
-            entries,
-            counter,
-        );
+        return diff_run_rows(&[before], &[after], entries, counter);
     }
 
     match (before.entries(), after.entries()) {
@@ -886,31 +891,20 @@ fn diff_node_lists<'before, 'after>(
             // There is no later shared anchor. Merge the complete remaining
             // key ranges once; splitting them here would turn equal tail rows
             // into a delete followed by an insert.
-            let before_rows = collect_run_rows(&before[before_run..], counter)?;
-            let after_rows = collect_run_rows(&after[after_run..], counter)?;
-            diff_rows(
-                before_rows.iter().copied(),
-                after_rows.iter().copied(),
-                entries,
-                counter,
-            )?;
+            diff_run_rows(&before[before_run..], &after[after_run..], entries, counter)?;
             return Ok(());
         }
-        let before_rows = collect_run_rows(&before[before_run..before_index], counter)?;
-        let after_rows = collect_run_rows(&after[after_run..after_index], counter)?;
-        diff_rows(
-            before_rows.iter().copied(),
-            after_rows.iter().copied(),
+        diff_run_rows(
+            &before[before_run..before_index],
+            &after[after_run..after_index],
             entries,
             counter,
         )?;
     }
     if before_index < before.len() || after_index < after.len() {
-        let before_rows = collect_run_rows(&before[before_index..], counter)?;
-        let after_rows = collect_run_rows(&after[after_index..], counter)?;
-        diff_rows(
-            before_rows.iter().copied(),
-            after_rows.iter().copied(),
+        diff_run_rows(
+            &before[before_index..],
+            &after[after_index..],
             entries,
             counter,
         )?;
@@ -945,36 +939,126 @@ fn node_frontiers_align<'before, 'after>(
     Ok(before_next == after_next)
 }
 
-fn collect_run_rows<'tree>(
-    nodes: &[RowNodeView<'tree>],
-    counter: &mut StableRowIndexDiffCounter,
-) -> Result<Vec<(&'tree StableRowKey, &'tree RowPayload)>, StableRowIndexError> {
-    let capacity = nodes.iter().try_fold(0_usize, |sum, node| {
-        sum.checked_add(usize::try_from(node.len()).ok()?)
-    });
-    let capacity = capacity.ok_or(StableRowIndexError::Overflow)?;
-    let mut rows = Vec::new();
-    rows.try_reserve(capacity)
-        .map_err(|_| StableRowIndexError::Allocation)?;
-    for node in nodes {
-        collect_rows_into(*node, counter, &mut rows)?;
-    }
-    Ok(rows)
+/// Streams a divergent run without copying its row references. The frame
+/// stack is bounded by tree height; the former merge path allocated one slot
+/// per row on both sides even when the runs ultimately matched.
+struct RunRowIter<'roots, 'tree> {
+    roots: &'roots [RowNodeView<'tree>],
+    next_root: usize,
+    frames: Vec<TreeNodeChildren<'tree, SemanticRowIndexRelation>>,
+    leaf: Option<std::slice::Iter<'tree, (StableRowKey, RowPayload)>>,
+    remaining: usize,
+    visited_nodes: u64,
 }
 
-fn collect_rows_into<'tree>(
-    node: RowNodeView<'tree>,
+impl<'roots, 'tree> RunRowIter<'roots, 'tree> {
+    fn new(roots: &'roots [RowNodeView<'tree>]) -> Result<Self, StableRowIndexError> {
+        let mut remaining = 0_usize;
+        let mut maximum_level = 0_usize;
+        for root in roots {
+            remaining = remaining
+                .checked_add(root.len())
+                .ok_or(StableRowIndexError::Overflow)?;
+            maximum_level = maximum_level.max(usize::from(root.level()));
+        }
+        let mut frames = Vec::new();
+        if !roots.is_empty() {
+            frames
+                .try_reserve_exact(maximum_level.saturating_add(1))
+                .map_err(|_| StableRowIndexError::Allocation)?;
+        }
+        Ok(Self {
+            roots,
+            next_root: 0,
+            frames,
+            leaf: None,
+            remaining,
+            visited_nodes: 0,
+        })
+    }
+
+    fn descend(&mut self, node: RowNodeView<'tree>) {
+        self.visited_nodes += 1;
+        if let Some(entries) = node.entries() {
+            self.leaf = Some(entries.iter());
+        } else {
+            self.frames.push(node.children());
+        }
+    }
+}
+
+impl<'tree> Iterator for RunRowIter<'_, 'tree> {
+    type Item = (&'tree StableRowKey, &'tree RowPayload);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(leaf) = self.leaf.as_mut() {
+                if let Some((key, payload)) = leaf.next() {
+                    self.remaining -= 1;
+                    return Some((key, payload));
+                }
+                self.leaf = None;
+            }
+            if let Some(frame) = self.frames.last_mut() {
+                if let Some(child) = frame.next() {
+                    self.descend(child);
+                } else {
+                    self.frames.pop();
+                }
+            } else if let Some(root) = self.roots.get(self.next_root).copied() {
+                self.next_root += 1;
+                self.descend(root);
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for RunRowIter<'_, '_> {
+    fn len(&self) -> usize {
+        self.remaining
+    }
+}
+
+fn diff_run_rows<'before, 'after>(
+    before_nodes: &[RowNodeView<'before>],
+    after_nodes: &[RowNodeView<'after>],
+    entries: &mut Vec<StableRowIndexDiffEntry<'before, 'after>>,
     counter: &mut StableRowIndexDiffCounter,
-    rows: &mut Vec<(&'tree StableRowKey, &'tree RowPayload)>,
 ) -> Result<(), StableRowIndexError> {
-    counter.visited_node()?;
-    if let Some(entries) = node.entries() {
-        rows.extend(entries.iter().map(|(key, payload)| (key, payload)));
-        return Ok(());
-    }
-    for child in node.children() {
-        collect_rows_into(child, counter, rows)?;
-    }
+    let mut before = RunRowIter::new(before_nodes)?;
+    let mut after = RunRowIter::new(after_nodes)?;
+    let frame_slots = before
+        .frames
+        .capacity()
+        .checked_add(after.frames.capacity())
+        .ok_or(StableRowIndexError::Overflow)?;
+    let scratch_bytes = frame_slots
+        .checked_mul(size_of::<TreeNodeChildren<'_, SemanticRowIndexRelation>>())
+        .ok_or(StableRowIndexError::Overflow)?;
+    counter.work.peak_run_cursor_scratch_bytes = counter
+        .work
+        .peak_run_cursor_scratch_bytes
+        .max(usize_to_u64(scratch_bytes)?);
+    diff_rows(&mut before, &mut after, entries, counter)?;
+    counter.traversed_nodes(before.visited_nodes)?;
+    counter.traversed_nodes(after.visited_nodes)?;
+    Ok(())
+}
+
+fn push_diff_entry<'before, 'after>(
+    entries: &mut Vec<StableRowIndexDiffEntry<'before, 'after>>,
+    entry: StableRowIndexDiffEntry<'before, 'after>,
+) -> Result<(), StableRowIndexError> {
+    entries
+        .try_reserve(1)
+        .map_err(|_| StableRowIndexError::Allocation)?;
+    entries.push(entry);
     Ok(())
 }
 
@@ -984,13 +1068,6 @@ fn diff_rows<'before, 'after>(
     entries: &mut Vec<StableRowIndexDiffEntry<'before, 'after>>,
     counter: &mut StableRowIndexDiffCounter,
 ) -> Result<(), StableRowIndexError> {
-    let maximum_changes = before
-        .len()
-        .checked_add(after.len())
-        .ok_or(StableRowIndexError::Overflow)?;
-    entries
-        .try_reserve(maximum_changes)
-        .map_err(|_| StableRowIndexError::Allocation)?;
     let mut before = before.peekable();
     let mut after = after.peekable();
     while let (Some((before_key, before_payload)), Some((after_key, after_payload))) =
@@ -999,26 +1076,35 @@ fn diff_rows<'before, 'after>(
         counter.examined_rows(2)?;
         match before_key.cmp(after_key) {
             std::cmp::Ordering::Less => {
-                entries.push(StableRowIndexDiffEntry::Delete {
-                    key: *before_key,
-                    before: before_payload,
-                });
+                push_diff_entry(
+                    entries,
+                    StableRowIndexDiffEntry::Delete {
+                        key: *before_key,
+                        before: before_payload,
+                    },
+                )?;
                 before.next();
             }
             std::cmp::Ordering::Greater => {
-                entries.push(StableRowIndexDiffEntry::Insert {
-                    key: *after_key,
-                    after: after_payload,
-                });
+                push_diff_entry(
+                    entries,
+                    StableRowIndexDiffEntry::Insert {
+                        key: *after_key,
+                        after: after_payload,
+                    },
+                )?;
                 after.next();
             }
             std::cmp::Ordering::Equal => {
                 if before_payload != after_payload {
-                    entries.push(StableRowIndexDiffEntry::Replace {
-                        key: *before_key,
-                        before: before_payload,
-                        after: after_payload,
-                    });
+                    push_diff_entry(
+                        entries,
+                        StableRowIndexDiffEntry::Replace {
+                            key: *before_key,
+                            before: before_payload,
+                            after: after_payload,
+                        },
+                    )?;
                 }
                 before.next();
                 after.next();
@@ -1027,17 +1113,23 @@ fn diff_rows<'before, 'after>(
     }
     for (key, payload) in before {
         counter.examined_rows(1)?;
-        entries.push(StableRowIndexDiffEntry::Delete {
-            key: *key,
-            before: payload,
-        });
+        push_diff_entry(
+            entries,
+            StableRowIndexDiffEntry::Delete {
+                key: *key,
+                before: payload,
+            },
+        )?;
     }
     for (key, payload) in after {
         counter.examined_rows(1)?;
-        entries.push(StableRowIndexDiffEntry::Insert {
-            key: *key,
-            after: payload,
-        });
+        push_diff_entry(
+            entries,
+            StableRowIndexDiffEntry::Insert {
+                key: *key,
+                after: payload,
+            },
+        )?;
     }
     Ok(())
 }

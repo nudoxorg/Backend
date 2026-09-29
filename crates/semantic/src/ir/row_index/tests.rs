@@ -356,6 +356,38 @@ fn borrowed_two_root_diff_skips_no_op_and_sparse_equal_subtrees() {
 }
 
 #[test]
+fn divergent_run_cursor_borrows_large_row_runs_with_tree_depth_scratch() {
+    let rows = fixture_rows(16_384);
+    let index = StableRowIndex::from_sorted_rows(&rows).expect("valid base index");
+    let root = index.tree.root_view();
+    let roots = [root];
+    let mut cursor = RunRowIter::new(&roots).expect("bounded cursor");
+    assert_eq!(cursor.len(), rows.len());
+    for (key, payload) in &rows {
+        assert_eq!(cursor.next(), Some((key, payload)));
+    }
+    assert_eq!(cursor.next(), None);
+    assert_eq!(cursor.len(), 0);
+    assert!(cursor.visited_nodes > 1);
+    assert!(cursor.frames.capacity() < 1_024);
+}
+
+#[test]
+fn fresh_repartition_after_prefix_insert_does_not_buffer_equal_row_runs() {
+    let after_rows = fixture_rows(16_385);
+    let before = StableRowIndex::from_sorted_rows(&after_rows[1..]).expect("base index");
+    let after = StableRowIndex::from_sorted_rows(&after_rows).expect("repartitioned index");
+    let diff = before.diff(&after).expect("borrowed repartition diff");
+    assert!(matches!(
+        diff.entries(),
+        [StableRowIndexDiffEntry::Insert { key: inserted, .. }]
+            if *inserted == key(RowFamily::Core, 0)
+    ));
+    assert!(diff.work().peak_run_cursor_scratch_bytes < 4_096);
+    assert_eq!(diff.work().decoded_rows, 0);
+}
+
+#[test]
 fn two_root_diff_matches_btree_map_oracle_for_insert_delete_replace() {
     let before_rows = fixture_rows(4_096);
     let before = StableRowIndex::from_sorted_rows(&before_rows).expect("valid base index");
