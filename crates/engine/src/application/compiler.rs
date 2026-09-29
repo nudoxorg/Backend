@@ -272,6 +272,7 @@ fn begin_rust_workspace_with_observation<'lane>(
         source_vfs_events_delivered = source_summary.vfs_events_delivered,
         source_module_candidates_visited = source_summary.module_candidates_visited,
         source_module_candidate_events_delivered = source_summary.module_candidate_events_delivered,
+        source_module_diagnostics_visited = source_summary.module_diagnostics_visited,
         source_rustdoc_inputs_visited = source_summary.rustdoc_inputs_visited,
         source_rustdoc_input_events_delivered = source_summary.rustdoc_input_events_delivered,
         unsupported_paths = source_summary.unsupported_paths,

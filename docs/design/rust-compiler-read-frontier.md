@@ -95,9 +95,10 @@ diagnostics, or hashing.
 
 The callbacks are synchronous and use no per-read `Arc<Mutex<_>>` or retained
 event row. File contents are hashed as RA holds them; module-candidate
-deduplication retains fixed-size digests. Event and byte limits are
-512 MiB/250,000 observations, and overflow leaves the affected producer
-unsealed. This is diagnostic evidence only: a VFS snapshot is not a loader
+deduplication retains fixed-size digests. The observer caps VFS/candidate
+events and examined DefMap diagnostics at 250,000 each, and content/path
+evidence at 512 MiB; overflow leaves the affected producer unsealed. This is
+diagnostic evidence only: a VFS snapshot is not a loader
 event stream, unresolved-module diagnostics do not expose all successful or
 failed resolver attempts, and later semantic queries can still discover other
 reads. No work or validation scan is skipped.

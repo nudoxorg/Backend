@@ -149,6 +149,8 @@ pub struct RustWorkspaceReadFrontierSummary {
     pub module_candidates_visited: u64,
     /// Module-candidate callbacks acknowledged by the observer.
     pub module_candidate_events_delivered: u64,
+    /// Name-resolution diagnostics examined, including non-module and empty results.
+    pub module_diagnostics_visited: u64,
     /// Successful Rustdoc include-file reads encountered by the preloader.
     pub rustdoc_inputs_visited: u64,
     /// Rustdoc include-file callbacks acknowledged by the observer.
@@ -160,6 +162,7 @@ pub struct RustWorkspaceReadFrontierSummary {
 }
 
 const MAX_RUST_READ_FRONTIER_EVENTS: u64 = 250_000;
+const MAX_RUST_READ_FRONTIER_DIAGNOSTICS: u64 = 250_000;
 const MAX_RUST_READ_FRONTIER_BYTES: u64 = 512 * 1024 * 1024;
 
 enum RustWorkspaceSessionObserver<'a> {
@@ -1418,6 +1421,13 @@ impl RustWorkspace {
                 let def_map = crate_def_map(&self.database, crate_id);
                 for diagnostic in def_map.diagnostics() {
                     if summary.truncated || control.check().is_err() {
+                        summary.truncated = true;
+                        break;
+                    }
+                    if !advance_bounded_counter(
+                        &mut summary.module_diagnostics_visited,
+                        MAX_RUST_READ_FRONTIER_DIAGNOSTICS,
+                    ) {
                         summary.truncated = true;
                         break;
                     }
@@ -2839,6 +2849,14 @@ fn bytes_at(source: &[u8], span: ByteSpan) -> Result<&[u8], RustAuthorityError> 
         })
 }
 
+fn advance_bounded_counter(counter: &mut u64, maximum: u64) -> bool {
+    if *counter >= maximum {
+        return false;
+    }
+    *counter += 1;
+    true
+}
+
 /// Converts rust-analyzer's Cargo-derived edition into the sealed compiler profile.
 const fn rust_edition(edition: ra_ap_syntax::Edition) -> RustEdition {
     match edition {
@@ -2846,5 +2864,37 @@ const fn rust_edition(edition: ra_ap_syntax::Edition) -> RustEdition {
         ra_ap_syntax::Edition::Edition2018 => RustEdition::Rust2018,
         ra_ap_syntax::Edition::Edition2021 => RustEdition::Rust2021,
         ra_ap_syntax::Edition::Edition2024 => RustEdition::Rust2024,
+    }
+}
+
+#[cfg(test)]
+mod read_frontier_budget_tests {
+    use super::advance_bounded_counter;
+
+    #[test]
+    fn empty_and_duplicate_diagnostics_still_consume_the_examined_budget() {
+        let diagnostic_candidate_lists = [Vec::<&str>::new(), vec!["same.rs"], vec!["same.rs"]];
+        let mut diagnostics_visited = 0;
+        let maximum = 2;
+        let mut candidates = std::collections::HashSet::new();
+        let mut truncated = false;
+
+        for diagnostic in &diagnostic_candidate_lists {
+            if !advance_bounded_counter(&mut diagnostics_visited, maximum) {
+                truncated = true;
+                break;
+            }
+            for candidate in diagnostic {
+                candidates.insert(*candidate);
+            }
+        }
+
+        assert_eq!(diagnostics_visited, maximum);
+        assert_eq!(candidates.len(), 1);
+        assert!(
+            truncated,
+            "empty and duplicate results must not bypass the cap"
+        );
+        assert!(!advance_bounded_counter(&mut diagnostics_visited, maximum));
     }
 }

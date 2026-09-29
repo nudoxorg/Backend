@@ -22,6 +22,11 @@ struct RecordingReadFrontier {
     editor_buffers: std::collections::HashMap<PathBuf, Vec<u8>>,
     vfs_events: u64,
     rustdoc_input_events: u64,
+    expected_root_vfs_path: PathBuf,
+    expected_root_contents: Vec<u8>,
+    root_content_paths: Vec<String>,
+    expected_sibling_vfs_path: PathBuf,
+    expected_sibling_contents: Vec<u8>,
     saw_root_source: bool,
     saw_disk_sibling: bool,
     unresolved_candidates: Vec<(String, String, String)>,
@@ -36,13 +41,17 @@ impl RustWorkspaceReadFrontierObserver for RecordingReadFrontier {
 
     fn observe_ra_vfs_file(&mut self, absolute_path: &str, contents: &[u8]) -> bool {
         self.vfs_events = self.vfs_events.saturating_add(1);
-        if absolute_path.ends_with("/src/lib.rs") {
-            self.saw_root_source = contents
-                .windows(b"mod absent;".len())
-                .any(|window| window == b"mod absent;");
+        if contents == self.expected_root_contents.as_slice() {
+            if self.root_content_paths.len() < 16 {
+                self.root_content_paths.push(absolute_path.to_owned());
+            }
+            self.saw_root_source =
+                Path::new(absolute_path) == self.expected_root_vfs_path.as_path();
         }
-        if absolute_path.ends_with("/src/sibling.rs") {
-            self.saw_disk_sibling = contents == b"pub fn value() -> u8 { 1 }\n";
+        if Path::new(absolute_path) == self.expected_sibling_vfs_path.as_path()
+            && contents == self.expected_sibling_contents.as_slice()
+        {
+            self.saw_disk_sibling = true;
         }
         true
     }
@@ -177,6 +186,10 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
         let initial = package_frontier(root_source, disk_sibling, None);
         {
             let mut observed_buffers = RecordingReadFrontier {
+                expected_root_vfs_path: fs::canonicalize(root.join("src/lib.rs"))?,
+                expected_root_contents: root_source.as_bytes().to_vec(),
+                expected_sibling_vfs_path: fs::canonicalize(root.join("src/sibling.rs"))?,
+                expected_sibling_contents: disk_sibling.as_bytes().to_vec(),
                 reject_candidate: Some(String::from("absent.rs")),
                 ..RecordingReadFrontier::default()
             };
@@ -203,9 +216,14 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
                 "each selected buffer must be reported once from the RA database"
             );
             assert!(observed_buffers.vfs_events > 0);
-            assert!(observed_buffers.saw_root_source);
+            assert!(
+                observed_buffers.saw_root_source,
+                "expected exact root bytes at {:?}; matching contents arrived from {:?}",
+                observed_buffers.expected_root_vfs_path, observed_buffers.root_content_paths
+            );
             assert!(observed_buffers.saw_disk_sibling);
             assert!(read_summary.vfs_files_visited >= 3);
+            assert!(read_summary.module_diagnostics_visited > 0);
             assert_eq!(
                 read_summary.vfs_events_delivered, read_summary.vfs_files_visited,
                 "every representable loaded VFS file must be acknowledged"
