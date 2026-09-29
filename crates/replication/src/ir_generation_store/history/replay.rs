@@ -54,6 +54,7 @@ impl LocalSemanticGenerationFiles {
         let target_root = self.target_root(target);
         let commits_root = target_root.join("history").join("commits");
         let mut entries = Vec::with_capacity(MAX_REPLAY_COMMITS);
+        let mut parent_scratch = Vec::with_capacity(MAX_HISTORY_PARENTS);
         let mut next = None;
         let mut current = Some(load_replay_node(
             target_root.as_path(),
@@ -63,8 +64,13 @@ impl LocalSemanticGenerationFiles {
         )?);
 
         while let Some(node) = current.take() {
-            let (node, parent) =
-                validate_replay_parent(target_root.as_path(), target, &commits_root, node)?;
+            let (node, parent) = validate_replay_parent(
+                target_root.as_path(),
+                target,
+                &commits_root,
+                node,
+                &mut parent_scratch,
+            )?;
             let parent_identity = parent.as_ref().map(|parent| parent.record.identity);
             entries.push(HistoryReplayEntry {
                 commit: AdmittedHistoryCommit {
@@ -115,15 +121,16 @@ fn validate_replay_parent(
     target: &SemanticTargetKey,
     commits_root: &Path,
     current: ValidatedReplayNode,
+    parent_scratch: &mut Vec<HistoryCommitRecord>,
 ) -> Result<(ValidatedReplayNode, Option<ValidatedReplayNode>), String> {
-    let mut parent_records = Vec::with_capacity(current.record.parents.len());
+    parent_scratch.clear();
     for identity in &current.record.parents {
-        parent_records.push(load_history_commit(commits_root, *identity)?);
+        parent_scratch.push(load_history_commit(commits_root, *identity)?);
     }
-    validate_parent_set_with_records(&current.record, &parent_records)?;
+    validate_parent_set_with_records(&current.record, parent_scratch)?;
 
     let mut parent = None;
-    for parent_record in parent_records {
+    for parent_record in parent_scratch.drain(..) {
         if !matches!(
             parent_record.generation_root,
             HistoryGenerationRoot::NxfiV1(_)
