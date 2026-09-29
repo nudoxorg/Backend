@@ -1460,6 +1460,19 @@ impl StableRowIndexBuilder {
         self.rows.is_empty()
     }
 
+    /// Logical live bytes reserved by the current sorted row run.
+    ///
+    /// This multiplies the vector's actual capacity by the inline slot size.
+    /// It excludes allocator metadata and any other aggregate-verifier
+    /// buffers; the builder itself retains this complete row run until
+    /// `finish` consumes it.
+    #[must_use]
+    pub fn buffered_row_slot_capacity_bytes(&self) -> usize {
+        self.rows
+            .capacity()
+            .saturating_mul(size_of::<(StableRowKey, RowPayload)>())
+    }
+
     /// Builds and consumes this owner-local run.
     pub fn finish(self) -> Result<StableRowIndex, StableRowIndexError> {
         Ok(StableRowIndex {

@@ -349,19 +349,63 @@ fn cold_seek_is_path_bounded_and_closure_counts_exact_pages_and_rows() {
     let touched_for_seek = loader.loads.get();
     assert!(touched_for_seek < family.node_closure().count());
 
-    let mut seen_nodes = Vec::new();
-    let mut seen_rows = Vec::new();
+    let mut seen_nodes = 0_usize;
+    let mut seen_rows = 0_usize;
     let proof = cold
         .visit_closure(
             SemanticTypedPlaneClosureLimitsV3::new(100_000, 3_000, 100_000_000, 2_000),
-            |id, _| seen_nodes.push(id),
-            |key, _| seen_rows.push(key),
+            |_, _| seen_nodes += 1,
+            |_, _| seen_rows += 1,
         )
         .expect("every descriptor page and row reference closes");
     assert_eq!(proof.node_count() as usize, family.node_closure().count());
     assert_eq!(proof.row_reference_count(), 2_048);
-    assert_eq!(seen_nodes.len(), proof.node_count() as usize);
-    assert_eq!(seen_rows.len(), proof.row_count() as usize);
+    assert_eq!(seen_nodes, proof.node_count() as usize);
+    assert_eq!(seen_rows, proof.row_count() as usize);
+    assert!(page.work().peak_logical_live_buffer_bytes > 0);
+    assert!(proof.peak_logical_live_buffer_bytes() > 0);
+
+    // Compare cold work buffers with actual sorted-run capacities. These
+    // measurements intentionally exclude the in-memory test store, allocator
+    // overhead, and aggregate-verifier buffers; they describe logical
+    // row-index buffers, not peak process memory.
+    let mut semantic_rows = super::super::row_index::StableRowIndex::builder();
+    for ordinal in 0..2_048 {
+        let payload = ordinal.to_be_bytes();
+        semantic_rows
+            .push(
+                ordinal_key(RowFamily::Core, ordinal),
+                RowPayload::from_bytes(&payload).expect("fixture payload hashes"),
+            )
+            .expect("sorted semantic row fixture");
+    }
+    let semantic_builder_bytes = semantic_rows.buffered_row_slot_capacity_bytes();
+    let semantic_index = semantic_rows.finish().expect("complete row index build");
+    assert_eq!(semantic_index.row_count(), 2_048);
+
+    let mut v3_rows = SemanticTypedPlaneRowTreeBuilderV3::new(
+        RowFamily::Core,
+        None,
+        SemanticTypedPlaneRowTreeLimitsV3::new(3_000, 100_000_000),
+    )
+    .expect("core family builder");
+    for ordinal in 0..2_048 {
+        v3_rows
+            .push(
+                ordinal_key(RowFamily::Core, ordinal),
+                fixture_reference(ordinal),
+            )
+            .expect("sorted V3 row fixture");
+    }
+    let v3_builder_bytes = v3_rows.buffered_descriptor_capacity_bytes();
+    let v3_rebuilt = v3_rows.finish().expect("complete V3 descriptor build");
+    assert_eq!(v3_rebuilt.tree_root(), family.tree_root());
+    eprintln!(
+        "V3-logical-memory rows=2048 semantic_row_builder_slot_capacity={semantic_builder_bytes} v3_bulk_builder_slot_capacity={v3_builder_bytes} cold_page_peak={} full_closure_peak={} closure_node_bytes={}",
+        page.work().peak_logical_live_buffer_bytes,
+        proof.peak_logical_live_buffer_bytes(),
+        proof.node_bytes(),
+    );
 }
 
 #[test]
@@ -479,6 +523,19 @@ fn cold_batched_edit_emits_a_checked_new_root_and_changed_pages() {
         .map(|ordinal| ordinal_key(RowFamily::Core, ordinal))
         .chain([ordinal_key(RowFamily::Core, 35)])
         .collect();
+    let mut expected_rows: Vec<_> = (0..32)
+        .filter(|ordinal| *ordinal != 2)
+        .map(|ordinal| {
+            let payload = if ordinal == 11 {
+                replacement
+            } else {
+                fixture_reference(ordinal)
+            };
+            (ordinal_key(RowFamily::Core, ordinal), payload)
+        })
+        .chain([(ordinal_key(RowFamily::Core, 35), reference(0xf4, 27, 0x1b))])
+        .collect();
+    expected_rows.sort_unstable_by_key(|(key, _)| *key);
     assert_eq!(target_page.entries().len(), expected_keys.len());
     assert_eq!(
         target_page
@@ -489,12 +546,40 @@ fn cold_batched_edit_emits_a_checked_new_root_and_changed_pages() {
         expected_keys
     );
     assert_eq!(
+        target_page.entries(),
+        expected_rows.as_slice(),
+        "cold-reopened rows preserve the independent semantic mutation history"
+    );
+    assert_eq!(
         target_page
             .entries()
             .iter()
             .find(|(key, _)| *key == change_key)
             .map(|(_, value)| *value),
         Some(replacement)
+    );
+
+    let rebuilt_families = std::array::from_fn(|slot| {
+        let family = RowFamily::ALL[slot];
+        let profile = (family == RowFamily::LanguageExtensions)
+            .then_some(LanguageProfile::Rust(RustEdition::Rust2021));
+        if family == RowFamily::Core {
+            build_family(family, profile, &expected_rows)
+        } else {
+            build_family(family, profile, &[])
+        }
+    });
+    let rebuilt = super::SemanticTypedPlaneIndexV3::from_families(rebuilt_families)
+        .expect("complete full-rebuild fixture catalog");
+    assert_eq!(
+        target_descriptor.tree_root(),
+        rebuilt.family(RowFamily::Core).tree_root(),
+        "path-copy root equals a complete canonical row-tree rebuild"
+    );
+    assert_eq!(
+        target_catalog.root(),
+        rebuilt.catalog().root(),
+        "cold-reopened structural catalog equals a full seven-family rebuild"
     );
 }
 

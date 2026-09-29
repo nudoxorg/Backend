@@ -14,6 +14,11 @@
 //! admit every payload and check all cross-family references before
 //! publication. V2 remains the current publication format until that adapter
 //! is completed.
+//!
+//! Cold range and closure reads have bounded logical live buffers, but this
+//! is not a low-memory verification cutover: the aggregate semantic verifier
+//! and this module's sorted bulk builder still retain O(rows) input
+//! descriptors while constructing their complete indexes.
 
 use std::{borrow::Bound, vec::Vec};
 
@@ -273,6 +278,19 @@ impl SemanticTypedPlaneRowTreeBuilderV3 {
         self.rows.push((key, payload));
         self.payload_bytes = next_bytes;
         Ok(())
+    }
+
+    /// Current descriptor scratch allocation in bytes.
+    ///
+    /// This is the row vector's actual capacity multiplied by its inline slot
+    /// size. It excludes allocator metadata and the immutable tree allocated
+    /// during `finish`; the sorted builder intentionally retains all rows
+    /// until that bulk build begins.
+    #[must_use]
+    pub fn buffered_descriptor_capacity_bytes(&self) -> usize {
+        self.rows
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>())
     }
 
     /// Finishes a deterministic canonical bulk build.
@@ -832,6 +850,14 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
         let mut loaded_nodes = 0_usize;
         let mut visited_nodes = 0_usize;
         let mut examined_rows = 0_usize;
+        let mut peak_logical_live_buffer_bytes = 0_usize;
+        let mut queued_root_bytes = match pending.first() {
+            Some(PendingDescriptorNodeV3::Root(root)) => root.bytes().len(),
+            _ => 0,
+        };
+        peak_logical_live_buffer_bytes = peak_logical_live_buffer_bytes.max(
+            logical_live_buffer_bytes(&pending, entries.capacity(), queued_root_bytes, 0, 0, 0),
+        );
 
         while let Some(pending_node) = pending.pop() {
             visited_nodes = visited_nodes
@@ -841,7 +867,10 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                 return Err(SemanticTypedPlaneIndexV3Error::PageNodeLimit);
             }
             let node = match pending_node {
-                PendingDescriptorNodeV3::Root(root) => root,
+                PendingDescriptorNodeV3::Root(root) => {
+                    queued_root_bytes = 0;
+                    root
+                }
                 PendingDescriptorNodeV3::Child {
                     claim,
                     first_key,
@@ -866,6 +895,15 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                     loaded
                 }
             };
+            peak_logical_live_buffer_bytes =
+                peak_logical_live_buffer_bytes.max(logical_live_buffer_bytes(
+                    &pending,
+                    entries.capacity(),
+                    0,
+                    node.bytes().len(),
+                    0,
+                    0,
+                ));
 
             if node.node().level() == 0 {
                 let rows = node
@@ -874,6 +912,15 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                 examined_rows = examined_rows
                     .checked_add(rows.len())
                     .ok_or(SemanticTypedPlaneIndexV3Error::Overflow)?;
+                peak_logical_live_buffer_bytes =
+                    peak_logical_live_buffer_bytes.max(logical_live_buffer_bytes(
+                        &pending,
+                        entries.capacity(),
+                        0,
+                        node.bytes().len(),
+                        rows.capacity(),
+                        0,
+                    ));
                 for (key, value) in rows {
                     if key < start || (start_exclusive && key == start) {
                         continue;
@@ -894,6 +941,7 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                                 loaded_nodes,
                                 visited_nodes,
                                 examined_rows,
+                                peak_logical_live_buffer_bytes,
                             },
                         });
                     }
@@ -902,6 +950,15 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                 let children = node
                     .child_summaries()
                     .map_err(SemanticTypedPlaneIndexV3Error::Node)?;
+                peak_logical_live_buffer_bytes =
+                    peak_logical_live_buffer_bytes.max(logical_live_buffer_bytes(
+                        &pending,
+                        entries.capacity(),
+                        0,
+                        node.bytes().len(),
+                        0,
+                        children.capacity(),
+                    ));
                 for index in (0..children.len()).rev() {
                     let child = &children[index];
                     let before_end = end.is_none_or(|end| child.first_key < end);
@@ -929,6 +986,15 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                         row_count: child.row_count,
                         level: child.level,
                     });
+                    peak_logical_live_buffer_bytes =
+                        peak_logical_live_buffer_bytes.max(logical_live_buffer_bytes(
+                            &pending,
+                            entries.capacity(),
+                            0,
+                            node.bytes().len(),
+                            0,
+                            children.capacity(),
+                        ));
                 }
             }
         }
@@ -939,6 +1005,7 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                 loaded_nodes,
                 visited_nodes,
                 examined_rows,
+                peak_logical_live_buffer_bytes,
             },
         })
     }
@@ -998,6 +1065,12 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
         let mut node_count = 0_u64;
         let mut row_count = 0_u64;
         let mut node_bytes = 0_u64;
+        let mut peak_logical_live_buffer_bytes = match pending.first() {
+            Some(PendingDescriptorNodeV3::Root(root)) => {
+                logical_live_buffer_bytes(&pending, 0, root.bytes().len(), 0, 0, 0)
+            }
+            _ => 0,
+        };
         while let Some(pending_node) = pending.pop() {
             node_count = node_count
                 .checked_add(1)
@@ -1025,6 +1098,9 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                     loaded
                 }
             };
+            peak_logical_live_buffer_bytes = peak_logical_live_buffer_bytes.max(
+                logical_live_buffer_bytes(&pending, 0, 0, node.bytes().len(), 0, 0),
+            );
             let bytes = node.bytes();
             let byte_len =
                 u64::try_from(bytes.len()).map_err(|_| SemanticTypedPlaneIndexV3Error::Overflow)?;
@@ -1040,10 +1116,19 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
             }
             visit_node(node.root().to_bytes(), bytes);
             if node.node().level() == 0 {
-                for (key, value) in node
+                let rows = node
                     .leaf_entries()
-                    .map_err(SemanticTypedPlaneIndexV3Error::Node)?
-                {
+                    .map_err(SemanticTypedPlaneIndexV3Error::Node)?;
+                peak_logical_live_buffer_bytes =
+                    peak_logical_live_buffer_bytes.max(logical_live_buffer_bytes(
+                        &pending,
+                        0,
+                        0,
+                        node.bytes().len(),
+                        rows.capacity(),
+                        0,
+                    ));
+                for (key, value) in rows {
                     if key.family() != self.family {
                         return Err(SemanticTypedPlaneIndexV3Error::RowFamilyMismatch);
                     }
@@ -1059,6 +1144,16 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                 let children = node
                     .child_summaries()
                     .map_err(SemanticTypedPlaneIndexV3Error::Node)?;
+                peak_logical_live_buffer_bytes =
+                    peak_logical_live_buffer_bytes.max(logical_live_buffer_bytes(
+                        &pending,
+                        0,
+                        0,
+                        node.bytes().len(),
+                        0,
+                        children.capacity(),
+                    ));
+                let child_capacity = children.capacity();
                 for child in children.into_iter().rev() {
                     if pending.len() >= limits.max_pending_nodes {
                         return Err(SemanticTypedPlaneIndexV3Error::ClosureLimit);
@@ -1078,6 +1173,15 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
                         row_count: child.row_count,
                         level: child.level,
                     });
+                    peak_logical_live_buffer_bytes =
+                        peak_logical_live_buffer_bytes.max(logical_live_buffer_bytes(
+                            &pending,
+                            0,
+                            0,
+                            node.bytes().len(),
+                            0,
+                            child_capacity,
+                        ));
                 }
             }
         }
@@ -1089,6 +1193,7 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
             node_count,
             row_count,
             node_bytes,
+            peak_logical_live_buffer_bytes,
         })
     }
 }
@@ -1193,6 +1298,13 @@ pub struct SemanticTypedPlanePageWorkV3 {
     pub visited_nodes: usize,
     /// Rows decoded from touched leaves, including keys outside the exact range.
     pub examined_rows: usize,
+    /// Peak additional logical live buffer bytes accounted by this traversal.
+    ///
+    /// Counts actual `Vec` capacities, active canonical page bytes, and
+    /// inline element slots; the returned page's output capacity is included.
+    /// Excludes the retained `LazyTree` root, decoder re-encoding scratch,
+    /// allocator overhead, loader/cache state, and process RSS.
+    pub peak_logical_live_buffer_bytes: usize,
 }
 
 enum PendingDescriptorNodeV3 {
@@ -1203,6 +1315,44 @@ enum PendingDescriptorNodeV3 {
         row_count: u64,
         level: u16,
     },
+}
+
+/// Estimates the operation's explicitly owned live buffers from their actual
+/// vector capacities and the active canonical page's exact byte length.
+///
+/// This is an accounted logical buffer counter, not a complete heap or RSS
+/// measurement: decoder re-encoding scratch, allocator metadata, loader
+/// internals, callback state, the retained `LazyTree` root, and unrelated
+/// storage are outside its accounting boundary.
+fn logical_live_buffer_bytes(
+    pending: &Vec<PendingDescriptorNodeV3>,
+    output_capacity: usize,
+    queued_root_bytes: usize,
+    active_node_bytes: usize,
+    leaf_row_capacity: usize,
+    branch_child_capacity: usize,
+) -> usize {
+    let mut bytes = pending
+        .capacity()
+        .saturating_mul(std::mem::size_of::<PendingDescriptorNodeV3>());
+    bytes = bytes.saturating_add(
+        output_capacity
+            .saturating_mul(std::mem::size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>()),
+    );
+    bytes = bytes.saturating_add(queued_root_bytes);
+    if active_node_bytes != 0 {
+        bytes = bytes.saturating_add(active_node_bytes);
+        bytes = bytes.saturating_add(std::mem::size_of::<
+            CheckedCanonicalRoot<SemanticTypedPlaneRowRelationV3>,
+        >());
+    }
+    bytes = bytes.saturating_add(
+        leaf_row_capacity
+            .saturating_mul(std::mem::size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>()),
+    );
+    bytes.saturating_add(branch_child_capacity.saturating_mul(std::mem::size_of::<
+        backend_version::CommittedChild<SemanticTypedPlaneRowRelationV3>,
+    >()))
 }
 
 /// Structural tree and catalog admission failures for V3.
@@ -1299,6 +1449,7 @@ pub struct SemanticTypedPlaneIndexClosureV3 {
     node_count: u64,
     row_count: u64,
     node_bytes: u64,
+    peak_logical_live_buffer_bytes: usize,
 }
 
 impl SemanticTypedPlaneIndexClosureV3 {
@@ -1330,6 +1481,17 @@ impl SemanticTypedPlaneIndexClosureV3 {
     #[must_use]
     pub const fn node_bytes(self) -> u64 {
         self.node_bytes
+    }
+
+    /// Peak additional logical live buffer bytes accounted by the closure walk.
+    ///
+    /// Counts actual `Vec` capacities, active canonical page bytes, and
+    /// inline element slots. Excludes decoder re-encoding scratch, allocator
+    /// overhead, loader/cache state, callback state, the retained `LazyTree`
+    /// root, and process RSS.
+    #[must_use]
+    pub const fn peak_logical_live_buffer_bytes(self) -> usize {
+        self.peak_logical_live_buffer_bytes
     }
 }
 
