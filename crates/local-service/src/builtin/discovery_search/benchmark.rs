@@ -354,7 +354,9 @@ impl BenchmarkIndex {
 
     /// Runs the production source-scoped package-lineage query used by the
     /// benchmark holdout. Each returned group includes the canonical release
-    /// ids that matched inside that lineage.
+    /// ids that matched inside that lineage. Requests may set
+    /// `measure_owner_time: true` to add `owner_search_nanos`, timing the
+    /// in-process ranker separately from JSONL and process overhead.
     ///
     /// # Errors
     /// Returns an error for malformed requests or a grouped-search failure.
@@ -388,6 +390,14 @@ impl BenchmarkIndex {
             .map(serde_json::from_value::<super::DiscoverySearchCursor>)
             .transpose()
             .map_err(|error| format!("decode lineage search cursor: {error}"))?;
+        // A long-lived adapter process can report owner-only ranker latency
+        // alongside the response. A caller timing a fresh process around this
+        // request can then compare both measurements on the same saved index.
+        let measure_owner_time = request
+            .get("measure_owner_time")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let owner_search_started = measure_owner_time.then(std::time::Instant::now);
         let page = self
             .search
             .search_groups_after(
@@ -399,6 +409,8 @@ impl BenchmarkIndex {
                 cursor.as_ref(),
             )
             .map_err(|error| format!("production grouped package search failed: {error}"))?;
+        let owner_search_nanos = owner_search_started
+            .map(|started| u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
         let mut groups = Vec::new();
         for group in page.groups {
             let mut document_ids = Vec::new();
@@ -444,6 +456,9 @@ impl BenchmarkIndex {
         });
         if let Some(request_id) = request.get("request_id") {
             response["request_id"] = request_id.clone();
+        }
+        if let Some(owner_search_nanos) = owner_search_nanos {
+            response["owner_search_nanos"] = json!(owner_search_nanos);
         }
         Ok(response)
     }

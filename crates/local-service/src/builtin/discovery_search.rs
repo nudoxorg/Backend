@@ -11,13 +11,15 @@ use backend_engine::{
 };
 use backend_library::{Fragment, Row};
 use serde::{Deserialize, Serialize};
+use std::cell::OnceCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::Bound;
+use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::{
-    BooleanQuery, ConstScoreQuery, EmptyQuery, FuzzyTermQuery, Occur, PhraseQuery, Query,
-    RangeQuery, RegexQuery, TermQuery,
+    BooleanQuery, ConstScoreQuery, EmptyQuery, EnableScoring, FuzzyTermQuery, Occur, PhraseQuery,
+    Query, RangeQuery, RegexQuery, TermQuery, Weight,
 };
 use tantivy::schema::{FAST, Field, IndexRecordOption, STRING, Schema, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, Order, TantivyDocument, Term};
@@ -2020,8 +2022,13 @@ impl DiscoverySearchIndex {
                 after_sort_key: lineage_sort_key(&after.key),
                 returned_before: 0,
             });
-        let page = self.lineages.inner.page_filtered(
-            request.text,
+        let prepared_lineage_query = self
+            .lineages
+            .inner
+            .prepare_search_query(normalized_query.clone());
+        let prepared_release_query = self.inner.prepare_search_query(normalized_query.clone());
+        let empty_release_query = self.inner.prepare_search_query(String::new());
+        let page = prepared_lineage_query.page_filtered(
             limit.saturating_add(1),
             request.ecosystem.map(RegistryEcosystem::as_str),
             continuation.as_ref(),
@@ -2067,7 +2074,6 @@ impl DiscoverySearchIndex {
             );
         }
 
-        let normalized_query = normalize(request.text);
         let query_tokens = normalized_query
             .split(|character: char| !character.is_alphanumeric())
             .filter(|token| !token.is_empty())
@@ -2210,8 +2216,7 @@ impl DiscoverySearchIndex {
                 }),
             };
             let sort_key = lineage_sort_key(&hit.key);
-            let facet_page = self.inner.page_in_group(
-                request.text,
+            let facet_page = prepared_release_query.page_in_group(
                 MAX_RELEASES_PER_GROUP,
                 request.ecosystem.map(RegistryEcosystem::as_str),
                 &sort_key,
@@ -2230,8 +2235,7 @@ impl DiscoverySearchIndex {
                 // A lineage can match through the package-level union of facts
                 // contributed by different releases. Keep a bounded source
                 // facet page visible, with an explicit scope marker.
-                let fallback = self.inner.page_in_group(
-                    "",
+                let fallback = empty_release_query.page_in_group(
                     MAX_RELEASES_PER_GROUP,
                     request.ecosystem.map(RegistryEcosystem::as_str),
                     &sort_key,
@@ -2493,6 +2497,118 @@ pub(super) struct TextSearchIndex<K> {
     standings: BTreeMap<String, SearchStandingEvidence>,
     substring_values: BTreeMap<String, Vec<String>>,
     dirty: bool,
+}
+
+/// Normalized query state and lazily built ranked query trees for one index.
+/// Grouped search reuses this across its first lineage page and release facets,
+/// while exact hits avoid constructing tiers they never reach.
+struct PreparedSearchQuery<'index, K> {
+    index: &'index TextSearchIndex<K>,
+    needle: String,
+    tier_queries: [OnceCell<Arc<dyn Query>>; SEARCH_TIERS.len()],
+    ranked_tiers: [OnceCell<Arc<dyn Query>>; SEARCH_TIERS.len()],
+}
+
+/// Cheaply clones a prepared Tantivy query node into request-specific trees.
+#[derive(Clone, Debug)]
+struct SharedQuery(Arc<dyn Query>);
+
+impl Query for SharedQuery {
+    fn weight(&self, scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        self.0.weight(scoring)
+    }
+
+    fn query_terms<'a>(&'a self, visitor: &mut dyn FnMut(&'a Term, bool)) {
+        self.0.query_terms(visitor);
+    }
+}
+
+impl<'index, K: Clone> PreparedSearchQuery<'index, K> {
+    fn new(index: &'index TextSearchIndex<K>, needle: String) -> Self {
+        Self {
+            index,
+            needle,
+            tier_queries: std::array::from_fn(|_| OnceCell::new()),
+            ranked_tiers: std::array::from_fn(|_| OnceCell::new()),
+        }
+    }
+
+    fn tier_query(&self, tier_index: usize) -> &Arc<dyn Query> {
+        self.tier_queries[tier_index].get_or_init(|| {
+            Arc::<dyn Query>::from(
+                self.index
+                    .tier_query(SEARCH_TIERS[tier_index], &self.needle),
+            )
+        })
+    }
+
+    fn ranked_tier_query(&self, tier_index: usize) -> &Arc<dyn Query> {
+        self.ranked_tiers[tier_index].get_or_init(|| {
+            let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(
+                Occur::Must,
+                Box::new(SharedQuery(Arc::clone(self.tier_query(tier_index)))),
+            )];
+            for (earlier_index, earlier_tier) in SEARCH_TIERS[..tier_index].iter().enumerate() {
+                if tier_index > SearchTier::Substring as usize
+                    && matches!(earlier_tier, SearchTier::Substring)
+                {
+                    continue;
+                }
+                clauses.push((
+                    Occur::MustNot,
+                    Box::new(SharedQuery(Arc::clone(self.tier_query(earlier_index)))),
+                ));
+            }
+            let ranked_query: Box<dyn Query> = Box::new(BooleanQuery::new(clauses));
+            Arc::<dyn Query>::from(ranked_query)
+        })
+    }
+
+    fn page_filtered(
+        &self,
+        limit: usize,
+        ecosystem: Option<&str>,
+        continuation: Option<&SearchContinuation>,
+    ) -> Result<IndexedSearchPage<K>, String> {
+        self.page_filtered_in_group(limit, ecosystem, None, continuation)
+    }
+
+    fn page_in_group(
+        &self,
+        limit: usize,
+        ecosystem: Option<&str>,
+        lineage_group_sort_key: &str,
+        continuation: Option<&SearchContinuation>,
+    ) -> Result<SearchPage<K>, String> {
+        let indexed = self.page_filtered_in_group(
+            limit,
+            ecosystem,
+            Some(lineage_group_sort_key),
+            continuation,
+        )?;
+        Ok(SearchPage {
+            hits: indexed.hits,
+            posting_candidates: indexed.posting_candidates,
+            result_count: indexed.result_count,
+            next_cursor: indexed.next_cursor,
+        })
+    }
+
+    fn page_filtered_in_group(
+        &self,
+        limit: usize,
+        ecosystem: Option<&str>,
+        lineage_group: Option<&str>,
+        continuation: Option<&SearchContinuation>,
+    ) -> Result<IndexedSearchPage<K>, String> {
+        TextSearchIndex::<K>::page_filtered_in_group_prepared(
+            self,
+            limit,
+            ecosystem,
+            lineage_group,
+            continuation,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -3395,10 +3511,9 @@ impl<K: Clone> TextSearchIndex<K> {
         if search_text.substring_generic {
             substring_fields.extend(generic.iter().copied());
         }
-        let substring_values = substring_fields
+        let mut substring_values = substring_fields
             .iter()
             .map(|field| normalize(field))
-            .filter(|field| !field.is_empty())
             .collect::<Vec<_>>();
         let mut document = TantivyDocument::default();
         document.add_text(self.exact_coordinate, coordinate.as_str());
@@ -3439,16 +3554,17 @@ impl<K: Clone> TextSearchIndex<K> {
         document.add_text(self.pagination_key, sort_key.as_str());
         document.add_text(
             self.substring_unigram,
-            combined_gram_stream(substring_fields.iter().copied(), 1).as_str(),
+            combined_gram_stream::<1>(substring_values.iter().map(String::as_str)).as_str(),
         );
         document.add_text(
             self.substring_bigram,
-            combined_gram_stream(substring_fields.iter().copied(), 2).as_str(),
+            combined_gram_stream::<2>(substring_values.iter().map(String::as_str)).as_str(),
         );
         document.add_text(
             self.substring_trigram,
-            combined_gram_stream(substring_fields.iter().copied(), 3).as_str(),
+            combined_gram_stream::<3>(substring_values.iter().map(String::as_str)).as_str(),
         );
+        substring_values.retain(|field| !field.is_empty());
         self.dirty = true;
         self.writer
             .add_document(document)
@@ -3489,6 +3605,10 @@ impl<K: Clone> TextSearchIndex<K> {
         Ok(())
     }
 
+    fn prepare_search_query(&self, needle: String) -> PreparedSearchQuery<'_, K> {
+        PreparedSearchQuery::new(self, needle)
+    }
+
     pub(super) fn page(&self, query: &str, limit: usize) -> Result<SearchPage<K>, String> {
         self.page_with_ecosystem(query, limit, None, None)
     }
@@ -3509,29 +3629,6 @@ impl<K: Clone> TextSearchIndex<K> {
         })
     }
 
-    pub(super) fn page_in_group(
-        &self,
-        query: &str,
-        limit: usize,
-        ecosystem: Option<&str>,
-        lineage_group_sort_key: &str,
-        continuation: Option<&SearchContinuation>,
-    ) -> Result<SearchPage<K>, String> {
-        let indexed = self.page_filtered_in_group(
-            query,
-            limit,
-            ecosystem,
-            Some(lineage_group_sort_key),
-            continuation,
-        )?;
-        Ok(SearchPage {
-            hits: indexed.hits,
-            posting_candidates: indexed.posting_candidates,
-            result_count: indexed.result_count,
-            next_cursor: indexed.next_cursor,
-        })
-    }
-
     pub(super) fn page_filtered(
         &self,
         query: &str,
@@ -3542,6 +3639,25 @@ impl<K: Clone> TextSearchIndex<K> {
         self.page_filtered_in_group(query, limit, ecosystem, None, continuation)
     }
 
+    pub(super) fn page_in_group(
+        &self,
+        query: &str,
+        limit: usize,
+        ecosystem: Option<&str>,
+        lineage_group: &str,
+        continuation: Option<&SearchContinuation>,
+    ) -> Result<SearchPage<K>, String> {
+        if query.len() > MAX_QUERY_BYTES {
+            return Err("catalog search query exceeds its byte limit".to_owned());
+        }
+        self.prepare_search_query(normalize(query)).page_in_group(
+            limit,
+            ecosystem,
+            lineage_group,
+            continuation,
+        )
+    }
+
     pub(super) fn page_filtered_in_group(
         &self,
         query: &str,
@@ -3550,10 +3666,22 @@ impl<K: Clone> TextSearchIndex<K> {
         lineage_group: Option<&str>,
         continuation: Option<&SearchContinuation>,
     ) -> Result<IndexedSearchPage<K>, String> {
-        let limit = limit.min(MAX_INTERNAL_SEARCH_PAGE_SIZE);
         if query.len() > MAX_QUERY_BYTES {
             return Err("catalog search query exceeds its byte limit".to_owned());
         }
+        let prepared = self.prepare_search_query(normalize(query));
+        prepared.page_filtered_in_group(limit, ecosystem, lineage_group, continuation)
+    }
+
+    fn page_filtered_in_group_prepared(
+        prepared: &PreparedSearchQuery<'_, K>,
+        limit: usize,
+        ecosystem: Option<&str>,
+        lineage_group: Option<&str>,
+        continuation: Option<&SearchContinuation>,
+    ) -> Result<IndexedSearchPage<K>, String> {
+        let index = prepared.index;
+        let limit = limit.min(MAX_INTERNAL_SEARCH_PAGE_SIZE);
         if limit == 0 {
             return Ok(IndexedSearchPage {
                 hits: Vec::new(),
@@ -3562,7 +3690,7 @@ impl<K: Clone> TextSearchIndex<K> {
                 next_cursor: None,
             });
         }
-        if self.keys.is_empty() {
+        if index.keys.is_empty() {
             return Ok(IndexedSearchPage {
                 hits: Vec::new(),
                 posting_candidates: 0,
@@ -3570,18 +3698,18 @@ impl<K: Clone> TextSearchIndex<K> {
                 next_cursor: None,
             });
         }
-        let needle = normalize(query);
+        let needle = prepared.needle.as_str();
         if needle.is_empty() {
             if ecosystem.is_some() || lineage_group.is_some() {
                 let after = continuation.map(|value| value.after_sort_key.as_str());
                 let mut clauses = Vec::new();
                 if let Some(ecosystem) = ecosystem {
-                    clauses.push((Occur::Must, exact_term_query(self.ecosystem, ecosystem)));
+                    clauses.push((Occur::Must, exact_term_query(index.ecosystem, ecosystem)));
                 }
                 if let Some(lineage_group) = lineage_group {
                     clauses.push((
                         Occur::Must,
-                        exact_term_query(self.lineage_group, lineage_group),
+                        exact_term_query(index.lineage_group, lineage_group),
                     ));
                 }
                 if let Some(after_sort_key) = after {
@@ -3589,14 +3717,14 @@ impl<K: Clone> TextSearchIndex<K> {
                         Occur::Must,
                         Box::new(RangeQuery::new(
                             Bound::Excluded(Term::from_field_text(
-                                self.pagination_key,
+                                index.pagination_key,
                                 after_sort_key,
                             )),
                             Bound::Unbounded,
                         )),
                     ));
                 }
-                let (posting_candidates, selected) = self.collect_category(
+                let (posting_candidates, selected) = index.collect_category(
                     Box::new(BooleanQuery::new(clauses)),
                     limit.saturating_add(1),
                     u8::MAX,
@@ -3611,7 +3739,7 @@ impl<K: Clone> TextSearchIndex<K> {
             }
             let after = continuation.map(|value| value.after_sort_key.as_str());
             let lower = after.map_or(Bound::Unbounded, |value| Bound::Excluded(value.to_owned()));
-            let mut selected = self
+            let mut selected = index
                 .keys
                 .range((lower, Bound::Unbounded))
                 .take(limit.saturating_add(1))
@@ -3620,7 +3748,7 @@ impl<K: Clone> TextSearchIndex<K> {
                         u8::MAX,
                         sort_key.clone(),
                         key.clone(),
-                        self.standings.get(sort_key).copied().unwrap_or_default(),
+                        index.standings.get(sort_key).copied().unwrap_or_default(),
                     )
                 })
                 .collect::<Vec<_>>();
@@ -3658,7 +3786,7 @@ impl<K: Clone> TextSearchIndex<K> {
                     })
                     .collect(),
                 posting_candidates: 0,
-                result_count: SearchResultCount::Exact(self.keys.len()),
+                result_count: SearchResultCount::Exact(index.keys.len()),
                 next_cursor,
             });
         }
@@ -3677,33 +3805,27 @@ impl<K: Clone> TextSearchIndex<K> {
                 if remaining == 0 {
                     break;
                 }
-                let mut clauses = vec![(
+                let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(
                     Occur::Must,
-                    self.tier_query(SEARCH_TIERS[tier_index], &needle),
+                    Box::new(SharedQuery(Arc::clone(
+                        prepared.ranked_tier_query(tier_index),
+                    ))),
                 )];
                 if let Some(ecosystem) = ecosystem {
-                    clauses.push((Occur::Must, exact_term_query(self.ecosystem, ecosystem)));
+                    clauses.push((Occur::Must, exact_term_query(index.ecosystem, ecosystem)));
                 }
                 if let Some(lineage_group) = lineage_group {
                     clauses.push((
                         Occur::Must,
-                        exact_term_query(self.lineage_group, lineage_group),
+                        exact_term_query(index.lineage_group, lineage_group),
                     ));
-                }
-                for earlier_tier in SEARCH_TIERS[..tier_index].iter().copied() {
-                    if tier_index > SearchTier::Substring as usize
-                        && matches!(earlier_tier, SearchTier::Substring)
-                    {
-                        continue;
-                    }
-                    clauses.push((Occur::MustNot, self.tier_query(earlier_tier, &needle)));
                 }
                 if let Some(after_sort_key) = after_sort_key.as_deref() {
                     clauses.push((
                         Occur::Must,
                         Box::new(RangeQuery::new(
                             Bound::Excluded(Term::from_field_text(
-                                self.pagination_key,
+                                index.pagination_key,
                                 after_sort_key,
                             )),
                             Bound::Unbounded,
@@ -3711,7 +3833,7 @@ impl<K: Clone> TextSearchIndex<K> {
                     ));
                 }
                 let query: Box<dyn Query> = Box::new(BooleanQuery::new(clauses));
-                let (candidates, fetched) = self.collect_category(
+                let (candidates, fetched) = index.collect_category(
                     query,
                     remaining,
                     tier_index as u8,
@@ -3723,7 +3845,7 @@ impl<K: Clone> TextSearchIndex<K> {
                 if tier_index > SearchTier::Substring as usize {
                     selected.extend(
                         fetched.into_iter().filter(|(_, sort_key, _, _)| {
-                            !self.contains_substring(sort_key, &needle)
+                            !index.contains_substring(sort_key, needle)
                         }),
                     );
                     if selected.len() >= limit.saturating_add(1) || fetched_count < remaining {
@@ -3989,16 +4111,36 @@ fn substring_query(unigram: Field, bigram: Field, trigram: Field, query: &str) -
     }
 }
 
-fn combined_gram_stream<'a>(fields: impl IntoIterator<Item = &'a str>, width: usize) -> String {
-    let mut tokens = Vec::new();
+fn combined_gram_stream<'a, const WIDTH: usize>(
+    fields: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let mut stream = String::new();
     for field in fields {
-        let normalized = normalize(field);
-        if !tokens.is_empty() {
-            tokens.push(BOUNDARY_TOKEN.to_owned());
+        let mut window = ['\0'; WIDTH];
+        let mut seen = 0_usize;
+        let mut field_emitted = false;
+        for character in field.chars() {
+            window.rotate_left(1);
+            window[WIDTH - 1] = character;
+            if seen < WIDTH {
+                seen += 1;
+            }
+            if seen >= WIDTH {
+                if !field_emitted {
+                    if !stream.is_empty() {
+                        stream.push(' ');
+                        stream.push_str(BOUNDARY_TOKEN);
+                    }
+                    field_emitted = true;
+                }
+                if !stream.is_empty() {
+                    stream.push(' ');
+                }
+                append_gram_token(&mut stream, &window);
+            }
         }
-        tokens.extend(gram_tokens(&normalized, width));
     }
-    tokens.join(" ")
+    stream
 }
 
 fn gram_tokens(value: &str, width: usize) -> Vec<String> {
@@ -4012,12 +4154,19 @@ fn gram_tokens(value: &str, width: usize) -> Vec<String> {
 
 fn gram_token(characters: &[char]) -> String {
     let mut token = String::with_capacity(1 + characters.len() * 6);
+    append_gram_token(&mut token, characters);
+    token
+}
+
+fn append_gram_token(token: &mut String, characters: &[char]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     token.push('g');
     for character in characters {
-        use std::fmt::Write as _;
-        let _ = write!(token, "{:06x}", u32::from(*character));
+        let code_point = u32::from(*character);
+        for shift in [20, 16, 12, 8, 4, 0] {
+            token.push(char::from(HEX[((code_point >> shift) & 0x0f) as usize]));
+        }
     }
-    token
 }
 
 fn normalize(value: &str) -> String {
@@ -5048,6 +5197,90 @@ mod tests {
     }
 
     #[test]
+    fn prepared_group_search_matches_oracle_on_cold_warm_and_continued_pages() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        let mirror = source(RegistryEcosystem::Cargo, "https://mirror.example.test");
+        let npm = source(RegistryEcosystem::Npm, "https://registry.npmjs.org");
+        let entries = vec![
+            (
+                key(cargo, "pkg:cargo/serde@1.0.0"),
+                DiscoveryMetadata {
+                    aliases: DiscoveryFacet::Known(vec!["serde-json".to_owned()]),
+                    ..DiscoveryMetadata::default()
+                },
+            ),
+            (
+                key(cargo, "pkg:cargo/serde@2.0.0"),
+                DiscoveryMetadata {
+                    keywords: DiscoveryFacet::Known(vec!["serialization".to_owned()]),
+                    ..DiscoveryMetadata::default()
+                },
+            ),
+            (
+                key(mirror, "pkg:cargo/serde@1.0.0"),
+                DiscoveryMetadata {
+                    aliases: DiscoveryFacet::Known(vec!["serde-adapter".to_owned()]),
+                    ..DiscoveryMetadata::default()
+                },
+            ),
+            (
+                key(npm, "pkg:npm/@acme/serde@3.0.0"),
+                DiscoveryMetadata {
+                    description: DiscoveryFacet::Known("JavaScript serialization".to_owned()),
+                    ..DiscoveryMetadata::default()
+                },
+            ),
+            (
+                key(npm, "pkg:npm/serde-tools@1.0.0"),
+                DiscoveryMetadata {
+                    keywords: DiscoveryFacet::Known(vec!["serde helper".to_owned()]),
+                    ..DiscoveryMetadata::default()
+                },
+            ),
+        ];
+        let index = build_discovery_projection_with_metadata(&entries);
+        let request = || DiscoverySearchRequest {
+            text: "serde",
+            ecosystem: None,
+        };
+        let expected = typed_group_oracle(&entries, "serde", None, 32);
+        let project = |groups: Vec<DiscoveryPackageSearchGroup>| {
+            groups
+                .into_iter()
+                .map(|group| {
+                    (
+                        group.key,
+                        group.evidence.rank(),
+                        group.matched_releases,
+                        group.more_releases,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // The first call exercises query preparation against the freshly
+        // committed index; the next call exercises the same warm request.
+        let cold = index
+            .search_groups_after(request(), 1, None)
+            .expect("cold grouped page");
+        let warm = index
+            .search_groups_after(request(), 1, None)
+            .expect("warm grouped page");
+        assert_eq!(project(warm.groups), project(cold.groups.clone()));
+
+        let mut actual = project(cold.groups);
+        let mut cursor = cold.next_cursor;
+        while let Some(after) = cursor {
+            let page = index
+                .search_groups_after(request(), 1, Some(&after))
+                .expect("continued grouped page");
+            actual.extend(project(page.groups));
+            cursor = page.next_cursor;
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn grouped_search_pages_past_many_releases_and_bounds_release_expansion() {
         let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
         let mut entries = (0..320)
@@ -5496,9 +5729,14 @@ mod tests {
         })
         .collect::<Vec<_>>();
         let index = build_discovery_projection_with_metadata(&entries);
+        let (_, fixture) = store
+            .facts()
+            .find(|(_, fact)| fact.source.ecosystem() == RegistryEcosystem::Cargo)
+            .or_else(|| store.facts().next())
+            .expect("live journal must contain at least one indexed release");
         let request = DiscoverySearchRequest {
-            text: "serde",
-            ecosystem: Some(RegistryEcosystem::Cargo),
+            text: fixture.coordinate.as_str(),
+            ecosystem: Some(fixture.source.ecosystem()),
         };
         let first = index
             .search_groups_after(request, 1, None)
@@ -5594,7 +5832,12 @@ mod tests {
                 "",
                 "go-window-1",
                 100,
-                &[(upper_coordinate, DiscoveryStanding::Published, "2026-09-01", 1)],
+                &[(
+                    upper_coordinate,
+                    DiscoveryStanding::Published,
+                    "2026-09-01",
+                    1,
+                )],
             ))
             .expect("commit first case-sensitive Go module");
         let mut warm = DiscoverySearchIndex::open(&store).expect("initial warm projection");
@@ -5604,7 +5847,12 @@ mod tests {
                 "go-window-1",
                 "go-window-2",
                 200,
-                &[(lower_coordinate, DiscoveryStanding::Published, "2026-09-02", 2)],
+                &[(
+                    lower_coordinate,
+                    DiscoveryStanding::Published,
+                    "2026-09-02",
+                    2,
+                )],
             ))
             .expect("commit second case-sensitive Go module");
         warm.sync(&store).expect("incremental warm update");
@@ -5837,6 +6085,48 @@ mod tests {
     }
 
     #[test]
+    fn streaming_grams_keep_the_existing_unicode_and_field_boundary_grammar() {
+        fn reference(fields: &[String], width: usize) -> String {
+            let mut terms = Vec::new();
+            for field in fields {
+                if !terms.is_empty() {
+                    terms.push(BOUNDARY_TOKEN.to_owned());
+                }
+                let characters = field.chars().collect::<Vec<_>>();
+                for window in characters.windows(width) {
+                    let mut term = String::from("g");
+                    for character in window {
+                        term.push_str(&format!("{:06x}", u32::from(*character)));
+                    }
+                    terms.push(term);
+                }
+            }
+            terms.join(" ")
+        }
+
+        for fields in [
+            vec!["", "a", "", "ab", "", "abc"],
+            vec!["Café Straße", "İstanbul", "emoji 🚀 launch"],
+            vec!["👩🏽‍💻", "e\u{301}", "\u{0}", ""],
+        ] {
+            let normalized = fields.into_iter().map(normalize).collect::<Vec<_>>();
+            let values = || normalized.iter().map(String::as_str);
+            assert_eq!(
+                combined_gram_stream::<1>(values()),
+                reference(&normalized, 1)
+            );
+            assert_eq!(
+                combined_gram_stream::<2>(values()),
+                reference(&normalized, 2)
+            );
+            assert_eq!(
+                combined_gram_stream::<3>(values()),
+                reference(&normalized, 3)
+            );
+        }
+    }
+
+    #[test]
     fn search_grams_match_unicode_phrases_without_cross_field_matches() {
         let mut index = TextSearchIndex::new().expect("index");
         index
@@ -6010,6 +6300,48 @@ mod tests {
         assert!(page_count > 1, "fixture should exercise continuation");
         assert_eq!(actual, expected);
         assert_eq!(actual.iter().collect::<BTreeSet<_>>().len(), actual.len());
+    }
+
+    #[test]
+    fn exact_lookahead_prepares_only_the_exact_search_tier() {
+        let mut index = TextSearchIndex::new().expect("index");
+        for ordinal in 0..2 {
+            index
+                .add_document(
+                    ordinal,
+                    "pkg:local/needle",
+                    "needle",
+                    std::iter::empty(),
+                    format!("pkg:local/needle\u{1f}{ordinal:03}"),
+                )
+                .expect("add exact-coordinate row");
+        }
+        index.commit().expect("commit");
+
+        let prepared = index.prepare_search_query(normalize("pkg:local/needle"));
+        let page = prepared
+            .page_filtered(1, None, None)
+            .expect("exact search page");
+        assert_eq!(page.hits.len(), 1);
+        assert!(page.next_cursor.is_some());
+        assert_eq!(
+            prepared
+                .tier_queries
+                .iter()
+                .filter(|query| query.get().is_some())
+                .count(),
+            1
+        );
+        assert_eq!(
+            prepared
+                .ranked_tiers
+                .iter()
+                .filter(|query| query.get().is_some())
+                .count(),
+            1
+        );
+        assert!(prepared.tier_queries[0].get().is_some());
+        assert!(prepared.ranked_tiers[0].get().is_some());
     }
 
     #[test]
@@ -6605,6 +6937,53 @@ mod tests {
         let linear_p95 = percentile_micros(&mut linear_samples, 95);
         eprintln!(
             "10k discovery search: build={build_millis}ms rss_delta_kib={rss_delta_kib:?} posting_candidates={posting_candidates} indexed_warm_p50={index_p50}us indexed_warm_p95={index_p95}us linear_p50={linear_p50}us linear_p95={linear_p95}us"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual live-owner latency diagnostic; set DISCOVERY_SEARCH_OWNER_JOURNAL to a cloned owner's registry-discovery/catalog.journal"]
+    fn manual_live_owner_group_search_reports_cold_open_and_warm_owner_p50_p95() {
+        const WARMUPS: usize = 3;
+        const SAMPLES: usize = 21;
+        let journal = std::env::var_os("DISCOVERY_SEARCH_OWNER_JOURNAL")
+            .expect("set DISCOVERY_SEARCH_OWNER_JOURNAL to a cloned owner's catalog journal");
+        let store = DiscoveryStore::open(std::path::PathBuf::from(journal))
+            .expect("open cloned live-owner discovery journal");
+        let cold_started = std::time::Instant::now();
+        let index = DiscoverySearchIndex::open(&store).expect("rebuild owner search projection");
+        let cold_open_millis = cold_started.elapsed().as_millis();
+        let request = DiscoverySearchRequest {
+            text: "serde",
+            ecosystem: Some(RegistryEcosystem::Cargo),
+        };
+        for _ in 0..WARMUPS {
+            index
+                .search_groups(request, 20)
+                .expect("warm owner grouped search");
+        }
+        let mut samples = Vec::with_capacity(SAMPLES);
+        let mut last_page = None;
+        for _ in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            let page = index
+                .search_groups(request, 20)
+                .expect("measured owner grouped search");
+            samples.push(started.elapsed());
+            last_page = Some((
+                page.groups.len(),
+                page.posting_candidates,
+                page.index_documents_visited,
+                page.facet_releases_examined,
+            ));
+        }
+        let p50_micros = percentile_micros(&mut samples, 50);
+        let p95_micros = percentile_micros(&mut samples, 95);
+        assert!(
+            last_page.is_some_and(|(groups, candidates, _, _)| { groups > 0 && candidates > 0 })
+        );
+        eprintln!(
+            "live owner grouped search: cold_open={cold_open_millis}ms warm_owner_p50={p50_micros}us warm_owner_p95={p95_micros}us query={} ecosystem={:?} limit=20 samples={SAMPLES} page_counters={last_page:?}",
+            request.text, request.ecosystem,
         );
     }
 
