@@ -2,6 +2,7 @@
 
 use super::frame::read_frame_at_path;
 use super::scan::{collect_recovery, repair_tail, scan_path, scan_path_from};
+use std::fs::File;
 use super::{
     HashChainJournal, JournalCheckpoint, JournalCodec, JournalError, JournalFrame, JournalFrameRef,
     JournalLimits, JournalReceipt, JournalRecovery, JournalScan, JournalState, Mutex, OpenOptions,
