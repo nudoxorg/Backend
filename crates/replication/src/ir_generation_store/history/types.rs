@@ -10,10 +10,11 @@ const HISTORY_PAYLOAD_ROOT_TAG: u8 = 6;
 const HISTORY_SEGMENT_MAP_TAG: u8 = 7;
 const HISTORY_INDEX_INTENT_TAG: u8 = 8;
 const HISTORY_SEGMENT_MAP_COUNT_TAG: u8 = 9;
+pub(super) const HISTORY_SEGMENT_MAP_EPOCH_TAG: u8 = 12;
 const MAX_HISTORY_PARENTS: usize = 2;
 const MAX_HISTORY_REFS: usize = 512;
 const MAX_REPLAY_COMMITS: usize = 32;
-const MAX_HISTORY_GC_BATCH_RECORDS: usize = 32;
+pub(super) const MAX_HISTORY_GC_BATCH_RECORDS: usize = 32;
 const HISTORY_CHECKPOINT_INTERVAL: u32 = 16;
 const MAX_HISTORY_REF_NAME_BYTES: usize = 255;
 const MAX_HISTORY_COMMIT_BYTES: usize = 1_024;
@@ -276,11 +277,15 @@ impl AdmittedHistoryCommit {
 }
 
 /// Receipt for immutable commit admission. A retry with the same proposal is
-/// idempotent and reports `created == false`.
+/// idempotent and reports `created == false`. The high-level admission API
+/// keeps a shared FileStore GC pin in the receipt until it is dropped, so the
+/// admitted commit can be published by a later ref CAS without racing metadata
+/// retention.
 #[derive(Clone, Debug)]
 pub struct HistoryAdmissionReceipt {
     commit: AdmittedHistoryCommit,
     created: bool,
+    _gc_pin: Option<std::sync::Arc<backend_store::GcPinGuard>>,
 }
 
 impl HistoryAdmissionReceipt {
@@ -294,6 +299,11 @@ impl HistoryAdmissionReceipt {
     #[must_use]
     pub const fn created(&self) -> bool {
         self.created
+    }
+
+    pub(crate) fn with_gc_pin(mut self, gc_pin: std::sync::Arc<backend_store::GcPinGuard>) -> Self {
+        self._gc_pin = Some(gc_pin);
+        self
     }
 }
 
@@ -346,6 +356,7 @@ pub struct HistoryRefUpdateReceipt {
 pub struct HistoryGcProgress {
     processed_records: usize,
     complete: bool,
+    stats: HistoryGcStats,
 }
 
 impl HistoryGcProgress {
@@ -359,6 +370,104 @@ impl HistoryGcProgress {
     #[must_use]
     pub const fn complete(self) -> bool {
         self.complete
+    }
+
+    /// Returns cumulative reachability and reclamation counters for this GC
+    /// epoch. Counters survive bounded batches and cold reopen.
+    #[must_use]
+    pub const fn stats(self) -> HistoryGcStats {
+        self.stats
+    }
+}
+
+/// Durable counters reported by semantic history retention.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HistoryGcStats {
+    live_maps: u64,
+    reclaimed_maps: u64,
+    live_map_bytes: u64,
+    reclaimed_map_bytes: u64,
+    live_commits: u64,
+    reclaimed_commits: u64,
+    live_commit_bytes: u64,
+    reclaimed_commit_bytes: u64,
+    live_generation_records: u64,
+    reclaimed_generation_records: u64,
+    live_generation_record_bytes: u64,
+    reclaimed_generation_record_bytes: u64,
+}
+
+impl HistoryGcStats {
+    /// Number of bridge maps retained by current refs and live ancestry.
+    #[must_use]
+    pub const fn live_maps(self) -> u64 {
+        self.live_maps
+    }
+
+    /// Number of bridge maps removed by this retention epoch.
+    #[must_use]
+    pub const fn reclaimed_maps(self) -> u64 {
+        self.reclaimed_maps
+    }
+
+    /// Bytes occupied by retained bridge maps.
+    #[must_use]
+    pub const fn live_map_bytes(self) -> u64 {
+        self.live_map_bytes
+    }
+
+    /// Bytes reclaimed from bridge maps.
+    #[must_use]
+    pub const fn reclaimed_map_bytes(self) -> u64 {
+        self.reclaimed_map_bytes
+    }
+
+    /// Number of commit records retained by refs and their ancestry.
+    #[must_use]
+    pub const fn live_commits(self) -> u64 {
+        self.live_commits
+    }
+
+    /// Number of unreferenced commit records swept in this epoch.
+    #[must_use]
+    pub const fn reclaimed_commits(self) -> u64 {
+        self.reclaimed_commits
+    }
+
+    /// Bytes occupied by retained commit records.
+    #[must_use]
+    pub const fn live_commit_bytes(self) -> u64 {
+        self.live_commit_bytes
+    }
+
+    /// Bytes reclaimed from commit records.
+    #[must_use]
+    pub const fn reclaimed_commit_bytes(self) -> u64 {
+        self.reclaimed_commit_bytes
+    }
+
+    /// Number of generation records retained by refs, ancestry, or local HEAD.
+    #[must_use]
+    pub const fn live_generation_records(self) -> u64 {
+        self.live_generation_records
+    }
+
+    /// Number of unreferenced generation records swept in this epoch.
+    #[must_use]
+    pub const fn reclaimed_generation_records(self) -> u64 {
+        self.reclaimed_generation_records
+    }
+
+    /// Bytes occupied by retained generation records.
+    #[must_use]
+    pub const fn live_generation_record_bytes(self) -> u64 {
+        self.live_generation_record_bytes
+    }
+
+    /// Bytes reclaimed from generation records.
+    #[must_use]
+    pub const fn reclaimed_generation_record_bytes(self) -> u64 {
+        self.reclaimed_generation_record_bytes
     }
 }
 

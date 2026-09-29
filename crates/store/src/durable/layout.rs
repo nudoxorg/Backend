@@ -8,8 +8,14 @@ use backend_version::WorkspaceRoot;
 use std::{
     fs::{File, OpenOptions, TryLockError},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
+
+static ACTIVE_GC_PINS: AtomicUsize = AtomicUsize::new(0);
 
 /// Kernel-held capability required to select a durable store head.
 ///
@@ -170,6 +176,15 @@ impl GcPinLease {
         file.lock().map_err(|error| super::io_error(&error))?;
         Ok(Self { file })
     }
+
+    pub(super) fn try_exclusive(root: &Path) -> Result<Option<Self>, super::StoreError> {
+        let file = Self::open(root)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(super::io_error(&error)),
+        }
+    }
 }
 
 impl Drop for GcPinLease {
@@ -185,6 +200,30 @@ impl Drop for GcPinLease {
 #[derive(Debug)]
 pub struct GcPinGuard {
     _lease: GcPinLease,
+    acquired_at: Instant,
+}
+
+impl GcPinGuard {
+    /// Elapsed time since this shared collection pin was acquired.
+    #[must_use]
+    pub fn held_for(&self) -> Duration {
+        self.acquired_at.elapsed()
+    }
+
+    /// Number of shared collection-pin guards held in this process.
+    ///
+    /// Pins held by other processes are not included; a failed nonblocking
+    /// exclusive lease still reports that another process may be holding one.
+    #[must_use]
+    pub fn active_count() -> usize {
+        ACTIVE_GC_PINS.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for GcPinGuard {
+    fn drop(&mut self) {
+        ACTIVE_GC_PINS.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Opaque identity for one exact publication transaction.
@@ -448,9 +487,43 @@ impl FileStore {
     /// Product writers should acquire it before their owner lock, persist the
     /// product ref, then drop it to preserve lock ordering with root resolvers.
     pub fn pin_garbage_collection(&self) -> Result<GcPinGuard, super::StoreError> {
+        let lease = self.acquire_gc_pin()?;
+        ACTIVE_GC_PINS.fetch_add(1, Ordering::Relaxed);
         Ok(GcPinGuard {
-            _lease: self.acquire_gc_pin()?,
+            _lease: lease,
+            acquired_at: Instant::now(),
         })
+    }
+
+    /// Runs a product metadata operation while holding the exclusive garbage
+    /// collection lease.
+    ///
+    /// This is for external metadata which must be reclaimed under the same
+    /// cross-process barrier as FileStore objects. The callback must not call
+    /// a FileStore method that acquires a shared GC pin or starts collection;
+    /// either would wait on this lease. Product owners should acquire their
+    /// own lock inside the callback, preserving the global `GC-PINS.lock`
+    /// before owner-lock ordering used by readers and writers.
+    pub fn with_gc_exclusive_lease<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, super::StoreError>,
+    ) -> Result<T, super::StoreError> {
+        let _gc_exclusive = self.acquire_gc_exclusive()?;
+        operation()
+    }
+
+    /// Attempts a product metadata operation under the exclusive collection
+    /// lease without waiting for shared readers. `Ok(None)` signals that a
+    /// reader or another process currently holds a pin, so the caller should
+    /// apply backpressure and retry later.
+    pub fn try_with_gc_exclusive_lease<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, super::StoreError>,
+    ) -> Result<Option<T>, super::StoreError> {
+        let Some(_gc_exclusive) = GcPinLease::try_exclusive(&self.root)? else {
+            return Ok(None);
+        };
+        operation().map(Some)
     }
 
     /// Acquires this store's canonical head-selection capability.

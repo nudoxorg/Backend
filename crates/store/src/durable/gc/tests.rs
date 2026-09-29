@@ -12,6 +12,9 @@ use super::*;
 use backend_version::{ObjectKey, Schema};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 struct TestSchema;
 
@@ -1085,5 +1088,112 @@ fn committed_sweep_cursor_resumes_without_revisiting_live_candidates() {
         .expect("resume committed cursor");
     assert_eq!(report.swept_items, 0);
     assert_eq!(report.examined_items, count);
+    let _ = fs::remove_dir_all(path);
+}
+
+#[test]
+fn long_lived_product_pin_blocks_the_exclusive_metadata_gc_barrier() {
+    let (store, path) = temp_store("product-gc-pin-barrier");
+    let pin = store
+        .pin_garbage_collection()
+        .expect("acquire shared product pin");
+    let contender = store.clone();
+    let (attempt_tx, attempt_rx) = mpsc::channel();
+    let (complete_tx, complete_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        attempt_tx.send(()).expect("signal exclusive attempt");
+        let result = contender.with_gc_exclusive_lease(|| Ok(()));
+        complete_tx
+            .send(result.is_ok())
+            .expect("report exclusive lease");
+    });
+
+    attempt_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("exclusive worker started");
+    assert!(
+        complete_rx.recv_timeout(Duration::from_millis(75)).is_err(),
+        "exclusive metadata GC must wait while a reader pin is live"
+    );
+    drop(pin);
+    assert!(
+        complete_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("exclusive barrier resumes after reader release")
+    );
+    worker.join().expect("exclusive worker joined");
+    let _ = fs::remove_dir_all(path);
+}
+
+#[test]
+fn try_exclusive_metadata_gc_reports_reader_backpressure() {
+    let (store, path) = temp_store("product-gc-pin-backpressure");
+    let pin = store
+        .pin_garbage_collection()
+        .expect("acquire shared product pin");
+    assert!(pin.held_for() >= Duration::ZERO);
+    assert!(
+        store
+            .try_with_gc_exclusive_lease(|| Ok(()))
+            .expect("try exclusive lease")
+            .is_none(),
+        "a live reader produces explicit backpressure"
+    );
+    drop(pin);
+    assert_eq!(
+        store
+            .try_with_gc_exclusive_lease(|| Ok(()))
+            .expect("acquire released exclusive lease"),
+        Some(())
+    );
+    let _ = fs::remove_dir_all(path);
+}
+
+#[test]
+fn gc_pin_child_process_holds_shared_lease_until_killed() {
+    let Ok(root) = std::env::var("BACKEND_TEST_GC_PIN_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let store = FileStore::open(&root, 64 * 1024).expect("open child FileStore");
+    let _pin = store
+        .pin_garbage_collection()
+        .expect("child acquires shared collection pin");
+    fs::write(root.join("gc-pin-ready"), b"ready").expect("publish child pin readiness");
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+#[test]
+fn killed_reader_process_does_not_leave_a_stale_gc_pin_after_reopen() {
+    let (_store, path) = temp_store("stale-product-gc-pin");
+    let executable = std::env::current_exe().expect("test executable path");
+    let mut child = Command::new(executable)
+        .arg("gc_pin_child_process_holds_shared_lease_until_killed")
+        .env("BACKEND_TEST_GC_PIN_ROOT", &path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn process holding GC pin");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !path.join("gc-pin-ready").exists() {
+        if let Some(status) = child.try_wait().expect("check pin-holder process") {
+            panic!("pin-holder exited before acquiring its lease: {status}");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not publish its pin");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    child.kill().expect("terminate pin-holder process");
+    let _ = child.wait().expect("reap pin-holder process");
+
+    let reopened = FileStore::open(&path, 64 * 1024).expect("reopen FileStore after exit");
+    reopened
+        .with_gc_exclusive_lease(|| Ok(()))
+        .expect("operating system releases the dead process pin");
     let _ = fs::remove_dir_all(path);
 }

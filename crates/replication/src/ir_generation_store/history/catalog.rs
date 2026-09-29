@@ -193,6 +193,7 @@ impl LocalSemanticGenerationFiles {
         byte_length: u64,
     ) -> Result<(), String> {
         let target_root = self.target_root(target);
+        super::retention::recover_pending_delete(&target_root)?;
         let history_root = target_root.join("history");
         prepare_history_layout(&target_root)?;
         let directory = history_root.join("segment-map");
@@ -233,7 +234,21 @@ impl LocalSemanticGenerationFiles {
         &self,
         target: &SemanticTargetKey,
     ) -> Result<HistoryGcProgress, String> {
-        super::gc::advance_history_gc(&self.target_root(target), target)
+        let target_root = self.target_root(target);
+        let mut progress = super::gc::advance_history_gc(&target_root, target)?;
+        if progress.complete {
+            let remaining = MAX_HISTORY_GC_BATCH_RECORDS.saturating_sub(progress.processed_records);
+            let retention = super::retention::advance_retention(&target_root, target, remaining)?;
+            progress.processed_records = progress
+                .processed_records
+                .checked_add(retention.processed_records)
+                .ok_or_else(|| "semantic history GC work counter overflows".to_owned())?;
+            progress.complete = retention.complete;
+            progress.stats = retention.stats;
+        } else if let Some(stats) = super::retention::read_stats(&target_root)? {
+            progress.stats = stats;
+        }
+        Ok(progress)
     }
 
     pub(crate) fn propose_history_commit(
@@ -288,6 +303,7 @@ impl LocalSemanticGenerationFiles {
         source: &mut S,
     ) -> Result<HistoryAdmissionReceipt, String> {
         let target_root = self.target_root(&proposal.record.target);
+        super::retention::recover_pending_delete(&target_root)?;
         let commits_root = prepare_history_layout(&target_root)?;
         let generation = load_record(
             &target_root,
@@ -321,6 +337,7 @@ impl LocalSemanticGenerationFiles {
         Ok(HistoryAdmissionReceipt {
             commit: AdmittedHistoryCommit { record: admitted },
             created,
+            _gc_pin: None,
         })
     }
 
@@ -391,6 +408,7 @@ impl LocalSemanticGenerationFiles {
         next: Option<HistoryCommitId>,
     ) -> Result<HistoryRefUpdateReceipt, String> {
         let target_root = self.target_root(target);
+        super::retention::recover_pending_delete(&target_root)?;
         let commits_root = prepare_history_layout(&target_root)?;
         let (mut catalog, _) = read_history_catalog_snapshot(&target_root)?;
         validate_catalog_tips(&target_root, target, &catalog)?;
@@ -430,6 +448,7 @@ impl LocalSemanticGenerationFiles {
         expected: HistoryCommitId,
     ) -> Result<HistoryRefUpdateReceipt, String> {
         let target_root = self.target_root(target);
+        super::retention::recover_pending_delete(&target_root)?;
         prepare_history_layout(&target_root)?;
         let (mut catalog, _) = read_history_catalog_snapshot(&target_root)?;
         validate_catalog_tips(&target_root, target, &catalog)?;
@@ -462,6 +481,7 @@ impl LocalSemanticGenerationFiles {
     ) -> Result<HistoryAdmissionReceipt, String> {
         let target = &generation.target;
         let target_root = self.target_root(target);
+        super::retention::recover_pending_delete(&target_root)?;
         prepare_history_layout(&target_root)?;
         let name = HistoryRefName::new("local-cache")?;
         let previous = self.history_ref(target, HistoryRefKind::Branch, &name)?;
@@ -475,6 +495,7 @@ impl LocalSemanticGenerationFiles {
                 return Ok(HistoryAdmissionReceipt {
                     commit: selected,
                     created: false,
+                    _gc_pin: None,
                 });
             }
         }

@@ -352,6 +352,7 @@ pub(super) fn reserve_history_segment_mapping(
             "semantic history segment-map retention limit reached; commit needs hydration or map compaction"
                 .to_owned()
         })?;
+    bump_history_segment_map_epoch(history_root)?;
     write_history_segment_map_count(&count_path, next)
 }
 
@@ -370,10 +371,31 @@ pub(super) fn decode_history_segment_map_count(bytes: &[u8]) -> Result<u32, Stri
     reader.header(HISTORY_SEGMENT_MAP_COUNT_TAG)?;
     let count = reader.u32()?;
     reader.finish()?;
-    if count > MAX_HISTORY_SEGMENT_MAPPINGS {
-        return Err("semantic history segment-map count exceeds its retention limit".to_owned());
-    }
     Ok(count)
+}
+
+pub(super) fn bump_history_segment_map_epoch(history_root: &Path) -> Result<(), String> {
+    let path = history_root.join("segment-map.epoch");
+    let current = match read_optional_bounded(&path, MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES)? {
+        Some(bytes) => {
+            let body = checked_body(&bytes, MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES)?;
+            let mut reader = Reader::new(body);
+            reader.header(HISTORY_SEGMENT_MAP_EPOCH_TAG)?;
+            let epoch = reader.u64()?;
+            reader.finish()?;
+            epoch
+        }
+        None => 0,
+    };
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| "semantic history segment-map epoch overflows".to_owned())?;
+    let mut writer = Writer::new(MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES - CHECKSUM_BYTES);
+    writer.header(HISTORY_SEGMENT_MAP_EPOCH_TAG)?;
+    writer.u64(next)?;
+    let mut bytes = writer.finish();
+    bytes.extend_from_slice(blake3::hash(&bytes).as_bytes());
+    backend_platform::durable::write_private_atomic(&path, &bytes).map_err(display_io)
 }
 
 pub(super) fn encode_history_segment_mapping(

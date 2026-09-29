@@ -22,6 +22,7 @@ const MAGIC: [u8; 4] = *b"SIRG";
 const VERSION: u8 = 1;
 const RECORD_TAG: u8 = 1;
 const HEAD_TAG: u8 = 2;
+const RECORDS_EPOCH_TAG: u8 = 3;
 const CHECKSUM_BYTES: usize = 32;
 const MAX_TARGET_FIELD_BYTES: usize = 4 * 1024;
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
@@ -39,6 +40,8 @@ pub(super) enum HistoryTestFault {
     AfterPayloadRoot,
     AfterRefsCatalog,
     AfterHead,
+    AfterHistoryMapUnlink,
+    AfterHistoryIndexCompactRename,
 }
 
 #[cfg(test)]
@@ -69,8 +72,8 @@ mod history;
 pub(super) use history::HistoryPayloadRoot;
 pub use history::{
     AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
-    HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError, HistoryRefKind,
-    HistoryRefName, HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor,
+    HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError,
+    HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor,
     HistoryReplayEntry, HistorySegmentDeltas, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
     UnpublishedHistoryProposal,
 };
@@ -424,6 +427,7 @@ impl LocalSemanticGenerationFiles {
         let record = decode_generation_record(&record_bytes)?;
         validate_record_selection(&record, stamp)?;
         let target_root = self.target_root(target);
+        history::recover_pending_retention_delete(&target_root)?;
         let records_root = target_root.join("records");
         create_private_directory(&target_root)?;
         create_private_directory(&records_root)?;
@@ -461,6 +465,7 @@ impl LocalSemanticGenerationFiles {
             Ok(existing) if existing == record_bytes => {}
             Ok(_) => return Err("immutable semantic generation identity collision".to_owned()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                bump_generation_records_epoch(&target_root)?;
                 backend_platform::durable::write_private_atomic(&immutable_path, &record_bytes)
                     .map_err(display_io)?;
             }
@@ -811,6 +816,31 @@ fn record_path(target_root: &Path, identity: LocalSemanticGenerationId) -> PathB
     target_root
         .join("records")
         .join(format!("{}.record", hex(&identity.0)))
+}
+
+fn bump_generation_records_epoch(target_root: &Path) -> Result<(), String> {
+    const MAX_EPOCH_BYTES: usize = 64;
+    let path = target_root.join("records.epoch");
+    let current = match read_optional_bounded(&path, MAX_EPOCH_BYTES)? {
+        Some(bytes) => {
+            let body = checked_body(&bytes, MAX_EPOCH_BYTES)?;
+            let mut reader = Reader::new(body);
+            reader.header(RECORDS_EPOCH_TAG)?;
+            let epoch = reader.u64()?;
+            reader.finish()?;
+            epoch
+        }
+        None => 0,
+    };
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| "semantic generation-record epoch overflows".to_owned())?;
+    let mut writer = Writer::new(MAX_EPOCH_BYTES - CHECKSUM_BYTES);
+    writer.header(RECORDS_EPOCH_TAG)?;
+    writer.u64(next)?;
+    let mut bytes = writer.finish();
+    bytes.extend_from_slice(blake3::hash(&bytes).as_bytes());
+    backend_platform::durable::write_private_atomic(&path, &bytes).map_err(display_io)
 }
 
 fn load_record(
@@ -2174,6 +2204,28 @@ mod tests {
                 .expect_err("merge must not advertise a first-parent-only payload closure"),
             HistoryProposalError::UnsupportedMergePayloadClosure
         );
+        let mut progress = files
+            .advance_history_gc(&base.target)
+            .expect("mark every branch root before retention");
+        while !progress.complete() {
+            progress = files
+                .advance_history_gc(&base.target)
+                .expect("continue branch-root retention");
+        }
+        assert_eq!(progress.stats().live_commits(), 4);
+        for name in ["local-cache", "other-root", "left", "right"] {
+            let reference = files
+                .history_ref(
+                    &base.target,
+                    HistoryRefKind::Branch,
+                    &HistoryRefName::new(name).expect("branch name"),
+                )
+                .expect("read retained branch")
+                .expect("branch root remains");
+            files
+                .history_commit(&base.target, reference.commit())
+                .expect("retained branch commit remains readable");
+        }
     }
 
     #[test]
@@ -2555,6 +2607,20 @@ mod tests {
             commits.push(committed.identity());
         }
         assert_eq!(commits.len(), 3);
+        let history_target = fixture(b"historical segment one", 1, 81).target;
+        let mut history_gc = range_store
+            .advance_history_gc(&history_target)
+            .expect("start retention while the third-old commit is reachable");
+        while !history_gc.complete() {
+            assert!(
+                history_gc.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS,
+                "history retention stays within its per-call work budget"
+            );
+            history_gc = range_store
+                .advance_history_gc(&history_target)
+                .expect("continue bounded retention before payload GC");
+        }
+        assert!(history_gc.stats().live_commits() >= 3);
         drop(generations);
         drop(range_store);
         drop(file_store);
@@ -2599,6 +2665,14 @@ mod tests {
                 old_segment,
             )
             .expect("read third-old segment after GC and restart");
+        let pressure = reopened
+            .advance_history_gc(&generation.target)
+            .expect_err("a returned historical reader pins metadata during forced GC");
+        assert!(
+            pressure.contains("deferred"),
+            "unexpected GC result: {pressure}"
+        );
+        assert!(reader.gc_pin_held_for() >= std::time::Duration::ZERO);
         let mut actual = vec![0; expected_bytes.len()];
         assert_eq!(
             reader
@@ -2607,6 +2681,13 @@ mod tests {
             expected_bytes.len()
         );
         assert_eq!(actual, expected_bytes);
+        drop(reader);
+        assert!(
+            reopened
+                .advance_history_gc(&generation.target)
+                .expect("GC resumes after historical reader drops")
+                .complete()
+        );
     }
 
     #[test]
@@ -2764,6 +2845,16 @@ mod tests {
             first_snapshot.expect("first generation snapshot");
         let (third_commit, _third_identity) = third_snapshot.expect("third generation snapshot");
         assert_ne!(first_commit, third_commit);
+        let mut history_gc = range_store
+            .advance_history_gc(&first_generation.target)
+            .expect("start metadata retention with the old tag present");
+        while !history_gc.complete() {
+            assert!(history_gc.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS);
+            history_gc = range_store
+                .advance_history_gc(&first_generation.target)
+                .expect("continue metadata retention for the old tag");
+        }
+        assert!(history_gc.stats().live_commits() >= 3);
         assert!(
             images
                 .open_identity(
@@ -2819,7 +2910,21 @@ mod tests {
         assert_eq!(stats.segment_copy_bytes_read(), expected_bytes);
         assert_eq!(stats.scratch_bytes_written(), expected_bytes);
         assert_eq!(stats.image_bytes_read_for_validation(), expected_bytes);
+        assert!(reader.gc_pin_held_for() >= Duration::ZERO);
+        let pressure = reopened
+            .advance_history_gc(&first_generation.target)
+            .expect_err("historical image checkout pins bridge metadata during GC");
+        assert!(
+            pressure.contains("deferred"),
+            "unexpected GC result: {pressure}"
+        );
         drop(reader);
+        assert!(
+            reopened
+                .advance_history_gc(&first_generation.target)
+                .expect("GC resumes after image reader drops")
+                .complete()
+        );
 
         let first_segment = first_generation
             .manifest
@@ -3057,6 +3162,9 @@ mod tests {
             .join("history")
             .join("commits")
             .join(format!("{}.commit", hex(scratch.identity().as_bytes())));
+        let scratch_bytes = fs::metadata(&scratch_path)
+            .expect("read scratch commit size")
+            .len();
         set_history_ref(
             &files,
             &base.target,
@@ -3068,19 +3176,204 @@ mod tests {
         .expect("delete scratch branch by CAS");
         drop(files);
 
-        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
-        let _ = reopened
+        let after_ref_delete =
+            LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
+        let _ = after_ref_delete
             .current(&base.target)
             .expect("recover retained selected branch")
             .expect("selected local head remains");
+        arm_history_test_fault(HistoryTestFault::AfterHistoryIndexCompactRename);
+        let interruption = loop {
+            match after_ref_delete.advance_history_gc(&base.target) {
+                Ok(progress) if progress.complete() => {
+                    panic!("the injected compact-index interruption did not fire")
+                }
+                Ok(_) => {}
+                Err(error) if error.contains("AfterHistoryIndexCompactRename") => break error,
+                Err(error) => panic!("unexpected retention error: {error}"),
+            }
+        };
+        assert!(interruption.contains("injected semantic history interruption"));
+        assert!(
+            !scratch_path.exists(),
+            "commit unlink precedes index publication"
+        );
+        drop(after_ref_delete);
+
+        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("cold reopen");
         let mut progress = reopened
             .advance_history_gc(&base.target)
-            .expect("begin history mark and sweep");
+            .expect("recover compact-index rename");
         while !progress.complete() {
+            assert!(
+                progress.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS,
+                "one retention cycle stays within its durable work budget"
+            );
             progress = reopened
                 .advance_history_gc(&base.target)
-                .expect("continue bounded history mark and sweep");
+                .expect("continue bounded history retention");
         }
+        assert!(progress.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS);
         assert!(!scratch_path.exists());
+        assert_eq!(progress.stats().reclaimed_commits(), 1);
+        assert_eq!(progress.stats().reclaimed_commit_bytes(), scratch_bytes);
+
+        let history_root = reopened.target_root(&base.target).join("history");
+        assert_eq!(
+            fs::read_dir(history_root.join("gc"))
+                .expect("enumerate bounded GC work roots")
+                .count(),
+            2,
+            "only current reachability and retention work roots remain"
+        );
+        assert_eq!(
+            fs::metadata(history_root.join("commit.index"))
+                .expect("read compacted commit index")
+                .len(),
+            64,
+            "only selected history ancestry remains indexed"
+        );
+        assert_eq!(
+            fs::metadata(history_root.join("tombstones.index"))
+                .expect("read compacted tombstone index")
+                .len(),
+            0,
+            "consumed tombstones are compacted after retention"
+        );
+        drop(reopened);
+        let cold = LocalSemanticGenerationFiles::open(&directory.0).expect("cold reopen");
+        assert!(
+            cold.history_ref(
+                &base.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local cache ref"),
+            )
+            .expect("read retained local branch after reopen")
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn map_unlink_crash_reopens_and_reconciles_capacity_before_compaction() {
+        let directory = TestDirectory::create();
+        let base = fixture(b"retention map crash", 1, 79);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let _ = commit(&files, &base, [base.stamp, base.stamp]).expect("commit selected base");
+        let orphan_segment = backend_semantic::ir::UntrustedSemanticSegmentId::from_raw([0xa7; 32]);
+        files
+            .persist_history_segment_mapping(
+                &base.target,
+                orphan_segment,
+                backend_store::ObjectId::from_bytes([0x19; 32]),
+                23,
+            )
+            .expect("persist known unreferenced bridge map");
+        let target_root = files.target_root(&base.target);
+        let history_root = target_root.join("history");
+        let map_path = history_root
+            .join("segment-map")
+            .join(format!("{}.map", hex(orphan_segment.as_bytes())));
+        assert!(map_path.exists());
+
+        arm_history_test_fault(HistoryTestFault::AfterHistoryMapUnlink);
+        let interruption = loop {
+            match files.advance_history_gc(&base.target) {
+                Ok(progress) if progress.complete() => {
+                    panic!("the injected map-unlink interruption did not fire")
+                }
+                Ok(_) => {}
+                Err(error) if error.contains("AfterHistoryMapUnlink") => break error,
+                Err(error) => panic!("unexpected retention error: {error}"),
+            }
+        };
+        assert!(interruption.contains("injected semantic history interruption"));
+        assert!(!map_path.exists(), "unlink is durable before count repair");
+        assert_eq!(
+            history::decode_history_segment_map_count(
+                &fs::read(history_root.join("segment-map.count")).expect("read old count")
+            )
+            .expect("decode old count"),
+            1
+        );
+        drop(files);
+
+        let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("cold reopen");
+        let mut progress = reopened
+            .advance_history_gc(&base.target)
+            .expect("recover deletion intent after reopen");
+        while !progress.complete() {
+            assert!(progress.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS);
+            progress = reopened
+                .advance_history_gc(&base.target)
+                .expect("continue recovered retention sweep");
+        }
+        assert_eq!(
+            history::decode_history_segment_map_count(
+                &fs::read(history_root.join("segment-map.count")).expect("read repaired count")
+            )
+            .expect("decode repaired count"),
+            0
+        );
+        assert_eq!(progress.stats().reclaimed_maps(), 1);
+        assert_eq!(progress.stats().reclaimed_map_bytes(), 23);
+        assert!(!map_path.exists());
+
+        let next_segment = backend_semantic::ir::UntrustedSemanticSegmentId::from_raw([0xa8; 32]);
+        reopened
+            .persist_history_segment_mapping(
+                &base.target,
+                next_segment,
+                backend_store::ObjectId::from_bytes([0x1a; 32]),
+                29,
+            )
+            .expect("reclaimed map slot is reusable");
+        assert_eq!(
+            history::decode_history_segment_map_count(
+                &fs::read(history_root.join("segment-map.count")).expect("read reused count")
+            )
+            .expect("decode reused count"),
+            1
+        );
+    }
+
+    #[test]
+    fn corrupt_unreferenced_bridge_map_fails_closed_before_sweep() {
+        let directory = TestDirectory::create();
+        let base = fixture(b"corrupt history map", 1, 80);
+        let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
+        let _ = commit(&files, &base, [base.stamp, base.stamp]).expect("commit selected base");
+        let orphan_segment = backend_semantic::ir::UntrustedSemanticSegmentId::from_raw([0xb7; 32]);
+        files
+            .persist_history_segment_mapping(
+                &base.target,
+                orphan_segment,
+                backend_store::ObjectId::from_bytes([0x29; 32]),
+                31,
+            )
+            .expect("persist known unreferenced bridge map");
+        let map_path = files
+            .target_root(&base.target)
+            .join("history")
+            .join("segment-map")
+            .join(format!("{}.map", hex(orphan_segment.as_bytes())));
+        fs::write(&map_path, b"corrupt bridge mapping").expect("corrupt exact map fixture");
+
+        let error = (0..64)
+            .find_map(|_| match files.advance_history_gc(&base.target) {
+                Ok(progress) if progress.complete() => {
+                    panic!("corrupt bridge map was swept instead of rejected")
+                }
+                Ok(_) => None,
+                Err(error) => Some(error),
+            })
+            .expect("bounded retention reaches the corrupt bridge map");
+        assert!(
+            error.contains("checksum failed"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            map_path.exists(),
+            "fail-closed retention leaves corruption intact"
+        );
     }
 }

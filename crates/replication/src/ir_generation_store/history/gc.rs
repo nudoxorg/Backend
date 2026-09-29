@@ -249,6 +249,7 @@ pub(super) fn advance_history_gc(
         return Ok(HistoryGcProgress {
             processed_records: 0,
             complete: true,
+            stats: HistoryGcStats::default(),
         });
     }
     let (catalog, digest) = read_history_catalog_snapshot(target_root)?;
@@ -330,6 +331,7 @@ pub(super) fn advance_history_gc(
                     return Ok(HistoryGcProgress {
                         processed_records: processed,
                         complete: false,
+                        stats: HistoryGcStats::default(),
                     });
                 }
             }
@@ -341,6 +343,7 @@ pub(super) fn advance_history_gc(
                     return Ok(HistoryGcProgress {
                         processed_records: processed,
                         complete: restarted.phase == HistoryGcPhase::Complete,
+                        stats: HistoryGcStats::default(),
                     });
                 }
                 validate_catalog_tips(target_root, target, &current_catalog)?;
@@ -378,6 +381,7 @@ pub(super) fn advance_history_gc(
                     return Ok(HistoryGcProgress {
                         processed_records: processed,
                         complete: true,
+                        stats: HistoryGcStats::default(),
                     });
                 }
                 while state.sweep_offset < length && processed < MAX_HISTORY_GC_BATCH_RECORDS {
@@ -411,6 +415,7 @@ pub(super) fn advance_history_gc(
                 return Ok(HistoryGcProgress {
                     processed_records: processed,
                     complete: state.phase == HistoryGcPhase::Complete,
+                    stats: HistoryGcStats::default(),
                 });
             }
             HistoryGcPhase::Complete => {
@@ -444,6 +449,7 @@ pub(super) fn advance_history_gc(
                 return Ok(HistoryGcProgress {
                     processed_records: processed,
                     complete: true,
+                    stats: HistoryGcStats::default(),
                 });
             }
         }

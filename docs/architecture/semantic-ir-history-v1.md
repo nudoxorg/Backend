@@ -48,14 +48,24 @@ The current bridge catalog is content-addressed by semantic segment ID and
 has a hard per-target limit of 65,536 unique mapping files. Each encoded map is
 110 bytes, for at most 7,208,960 bytes of map payload, plus filesystem
 metadata. The counter reserves capacity before writing a map; an interrupted
-reservation may conservatively consume a slot. Reaching the limit fails the
-commit before ref or `HEAD` publication. This is a hard safety bound, not a
-production retention policy: unreachable bridge maps are not reclaimed yet,
-so a long-lived store will eventually stop accepting new unique segments.
-Bounded ref-rooted bridge-map sweep and generation-record compaction remain
-release gates; the generation-record area is currently unbounded. The GC lane
-must reclaim maps and records only after marking both-parent reachability under
-the metadata-exclusive barrier.
+reservation may conservatively consume a slot until the next retention pass
+reconciles the sidecar against the map directory. A bounded retention pass
+marks maps reachable from every named ref and both-parent ancestry, plus the
+current and previous local `HEAD` generations. It sweeps unreachable maps and
+generation records, removes unreferenced commit objects, and compacts append
+indexes. A durable delete intent makes map unlink and capacity-counter updates
+restart-safe. Reaching the live-map limit returns backpressure before ref or
+`HEAD` publication; reclaimed slots are available to later commits.
+`HistoryGcProgress::stats()` reports live and reclaimed map, commit, and
+generation-record counts and bytes.
+
+History GC acquires the FileStore's exclusive cross-process collection lease
+before `state.lock`, matching the shared-lease-then-`state.lock` order used by
+writers, admitted proposals, and historical readers. This protects bridge
+metadata and FileStore objects as one reclamation boundary. Segment readers
+report their pin age, `GcPinGuard::active_count()` reports process-local pins,
+and history GC returns an explicit retryable backpressure error instead of
+waiting indefinitely while shared readers hold the lease.
 
 `FileSemanticRangeStore::checkout_history_image` now reconstructs the exact
 selected V1 image when its core plane has the producer's ordinal NXFI byte
@@ -78,13 +88,13 @@ planes are not reconstructed by this V1 path.
 | Branches and tags | Named refs, expected-value CAS, atomic rename, navigation-only authority | The implicit branch is local cache history, not an index selection ref |
 | Patch deltas | Borrowed manifest-segment deltas using existing exact-root cursor checks | No materialized whole-snapshot patch archive |
 | Merge semantics | Commit decoding and ancestry validation understand up to two parents; first-parent DAG replay is paged | New two-parent proposals return typed `UnsupportedMergePayloadClosure` until payload closures are unioned; no three-way IR merge engine |
-| GC and serving pins | Bounded indexed history mark/sweep; FileStore closure roots retain segment objects for named refs; segment and image readers pin against FileStore GC | Bridge maps and generation records are not compacted; bridge maps hit the hard 65,536-entry exhaustion bound above; no scan-resistant whole-archive serving cache |
+| GC and serving pins | Bounded indexed history mark/sweep, bridge-map reclamation, generation-record sweep, and append-index compaction; FileStore closure roots retain segment objects for named refs; segment and image readers pin against FileStore GC | Live bridge maps remain limited to 65,536 per target; long-lived readers delay collection; no scan-resistant whole-archive serving cache |
 | Cold checkout | V1 ordinal NXFI images can be reconstructed from retained segment closures after image pruning, forced FileStore GC, and restart, then read through the borrowed semantic view | V2 typed-plane checkout and hydration are not implemented; the V1 checkout reports `NeedsHydration` for missing segments or unsupported layouts |
-| Collision and failure handling | Domain-separated IDs, checksummed records, atomic ref catalog, fail-closed missing/corrupt live ancestry, retry-safe index intent, and typed rejection of unmaterialized merge proposals | Cross-process fault tests and the full gated Cargo suite are pending |
+| Collision and failure handling | Domain-separated IDs, checksummed records, atomic ref catalog, fail-closed missing/corrupt live ancestry, retry-safe append and delete intents, and typed rejection of unmaterialized merge proposals | The full gated Cargo suite is pending |
 
-The checkout regression builds three valid, distinct NXFI generations larger
-than one segment, prunes the oldest full-image cache object, pins the oldest
-commit with a tag, forces FileStore GC, cold-reopens, and checks the borrowed
-view and exact I/O counters. It also removes one bridge and checks the typed
-`NeedsHydration` result. Cargo execution remains gated; formatting and static
-diff checks alone do not establish that this slice is production-ready.
+The retention regressions use deterministic fixtures to check ref deletion,
+index compaction recovery, bridge-map unlink recovery and reuse, fail-closed
+corruption, and a third-old segment read after retention, FileStore GC, and
+cold reopen. The full-image checkout path still needs its own end-to-end test.
+Cargo execution remains gated; formatting and static diff checks do not
+establish that this slice is production-ready.

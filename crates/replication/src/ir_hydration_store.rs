@@ -139,6 +139,12 @@ impl HistorySegmentReader {
         self.byte_length
     }
 
+    /// Returns how long this reader has held a shared pin against collection.
+    #[must_use]
+    pub fn gc_pin_held_for(&self) -> Duration {
+        self._gc_pin.held_for()
+    }
+
     /// Reads a bounded range from the verified immutable payload.
     pub fn read_range(&mut self, offset: u64, output: &mut [u8]) -> Result<usize, String> {
         self.reader.read_range(offset, output)
@@ -224,6 +230,13 @@ impl HistorySemanticImageReader {
     #[must_use]
     pub const fn io_stats(&self) -> HistoryImageIoStats {
         self.stats
+    }
+
+    /// Returns how long this image reader has held a shared pin against
+    /// collection.
+    #[must_use]
+    pub fn gc_pin_held_for(&self) -> Duration {
+        self._gc_pin.held_for()
     }
 
     /// Borrows the canonical validated semantic reader for this lease.
@@ -802,15 +815,22 @@ impl FileSemanticRangeStore {
     }
 
     /// Admits a history proposal only while its exact selected authority
-    /// stamp still names the same semantic image. The durable commit remains
-    /// immutable; a separate ref CAS is required to make it navigable.
+    /// stamp still names the same semantic image. The returned receipt holds a
+    /// shared FileStore GC pin until dropped, keeping the commit available for
+    /// the separate ref CAS that makes it navigable.
     pub fn admit_history_proposal<S: crate::SelectedGenerationSource>(
         &self,
         proposal: crate::UnpublishedHistoryProposal,
         source: &mut S,
     ) -> Result<crate::HistoryAdmissionReceipt, String> {
+        let gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin admitted semantic history proposal: {error:?}"))?;
         let _state_lock = self.acquire_state_lock()?;
-        self.generations.admit_history_proposal(proposal, source)
+        self.generations
+            .admit_history_proposal(proposal, source)
+            .map(|receipt| receipt.with_gc_pin(Arc::new(gc_pin)))
     }
 
     /// Reads a validated branch or tag pointer. Named refs are navigation
@@ -1197,13 +1217,29 @@ impl FileSemanticRangeStore {
 
     /// Advances a durable bounded history mark/sweep batch. Ref mutations,
     /// commits, and this method share `state.lock`, so no batch can delete
-    /// from a stale catalog epoch. Call again while `complete()` is false.
+    /// from a stale catalog epoch. Returns a backpressure error when a shared
+    /// reader pin prevents acquiring the exclusive collection barrier; retry
+    /// after the reader closes. Call again while `complete()` is false.
     pub fn advance_history_gc(
         &self,
         target: &crate::SemanticTargetKey,
     ) -> Result<crate::HistoryGcProgress, String> {
-        let _state_lock = self.acquire_state_lock()?;
-        self.generations.advance_history_gc(target)
+        self.store
+            .try_with_gc_exclusive_lease(|| {
+                let _state_lock = self
+                    .acquire_state_lock()
+                    .map_err(backend_store::StoreError::Io)?;
+                self.generations
+                    .advance_history_gc(target)
+                    .map_err(backend_store::StoreError::Io)
+            })
+            .map_err(|error| format!("exclusive semantic history GC: {error:?}"))?
+            .ok_or_else(|| {
+                format!(
+                    "semantic history GC deferred while shared readers hold collection pins ({} local pins)",
+                    GcPinGuard::active_count()
+                )
+            })
     }
 
     /// Collects FileStore garbage while retaining every payload closure named
