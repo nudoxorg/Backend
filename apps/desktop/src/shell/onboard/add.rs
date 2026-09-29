@@ -56,6 +56,9 @@ pub(crate) struct Form {
     /// The refusal said under the field, once, until the next edit.
     said: Option<Refusal>,
     asking: Option<Task<()>>,
+    /// ↵ put a folder on the shelf (or went to one already there): the
+    /// dialog closes onto a Library that changed under it.
+    landed: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -79,6 +82,7 @@ impl Form {
             walking: None,
             said: None,
             asking: None,
+            landed: false,
             _subscriptions: vec![events],
         }
     }
@@ -89,6 +93,7 @@ impl Form {
         self.walking = None;
         self.said = None;
         self.asking = None;
+        self.landed = false;
         self.edit = self.edit.wrapping_add(1);
         self.input.update(cx, |input, cx| {
             input.set_value("", window, cx);
@@ -100,6 +105,11 @@ impl Form {
     /// The plate's measure for this frame (the dialog computes it).
     pub(crate) fn measured(&mut self, measure: &Measure) {
         self.measure = Some(*measure);
+    }
+
+    /// Whether ↵ landed a folder on the shelf since the dialog opened.
+    pub(crate) const fn landed(&self) -> bool {
+        self.landed
     }
 
     /// The field, for the dialog to focus.
@@ -186,10 +196,12 @@ impl Form {
         let typed = self.typed(cx);
         match path::admit(&typed, path::home().as_deref(), &self.shelf(cx)) {
             Ok(folder) if folder.on_shelf => {
+                self.landed = true;
                 self.links.dispatch(Intent::ActivateProject(folder.id), cx);
                 self.links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx);
             }
             Ok(folder) => {
+                self.landed = true;
                 self.links.dispatch(Intent::AddProject { project: folder.id }, cx);
                 // The Library is where a new project shows what it is doing;
                 // arriving there also closes the dialog.

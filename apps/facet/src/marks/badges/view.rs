@@ -123,6 +123,9 @@ impl RenderOnce for Badge {
             .child(super::glyph(self.facts.glyph, 12.0 * scale, ink))
             .child(word);
         let (title, sentence): (SharedString, SharedString) = (self.facts.word.clone(), self.facts.tip.clone());
-        div().id(self.id.clone()).flex_none().child(hover_zone(body, &touch, 3.0 * scale, true)).tip_rich(title, sentence, &[])
+        // The plate is 21 px; the pointer's target around it is 24 (a
+        // badge is something a person points at: its tip).
+        let zone = div().flex().items_center().h(px(24.0 * scale)).child(body);
+        div().id(self.id.clone()).flex_none().child(hover_zone(zone, &touch, 3.0 * scale, true)).tip_rich(title, sentence, &[])
     }
 }

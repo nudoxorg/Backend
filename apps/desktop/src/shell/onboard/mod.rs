@@ -84,14 +84,18 @@ pub(crate) fn sync(links: &Links, window: &mut Window, cx: &mut App) {
         }
         (false, true) => {
             dialog::close(window, cx);
-            let restore = cx.default_global::<PerWindow>().0.get_mut(&id).and_then(|mounted| {
+            let (restore, content) = cx.default_global::<PerWindow>().0.get_mut(&id).map_or((None, None), |mounted| {
                 mounted.ours = false;
-                mounted.restore.take()
+                (mounted.restore.take(), Some(mounted.content.clone()))
             });
-            // Back to what held it, unless the place changed under the
-            // dialog (an add lands on the Library): then the shell has
-            // already put focus where the new page wants it.
+            let landed = content.is_some_and(|content| content.read(cx).landed());
+            // Back to what held it on Esc or Cancel, unless the place
+            // changed under the dialog. An add lands a new project on the
+            // Library: focus goes to no control (the keyboard ring does not
+            // come back on "Add a folder", as if nothing had happened), and
+            // the next key starts from the page's first target (D6).
             match restore {
+                _ if landed => window.blur(),
                 Some((handle, route)) if links.snapshot(cx).route() == &route => window.focus(&handle, cx),
                 Some(_) => {}
                 None => window.blur(),

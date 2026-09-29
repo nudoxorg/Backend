@@ -152,11 +152,22 @@ fn typing_a_path_lists_the_folders_it_continues_to_and_a_project_says_what_it_is
 fn enter_adds_the_folder_and_lands_on_the_library_saying_what_it_is_doing(cx: &mut TestAppContext) {
     let (parent, folder) = project("admit");
     let mut rig = first_run(cx, 1440.0);
-    rig.keys("cmd-o");
+    // Opened the way J0 opens it: by pressing "Add a folder", which then
+    // holds the focus the dialog would give back.
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Add a folder").expect("target").clone();
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert!(dialog_open(&mut rig));
     type_in(&mut rig, &format!("{}/toml_pin", parent.display()));
     rig.keys("enter");
     assert_eq!(overlay(&mut rig), None, "adding closes the dialog");
     assert!(!dialog_open(&mut rig));
+    let focused = rig.cx.update(|window, cx| window.focused(cx));
+    assert!(
+        focused.is_none(),
+        "an add lands on a Library that changed: focus does not go back to \"Add a folder\", whose keyboard ring would stand on a page that moved on (D6)"
+    );
     let snapshot = snapshot(&mut rig);
     let admitted = snapshot.workspace().projects.iter().find(|project| project.path.as_ref() == folder.to_str().expect("utf-8")).expect("the folder is on the shelf");
     assert_eq!(admitted.phase, ProjectPhase::Indexing, "an admitted folder starts indexing");

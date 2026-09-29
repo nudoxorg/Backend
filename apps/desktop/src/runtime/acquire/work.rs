@@ -98,6 +98,7 @@ impl Queue {
     }
 
     /// Whether a worker is draining the queue.
+    #[cfg(feature = "visual-harness")]
     pub(crate) fn running(&self) -> bool {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner).running
     }
@@ -126,7 +127,7 @@ impl Queue {
     }
 }
 
-fn run(job: &Job, composition: &Composition, post: &(dyn Fn(Landed) + Send + Sync)) {
+pub(crate) fn run(job: &Job, composition: &Composition, post: &(dyn Fn(Landed) + Send + Sync)) {
     match job {
         Job::Release(release) => {
             index_release(composition, release, Listed::Ready, &|stage| post(Landed::Stage(release.clone(), stage)));
@@ -143,13 +144,23 @@ fn run(job: &Job, composition: &Composition, post: &(dyn Fn(Landed) + Send + Syn
             match read {
                 Ok(found) => {
                     let found: Arc<[Dependency]> = found.into();
+                    // What the owner already lists lands before the list is
+                    // drawn: a relaunch shows its packages in the library from
+                    // its first frame, never "adding" them again.
+                    let settled = listed_already(composition, &found);
+                    for (release, stage) in &settled {
+                        post(Landed::Stage(release.clone(), stage.clone()));
+                    }
                     post(Landed::Dependencies(project.clone(), Ok(Arc::clone(&found))));
                     for dependency in found.iter().filter(|dependency| matches!(dependency.origin, Origin::Registry(_))) {
                         let release = &dependency.release;
+                        if settled.iter().any(|(settled, _)| settled == release) {
+                            continue;
+                        }
                         reads_first();
                         // A package the owner already lists, in any state, was
-                        // read once: a relaunch or a project indexed again does
-                        // not compile it again (a refusal stays the owner's).
+                        // read once: a project indexed again does not compile
+                        // it again (a refusal stays the owner's).
                         index_release(composition, release, Listed::Any, &|stage| post(Landed::Stage(release.clone(), stage)));
                     }
                 }
@@ -211,6 +222,35 @@ fn ordered(tree: &ProjectTree, source: &dyn RegistrySource) -> Vec<Dependency> {
                 PackageOrigin::Vendored { path } => Origin::Elsewhere(Arc::from(format!("vendored at {path}: only registry releases are added"))),
             };
             Some(Dependency { release, direct: package.role == PackageRole::Direct, origin })
+        })
+        .collect()
+}
+
+/// Each of `found`'s registry packages the owner already lists (in any state,
+/// from one read of its list), with the stage it stands at: added, or thin
+/// for the reason the owner gave when it could not finish the compile. Only
+/// trees already on disk are looked at; nothing is unpacked or indexed.
+pub(crate) fn listed_already(composition: &Composition, found: &[Dependency]) -> Vec<(Release, Stage)> {
+    let Ok(mut session) = Session::connect(&composition.endpoint) else { return Vec::new() };
+    let Ok(reply) = session.packages() else { return Vec::new() };
+    let backend_library::CommandReply::Packages(snapshot) = reply.reply else { return Vec::new() };
+    let listed = snapshot.root.rows().iter().map(|row| row.label.clone()).collect::<std::collections::HashSet<_>>();
+    let refusals = composition.refusals.as_deref().map(Refusals::at);
+    found
+        .iter()
+        .filter_map(|dependency| {
+            let Origin::Registry(Availability::Unpacked(tree)) = &dependency.origin else { return None };
+            let tree = tree.canonicalize().ok()?;
+            let coordinate = tree.to_str()?;
+            if !listed.contains(coordinate) {
+                return None;
+            }
+            let package = PackageRef::parse(coordinate).ok()?;
+            let stage = match refusals.as_ref().and_then(|refusals| refusals.words(coordinate)) {
+                Some(words) => Stage::Partial { page: package, words },
+                None => Stage::Added(package),
+            };
+            Some((dependency.release.clone(), stage))
         })
         .collect()
 }

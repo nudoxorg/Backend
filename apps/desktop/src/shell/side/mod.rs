@@ -36,7 +36,7 @@ pub(crate) use outline::{is_test_module, shelf_name};
 #[cfg(test)]
 pub(crate) use row::TESTS_ROW;
 pub(crate) use input::KEYS;
-pub(crate) use listing::{beside_your_projects, told_apart};
+pub(crate) use listing::{LibraryOrder, beside_your_projects, told_apart};
 pub(crate) mod twin;
 
 use super::focus::{Act, Target, Targets};

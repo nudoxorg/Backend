@@ -171,6 +171,10 @@ pub enum StepKind {
     /// Quit (the app's quit handlers run, the owner stops) and launch again
     /// on the same machine state, through the production launch path.
     Restart,
+    /// Every target of the reader, hovered, clicked and left by back, pages
+    /// deep ([`super::crawl`]): no fault plate, no empty reader, no lint,
+    /// cards quick and in the window, back restoring the focus.
+    Crawl(super::crawl::Crawl),
     /// A named checkpoint.
     Check {
         /// Its name.
@@ -663,6 +667,17 @@ pub(super) fn step_kind(text: &str) -> Result<StepKind, String> {
             .map(StepKind::Wait)
             .map_err(|_| format!("`wait {rest}`: expected a time in ms")),
         "await" => await_step(rest),
+        "crawl" => {
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            let usage = || format!("`crawl {rest}`: expected `crawl DEPTH [per N]`");
+            let depth = words.first().and_then(|word| word.parse::<u8>().ok()).ok_or_else(usage)?;
+            let per_page = match words.get(1..) {
+                Some([]) | None => 8,
+                Some(["per", n]) => n.parse::<usize>().map_err(|_| usage())?,
+                Some(_) => return Err(usage()),
+            };
+            Ok(StepKind::Crawl(super::crawl::Crawl { depth, per_page }))
+        }
         "answer-picker" => match rest {
             "cancel" => Ok(StepKind::AnswerPicker(PickerAnswer::Cancel)),
             "" => Err("`answer-picker PATH…|cancel`".to_owned()),

@@ -495,6 +495,57 @@ fn a_package_the_compiler_could_not_finish_still_says_so_after_a_relaunch() {
     assert_eq!(again, Stage::Partial { page: page.clone(), words: words.clone() }, "after a relaunch it is still thin, for the same reason");
     assert!(!stages.lock().expect("stages").contains(&Stage::Indexing), "and it was not compiled again");
     assert!(refusals.is_file(), "the words are kept beside the owner's workspace");
+    // A relaunch lands what the owner lists before it draws a project's
+    // packages (the Library never says "adding" them again), and only that.
+    let dependency = |release: &Release| crate::runtime::acquire::Dependency {
+        release: release.clone(),
+        direct: true,
+        origin: crate::runtime::acquire::Origin::Registry(composition.source.availability(release)),
+    };
+    let unlisted = Release::new("equivalent", "1.0.2").expect("release");
+    let settled = crate::runtime::acquire::listed_already(&composition, &[dependency(&unlisted), dependency(&release)]);
+    assert_eq!(
+        settled,
+        vec![(release.clone(), Stage::Partial { page: page.clone(), words: words.clone() })],
+        "the listed package lands at once, thin for its reason; the one never indexed waits its turn"
+    );
+}
+
+/// A relaunch: the project's packages the owner already lists land before
+/// the list does, so the Library says they are in the library from its first
+/// frame (it said "Adding the 12 packages toml_pin uses: 0 in the library so
+/// far" over an empty seam, `f-data/cap/m2b/…-t20@1x.png`), and none of them
+/// is resolved or indexed again.
+#[test]
+fn a_relaunch_lands_what_the_owner_lists_before_it_lists_the_projects_packages() {
+    use crate::runtime::acquire::{Job, Landed, Listed, Stage, index_release, run};
+    let owner = Owner::start("relaunch-lands");
+    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let composition = Composition { endpoint: owner.host.endpoint().to_path_buf(), source: Arc::new(source), refusals: None };
+    let equivalent = Release::new("equivalent", "1.0.2").expect("release");
+    assert!(matches!(index_release(&composition, &equivalent, Listed::Any, &|_| {}), Stage::Added(_)), "equivalent is in the library");
+    // A project that builds with equivalent alone (its lock entry is toml_pin's).
+    let project = owner.root.join("tiny");
+    std::fs::create_dir_all(project.join("src")).expect("project");
+    std::fs::write(project.join("Cargo.toml"), b"[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nequivalent = \"=1.0.2\"\n").expect("manifest");
+    std::fs::write(project.join("src/lib.rs"), b"pub use equivalent::Equivalent;\n").expect("source");
+    std::fs::write(
+        project.join("Cargo.lock"),
+        b"version = 4\n\n[[package]]\nname = \"equivalent\"\nversion = \"1.0.2\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f\"\n\n[[package]]\nname = \"tiny\"\nversion = \"0.1.0\"\ndependencies = [\n \"equivalent\",\n]\n",
+    )
+    .expect("lock");
+    let id = crate::core::LocalProjectId::from_path(&project.canonicalize().expect("canonical")).expect("project id");
+    let landed = std::sync::Mutex::new(Vec::new());
+    run(&Job::Dependencies(id.clone()), &composition, &|what| landed.lock().expect("landed").push(what));
+    let landed = landed.into_inner().expect("landed");
+    let listed_at = landed.iter().position(|what| matches!(what, Landed::Dependencies(project, Ok(found)) if *project == id && found.iter().any(|dependency| dependency.release == equivalent)));
+    let Some(listed_at) = listed_at else { panic!("the project's packages are read: {landed:?}") };
+    let settled_at = landed.iter().position(|what| matches!(what, Landed::Stage(release, Stage::Added(_)) if *release == equivalent));
+    assert!(settled_at.is_some_and(|at| at < listed_at), "equivalent lands before the list is posted: {landed:?}");
+    assert!(
+        !landed.iter().any(|what| matches!(what, Landed::Stage(release, Stage::Resolving | Stage::Unpacking | Stage::Indexing) if *release == equivalent)),
+        "and it is not resolved or indexed again: {landed:?}"
+    );
 }
 
 #[test]
@@ -552,6 +603,107 @@ fn probe_reopen_after_each_package() {
         }
     }
     drop(host);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_compilers_own_rows_carry_the_file_each_type_is_declared_in() {
+    // toml_datetime 0.6.11 compiles, so its outline is the compiler's rows
+    // (not the structural scan's), and every one of its public types has an
+    // `impl` and fields named like parameters: W-Index's pairing rule
+    // (`semantic_sites` counts neither) is what keeps their files.
+    let owner = Owner::start("semantic-files");
+    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let tree = source.resolve(&Release::new("toml_datetime", "0.6.11").expect("release")).expect("toml_datetime 0.6.11 is in the local cargo cache");
+    let declared = public_items_by_file(&tree.root);
+    let datetime = std::fs::read_to_string(tree.root.join("src/datetime.rs")).expect("datetime.rs");
+    let lines = datetime.lines().collect::<Vec<_>>();
+    let types = lines
+        .iter()
+        .enumerate()
+        // A type behind a `cfg` (a feature off by default) is not compiled.
+        .filter(|(at, _)| !lines[at.saturating_sub(3)..*at].iter().any(|line| line.contains("#[cfg(")))
+        .filter_map(|(_, line)| {
+            let rest = line.strip_prefix("pub ")?;
+            let rest = ["struct ", "enum "].iter().find_map(|kind| rest.strip_prefix(kind))?;
+            Some(rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next()?.to_owned())
+        })
+        .collect::<Vec<_>>();
+    assert!(types.len() >= 4 && declared.iter().any(|(file, _)| file == "src/datetime.rs"), "the types are in src/datetime.rs: {types:?}");
+    owner.index(&tree);
+    let package = PackageRef::parse(tree.root.to_str().expect("UTF-8")).expect("package");
+    let mut reader = SessionReader::connect(owner.host.endpoint());
+    let cancel = CancellationToken::new();
+    let outlines = OutlineCache::default();
+    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+    let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context) else { panic!("the page did not read") };
+    let outline = dossier.outline.known().expect("outline");
+    let compiled = outline.walk().filter(|node| node.decl.coordinate.as_str().contains("::semantic::")).collect::<Vec<_>>();
+    assert!(!compiled.is_empty(), "the outline is the compiler's rows");
+    for name in &types {
+        let row = compiled
+            .iter()
+            .find(|node| node.decl.name.as_ref() == name.as_str() && matches!(node.decl.kind, Some(backend_library::DeclarationKind::Struct | backend_library::DeclarationKind::Enum)))
+            .unwrap_or_else(|| panic!("{name} is one of the compiler's rows"));
+        assert_eq!(row.decl.path.as_deref(), Some("src/datetime.rs"), "{name} is placed in the file that declares it");
+    }
+}
+
+/// Where a compiled crate's methods sit in its outline (learning probe):
+/// `NX_PROBE_RELEASE=name@version` and `NX_PROBE_NAME=method`.
+#[test]
+#[ignore = "probe: run by hand"]
+fn probe_outline_rows_named() {
+    let (name, version) = std::env::var("NX_PROBE_RELEASE").ok().and_then(|release| release.split_once('@').map(|(n, v)| (n.to_owned(), v.to_owned()))).unwrap_or(("toml".to_owned(), "0.8.23".to_owned()));
+    let wanted = std::env::var("NX_PROBE_NAME").unwrap_or_else(|_| "as_str".to_owned());
+    let owner = Owner::start("probe-outline");
+    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let tree = source.resolve(&Release::new(&name, &version).expect("release")).expect("in the local cargo cache");
+    owner.index(&tree);
+    let package = PackageRef::parse(tree.root.to_str().expect("UTF-8")).expect("package");
+    let mut reader = SessionReader::connect(owner.host.endpoint());
+    let cancel = CancellationToken::new();
+    let outlines = OutlineCache::default();
+    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+    let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context) else { panic!("the page did not read") };
+    let outline = dossier.outline.known().expect("outline");
+    let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+    for node in outline.walk() {
+        *kinds.entry(format!("{:?}", node.decl.kind)).or_default() += 1;
+        if node.decl.name.as_ref() == wanted || node.decl.coordinate.as_str().ends_with(&format!("::{wanted}")) {
+            eprintln!("PROBE row name={} kind={:?} path={:?} line={:?} coordinate={}", node.decl.name, node.decl.kind, node.decl.path, node.decl.line, node.decl.coordinate.as_str());
+        }
+    }
+    eprintln!("PROBE kinds {kinds:?} complete={}", outline.complete);
+    fn ancestry(nodes: &[crate::model::pages::OutlineNode], wanted: &str, above: &mut Vec<String>) {
+        for node in nodes {
+            if node.decl.name.as_ref() == wanted {
+                eprintln!("PROBE under {above:?}: {} {:?}", node.decl.name, node.decl.kind);
+            }
+            above.push(format!("{}:{:?}", node.decl.name, node.decl.kind));
+            ancestry(&node.children, wanted, above);
+            above.pop();
+        }
+    }
+    ancestry(&outline.roots, &wanted, &mut Vec::new());
+}
+
+#[test]
+fn a_registry_package_is_named_as_its_manifest_names_it_with_its_version_apart() {
+    let named = |path: &Path| {
+        let package = PackageRef::parse(path.to_str().expect("UTF-8")).expect("package");
+        (package.display_name().to_owned(), package.release_version().map(str::to_owned))
+    };
+    assert_eq!(named(&cached("toml-0.8.23")), ("toml".to_owned(), Some("0.8.23".to_owned())));
+    assert_eq!(named(&cached("proc-macro2-1.0.107")), ("proc-macro2".to_owned(), Some("1.0.107".to_owned())), "a name with a dash");
+    assert_eq!(named(&toml_pin()), ("toml_pin".to_owned(), None), "a person's own folder keeps its folder's name");
+    // A tree laid out like the cache whose manifest says otherwise is not
+    // taken at its folder's word.
+    let root = scratch("named");
+    let tree = root.join("registry/src/index.test-0/fake-1.0.0");
+    std::fs::create_dir_all(&tree).expect("tree");
+    std::fs::write(tree.join("Cargo.toml"), b"[package]\nname = \"other\"\nversion = \"2.0.0\"\n").expect("manifest");
+    assert_eq!(named(&tree), ("fake-1.0.0".to_owned(), None));
     let _ = std::fs::remove_dir_all(&root);
 }
 

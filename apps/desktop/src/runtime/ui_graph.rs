@@ -578,7 +578,7 @@ impl UiEntityGraph {
             root
         });
         if let Some(gate) = gate {
-            super::owner::watch(gate, root.clone(), store.clone(), cx);
+            super::owner::watch(gate, &root, &store, cx);
         }
         Self { root, store }
     }

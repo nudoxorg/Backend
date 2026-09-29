@@ -19,6 +19,10 @@ type "toml Value"
 check typed
   like "*Value*"
 
+# The owner answers: the results panel lists what matched.
+needs product "the index answers a search over the library a real install made (the owner refuses: typed semantic evidence does not exactly cover the selected query corpus)"
+await text "every result, as a page" within 60s
+
 key enter
 check value
   route like "symbol *toml*Value*view=page*"

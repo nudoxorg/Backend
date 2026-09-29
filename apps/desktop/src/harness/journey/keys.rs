@@ -5,9 +5,9 @@
 //! does not build until J11 says what it does).
 //!
 //! The walk starts on the Library of a real install of toml_pin with the
-//! packages its lock pins (`install-all`), goes to toml's `Value` by Ask
-//! (⌘K, the words, ↵) for the keys that need a declaration, and comes back
-//! by keys. Every navigation that is not the key under test is itself
+//! packages its lock pins (`install-all`), goes to toml's `Value` by the
+//! pointer (its chip, its `value` module, the card) for the keys that need a
+//! declaration, and comes back by keys. Every navigation that is not the key under test is itself
 //! checked, so a case never judges a key from the wrong place.
 
 use super::parts::Parts;
@@ -109,10 +109,13 @@ fn arrive(plan: &mut Builder<'_>, place: Place, index: usize) -> Result<(), Stri
             check(plan, &format!("{index:02}-at-library"), &["route like \"orbit\"", "state overlay \"none\"", "state ask \"closed\""])
         }
         Place::Value => {
+            // By the pointer, from the Library: toml's chip, its `value`
+            // module, the `Value` card (J9 is the search's own journey).
             plan.step("key escape");
-            plan.step("key cmd-k");
-            plan.step("type \"toml Value\"");
-            plan.step("key enter");
+            plan.step("key ctrl-1");
+            plan.step("click \"toml\" in reader");
+            plan.step("click \"value\" in reader");
+            plan.step("click \"Value\" in reader");
             check(plan, &format!("{index:02}-at-value"), &["route like \"symbol *toml*Value*view=page*\"", "state ask \"closed\""])
         }
     }

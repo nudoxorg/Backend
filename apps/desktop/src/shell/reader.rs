@@ -86,7 +86,10 @@ impl Default for SymbolDisclosure {
 
 impl SymbolDisclosure {
     fn for_symbol(symbol: &crate::model::pages::SymbolRef) -> Self {
-        Self { scope: symbol.as_str().to_owned(), flow: facet::motion::Flow::new(format!("symbol-page-{}", symbol.as_str())), ..Self::default() }
+        // `lands_lines`: a part that changes line (the rail going under the
+        // page) lands there, never flying across the page's words; nothing
+        // waits, so words the owner sends are shown the frame they land.
+        Self { scope: symbol.as_str().to_owned(), flow: facet::motion::Flow::new(format!("symbol-page-{}", symbol.as_str())).lands_lines(), ..Self::default() }
     }
     pub(crate) fn is_open(&self, fold: &FoldKey) -> bool { self.open.contains(fold) }
     pub(crate) fn unroll(&self, fold: FoldKey) -> Presence {
@@ -385,6 +388,9 @@ pub(crate) struct Reader {
     descents: u64,
     last_way: Option<Way>,
     places: Vec<Place>,
+    /// The change in flight's last published tracks, ended at rest once it
+    /// lands (the probe).
+    in_flight: std::cell::RefCell<Vec<facet::probe::TrackSample>>,
     /// The Library's ring of names: its own flow, so a name that wraps to
     /// another line glides there (one per reader, not one per app).
     ring_flow: facet::motion::Flow,
@@ -435,7 +441,10 @@ impl Reader {
             descents: 0,
             last_way: None,
             painted: None,
-            ring_flow: facet::motion::Flow::new("orbit-ring"),
+            // The ring re-wraps as the library grows: a name that moves to
+            // another line lands there, never flying across the others.
+            ring_flow: facet::motion::Flow::new("orbit-ring").wrapped(),
+            in_flight: std::cell::RefCell::default(),
             places: vec![Place {
                 key: 0,
                 route: snapshot.route().clone(),
@@ -1666,6 +1675,23 @@ impl Reader {
             overshoot_absolute: 0.0,
             group: group.map(ToOwned::to_owned),
         };
+        if self.transit.is_none() || staged.is_none() {
+            // The change landed: its tracks end at rest where they were
+            // heading, so the next change starts from a rest, not from a
+            // sample still in flight. The driver (`reader.carry`, never
+            // painted) lands by design once its page has landed; the plate's
+            // and the gem's edges are painted, and their last step is judged.
+            let ended = std::mem::take(&mut *self.in_flight.borrow_mut());
+            for mut sample in ended {
+                sample.kind = if sample.key == "reader.carry" { facet::probe::TrackKind::Snap } else { facet::probe::TrackKind::Spring };
+                sample.value = sample.target;
+                sample.velocity = 0.0;
+                sample.live = false;
+                sample.budget_ms = 0.0;
+                sample.at_ms = at_ms;
+                facet::probe::record_track(cx, || sample);
+            }
+        }
         if let (Some(transit), Some(staged)) = (&self.transit, staged) {
             let (value, velocity) = transit.carry.sample(now);
             let started = millis(transit.carry.start());
@@ -1685,6 +1711,17 @@ impl Reader {
             if let (Some((_, gem)), Some(gem_course)) = (staged.gem, staged.gem_course) {
                 publish_course("gem", gem, gem_course, &mut samples);
             }
+            // A change that starts from rest is born where it starts: its
+            // plate at the row it opens from, its driver at the start. That
+            // first frame is a designed start, not a step from the last
+            // change's rest. (One that interrupts a change in flight is
+            // judged against where that one was.)
+            if self.in_flight.borrow().is_empty() {
+                for sample in &mut samples {
+                    sample.kind = facet::probe::TrackKind::Snap;
+                }
+            }
+            self.in_flight.replace(samples.clone());
             for sample in samples {
                 facet::probe::record_track(cx, || sample);
             }

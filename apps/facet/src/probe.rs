@@ -30,6 +30,12 @@ pub enum TrackKind {
     Keys,
     /// The ambient pulse.
     Pulse,
+    /// Put where its layout is, in one frame, by design: an item of a
+    /// wrapped list that moved to another line (it lands there instead of
+    /// flying across the others), or a page's parts landing where a reflow
+    /// put them (`motion::Flow::land`). The step into it is not motion, and
+    /// continuity is not asked of it; the next motion starts from it.
+    Snap,
 }
 
 impl TrackKind {
@@ -42,6 +48,7 @@ impl TrackKind {
             Self::Spring => "spring",
             Self::Keys => "keys",
             Self::Pulse => "pulse",
+            Self::Snap => "snap",
         }
     }
 }

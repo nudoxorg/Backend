@@ -19,7 +19,7 @@ mod work;
 
 pub(crate) use work::{Dependency, NOT_CARGO, Origin};
 #[cfg(test)]
-pub(crate) use work::{Listed, Refusals, dependencies, index_release};
+pub(crate) use work::{Listed, Refusals, dependencies, index_release, listed_already, run};
 
 use super::offload::Asker;
 use super::ui_graph::UiRootEntity;
@@ -32,7 +32,8 @@ use crate::model::{AppSnapshot, ProjectPhase};
 use gpui::{App, Global, Task, WeakEntity};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
-use work::{Job, Landed, Queue};
+pub(crate) use work::{Job, Landed};
+use work::Queue;
 
 /// Where adding one release stands.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +71,56 @@ pub(crate) enum ProjectPackages {
     Read(Vec<(Dependency, Option<Stage>)>),
     /// The owner could not say, in its words.
     Refused(Arc<str>),
+}
+
+/// Where adding one project's packages stands, typed: how many there are,
+/// how many are in the library, which one is being worked on (and its place),
+/// and each that could not be added or could not be compiled, with the
+/// owner's words. Every count comes from the one list the owner read, so
+/// every surface that shows it (the Library, a status line) agrees.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InstallProgress {
+    /// Packages the project builds with.
+    pub(crate) total: usize,
+    /// Of those, in the library (compiled, or listed on their source's names).
+    pub(crate) landed: usize,
+    /// The one being worked on now, its stage, and its place (1-based).
+    pub(crate) now: Option<(Release, Stage, usize)>,
+    /// Not in the library, and why.
+    pub(crate) refused: Vec<(Release, Arc<str>)>,
+    /// In the library on their source's names alone, and why.
+    pub(crate) thin: Vec<(Release, Arc<str>)>,
+    /// Nothing is waiting or under way.
+    pub(crate) done: bool,
+}
+
+impl ProjectPackages {
+    /// The typed progress of a read project's packages; `None` while they
+    /// are being read or could not be.
+    pub(crate) fn progress(&self) -> Option<InstallProgress> {
+        let Self::Read(found) = self else { return None };
+        let mut progress = InstallProgress { total: found.len(), landed: 0, now: None, refused: Vec::new(), thin: Vec::new(), done: true };
+        for (at, (dependency, stage)) in found.iter().enumerate() {
+            let release = dependency.release.clone();
+            match (&dependency.origin, stage) {
+                (Origin::Elsewhere(why), _) => progress.refused.push((release, Arc::clone(why))),
+                (Origin::Registry(_), Some(Stage::Added(_))) => progress.landed += 1,
+                (Origin::Registry(_), Some(Stage::Partial { words, .. })) => {
+                    progress.landed += 1;
+                    progress.thin.push((release, Arc::clone(words)));
+                }
+                (Origin::Registry(_), Some(Stage::Failed(why))) => progress.refused.push((release, Arc::clone(why))),
+                (Origin::Registry(_), Some(working @ (Stage::Resolving | Stage::Unpacking | Stage::Indexing))) => {
+                    progress.done = false;
+                    if progress.now.is_none() {
+                        progress.now = Some((release, working.clone(), at + 1));
+                    }
+                }
+                (Origin::Registry(_), Some(Stage::Queued) | None) => progress.done = false,
+            }
+        }
+        Some(progress)
+    }
 }
 
 /// One addition and the views waiting on it.
@@ -216,6 +267,7 @@ pub(crate) fn resume(now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut
 
 /// Whether the worker has work under way, or landed work the UI has not
 /// taken yet.
+#[cfg(feature = "visual-harness")]
 pub(crate) fn working(cx: &App) -> bool {
     cx.try_global::<Additions>().is_some_and(|additions| {
         additions.queue.running() || !additions.mailbox.lock().unwrap_or_else(PoisonError::into_inner).is_empty()

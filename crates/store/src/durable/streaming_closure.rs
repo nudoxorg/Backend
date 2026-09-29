@@ -1127,6 +1127,38 @@ mod tests {
         }
     }
 
+    /// A process killed between linking an object into `objects/` and
+    /// unlinking its stage leaves the object with two links. The next process
+    /// may read that object before it ever begins a write session (a closure
+    /// write first asks whether its relation nodes are already stored), so
+    /// open, not the first write, repairs what the dead process left.
+    #[test]
+    fn an_object_a_dead_process_left_linked_twice_reads_before_any_write() {
+        const CHILD_TEST: &str = "durable::streaming_closure::tests::simulated_process_crash_child";
+        let test = TestStore::new();
+        let item = object(19, 83);
+        let status = Command::new(std::env::current_exe().expect("test executable"))
+            .arg("--exact")
+            .arg(CHILD_TEST)
+            .env("BACKEND_STORE_TEST_CRASH_PATH", &test.path)
+            .env("BACKEND_STORE_TEST_CRASH_POINT", "12")
+            .output()
+            .expect("start object-link crash child");
+        assert_eq!(status.status.code(), Some(92));
+
+        let reopened = FileStore::open(&test.path, 64 * 1024).expect("cold-open after the crash");
+        let read = artifact_fs::open_object(&reopened, item.id());
+        assert!(
+            matches!(read, Ok(Some(_))),
+            "the object the dead process linked reads on the next open, before any write: {:?}",
+            read.map(|file| file.is_some())
+        );
+        let sessions = fs::read_dir(test.path.join("staging").join("artifacts"))
+            .expect("read staging sessions")
+            .count();
+        assert_eq!(sessions, 0, "the dead process's session is recovered at open");
+    }
+
     #[test]
     fn alias_preflight_keeps_session_lease_after_two_cold_reap_attempts() {
         const CHILD_TEST: &str = "durable::streaming_closure::tests::simulated_process_crash_child";

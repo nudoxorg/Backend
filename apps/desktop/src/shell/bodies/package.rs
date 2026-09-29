@@ -210,11 +210,33 @@ fn hero(
         && !list.is_empty()
     {
         let parent = dossier.package.display_name().to_owned();
-        let facts: Vec<DepFacts> = list.iter().map(|dependency| dep_facts(dependency, active)).collect();
-        let links = ctx.links.clone();
-        marks = marks.child(dep_line("mk-deps", facts, parent, measure).on_open(move |target, _window, cx| {
-            open_dependency(target, &links, cx);
-        }));
+        // The library, to link a dependency to the release of it that is
+        // indexed here (a project's own dependencies are indexed as the
+        // trees its lock pins, not under a registry address).
+        let store = ctx.links.store.read(cx);
+        let orbit = store.orbit();
+        let indexed: &[crate::model::pages::IndexedPackage] = orbit.loaded_value().and_then(|model| model.indexed.known()).map_or(&[], |list| &list[..]);
+        let facts: Vec<DepFacts> = list.iter().map(|dependency| dep_facts(dependency, active, indexed)).collect();
+        // Each dependency that goes somewhere is a door: the keyboard stands
+        // on it, Enter opens it as a click does, and Back lands on it again.
+        let door_of: Vec<(SharedString, SharedString)> =
+            facts.iter().filter_map(|dep| dep.target.clone().map(|place| (place, PageTarget::Dependency(dep.name.clone()).id()))).collect();
+        let (targets, on_page, recall) = (ctx.targets.clone(), ctx.active, ctx.targets.recall());
+        let (click_links, click_recall, door_links) = (ctx.links.clone(), recall.clone(), ctx.links.clone());
+        marks = marks.child(
+            dep_line("mk-deps", facts, parent, measure)
+                .on_open(move |place, _window, cx| {
+                    let door = door_of.iter().find(|(at, _)| at == place).map(|(_, id)| id.clone());
+                    open_dependency(place, door, &click_recall, &click_links, cx);
+                })
+                .wrap(move |dep, link| {
+                    let Some(place) = dep.target.clone() else { return link };
+                    let door = PageTarget::Dependency(dep.name.clone());
+                    let (links, recall, id) = (door_links.clone(), recall.clone(), door.id());
+                    let act: crate::shell::focus::Act = Rc::new(move |_window, cx| open_dependency(&place, Some(id.clone()), &recall, &links, cx));
+                    folio::door(&targets, on_page, &door, dep.name.clone(), act, link)
+                }),
+        );
     }
     div()
         .flex()
@@ -258,7 +280,7 @@ fn today() -> String {
 /// of the reader's own cargo workspace (`active.members`, from its
 /// `[workspace] members`) — not merely a coordinate that resolves to a
 /// path on this machine, which vendored and registry sources do too.
-fn dep_facts(dependency: &Dependency, active: &ActiveProject) -> DepFacts {
+fn dep_facts(dependency: &Dependency, active: &ActiveProject, indexed: &[crate::model::pages::IndexedPackage]) -> DepFacts {
     let kind = match dependency.scope {
         DependencyScope::Development => DepKind::Dev,
         DependencyScope::Build => DepKind::Build,
@@ -270,9 +292,8 @@ fn dep_facts(dependency: &Dependency, active: &ActiveProject) -> DepFacts {
     // text, never as a control that looks live but goes nowhere. An
     // unresolved dependency has no target at all, rather than a name that
     // cannot actually open.
-    let target = dependency
-        .resolved
-        .as_ref()
+    let target = in_the_library(dependency, indexed)
+        .or(dependency.resolved.as_ref())
         .map(|package| SharedString::from(package.as_str().to_owned()));
     DepFacts {
         name: dependency.name.to_string().into(),
@@ -294,11 +315,32 @@ fn dep_facts(dependency: &Dependency, active: &ActiveProject) -> DepFacts {
     }
 }
 
-/// Follows a dependency mark's link to the package it names.
-fn open_dependency(target: &SharedString, links: &crate::shell::region::Links, cx: &mut gpui::App) {
+/// The release of `dependency` the library holds, when it holds one: the
+/// release its resolver chose, else the one release of that name, else the
+/// one whose version the requirement names exactly (`0.8.23`, `=0.8.23`).
+fn in_the_library<'a>(dependency: &Dependency, indexed: &'a [crate::model::pages::IndexedPackage]) -> Option<&'a PackageRef> {
+    let named: Vec<&PackageRef> = indexed.iter().map(|package| &package.package).filter(|package| package.display_name() == dependency.name.as_ref()).collect();
+    let chosen = dependency.resolved.as_ref().and_then(PackageRef::release_version);
+    let written = dependency.requirement.trim_start_matches(['=', '^', '~', ' ']);
+    named
+        .iter()
+        .copied()
+        .find(|package| chosen.is_some_and(|version| package.release_version() == Some(version)))
+        .or_else(|| (named.len() == 1).then(|| named[0]))
+        .or_else(|| named.iter().copied().find(|package| package.release_version() == Some(written)))
+}
+
+/// Follows a dependency mark's link to the package it names; the page is
+/// left by its door (`door`), so Back lands on it again.
+fn open_dependency(target: &SharedString, door: Option<SharedString>, recall: &crate::shell::focus::Recall, links: &crate::shell::region::Links, cx: &mut gpui::App) {
     if let Ok(package) = PackageRef::parse(target.as_ref())
         && let Some(route) = package_route(&package)
     {
+        if let Some(door) = door {
+            let leaving = links.snapshot(cx).route().clone();
+            recall.focus(door.clone());
+            recall.remember_leave(leaving, door);
+        }
         links.dispatch(Intent::Navigate(route), cx);
     }
 }

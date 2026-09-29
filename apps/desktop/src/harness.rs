@@ -851,6 +851,7 @@ pub mod route {
                             "class" => backend_library::DeclarationKind::Class,
                             "enum" => backend_library::DeclarationKind::Enum,
                             "function" => backend_library::DeclarationKind::Function,
+                            "method" => backend_library::DeclarationKind::Method,
                             "interface" => backend_library::DeclarationKind::Interface,
                             "struct" => backend_library::DeclarationKind::Struct,
                             "trait" => backend_library::DeclarationKind::Trait,
@@ -1057,10 +1058,21 @@ fn outline_symbol_candidates<'a>(
     expected_kind: Option<backend_library::DeclarationKind>,
     expected_path: Option<&str>,
 ) -> Vec<&'a crate::model::pages::DeclRef> {
-    outline
-        .walk()
-        .map(|node| &node.decl)
-        .filter(|decl| {
+    // Each declaration with the names of the declarations it is nested
+    // under: a method's type (`Value` in `toml::value::Value::as_str`) is
+    // its parent in the outline, not a part of its path or coordinate.
+    fn nested<'a>(nodes: &'a [crate::model::pages::OutlineNode], above: &mut Vec<&'a str>, out: &mut Vec<(Vec<&'a str>, &'a crate::model::pages::DeclRef)>) {
+        for node in nodes {
+            out.push((above.clone(), &node.decl));
+            above.push(node.decl.name.as_ref());
+            nested(&node.children, above, out);
+            above.pop();
+        }
+    }
+    let mut all = Vec::new();
+    nested(&outline.roots, &mut Vec::new(), &mut all);
+    all.into_iter()
+        .filter(|(above, decl)| {
             decl.name.as_ref() == name
                 && expected_kind.is_none_or(|kind| decl.kind == Some(kind))
                 && expected_path.is_none_or(|path| decl.path.as_deref() == Some(path))
@@ -1068,8 +1080,10 @@ fn outline_symbol_candidates<'a>(
                 && middle.iter().all(|segment| {
                     decl.path.as_deref().is_some_and(|path| path.contains(segment))
                         || decl.coordinate.as_str().contains(segment)
+                        || above.contains(segment)
                 })
         })
+        .map(|(_, decl)| decl)
         .collect()
 }
 
@@ -1737,6 +1751,24 @@ mod tests {
         assert!(parse("elsewhere").is_err());
     }
 
+    /// Every scene boots at a route written as words in this file; one the
+    /// parser cannot read panics only when `capture-all` reaches it, after
+    /// every scene before it (`kind=method` stopped a 14-minute run).
+    #[test]
+    fn every_scene_boots_at_a_route_the_parser_reads() {
+        let source = include_str!("harness.rs");
+        let starts = source
+            .split("build(\"")
+            .skip(1)
+            .filter_map(|rest| rest.split_once('"').map(|(words, _)| words))
+            .filter(|words| !words.is_empty())
+            .collect::<Vec<_>>();
+        assert!(starts.len() > 20, "the scenes' routes are found in the source: {starts:?}");
+        for words in starts {
+            assert!(parse(words).is_ok(), "scene route `{words}`: {:?}", parse(words));
+        }
+    }
+
     #[test]
     fn sampled_browse_route_keeps_query_and_ordered_package_identity() {
         use crate::navigation::{BrowseRoute, CompareSet};
@@ -1816,6 +1848,33 @@ mod tests {
         ).expect("exact package, path and kind selector");
         assert_eq!(selected.1, 25);
         assert_eq!(selected.0.as_str(), "pkg:cargo/toml@0.8.23::src/value.rs:25::Value");
+    }
+
+    /// `toml::value::Value::as_str kind=method`: the owner's outline nests a
+    /// method under its type (probe: `value.rs` > `Value` > `as_str`), and its
+    /// row names neither the type nor the impl.
+    #[test]
+    fn a_method_route_finds_the_method_under_its_type() {
+        use super::{choose_outline_symbol_candidate, outline_symbol_candidates};
+        use crate::model::pages::{OutlineNode, OutlineTree};
+
+        let package = "pkg:cargo/toml@0.8.23";
+        let under = |parent: OutlineNode, children: Vec<OutlineNode>| OutlineNode { decl: parent.decl, children: children.into() };
+        let method = |line| outline_node(package, "as_str", backend_library::DeclarationKind::Method, "src/value.rs", line);
+        let outline = OutlineTree {
+            roots: vec![
+                under(outline_node(package, "Value", backend_library::DeclarationKind::Enum, "src/value.rs", 25), vec![method(135)]),
+                under(outline_node(package, "Key", backend_library::DeclarationKind::Struct, "src/value.rs", 900), vec![method(950)]),
+            ].into(),
+            complete: true,
+        };
+        let found = outline_symbol_candidates(
+            &outline, "as_str", package, &["value", "Value"],
+            Some(backend_library::DeclarationKind::Method), Some("src/value.rs"),
+        );
+        let selected = choose_outline_symbol_candidate(&found, "toml::value::Value::as_str", package, true, outline.count())
+            .expect("the method under Value, not the one under Key");
+        assert_eq!(selected.1, 135);
     }
 
     #[test]

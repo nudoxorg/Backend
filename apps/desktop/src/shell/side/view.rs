@@ -404,7 +404,9 @@ impl Shelf {
         }
         element = match &item.trailing {
             Trailing::Nothing => element,
-            Trailing::Words(words) => element.child(text(ty::MONO_SMALL, measure, palette.ink3).ml_auto().flex_none().whitespace_nowrap().child(words.clone())),
+            // Keyed by its row: one version stands on many rows, and the
+            // probe must tell them apart.
+            Trailing::Words(words) => element.child(text(ty::MONO_SMALL, measure, palette.ink3).keyed(SharedString::from(format!("shelf-trailing:{}", item.key))).ml_auto().flex_none().whitespace_nowrap().child(words.clone())),
             Trailing::State(state) => element.child(glyph::trailing(state, measure, palette)),
         };
         if item.dim {

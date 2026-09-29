@@ -455,6 +455,7 @@ pub struct DepLine {
     on_open: Option<Open>,
     open_look: bool,
     card_look: Vec<(SharedString, u64)>,
+    wrap: Option<Rc<dyn Fn(&DepFacts, AnyElement) -> AnyElement>>,
 }
 
 /// The dependency line of `parent` over `deps`, as wide as `measure`.
@@ -468,10 +469,20 @@ pub fn dep_line(id: impl Into<ElementId>, deps: impl Into<Rc<[DepFacts]>>, paren
         on_open: None,
         open_look: false,
         card_look: Vec::new(),
+        wrap: None,
     }
 }
 
 impl DepLine {
+    /// The host's hook on each link that goes somewhere (one with a
+    /// target): it gets the dependency and its link, so it can make the
+    /// link a keyboard target. A name with no place is not a door.
+    #[must_use]
+    pub fn wrap(mut self, wrap: impl Fn(&DepFacts, AnyElement) -> AnyElement + 'static) -> Self {
+        self.wrap = Some(Rc::new(wrap));
+        self
+    }
+
     /// Where following a link goes: called with its target.
     #[must_use]
     pub fn on_open(mut self, open: impl Fn(&SharedString, &mut Window, &mut App) + 'static) -> Self {
@@ -605,6 +616,10 @@ impl RenderOnce for DepLine {
             if let Some((_, after)) = self.card_look.iter().find(|(name, _)| *name == dep.name) {
                 link = link.open_at(*after);
             }
+            let link = match &self.wrap {
+                Some(wrap) if dep.target.is_some() => wrap(dep, link.into_any_element()),
+                _ => link.into_any_element(),
+            };
             let element = if i >= shown {
                 // Uncovered in reading order: 140 ms each, 20 ms apart.
                 let t = open_t.unwrap_or(0.0) - 20.0 * (i - shown) as f32;
@@ -612,7 +627,7 @@ impl RenderOnce for DepLine {
                 live |= u < 1.0;
                 motion::reveal(link).right(1.0 - u).into_any_element()
             } else {
-                link.into_any_element()
+                link
             };
             line = line.child(element);
         }

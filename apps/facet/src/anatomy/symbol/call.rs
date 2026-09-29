@@ -73,9 +73,12 @@ pub(super) fn ty_el(env: &Env<'_>, cards: &Cards, key: &Key, ty: &Ty, tone: Tone
         let m = env.m;
         let word_key = key.field(Slot::Word);
         let word = ty.word.clone();
+        // A door is a stop in the walk: at least 24 px tall (a pointer's
+        // target), whatever its type's size.
+        let height = env.s(24.0);
         let build = {
             let (word, word_key) = (word.clone(), word_key.clone());
-            move |_lit| said_in(&m, &word_key, word, roles::WORD, colour)
+            move |_lit| div().min_h(height).flex().items_center().child(said_in(&m, &word_key, word, roles::WORD, colour)).into_any_element()
         };
         let mut el = named_as(key.field(Slot::Door).text(), &word, ty.link.as_deref(), colour, env.host, false, build);
         if ty.origin.dotted() {

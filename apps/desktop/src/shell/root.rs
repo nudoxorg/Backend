@@ -1245,8 +1245,7 @@ fn run(act: super::focus::Act, window: &mut Window, cx: &mut App) {
 impl Shell {
     /// Publishes the transient layers as the float stack the harness checks
     /// (unique keys, at most one of each, nothing left once settled).
-    fn publish_stack(&self, cx: &mut App) {
-        let ask = self.ask_open;
+    fn publish_stack(&self, ask: Option<Vec<facet::probe::BoundsSample>>, cx: &mut App) {
         let hints = self.hints.as_ref().map(HintMode::remaining);
         facet::probe::record_stack(cx, move || {
             let entry = |key: String, kind: &str, pinned: bool| facet::probe::StackEntry {
@@ -1260,8 +1259,8 @@ impl Shell {
             // Peeks and pins are W-Float's layer's own entries; the shell
             // adds its transients: Ask and hint mode.
             let mut entries = Vec::new();
-            if ask {
-                entries.push(entry("ask".to_owned(), "dialog", false));
+            for bounds in ask.into_iter().flatten() {
+                entries.push(facet::probe::StackEntry { bounds: Some(bounds.clone()), ..entry(bounds.key.clone(), "dialog", false) });
             }
             if let Some(count) = hints {
                 entries.push(entry(format!("hints:{count}"), "hints", false));
@@ -1516,7 +1515,26 @@ impl Render for Shell {
             self.pinned = pinned;
             self.pins.update(cx, |_, cx| cx.notify());
         }
-        self.publish_stack(cx);
+        let ask_width = match self.modes.settle(&ASK, frame.room).mode {
+            Float::Panel => ASK_PANEL.at(frame.room),
+            Float::Sheet => viewport.width,
+        };
+        // Ask is a dialog over the veiled page: its field (the titlebar) and
+        // its plate are what a person reads; the page under the veil is not.
+        let ask_bounds = self.ask_open.then(|| {
+            let sample = |key: &str, x: Pixels, y: Pixels, width: Pixels, height: Pixels| facet::probe::BoundsSample {
+                key: key.to_owned(),
+                x: f32::from(x),
+                y: f32::from(y),
+                width: f32::from(width),
+                height: f32::from(height),
+            };
+            vec![
+                sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar),
+                sample("ask-plate", px(0.0), frame.titlebar, ask_width, (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))),
+            ]
+        });
+        self.publish_stack(ask_bounds, cx);
         let float = float::layer(window, cx);
         // Twins: a ring on every other place the hovered declaration stands,
         // each clipped to the region it is in (the shelf's rows, the page).

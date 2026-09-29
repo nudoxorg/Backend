@@ -57,6 +57,7 @@
 //! replayed calmly (each settled before the next), and the two settled frames
 //! must be pixel-identical.
 
+pub mod crawl;
 pub mod keys;
 mod look;
 mod machine;
@@ -1109,7 +1110,7 @@ fn perform(runner: &mut Runner, kind: &StepKind, label: &str, origin: &str, repo
             let _ = writeln!(report, "  {origin:<28} {:>6} ms  {label}  (the native panel, answered)", runner.now());
             return Ok(Ok(()));
         }
-        StepKind::Settle | StepKind::Wait(_) | StepKind::Check { .. } | StepKind::Await { .. } | StepKind::Restart => {
+        StepKind::Settle | StepKind::Wait(_) | StepKind::Check { .. } | StepKind::Await { .. } | StepKind::Restart | StepKind::Crawl(_) => {
             return Err(format!("{origin}: `{label}` is not an act"));
         }
     };
@@ -1357,6 +1358,27 @@ pub fn run(plan: &Plan, out: &Path, options: &Options) -> Result<Outcome, String
             StepKind::Await { until, within } => {
                 let _ = writeln!(report, "  {origin:<28} {:>6} ms  {} (real time; new texts as they appeared:)", runner.now(), step.text);
                 runner.await_until(until, *within, &mut report)?
+            }
+            StepKind::Crawl(crawl) => {
+                let _ = writeln!(report, "  {origin:<28} {:>6} ms  {} (every target: hover, click, back)", runner.now(), step.text);
+                let crawled = runner.crawl(*crawl, &mut report)?;
+                let _ = writeln!(
+                    report,
+                    "  {origin:<28} {:>6} ms  crawled {} page(s): {} hover(s), {} card(s), {} click(s); {} problem(s)",
+                    runner.now(),
+                    crawled.pages,
+                    crawled.hovers,
+                    crawled.cards,
+                    crawled.clicks,
+                    crawled.problems.len()
+                );
+                for problem in crawled.problems.iter().take(40) {
+                    let _ = writeln!(report, "           FAIL {problem}");
+                }
+                if crawled.problems.len() > 40 {
+                    let _ = writeln!(report, "           … {} more", crawled.problems.len() - 40);
+                }
+                if crawled.problems.is_empty() { Ok(()) } else { Err(format!("crawl: {} problem(s), first: {}", crawled.problems.len(), crawled.problems[0])) }
             }
             StepKind::Restart => {
                 let wall = Instant::now();

@@ -336,7 +336,8 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
 pub(crate) struct PackageWords {
     /// What is happening, or what came of it.
     pub headline: String,
-    /// The package being worked on now, and which of how many it is.
+    /// The package being worked on now, and which of how many it is (also
+    /// in the headline, which says it on one line of full ink).
     pub now: Option<String>,
     /// One step per package, in the order they are added: its name and state.
     pub steps: Vec<(String, StageState, String)>,
@@ -367,22 +368,27 @@ impl PackageWords {
         if total == 0 {
             return plain(format!("{label} uses no registry packages."));
         }
+        let Some(progress) = packages.progress() else { return plain(format!("Reading the packages {label} uses.")) };
+        let added = progress.landed;
+        let now = progress.now.as_ref().map(|(release, stage, at)| {
+            let doing = match stage {
+                Adding::Resolving => "finding",
+                Adding::Unpacking => "unpacking",
+                _ => "indexing",
+            };
+            format!("{doing} {release} ({at} of {total})")
+        });
         let mut steps = Vec::with_capacity(total);
         let (mut refused, mut thin) = (Vec::new(), Vec::new());
-        let (mut added, mut now) = (0, None);
-        for (at, (dependency, stage)) in found.iter().enumerate() {
+        for (dependency, stage) in found {
             let release = dependency.release.to_string();
             let (state, tip) = match (&dependency.origin, stage) {
                 (Origin::Elsewhere(why), _) => {
                     refused.push(format!("{release}: {why}"));
                     (StageState::Bad, why.to_string())
                 }
-                (Origin::Registry(_), Some(Adding::Added(_))) => {
-                    added += 1;
-                    (StageState::Done, "In the library.".to_owned())
-                }
+                (Origin::Registry(_), Some(Adding::Added(_))) => (StageState::Done, "In the library.".to_owned()),
                 (Origin::Registry(_), Some(Adding::Partial { words, .. })) => {
-                    added += 1;
                     let why = super::failure::Cause::of(words).says().into_iter().next().unwrap_or_default();
                     let why = lowercase_first(why.trim_end_matches('.'));
                     thin.push(format!("{release}: {why}, so its names come from its source alone."));
@@ -398,17 +404,19 @@ impl PackageWords {
                         Adding::Unpacking => "unpacking",
                         _ => "indexing",
                     };
-                    now.get_or_insert_with(|| format!("{doing} {release} ({} of {total})", at + 1));
                     (StageState::Now, format!("{} now.", capitalized(doing)))
                 }
                 (Origin::Registry(_), Some(Adding::Queued) | None) => (StageState::Todo, "Waiting its turn.".to_owned()),
             };
             steps.push((release, state, tip));
         }
-        let working = steps.iter().any(|(_, state, _)| matches!(state, StageState::Now | StageState::Todo));
+        let working = !progress.done;
         let packages = |n: usize| if n == 1 { "package".to_owned() } else { format!("{n} packages") };
         let headline = if working {
-            format!("Adding the {} {label} uses: {added} in the library so far.", packages(total))
+            match &now {
+                Some(now) => format!("Adding the {} {label} uses: {added} in the library, {now}.", packages(total)),
+                None => format!("Adding the {} {label} uses: {added} in the library so far.", packages(total)),
+            }
         } else if !refused.is_empty() {
             format!("{added} of the {} {label} uses are in the library; {} could not be added:", packages(total), refused.len())
         } else if !thin.is_empty() {
@@ -466,10 +474,6 @@ fn package_block(path: &str, words: &PackageWords, ctx: &mut Ctx<'_>) -> AnyElem
             content(TipText { title: Some(title), body, chord: Vec::new() })(measure, window, cx)
         });
         block = block.child(seam(SharedString::from(format!("package-seam-{path}")), stages, &strip).door(door));
-    }
-    if let Some(now) = &words.now {
-        let now = ctx.say(now.clone());
-        block = block.child(text(ty::MONO_SMALL, &measure, palette.ink2).text_center().child(now));
     }
     for line in words.refused.iter().chain(&words.thin) {
         let line = ctx.say(line.clone());
@@ -613,7 +617,11 @@ mod tests {
             (dependency("forked", "0.1.0", Origin::Elsewhere(Arc::from("from git (https://example.test/forked): only registry releases are added"))), None),
         ];
         let working = PackageWords::of("toml_pin", &ProjectPackages::Read(found.clone()));
-        assert_eq!(working.headline, "Adding the 5 packages toml_pin uses: 1 in the library so far.");
+        assert_eq!(
+            working.headline,
+            "Adding the 5 packages toml_pin uses: 1 in the library, indexing toml_edit 0.22.27 (2 of 5).",
+            "one line says how many there are, how many are in, and which is being indexed"
+        );
         assert_eq!(working.now.as_deref(), Some("indexing toml_edit 0.22.27 (2 of 5)"), "the one being indexed, and which of how many");
         assert_eq!(
             working.steps.iter().map(|(name, state, _)| (name.as_str(), *state)).collect::<Vec<_>>(),

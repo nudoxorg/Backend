@@ -1164,3 +1164,25 @@ pub(super) use imp::{
     open_object, open_store_file, prepare_staging_root, reap_stale_sessions, unlink_stage_file,
     write_closure_descriptor,
 };
+
+/// Recovers the staging sessions of processes that died mid-write, when the
+/// store has ever staged one.
+///
+/// A process killed between linking an object into `objects/` and unlinking
+/// its stage leaves that object with two links, and every read refuses a
+/// twice-linked object as unsafe. Write sessions reap stale sessions when
+/// they begin, but the next process can read that object first (a closure
+/// write asks whether its relation nodes are already stored before it opens a
+/// session), so open reaps too. A live session keeps its lease locked and is
+/// left alone. The caller holds the process lock.
+pub(super) fn reap_stale_sessions_on_open(store: &FileStore) -> Result<(), StoreError> {
+    let sessions = store.root.join("staging").join("artifacts");
+    let left = std::fs::read_dir(&sessions)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+    if !left {
+        return Ok(());
+    }
+    let staging_root = prepare_staging_root(store)?;
+    reap_stale_sessions(store, &staging_root)
+}

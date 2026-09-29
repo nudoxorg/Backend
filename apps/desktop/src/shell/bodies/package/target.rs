@@ -38,6 +38,9 @@ pub(super) enum PageTarget {
     Release(Mark),
     /// A block of the open berg (an index into its blocks): Enter goes to that package.
     Block(usize),
+    /// A dependency the hero names that has a place to go (by its name):
+    /// Enter opens it.
+    Dependency(SharedString),
 }
 
 const MODULE: &str = "pkg-module-";
@@ -45,6 +48,7 @@ const CARD: &str = "pkg-card-";
 const FEATURE: &str = "pkg-feature-";
 const RELEASE: &str = "pkg-release-";
 const BLOCK: &str = "pkg-block-";
+const DEPENDENCY: &str = "pkg-dep-";
 
 impl PageTarget {
     /// The id the shell's target list carries.
@@ -61,6 +65,7 @@ impl PageTarget {
             Self::Release(Mark::Newest) => format!("{RELEASE}newest"),
             Self::Release(Mark::Breaking(tick)) => format!("{RELEASE}{tick}"),
             Self::Block(index) => format!("{BLOCK}{index}"),
+            Self::Dependency(name) => format!("{DEPENDENCY}{name}"),
         }
         .into()
     }
@@ -86,6 +91,9 @@ impl PageTarget {
         }
         if let Some(index) = id.strip_prefix(BLOCK) {
             return index.parse().ok().map(Self::Block);
+        }
+        if let Some(name) = id.strip_prefix(DEPENDENCY) {
+            return Some(Self::Dependency(name.to_owned().into()));
         }
         match id {
             "pkg-licence" => Some(Self::Licence),
@@ -115,6 +123,7 @@ mod tests {
             PageTarget::Release(Mark::Newest),
             PageTarget::Release(Mark::Breaking(41)),
             PageTarget::Block(7),
+            PageTarget::Dependency("serde_spanned".into()),
         ] {
             assert_eq!(PageTarget::parse(&target.id()), Some(target.clone()), "{target:?}");
         }

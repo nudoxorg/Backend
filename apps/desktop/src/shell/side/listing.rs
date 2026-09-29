@@ -247,25 +247,37 @@ fn is_a_project(package_root: &str, package_name: &str, local: bool, project_pat
     local && (package_root == project_path || package_name == project_label)
 }
 
-/// The library's packages that are not one of your projects, in name order
-/// (then version), so a package is where a person looks for it. The
-/// sidebar's "In the library" and the Library page's ring list the same.
+/// In what order the library's packages are listed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LibraryOrder {
+    /// By name, then version: a list a person looks things up in (the
+    /// sidebar).
+    Name,
+    /// As the library lists them (the Library page's ring).
+    Library,
+}
+
+/// The library's packages that are not one of your projects, in `order`.
+/// The sidebar's "In the library" and the Library page's ring list the same.
 pub(crate) fn beside_your_projects<'a>(
     indexed: &'a [crate::model::pages::IndexedPackage],
     workspace: &crate::model::WorkspaceState,
+    order: LibraryOrder,
 ) -> Vec<&'a crate::model::pages::IndexedPackage> {
     let yours = |package: &crate::model::pages::IndexedPackage| {
         workspace.projects.iter().any(|project| is_a_project(package.package.as_str(), &package.name, package.package.is_local(), &project.path, &project.label))
     };
     let mut list: Vec<_> = indexed.iter().filter(|package| !yours(package)).collect();
-    list.sort_by(|a, b| (a.name.as_ref(), a.package.version(), a.package.as_str()).cmp(&(b.name.as_ref(), b.package.version(), b.package.as_str())));
+    if order == LibraryOrder::Name {
+        list.sort_by(|a, b| (a.name.as_ref(), a.package.release_version(), a.package.as_str()).cmp(&(b.name.as_ref(), b.package.release_version(), b.package.as_str())));
+    }
     list
 }
 
 fn library(inputs: &Inputs<'_>) -> Listing {
     let workspace = inputs.snapshot.workspace();
     let library: Option<Vec<&crate::model::pages::IndexedPackage>> =
-        inputs.orbit.and_then(|model| model.indexed.known()).map(|list| beside_your_projects(list, workspace));
+        inputs.orbit.and_then(|model| model.indexed.known()).map(|list| beside_your_projects(list, workspace, LibraryOrder::Name));
     let indexed = library.as_deref();
     let packages = indexed.map_or(0, <[_]>::len);
     let projects = workspace.projects.len();
@@ -316,7 +328,9 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                         item.current = reading.as_ref().is_some_and(|reading| super::scope::book_of(reading) == super::scope::book_of(&package.package));
                         item.warm = Some(PageKey::Package(package.package.clone()));
                         item.hoists = Some(Scope::Package(package.package.clone()));
-                        if let Some(version) = package.package.version() {
+                        // The release, quiet beside the name: two releases
+                        // of one crate otherwise read the same.
+                        if let Some(version) = package.package.release_version() {
                             item.trailing = Trailing::Words(version.to_owned().into());
                         }
                         item.sub = apart;
@@ -357,13 +371,16 @@ pub(crate) fn told_apart(packages: &[&crate::model::pages::IndexedPackage]) -> V
         .iter()
         .enumerate()
         .map(|(index, package)| {
-            if !package.package.is_local() {
+            // A release (a purl, or a registry tree in the cargo cache) is
+            // told apart by its version, drawn beside it.
+            let folder = |package: &crate::model::pages::IndexedPackage| package.package.is_local() && package.package.release_version().is_none();
+            if !folder(package) {
                 return None;
             }
             let twins: Vec<Vec<String>> = packages
                 .iter()
                 .enumerate()
-                .filter(|(other, twin)| *other != index && twin.package.is_local() && twin.name == package.name)
+                .filter(|(other, twin)| *other != index && folder(twin) && twin.name == package.name)
                 .map(|(_, twin)| folders(twin))
                 .collect();
             if twins.is_empty() {

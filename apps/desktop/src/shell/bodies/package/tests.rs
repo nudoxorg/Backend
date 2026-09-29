@@ -238,6 +238,46 @@ fn a_page_after_a_resize_storm_equals_a_fresh_page(cx: &mut TestAppContext) {
     }
 }
 
+/// A window dragged across the crest's edge (four cells in a row become two
+/// by two, and the crest grows by a row): the blocks under it glide down to
+/// their new place instead of jumping the crest's change of height in one
+/// frame (FLUID-C: every block under a changed one moved by the change in
+/// one frame). Each frame the modules' heading moves by a glide's step at
+/// most, and it lands where a window born at that width puts it.
+#[gpui::test]
+fn the_blocks_under_the_crest_glide_when_its_cells_change_rows(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1600.0, 900.0);
+    read_and_open(&mut rig);
+    let heading = |ledger: &Ledger| ledger.texts.iter().find(|t| t.key.contains("names-words")).map(|t| t.bounds.y);
+    let before = heading(&painted_at(&mut rig)).expect("the modules' heading is drawn");
+    rig.cx.simulate_resize(gpui::size(px(1100.0), px(900.0)));
+    let mut ys = vec![before];
+    for _ in 0..40 {
+        rig.frame(16);
+        rig.cx.update(|_, cx| facet::probe::enable(cx));
+        let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
+        rig.repaint();
+        let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+        if let Some(y) = heading(&ledger) {
+            ys.push(y);
+        }
+    }
+    rig.settle();
+    let landed = heading(&painted_at(&mut rig)).expect("the heading is drawn");
+    assert!((landed - before).abs() > 40.0, "the crest changed rows between 1600 and 1100 px, so the heading moved: {before} -> {landed}");
+    let worst = ys.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0_f32, f32::max);
+    assert!(worst <= (landed - before).abs() * 0.6, "the heading jumped {worst:.1} px in one frame on its way from {before:.1} to {landed:.1}: {ys:?}");
+    let mut fresh = rig_at(cx, 1100.0);
+    let born = heading(&painted_at(&mut fresh)).expect("drawn");
+    assert!((born - landed).abs() <= 0.75, "it lands where a fresh 1100 px window puts it: {landed} vs {born}");
+}
+
+fn rig_at(cx: &mut TestAppContext, width: f32) -> Rig {
+    let mut rig = rig(cx, None, width, 900.0);
+    read_and_open(&mut rig);
+    rig
+}
+
 /// From a phone to a big screen nothing of the folio hangs past the window's
 /// sides, is cut mid-glyph, or lies on other words. (Below the fold is the
 /// reader's to scroll; only the sides are held to the window.)
@@ -655,4 +695,86 @@ fn a_crate_whose_modules_are_private_says_its_names_are_all_at_the_root(cx: &mut
     assert_eq!(hidden, ["1"], "through one private module");
     assert_eq!(said(&ledger, "hidden-words"), ["private module"]);
     assert!(!has(&ledger, "modules-words"), "it does not claim `1 module`: {:?}", said(&ledger, "modules-words"));
+}
+
+/// A project's dependency is indexed as the tree its lock pins (a local root
+/// in the cargo cache, named and versioned from its manifest), not under a
+/// registry address: the dependency mark links to that release when the
+/// library holds it (J1: toml_pin's `toml` read as text, not a link).
+#[test]
+fn a_dependency_links_to_the_release_the_library_holds() {
+    use crate::model::pages::{Dependency, DependencyScope, IndexedPackage, Readiness};
+    let home = std::env::var("HOME").unwrap_or_default();
+    let tree = |name: &str| IndexedPackage {
+        package: PackageRef::parse(&format!("{home}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{name}")).expect("a tree"),
+        name: Arc::from(name),
+        readiness: Readiness::Ready,
+    };
+    // Trees this machine's cargo cache holds (the journeys read the same).
+    let library = [tree("toml-0.8.23"), tree("toml-0.5.11"), tree("serde-1.0.229")];
+    let wants = |name: &str, requirement: &str, resolved: Option<&str>| Dependency {
+        name: Arc::from(name),
+        requirement: Arc::from(requirement),
+        scope: DependencyScope::Runtime,
+        optional: false,
+        resolved: resolved.map(|purl| PackageRef::parse(purl).expect("a purl")),
+    };
+    let linked = |dependency: &Dependency| super::in_the_library(dependency, &library).map(|package| package.as_str().rsplit('/').next().unwrap_or_default().to_owned());
+    assert_eq!(linked(&wants("toml", "0.8.23", None)).as_deref(), Some("toml-0.8.23"), "the release the requirement names");
+    assert_eq!(linked(&wants("toml", "0.5", Some("pkg:cargo/toml@0.5.11"))).as_deref(), Some("toml-0.5.11"), "the release the resolver chose");
+    assert_eq!(linked(&wants("serde", "1", None)).as_deref(), Some("serde-1.0.229"), "the one release of that name");
+    assert_eq!(linked(&wants("winnow", "0.7", None)), None, "a package the library does not hold has no link here");
+}
+
+/// Serves the fixture dossier naming two dependencies: `serde`, whose
+/// release the resolver chose (it has a place to go), and `winnow`, which
+/// nothing resolved (it has none).
+struct Depends;
+
+impl crate::runtime::reads::PageReader for Depends {
+    fn read(
+        &mut self,
+        request: &crate::runtime::reads::ReadRequest,
+        context: &crate::runtime::reads::ReadContext<'_>,
+    ) -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
+        use crate::model::pages::{Dependency, DependencyScope, Known, PageValue};
+        let crate::runtime::reads::ReadRequest::Package(package) = request else {
+            return crate::shell::tests::Fixture.read(request, context);
+        };
+        let mut about = dossier();
+        about.package = package.clone();
+        if *package == dossier().package {
+            let wants = |name: &str, requirement: &str, resolved: Option<&str>| Dependency {
+                name: Arc::from(name),
+                requirement: Arc::from(requirement),
+                scope: DependencyScope::Runtime,
+                optional: false,
+                resolved: resolved.map(|purl| PackageRef::parse(purl).expect("a purl")),
+            };
+            about.dependencies = Known::Known(Arc::from([wants("serde", "1", Some("pkg:cargo/serde@1.0.229")), wants("winnow", "0.7", None)]));
+        }
+        Ok(PageValue::Package(about))
+    }
+}
+
+/// A dependency the hero names is a door when it goes somewhere: the
+/// keyboard reaches it, Enter opens the release it names as a click does,
+/// and ⌘[ comes back with the keyboard standing on it. A name with no place
+/// to go is not a door (dead end #15).
+#[gpui::test]
+fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut TestAppContext) {
+    let pool = crate::runtime::reads::ReadPool::start(1, |_| Depends).expect("pool");
+    let mut rig = crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let ledger = painted(&mut rig);
+    assert_eq!(said(&ledger, "mk-deps").iter().filter(|w| *w != "on").collect::<Vec<_>>(), ["serde", "winnow"], "the hero names both");
+    let doors: Vec<&str> = ledger.targets.iter().map(|t| t.key.as_str()).filter(|key| key.starts_with("pkg-dep-")).collect();
+    assert_eq!(doors, ["pkg-dep-serde"], "only the dependency with a place to go is a door");
+    walk_to(&mut rig, "pkg-dep-serde", 24);
+    rig.keys("enter");
+    let opened = rig.route();
+    assert!(format!("{opened:?}").contains("serde@1.0.229"), "Enter opened the release the resolver chose: {opened:?}");
+    rig.keys("cmd-[");
+    assert_eq!(rig.route(), package_route(), "⌘[ came back");
+    assert_eq!(focused(&mut rig).as_deref(), Some("pkg-dep-serde"), "and the keyboard stands on the door it left by");
 }

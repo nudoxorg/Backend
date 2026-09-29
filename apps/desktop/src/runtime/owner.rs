@@ -314,29 +314,40 @@ fn watch_patience(gate: &OwnerGate, patience: Duration, cx: &mut App) {
 }
 
 /// Turns every published owner state into the window's data events, on the
-/// UI thread, for as long as the app runs.
-pub(crate) fn watch(gate: OwnerGate, root: Entity<super::UiRootEntity>, store: Entity<super::store::DataStore>, cx: &mut App) {
+/// UI thread, for as long as the window's root and store live (D2). The task
+/// holds them weakly: a window that is let go is not kept alive by its owner's
+/// watch, and an app that is dropped leaks no handle.
+pub(crate) fn watch(gate: OwnerGate, root: &Entity<super::UiRootEntity>, store: &Entity<super::store::DataStore>, cx: &mut App) {
     watch_patience(&gate, PATIENCE, cx);
+    let (root, store) = (root.downgrade(), store.downgrade());
     cx.spawn(async move |cx| {
         let mut seen = Epoch::default();
         loop {
             let (epoch, state) = gate.next(seen).await;
             seen = epoch;
-            // The task ends with the app (a spawned task is dropped with it).
-            cx.update(|cx| match state {
-                OwnerState::Starting => {
-                    // A restart is a new wait: its patience starts now.
-                    watch_patience(&gate, PATIENCE, cx);
-                    store.update(cx, super::store::DataStore::owner_starting);
+            let alive = cx.update(|cx| {
+                let (Some(root), Some(store)) = (root.upgrade(), store.upgrade()) else {
+                    return false;
+                };
+                match state {
+                    OwnerState::Starting => {
+                        // A restart is a new wait: its patience starts now.
+                        watch_patience(&gate, PATIENCE, cx);
+                        store.update(cx, super::store::DataStore::owner_starting);
+                    }
+                    OwnerState::Ready { key, mode } => {
+                        root.update(cx, |root, cx| root.admit_owner(key, mode, cx));
+                        store.update(cx, super::store::DataStore::owner_ready);
+                    }
+                    OwnerState::Failed(fault) => {
+                        store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+                    }
                 }
-                OwnerState::Ready { key, mode } => {
-                    root.update(cx, |root, cx| root.admit_owner(key, mode, cx));
-                    store.update(cx, super::store::DataStore::owner_ready);
-                }
-                OwnerState::Failed(fault) => {
-                    store.update(cx, |store, cx| store.owner_failed(&fault, cx));
-                }
+                true
             });
+            if !alive {
+                break;
+            }
         }
     })
     .detach();

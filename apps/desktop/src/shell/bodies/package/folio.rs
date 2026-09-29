@@ -297,7 +297,7 @@ impl Folio {
 
 /// A keyboard door for `target` around `element`: the shell's `j`/`k` walk to
 /// it and Enter runs `act` (only on the page the keyboard is on).
-fn door(targets: &Targets, active: bool, target: &PageTarget, label: impl Into<SharedString>, act: Act, element: impl IntoElement) -> AnyElement {
+pub(super) fn door(targets: &Targets, active: bool, target: &PageTarget, label: impl Into<SharedString>, act: Act, element: impl IntoElement) -> AnyElement {
     let id = target.id();
     if active {
         targets.push(Target { id: id.clone(), label: label.into(), act, peek: None, source: None });
@@ -482,13 +482,21 @@ impl RenderOnce for Folio {
         if dedicated {
             return column.children(ticker_block).child(territory).children(in_the_air);
         }
+        // The blocks under the crest move when its cells change rows (four
+        // in a row, two by two): they are items of the crest's flow, so they
+        // glide to where the new arrangement puts them instead of jumping
+        // the crest's change of height in one frame (FLUID-C). Between the
+        // crest's changes a window drag moves them with no lag.
+        let blocks = Flow::scoped("package-blocks", cx).only_epochs();
+        blocks.epoch((tracks.epoch, facet.text_scale.to_bits()));
+        let block = |name: &str, element: AnyElement| blocks.item(key(&self.id, format!("flow-block-{name}")), element);
         column
             .child(self.hero)
             .child(crest)
             .children(berg_panel)
-            .children(ticker_block)
-            .children(features_bar)
-            .child(div().flex().flex_col().gap(measure.space(Space::Roomy)).child(header).child(territory))
+            .children(ticker_block.map(|ticker| block("ticker", ticker.into_any_element())))
+            .children(features_bar.map(|bar| block("features", bar)))
+            .child(block("territory", div().flex().flex_col().gap(measure.space(Space::Roomy)).child(header).child(territory).into_any_element()))
             .children(in_the_air)
     }
 }

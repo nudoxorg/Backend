@@ -25,12 +25,18 @@ const KIND_SHOWN: usize = 40;
 /// module brings in, not what it holds: it is neither a row nor part of the
 /// count.
 pub(super) fn is_listed(node: &OutlineNode) -> bool {
-    node.decl.kind != Some(DeclarationKind::Import)
+    // A row that holds others is kept whatever its name (a `crate` root
+    // with items in it); a leaf that is a type written out or a keyword is
+    // not something the package declares.
+    node.decl.kind != Some(DeclarationKind::Import) && (crate::shell::kit::names_a_declaration(&node.decl.name) || !node.children.is_empty())
 }
 
-/// The children of a node that are listed.
+/// The children of a node that are listed. A function's are its own (its
+/// parameters and locals, which a compiler's rows also carry): not part of
+/// the package's outline.
 pub(super) fn kids(node: &OutlineNode) -> impl Iterator<Item = &OutlineNode> {
-    node.children.iter().filter(|child| is_listed(child))
+    let own = matches!(node.decl.kind, Some(DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor));
+    node.children.iter().filter(move |child| !own && is_listed(child))
 }
 
 /// How many names a subtree holds, itself included (imports left out): what
@@ -580,6 +586,39 @@ mod tests {
 
     fn tree(dossier: &PackageDossier) -> &OutlineTree {
         dossier.outline.known().expect("the fixture outline")
+    }
+
+    /// A compiler's rows carry more than the package declares: a function's
+    /// parameters and locals, a type written out (`&str`), the `crate`
+    /// keyword. The outline lists what a person would look up (seen on
+    /// toml_pin's `read_settings` page: `read_settings` held `text`, and
+    /// `&str` and `crate` stood beside it).
+    #[test]
+    fn a_functions_locals_a_written_type_and_a_path_keyword_are_not_in_the_outline() {
+        use backend_library::DeclarationKind as K;
+        let node = |name: &str, kind: K, children: Vec<OutlineNode>| OutlineNode {
+            decl: crate::model::pages::DeclRef::from_label(&format!("{PACKAGE}::lib.rs:16::{name}"), None, Some(kind), None).expect("decl"),
+            children: std::sync::Arc::from(children),
+        };
+        let roots = vec![
+            node("Settings", K::Struct, vec![node("table", K::Field, vec![])]),
+            node("read_settings", K::Function, vec![node("text", K::Variable, vec![]), node("read_settings", K::Variable, vec![])]),
+            node("&str", K::Type, vec![]),
+            node("crate", K::Module, vec![]),
+        ];
+        let tree = OutlineTree { roots: std::sync::Arc::from(roots), complete: true };
+        let (package, folds, book) = (package(), Folds::default(), StateBook::none());
+        let current = symbol("read_settings");
+        let outline = Outline { package: &package, current: Some(&current), folds: &folds, book: &book, filter: Filter::default() };
+        let listed = outline.package_rows(&tree);
+        let shown = names(&listed.rows);
+        assert!(shown.contains(&"Settings".to_owned()) && shown.contains(&"read_settings".to_owned()), "{shown:?}");
+        for gone in ["text", "&str", "crate"] {
+            assert!(!shown.contains(&gone.to_owned()), "`{gone}` is not the package's to list: {shown:?}");
+        }
+        assert_eq!(shown.iter().filter(|name| *name == "read_settings").count(), 1, "the function once, not its own name inside it: {shown:?}");
+        let read = listed.rows.iter().filter_map(Row::item).find(|item| item.name.as_ref() == "read_settings").expect("the function");
+        assert_eq!(read.fold, None, "a function is a leaf of the outline: {shown:?}");
     }
 
     #[test]

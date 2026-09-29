@@ -56,6 +56,8 @@ mod anatomy_tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
+mod orbit_tests;
+#[cfg(test)]
 mod comb_tests;
 #[cfg(test)]
 mod hand_tests;

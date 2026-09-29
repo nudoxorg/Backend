@@ -285,6 +285,8 @@ pub(super) fn facts(page: &SymbolPage, package: &str, companions: &[(DeclRef, Op
         facts.beside = outline
             .siblings
             .iter()
+            // What the package declares beside it (not `&str`, not `crate`).
+            .filter(|decl| crate::shell::kit::names_a_declaration(&decl.name))
             .take(96)
             .map(|decl| Beside { name: decl.name.to_string(), kind: kind_of(decl.kind), signature: None, link: Some(decl.coordinate.as_str().to_owned()) })
             .collect();

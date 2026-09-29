@@ -4574,8 +4574,6 @@ dependencies = [
 [[package]]
 name = "gpui_ce_scheduler"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba0e1b5482fa9bc8ee71117c981e4d9afc5511624bedd9454040c95aca26091"
 dependencies = [
  "async-task",
  "backtrace",

@@ -391,8 +391,17 @@ impl Render for Ask {
             }
             list = list.child(self.row(index, choice, &measure, palette));
         }
-        if choices.is_empty() && self.query.is_some() && !searching {
-            list = list.child(div().px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet("Nothing matches that yet.", &measure, palette)));
+        if choices.is_empty() && let Some(query) = &self.query {
+            // Never an empty plate: what the search is doing, or why it
+            // could not answer.
+            let terminal = self.links.store.read(cx).search(query).terminal().clone();
+            let words: SharedString = match terminal {
+                crate::core::ResourceTerminal::Fault(error) => format!("The index could not search: {}", error.message()).into(),
+                crate::core::ResourceTerminal::Unavailable(_) => "The index does not search yet.".into(),
+                crate::core::ResourceTerminal::Complete if searching => "Searching the library…".into(),
+                crate::core::ResourceTerminal::Complete => "Nothing matches that yet.".into(),
+            };
+            list = list.child(div().id("ask-said").px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet(words, &measure, palette)));
         }
         if let Some(route) = self.all_results().filter(|_| !choices.is_empty()) {
             let links = self.links.clone();

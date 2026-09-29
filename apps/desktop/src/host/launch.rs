@@ -441,7 +441,16 @@ mod tests {
 
     #[test]
     fn a_snapshot_reader_that_panics_is_a_launch_with_no_snapshot_not_a_hang_or_a_crash() {
-        let seed = spawn_reading(|| panic!("the decoder tripped")).expect("the reader thread");
+        // Timed from the moment the reader is gone, not from its spawn: a
+        // panic waits on the process's panic-output lock, which another test
+        // printing a backtrace can hold for longer than the bound.
+        let (alive, gone) = mpsc::channel::<()>();
+        let seed = spawn_reading(move || {
+            let _alive = alive;
+            panic!("the decoder tripped")
+        })
+        .expect("the reader thread");
+        let _ = gone.recv();
         let started = Instant::now();
         let kept = keep_for(seed).joined();
         assert!(kept.seed.is_none(), "no snapshot this launch");

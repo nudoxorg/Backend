@@ -334,6 +334,47 @@ fn an_owner_that_could_not_start_is_named_on_the_first_screen_and_try_again_star
 }
 
 #[gpui::test]
+fn the_owner_watch_lets_a_window_that_is_let_go_go(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let gate = OwnerGate::starting();
+    let snapshot = AppSnapshot::empty(VersionedRoot::unserved());
+    let runtime = DesktopRuntime::new(snapshot, EngineActor::start(WaitsForOwner(gate.clone()), 8).expect("actor"));
+    let graph = cx.update(|cx| UiEntityGraph::install_with_owner(cx, runtime, None, None, Some(gate.clone()), None));
+    let (root, store) = (graph.root.downgrade(), graph.store.downgrade());
+    drop(graph);
+    // Releasing the root lets go of the store it holds, one effect cycle on.
+    for _ in 0..3 {
+        cx.update(|_| {});
+        cx.run_until_parked();
+    }
+    // D2: the watch held both for the life of the process ("leaked handles"
+    // when an app that was quit is dropped).
+    assert!(root.upgrade().is_none(), "the window's root is let go, not held by the owner's watch");
+    assert!(store.upgrade().is_none(), "the window's store is let go, not held by the owner's watch");
+    // The watch, still waiting on the gate, ends at the next state.
+    gate.publish(OwnerState::Failed("the window is gone".into()));
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn an_owner_that_could_not_start_is_said_in_the_foot_with_try_again_wherever_the_person_is(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let (_graph, _shell) = window_before_its_owner(cx, &gate);
+    let window = cx.windows().into_iter().next().expect("window");
+    let cx = VisualTestContext::from_window(window, cx).into_mut();
+    draw(cx);
+    // No page painted from a launch snapshot: the foot says it all the same (R7).
+    gate.publish(OwnerState::Failed("could not own /tmp/demo".into()));
+    until(cx, "the foot names why", |cx| {
+        cx.update(|_, cx| facet::probe::enable(cx));
+        draw(cx);
+        cx.update(|_, cx| facet::probe::take(cx)).targets.iter().any(|target| target.key.contains("status-retry"))
+    });
+    press(cx, "status-retry");
+    assert_eq!(gate.state(), OwnerState::Starting, "the foot's Try again starts the owner again");
+}
+
+#[gpui::test]
 fn the_foot_offers_try_again_beside_a_notice_that_the_index_could_not_start(cx: &mut TestAppContext) {
     let gate = OwnerGate::starting();
     let (graph, _shell) = window_before_its_owner(cx, &gate);

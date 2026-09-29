@@ -115,7 +115,7 @@ fn boot(window: &mut Window, cx: &mut App) -> Result<AnyView, String> {
         ReadPool::start(READ_SESSIONS, |_| SessionReader::gated(&endpoint, sessions.clone())).ok()
     });
     let keep = keep.map(launch::SnapshotRead::joined);
-    let graph = install_graph(cx, runtime, persistence, reads, &gate, keep);
+    let graph = UiEntityGraph::install_with_owner(cx, runtime, persistence, reads, Some(gate.clone()), keep);
     gallery::declare_quiet(quiet, cx);
     gallery::declare_adapter(adapt, cx);
     // The shot's facet becomes the product's settings, through its own intents.
@@ -129,6 +129,8 @@ fn boot(window: &mut Window, cx: &mut App) -> Result<AnyView, String> {
         graph.root.update(cx, |root, cx| root.dispatch(Intent::AddProject { project }, cx));
     }
     let shell = ROOT(&graph, window, cx);
+    // As `launch::open_the_window` does: a resize that rests is remembered.
+    crate::host::window_size::remember(window, &graph.root, cx);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let percent = (facet.text_scale * 100.0).round() as u16;
     let display = shell.read(cx).display_key();
@@ -157,55 +159,6 @@ impl EngineClient for Refusing {
             other => self.inner.execute(other),
         }
     }
-}
-
-/// The product's `UiEntityGraph::install_with_owner`, with one difference: the
-/// task that turns the owner's answers into data events holds the window's
-/// entities weakly, so it ends with the window. The product's task holds them
-/// strongly for the life of the process; a harness run that ends its app
-/// (rather than its process) would otherwise exit with those handles leaked.
-fn install_graph(
-    cx: &mut App,
-    runtime: DesktopRuntime,
-    persistence: Option<PersistentState>,
-    reads: Option<ReadPool>,
-    gate: &OwnerGate,
-    keep: Option<crate::runtime::snapshot::Keep>,
-) -> UiEntityGraph {
-    let store = DataStore::install_with_owner(cx, runtime.snapshot(), reads, Some(gate.clone()), keep);
-    let attached = store.clone();
-    let root = cx.new(|cx| {
-        let mut root = UiRootEntity::new(runtime, persistence);
-        root.attach(Some(attached), cx);
-        root
-    });
-    let (weak_root, weak_store, gate) = (root.downgrade(), store.downgrade(), gate.clone());
-    cx.spawn(async move |cx| {
-        let mut seen = Default::default();
-        loop {
-            let (epoch, state) = gate.next(seen).await;
-            seen = epoch;
-            let alive = cx.update(|cx| {
-                    let (Some(root), Some(store)) = (weak_root.upgrade(), weak_store.upgrade()) else {
-                        return false;
-                    };
-                    match state {
-                        OwnerState::Starting => store.update(cx, DataStore::owner_starting),
-                        OwnerState::Ready { key, mode } => {
-                            root.update(cx, |root, cx| root.admit_owner(key, mode, cx));
-                            store.update(cx, DataStore::owner_ready);
-                        }
-                        OwnerState::Failed(fault) => store.update(cx, |store, cx| store.owner_failed(&fault, cx)),
-                    }
-                    true
-                });
-            if !alive {
-                break;
-            }
-        }
-    })
-    .detach();
-    UiEntityGraph { root, store }
 }
 
 /// Holds the instant (real time, the virtual clock stands) until no project
@@ -255,10 +208,9 @@ fn quiet(cx: &mut App) -> bool {
         store.drain(cx);
     });
     let ui_idle = shell.read(cx).graph_ready(cx) && super::in_flight().iter().all(|(_, count)| *count == 0);
-    // A project being indexed holds the owner's one loop, so its reads (and
-    // the index request itself) are in flight for as long as the pass runs:
-    // a capture of that moment must not wait for them. With nothing indexing,
-    // every read must have landed.
+    // The owner answers reads while it compiles (the compile runs off its
+    // loop), so every read must have landed, whatever is being indexed; the
+    // index requests themselves are what `settled` waits for.
     let indexing = store
         .read(cx)
         .snapshot()
@@ -266,13 +218,12 @@ fn quiet(cx: &mut App) -> bool {
         .projects
         .iter()
         .any(|project| project.phase == crate::model::ProjectPhase::Indexing);
-    // The packages a project builds with are indexed one by one after it,
-    // each holding the owner's loop the same way.
+    // The packages a project builds with are indexed one by one after it.
     let adding = crate::runtime::acquire::working(cx);
-    let reads_landed = store.read(cx).pool_load() == (0, 0) && !root.read(cx).has_pending_work();
+    let reads_landed = store.read(cx).pool_load() == (0, 0) && !root.read(cx).has_pending_work_besides_indexing();
     match wait {
-        Wait::Owner => ui_idle && (indexing || adding || reads_landed),
-        Wait::Settled => ui_idle && !adding && reads_landed,
+        Wait::Owner => ui_idle && reads_landed,
+        Wait::Settled => ui_idle && !indexing && !adding && reads_landed,
     }
 }
 

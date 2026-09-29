@@ -132,8 +132,11 @@ pub(super) fn body(
                 let flow = ctx.ring_flow.clone();
                 flow.epoch((measure.density(), measure.scale().to_bits()));
                 // Your projects stand in the middle; the ring is what they
-                // use, in name order, one name told apart from its twin.
-                let around = crate::shell::side::beside_your_projects(indexed, &workspace);
+                // use, in the library's own order (the same after a
+                // relaunch), one name told apart from its twin. It re-wraps
+                // as an install adds packages: a name that must go to
+                // another line lands there (the ring's flow is `wrapped`).
+                let around = crate::shell::side::beside_your_projects(indexed, &workspace, crate::shell::side::LibraryOrder::Library);
                 let apart = crate::shell::side::told_apart(&around);
                 for (package, apart) in around.into_iter().zip(apart) {
                     let key = gpui::ElementId::Name(format!("orbit-chip-{}", package.package).into());
@@ -243,8 +246,9 @@ fn package_name(package: &IndexedPackage, apart: Option<SharedString>, ctx: &mut
     let measure: Measure = ctx.measure;
     let palette: &Palette = ctx.palette;
     let name = ctx.say(package.name.to_string());
-    // What tells it apart from a twin of the same name, said with it.
-    let apart = apart.map(|apart| ctx.say(apart.to_string()));
+    // What tells it apart from a twin of the same name, said with it: its
+    // release (a registry package), or the folder it is in.
+    let apart = package.package.release_version().map(ToOwned::to_owned).or_else(|| apart.map(|apart| apart.to_string())).map(|apart| ctx.say(apart));
     let id: SharedString = format!("orbit-package-{}", package.package).into();
     let route = package_route(&package.package);
     let links = ctx.links.clone();
@@ -280,7 +284,7 @@ fn package_name(package: &IndexedPackage, apart: Option<SharedString>, ctx: &mut
                 .hover(|style| style.bg(palette.tint))
                 .child(crate::shell::kit::kind_mark(Kind::Package, KindSize::Sm, &measure, palette))
                 .child(text(ty::MONO_ROW, &measure, ink).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
-                .children(apart.map(|apart| text(ty::MONO_SMALL, &measure, palette.ink3).flex_none().whitespace_nowrap().child(apart)))
+                .children(apart.map(|apart| text(ty::MONO_SMALL, &measure, palette.ink3).keyed(SharedString::from(format!("orbit-apart:{}", package.package))).flex_none().whitespace_nowrap().child(apart)))
                 .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
                 .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx))),
         )
