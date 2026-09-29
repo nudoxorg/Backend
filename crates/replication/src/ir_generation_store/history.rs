@@ -32,6 +32,7 @@ include!("history/types.rs");
 mod catalog;
 mod codec;
 mod gc;
+mod lineage;
 mod provenance;
 mod replay;
 mod retention;
@@ -57,6 +58,16 @@ pub(super) use gc::{
 };
 pub(super) use provenance::decode_hex_digest;
 pub(crate) use v2::{TypedV2HistoryLocator, TypedV2HistoryPublicationSnapshot};
+pub use lineage::{
+    BorrowedTypedLineageEdgeSetV1, LineageAttestationId, LineageAttestationVerifierV1,
+    LineageCandidateGroupIdV1, LineageEdgeSetErrorV1, LineageEdgeV1, LineageEdgeViewV1,
+    LineageHistoryEvidenceV1, LineageKindV1, LineageSourceV1, LineageStatusV1,
+    LineageStatusViewV1, LineageEdgeIterV1, OwnedTypedLineageEdgeSetV1,
+    RejectLineageConfirmationsV1, UnresolvedLineageReasonV1, VerifiedTypedLineageEdgeSetV1,
+    VerifiedLineageRootV2,
+    MAX_LINEAGE_CANDIDATES_PER_GROUP_V1, MAX_TYPED_LINEAGE_EDGES_V1,
+    MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES,
+};
 
 pub(super) fn compact_history_tombstones(target_root: &Path) -> Result<(), String> {
     let history_root = target_root.join("history");

@@ -115,13 +115,20 @@ pub(crate) use history::TypedV2HistoryLocator;
 pub(crate) use history::TypedV2HistoryPublicationAdmission;
 pub(crate) use history::TypedV2HistoryPublicationSnapshot;
 pub use history::{
-    AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
+    AdmittedHistoryCommit, BorrowedTypedLineageEdgeSetV1, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
     HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError,
     HistoryRefAncestryProof, HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt,
     HistoryReplay, HistoryReplayCursor, HistoryReplayEntry, HistorySegmentDeltas,
     HistoryTypedV2JumboObject, HistoryTypedV2LocatorId, HistoryTypedV2RootClaim,
     HistoryTypedV2SegmentObject, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
-    TypedV2HistoryReplay, UnpublishedHistoryProposal,
+    LineageAttestationId, LineageAttestationVerifierV1, LineageCandidateGroupIdV1,
+    LineageEdgeIterV1, LineageEdgeSetErrorV1, LineageEdgeV1, LineageEdgeViewV1,
+    LineageHistoryEvidenceV1, LineageKindV1, LineageSourceV1, LineageStatusV1,
+    LineageStatusViewV1, MAX_LINEAGE_CANDIDATES_PER_GROUP_V1,
+    MAX_TYPED_LINEAGE_EDGES_V1, MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES,
+    OwnedTypedLineageEdgeSetV1, RejectLineageConfirmationsV1, TypedV2HistoryReplay,
+    UnresolvedLineageReasonV1, UnpublishedHistoryProposal,
+    VerifiedTypedLineageEdgeSetV1, VerifiedLineageRootV2,
 };
 pub(super) use history::{AdmittedHistoryPayloadRoot, HistoryPayloadRoot};
 
