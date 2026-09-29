@@ -14,6 +14,7 @@ mod coordinate;
 mod declaration_identity;
 mod discovery;
 mod docs_facts;
+mod edit_session;
 mod extension_pools;
 mod interner;
 /// Content-addressed chunked storage for jumbo documentation and source values.
@@ -88,6 +89,13 @@ pub use discovery::{FragmentDiscovery, FragmentDiscoveryError, SemanticCensus};
 pub use docs_facts::{
     DecodedDocFact, DocFactCursor, DocFactFault, DocFactInput, DocFragmentInput, DocLinkTarget,
     DocumentationLane,
+};
+pub use edit_session::{
+    DependencyChannel, EmbeddingRowKey, FrontierCause, FrontierEntry, FrontierScope,
+    SemanticCaptureWork, SemanticChangeFrontier, SemanticDependencyEdge,
+    SemanticDependencyEdgeError, SemanticDependencyKey, SemanticEditOwner, SemanticEditOwnerError,
+    SemanticEditWork, SemanticUnitCaptureError, SemanticUnitEvent, SemanticUnitObservation,
+    SemanticUnitObservationError, SourceUnitKey,
 };
 pub use extension_pools::{
     DecodedFreePredicate, DecodedRefList, DecodedTypeParameter, DecodedTypeParameterBound,
