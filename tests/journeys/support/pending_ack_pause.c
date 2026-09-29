@@ -11,7 +11,6 @@
  */
 #define _GNU_SOURCE
 
-#include <dlfcn.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -27,16 +26,21 @@
 
 #if defined(__APPLE__)
 #include <sys/param.h>
+#include <sys/syscall.h>
+#else
+#include <dlfcn.h>
 #endif
 
 typedef int (*fsync_function)(int);
 
+#if !defined(__APPLE__)
 static pthread_once_t resolve_fsync_once = PTHREAD_ONCE_INIT;
 static fsync_function next_fsync = NULL;
 
 static void resolve_next_fsync(void) {
     next_fsync = (fsync_function)dlsym(RTLD_NEXT, "fsync");
 }
+#endif
 
 static int path_for_fd(int fd, char *path, size_t capacity) {
 #if defined(__APPLE__)
@@ -214,13 +218,22 @@ static void publish_ready_marker_and_block(const char *marker, int state) {
 }
 
 static int journey_fsync(int fd) {
+#if defined(__APPLE__)
+    /*
+     * Calling dlsym(RTLD_NEXT, "fsync") from a dyld interpose can resolve
+     * back to this replacement during process startup. Invoke the kernel
+     * operation directly to preserve fsync's return value and errno without
+     * recursing through the interposition table.
+     */
+    int result = (int)syscall(SYS_fsync, fd);
+#else
     (void)pthread_once(&resolve_fsync_once, resolve_next_fsync);
     if (next_fsync == NULL) {
         errno = ENOSYS;
         return -1;
     }
-
     int result = next_fsync(fd);
+#endif
     int saved_errno = errno;
     if (result == 0) {
         char directory[PATH_MAX];
