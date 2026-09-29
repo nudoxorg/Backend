@@ -429,12 +429,12 @@ fn atom_id_reordering_preserves_types_and_extension_payloads() {
     let reordered_types =
         encode_canonical_plane_family(&reordered, &TypesRows, witness(), MAXIMUM_BYTES)
             .expect("reordered Types rows");
-    let payload_bytes = |payloads: &[CanonicalSemanticPlaneSegmentPayload]| {
+    fn payload_bytes(payloads: &[CanonicalSemanticPlaneSegmentPayload]) -> Vec<&[u8]> {
         payloads
             .iter()
             .map(|segment| segment.bytes())
             .collect::<Vec<_>>()
-    };
+    }
     assert_eq!(
         payload_bytes(&first_extensions),
         payload_bytes(&reordered_extensions)

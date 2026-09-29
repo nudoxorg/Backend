@@ -272,7 +272,8 @@ fn reader_blocks_do_not_change_content_defined_leaf_boundaries() {
     let scratch_upper_bound = (JUMBO_ROPE_MAX_LEAF_BYTES
         + JUMBO_ROPE_STREAM_BUFFER_BYTES
         + MAX_PROOF_DEPTH * size_of::<RopeObjectRef>()
-        + size_of::<RopeWriter<'static, MemoryObjects>>()) as u64;
+        + size_of::<super::writer::RopeWriter<'static, MemoryObjects>>())
+        as u64;
     assert!(streamed.metrics().peak_live_scratch_bytes() <= scratch_upper_bound);
     assert_eq!(
         streamed.metrics().input_buffer_bytes(),
@@ -349,7 +350,11 @@ fn missing_ranges_resume_and_bad_order_or_content_cannot_publish() {
     ));
 
     let wrong_ordinal_id = original.leaf_order[1];
-    let wrong_ordinal = original.leaves.get(&wrong_ordinal_id).expect("leaf exists");
+    let wrong_ordinal = original
+        .leaves
+        .get(&wrong_ordinal_id)
+        .expect("leaf exists")
+        .clone();
     let wrong_proof = prove_jumbo_leaf(&descriptor, 1, &mut original).expect("proof should exist");
     assert!(closure.check_leaf(0, &wrong_ordinal, &wrong_proof).is_err());
 

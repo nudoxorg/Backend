@@ -179,7 +179,7 @@ where
     writer.finish_with_input_buffer(JUMBO_ROPE_STREAM_BUFFER_BYTES as u64)
 }
 
-struct RopeWriter<'sink, S: JumboRopeObjectSink + ?Sized> {
+pub(super) struct RopeWriter<'sink, S: JumboRopeObjectSink + ?Sized> {
     context: JumboValueContext,
     limits: JumboRopeLimits,
     sink: &'sink mut S,
