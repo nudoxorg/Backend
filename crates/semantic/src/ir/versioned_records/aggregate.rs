@@ -20,13 +20,13 @@ use crate::ir::{
 use crate::vocabulary::{CompileRecipeFact, LanguageProfile};
 use thiserror::Error;
 
-use super::wire::{Cursor, read_identity};
-use super::{
-    LanguageExtensionFamilyValidationError, LanguageExtensionVerificationLimitsV2,
-    TypesFamilyValidationError, TypesFamilyVerificationLimitsV2,
+use super::extensions::{
+    LanguageExtensionFamilyValidationError,
     validate_language_extension_family_v2_with_limits_detailed,
-    validate_types_family_v2_with_limits_detailed,
 };
+use super::types::{TypesFamilyValidationError, validate_types_family_v2_with_limits_detailed};
+use super::wire::{Cursor, read_identity};
+use super::{LanguageExtensionVerificationLimitsV2, TypesFamilyVerificationLimitsV2};
 
 /// Resource ceiling for one aggregate verification window.
 ///

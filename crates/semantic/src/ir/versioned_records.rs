@@ -38,10 +38,6 @@ pub use extensions::{
     validate_language_extension_family_v2_with_limits,
     verify_language_extension_plane_against_reader,
 };
-pub(super) use extensions::{
-    LanguageExtensionFamilyValidationError,
-    validate_language_extension_family_v2_with_limits_detailed,
-};
 pub use occurrences::{OccurrenceHandle, OccurrenceRows};
 pub use relations::RelationRows;
 pub use source_provenance::{SourceProvenanceHandle, SourceProvenanceRows};
@@ -50,7 +46,6 @@ pub use types::{
     TypesReferenceV2, TypesRowDomainV2, TypesRowHandle, TypesRows, validate_types_family_v2,
     validate_types_family_v2_with_limits,
 };
-pub(super) use types::{TypesFamilyValidationError, validate_types_family_v2_with_limits_detailed};
 
 /// One compact handle to a row in the borrowed canonical reader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

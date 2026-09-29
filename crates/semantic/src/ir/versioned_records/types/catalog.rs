@@ -11,7 +11,7 @@ const TYPES_FAMILY_ROOT_DOMAIN: &[u8] = b"backend.semantic.ir.types-family-root.
 
 /// Typed failure used by the aggregate verifier to preserve reference-budget errors.
 #[derive(Debug)]
-pub(super) enum TypesFamilyValidationError {
+pub(in crate::ir::versioned_records) enum TypesFamilyValidationError {
     Record(SemanticPlaneRecordError),
     ReferenceLimitExceeded,
 }
@@ -528,7 +528,7 @@ pub fn validate_types_family_v2_with_limits<'bytes>(
 }
 
 /// Validates a family while preserving the typed reference-limit failure.
-pub(super) fn validate_types_family_v2_with_limits_detailed<'bytes>(
+pub(in crate::ir::versioned_records) fn validate_types_family_v2_with_limits_detailed<'bytes>(
     segments: impl IntoIterator<Item = crate::ir::CanonicalSemanticPlaneSegmentView<'bytes>>,
     limits: TypesFamilyVerificationLimitsV2,
 ) -> Result<CheckedTypesFamilyV2, TypesFamilyValidationError> {

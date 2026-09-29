@@ -20,7 +20,7 @@ const EXTENSION_FAMILY_ROOT_DOMAIN: &[u8] = b"backend.semantic.ir.language-exten
 
 /// Typed failure used by aggregate verification for shared reference budgeting.
 #[derive(Debug)]
-pub(super) enum LanguageExtensionFamilyValidationError {
+pub(in crate::ir::versioned_records) enum LanguageExtensionFamilyValidationError {
     Record(SemanticPlaneRecordError),
     ReferenceLimitExceeded,
 }
@@ -188,7 +188,9 @@ pub fn validate_language_extension_family_v2_with_limits<'bytes>(
 }
 
 /// Validates a family while preserving the typed reference-limit failure.
-pub(super) fn validate_language_extension_family_v2_with_limits_detailed<'bytes>(
+pub(in crate::ir::versioned_records) fn validate_language_extension_family_v2_with_limits_detailed<
+    'bytes,
+>(
     profile: LanguageProfile,
     segments: impl IntoIterator<Item = CanonicalSemanticPlaneSegmentView<'bytes>>,
     types: &CheckedTypesFamilyV2,
