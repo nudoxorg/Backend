@@ -193,8 +193,8 @@ pub use semantic_generation::{
     SemanticGenerationFamilyCommitmentV2, SemanticGenerationFamilyRootV2,
     SemanticGenerationProofError, SemanticGenerationRootV2, SemanticTypedPlaneVerificationTierV2,
     TypedPlaneSegmentSourceV2, UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2,
-    VerifiedTypedPlaneContentV2, verify_typed_plane_content_v2,
-    verify_typed_plane_content_v2_with_jumbo_segment_source,
+    VerifiedTypedPlaneContentV2, derive_typed_plane_content_v2_from_admitted_reader,
+    verify_typed_plane_content_v2, verify_typed_plane_content_v2_with_jumbo_segment_source,
     verify_typed_plane_content_v2_with_jumbo_source, verify_typed_plane_content_v2_with_tier,
 };
 pub use semantic_image::{
@@ -268,9 +268,11 @@ pub use versioned_records::{
     declaration_plane_key, decode_semantic_plane_segment, encode_canonical_plane_family,
     encode_canonical_plane_family_measured, encode_declaration_planes,
     encode_language_extension_plane, stream_canonical_plane_family,
-    stream_canonical_plane_family_with_jumbo, validate_language_extension_family_v2,
-    verify_jumbo_plane_family_closures, verify_language_extension_plane_against_reader,
-    verify_semantic_plane_family_against_reader,
+    stream_canonical_plane_family_with_jumbo,
+    stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
+    stream_canonical_plane_family_with_stable_key_anchors, validate_language_extension_family_v2,
+    verify_canonical_semantic_plane_segment_boundaries, verify_jumbo_plane_family_closures,
+    verify_language_extension_plane_against_reader, verify_semantic_plane_family_against_reader,
 };
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{

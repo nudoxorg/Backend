@@ -23,8 +23,9 @@ use crate::ir::versioned_records::aggregate::{
 };
 use crate::ir::{
     ImageProvenance, JumboRopeLimits, JumboRopeObjectSource, SemanticBuildIdentity,
-    SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
-    SemanticTypedPlaneManifestV2, SemanticTypedPlaneSegmentClaimV2,
+    SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticInputWitness,
+    SemanticIrPlane, SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
+    SemanticTypedPlaneSegmentClaimV2,
 };
 use thiserror::Error;
 
@@ -463,6 +464,53 @@ where
     Ok(content)
 }
 
+/// Derives V2 semantic roots from the exact durable segment family claims
+/// emitted from one complete reader, before those roots have been written into
+/// a c007 manifest. The caller must provide the same live complete read
+/// witness used to produce the rows; claim-only `Coverage::Complete` is not
+/// accepted here. This runs the normal bounded all-family consumer verifier,
+/// including boundary policy, cross-family closure, and jumbo admission, and
+/// returns roots for the caller to bind into the final manifest.
+///
+/// This producer-side bridge avoids re-encoding reader rows merely to learn
+/// the roots that the cold consumer will later check. It verifies the exact
+/// payloads reopened through `source`; it does not itself authorize selection
+/// after restart, which still requires fresh owner read admission.
+pub fn derive_typed_plane_content_v2_from_admitted_reader<S, P>(
+    build: SemanticBuildIdentity,
+    image_facts: SemanticImageFacts,
+    input_witness: SemanticInputWitness,
+    families: &[SemanticTypedPlaneFamilyDescriptorV2; IR_FAMILY_COUNT],
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+    source: &mut S,
+    jumbo_source: &mut P,
+) -> Result<VerifiedTypedPlaneContentV2, SemanticGenerationProofError>
+where
+    S: TypedPlaneSegmentSourceV2 + ?Sized,
+    P: JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+    P::Error: core::fmt::Display,
+{
+    if !input_witness.coverage().is_authorized_complete() {
+        return Err(SemanticGenerationProofError::InputAdmissionRequired);
+    }
+    let limits = typed_plane_verification_limits(tier);
+    let mut jumbo_admission =
+        JumboObjectClosureAdmissionV2::new(jumbo_source, jumbo_limits, limits);
+    let inventory = verify_semantic_typed_plane_inventory_v2_with_segment_source(
+        build,
+        image_facts,
+        input_witness,
+        families,
+        source,
+        limits,
+        Some(&mut jumbo_admission),
+    )
+    .map_err(map_inventory_verification_error)?;
+    VerifiedTypedPlaneContentV2::from_verified_inventory(inventory)
+}
+
 fn verify_typed_plane_content_v2_with_admission(
     manifest: &SemanticTypedPlaneManifestV2,
     exact_ordered_payloads: &[&[u8]],
@@ -690,6 +738,10 @@ pub enum SemanticGenerationProofError {
     /// A V2 generation claim does not assert complete input/read coverage.
     #[error("V2 typed-plane input/read claim is not Complete")]
     InputClaimNotComplete,
+    /// A V2 producer requires a live owner-admitted complete input witness;
+    /// a claim-only manifest field cannot stand in for that capability.
+    #[error("V2 typed-plane production requires live owner-admitted complete input coverage")]
+    InputAdmissionRequired,
     /// A family was missing, duplicated, or out of the required canonical order.
     #[error(
         "semantic generation family inventory differs at slot {index}: expected {expected:?}, observed {observed:?}"
