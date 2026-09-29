@@ -2298,7 +2298,9 @@ mod tests {
                 SemanticPlaneRecordError::JumboObjectStoreRequired
             ))
         ));
-        let mut absent = TestJumboObjects::default();
+        let missing_leaf = *persisted.leaf_order.first().expect("stored jumbo leaf");
+        let mut absent = persisted.clone();
+        absent.leaves.remove(&missing_leaf);
         assert!(matches!(
             verify_rows_with_jumbo_source(rows, &mut absent, crate::ir::JumboRopeLimits::default()),
             Err(SemanticTypedPlaneInventoryV2Error::Record(
@@ -2358,7 +2360,11 @@ mod tests {
         ] {
             let mut objects = TestJumboObjects::default();
             let mut rows = valid_rows(owner, None, None, false, true);
-            let row = jumbo_docs_row_with_context(owner, &text, context, &mut objects);
+            // These descriptors must fail the owner/family/field/encoding
+            // grammar before closure admission. Keep the stored value valid
+            // UTF-8 even for the wrong-encoding case; `docs_wire` contains a
+            // binary length prefix and is not necessarily valid UTF-8.
+            let row = jumbo_docs_row_with_value(owner, &text, context, &mut objects);
             replace_documentation_row(&mut rows, owner, row);
             assert!(matches!(
                 verify_rows_with_jumbo_source(
