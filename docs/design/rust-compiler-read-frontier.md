@@ -73,8 +73,11 @@ The compiler now has one real, borrow-scoped observation seam in
 `RustWorkspaceSessionLane::begin_with_editor_buffer_observer`: after applying
 the selected editor overlay, it reads each selected `FileId` back through
 `SourceDatabase::file_text` and passes the relative path and exact bytes to the
-caller-owned callback. The production Rust package compiler feeds those events
-to a bounded, attempt-fenced diagnostic recorder and emits a debug summary.
+caller-owned callback. When the `compiler.read_frontier` debug target is
+enabled, the production Rust package compiler feeds those events to a bounded,
+attempt-fenced diagnostic recorder and emits a debug summary. With that target
+disabled (the default), the compiler takes the original `begin` path without
+the selected-buffer walk or hashing.
 The callback is synchronous and uses no per-read `Arc<Mutex<_>>`. It observes
 only selected editor buffers; it does not walk the workspace VFS and therefore
 does not claim disk-loaded dependency or sibling coverage. Its 512 MiB aggregate

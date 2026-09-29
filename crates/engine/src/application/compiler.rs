@@ -101,6 +101,9 @@ fn begin_rust_workspace_with_observation<'lane>(
     files: &[RustWorkspaceFile<'_>],
     control: RustAnalysisControl<'_>,
 ) -> Result<RustWorkspaceSessionLease<'lane>, RustAuthorityError> {
+    if !tracing::enabled!(target: "compiler.read_frontier", tracing::Level::DEBUG) {
+        return lane.begin(key, files, control);
+    }
     let Ok(mut recorder) = CompilerReadObservationRecorderV2::new() else {
         return lane.begin(key, files, control);
     };
