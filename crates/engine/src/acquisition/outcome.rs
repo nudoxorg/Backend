@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -73,7 +74,7 @@ pub struct Offline {
 }
 
 /// Typed negative fact retained by the negative cache.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NegativeFact {
     /// Exact negative fact kind.
     pub kind: NegativeFactKind,
@@ -92,7 +93,7 @@ pub struct NegativeFact {
 }
 
 /// Negative facts distinguish absence from transient failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum NegativeFactKind {
     /// Source definitively has no matching coordinate.
     NotFound,

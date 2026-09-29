@@ -1,7 +1,7 @@
 //! Open, restart, and bounded recovery façade for hash-chain journals.
 
 use super::frame::read_frame_at_path;
-use super::scan::{collect_recovery, repair_tail, scan_path};
+use super::scan::{collect_recovery, repair_tail, scan_path, scan_path_from};
 use super::{
     HashChainJournal, JournalCheckpoint, JournalCodec, JournalError, JournalFrame, JournalFrameRef,
     JournalLimits, JournalReceipt, JournalRecovery, JournalScan, JournalState, Mutex, OpenOptions,
@@ -27,6 +27,42 @@ impl<D: JournalCodec> HashChainJournal<D> {
         path: impl AsRef<Path>,
         limits: JournalLimits,
     ) -> Result<(Self, JournalRecovery<D>), JournalError> {
+        Self::open_with_limits_mode(path, limits, true)
+    }
+
+    /// Opens a journal for a domain that will repair a torn tail only after
+    /// taking its own interprocess publication fence. Recovery remains
+    /// read-only here, so opening beside an active writer cannot truncate its
+    /// incomplete final frame.
+    /// # Errors
+    ///
+    /// Returns an error when validation or admission of the supplied value
+    /// fails. A torn tail is reported in the returned recovery value and is
+    /// repaired by a later fenced [`Self::refresh_external_with`] call.
+    pub fn open_deferred_repair(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, JournalRecovery<D>), JournalError> {
+        Self::open_with_limits_mode(path, JournalLimits::default(), false)
+    }
+
+    /// Opens with explicit bounds while deferring torn-tail repair to the
+    /// domain's interprocess publication boundary.
+    /// # Errors
+    ///
+    /// Returns an error when validation or admission of the supplied value
+    /// fails.
+    pub fn open_with_limits_deferred_repair(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<(Self, JournalRecovery<D>), JournalError> {
+        Self::open_with_limits_mode(path, limits, false)
+    }
+
+    fn open_with_limits_mode(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+        repair_torn_tail: bool,
+    ) -> Result<(Self, JournalRecovery<D>), JournalError> {
         validate_limits(limits)?;
         let path = path.as_ref().to_owned();
         std::fs::create_dir_all(containing_directory(&path))?;
@@ -37,7 +73,9 @@ impl<D: JournalCodec> HashChainJournal<D> {
             .append(true)
             .open(&path)?;
         let (recovery, scan) = collect_recovery::<D>(&path, limits, None)?;
-        repair_tail(&path, &scan)?;
+        if repair_torn_tail {
+            repair_tail(&path, &scan)?;
+        }
         if !existed {
             backend_platform::durability::open_directory(containing_directory(&path))?
                 .sync_all()?;
@@ -93,6 +131,36 @@ impl<D: JournalCodec> HashChainJournal<D> {
     where
         F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
     {
+        Self::open_streaming_with_mode(path, limits, visitor, true)
+    }
+
+    /// Opens and streams validated journal frames without repairing a torn
+    /// final frame. Domain owners use this during cold replay, then let their
+    /// own interprocess fence authorize tail repair during refresh.
+    /// # Errors
+    ///
+    /// Returns an error when validation or admission of the supplied value
+    /// fails. A torn tail is reported in the scan result but remains intact.
+    pub fn open_streaming_with_deferred_repair<F>(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+        visitor: F,
+    ) -> Result<(Self, JournalScan<D>), JournalError>
+    where
+        F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
+    {
+        Self::open_streaming_with_mode(path, limits, visitor, false)
+    }
+
+    fn open_streaming_with_mode<F>(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+        mut visitor: F,
+        repair_torn_tail: bool,
+    ) -> Result<(Self, JournalScan<D>), JournalError>
+    where
+        F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
+    {
         validate_limits(limits)?;
         let path = path.as_ref().to_owned();
         std::fs::create_dir_all(containing_directory(&path))?;
@@ -103,7 +171,9 @@ impl<D: JournalCodec> HashChainJournal<D> {
             .append(true)
             .open(&path)?;
         let scan = scan_path(&path, limits, None, visitor)?;
-        repair_tail(&path, &scan)?;
+        if repair_torn_tail {
+            repair_tail(&path, &scan)?;
+        }
         if !existed {
             backend_platform::durability::open_directory(containing_directory(&path))?
                 .sync_all()?;
@@ -320,6 +390,81 @@ impl<D: JournalCodec> HashChainJournal<D> {
         state.next_offset = scan.valid_offset;
         state.unusable = false;
         Ok(recovery)
+    }
+
+    /// Refreshes append state from complete frames appended by another process
+    /// and visits only that suffix. Callers must hold their domain's
+    /// interprocess publication gate for the duration of this operation and
+    /// its corresponding domain-state fold.
+    ///
+    /// A torn final frame is repaired at the last validated boundary. The
+    /// current in-memory checkpoint is used as the trusted predecessor, so a
+    /// normal cross-process update scans only new frames rather than replaying
+    /// the entire journal.
+    /// # Errors
+    ///
+    /// Returns an error when the suffix diverges, exceeds the recovery bounds,
+    /// or cannot be durably repaired.
+    pub fn refresh_external_with<F>(
+        &self,
+        limits: JournalLimits,
+        visitor: F,
+    ) -> Result<JournalScan<D>, JournalError>
+    where
+        F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
+    {
+        validate_limits(limits)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| JournalError::Corrupt("poisoned journal"))?;
+        if state.unusable {
+            return Err(JournalError::Corrupt("journal append state"));
+        }
+        let initial_sequence = state.next_sequence.checked_sub(1);
+        let result = scan_path_from(
+            &self.path,
+            limits,
+            state.next_offset,
+            state.next_sequence,
+            state.chain,
+            initial_sequence,
+            visitor,
+        );
+        let scan = match result {
+            Ok(scan) => scan,
+            Err(error) => {
+                state.unusable = true;
+                return Err(error);
+            }
+        };
+        if scan.truncated_tail
+            && let Err(error) = (|| -> Result<(), JournalError> {
+                state.file.set_len(scan.valid_offset)?;
+                state.file.sync_all()?;
+                if state.file.metadata()?.len() != scan.valid_offset {
+                    return Err(JournalError::Corrupt("tail repair"));
+                }
+                backend_platform::durability::open_directory(containing_directory(&self.path))?
+                    .sync_all()?;
+                Ok(())
+            })()
+        {
+            state.unusable = true;
+            return Err(error);
+        }
+        state.next_sequence = match scan.last_sequence.map_or(Ok(0), |sequence| {
+            sequence.checked_add(1).ok_or(JournalError::Bounds)
+        }) {
+            Ok(sequence) => sequence,
+            Err(error) => {
+                state.unusable = true;
+                return Err(error);
+            }
+        };
+        state.chain = scan.chain;
+        state.next_offset = scan.valid_offset;
+        Ok(scan)
     }
 
     /// Folds validated frames with one reusable payload buffer.

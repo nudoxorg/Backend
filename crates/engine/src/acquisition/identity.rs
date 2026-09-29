@@ -1,4 +1,5 @@
 use blake3::Hasher;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     fs::{self, File},
@@ -37,7 +38,7 @@ pub(super) fn digest(domain: &[u8], fields: &[&[u8]]) -> [u8; ID_BYTES] {
 
 macro_rules! identity {
     ($name:ident, $domain:literal) => {
-        #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
         pub struct $name([u8; ID_BYTES]);
 
         impl $name {
@@ -86,6 +87,7 @@ identity!(TreeManifestId, b"tree-manifest");
 identity!(SourceSnapshotId, b"source-snapshot");
 identity!(AcquisitionDeltaId, b"acquisition-delta");
 identity!(AcquisitionReceiptId, b"acquisition-receipt");
+identity!(AcquisitionRecordId, b"acquisition-record");
 identity!(PublicationRootId, b"publication-root");
 
 /// A canonical release claim, independent of mutable release facts.
@@ -232,7 +234,7 @@ impl RawArchiveObjectId {
 }
 
 /// One canonical path/object row in a tree manifest.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ManifestEntry {
     /// Slash-separated relative path.
     pub path: Arc<str>,
@@ -243,7 +245,7 @@ pub struct ManifestEntry {
 }
 
 /// Immutable sorted tree manifest shared by local directories and archives.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TreeManifest {
     id: TreeManifestId,
     entries: Arc<[ManifestEntry]>,
@@ -292,6 +294,14 @@ impl TreeManifest {
             id,
             entries: Arc::from(entries),
         })
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), IdentityError> {
+        let rebuilt = Self::from_sorted(self.entries.to_vec())?;
+        if rebuilt.id != self.id {
+            return Err(IdentityError::LengthMismatch);
+        }
+        Ok(())
     }
 
     /// Returns the immutable manifest identity.
@@ -377,7 +387,7 @@ pub(super) fn collect_directory(
 }
 
 /// Immutable source snapshot that carries a manifest and release claims.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceSnapshot {
     source: [u8; ID_BYTES],
     cursor: [u8; ID_BYTES],
@@ -442,6 +452,28 @@ impl SourceSnapshot {
             claims: Arc::from(claims),
             id,
         })
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), IdentityError> {
+        self.manifest.validate()?;
+        if self.claims.windows(2).any(|window| window[0] == window[1]) {
+            return Err(IdentityError::Duplicate);
+        }
+        if self.claims.windows(2).any(|window| window[0] > window[1]) {
+            return Err(IdentityError::Unsorted);
+        }
+        let rebuilt = Self::new_with_frontier(
+            self.source,
+            self.cursor,
+            self.policy_epoch,
+            self.facts_frontier,
+            Arc::clone(&self.manifest),
+            self.claims.to_vec(),
+        )?;
+        if rebuilt.id != self.id {
+            return Err(IdentityError::LengthMismatch);
+        }
+        Ok(())
     }
 
     /// Returns the exact snapshot root.

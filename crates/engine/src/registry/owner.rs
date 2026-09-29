@@ -17,7 +17,7 @@ use crate::{
     },
     effects::{EffectKey, effect_key},
     fault::{Boundary, Faults},
-    journal::{HashChainJournal, JournalError},
+    journal::{HashChainJournal, JournalCodec, JournalError, JournalLimits},
 };
 use backend_advisory::{
     AcquisitionDecision, AcquisitionGate, AdvisoryCoverage, AdvisoryObservation,
@@ -33,8 +33,8 @@ use super::frontier::{
 use super::wire::{RegistryLog, RegistryRecord};
 use super::{
     AcquisitionLimits, AcquisitionPolicy, CanonicalFeedV1, FeedCursor, FeedRequest, FeedSchema,
-    PackageCoordinate, PublishedArtifactClaim, RegistryEndpoint, RegistryTransport, RemoteRegistry,
-    TransportFailure, TransportResult,
+    PackageCoordinate, PublishedArtifactClaim, RegistryEndpoint, RegistryId, RegistryTransport,
+    RemoteRegistry, TransportFailure, TransportResult,
 };
 
 /// Durable external effect intent. The key covers every request field.
@@ -94,6 +94,16 @@ pub struct PublishedPackage {
         backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
 }
 
+impl PublishedPackage {
+    /// Content identity of the exact normalized metadata record admitted by
+    /// the registry owner. The digest intentionally includes the metadata's
+    /// selected raw object identity and extent without reading that object.
+    #[must_use]
+    pub fn metadata_evidence_digest(&self) -> [u8; 32] {
+        super::wire::metadata_evidence_digest(self)
+    }
+}
+
 /// Receipt atomically pairing archive publication and cursor advancement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcquisitionReceipt<S: FeedSchema = CanonicalFeedV1> {
@@ -122,7 +132,8 @@ pub struct RegistryRecovery<S: FeedSchema = CanonicalFeedV1> {
     pub pending: Option<AcquisitionIntent<S>>,
     /// Most recent committed publication receipt.
     pub last_receipt: Option<AcquisitionReceipt<S>>,
-    /// Whether a partial final journal frame was discarded.
+    /// Whether cold replay observed a partial final frame. Destructive tail
+    /// repair remains deferred until the endpoint publication fence is held.
     pub repaired_tail: bool,
 }
 
@@ -281,6 +292,110 @@ pub struct RegistryOwner<S: FeedSchema = CanonicalFeedV1> {
     readiness: RegistryReadiness,
     advisory_gate: Option<AcquisitionGate>,
     advisory_resolver: Option<Arc<dyn AdvisoryResolver>>,
+    #[cfg(test)]
+    archive_bytes_read_for_tests: Arc<std::sync::atomic::AtomicU64>,
+}
+
+struct RegistryReplayTarget<'a> {
+    endpoint: RegistryId,
+    limits: AcquisitionLimits,
+    objects: &'a ContentAddressedStore,
+    cursor: &'a mut FeedCursor<RemoteRegistry, CanonicalFeedV1>,
+    pending: &'a mut Option<AcquisitionIntent>,
+    last_receipt: &'a mut Option<AcquisitionReceipt>,
+    catalog: &'a mut BTreeMap<PackageCoordinate, PublishedPackage>,
+    forge_associations: &'a mut BTreeMap<[u8; 32], backend_library::RegistryForgeAssociation>,
+    forge_refcounts: &'a mut BTreeMap<[u8; 32], u32>,
+    facts_map: &'a mut FactsMerkleMap,
+    catalog_generation: &'a mut u64,
+}
+
+impl RegistryReplayTarget<'_> {
+    fn apply(&mut self, record: RegistryRecord) -> Result<(), AcquisitionError> {
+        match record {
+            RegistryRecord::Prepared(intent) => {
+                if intent.cursor != *self.cursor || self.pending.replace(intent).is_some() {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
+            }
+            RegistryRecord::Settled(intent) => {
+                if self
+                    .pending
+                    .take()
+                    .is_none_or(|pending| pending.key != intent.key)
+                {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
+            }
+            RegistryRecord::Committed(intent, receipt) => {
+                let Some(persisted) = self.pending.take() else {
+                    return Err(AcquisitionError::CorruptJournal);
+                };
+                if persisted.key != receipt.effect || persisted != intent {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
+                if intent.cursor != receipt.base
+                    || receipt.base != *self.cursor
+                    || receipt.target.registry() != self.endpoint
+                    || receipt.target.sequence()
+                        != self
+                            .cursor
+                            .sequence()
+                            .checked_add(1)
+                            .ok_or(AcquisitionError::Bounds)?
+                {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
+                validate_receipt_object_references(self.objects, &receipt)?;
+                validate_receipt_catalog(
+                    self.catalog,
+                    self.forge_associations,
+                    &receipt,
+                    self.limits.max_catalog_items,
+                )?;
+                let prepared_facts = prepare_receipt_facts(self.facts_map, &receipt)?;
+                if prepared_facts.target_root() != receipt.facts_root {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
+                apply_receipt_to_catalog(
+                    self.catalog,
+                    self.forge_associations,
+                    self.forge_refcounts,
+                    self.facts_map,
+                    &receipt,
+                    prepared_facts,
+                )?;
+                *self.catalog_generation = (*self.catalog_generation).saturating_add(1);
+                *self.cursor = receipt.target;
+                *self.last_receipt = Some(receipt);
+            }
+            RegistryRecord::ForgeLinked {
+                coordinate,
+                associations,
+                facts_root,
+            } => {
+                let prepared = prepare_forge_link(
+                    self.catalog,
+                    self.forge_associations,
+                    self.facts_map,
+                    &coordinate,
+                    associations,
+                )?;
+                if prepared.target_root() != facts_root {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
+                apply_prepared_forge_link(
+                    self.catalog,
+                    self.forge_associations,
+                    self.forge_refcounts,
+                    self.facts_map,
+                    prepared,
+                )?;
+                *self.catalog_generation = (*self.catalog_generation).saturating_add(1);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<S: FeedSchema> fmt::Debug for RegistryOwner<S> {
@@ -364,109 +479,50 @@ impl RegistryOwner {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| root.join("registry-content"));
         let objects = ContentAddressedStore::open(objects_root).map_err(content_store_error)?;
-        let (journal, recovery) =
-            HashChainJournal::<RegistryLog>::open(root.join("registry.journal"))?;
         let mut cursor = FeedCursor::genesis(endpoint.id());
-        let mut pending: BTreeMap<EffectKey, AcquisitionIntent> = BTreeMap::new();
+        let mut pending = None;
         let mut last_receipt = None;
         let mut catalog = BTreeMap::new();
         let mut forge_associations = BTreeMap::new();
         let mut forge_refcounts = BTreeMap::new();
         let mut facts_map = FactsMerkleMap::try_new().map_err(facts_store_error)?;
         let mut catalog_generation = 0u64;
-        for frame in recovery.frames {
-            match RegistryLog::decode_record(&frame.payload)? {
-                RegistryRecord::Prepared(intent) => {
-                    if intent.cursor != cursor
-                        || pending.insert(intent.key, intent).is_some()
-                        || pending.len() != 1
-                    {
-                        return Err(AcquisitionError::CorruptJournal);
-                    }
+        let (journal, scan) = HashChainJournal::<RegistryLog>::open_streaming_with_deferred_repair(
+            root.join("registry.journal"),
+            JournalLimits::default(),
+            |frame| {
+                let record = RegistryLog::decode_record(frame.payload)
+                    .map_err(|_| JournalError::Corrupt("registry record"))?;
+                RegistryReplayTarget {
+                    endpoint: endpoint.id(),
+                    limits,
+                    objects: &objects,
+                    cursor: &mut cursor,
+                    pending: &mut pending,
+                    last_receipt: &mut last_receipt,
+                    catalog: &mut catalog,
+                    forge_associations: &mut forge_associations,
+                    forge_refcounts: &mut forge_refcounts,
+                    facts_map: &mut facts_map,
+                    catalog_generation: &mut catalog_generation,
                 }
-                RegistryRecord::Settled(intent) => {
-                    if pending.remove(&intent.key).is_none() {
-                        return Err(AcquisitionError::CorruptJournal);
-                    }
-                }
-                RegistryRecord::Committed(intent, receipt) => {
-                    let Some(persisted) = pending.remove(&receipt.effect) else {
-                        return Err(AcquisitionError::CorruptJournal);
-                    };
-                    if persisted != intent {
-                        return Err(AcquisitionError::CorruptJournal);
-                    }
-                    if intent.cursor != receipt.base
-                        || receipt.base != cursor
-                        || receipt.target.registry() != endpoint.id()
-                        || receipt.target.sequence()
-                            != cursor
-                                .sequence()
-                                .checked_add(1)
-                                .ok_or(AcquisitionError::Bounds)?
-                    {
-                        return Err(AcquisitionError::CorruptJournal);
-                    }
-                    verify_receipt_objects(&objects, &receipt)?;
-                    validate_receipt_catalog(
-                        &catalog,
-                        &forge_associations,
-                        &receipt,
-                        limits.max_catalog_items,
-                    )?;
-                    let prepared_facts = prepare_receipt_facts(&facts_map, &receipt)?;
-                    if prepared_facts.target_root() != receipt.facts_root {
-                        return Err(AcquisitionError::CorruptJournal);
-                    }
-                    apply_receipt_to_catalog(
-                        &mut catalog,
-                        &mut forge_associations,
-                        &mut forge_refcounts,
-                        &mut facts_map,
-                        &receipt,
-                        prepared_facts,
-                    )?;
-                    catalog_generation = catalog_generation.saturating_add(1);
-                    cursor = receipt.target;
-                    last_receipt = Some(receipt);
-                }
-                RegistryRecord::ForgeLinked {
-                    coordinate,
-                    associations,
-                    facts_root,
-                } => {
-                    let prepared = prepare_forge_link(
-                        &catalog,
-                        &forge_associations,
-                        &facts_map,
-                        &coordinate,
-                        associations,
-                    )?;
-                    if prepared.target_root() != facts_root {
-                        return Err(AcquisitionError::CorruptJournal);
-                    }
-                    apply_prepared_forge_link(
-                        &mut catalog,
-                        &mut forge_associations,
-                        &mut forge_refcounts,
-                        &mut facts_map,
-                        prepared,
-                    )?;
-                    catalog_generation = catalog_generation.saturating_add(1);
-                }
-            }
-        }
+                .apply(record)
+                .map_err(|_| JournalError::Corrupt("registry replay"))
+            },
+        )?;
         for package in catalog.values() {
             if !valid_forge_source_ids(package, &forge_associations) {
                 return Err(AcquisitionError::CorruptJournal);
             }
         }
-        let pending = pending.into_values().next();
         let report = RegistryRecovery {
             cursor,
             pending,
             last_receipt: last_receipt.clone(),
-            repaired_tail: recovery.truncated_tail,
+            // The observation is reported at open, but any destructive
+            // truncation is deferred until `refresh_from_external` runs under
+            // the endpoint publication fence.
+            repaired_tail: scan.truncated_tail,
         };
         let readiness = match policy {
             AcquisitionPolicy::Offline => RegistryReadiness::Offline {
@@ -497,6 +553,8 @@ impl RegistryOwner {
                 readiness,
                 advisory_gate: None,
                 advisory_resolver: None,
+                #[cfg(test)]
+                archive_bytes_read_for_tests: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             },
             report,
         ))
@@ -531,7 +589,10 @@ impl RegistryOwner {
     /// Reserves the next feed effect while holding the owner lock only for
     /// durable intent admission. The returned intent is safe to use for
     /// network I/O after the lock is released.
-    pub(crate) fn begin_intent(&mut self) -> Result<AcquisitionIntent, AcquisitionError> {
+    pub(crate) fn begin_intent(
+        &mut self,
+        _capability: &crate::acquisition::AcquisitionPublicationCapability<'_>,
+    ) -> Result<AcquisitionIntent, AcquisitionError> {
         if let Some(intent) = self.pending {
             return Ok(intent);
         }
@@ -583,6 +644,7 @@ impl RegistryOwner {
     /// deterministic source order under concurrent callers.
     pub(crate) fn commit_reserved_page(
         &mut self,
+        _capability: &crate::acquisition::AcquisitionPublicationCapability<'_>,
         intent: AcquisitionIntent,
         page: &super::FeedPage,
         publications: Vec<PublishedPackage>,
@@ -639,6 +701,7 @@ impl RegistryOwner {
     /// still names the current cursor.
     pub(crate) fn settle_reserved(
         &mut self,
+        _capability: &crate::acquisition::AcquisitionPublicationCapability<'_>,
         intent: AcquisitionIntent,
     ) -> Result<(), AcquisitionError> {
         if self.pending != Some(intent) || self.cursor != intent.cursor {
@@ -797,8 +860,9 @@ impl RegistryOwner {
     /// Associations are normalized by their content identity in the owner
     /// journal. Replacing a link changes the facts frontier and therefore the
     /// next source snapshot/delta root without re-reading archive bytes.
-    pub fn link_forge_associations(
+    pub(crate) fn link_forge_associations(
         &mut self,
+        _capability: &crate::acquisition::AcquisitionPublicationCapability<'_>,
         coordinate: &PackageCoordinate,
         associations: Box<[backend_library::RegistryForgeAssociation]>,
     ) -> Result<(), AcquisitionError> {
@@ -864,6 +928,56 @@ impl RegistryOwner {
         self.readiness
     }
 
+    /// Applies complete journal frames appended by another process since this
+    /// owner last observed the file. The caller must hold the endpoint-wide
+    /// interprocess journal publication fence around this refresh and the
+    /// mutation that follows it.
+    pub(crate) fn refresh_from_external(&mut self) -> Result<usize, AcquisitionError> {
+        let endpoint = self.endpoint.id();
+        let limits = self.limits;
+        let journal = &self.journal;
+        let scanned = {
+            let mut replay = RegistryReplayTarget {
+                endpoint,
+                limits,
+                objects: &self.objects,
+                cursor: &mut self.cursor,
+                pending: &mut self.pending,
+                last_receipt: &mut self.last_receipt,
+                catalog: &mut self.catalog,
+                forge_associations: &mut self.forge_associations,
+                forge_refcounts: &mut self.forge_refcounts,
+                facts_map: &mut self.facts_map,
+                catalog_generation: &mut self.catalog_generation,
+            };
+            journal.refresh_external_with(JournalLimits::default(), |frame| {
+                let record = <RegistryLog as JournalCodec>::decode(frame.payload)?;
+                replay
+                    .apply(record)
+                    .map_err(|_| JournalError::Corrupt("registry state transition"))
+            })?
+        };
+        if scanned.frames_scanned > 0 {
+            self.readiness = match self.policy {
+                AcquisitionPolicy::Offline => RegistryReadiness::Offline {
+                    source: endpoint,
+                    cursor: self.cursor.sequence(),
+                },
+                AcquisitionPolicy::Online if self.cursor.sequence() == 0 => {
+                    RegistryReadiness::Configured {
+                        source: endpoint,
+                        cursor: 0,
+                    }
+                }
+                AcquisitionPolicy::Online => RegistryReadiness::Ready {
+                    source: endpoint,
+                    cursor: self.cursor.sequence(),
+                },
+            };
+        }
+        Ok(scanned.frames_scanned)
+    }
+
     /// Loads a published archive as the canonical object accepted by capability installation.
     ///
     /// # Errors
@@ -875,16 +989,29 @@ impl RegistryOwner {
         let Some(publication) = self.catalog.get(coordinate) else {
             return Ok(None);
         };
-        self.objects
-            .verify_object(publication.raw_object, publication.bytes)
-            .map_err(content_store_error)?;
+        if self
+            .objects
+            .object_len(publication.raw_object)
+            .map_err(content_store_error)?
+            != Some(publication.bytes)
+        {
+            return Err(AcquisitionError::CorruptJournal);
+        }
         let mut bytes = Vec::new();
         self.objects
             .open_object(publication.raw_object)
             .map_err(content_store_error)?
             .take(publication.bytes.saturating_add(1))
             .read_to_end(&mut bytes)?;
+        #[cfg(test)]
+        self.archive_bytes_read_for_tests.fetch_add(
+            u64::try_from(bytes.len()).map_err(|_| AcquisitionError::Bounds)?,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         if u64::try_from(bytes.len()).map_err(|_| AcquisitionError::Bounds)? != publication.bytes {
+            return Err(AcquisitionError::CorruptJournal);
+        }
+        if RawArchiveObjectId::from_bytes(&bytes) != publication.raw_object {
             return Err(AcquisitionError::CorruptJournal);
         }
         let admitted = publication.artifact.admit(&bytes)?;
@@ -896,6 +1023,12 @@ impl RegistryOwner {
         Ok(Some(object))
     }
 
+    #[cfg(test)]
+    pub(crate) fn archive_bytes_read_for_tests(&self) -> u64 {
+        self.archive_bytes_read_for_tests
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Performs one durable, bounded feed effect.
     ///
     /// # Errors
@@ -904,8 +1037,9 @@ impl RegistryOwner {
         clippy::too_many_lines,
         reason = "one owner poll keeps the durable effect transitions together"
     )]
-    pub fn poll<T: RegistryTransport>(
+    pub(crate) fn poll<T: RegistryTransport>(
         &mut self,
+        capability: &crate::acquisition::AcquisitionPublicationCapability<'_>,
         transport: &mut T,
     ) -> Result<AcquisitionOutcome, AcquisitionError> {
         if self.policy == AcquisitionPolicy::Offline {
@@ -1355,18 +1489,18 @@ fn archive_transfer_id(package: &super::RemotePackage) -> TransferId {
     TransferId::from_parts(&transfer_key, None, None)
 }
 
-fn verify_receipt_objects(
+fn validate_receipt_object_references(
     store: &ContentAddressedStore,
     receipt: &AcquisitionReceipt,
 ) -> Result<(), AcquisitionError> {
     for package in &receipt.packages {
-        store
-            .verify_object(package.raw_object, package.bytes)
-            .map_err(content_store_error)?;
-        let file = store
-            .open_object(package.raw_object)
-            .map_err(content_store_error)?;
-        let _ = package.artifact.admit_reader(file, package.bytes)?;
+        if store
+            .object_len(package.raw_object)
+            .map_err(content_store_error)?
+            != Some(package.bytes)
+        {
+            return Err(AcquisitionError::CorruptJournal);
+        }
     }
     Ok(())
 }

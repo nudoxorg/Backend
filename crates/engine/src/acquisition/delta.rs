@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
 use super::identity::{
@@ -6,7 +7,7 @@ use super::identity::{
 };
 
 /// One before/after source path transition.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DeltaChange {
     /// Canonical path key.
     pub path: Arc<str>,
@@ -114,7 +115,7 @@ pub(super) fn merge_manifest_entries(
 }
 
 /// Immutable root-bound source delta.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AcquisitionDelta {
     id: AcquisitionDeltaId,
     base: SourceSnapshotId,
@@ -223,6 +224,18 @@ impl AcquisitionDelta {
             canonical.extend_from_slice(&change.after_mode.unwrap_or_default().to_be_bytes());
         }
         canonical
+    }
+
+    pub(crate) fn validate(&self, base: &SourceSnapshot) -> Result<(), DeltaError> {
+        let rebuilt = Self::new(
+            base,
+            Arc::clone(&self.target_snapshot),
+            self.changes.to_vec(),
+        )?;
+        if rebuilt != *self {
+            return Err(DeltaError::TargetMismatch);
+        }
+        Ok(())
     }
 
     /// Applies once, or returns the same immutable target for a repeated

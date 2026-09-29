@@ -47,8 +47,6 @@ pub(super) struct RegistryGateway {
     advisory: Arc<backend_engine::advisory::AdvisoryAuthority>,
     advisory_path: PathBuf,
     advisory_config: AdvisoryConfig,
-    last_receipt: Option<Arc<backend_engine::acquisition::AcquisitionReceipt>>,
-    last_snapshot: Option<Arc<backend_engine::acquisition::SourceSnapshot>>,
     fresh_package_facts: FreshPackageFactMap,
     observation_generation: u64,
     projection: Option<(CatalogProjectionKey, Arc<CatalogProjection>)>,
@@ -596,6 +594,9 @@ impl RegistryGateway {
             let service = self
                 .service_for(&source)
                 .map_err(|error| format!("open registry source: {error}"))?;
+            service
+                .refresh_external()
+                .map_err(|error| format!("refresh registry source: {error}"))?;
             hasher.update(&source.id().as_bytes());
             hasher.update(&service.catalog_generation().to_le_bytes());
         }
@@ -680,8 +681,6 @@ impl RegistryGateway {
             advisory,
             advisory_path,
             advisory_config: advisory_config.clone(),
-            last_receipt: None,
-            last_snapshot: None,
             // Freshness observations are deliberately process-local. A
             // recovered catalog retains authenticated facts, but a restart
             // cannot make a mutable fact current merely by reopening cache.
@@ -736,6 +735,9 @@ impl RegistryGateway {
             let service = self
                 .service_for(source)
                 .map_err(|error| format!("open registry source: {error}"))?;
+            service
+                .refresh_external()
+                .map_err(|error| format!("refresh registry source: {error}"))?;
             source_keys.push(CatalogSourceProjectionKey {
                 source: service.source_id(),
                 facts_frontier: service.facts_frontier(),
@@ -882,60 +884,123 @@ impl RegistryGateway {
         coordinate: &PackageCoordinate,
         proof: PackageFactObservationProof,
     ) {
-        let Some((facts_version, source_provenance, valid)) = (|| {
+        let Some((facts_version, source_provenance, valid, receipt_observed_at)) = (|| {
             let service = self.slots.values().find_map(|slot| {
                 slot.service
                     .as_ref()
                     .filter(|service| service.source_id() == source_id)
             })?;
-            let package = service
-                .published_packages()
-                .into_iter()
-                .find(|package| &package.coordinate == coordinate)?;
-            let valid = match proof {
-                PackageFactObservationProof::AcquisitionReceipt { receipt, snapshot } => self
-                    .last_receipt
-                    .as_ref()
-                    .zip(self.last_snapshot.as_ref())
-                    .is_some_and(|(selected_receipt, selected_snapshot)| {
-                        selected_receipt.id.to_bytes() == receipt
+            if service.refresh_external().is_err() {
+                return None;
+            }
+            let package = service.published_package(coordinate)?;
+            let (valid, receipt_observed_at) = match proof {
+                PackageFactObservationProof::AcquisitionReceipt { receipt, snapshot } => {
+                    let request = AcquisitionRequest::for_coordinate(
+                        source_id,
+                        coordinate.to_string(),
+                        1,
+                        service.policy_epoch(),
+                    )
+                    .ok()?;
+                    let record = service.recover_product_record(&request).ok().flatten();
+                    let valid = record.as_ref().is_some_and(|record| {
+                        let (Some(selected_receipt), Some(selected_snapshot)) =
+                            (record.receipt.as_deref(), record.target_snapshot.as_deref())
+                        else {
+                            return false;
+                        };
+                        record.terminal
+                            == backend_engine::acquisition::AcquisitionProductTerminal::Published
+                            && record.source == source_id
+                            && record.policy_epoch == service.policy_epoch()
+                            && record.facts_frontier == service.facts_frontier()
+                            && record.metadata_digest == Some(package.metadata_evidence_digest())
+                            && record.raw_object == Some(package.raw_object)
+                            && selected_receipt.id.to_bytes() == receipt
                             && selected_snapshot.id().to_bytes() == snapshot
                             && selected_receipt.target == selected_snapshot.id()
+                            && selected_receipt.owner_cursor == record.owner_cursor
+                            && selected_receipt.metadata_digest
+                                == package.metadata_evidence_digest()
+                            && selected_receipt.raw_object == package.raw_object
                             && selected_snapshot.source() == source_id
                             && selected_snapshot.facts_frontier() == service.facts_frontier()
                             && selected_receipt.policy_epoch == service.policy_epoch()
                             && snapshot_selects_package(selected_snapshot, source_id, &package)
-                    }),
+                    });
+                    (valid, record.map(|record| record.observed_at_millis))
+                }
                 PackageFactObservationProof::SourceNegativeFact {
                     authority,
                     source_proof,
                     cursor,
+                    observed_at_millis,
                     expires_at_millis,
                     policy_epoch,
                     kind,
                     ..
                 } => {
-                    authority == source_id
-                        && source_proof == cursor
-                        && expires_at_millis > current_millis()
-                        && policy_epoch == service.policy_epoch()
-                        && match kind {
-                            NegativeFactKind::Yanked => matches!(
-                                package.facts.standing(),
-                                backend_engine::registry::ReleaseStanding::Yanked
-                            ),
-                            NegativeFactKind::AdvisoryBlocked => matches!(
-                                package.advisory.decision,
-                                backend_engine::advisory::AcquisitionDecision::Deny(_)
-                            ),
-                            NegativeFactKind::NotFound | NegativeFactKind::Unsupported => false,
-                        }
+                    let request = AcquisitionRequest::for_coordinate(
+                        source_id,
+                        coordinate.to_string(),
+                        1,
+                        service.policy_epoch(),
+                    )
+                    .ok()?;
+                    let expected_fact = backend_engine::acquisition::NegativeFact {
+                        kind,
+                        authority,
+                        source_proof,
+                        cursor,
+                        observed_at_millis,
+                        expires_at_millis,
+                        policy_epoch,
+                    };
+                    let record = service.recover_product_record(&request).ok().flatten();
+                    let durable_fact_matches = record.as_ref().is_some_and(|record| {
+                        let backend_engine::acquisition::AcquisitionProductTerminal::NegativeFact(
+                            durable_fact,
+                        ) = record.terminal
+                        else {
+                            return false;
+                        };
+                        record.source == source_id
+                            && record.source_intent == request.source_intent()
+                            && record.coordinate.as_ref() == coordinate.as_str()
+                            && record.policy_epoch == service.policy_epoch()
+                            && record.owner_cursor == cursor
+                            && record.facts_frontier == service.facts_frontier()
+                            && record.metadata_digest == Some(package.metadata_evidence_digest())
+                            && record.raw_object == Some(package.raw_object)
+                            && durable_fact == expected_fact
+                    });
+                    (
+                        durable_fact_matches
+                            && authority == source_id
+                            && source_proof == cursor
+                            && expires_at_millis > current_millis()
+                            && policy_epoch == service.policy_epoch()
+                            && match kind {
+                                NegativeFactKind::Yanked => matches!(
+                                    package.facts.standing(),
+                                    backend_engine::registry::ReleaseStanding::Yanked
+                                ),
+                                NegativeFactKind::AdvisoryBlocked => matches!(
+                                    package.advisory.decision,
+                                    backend_engine::advisory::AcquisitionDecision::Deny(_)
+                                ),
+                                NegativeFactKind::NotFound | NegativeFactKind::Unsupported => false,
+                            },
+                        None,
+                    )
                 }
             };
             Some((
                 package.facts.version(),
                 package.provenance.as_bytes(),
                 valid,
+                receipt_observed_at,
             ))
         })() else {
             return;
@@ -944,7 +1009,9 @@ impl RegistryGateway {
             return;
         }
         let at_millis = match proof {
-            PackageFactObservationProof::AcquisitionReceipt { .. } => current_millis(),
+            PackageFactObservationProof::AcquisitionReceipt { .. } => {
+                receipt_observed_at.unwrap_or_else(current_millis)
+            }
             PackageFactObservationProof::SourceNegativeFact {
                 observed_at_millis, ..
             } => observed_at_millis,
@@ -977,8 +1044,6 @@ impl RegistryGateway {
                 // The local ingester consumes the immutable target root and
                 // receipt alongside the bytes, so a successful Add cannot
                 // discard its source snapshot evidence.
-                self.last_receipt = Some(Arc::clone(&result.receipt));
-                self.last_snapshot = Some(Arc::clone(&result.snapshot));
                 Ok(result.artifact.bytes().to_vec())
             }
             TypedAcquisitionOutcome::NegativeFact(fact) => match fact.kind {
@@ -1027,16 +1092,6 @@ impl RegistryGateway {
             }
             TypedAcquisitionOutcome::Cancelled => Err(RegistryAddError::Unavailable),
         }
-    }
-
-    /// Returns the last immutable receipt consumed by a local Add.
-    pub(super) fn last_receipt(&self) -> Option<&backend_engine::acquisition::AcquisitionReceipt> {
-        self.last_receipt.as_deref()
-    }
-
-    /// Returns the target source snapshot consumed by a local Add.
-    pub(super) fn last_snapshot(&self) -> Option<&backend_engine::acquisition::SourceSnapshot> {
-        self.last_snapshot.as_deref()
     }
 
     pub(super) fn stage_archive(
@@ -1157,9 +1212,11 @@ fn snapshot_selects_package(
         return false;
     };
     snapshot.source() == source_id
-        && snapshot.manifest().entries().iter().any(|entry| {
-            entry.path.as_ref() == package.coordinate.as_str() && entry.object == package.raw_object
-        })
+        && snapshot
+            .manifest()
+            .entries()
+            .binary_search_by(|entry| entry.path.as_ref().cmp(package.coordinate.as_str()))
+            .is_ok_and(|index| snapshot.manifest().entries()[index].object == package.raw_object)
         && snapshot.claims().binary_search(&claim.id).is_ok()
 }
 

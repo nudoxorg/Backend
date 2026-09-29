@@ -343,6 +343,215 @@ fn fixture_acquisition_reuses_content_and_restarts_offline() {
 }
 
 #[test]
+fn forge_owner_refreshes_cross_instance_publications_for_reference_and_search() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-forge-cross-instance-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let first_coordinate = coordinate();
+    let second_coordinate = ForgeCoordinate::new(
+        "https://github.com/acme/mono.git",
+        ForgeRevision::Tag(ForgeRefName::new("v2.0.0").expect("tag")),
+        Some("crates/widget"),
+    )
+    .expect("second coordinate");
+    let mut first_transport = Fixture {
+        calls: AtomicUsize::new(0),
+        archive: tar_one(
+            "crates/widget/Cargo.toml",
+            b"[package]\nname=\"widget\"\nversion=\"1.0.0\"\n",
+        ),
+    };
+    let mut second_transport = Fixture {
+        calls: AtomicUsize::new(0),
+        archive: tar_one(
+            "crates/widget/Cargo.toml",
+            b"[package]\nname=\"widget\"\nversion=\"2.0.0\"\n",
+        ),
+    };
+    let first_owner = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("first owner");
+    let second_owner = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("second owner");
+
+    assert!(matches!(
+        first_owner.acquire(&first_coordinate, &mut first_transport),
+        ForgeAcquisitionOutcome::Hit(_)
+    ));
+    assert!(matches!(
+        second_owner.acquire(&second_coordinate, &mut second_transport),
+        ForgeAcquisitionOutcome::Hit(_)
+    ));
+
+    let recovered = first_owner
+        .reference(&second_coordinate)
+        .expect("refresh external forge record")
+        .expect("second owner publication visible");
+    assert_eq!(recovered.coordinate, second_coordinate);
+    assert_eq!(
+        first_owner
+            .search_records()
+            .expect("refreshed search")
+            .len(),
+        2
+    );
+    drop(second_owner);
+    drop(first_owner);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn concurrent_forge_journal_process_worker() {
+    let Some(root) = std::env::var_os("BACKEND_FORGE_JOURNAL_WORKER_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let worker = std::env::var("BACKEND_FORGE_JOURNAL_WORKER_ID").expect("worker id");
+    let other = if worker == "one" { "two" } else { "one" };
+    let barrier = root.join("forge-barrier");
+    fs::create_dir_all(&barrier).expect("barrier directory");
+    let coordinate = ForgeCoordinate::new(
+        "https://github.com/acme/multiprocess.git",
+        ForgeRevision::Tag(
+            ForgeRefName::new(if worker == "one" { "v1.0.0" } else { "v2.0.0" }).expect("tag"),
+        ),
+        None::<String>,
+    )
+    .expect("coordinate");
+
+    struct BarrierTransport {
+        worker: String,
+        other: String,
+        barrier: PathBuf,
+    }
+    impl ForgeTransport for BarrierTransport {
+        fn resolve(
+            &mut self,
+            coordinate: &ForgeCoordinate,
+        ) -> Result<ForgeResolution, ForgeTransportError> {
+            fs::write(
+                self.barrier.join(format!("{}.ready", self.worker)),
+                b"ready",
+            )
+            .map_err(|_| ForgeTransportError::Unavailable)?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !self.barrier.join(format!("{}.ready", self.other)).is_file() {
+                if std::time::Instant::now() >= deadline {
+                    return Err(ForgeTransportError::Unavailable);
+                }
+                thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let commit = if self.worker == "one" {
+                sha("0123456789012345678901234567890123456789")
+            } else {
+                sha("abcdefabcdefabcdefabcdefabcdefabcdefabcd")
+            };
+            ForgeResolution::for_coordinate(coordinate, commit, None, self.worker.clone())
+                .map_err(|_| ForgeTransportError::Integrity)
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _coordinate: &ForgeCoordinate,
+            _resolution: &ForgeResolution,
+        ) -> Result<ForgeArchive, ForgeTransportError> {
+            Ok(ForgeArchive::tar(
+                tar_one(
+                    "Cargo.toml",
+                    format!(
+                        "[package]\nname=\"process-{}\"\nversion=\"1.0.0\"\n",
+                        self.worker
+                    )
+                    .as_bytes()
+                    .to_vec(),
+                ),
+                None::<String>,
+            ))
+        }
+
+        fn fetch_metadata(
+            &mut self,
+            coordinate: &ForgeCoordinate,
+            _resolution: &ForgeResolution,
+        ) -> Result<ForgeRepositoryMetadata, ForgeTransportError> {
+            Ok(ForgeRepositoryMetadata::unavailable(
+                coordinate.owner(),
+                ForgeUnavailableReason::AuthorityOmitted,
+            ))
+        }
+    }
+
+    let service = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("service");
+    let mut transport = BarrierTransport {
+        worker,
+        other: other.to_owned(),
+        barrier,
+    };
+    assert!(matches!(
+        service.acquire(&coordinate, &mut transport),
+        ForgeAcquisitionOutcome::Hit(_)
+    ));
+}
+
+#[test]
+fn concurrent_forge_processes_serialize_the_shared_journal() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-forge-process-journal-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let executable = std::env::current_exe().expect("test executable");
+    let spawn_worker = |worker: &str| {
+        Command::new(&executable)
+            .arg("--nocapture")
+            .arg("concurrent_forge_journal_process_worker")
+            .env("BACKEND_FORGE_JOURNAL_WORKER_ROOT", &root)
+            .env("BACKEND_FORGE_JOURNAL_WORKER_ID", worker)
+            .spawn()
+            .expect("spawn forge journal worker")
+    };
+    let first = spawn_worker("one");
+    let second = spawn_worker("two");
+    let first = first.wait_with_output().expect("wait for first worker");
+    let second = second.wait_with_output().expect("wait for second worker");
+    assert!(
+        first.status.success(),
+        "first worker failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second worker failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let service = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Offline,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("cold reopen forge journal");
+    let records = service.search_records().expect("recover both processes");
+    assert_eq!(records.len(), 2);
+    drop(service);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn not_found_tombstone_survives_restart_without_becoming_identity() {
     struct Missing;
     impl ForgeTransport for Missing {
@@ -765,8 +974,7 @@ fn partial_clone_skips_historical_blobs() {
     )
     .expect("commit text");
     let expected = expected.trim();
-    let (address, stopped, response_bytes, server) =
-        start_smart_git_http(&root.join("server"));
+    let (address, stopped, response_bytes, server) = start_smart_git_http(&root.join("server"));
     let url = format!("http://{address}/acme/mono.git");
     let full = root.join("full");
     git_quiet(None, &["init", "--quiet", full.to_str().expect("full")]);

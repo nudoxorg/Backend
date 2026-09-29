@@ -20,16 +20,21 @@ mod lease;
 mod outcome;
 mod permit;
 mod phase;
+mod receipt_store;
 mod retry;
 mod service;
 mod telemetry;
 
+pub(crate) use service::AcquisitionPublicationCapability;
+#[cfg(test)]
+pub(crate) use service::test_publication_capability;
+
 pub use delta::{AcquisitionDelta, DeltaChange, DeltaError};
 pub use freshness::FactFreshness;
 pub use identity::{
-    AcquisitionDeltaId, AcquisitionReceiptId, IdentityError, ManifestEntry, PublicationRootId,
-    RawArchiveObjectId, ReleaseClaim, ReleaseClaimId, SourceSnapshot, SourceSnapshotId,
-    TreeManifest, TreeManifestId,
+    AcquisitionDeltaId, AcquisitionReceiptId, AcquisitionRecordId, IdentityError, ManifestEntry,
+    PublicationRootId, RawArchiveObjectId, ReleaseClaim, ReleaseClaimId, SourceSnapshot,
+    SourceSnapshotId, TreeManifest, TreeManifestId,
 };
 pub use lease::{
     AcquisitionLease, CasAdmission, LeaseGuard, LeaseStore, PrivateTemp, RootPublisher,
@@ -43,6 +48,7 @@ pub use phase::{
     AcquisitionPhase, AcquisitionReceipt, AcquisitionRequest, AcquisitionState, Metadata,
     MetadataRecord, Object, Policy, PublishedDelta, Resolve, VerifiedObject, admit_archive,
 };
+pub use receipt_store::{AcquisitionProductTerminal, AcquisitionRecoveryRecord};
 pub use retry::{
     AttemptFailure, CircuitBreaker, CircuitPermit, CircuitState, RetryClass, RetryPolicy,
 };
@@ -84,6 +90,21 @@ mod tests {
             .expect("manifest"),
         );
         Arc::new(SourceSnapshot::new([1; 32], [2; 32], 7, manifest, Vec::new()).expect("snapshot"))
+    }
+
+    #[test]
+    fn receipt_lease_key_ignores_freshness_but_tracks_product_identity() {
+        let request =
+            AcquisitionRequest::for_coordinate([9; 32], "pkg:cargo/receipt-key@1.0.0", 1, 7)
+                .expect("request");
+        let bounded = request
+            .clone()
+            .with_fact_freshness(FactFreshness::max_age_millis(60_000));
+        let next_epoch = request.clone().with_policy_epoch(8);
+
+        assert_eq!(request.receipt_work_key(), bounded.receipt_work_key());
+        assert_ne!(request.receipt_work_key(), next_epoch.receipt_work_key());
+        assert_ne!(request.source_intent(), next_epoch.source_intent());
     }
 
     #[test]

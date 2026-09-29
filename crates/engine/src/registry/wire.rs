@@ -228,6 +228,26 @@ fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
         out.extend_from_slice(id);
     }
 }
+
+/// Digests the exact normalized package metadata record persisted by the owner.
+/// The provenance token remains a field within this canonical encoding, while
+/// the digest also covers the release facts, native metadata, advisory result,
+/// dependency facts, raw object identity, and declared extent selected beside
+/// it.
+pub(super) fn metadata_evidence_digest(value: &PublishedPackage) -> [u8; 32] {
+    let mut encoded = Vec::new();
+    put_package(&mut encoded, value);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.registry.metadata-evidence.v1\0");
+    hasher.update(
+        &u64::try_from(encoded.len())
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    hasher.update(&encoded);
+    *hasher.finalize().as_bytes()
+}
+
 fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, AcquisitionError> {
     let ecosystem = RegistryEcosystem::try_from(take_byte(bytes, at)?)
         .map_err(|_| AcquisitionError::CorruptJournal)?;

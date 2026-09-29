@@ -1,4 +1,5 @@
 use blake3::Hasher;
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::sync::Arc;
 
@@ -106,6 +107,43 @@ impl AcquisitionRequest {
             key_epoch,
         )
     }
+
+    /// Returns the durable source intent identity, independent of the caller's
+    /// freshness horizon. A changed policy epoch remains a different intent.
+    #[must_use]
+    pub fn source_intent(&self) -> [u8; ID_BYTES] {
+        let artifact = self.artifact.map_or_else(
+            || digest(b"backend.acquisition.unknown-artifact.v1", &[]),
+            RawArchiveObjectId::to_bytes,
+        );
+        digest(
+            b"backend.acquisition.product-intent.v1",
+            &[
+                &self.source,
+                self.coordinate.as_bytes(),
+                &artifact,
+                &self.schema.to_be_bytes(),
+                &self.policy_epoch.to_be_bytes(),
+            ],
+        )
+    }
+
+    /// Returns the stable lease key that serializes publications of one
+    /// durable source intent across freshness-horizon variants.
+    #[must_use]
+    pub fn receipt_work_key(&self) -> WorkKey {
+        let artifact = self.artifact.map_or_else(
+            || digest(b"backend.acquisition.unknown-artifact.v1", &[]),
+            RawArchiveObjectId::to_bytes,
+        );
+        acquisition_work_key(
+            self.source,
+            self.coordinate.as_bytes(),
+            artifact,
+            self.schema,
+            self.policy_epoch,
+        )
+    }
 }
 
 /// Resolve phase of the acquisition typestate machine.
@@ -152,6 +190,10 @@ pub struct MetadataRecord {
     pub length: u64,
     /// Source cursor/proof digest.
     pub source_proof: [u8; ID_BYTES],
+    /// Digest of the exact metadata evidence admitted by the source adapter.
+    pub evidence_digest: [u8; ID_BYTES],
+    /// Exact product request intent that selected this evidence.
+    pub source_intent: [u8; ID_BYTES],
 }
 
 /// Metadata phase.
@@ -235,7 +277,7 @@ pub struct Policy {
 }
 
 /// Immutable publication receipt pairing a delta with its root transition.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AcquisitionReceipt {
     /// Receipt identity.
     pub id: AcquisitionReceiptId,
@@ -249,19 +291,56 @@ pub struct AcquisitionReceipt {
     pub publication: PublicationRootId,
     /// Policy/advisory frontier that authenticated this publication.
     pub policy_epoch: u64,
+    /// Exact request identity that owns this product publication.
+    pub source_intent: [u8; ID_BYTES],
+    /// Exact committed owner cursor admitted with the metadata.
+    pub owner_cursor: [u8; ID_BYTES],
+    /// Digest of the exact metadata evidence admitted by the source adapter.
+    pub metadata_digest: [u8; ID_BYTES],
+    /// Verified raw object identity selected by the source intent.
+    pub raw_object: RawArchiveObjectId,
+    /// Time at which the receipt was admitted.
+    pub observed_at_millis: u64,
 }
 
 impl AcquisitionReceipt {
     /// Returns the fixed canonical receipt preimage.
     #[must_use]
-    pub fn canonical_bytes(&self) -> [u8; ID_BYTES * 4 + 8] {
-        let mut encoded = [0_u8; ID_BYTES * 4 + 8];
-        encoded[..ID_BYTES].copy_from_slice(self.delta.as_bytes());
-        encoded[ID_BYTES..ID_BYTES * 2].copy_from_slice(self.base.as_bytes());
-        encoded[ID_BYTES * 2..ID_BYTES * 3].copy_from_slice(self.target.as_bytes());
-        encoded[ID_BYTES * 3..ID_BYTES * 4].copy_from_slice(self.publication.as_bytes());
-        encoded[ID_BYTES * 4..].copy_from_slice(&self.policy_epoch.to_be_bytes());
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(ID_BYTES * 8 + 16);
+        encoded.extend_from_slice(self.delta.as_bytes());
+        encoded.extend_from_slice(self.base.as_bytes());
+        encoded.extend_from_slice(self.target.as_bytes());
+        encoded.extend_from_slice(self.publication.as_bytes());
+        encoded.extend_from_slice(&self.policy_epoch.to_be_bytes());
+        encoded.extend_from_slice(&self.source_intent);
+        encoded.extend_from_slice(&self.owner_cursor);
+        encoded.extend_from_slice(&self.metadata_digest);
+        encoded.extend_from_slice(self.raw_object.as_bytes());
+        encoded.extend_from_slice(&self.observed_at_millis.to_be_bytes());
         encoded
+    }
+
+    pub(crate) fn validate(&self, source: [u8; ID_BYTES]) -> bool {
+        let publication = PublicationRootId::derive(&[
+            self.base.as_bytes(),
+            self.target.as_bytes(),
+            self.delta.as_bytes(),
+            &self.policy_epoch.to_be_bytes(),
+        ]);
+        self.publication == publication
+            && self.id
+                == AcquisitionReceiptId::derive(&[
+                    &source,
+                    self.delta.as_bytes(),
+                    self.publication.as_bytes(),
+                    &self.policy_epoch.to_be_bytes(),
+                    &self.source_intent,
+                    &self.owner_cursor,
+                    &self.metadata_digest,
+                    self.raw_object.as_bytes(),
+                    &self.observed_at_millis.to_be_bytes(),
+                ])
     }
 }
 
@@ -291,19 +370,29 @@ impl Policy {
             delta.id().as_bytes(),
             &target.policy_epoch().to_be_bytes(),
         ]);
-        let receipt_id = AcquisitionReceiptId::derive(&[
-            &self.verified.request.source,
-            delta.id().as_bytes(),
-            publication.as_bytes(),
-            &target.policy_epoch().to_be_bytes(),
-        ]);
+        let observed_at_millis = super::identity::now_millis();
         let receipt = Arc::new(AcquisitionReceipt {
-            id: receipt_id,
+            id: AcquisitionReceiptId::derive(&[
+                &self.verified.request.source,
+                delta.id().as_bytes(),
+                publication.as_bytes(),
+                &target.policy_epoch().to_be_bytes(),
+                &self.verified.record.source_intent,
+                &self.verified.record.source_proof,
+                &self.verified.record.evidence_digest,
+                self.verified.object.as_bytes(),
+                &observed_at_millis.to_be_bytes(),
+            ]),
             delta: delta.id(),
             base: delta.base(),
             target: delta.target(),
             publication,
             policy_epoch: target.policy_epoch(),
+            source_intent: self.verified.record.source_intent,
+            owner_cursor: self.verified.record.source_proof,
+            metadata_digest: self.verified.record.evidence_digest,
+            raw_object: self.verified.object,
+            observed_at_millis,
         });
         AcquisitionOutcome::Hit(PublishedDelta { delta, receipt })
     }
@@ -338,6 +427,9 @@ impl AcquisitionPhase for PublishedDelta {}
 pub type AcquisitionState<S> = S;
 
 /// Streams an archive into a private temp object and admits its identity.
+///
+/// This compatibility adapter is retained for direct callers. Registry
+/// acquisition uses the sealed `ContentAddressedStore` path.
 pub fn admit_archive(
     source: &mut impl Read,
     store: &LeaseStore,
