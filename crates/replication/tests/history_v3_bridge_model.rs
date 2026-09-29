@@ -888,9 +888,21 @@ fn verify_cold(
     }
     let closure_set = closure_members.into_iter().collect::<BTreeSet<_>>();
     if closure_set != expected_members {
-        return Err(
-            "closure members are not the exact bridge-node/payload reachability set".to_owned(),
-        );
+        let extra = closure_set
+            .difference(&expected_members)
+            .take(4)
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>();
+        let missing = expected_members
+            .difference(&closure_set)
+            .take(4)
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "closure members are not exact: extra={} missing={} (sample extra={extra:?}, missing={missing:?})",
+            closure_set.difference(&expected_members).count(),
+            expected_members.difference(&closure_set).count(),
+        ));
     }
     let (bridge_node_reads, bridge_node_bytes) = loader.read_metrics();
     metrics.bridge_node_reads = bridge_node_reads;
@@ -1053,20 +1065,37 @@ fn apply_update(
         changed_tree(store, current_body.bridge_root, &changes)
             .expect("prepare typed V3 path-copy update");
     let target_root = update.target().root().to_bytes();
-    let target_node_versions = update
+    // A batched LazyTree update retains the changed frontier from each
+    // sequential edit. Intermediate roots are durable candidates, but only
+    // nodes reachable from the final root belong to its exact closure.
+    let changed_node_indices = update
         .changed_nodes()
         .iter()
-        .map(|node| node.commitment().to_bytes())
-        .collect::<BTreeSet<_>>();
-    let mut target_child_versions = BTreeSet::new();
-    for node in update.changed_nodes() {
-        let checked = backend_version::admit_canonical_root::<BridgeRelation>(node.as_bytes())
-            .expect("admit emitted canonical bridge node");
+        .enumerate()
+        .map(|(index, node)| (node.commitment().to_bytes(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut target_reachable_versions = BTreeSet::new();
+    let mut target_node_objects = Vec::new();
+    let mut pending_versions = vec![target_root];
+    while let Some(version) = pending_versions.pop() {
+        if !target_reachable_versions.insert(version) {
+            continue;
+        }
+        let Some(index) = changed_node_indices.get(&version).copied() else {
+            // This is an unchanged base subtree. Its root remains reachable;
+            // descendants were not rewritten by this path copy.
+            continue;
+        };
+        target_node_objects.push(new_node_objects[index].id());
+        let checked = backend_version::admit_canonical_root::<BridgeRelation>(
+            update.changed_nodes()[index].as_bytes(),
+        )
+        .expect("admit emitted canonical bridge node");
         for child in checked
             .child_summaries()
             .expect("decode emitted bridge child summaries")
         {
-            target_child_versions.insert(*child.commitment.as_bytes());
+            pending_versions.push(*child.commitment.as_bytes());
         }
     }
 
@@ -1099,11 +1128,11 @@ fn apply_update(
             desired_changes.insert(id, should_exist);
         }
     };
-    for object in &new_node_objects {
-        schedule(object.id(), true);
+    for object in target_node_objects {
+        schedule(object, true);
     }
     for (version, object) in loader.loaded_frontier() {
-        if !target_node_versions.contains(&version) && !target_child_versions.contains(&version) {
+        if !target_reachable_versions.contains(&version) {
             schedule(object, false);
         }
     }
