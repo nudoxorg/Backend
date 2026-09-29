@@ -1506,7 +1506,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::vocabulary::{LanguageProfile, RustEdition, Stage};
     use backend_semantic::ir::{
         BorrowedTree, BuiltinType, ConcreteType, Confidence, CorePayloadHash, DeclarationFamilyId,
         DocInput, DocumentationRows, EntityAuthorityFacts, EntityVersion, FactAvailability, Ir,
@@ -1521,6 +1520,7 @@ mod tests {
         stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
         verify_canonical_semantic_plane_segment_boundaries, verify_jumbo_plane_family_closures,
     };
+    use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
     use backend_store::{ClosureCompositionBudget, ClosureMembershipChange};
     use backend_version::{
         AdmittedProducerObservation, AuthorityScopeClaim, CoverageAdmissionError, CoverageWitness,
@@ -2175,8 +2175,12 @@ mod tests {
             .collect::<Vec<_>>();
         let links = (0..stable_keys.len().saturating_sub(1))
             .map(|position| TreeLinkInput {
-                from: TreeEntityId::new(position),
-                target: TreeLinkTarget::Local(TreeEntityId::new(position + 1)),
+                from: TreeEntityId::new(
+                    u32::try_from(position).expect("fixture tree entity index fits u32"),
+                ),
+                target: TreeLinkTarget::Local(TreeEntityId::new(
+                    u32::try_from(position + 1).expect("fixture tree target index fits u32"),
+                )),
                 kind: LinkKind::Calls,
                 confidence: Confidence::Compiler,
                 authority: OccurrenceAuthorityFacts {
@@ -2346,7 +2350,7 @@ mod tests {
             let object = self
                 .store
                 .read_object(object_id)
-                .map_err(|error| format!("cold read jumbo leaf object: {error}"))?;
+                .map_err(|error| format!("cold read jumbo leaf object: {error:?}"))?;
             if object.id() != object_id
                 || object.schema() != ProducedSemanticObjectKind::JumboLeaf.schema_identity()
             {
@@ -2370,7 +2374,7 @@ mod tests {
             let object = self
                 .store
                 .read_object(object_id)
-                .map_err(|error| format!("cold read jumbo interior object: {error}"))?;
+                .map_err(|error| format!("cold read jumbo interior object: {error:?}"))?;
             if object.id() != object_id
                 || object.schema() != ProducedSemanticObjectKind::JumboInterior.schema_identity()
             {
