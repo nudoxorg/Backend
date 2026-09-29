@@ -1,0 +1,1103 @@
+//! Durable producer-side admission for stable-key semantic IR objects.
+//!
+//! This path writes bounded SPIR segments and jumbo-rope objects directly to
+//! the immutable FileStore. It does not create a V1 ordinal NXFI plane, select
+//! a generation, or claim that one family's local grammar check proves the
+//! complete V2 aggregate. The returned receipts are the object IDs a later
+//! manifest/history publisher must include in its verified closure.
+
+use std::fmt;
+
+use backend_semantic::ir::{
+    CanonicalSemanticPlaneSegmentRef, CanonicalSemanticPlaneSegmentSink, JumboRopeLeafRef,
+    JumboRopeNode, JumboRopeObjectId, JumboRopeObjectSink, SemanticIrPlane, SemanticPlaneKind,
+    SemanticPlaneRecordError, ValidatedCanonicalSemanticPlaneSegment,
+};
+use backend_store::{FileStore, GcPinGuard, ObjectId, ObjectWriteReceipt, TypedObject};
+use backend_version::{ObjectKey, Schema};
+
+use crate::ir_hydration_store::SemanticSegmentPayload;
+
+/// A semantic identity plus the physical FileStore identity that durably
+/// admitted its exact payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProducedSemanticObjectIdentity {
+    /// One locally validated stable-key SPIR segment.
+    Segment {
+        /// Exact IR family encoded by the segment.
+        family: SemanticIrPlane,
+        /// Content identity bound to family, stable range, count, and bytes.
+        id: backend_semantic::ir::SemanticSegmentId,
+        /// Inclusive first stable row key.
+        first_key: [u8; 32],
+        /// Inclusive last stable row key.
+        last_key: [u8; 32],
+        /// Exact number of complete rows.
+        row_count: u32,
+    },
+    /// One content-defined jumbo leaf.
+    JumboLeaf {
+        /// Jumbo-rope leaf identity from the semantic rope grammar.
+        id: JumboRopeObjectId,
+        /// Position within the complete ordered rope.
+        ordinal: u64,
+        /// Exact byte offset within the complete value.
+        byte_offset: u64,
+    },
+    /// One authenticated interior node in a jumbo rope.
+    JumboInterior {
+        /// Jumbo-rope interior identity from the semantic rope grammar.
+        id: JumboRopeObjectId,
+        /// First leaf ordinal covered by the node.
+        first_leaf: u64,
+        /// Number of leaves covered by the node.
+        leaf_count: u64,
+    },
+}
+
+/// Receipt produced only after a typed object is written and read back from
+/// FileStore with exact schema, identity, and payload bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DurableSemanticObjectAdmission {
+    identity: ProducedSemanticObjectIdentity,
+    object_id: ObjectId,
+    payload_bytes: u64,
+    envelope_bytes: u64,
+    created: bool,
+}
+
+/// Shared FileStore collection pin kept while producer receipts are composed
+/// into a manifest/history closure and its caller publishes the durable root.
+#[must_use = "keep the pin alive until the durable closure/ref is published"]
+#[derive(Debug)]
+pub struct DurableSemanticObjectPin {
+    _guard: GcPinGuard,
+}
+
+impl DurableSemanticObjectAdmission {
+    /// Semantic identity covered by this durable object receipt.
+    #[must_use]
+    pub const fn identity(self) -> ProducedSemanticObjectIdentity {
+        self.identity
+    }
+
+    /// Physical FileStore object identity to add to a verified closure.
+    #[must_use]
+    pub const fn object_id(self) -> ObjectId {
+        self.object_id
+    }
+
+    /// Exact semantic payload bytes stored in the object.
+    #[must_use]
+    pub const fn payload_bytes(self) -> u64 {
+        self.payload_bytes
+    }
+
+    /// Exact encoded FileStore envelope bytes admitted.
+    #[must_use]
+    pub const fn envelope_bytes(self) -> u64 {
+        self.envelope_bytes
+    }
+
+    /// Whether this call created the physical immutable object file.
+    #[must_use]
+    pub const fn created(self) -> bool {
+        self.created
+    }
+}
+
+/// Caller-owned destination for durable object receipts.
+///
+/// Production callers can stream these receipts into bounded manifest or
+/// closure construction. The implementation does not retain an Arc or mutex
+/// per row; it invokes this coarse object-level callback only after durable
+/// read-back succeeds.
+pub trait SemanticObjectAdmissionSink {
+    /// Failure while recording a completed durable admission.
+    type Error: fmt::Display;
+
+    /// Records one immutable object receipt.
+    fn record_admission(
+        &mut self,
+        admission: DurableSemanticObjectAdmission,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Caller-owned receipt collection for tests and bounded producer passes.
+///
+/// A seven-family V2 publisher can consume these entries into its manifest
+/// builder, then feed their object IDs into FileStore closure composition.
+/// Large rope producers should provide a streaming [`SemanticObjectAdmissionSink`]
+/// instead: this convenience buffer stores one small receipt per object, while
+/// row payload bytes are never retained here.
+#[derive(Default)]
+pub struct SemanticObjectAdmissionBuffer {
+    admissions: Vec<DurableSemanticObjectAdmission>,
+}
+
+impl SemanticObjectAdmissionBuffer {
+    /// Receipts recorded so far, in deterministic producer order.
+    #[must_use]
+    pub fn admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        &self.admissions
+    }
+
+    /// Consumes the buffer and returns the durable object receipts.
+    #[must_use]
+    pub fn into_admissions(self) -> Vec<DurableSemanticObjectAdmission> {
+        self.admissions
+    }
+}
+
+impl SemanticObjectAdmissionSink for SemanticObjectAdmissionBuffer {
+    type Error = String;
+
+    fn record_admission(
+        &mut self,
+        admission: DurableSemanticObjectAdmission,
+    ) -> Result<(), Self::Error> {
+        self.admissions
+            .try_reserve(1)
+            .map_err(|error| format!("reserve semantic object receipt: {error}"))?;
+        self.admissions.push(admission);
+        Ok(())
+    }
+}
+
+/// Counters for one stable-segment or jumbo-rope producer-to-FileStore pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SemanticProducerStoreMetrics {
+    attempted_objects: u64,
+    created_objects: u64,
+    reused_objects: u64,
+    semantic_segment_hash_bytes: u64,
+    jumbo_leaf_hash_bytes: u64,
+    jumbo_interior_hash_bytes: u64,
+    payload_bytes: u64,
+    admitted_envelope_bytes: u64,
+    newly_stored_envelope_bytes: u64,
+}
+
+impl SemanticProducerStoreMetrics {
+    /// Number of segment or rope objects offered to FileStore.
+    #[must_use]
+    pub const fn attempted_objects(self) -> u64 {
+        self.attempted_objects
+    }
+
+    /// Number of new physical object files created.
+    #[must_use]
+    pub const fn created_objects(self) -> u64 {
+        self.created_objects
+    }
+
+    /// Number of objects reused by content identity.
+    #[must_use]
+    pub const fn reused_objects(self) -> u64 {
+        self.reused_objects
+    }
+
+    /// SPIR bytes traversed by the segment's semantic identity verifier.
+    ///
+    /// This excludes FileStore's own key, version, and envelope hashing. It
+    /// measures physical producer validation work, not total compiler work.
+    #[must_use]
+    pub const fn semantic_segment_hash_bytes(self) -> u64 {
+        self.semantic_segment_hash_bytes
+    }
+
+    /// Jumbo leaf value bytes traversed by the content-defined leaf identity
+    /// hash before each leaf is handed to this storage sink.
+    #[must_use]
+    pub const fn jumbo_leaf_hash_bytes(self) -> u64 {
+        self.jumbo_leaf_hash_bytes
+    }
+
+    /// Fixed-size jumbo interior wire bytes traversed by the authenticated
+    /// interior identity hash before each node is handed to this sink.
+    #[must_use]
+    pub const fn jumbo_interior_hash_bytes(self) -> u64 {
+        self.jumbo_interior_hash_bytes
+    }
+
+    /// Exact segment/rope payload bytes offered for durable admission.
+    #[must_use]
+    pub const fn payload_bytes(self) -> u64 {
+        self.payload_bytes
+    }
+
+    /// Encoded FileStore envelope bytes admitted, including reuse hits.
+    #[must_use]
+    pub const fn admitted_envelope_bytes(self) -> u64 {
+        self.admitted_envelope_bytes
+    }
+
+    /// Encoded FileStore envelope bytes created on disk by this pass.
+    #[must_use]
+    pub const fn newly_stored_envelope_bytes(self) -> u64 {
+        self.newly_stored_envelope_bytes
+    }
+}
+
+/// FileStore-backed sink for borrowed stable-key SPIR segments.
+///
+/// The sink pins garbage collection from construction through its lifetime.
+/// After encoding, consume it with [`Self::into_collection_pin`] and retain
+/// that token until a complete closure/ref publication protects the object
+/// IDs. This closes the race where a collector could remove a newly written
+/// but not-yet-referenced segment.
+pub struct FileSemanticPlaneSegmentSink<'store, 'receipts, Receipts: ?Sized> {
+    store: &'store FileStore,
+    receipts: &'receipts mut Receipts,
+    metrics: SemanticProducerStoreMetrics,
+    gc_pin: GcPinGuard,
+}
+
+impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
+    FileSemanticPlaneSegmentSink<'store, 'receipts, Receipts>
+{
+    /// Starts a segment sink over the existing immutable object CAS.
+    pub fn new(
+        store: &'store FileStore,
+        receipts: &'receipts mut Receipts,
+    ) -> Result<Self, String> {
+        let gc_pin = store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin semantic producer segments against GC: {error}"))?;
+        Ok(Self {
+            store,
+            receipts,
+            metrics: SemanticProducerStoreMetrics::default(),
+            gc_pin,
+        })
+    }
+
+    /// Returns exact durable-object and semantic-hash counters so far.
+    #[must_use]
+    pub const fn metrics(&self) -> SemanticProducerStoreMetrics {
+        self.metrics
+    }
+
+    /// Consumes this sink and transfers its active collection pin to the
+    /// caller, which must keep it through durable closure/ref publication.
+    #[must_use]
+    pub fn into_collection_pin(self) -> DurableSemanticObjectPin {
+        DurableSemanticObjectPin {
+            _guard: self.gc_pin,
+        }
+    }
+
+    fn persist_validated(
+        &mut self,
+        segment: ValidatedCanonicalSemanticPlaneSegment<'_>,
+    ) -> Result<(), SemanticPlaneRecordError> {
+        let payload = segment.bytes();
+        let key = ObjectKey::<SemanticSegmentPayload>::from_value(payload);
+        let object = TypedObject::from_value(&key, payload);
+        let admitted = commit_and_read(self.store, &object, payload)
+            .map_err(SemanticPlaneRecordError::JumboObjectStore)?;
+        let byte_length =
+            u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
+        let identity = ProducedSemanticObjectIdentity::Segment {
+            family: match segment.kind() {
+                SemanticPlaneKind::Ir(family) => family,
+                _ => return Err(SemanticPlaneRecordError::IrKindRequired),
+            },
+            id: segment.id(),
+            first_key: segment.first_key(),
+            last_key: segment.last_key(),
+            row_count: segment.row_count(),
+        };
+        let receipt = DurableSemanticObjectAdmission {
+            identity,
+            object_id: admitted.id(),
+            payload_bytes: byte_length,
+            envelope_bytes: admitted.bytes(),
+            created: admitted.created(),
+        };
+        self.receipts
+            .record_admission(receipt)
+            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
+        self.metrics
+            .record(admitted, byte_length, byte_length, 0, 0)?;
+        Ok(())
+    }
+}
+
+impl<Receipts: SemanticObjectAdmissionSink + ?Sized> CanonicalSemanticPlaneSegmentSink
+    for FileSemanticPlaneSegmentSink<'_, '_, Receipts>
+{
+    type Error = SemanticPlaneRecordError;
+
+    fn write_segment(
+        &mut self,
+        segment: CanonicalSemanticPlaneSegmentRef<'_>,
+    ) -> Result<(), Self::Error> {
+        self.persist_validated(segment.validate()?)
+    }
+}
+
+/// FileStore-backed sink for leaves and interior records emitted by the
+/// semantic jumbo-rope writer. It pins collection through the producer pass;
+/// keep the transferred pin through closure/ref publication.
+pub struct FileSemanticJumboRopeSink<'store, 'receipts, Receipts: ?Sized> {
+    store: &'store FileStore,
+    receipts: &'receipts mut Receipts,
+    metrics: SemanticProducerStoreMetrics,
+    gc_pin: GcPinGuard,
+}
+
+impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
+    FileSemanticJumboRopeSink<'store, 'receipts, Receipts>
+{
+    /// Starts a rope-object sink over the existing immutable object CAS.
+    pub fn new(
+        store: &'store FileStore,
+        receipts: &'receipts mut Receipts,
+    ) -> Result<Self, String> {
+        let gc_pin = store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin jumbo producer objects against GC: {error}"))?;
+        Ok(Self {
+            store,
+            receipts,
+            metrics: SemanticProducerStoreMetrics::default(),
+            gc_pin,
+        })
+    }
+
+    /// Returns exact durable-object counters so far.
+    #[must_use]
+    pub const fn metrics(&self) -> SemanticProducerStoreMetrics {
+        self.metrics
+    }
+
+    /// Consumes this sink and transfers its active collection pin to the
+    /// caller, which must keep it through durable closure/ref publication.
+    #[must_use]
+    pub fn into_collection_pin(self) -> DurableSemanticObjectPin {
+        DurableSemanticObjectPin {
+            _guard: self.gc_pin,
+        }
+    }
+}
+
+impl<Receipts: SemanticObjectAdmissionSink + ?Sized> JumboRopeObjectSink
+    for FileSemanticJumboRopeSink<'_, '_, Receipts>
+{
+    type Error = SemanticPlaneRecordError;
+
+    fn write_leaf(&mut self, leaf: JumboRopeLeafRef<'_>) -> Result<(), Self::Error> {
+        let payload = leaf.bytes();
+        let key = ObjectKey::<SemanticJumboLeafPayload>::from_value(payload);
+        let object = TypedObject::from_value(&key, payload);
+        let admitted = commit_and_read(self.store, &object, payload)
+            .map_err(SemanticPlaneRecordError::JumboObjectStore)?;
+        let byte_length =
+            u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
+        self.receipts
+            .record_admission(DurableSemanticObjectAdmission {
+                identity: ProducedSemanticObjectIdentity::JumboLeaf {
+                    id: leaf.id(),
+                    ordinal: leaf.ordinal(),
+                    byte_offset: leaf.byte_offset(),
+                },
+                object_id: admitted.id(),
+                payload_bytes: byte_length,
+                envelope_bytes: admitted.bytes(),
+                created: admitted.created(),
+            })
+            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
+        self.metrics
+            .record(admitted, byte_length, 0, byte_length, 0)?;
+        Ok(())
+    }
+
+    fn write_interior(&mut self, node: &JumboRopeNode) -> Result<(), Self::Error> {
+        let payload = node.encode_wire();
+        let key = ObjectKey::<SemanticJumboInteriorPayload>::from_value(payload.as_slice());
+        let object = TypedObject::from_value(&key, payload.as_slice());
+        let admitted = commit_and_read(self.store, &object, payload.as_slice())
+            .map_err(SemanticPlaneRecordError::JumboObjectStore)?;
+        let byte_length =
+            u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
+        self.receipts
+            .record_admission(DurableSemanticObjectAdmission {
+                identity: ProducedSemanticObjectIdentity::JumboInterior {
+                    id: node.id(),
+                    first_leaf: node.first_leaf(),
+                    leaf_count: node.leaf_count(),
+                },
+                object_id: admitted.id(),
+                payload_bytes: byte_length,
+                envelope_bytes: admitted.bytes(),
+                created: admitted.created(),
+            })
+            .map_err(|error| SemanticPlaneRecordError::JumboObjectStore(error.to_string()))?;
+        self.metrics
+            .record(admitted, byte_length, 0, 0, byte_length)?;
+        Ok(())
+    }
+}
+
+impl SemanticProducerStoreMetrics {
+    fn record(
+        &mut self,
+        receipt: ObjectWriteReceipt,
+        payload_bytes: u64,
+        segment_hash_bytes: u64,
+        jumbo_leaf_hash_bytes: u64,
+        jumbo_interior_hash_bytes: u64,
+    ) -> Result<(), SemanticPlaneRecordError> {
+        self.attempted_objects = self
+            .attempted_objects
+            .checked_add(1)
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        if receipt.created() {
+            self.created_objects = self
+                .created_objects
+                .checked_add(1)
+                .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+            self.newly_stored_envelope_bytes = self
+                .newly_stored_envelope_bytes
+                .checked_add(receipt.bytes())
+                .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        } else {
+            self.reused_objects = self
+                .reused_objects
+                .checked_add(1)
+                .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        }
+        self.semantic_segment_hash_bytes = self
+            .semantic_segment_hash_bytes
+            .checked_add(segment_hash_bytes)
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        self.jumbo_leaf_hash_bytes = self
+            .jumbo_leaf_hash_bytes
+            .checked_add(jumbo_leaf_hash_bytes)
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        self.jumbo_interior_hash_bytes = self
+            .jumbo_interior_hash_bytes
+            .checked_add(jumbo_interior_hash_bytes)
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        self.payload_bytes = self
+            .payload_bytes
+            .checked_add(payload_bytes)
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        self.admitted_envelope_bytes = self
+            .admitted_envelope_bytes
+            .checked_add(receipt.bytes())
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        Ok(())
+    }
+}
+
+fn commit_and_read(
+    store: &FileStore,
+    object: &TypedObject,
+    expected_payload: &[u8],
+) -> Result<ObjectWriteReceipt, String> {
+    let receipt = store
+        .write_object_with_receipt(object)
+        .map_err(|error| format!("durably write semantic producer object: {error}"))?;
+    let reopened = store
+        .read_object(receipt.id())
+        .map_err(|error| format!("read back semantic producer object: {error}"))?;
+    if reopened.id() != receipt.id()
+        || reopened.schema() != object.schema()
+        || reopened.key() != object.key()
+        || reopened.version() != object.version()
+        || reopened.bytes() != expected_payload
+    {
+        return Err("FileStore read-back differs from the producer object".to_owned());
+    }
+    Ok(receipt)
+}
+
+struct SemanticJumboLeafPayload;
+
+impl Schema for SemanticJumboLeafPayload {
+    const DOMAIN: u8 = 0x52;
+    const TYPE: u16 = 0xfff9;
+    const VERSION: u8 = 1;
+    type Value = [u8];
+
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+        output.extend_from_slice(value);
+    }
+}
+
+struct SemanticJumboInteriorPayload;
+
+impl Schema for SemanticJumboInteriorPayload {
+    const DOMAIN: u8 = 0x52;
+    const TYPE: u16 = 0xfffa;
+    const VERSION: u8 = 1;
+    type Value = [u8];
+
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+        output.extend_from_slice(value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use backend_semantic::ir::{
+        BorrowedTree, CorePayloadHash, DeclarationFamilyId, DocInput, DocumentationRows,
+        EntityAuthorityFacts, EntityVersion, FactAvailability, Ir, IrBuilder, ItemKind,
+        MAX_SEMANTIC_SEGMENT_BYTES, ParentageAuthority, SemanticInputWitness, SemanticIrPlane,
+        TreeItemInput, VariantFingerprint, Visibility, encode_full_semantic_image,
+        full_semantic_image_len, stream_canonical_plane_family_with_jumbo,
+    };
+    use backend_store::{ClosureCompositionBudget, ClosureMembershipChange};
+    use backend_version::{SchemaIdentity, ScopeRoot};
+
+    use super::*;
+
+    const FIXTURE_ROWS: usize = 768;
+    const SEGMENT_BYTES: usize = 2 * 1024;
+    const ORDINAL_V1_CHUNK_BYTES: usize = 16 * 1024;
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "semantic-producer-store-{}-{id}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("test store directory is created");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct CapturedSegmentSink<'store, 'receipts> {
+        durable: FileSemanticPlaneSegmentSink<'store, 'receipts, SemanticObjectAdmissionBuffer>,
+        payloads: Vec<Vec<u8>>,
+    }
+
+    impl CanonicalSemanticPlaneSegmentSink for CapturedSegmentSink<'_, '_> {
+        type Error = SemanticPlaneRecordError;
+
+        fn write_segment(
+            &mut self,
+            segment: CanonicalSemanticPlaneSegmentRef<'_>,
+        ) -> Result<(), Self::Error> {
+            self.durable.write_segment(segment)?;
+            self.payloads.push(segment.bytes().to_vec());
+            Ok(())
+        }
+    }
+
+    fn fixture(edit: Option<usize>, insert_at_middle: bool, delete_middle: bool) -> Ir {
+        let mut indices = (0..FIXTURE_ROWS)
+            .filter(|index| !(delete_middle && *index == FIXTURE_ROWS / 2))
+            .collect::<Vec<_>>();
+        if insert_at_middle {
+            indices.insert(FIXTURE_ROWS / 2, FIXTURE_ROWS + 17);
+        }
+        let names = indices
+            .iter()
+            .map(|index| format!("fixture_{index:04}"))
+            .collect::<Vec<_>>();
+        let docs = indices
+            .iter()
+            .map(|index| {
+                if edit == Some(*index) {
+                    "bravo semantic documentation ".repeat(8)
+                } else if *index == 123 {
+                    // Exercise the production content-defined jumbo rope path
+                    // while keeping the changed regular row separate.
+                    "jumbo semantic documentation ".repeat(40_000)
+                } else if *index == FIXTURE_ROWS + 17 {
+                    "inserted semantic documentation ".repeat(8)
+                } else {
+                    "alpha semantic documentation ".repeat(8)
+                }
+            })
+            .collect::<Vec<_>>();
+        let doc_inputs = docs
+            .iter()
+            .map(|text| [DocInput::Text(text.as_str())])
+            .collect::<Vec<_>>();
+        let versions = indices
+            .iter()
+            .map(|index| {
+                let mut family = [0_u8; 16];
+                family[8..].copy_from_slice(&(*index as u64 + 1).to_be_bytes());
+                EntityVersion {
+                    family: DeclarationFamilyId::from_raw(family),
+                    variant: VariantFingerprint::from_raw([0x42; 16]),
+                    core_payload: CorePayloadHash::from_raw([0x43; 16]),
+                }
+            })
+            .collect::<Vec<_>>();
+        let authority = EntityAuthorityFacts {
+            parentage: ParentageAuthority::Root,
+            members: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = indices
+            .iter()
+            .enumerate()
+            .map(|(position, _)| TreeItemInput {
+                name: names[position].as_bytes(),
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &doc_inputs[position],
+                attributes: &[],
+                source: None,
+                extension: None,
+            })
+            .collect::<Vec<_>>();
+        let mut builder = IrBuilder::new();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .expect("stable-key IR fixture is valid");
+        builder.finish().expect("stable-key fixture IR is valid")
+    }
+
+    fn input() -> SemanticInputWitness {
+        SemanticInputWitness::claimed([0xA1; 32], ScopeRoot::from_bytes([0xB2; 32]))
+    }
+
+    fn encode_and_persist<'store, 'receipts>(
+        store: &'store FileStore,
+        ir: &Ir,
+        segment_receipts: &'receipts mut SemanticObjectAdmissionBuffer,
+        jumbo_receipts: &mut SemanticObjectAdmissionBuffer,
+    ) -> (
+        backend_semantic::ir::CanonicalPlaneEncodingMetrics,
+        SemanticProducerStoreMetrics,
+        SemanticProducerStoreMetrics,
+        Vec<Vec<u8>>,
+        DurableSemanticObjectPin,
+        DurableSemanticObjectPin,
+    ) {
+        let durable = FileSemanticPlaneSegmentSink::new(store, segment_receipts)
+            .expect("pin producer segment objects against GC");
+        let mut captured = CapturedSegmentSink {
+            durable,
+            payloads: Vec::new(),
+        };
+        let mut jumbo = FileSemanticJumboRopeSink::new(store, jumbo_receipts)
+            .expect("pin producer rope objects against GC");
+        let metrics = stream_canonical_plane_family_with_jumbo(
+            ir,
+            &DocumentationRows,
+            input(),
+            SEGMENT_BYTES,
+            &mut jumbo,
+            &mut captured,
+        )
+        .expect("canonical documentation rows persist to FileStore");
+        let segment_store_metrics = captured.durable.metrics();
+        let segment_pin = captured.durable.into_collection_pin();
+        let rope_store_metrics = jumbo.metrics();
+        let rope_pin = jumbo.into_collection_pin();
+        (
+            metrics,
+            segment_store_metrics,
+            rope_store_metrics,
+            captured.payloads,
+            segment_pin,
+            rope_pin,
+        )
+    }
+
+    fn segment_ids(receipts: &[DurableSemanticObjectAdmission]) -> HashSet<[u8; 32]> {
+        receipts
+            .iter()
+            .filter_map(|receipt| match receipt.identity() {
+                ProducedSemanticObjectIdentity::Segment { id, .. } => Some(*id.as_bytes()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn stable_new_payload_bytes(
+        base_ids: &HashSet<[u8; 32]>,
+        target: &[DurableSemanticObjectAdmission],
+    ) -> u64 {
+        target
+            .iter()
+            .filter(|receipt| match receipt.identity() {
+                ProducedSemanticObjectIdentity::Segment { id, .. } => {
+                    !base_ids.contains(id.as_bytes())
+                }
+                _ => false,
+            })
+            .map(|receipt| receipt.payload_bytes())
+            .sum()
+    }
+
+    fn matched_ordinal_new_payload_bytes(base: &[Vec<u8>], target: &[Vec<u8>]) -> u64 {
+        fn chunk_ids(payloads: &[Vec<u8>]) -> BTreeSet<(usize, [u8; 32])> {
+            let total = payloads.iter().map(Vec::len).sum::<usize>();
+            let mut bytes = Vec::with_capacity(total);
+            for payload in payloads {
+                bytes.extend_from_slice(payload);
+            }
+            bytes
+                .chunks(ORDINAL_V1_CHUNK_BYTES)
+                .enumerate()
+                .map(|(ordinal, chunk)| {
+                    let mut hasher = blake3::Hasher::new();
+                    hasher.update(b"test.v1.ordinal-segment.v1\0");
+                    hasher.update(&(ordinal as u64).to_be_bytes());
+                    hasher.update(chunk);
+                    (ordinal, *hasher.finalize().as_bytes())
+                })
+                .collect()
+        }
+
+        let base_chunks = chunk_ids(base);
+        let total = target.iter().map(Vec::len).sum::<usize>();
+        let mut bytes = Vec::with_capacity(total);
+        for payload in target {
+            bytes.extend_from_slice(payload);
+        }
+        bytes
+            .chunks(ORDINAL_V1_CHUNK_BYTES)
+            .enumerate()
+            .filter(|(ordinal, chunk)| {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"test.v1.ordinal-segment.v1\0");
+                hasher.update(&(*ordinal as u64).to_be_bytes());
+                hasher.update(chunk);
+                !base_chunks.contains(&(*ordinal, *hasher.finalize().as_bytes()))
+            })
+            .map(|(_, chunk)| chunk.len() as u64)
+            .sum()
+    }
+
+    fn v1_image(ir: &Ir) -> Vec<u8> {
+        let length = full_semantic_image_len(ir).expect("plan V1 NXFI fixture image");
+        let mut image = vec![0; length];
+        encode_full_semantic_image(ir, &mut image).expect("encode V1 NXFI fixture image");
+        image
+    }
+
+    fn v1_ordinal_metrics(base: &[u8], target: &[u8]) -> (u64, u64) {
+        // Match the existing V1 history layout: one `Ir(Core)` byte segment
+        // per MAX_SEMANTIC_SEGMENT_BYTES slice, keyed by its ordinal.
+        fn segment_ids(image: &[u8]) -> Vec<(backend_semantic::ir::SemanticSegmentId, u64)> {
+            image
+                .chunks(MAX_SEMANTIC_SEGMENT_BYTES)
+                .enumerate()
+                .map(|(ordinal, chunk)| {
+                    let ordinal = u64::try_from(ordinal).expect("small V1 chunk ordinal");
+                    let mut key = [0; 32];
+                    key[24..].copy_from_slice(&ordinal.to_be_bytes());
+                    let segment =
+                        backend_semantic::ir::SemanticPlaneSegment::from_payload_with_witness(
+                            SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                            key,
+                            key,
+                            1,
+                            chunk,
+                            input(),
+                        )
+                        .expect("admit production V1 ordinal NXFI segment");
+                    (
+                        segment
+                            .admitted_id()
+                            .expect("exact V1 chunk bytes were hashed"),
+                        chunk.len() as u64,
+                    )
+                })
+                .collect()
+        }
+
+        let before = segment_ids(base);
+        let after = segment_ids(target);
+        let changed_bytes = after
+            .iter()
+            .enumerate()
+            .filter(|(ordinal, (id, _))| {
+                before
+                    .get(*ordinal)
+                    .is_none_or(|(before_id, _)| before_id != id)
+            })
+            .map(|(_, (_, length))| *length)
+            .sum();
+        let hashed_bytes = u64::try_from(base.len() + target.len())
+            .expect("bounded V1 fixture byte count fits u64");
+        (changed_bytes, hashed_bytes)
+    }
+
+    fn compose_object_closure(
+        store: &FileStore,
+        receipts: &[DurableSemanticObjectAdmission],
+    ) -> backend_store::ClosureId {
+        let mut objects = BTreeMap::<ObjectId, u64>::new();
+        for receipt in receipts {
+            match objects.insert(receipt.object_id(), receipt.payload_bytes()) {
+                Some(previous) => assert_eq!(
+                    previous,
+                    receipt.payload_bytes(),
+                    "one immutable object has one exact payload length"
+                ),
+                None => {}
+            }
+        }
+        let changes = objects
+            .keys()
+            .copied()
+            .map(ClosureMembershipChange::add)
+            .collect::<Vec<_>>();
+        let payload_bytes = objects.values().copied().sum::<u64>();
+        let metadata_bytes = ClosureCompositionBudget::metadata_bytes_for(changes.len())
+            .expect("bounded closure metadata charge");
+        let budget = ClosureCompositionBudget::new(
+            changes.len(),
+            changes.len(),
+            payload_bytes.max(1),
+            metadata_bytes,
+        );
+        store
+            .compose_closure_index(None, &changes, budget)
+            .expect("compose durable producer object closure")
+            .receipt()
+            .closure()
+    }
+
+    fn reopen_and_verify_objects(store: &FileStore, receipts: &[DurableSemanticObjectAdmission]) {
+        for receipt in receipts {
+            let expected_schema = match receipt.identity() {
+                ProducedSemanticObjectIdentity::Segment { .. } => SchemaIdentity::new(
+                    SemanticSegmentPayload::DOMAIN,
+                    SemanticSegmentPayload::TYPE,
+                    SemanticSegmentPayload::VERSION,
+                ),
+                ProducedSemanticObjectIdentity::JumboLeaf { .. } => SchemaIdentity::new(
+                    SemanticJumboLeafPayload::DOMAIN,
+                    SemanticJumboLeafPayload::TYPE,
+                    SemanticJumboLeafPayload::VERSION,
+                ),
+                ProducedSemanticObjectIdentity::JumboInterior { .. } => SchemaIdentity::new(
+                    SemanticJumboInteriorPayload::DOMAIN,
+                    SemanticJumboInteriorPayload::TYPE,
+                    SemanticJumboInteriorPayload::VERSION,
+                ),
+            };
+            let object = store
+                .read_object(receipt.object_id())
+                .expect("cold FileStore reopens every producer closure member");
+            assert_eq!(object.id(), receipt.object_id());
+            assert_eq!(object.schema(), expected_schema);
+            assert_eq!(object.bytes().len() as u64, receipt.payload_bytes());
+        }
+    }
+
+    #[test]
+    fn real_reader_edits_store_stable_spir_and_rope_objects_with_locality_metrics() {
+        // This proof writes only DocumentationRows on the stable side. The
+        // V1 baseline is its full NXFI Core image; these bytes establish
+        // plane-local physical locality, not a complete seven-family V2
+        // generation write-set or end-to-end compiler speedup.
+        let directory = TestDirectory::new();
+        let cas_path = directory.0.join("cas");
+        let store = FileStore::open(&cas_path, 4 * 1024 * 1024).expect("open local FileStore");
+        let base_ir = fixture(None, false, false);
+        let base_v1_image = v1_image(&base_ir);
+        let mut base_segments = SemanticObjectAdmissionBuffer::default();
+        let mut base_jumbo = SemanticObjectAdmissionBuffer::default();
+        let (
+            base_encoding,
+            base_store_metrics,
+            base_rope_metrics,
+            base_spir,
+            _base_segment_pin,
+            _base_rope_pin,
+        ) = encode_and_persist(&store, &base_ir, &mut base_segments, &mut base_jumbo);
+        assert!(base_rope_metrics.created_objects() > 0);
+        assert!(base_rope_metrics.jumbo_leaf_hash_bytes() > 0);
+        assert!(base_rope_metrics.jumbo_interior_hash_bytes() > 0);
+        assert_eq!(
+            base_rope_metrics.payload_bytes(),
+            base_rope_metrics.jumbo_leaf_hash_bytes()
+                + base_rope_metrics.jumbo_interior_hash_bytes(),
+            "rope hash byte counters reconcile with exact leaf and interior payload lengths"
+        );
+        assert!(
+            base_spir
+                .iter()
+                .all(|payload| payload.len() <= SEGMENT_BYTES)
+        );
+        assert!(base_encoding.peak_segment_scratch_capacity_bytes() <= SEGMENT_BYTES as u64);
+        assert!(base_encoding.peak_tracked_scratch_upper_bound_bytes() < 1024 * 1024);
+        assert_eq!(
+            base_store_metrics.semantic_segment_hash_bytes(),
+            base_encoding.output_bytes(),
+            "local segment validation hashes each exact SPIR byte once"
+        );
+        println!(
+            "base: v1_image_bytes={} spir_payload_bytes={} segment_hash_bytes={} rope_leaf_hash_bytes={} rope_interior_hash_bytes={} rope_new_envelopes={} segment_scratch_peak={} tracked_scratch_peak={}",
+            base_v1_image.len(),
+            base_encoding.output_bytes(),
+            base_store_metrics.semantic_segment_hash_bytes(),
+            base_rope_metrics.jumbo_leaf_hash_bytes(),
+            base_rope_metrics.jumbo_interior_hash_bytes(),
+            base_rope_metrics.newly_stored_envelope_bytes(),
+            base_encoding.peak_segment_scratch_capacity_bytes(),
+            base_encoding.peak_tracked_scratch_upper_bound_bytes(),
+        );
+
+        let base_ids = segment_ids(base_segments.admissions());
+        let mut base_all = base_segments.admissions().to_vec();
+        base_all.extend_from_slice(base_jumbo.admissions());
+        let base_root = compose_object_closure(&store, &base_all);
+        let cold_store = FileStore::open(&cas_path, 4 * 1024 * 1024)
+            .expect("cold reopen FileStore without producer state");
+        assert_eq!(
+            cold_store
+                .open_closure(base_root)
+                .expect("reopen producer payload closure")
+                .id(),
+            base_root,
+            "closure root survives a cold FileStore reopen"
+        );
+        reopen_and_verify_objects(&cold_store, &base_all);
+
+        let cases = [
+            ("early edit", Some(0), false, false),
+            ("middle edit", Some(FIXTURE_ROWS / 2 - 1), false, false),
+            ("tail edit", Some(FIXTURE_ROWS - 1), false, false),
+            ("middle insert", None, true, false),
+            ("middle delete", None, false, true),
+        ];
+        for (label, edit, insert, delete) in cases {
+            let target_ir = fixture(edit, insert, delete);
+            let target_v1_image = v1_image(&target_ir);
+            let mut target_segments = SemanticObjectAdmissionBuffer::default();
+            let mut target_jumbo = SemanticObjectAdmissionBuffer::default();
+            let (
+                encoding,
+                storage,
+                rope_storage,
+                target_spir,
+                _target_segment_pin,
+                _target_rope_pin,
+            ) = encode_and_persist(&store, &target_ir, &mut target_segments, &mut target_jumbo);
+            let stable_bytes = stable_new_payload_bytes(&base_ids, target_segments.admissions());
+            let ordinal_bytes = matched_ordinal_new_payload_bytes(&base_spir, &target_spir);
+            let (v1_bytes, v1_hashed_bytes) = v1_ordinal_metrics(&base_v1_image, &target_v1_image);
+            assert!(
+                stable_bytes < ordinal_bytes,
+                "{label}: stable-key new documentation-plane payload bytes {stable_bytes} should beat matched 16 KiB ordinal bytes {ordinal_bytes}"
+            );
+            assert!(
+                stable_bytes < v1_bytes,
+                "{label}: stable-key new documentation-plane payload bytes {stable_bytes} should beat V1 ordinal NXFI bytes {v1_bytes}"
+            );
+            assert!(
+                storage.newly_stored_envelope_bytes() > 0,
+                "{label}: changed segment is durably written"
+            );
+            assert_eq!(
+                storage.newly_stored_envelope_bytes(),
+                target_segments
+                    .admissions()
+                    .iter()
+                    .filter(|receipt| receipt.created())
+                    .map(|receipt| receipt.envelope_bytes())
+                    .sum::<u64>(),
+                "{label}: FileStore byte metrics reconcile with durable segment receipts"
+            );
+            assert_eq!(
+                storage.semantic_segment_hash_bytes(),
+                encoding.output_bytes(),
+                "{label}: counters expose the full reader scan and family hashing"
+            );
+            assert_eq!(
+                rope_storage.created_objects(),
+                0,
+                "{label}: jumbo rope objects reuse"
+            );
+            assert!(
+                rope_storage.reused_objects() > 0,
+                "{label}: rope closure is reused"
+            );
+            assert_eq!(
+                rope_storage.jumbo_leaf_hash_bytes(),
+                base_rope_metrics.jumbo_leaf_hash_bytes(),
+                "{label}: unchanged jumbo value is still streamed and rehashed"
+            );
+            assert_eq!(
+                rope_storage.jumbo_interior_hash_bytes(),
+                base_rope_metrics.jumbo_interior_hash_bytes(),
+                "{label}: unchanged jumbo interior identities are still recomputed"
+            );
+            assert!(encoding.peak_segment_scratch_capacity_bytes() <= SEGMENT_BYTES as u64);
+            assert!(encoding.peak_tracked_scratch_upper_bound_bytes() < 1024 * 1024);
+            println!(
+                "{label}: stable_doc_payload={stable_bytes} matched_ordinal_16k_payload={ordinal_bytes} v1_ordinal_nxfi_payload={v1_bytes} v1_ordinal_hash_bytes={v1_hashed_bytes} stable_segment_hash_bytes={} rope_leaf_hash_bytes={} rope_interior_hash_bytes={} newly_stored_envelopes={} segment_scratch_peak={} tracked_scratch_peak={}",
+                storage.semantic_segment_hash_bytes(),
+                rope_storage.jumbo_leaf_hash_bytes(),
+                rope_storage.jumbo_interior_hash_bytes(),
+                storage.newly_stored_envelope_bytes(),
+                encoding.peak_segment_scratch_capacity_bytes(),
+                encoding.peak_tracked_scratch_upper_bound_bytes(),
+            );
+        }
+
+        let second_root = compose_object_closure(&cold_store, &base_all);
+        assert_eq!(
+            second_root, base_root,
+            "same exact payload set has same root"
+        );
+        let reopened = cold_store
+            .read_closure(base_root)
+            .expect("cold read exact SPIR and rope closure");
+        assert_eq!(reopened.id(), base_root);
+        assert_eq!(
+            reopened.object_count() as usize,
+            base_all
+                .iter()
+                .map(DurableSemanticObjectAdmission::object_id)
+                .collect::<HashSet<_>>()
+                .len()
+        );
+        assert!(base_all.iter().any(|receipt| matches!(
+            receipt.identity(),
+            ProducedSemanticObjectIdentity::JumboLeaf { .. }
+        )));
+        assert!(base_all.iter().any(|receipt| matches!(
+            receipt.identity(),
+            ProducedSemanticObjectIdentity::JumboInterior { .. }
+        )));
+        assert!(base_all.iter().any(|receipt| matches!(
+            receipt.identity(),
+            ProducedSemanticObjectIdentity::Segment {
+                family: SemanticIrPlane::Documentation,
+                ..
+            }
+        )));
+    }
+}

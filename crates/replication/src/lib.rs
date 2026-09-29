@@ -20,6 +20,7 @@ mod ir_hydration;
 mod ir_hydration_store;
 mod ir_hydration_wire;
 mod ir_image_store;
+mod ir_producer_store;
 mod ir_residency;
 mod local_peer;
 mod negotiation;
@@ -45,6 +46,11 @@ pub use ir_hydration::*;
 pub use ir_hydration_store::*;
 pub use ir_hydration_wire::*;
 pub use ir_image_store::{SemanticImageCacheError, SemanticImageResume};
+pub use ir_producer_store::{
+    DurableSemanticObjectAdmission, DurableSemanticObjectPin, FileSemanticJumboRopeSink,
+    FileSemanticPlaneSegmentSink, ProducedSemanticObjectIdentity, SemanticObjectAdmissionBuffer,
+    SemanticObjectAdmissionSink, SemanticProducerStoreMetrics,
+};
 pub use ir_residency::*;
 pub use local_peer::*;
 pub use negotiation::*;

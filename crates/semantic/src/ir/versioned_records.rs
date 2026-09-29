@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::ir::{
     DeclarationIdentity, JumboRopeObjectSink, JumboRopeObjectSource, SemanticInputWitness,
-    SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment, SemanticReader,
+    SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment, SemanticReader, SemanticSegmentId,
 };
 
 const MAGIC: [u8; 4] = *b"SPIR";
@@ -100,7 +100,9 @@ pub struct CanonicalSemanticPlaneSegmentPayload {
     bytes: Box<[u8]>,
 }
 
-/// One segment borrowed only for the duration of a streaming sink call.
+/// One not-yet-locally-validated segment borrowed only for the duration of a
+/// streaming sink call. [`Self::metadata`] constructs a byte identity claim;
+/// use [`Self::validate`] before crossing a durable producer boundary.
 ///
 /// Sinks can hash, persist, or forward the segment before the encoder reuses
 /// its bounded segment buffer. The borrowed bytes cannot be retained without
@@ -151,6 +153,86 @@ impl<'bytes> CanonicalSemanticPlaneSegmentRef<'bytes> {
             self.bytes,
             self.input,
         )?)
+    }
+
+    /// Checks the exact SPIR framing, row grammars, stable-key order, key
+    /// range, and content identity before this borrowed payload crosses a
+    /// storage boundary.
+    ///
+    /// This is local segment validation only. Cross-family references and the
+    /// complete seven-family census still require aggregate admission.
+    pub fn validate(
+        self,
+    ) -> Result<ValidatedCanonicalSemanticPlaneSegment<'bytes>, SemanticPlaneRecordError> {
+        let descriptor = self.metadata()?;
+        let view = decode_semantic_plane_segment_structure(self.kind, &descriptor, self.bytes)?;
+        let id = descriptor
+            .admitted_id()
+            .ok_or(SemanticPlaneRecordError::MissingAdmittedId)?;
+        Ok(ValidatedCanonicalSemanticPlaneSegment {
+            descriptor,
+            id,
+            view,
+            bytes: self.bytes,
+        })
+    }
+}
+
+/// Borrowed SPIR bytes that passed exact local segment validation.
+///
+/// This capability is deliberately weaker than family or generation
+/// admission: it proves the bytes match their segment claim and closed row
+/// grammar, but does not prove cross-family references or owner input
+/// completeness.
+#[derive(Clone, Copy, Debug)]
+pub struct ValidatedCanonicalSemanticPlaneSegment<'bytes> {
+    descriptor: SemanticPlaneSegment,
+    id: SemanticSegmentId,
+    view: CanonicalSemanticPlaneSegmentView<'bytes>,
+    bytes: &'bytes [u8],
+}
+
+impl<'bytes> ValidatedCanonicalSemanticPlaneSegment<'bytes> {
+    /// Locally admitted content identity for the exact SPIR bytes.
+    #[must_use]
+    pub const fn id(self) -> SemanticSegmentId {
+        self.id
+    }
+
+    /// Exact canonical IR family carried by the validated payload.
+    #[must_use]
+    pub const fn kind(self) -> SemanticPlaneKind {
+        self.view.kind()
+    }
+
+    /// First stable key in this segment.
+    #[must_use]
+    pub const fn first_key(self) -> [u8; 32] {
+        self.view.first_key()
+    }
+
+    /// Last stable key in this segment.
+    #[must_use]
+    pub const fn last_key(self) -> [u8; 32] {
+        self.view.last_key()
+    }
+
+    /// Exact locally checked row count.
+    #[must_use]
+    pub const fn row_count(self) -> u32 {
+        self.view.row_count()
+    }
+
+    /// Exact SPIR payload bytes, borrowed for the current sink call.
+    #[must_use]
+    pub const fn bytes(self) -> &'bytes [u8] {
+        self.bytes
+    }
+
+    /// Claim reconstructed from the exact bytes admitted by this token.
+    #[must_use]
+    pub const fn descriptor(self) -> SemanticPlaneSegment {
+        self.descriptor
     }
 }
 
@@ -218,6 +300,23 @@ impl CanonicalSemanticPlaneSegmentPayload {
             &self.bytes,
             self.input,
         )?)
+    }
+
+    /// Checks the exact SPIR framing, row grammars, stable-key order, key
+    /// range, and content identity before this owned payload crosses a
+    /// storage boundary.
+    pub fn validate(
+        &self,
+    ) -> Result<ValidatedCanonicalSemanticPlaneSegment<'_>, SemanticPlaneRecordError> {
+        CanonicalSemanticPlaneSegmentRef {
+            kind: self.kind,
+            first_key: self.first_key,
+            last_key: self.last_key,
+            row_count: self.row_count,
+            input: self.input,
+            bytes: &self.bytes,
+        }
+        .validate()
     }
 
     /// Consumes the descriptor wrapper and returns its exact owned bytes.
@@ -906,6 +1005,18 @@ pub fn decode_semantic_plane_segment<'bytes>(
         return Err(SemanticPlaneRecordError::IrKindRequired);
     }
     descriptor.admit(kind, bytes)?;
+    decode_semantic_plane_segment_structure(kind, descriptor, bytes)
+}
+
+/// Checks the row-plane grammar after the caller has established exact
+/// content identity. Producer validation uses this helper because its
+/// descriptor was just built from the same bytes; fetched/untrusted payloads
+/// must enter through `decode_semantic_plane_segment` and re-admit the claim.
+fn decode_semantic_plane_segment_structure<'bytes>(
+    kind: SemanticPlaneKind,
+    descriptor: &SemanticPlaneSegment,
+    bytes: &'bytes [u8],
+) -> Result<CanonicalSemanticPlaneSegmentView<'bytes>, SemanticPlaneRecordError> {
     if bytes.len() < HEADER_BYTES || bytes[..4] != MAGIC {
         return Err(SemanticPlaneRecordError::Header);
     }
@@ -2069,6 +2180,18 @@ mod tests {
             decode_semantic_plane_segment(kind, &bad_tag_descriptor, &bad_tag),
             Err(SemanticPlaneRecordError::RowGrammar)
         ));
+        let bad_tag_ref = CanonicalSemanticPlaneSegmentRef {
+            kind,
+            first_key: *payload.first_key(),
+            last_key: *payload.last_key(),
+            row_count: payload.row_count(),
+            input: payload.input,
+            bytes: &bad_tag,
+        };
+        assert!(matches!(
+            bad_tag_ref.validate(),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
 
         let mut bad_utf8 = payload.bytes().to_vec();
         bad_utf8[HEADER_BYTES + RECORD_HEADER_BYTES + 42] = 0xFF;
@@ -2102,6 +2225,16 @@ mod tests {
             Err(SemanticPlaneRecordError::Truncated)
         ));
         assert!(decode_semantic_plane_segment(kind, &descriptor, payload.bytes()).is_ok());
+        let validated = payload
+            .validate()
+            .expect("canonical local segment validates");
+        assert_eq!(validated.kind(), kind);
+        assert_eq!(validated.row_count(), payload.row_count());
+        assert_eq!(validated.bytes(), payload.bytes());
+        assert_eq!(
+            validated.id(),
+            descriptor.admitted_id().expect("descriptor hashes payload")
+        );
     }
 
     #[test]
