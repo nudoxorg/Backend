@@ -20,3 +20,10 @@ frontends/csharp/src/legacy/helper/obj/
 # fixtures. Keep them out of commits while retaining them for review.
 .artifacts/
 tests/journeys/.artifacts/
+
+# Design-board data caches. The board's extract_*.py scripts regenerate them
+# from the local index. The curated page contracts (page6, shapes) that the
+# native lanes build against stay tracked.
+/Nudox-Design-System/v6/moments/data/*
+!/Nudox-Design-System/v6/moments/data/page6/
+!/Nudox-Design-System/v6/moments/data/shapes/
