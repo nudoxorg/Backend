@@ -123,6 +123,7 @@ lines carry `NUDOX:` comments.
 | `src/metal_renderer.rs` `MetalHeadlessRenderer::compositing`, `src/window.rs` `MacWindow::compositing` | `{ group_opacity: true, chamfer_shadows: true }` | capability |
 | `src/shaders.metal` `shadow_vertex`, `shadow_fragment` | `inset == 2`: chamfered-rectangle drop shadow — each row's span blurred exactly along x (erf), integrated over y with 8 samples; exact SDF at zero blur | coverage error vs the CPU-convolved polygon: worst 0.0057, mean 0.00073 (the rounded box it replaces: 0.1496, 0.0066) |
 | `src/shaders.metal` `group_composite_fragment` | new: texel-exact copy of the group times opacity | group opacity |
+| `src/window.rs:3250-3271` `input_context` (new), registered as GPUIView's `inputContext` (`:301-305`); `MacWindowState::text_input_focused` (`:526-528`, `:931`) set by `set_input_handler` / cleared by `take_input_handler` (`:1390-1399`) | a window whose last frame registered no input handler returns `nil` from `-inputContext`; one with a focused text input gets NSView's default | W-Open I2: AppKit activated a text input context at every launch, whether or not anything took text; the first activation loads TextInputUI on the main thread, a 123-125 ms stall right after the first frame (Instruments System Trace, `-[NSTextInputContext activate]` -> `initTUINSCursorUIController`). The cost now falls on the first text focus. Key events are unaffected: with no context, `handleEvent:` goes to nil and the key reaches GPUI's dispatch |
 
 ## gpui_ce_components 0.2.0 (highlighter)
 
