@@ -32,7 +32,7 @@ use crate::measure::{Measure, Set, Space};
 use crate::paint::{Bevel, Chamfer, cut, gem};
 use crate::probe;
 use crate::theme::{ActiveFacet, Facet, set_facet};
-use crate::tokens::fluid::{LAB_CARDS, NOTES, Notes};
+use crate::tokens::fluid::{LAB_CARDS, NOTES as MARGIN_MODE, Notes};
 use crate::tokens::{Palette, ty};
 use crate::Density;
 use gpui::{
@@ -357,7 +357,7 @@ const NOTES: [&str; 3] = [
 /// card and note is a flow item.
 fn page(flow: &Flow, modes: &Modes, measure: &Measure, facet: &Facet) -> AnyElement {
     let palette = facet.palette();
-    let wide = modes.settle(&NOTES, measure.fluid_room()).mode == Notes::Beside;
+    let wide = modes.settle(&MARGIN_MODE, measure.fluid_room()).mode == Notes::Beside;
     let margin_width = px(250.0 * facet.text_scale);
     let gap = measure.space(Space::Base);
     let grid_measure = if wide {
@@ -516,7 +516,7 @@ impl Render for ReflowLab {
         let measure = Measure::new(px(width), &facet);
         // Steps are discrete (a shelf collapsing): epochs. The drag is not;
         // only the modes it crosses are.
-        let margin = self.modes.settle(&NOTES, measure.fluid_room());
+        let margin = self.modes.settle(&MARGIN_MODE, measure.fluid_room());
         self.flow.epoch((self.step, margin.epoch));
         div()
             .size_full()
@@ -565,7 +565,7 @@ impl Render for ScaleLab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let facet = cx.facet();
         let measure = Measure::new(px(940.0), &facet);
-        let margin = self.modes.settle(&NOTES, measure.fluid_room());
+        let margin = self.modes.settle(&MARGIN_MODE, measure.fluid_room());
         self.flow.epoch((facet.text_scale.to_bits(), facet.density, margin.epoch));
         div()
             .size_full()

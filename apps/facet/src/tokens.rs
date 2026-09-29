@@ -848,6 +848,176 @@ pub mod fluid {
     /// grows in a big window; body text never does.
     pub const DISPLAY: Blend = Blend::new(&[stop(320.0, 0.70), stop(480.0, 0.78), stop(1600.0, 1.0), stop(2560.0, 1.2)]).smooth();
 
+    /// What the gallery titlebar draws: the flow targets' container queries.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Beads {
+        /// The thread fills the bar; no buttons.
+        Bare,
+        /// The thread fills the bar; the shelf toggle and the buttons.
+        Buttons,
+        /// Two beads behind "here" and the forward half.
+        Some,
+        /// Three beads behind "here".
+        All,
+    }
+
+    /// Buttons from 520, beads from 760, the oldest bead from 1100.
+    pub const BEADS: Ladder<Beads> = Ladder::new(
+        ModeId::Beads,
+        &[rung(Beads::Bare, 0.0), rung(Beads::Buttons, 520.0), rung(Beads::Some, 760.0), rung(Beads::All, 1100.0)],
+    );
+
+    /// The mock window's shelf in the chrome gallery: 18 % of the window,
+    /// between 220 and 264 (the flow targets).
+    pub const MOCK_SHELF: Length = Length::new(&[stop(1222.22, 220.0), stop(1466.67, 264.0)]);
+
+    /// The marks gallery's hero gem: 48 on a phone, 64 from 640.
+    pub const MARK_GEM: Length = Length::new(&[stop(320.0, 48.0), stop(640.0, 64.0)]);
+
+    /// The marks gallery's dependency line sits beside the marks from 760.
+    pub const HERO_DEPS: Ladder<Split> = Ladder::new(ModeId::Lab, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)]);
+
+    /// Where the graph's focus card sits.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Card {
+        /// A sheet under the map, a gutter from its edges.
+        Below,
+        /// A card beside the map, at its right.
+        Beside,
+    }
+
+    /// The focus card sits beside the map from 640.
+    pub const CARD: Ladder<Card> = Ladder::new(ModeId::Card, &[rung(Card::Below, 0.0), rung(Card::Beside, 640.0)]);
+
+    /// What the focus card takes from the map beside it, for the camera: its
+    /// 340 px and the gutters around it.
+    pub const CARD_ROOM: Length = Length::new(&[stop(640.0, 380.0), stop(1440.0, 380.0)]);
+
+    /// How the graph sets a symbol's relations around it.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Reading {
+        /// One merged column, to the right of the focus.
+        Merged,
+        /// Two columns, one each side of the focus.
+        Columns,
+    }
+
+    /// The relations sit in two columns when the free room is 900 wide.
+    pub const READING: Ladder<Reading> =
+        Ladder::new(ModeId::Reading, &[rung(Reading::Merged, 0.0), rung(Reading::Columns, 900.0)]);
+
+    /// How far a chain is framed back from its ends: a step further on a
+    /// phone, where the map is small.
+    pub const CHAIN_MARGIN: Blend = Blend::new(&[stop(560.0, 2.8), stop(720.0, 1.9)]);
+
+    // ---- Ready for the page lanes (`.local/lanes/wave6/fluid/ADOPT.md`) ----
+    //
+    // The numbers the symbol and package pages compare a width with today,
+    // as tokens and modes, so adopting them is a swap of names.
+
+    /// Where the symbol page's rail sits.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Rail {
+        /// Under the page.
+        Below,
+        /// Beside the page, in a column of its own.
+        Beside,
+    }
+
+    /// The rail sits beside the page from 1100, held 40 px through the edge
+    /// (`anatomy/symbol/layout.rs` `ENTER` 1120 / `LEAVE` 1080).
+    pub const SYMBOL_RAIL: Ladder<Rail> =
+        Ladder::new(ModeId::SymbolRail, &[rung(Rail::Below, 0.0), rung(Rail::Beside, 1100.0)]).banded(40.0);
+
+    /// How a page sets a case's or a field's name, type and doc.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Rows {
+        /// Stacked: a room too narrow for three columns.
+        Stacked,
+        /// Name, type and doc in columns.
+        Columns,
+    }
+
+    /// Rows are in columns from 760 (`anatomy/symbol/body.rs` `stacked`).
+    pub const SYMBOL_ROWS: Ladder<Rows> =
+        Ladder::new(ModeId::SymbolRows, &[rung(Rows::Stacked, 0.0), rung(Rows::Columns, 760.0)]);
+
+    /// How many columns of cells a page has.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Cells {
+        /// One column.
+        One,
+        /// Two columns.
+        Two,
+    }
+
+    /// Cells are in two columns from 900 (`anatomy/symbol/body.rs` `two`).
+    pub const SYMBOL_CELLS: Ladder<Cells> =
+        Ladder::new(ModeId::SymbolCells, &[rung(Cells::One, 0.0), rung(Cells::Two, 900.0)]);
+
+    /// Whether the page is set for a phone.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Screen {
+        /// A phone-width column: lists, not diagrams.
+        Phone,
+        /// A window.
+        Window,
+    }
+
+    /// A phone below 480 (`anatomy/symbol/layout.rs` `phone`).
+    pub const SYMBOL_PHONE: Ladder<Screen> =
+        Ladder::new(ModeId::SymbolPhone, &[rung(Screen::Phone, 0.0), rung(Screen::Window, 480.0)]);
+
+    /// The relations prism is one column on a rail below 620, columns above
+    /// (`anatomy/prism.rs` `ONE_COLUMN_BELOW`).
+    pub const SYMBOL_PRISM: Ladder<Cells> =
+        Ladder::new(ModeId::SymbolPrism, &[rung(Cells::One, 0.0), rung(Cells::Two, 620.0)]);
+
+    /// How far the page's spine sits left of its column (`rhythm::SPINE_NARROW`
+    /// 36 below 720, `rhythm::SPINE` 44 above, as a glide).
+    pub const PAGE_SPINE: Length = Length::new(&[stop(560.0, 36.0), stop(760.0, 44.0)]);
+
+    /// The hero gem (`rhythm::GEM_NARROW` 40 below 720, `rhythm::GEM` 56 above).
+    pub const PAGE_GEM: Length = Length::new(&[stop(560.0, 40.0), stop(760.0, 56.0)]);
+
+    /// How many cells of the package page's crest share a row.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Crest {
+        /// One under the other, on a phone.
+        One,
+        /// Two by two.
+        Two,
+        /// Four in a row: the licence a little wider than the rest.
+        Four,
+    }
+
+    /// Two by two from 420, four in a row from 980, held 48 px through each
+    /// edge (`bodies/package/fluid.rs` `TWO_FROM`, `FOUR_FROM`, `STICKY` 24).
+    pub const CREST: Ladder<Crest> =
+        Ladder::new(ModeId::Crest, &[rung(Crest::One, 0.0), rung(Crest::Two, 420.0), rung(Crest::Four, 980.0)]).banded(48.0);
+
+    /// The package hero's gem (`bodies/package.rs` `fluid(48.0, 64.0)`).
+    pub const PACKAGE_GEM: Length = Length::new(&[stop(480.0, 48.0), stop(1600.0, 64.0)]).smooth();
+
+    /// How Ask (⌘K) sits over the page.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Float {
+        /// A sheet across the window, a gutter from every edge.
+        Sheet,
+        /// A panel floating over the page, centred.
+        Panel,
+    }
+
+    /// Ask is a floating panel from 640 and a sheet across the window below.
+    pub const ASK: Ladder<Float> = Ladder::new(ModeId::Ask, &[rung(Float::Sheet, 0.0), rung(Float::Panel, 640.0)]);
+
+    /// The floating panel's width.
+    pub const ASK_PANEL: Length = Length::new(&[stop(640.0, 480.0), stop(1440.0, 640.0)]);
+
+    /// The panel's distance from the top of the window, and the sheet's
+    /// distance from every edge.
+    pub const ASK_EDGE: Length = Length::new(&[stop(320.0, 8.0), stop(640.0, 72.0)]);
+
     /// How a page sets its detail against its list.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub enum Split {
@@ -876,8 +1046,12 @@ pub mod fluid {
     /// The motion lab's cards: as many columns of 220 as fit, up to four.
     pub const LAB_CARDS: Grid = Grid::new(ModeId::Lab, Length::new(&[stop(320.0, 220.0), stop(1440.0, 220.0)]), 4);
 
-    /// The Library's project gem.
-    pub const HERO_GEM: Length = Length::new(&[stop(320.0, 40.0), stop(1440.0, 56.0), stop(2560.0, 88.0)]);
+    /// The gem of a project in the Library, read at the wide measure: 44 in the
+    /// reading column, growing as the wide measure does.
+    pub const PROJECT_GEM: Length = Length::new(&[stop(320.0, 34.0), stop(784.0, 44.0), stop(1120.0, 60.0)]);
+
+    /// The gem of an empty Library.
+    pub const EMPTY_GEM: Length = Length::new(&[stop(320.0, 40.0), stop(784.0, 56.0), stop(1120.0, 76.0)]);
 
     /// The Library's roles: two columns from 714 (two of 340 and the gap).
     pub const ROLES: Grid = Grid::new(ModeId::Library, Length::new(&[stop(320.0, 340.0), stop(1440.0, 340.0)]), 2);

@@ -363,3 +363,166 @@ fn reduced_motion_swaps_at_once_but_stays_hysteretic(cx: &mut TestAppContext) {
     assert_eq!(modes.settle(&DOCK, room(650.0)).mode, Dock::Drawer, "650 is inside the band of 640");
     assert_eq!(modes.settle(&DOCK, room(660.0)).mode, Dock::Spine);
 }
+
+// ---- the rule ----
+
+/// Files (relative to `apps/`) that still compare a width with a number, and
+/// whose lane has been told how to stop (`.local/lanes/wave6/fluid/ADOPT.md`).
+/// The list only shrinks: a file on it with no hit left fails the test, so a
+/// finished file cannot stay listed.
+const KNOWN: &[&str] = &[
+    "facet/src/anatomy.rs",
+    "facet/src/anatomy/gallery.rs",
+    "facet/src/anatomy/page.rs",
+    "facet/src/anatomy/page/gallery.rs",
+    "facet/src/anatomy/prism.rs",
+    "facet/src/anatomy/symbol/body.rs",
+    "facet/src/anatomy/symbol/gallery.rs",
+    "facet/src/anatomy/symbol/layout.rs",
+    "facet/src/marks/version.rs",
+    "desktop/src/shell/bodies/package/fluid.rs",
+    "facet/src/measure.rs",
+];
+
+/// Files that are checks or harness code, not layout: a width compared with a
+/// number there is a measurement, not a breakpoint.
+const EXEMPT: &[&str] = &[
+    "facet/src/fluid/",
+    "facet/src/tokens.rs",
+    "facet/src/gallery/",
+    "facet/src/graph/gallery",
+    "facet/src/graph/sprite_checks.rs",
+    "desktop/src/harness",
+    "desktop/src/bin/",
+];
+
+/// The names a width goes by. A line that compares one of these with a number
+/// of three or more digits is a breakpoint.
+const WIDTHS: &[&str] = &["width", "effective", ".w ", ".w<", ".w>", "avail", "vw ", "room."];
+
+/// Whether `line` compares a width with a literal of three or more digits
+/// (`w < 900.0`, `effective() >= 760.0`, `640.0 <= w`).
+fn hand_rolled(line: &str) -> bool {
+    let code = line.split("//").next().unwrap_or_default();
+    if !WIDTHS.iter().any(|name| code.contains(name)) {
+        return false;
+    }
+    let bytes = code.as_bytes();
+    let literal_at = |from: usize| {
+        let digits = bytes[from..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+        digits >= 3 && !bytes.get(from + digits).is_some_and(u8::is_ascii_alphabetic)
+    };
+    for (at, byte) in bytes.iter().enumerate() {
+        if *byte != b'<' && *byte != b'>' {
+            continue;
+        }
+        let (prev, next) = (at.checked_sub(1).map(|i| bytes[i]), bytes.get(at + 1).copied());
+        // Not `->`, `=>`, `<<`, `>>`, or a generic's bracket.
+        if matches!(prev, Some(b'-' | b'=' | b'<' | b'>')) || matches!(next, Some(b'<' | b'>')) {
+            continue;
+        }
+        let mut after = at + 1;
+        if bytes.get(after) == Some(&b'=') {
+            after += 1;
+        }
+        while bytes.get(after) == Some(&b' ') {
+            after += 1;
+        }
+        if literal_at(after) {
+            return true;
+        }
+        let mut before = at;
+        while before > 0 && bytes[before - 1] == b' ' {
+            before -= 1;
+        }
+        let end = before;
+        let mut start = end;
+        while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
+            start -= 1;
+        }
+        let number = &code[start..end];
+        if number.split('.').next().is_some_and(|whole| whole.len() >= 3 && whole.bytes().all(|b| b.is_ascii_digit())) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Every `.rs` file under `dir`.
+fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            sources(&path, out);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The offending lines of a source file: the code before its test module.
+fn offences(source: &str) -> Vec<(usize, String)> {
+    source
+        .lines()
+        .enumerate()
+        .take_while(|(_, line)| line.trim() != "#[cfg(test)]")
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| hand_rolled(line))
+        .map(|(index, line)| (index + 1, line.trim().to_owned()))
+        .collect()
+}
+
+#[test]
+fn the_scanner_sees_a_breakpoint_and_only_a_breakpoint() {
+    for line in [
+        "if view.w < 640.0 { 2.8 } else { 1.9 }",
+        "let narrow = measure.effective() < 560.0;",
+        "let wide = width >= 900.0;",
+        "if 1100.0 <= avail { two }",
+        "        room.w < 900.0",
+        "let beds = effective>760.0;",
+    ] {
+        assert!(hand_rolled(line), "missed a breakpoint: {line}");
+    }
+    for line in [
+        "let n = width - 24.0 - 36.0;",
+        "fn f(x: Vec<u32>) -> Option<f32> { None }",
+        "let ok = text.width < 24.0;",
+        "if wanted > 500.0 { bold }",
+        "let w = width; // was < 900.0",
+        "map(|x| x => y)",
+        "let a = width << 3;",
+    ] {
+        assert!(!hand_rolled(line), "flagged what is not a breakpoint: {line}");
+    }
+}
+
+#[test]
+fn no_hand_rolled_breakpoints() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let apps = manifest.parent().expect("apps").to_path_buf();
+    let mut files = Vec::new();
+    sources(&manifest.join("src"), &mut files);
+    sources(&apps.join("desktop/src"), &mut files);
+    let mut found: std::collections::BTreeMap<String, Vec<(usize, String)>> = std::collections::BTreeMap::new();
+    for path in files {
+        let relative = path.strip_prefix(&apps).expect("under apps").to_string_lossy().replace('\\', "/");
+        let name = relative.rsplit('/').next().unwrap_or_default();
+        if EXEMPT.iter().any(|prefix| relative.starts_with(prefix)) || name.ends_with("tests.rs") || relative.contains("/tests/") {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(&path) else { continue };
+        let hits = offences(&source);
+        if !hits.is_empty() {
+            found.insert(relative, hits);
+        }
+    }
+    let new: Vec<_> = found.iter().filter(|(file, _)| !KNOWN.contains(&file.as_str())).collect();
+    assert!(
+        new.is_empty(),
+        "a width is compared with a number outside `facet::fluid` (read a token from `facet::tokens::fluid`, or a mode through `Modes::settle`): {new:#?}"
+    );
+    let stale: Vec<_> = KNOWN.iter().filter(|file| !found.contains_key(**file)).collect();
+    assert!(stale.is_empty(), "these files no longer compare a width with a number: take them off `KNOWN`: {stale:?}");
+}

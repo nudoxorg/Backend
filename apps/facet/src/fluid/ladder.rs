@@ -16,6 +16,8 @@ pub enum ModeId {
     Pins,
     /// The titlebar's controls, from every one down to the bare few.
     Bar,
+    /// The gallery titlebar's thread of beads.
+    Beads,
     /// A page's margin notes: beside their block, or under it.
     Notes,
     /// The Library's project grid.
@@ -28,6 +30,26 @@ pub enum ModeId {
     CompareColumns,
     /// The graph's rail: beside the canvas, or under it.
     Rail,
+    /// The graph's focus card: beside the map, or a sheet under it.
+    Card,
+    /// The graph's relation columns: two around the focus, or merged.
+    Reading,
+    /// Ask (⌘K): a floating panel, or a sheet across the window.
+    Ask,
+    /// The symbol page's rail: beside the page, or under it.
+    SymbolRail,
+    /// The symbol page's case and field rows: stacked or in columns.
+    SymbolRows,
+    /// The symbol page's cells: one column or two.
+    SymbolCells,
+    /// The symbol page on a phone.
+    SymbolPhone,
+    /// The symbol page's relations prism: one column on a rail, or columns.
+    SymbolPrism,
+    /// The package page's crest: one cell to a row, two, or four.
+    Crest,
+    /// The package page's cards: as many columns as fit.
+    Folio,
     /// A gallery scene's own columns (lab pages, the marks gallery).
     Lab,
 }
@@ -40,12 +62,23 @@ impl ModeId {
             Self::Dock => "dock",
             Self::Pins => "pins",
             Self::Bar => "bar",
+            Self::Beads => "beads",
             Self::Notes => "notes",
             Self::Library => "library",
             Self::Find => "find",
             Self::Compare => "compare",
             Self::CompareColumns => "compare-columns",
             Self::Rail => "rail",
+            Self::Card => "card",
+            Self::Reading => "reading",
+            Self::Ask => "ask",
+            Self::SymbolRail => "symbol-rail",
+            Self::SymbolRows => "symbol-rows",
+            Self::SymbolCells => "symbol-cells",
+            Self::SymbolPhone => "symbol-phone",
+            Self::SymbolPrism => "symbol-prism",
+            Self::Crest => "crest",
+            Self::Folio => "folio",
             Self::Lab => "lab",
         }
     }
