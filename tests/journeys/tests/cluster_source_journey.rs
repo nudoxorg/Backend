@@ -1450,7 +1450,7 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
         .expect("write hidden compiler configuration");
     std::fs::write(
         project.join("src/lib.rs"),
-        "#[doc = include_str!(\"../Cargo.toml\")]\npub fn remote_journey_helper() -> &'static str { \"helper\" }\npub fn remote_journey_entry() -> &'static str { remote_journey_helper() }\n",
+        "pub fn remote_journey_helper() -> &'static str { \"helper\" }\n#[doc = include_str!(\"../Cargo.toml\")]\npub fn remote_journey_entry() -> &'static str { remote_journey_helper() }\n",
     )
     .expect("write the only compiler source");
     assert_eq!(
