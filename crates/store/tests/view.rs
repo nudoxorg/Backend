@@ -7,13 +7,13 @@ use core::mem::{align_of, size_of};
 use std::vec::Vec;
 
 use allocation_counter::{AllocationInfo, measure};
-use backend_version::{ContentId, ObjectDomain};
-use backend_version::object::{ObjectLength, ObjectRef};
 use backend_store::object_pack::{
     OBJECT_PACK_HEADER_BYTES, ObjectPackBytes, ObjectPackError, ObjectPackHeader, ObjectPackIndex,
     ObjectPackView, PackInput, PreparedObjectPack,
 };
+use backend_version::object::{ObjectLength, ObjectRef};
 use backend_version::schema::SchemaId;
+use backend_version::{ContentId, ObjectDomain};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

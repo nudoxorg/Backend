@@ -5,11 +5,11 @@
 
 use core::mem::size_of;
 
-use backend_version::object::OBJECT_DESCRIPTOR_RECORD_BYTES;
 use backend_store::object_pack::{
     OBJECT_PACK_HEADER_BYTES, ObjectPackBytes, ObjectPackError, ObjectPackHeader,
     ObjectPackObjectCount,
 };
+use backend_version::object::OBJECT_DESCRIPTOR_RECORD_BYTES;
 use thiserror::Error;
 
 const COUNT_BYTES: usize = OBJECT_PACK_HEADER_BYTES;

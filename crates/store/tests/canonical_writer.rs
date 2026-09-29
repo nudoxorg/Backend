@@ -3,10 +3,10 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Public caller-buffer laws for canonical generation roots.
 
-use backend_version::{GenerationId, ObjectDomain};
-use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 use backend_store::root::{EntryKey, GenerationRoot, RootBuildError, RootEntry, RootWriteError};
+use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 use backend_version::schema::SchemaId;
+use backend_version::{GenerationId, ObjectDomain};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

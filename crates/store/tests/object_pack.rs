@@ -6,10 +6,10 @@
 use core::mem::size_of;
 use std::vec::Vec;
 
-use backend_version::{ContentId, ObjectDomain};
-use backend_version::object::{OBJECT_DESCRIPTOR_RECORD_BYTES, ObjectLength, ObjectRef};
 use backend_store::object_pack::{ObjectPackError, PackInput, PreparedObjectPack};
+use backend_version::object::{OBJECT_DESCRIPTOR_RECORD_BYTES, ObjectLength, ObjectRef};
 use backend_version::schema::SchemaId;
+use backend_version::{ContentId, ObjectDomain};
 use thiserror::Error;
 
 const SENTINEL: u8 = 0xa5;

@@ -4,9 +4,9 @@
 //! Isolated allocation contract for canonical object-pack preparation and writing.
 
 use allocation_counter::{AllocationInfo, measure};
+use backend_store::object_pack::{ObjectPackError, PackInput, PreparedObjectPack};
 use backend_version::ContentId;
 use backend_version::object::{ObjectLength, ObjectRef};
-use backend_store::object_pack::{ObjectPackError, PackInput, PreparedObjectPack};
 use backend_version::schema::SchemaId;
 use thiserror::Error;
 
