@@ -606,7 +606,7 @@ struct TypedV2SpoolSegmentSource {
 impl TypedV2SpoolSegmentSource {
     fn new(
         spool: &TypedV2HistorySpool,
-        locator: &super::ir_generation_store::TypedV2HistoryLocator,
+        locator: &crate::ir_generation_store::TypedV2HistoryLocator,
         manifest: &SemanticTypedPlaneManifestV2,
     ) -> Result<Self, String> {
         let segment_count = manifest
@@ -699,7 +699,7 @@ impl TypedPlaneSegmentSourceV2 for TypedV2SpoolSegmentSource {
 
 fn verify_typed_v2_history_content(
     spool: &TypedV2HistorySpool,
-    locator: &super::ir_generation_store::TypedV2HistoryLocator,
+    locator: &crate::ir_generation_store::TypedV2HistoryLocator,
     manifest: &SemanticTypedPlaneManifestV2,
     tier: SemanticTypedPlaneVerificationTierV2,
     jumbo_limits: JumboRopeLimits,
