@@ -400,8 +400,12 @@ fn cold_seek_is_path_bounded_and_closure_counts_exact_pages_and_rows() {
     let v3_builder_bytes = v3_rows.buffered_descriptor_capacity_bytes();
     let v3_rebuilt = v3_rows.finish().expect("complete V3 descriptor build");
     assert_eq!(v3_rebuilt.tree_root(), family.tree_root());
+    let semantic_slot_bytes = std::mem::size_of::<(StableRowKey, RowPayload)>();
+    let v3_slot_bytes = std::mem::size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>();
     eprintln!(
-        "V3-logical-memory rows=2048 semantic_row_builder_slot_capacity={semantic_builder_bytes} v3_bulk_builder_slot_capacity={v3_builder_bytes} cold_page_peak={} full_closure_peak={} closure_node_bytes={}",
+        "V3-logical-memory rows=2048 semantic_row_builder_slot_capacity={semantic_builder_bytes} v3_bulk_builder_slot_capacity={v3_builder_bytes} semantic_slot_bytes={semantic_slot_bytes} v3_slot_bytes={v3_slot_bytes} semantic_2m_row_slot_floor={} v3_2m_row_slot_floor={} cold_page_peak={} full_closure_peak={} closure_node_bytes={}",
+        2_000_000_usize.saturating_mul(semantic_slot_bytes),
+        2_000_000_usize.saturating_mul(v3_slot_bytes),
         page.work().peak_logical_live_buffer_bytes,
         proof.peak_logical_live_buffer_bytes(),
         proof.node_bytes(),
