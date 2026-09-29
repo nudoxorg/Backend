@@ -1064,7 +1064,9 @@ impl StableRowIndexBuilder {
 
     /// Builds and consumes this owner-local run.
     pub fn finish(self) -> Result<StableRowIndex, StableRowIndexError> {
-        StableRowIndex::from_sorted_rows(&self.rows)
+        Ok(StableRowIndex {
+            tree: RowTree::from_sorted_items_owned(self.rows)?,
+        })
     }
 }
 

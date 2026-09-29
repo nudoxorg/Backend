@@ -39,6 +39,96 @@ impl CanonicalRelation for RelationFixture {
     }
 }
 
+#[test]
+fn owned_bulk_builder_matches_borrowed_canonical_tree() -> Result<(), Box<dyn std::error::Error>> {
+    for size in [0, 1, 63, 64, 256, 1_024, 8_192] {
+        let rows: Vec<_> = (0..size).map(|key| (key, key.rotate_left(7))).collect();
+        let (borrowed, borrowed_work) =
+            PersistentTree::<RelationFixture>::from_sorted_items_with_work(&rows)?;
+        let (owned, owned_work) =
+            PersistentTree::<RelationFixture>::from_sorted_items_owned_with_work(rows)?;
+        assert_eq!(owned.root().commitment(), borrowed.root().commitment());
+        assert_eq!(owned.row_count(), borrowed.row_count());
+        assert_eq!(owned_work, borrowed_work);
+        let borrowed_nodes: Vec<_> = borrowed
+            .node_closure()
+            .map(|node| node.canonical_bytes().to_vec())
+            .collect();
+        let owned_nodes: Vec<_> = owned
+            .node_closure()
+            .map(|node| node.canonical_bytes().to_vec())
+            .collect();
+        assert_eq!(owned_nodes, borrowed_nodes);
+    }
+    let invalid = vec![(1, 1), (1, 2)];
+    assert!(matches!(
+        PersistentTree::<RelationFixture>::from_sorted_items_owned(invalid),
+        Err(TreeError::UnsortedOrDuplicate)
+    ));
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CountedValue {
+    bytes: Vec<u8>,
+    clones: std::sync::Arc<AtomicUsize>,
+}
+
+impl PartialEq for CountedValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for CountedValue {}
+
+impl Clone for CountedValue {
+    fn clone(&self) -> Self {
+        self.clones.fetch_add(1, AtomicOrdering::Relaxed);
+        Self {
+            bytes: self.bytes.clone(),
+            clones: self.clones.clone(),
+        }
+    }
+}
+
+struct CountedValueRelation;
+
+impl Relation for CountedValueRelation {
+    const DOMAIN: u8 = 14;
+    const TYPE: u16 = 9;
+    type Key = u64;
+    type Value = CountedValue;
+
+    fn encode_key(key: &u64, out: &mut Vec<u8>) {
+        out.extend_from_slice(&key.to_be_bytes());
+    }
+
+    fn encode_value(value: &CountedValue, out: &mut Vec<u8>) {
+        out.extend_from_slice(&value.bytes);
+    }
+}
+
+#[test]
+fn owned_bulk_builder_never_clones_payload_values() -> Result<(), Box<dyn std::error::Error>> {
+    let clones = std::sync::Arc::new(AtomicUsize::new(0));
+    let rows = (0..2_048)
+        .map(|key| {
+            (
+                key,
+                CountedValue {
+                    bytes: vec![key as u8; 256],
+                    clones: std::sync::Arc::clone(&clones),
+                },
+            )
+        })
+        .collect();
+    let tree = PersistentTree::<CountedValueRelation>::from_sorted_items_owned(rows)?;
+    assert_eq!(tree.row_count(), 2_048);
+    assert_eq!(clones.load(AtomicOrdering::Relaxed), 0);
+    Ok(())
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct VariableRelation;
 
@@ -352,7 +442,15 @@ fn lazy_sorted_lookup_batches_share_paths_and_match_single_key_lookup()
     // between, and above the stored range.
     let mut keys = vec![0, FIRST_KEY - 1];
     keys.extend(FIRST_KEY..FIRST_KEY + 32);
-    keys.extend([12_345, 12_346, END_KEY - 3, END_KEY - 2, END_KEY - 1, END_KEY, u64::MAX]);
+    keys.extend([
+        12_345,
+        12_346,
+        END_KEY - 3,
+        END_KEY - 2,
+        END_KEY - 1,
+        END_KEY,
+        u64::MAX,
+    ]);
     let expected_values = items.iter().copied().collect::<BTreeMap<_, _>>();
     let expected = keys
         .iter()
@@ -371,8 +469,10 @@ fn lazy_sorted_lookup_batches_share_paths_and_match_single_key_lookup()
 
     assert_eq!(batch, expected);
     assert_eq!(batch, singles);
-    assert!(batch_loads < single_loads,
-        "batched lookup loaded {batch_loads} nodes; singleton lookups loaded {single_loads}");
+    assert!(
+        batch_loads < single_loads,
+        "batched lookup loaded {batch_loads} nodes; singleton lookups loaded {single_loads}"
+    );
     assert!(lazy.lookup_many_sorted(&[])?.is_empty());
     assert!(matches!(
         lazy.lookup_many_sorted(&[FIRST_KEY + 2, FIRST_KEY]),
