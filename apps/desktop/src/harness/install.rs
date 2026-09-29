@@ -22,7 +22,8 @@
 //!   rest of the boot (host, owner, reads, persistence) is the real one.
 //! - `NUDOX_INSTALL_QUIET=owner|settled` (default `owner`): what a capture
 //!   waits for. `owner`: the owner answered (or said why not). `settled`: the
-//!   owner has also finished every index request in flight.
+//!   owner has also finished every index request in flight, and every package
+//!   the projects build with has been added (or said why not).
 
 use super::{ROOT, endpoint_for, private_dir, private_umask, settings_intents};
 use crate::host::launch;
@@ -207,6 +208,39 @@ fn install_graph(
     UiEntityGraph { root, store }
 }
 
+/// Holds the instant (real time, the virtual clock stands) until no project
+/// is indexing and the packages they build with have landed: all of them, or
+/// `enough`. Engine results and the worker's stages are taken as they come,
+/// so what the window shows next is what a person would see at that moment.
+fn await_install(enough: Option<usize>, root: &gpui::Entity<UiRootEntity>, cx: &mut App) {
+    let started = std::time::Instant::now();
+    loop {
+        root.update(cx, |root, cx| root.drain_now(cx));
+        crate::runtime::acquire::land_now(cx);
+        let snapshot = root.read(cx).snapshot();
+        let projects = &snapshot.workspace().projects;
+        let indexing = projects.iter().any(|project| project.phase == crate::model::ProjectPhase::Indexing);
+        let landed = projects
+            .iter()
+            .filter_map(|project| crate::runtime::acquire::project_packages(&project.id, crate::runtime::offload::Asker::Everyone, cx))
+            .map(|packages| match packages {
+                crate::runtime::acquire::ProjectPackages::Read(found) => {
+                    found.iter().filter(|(_, stage)| stage.as_ref().is_some_and(|stage| !stage.working())).count()
+                }
+                _ => 0,
+            })
+            .sum::<usize>();
+        let done = match enough {
+            Some(enough) => landed >= enough,
+            None => !indexing && !crate::runtime::acquire::working(cx),
+        };
+        if done || started.elapsed() > INSTALL_DEADLINE {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Whether the window has nothing left to wait for.
 fn quiet(cx: &mut App) -> bool {
     let Some(installed) = cx.try_global::<Installed>() else {
@@ -232,21 +266,41 @@ fn quiet(cx: &mut App) -> bool {
         .projects
         .iter()
         .any(|project| project.phase == crate::model::ProjectPhase::Indexing);
+    // The packages a project builds with are indexed one by one after it,
+    // each holding the owner's loop the same way.
+    let adding = crate::runtime::acquire::working(cx);
     let reads_landed = store.read(cx).pool_load() == (0, 0) && !root.read(cx).has_pending_work();
     match wait {
-        Wait::Owner => ui_idle && (indexing || reads_landed),
-        Wait::Settled => ui_idle && reads_landed,
+        Wait::Owner => ui_idle && (indexing || adding || reads_landed),
+        Wait::Settled => ui_idle && !adding && reads_landed,
     }
 }
 
-/// Settings acts through the product's own intents; `route` is not served
-/// here (a first-run window has no fixture to name a route in).
+/// How long `route await …` holds its instant for the owner's work.
+const INSTALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(40 * 60);
+
+/// Settings acts through the product's own intents. `route` names no page
+/// here (a first-run window has no fixture to name one in); it holds the
+/// instant for the owner's real work instead:
+/// - `route await install`: every project on the shelf is answered for and
+///   every package they build with is added (or refused in words);
+/// - `route await packages N`: at least N of those packages have landed.
 fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
     let Some(installed) = cx.try_global::<Installed>() else {
         return;
     };
     let (root, shell) = (installed.graph.root.clone(), installed.shell.clone());
     let intent = match act {
+        Act::Route { target } => {
+            let words = target.split_whitespace().collect::<Vec<_>>();
+            let enough = match words.as_slice() {
+                ["await", "install"] => None,
+                ["await", "packages", count] => Some(count.parse::<usize>().unwrap_or_else(|_| panic!("route {target}: not a count"))),
+                _ => panic!("route {target}: the install scene serves `await install` and `await packages N`"),
+            };
+            await_install(enough, &root, cx);
+            return;
+        }
         Act::TextScale { percent } => Intent::ZoomTo { display: shell.read(cx).display_key(), percent: *percent },
         Act::Density { name } => Intent::SetDensity(match name.as_str() {
             "compact" => DensityPreference::Compact,

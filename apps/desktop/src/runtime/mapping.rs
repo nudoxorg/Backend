@@ -336,6 +336,54 @@ mod tests {
         )
     }
 
+    /// A publication the owner made after the window's root: a new view
+    /// root (a hash) at the next sequence, as the real owner answers a root
+    /// read once a package it indexed is published.
+    fn published_after(current: VersionedRoot, salt: &str) -> VersionedRoot {
+        VersionedRoot::from_revision(
+            current.producer_epoch(),
+            backend_library::Cursor::at(
+                backend_library::view_state_root(&[("mapping".to_owned(), salt.to_owned())]),
+                current.generation() + 1,
+            ),
+            current.observation(),
+        )
+    }
+
+    #[test]
+    fn a_later_publication_is_admitted_whichever_way_its_root_hash_sorts() {
+        // Every root read after a package was indexed carried a new root hash
+        // and the next sequence. Ordering by the whole cursor compared the
+        // hashes first, so about half of them were rejected as older and the
+        // Library never grew while packages were added.
+        let current_key = root().with_generation(2);
+        let current = AppSnapshot::empty(current_key);
+        let mut seen = [false; 2];
+        for salt in 0..32 {
+            let key = published_after(current_key, &format!("publication {salt}"));
+            seen[usize::from(key.revision() < current_key.revision())] = true;
+            let accepted = map_event(
+                &current,
+                EngineEvent {
+                    basis: current_key,
+                    request: RequestId::new(1),
+                    lane: None,
+                    result: Ok(EngineDto::Root {
+                        request: RequestId::new(1),
+                        basis: current_key,
+                        key,
+                        revision: key.revision(),
+                        delta: None,
+                        project: None,
+                        catalog: None,
+                    }),
+                },
+            );
+            assert!(accepted.is_ok_and(|snapshot| snapshot.key() == key), "publication {salt}, the next sequence, is admitted");
+        }
+        assert_eq!(seen, [true, true], "the roots sort both ways against the current one");
+    }
+
     #[test]
     fn observation_sequence_does_not_authorize_or_reject_a_result() {
         let current_key = root().with_generation(2);

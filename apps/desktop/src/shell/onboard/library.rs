@@ -5,10 +5,15 @@
 //! project (one owner loop, one blocking pass), so the only truths this can
 //! tell are the ones the window itself holds: the pass was asked for, and
 //! how long ago. It never draws a percentage or names a stage the owner did
-//! not report.
+//! not report. Once the project is answered for, the packages it builds with
+//! are added one by one (`runtime::acquire`), and each one's own stage is
+//! drawn: which is being indexed, how many are in, and each that could not
+//! be added, named with its reason.
 
 use crate::core::LocalProjectId;
 use crate::model::{AppSnapshot, Note, ProjectPhase, WorkspaceProject};
+use crate::runtime::acquire::{NOT_CARGO, Origin, ProjectPackages, Stage as Adding};
+use crate::runtime::offload::Asker;
 use crate::navigation::Intent;
 use crate::shell::bodies::{Ctx, Leaf};
 use crate::shell::focus::{Act, Target};
@@ -141,6 +146,17 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>) -> Leaf {
     let lede = ctx.say("Read the code you depend on.");
     let how = ctx.say("Add a project folder. Nudox compiles it and every package it uses, then keeps them together here, ready to browse.");
     let private = ctx.say("Your source stays on this machine.");
+    // Which Rust the index compiles with, found where people install it (a
+    // Finder launch names none): said before anything is added, so a missing
+    // one is not first met as every package refused.
+    let rust = crate::host::toolchain::report().map(|rust| {
+        let missing = matches!(rust, crate::host::toolchain::Rust::Missing { .. });
+        let words = match &rust {
+            crate::host::toolchain::Rust::Found { .. } => format!("Compiles with {}.", rust.words()),
+            crate::host::toolchain::Rust::Missing { .. } => rust.words(),
+        };
+        (ctx.say(words), missing)
+    });
     let links = ctx.links.clone();
     let act: Act = {
         let links = links.clone();
@@ -178,7 +194,14 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>) -> Leaf {
                     .child(text(ty::SMALL, &measure, palette.ink3).child("or press"))
                     .child(kbd("⌘O", &measure).voice(KbdVoice::Quiet)),
             )
-            .child(quiet(private, &measure, palette)),
+            .child(quiet(private, &measure, palette))
+            .children(rust.map(|(words, missing)| {
+                if missing {
+                    text(ty::ROW, &measure, palette.ink1).text_center().min_w(px(0.0)).child(words).into_any_element()
+                } else {
+                    quiet(words, &measure, palette).text_center().min_w(px(0.0)).into_any_element()
+                }
+            })),
     )
 }
 
@@ -251,7 +274,8 @@ pub(crate) fn add_another(ctx: &mut Ctx<'_>) -> Leaf {
     )
 }
 
-/// What each running index is doing, under the projects it belongs to.
+/// What each running index is doing, under the projects it belongs to, and
+/// how adding the packages each answered project builds with is going.
 pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Option<Leaf> {
     let running: Vec<_> = snapshot
         .workspace()
@@ -261,16 +285,30 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
         .collect();
     let ids: Vec<LocalProjectId> = running.iter().map(|project| project.id.clone()).collect();
     let ages = Ages::observe(&ids, cx);
-    if running.is_empty() {
+    let view = cx.entity_id();
+    let additions = snapshot
+        .workspace()
+        .projects
+        .iter()
+        .filter(|project| project.phase != ProjectPhase::Indexing)
+        .filter_map(|project| {
+            let packages = crate::runtime::acquire::project_packages(&project.id, Asker::View(view), cx)?;
+            Some((project.path.clone(), PackageWords::of(&project.label, &packages)))
+        })
+        .collect::<Vec<_>>();
+    if running.is_empty() && additions.is_empty() {
         return None;
     }
     let measure = ctx.measure;
     let palette = ctx.palette;
     let mut block = div().flex().flex_col().items_center().gap(measure.space(Space::Roomy)).py(measure.space(Space::Wide));
+    for (path, words) in additions {
+        block = block.child(package_block(&path, &words, ctx));
+    }
     for project in running {
-        let headline = ctx.say(format!("Compiling {} and the packages it uses.", project.label));
+        let headline = ctx.say(format!("Compiling {}.", project.label));
         let promise = ctx.say(
-            "The index reads the whole dependency graph in one pass, so a first index takes a few minutes. Pages open when it finishes.",
+            "Then each package it uses is indexed from your cargo cache, one at a time. A first install takes a few minutes.",
         );
         let since = ctx.say(format!("started {}", ago(ages.of(&project.id))));
         // The seam is the strip under the thing being worked on: as wide as
@@ -290,6 +328,154 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
         );
     }
     Some(Leaf::new(block))
+}
+
+/// How adding one project's packages is going, in the words the Library
+/// draws, and one seam step per package.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PackageWords {
+    /// What is happening, or what came of it.
+    pub headline: String,
+    /// The package being worked on now, and which of how many it is.
+    pub now: Option<String>,
+    /// One step per package, in the order they are added: its name and state.
+    pub steps: Vec<(String, StageState, String)>,
+    /// Each package that could not be added, with its reason.
+    pub refused: Vec<String>,
+    /// Each package in the library whose compile the owner could not finish
+    /// (its names come from its source alone), with the reason.
+    pub thin: Vec<String>,
+}
+
+/// The longest reason drawn for a package that could not be added; the
+/// owner's full words are longer (its step's tip holds them).
+const REASON: usize = 160;
+
+impl PackageWords {
+    /// The words for `packages`, the packages of the project named `label`.
+    pub(crate) fn of(label: &str, packages: &ProjectPackages) -> Self {
+        let plain = |headline: String| Self { headline, now: None, steps: Vec::new(), refused: Vec::new(), thin: Vec::new() };
+        let found = match packages {
+            ProjectPackages::Reading => return plain(format!("Reading the packages {label} uses.")),
+            ProjectPackages::Refused(words) if words.as_ref() == NOT_CARGO => {
+                return plain(format!("Only a Rust project's packages are added for now, and {label} has no Cargo.toml."));
+            }
+            ProjectPackages::Refused(words) => return plain(format!("The packages {label} uses could not be read: {words}")),
+            ProjectPackages::Read(found) => found,
+        };
+        let total = found.len();
+        if total == 0 {
+            return plain(format!("{label} uses no registry packages."));
+        }
+        let mut steps = Vec::with_capacity(total);
+        let (mut refused, mut thin) = (Vec::new(), Vec::new());
+        let (mut added, mut now) = (0, None);
+        for (at, (dependency, stage)) in found.iter().enumerate() {
+            let release = dependency.release.to_string();
+            let (state, tip) = match (&dependency.origin, stage) {
+                (Origin::Elsewhere(why), _) => {
+                    refused.push(format!("{release}: {why}"));
+                    (StageState::Bad, why.to_string())
+                }
+                (Origin::Registry(_), Some(Adding::Added(_))) => {
+                    added += 1;
+                    (StageState::Done, "In the library.".to_owned())
+                }
+                (Origin::Registry(_), Some(Adding::Partial { words, .. })) => {
+                    added += 1;
+                    let why = super::failure::Cause::of(words).says().into_iter().next().unwrap_or_default();
+                    let why = lowercase_first(why.trim_end_matches('.'));
+                    thin.push(format!("{release}: {why}, so its names come from its source alone."));
+                    (StageState::Stall, format!("In the library from its source alone: {why}."))
+                }
+                (Origin::Registry(_), Some(Adding::Failed(why))) => {
+                    refused.push(format!("{release}: {}", clip(why)));
+                    (StageState::Bad, why.to_string())
+                }
+                (Origin::Registry(_), Some(working @ (Adding::Resolving | Adding::Unpacking | Adding::Indexing))) => {
+                    let doing = match working {
+                        Adding::Resolving => "finding",
+                        Adding::Unpacking => "unpacking",
+                        _ => "indexing",
+                    };
+                    now.get_or_insert_with(|| format!("{doing} {release} ({} of {total})", at + 1));
+                    (StageState::Now, format!("{} now.", capitalized(doing)))
+                }
+                (Origin::Registry(_), Some(Adding::Queued) | None) => (StageState::Todo, "Waiting its turn.".to_owned()),
+            };
+            steps.push((release, state, tip));
+        }
+        let working = steps.iter().any(|(_, state, _)| matches!(state, StageState::Now | StageState::Todo));
+        let packages = |n: usize| if n == 1 { "package".to_owned() } else { format!("{n} packages") };
+        let headline = if working {
+            format!("Adding the {} {label} uses: {added} in the library so far.", packages(total))
+        } else if !refused.is_empty() {
+            format!("{added} of the {} {label} uses are in the library; {} could not be added:", packages(total), refused.len())
+        } else if !thin.is_empty() {
+            let all = if total == 1 { format!("The package {label} uses is in the library") } else { format!("All {total} packages {label} uses are in the library") };
+            format!("{all}; the compiler could not finish {}:", if thin.len() == 1 { "one".to_owned() } else { thin.len().to_string() })
+        } else if total == 1 {
+            format!("The package {label} uses is in the library.")
+        } else {
+            format!("All {total} packages {label} uses are in the library.")
+        };
+        Self { headline, now, steps, refused, thin }
+    }
+}
+
+/// `why`'s first line, at most [`REASON`] characters.
+fn clip(why: &str) -> String {
+    let line = why.lines().next().unwrap_or_default();
+    if line.chars().count() <= REASON {
+        return line.to_owned();
+    }
+    let mut clipped = line.chars().take(REASON).collect::<String>();
+    clipped.push('…');
+    clipped
+}
+
+fn lowercase_first(words: &str) -> String {
+    let mut chars = words.chars();
+    chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
+}
+
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// One project's packages: the headline, a seam with one step per package
+/// (its tip names the package and its state), the one being worked on, and
+/// each that could not be added, named.
+fn package_block(path: &str, words: &PackageWords, ctx: &mut Ctx<'_>) -> AnyElement {
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let headline = ctx.say(words.headline.clone());
+    let mut block = div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(measure.space(Space::Snug))
+        .child(text(ty::ROW, &measure, palette.ink0).text_center().min_w(px(0.0)).child(headline));
+    if !words.steps.is_empty() && (words.now.is_some() || words.steps.iter().any(|(_, state, _)| *state == StageState::Todo)) {
+        let strip = measure.within(px(360.0 * measure.scale()).min(measure.width()));
+        let stages = words.steps.iter().map(|(name, state, _)| Stage::new(name.clone(), *state)).collect::<Vec<_>>();
+        let tips = words.steps.iter().map(|(name, _, tip)| (SharedString::from(name.clone()), SharedString::from(tip.clone()))).collect::<Rc<[_]>>();
+        let door = Door::tip(move |step, measure, window, cx| {
+            let (title, body) = tips.get(step).cloned().unwrap_or_default();
+            content(TipText { title: Some(title), body, chord: Vec::new() })(measure, window, cx)
+        });
+        block = block.child(seam(SharedString::from(format!("package-seam-{path}")), stages, &strip).door(door));
+    }
+    if let Some(now) = &words.now {
+        let now = ctx.say(now.clone());
+        block = block.child(text(ty::MONO_SMALL, &measure, palette.ink2).text_center().child(now));
+    }
+    for line in words.refused.iter().chain(&words.thin) {
+        let line = ctx.say(line.clone());
+        block = block.child(text(ty::SMALL, &measure, palette.ink2).text_center().min_w(px(0.0)).child(line));
+    }
+    block.into_any_element()
 }
 
 /// "just now", "1 min ago", "5 min ago", "1 h 5 min ago".
@@ -367,6 +553,8 @@ impl Elapsed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::acquire::Dependency;
+    use std::sync::Arc;
 
     #[test]
     fn what_arrived_is_said_so_a_project_without_its_dependencies_does_not_look_complete() {
@@ -402,6 +590,72 @@ mod tests {
             stages(ProjectPhase::Indexing).is_some_and(|steps| steps.iter().all(|step| step.done <= 1.0 && (step.state == StageState::Done || step.done == 0.0))),
             "no step claims a fraction of work the owner never reported"
         );
+    }
+
+    fn dependency(name: &str, version: &str, origin: Origin) -> Dependency {
+        Dependency { release: crate::model::release::Release::new(name, version).expect("release"), direct: false, origin }
+    }
+
+    fn cached() -> Origin {
+        Origin::Registry(crate::model::release::Availability::Unpacked(std::path::PathBuf::from("/cache")))
+    }
+
+    #[test]
+    fn a_projects_packages_are_said_one_by_one_and_each_that_could_not_be_added_is_named() {
+        let page = crate::model::pages::PackageRef::parse("/cache/toml-0.8.23").expect("page");
+        let reading = PackageWords::of("toml_pin", &ProjectPackages::Reading);
+        assert_eq!(reading.headline, "Reading the packages toml_pin uses.");
+        let found = vec![
+            (dependency("toml", "0.8.23", cached()), Some(Adding::Added(page.clone()))),
+            (dependency("toml_edit", "0.22.27", cached()), Some(Adding::Indexing)),
+            (dependency("winnow", "0.7.15", cached()), Some(Adding::Queued)),
+            (dependency("hashbrown", "0.17.1", Origin::Registry(crate::model::release::Availability::Download)), Some(Adding::Failed(Arc::from("hashbrown 0.17.1 is not on this machine; reading it needs a download")))),
+            (dependency("forked", "0.1.0", Origin::Elsewhere(Arc::from("from git (https://example.test/forked): only registry releases are added"))), None),
+        ];
+        let working = PackageWords::of("toml_pin", &ProjectPackages::Read(found.clone()));
+        assert_eq!(working.headline, "Adding the 5 packages toml_pin uses: 1 in the library so far.");
+        assert_eq!(working.now.as_deref(), Some("indexing toml_edit 0.22.27 (2 of 5)"), "the one being indexed, and which of how many");
+        assert_eq!(
+            working.steps.iter().map(|(name, state, _)| (name.as_str(), *state)).collect::<Vec<_>>(),
+            [
+                ("toml 0.8.23", StageState::Done),
+                ("toml_edit 0.22.27", StageState::Now),
+                ("winnow 0.7.15", StageState::Todo),
+                ("hashbrown 0.17.1", StageState::Bad),
+                ("forked 0.1.0", StageState::Bad)
+            ],
+            "one step per package, each in its own state"
+        );
+        assert_eq!(
+            working.refused,
+            [
+                "hashbrown 0.17.1: hashbrown 0.17.1 is not on this machine; reading it needs a download",
+                "forked 0.1.0: from git (https://example.test/forked): only registry releases are added"
+            ],
+            "a package that could not be added is named with its reason, never skipped"
+        );
+        let mut settled = found;
+        settled[1].1 = Some(Adding::Added(page.clone()));
+        settled[2].1 = Some(Adding::Added(page.clone()));
+        let done = PackageWords::of("toml_pin", &ProjectPackages::Read(settled.clone()));
+        assert_eq!(done.headline, "3 of the 5 packages toml_pin uses are in the library; 2 could not be added:");
+        assert_eq!(done.now, None);
+        let all = PackageWords::of("toml_pin", &ProjectPackages::Read(settled[..3].to_vec()));
+        assert_eq!(all.headline, "All 3 packages toml_pin uses are in the library.");
+        assert!(all.refused.is_empty());
+        // A compile the owner could not finish is in the library, on its
+        // source's names, and says why in a person's words.
+        let mut thin = settled[..3].to_vec();
+        thin[1].1 = Some(Adding::Partial {
+            page: page.clone(),
+            words: Arc::from("protocol: command execution failed: local semantic compilation failed; prior selected semantic generation was preserved: package semantic compilation failed for src/alloc.rs: Compile { attempted: …, cause: Fragment(Prepare) }"),
+        });
+        let thin = PackageWords::of("toml_pin", &ProjectPackages::Read(thin));
+        assert_eq!(thin.headline, "All 3 packages toml_pin uses are in the library; the compiler could not finish one:");
+        assert_eq!(thin.thin, ["toml_edit 0.22.27: the compiler could not finish reading src/alloc.rs, so its names come from its source alone."]);
+        assert_eq!(thin.steps[1].1, StageState::Stall);
+        let not_cargo = PackageWords::of("site", &ProjectPackages::Refused(Arc::from(NOT_CARGO)));
+        assert_eq!(not_cargo.headline, "Only a Rust project's packages are added for now, and site has no Cargo.toml.");
     }
 
     #[test]

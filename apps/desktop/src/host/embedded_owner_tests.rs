@@ -187,6 +187,82 @@ fn the_embedded_owner_compiles_rust_and_never_answers_unavailable() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// What a person who opens the app from the Finder gives it: a home and the
+/// system `PATH`, and no `NUDOX_*` variable at all.
+const FINDER_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// The child half of [`a_finder_launch_compiles_rust_with_the_rust_the_person_installed`]:
+/// run by it, in exactly a Finder launch's environment.
+#[test]
+#[ignore = "run by a_finder_launch_compiles_rust_with_the_rust_the_person_installed, in a Finder launch's environment"]
+fn finder_launch_child() {
+    assert!(std::env::var_os("NUDOX_RUSTC").is_none(), "a Finder launch names no compiler");
+    let root = scratch("finder");
+    // `NX_FINDER_PROJECT` indexes that folder instead (a project with
+    // registry dependencies, run by hand).
+    let project = match std::env::var_os("NX_FINDER_PROJECT") {
+        Some(project) => {
+            super::private_dir(&root).expect("private scratch root");
+            PathBuf::from(project).canonicalize().expect("NX_FINDER_PROJECT")
+        }
+        None => rust_project(&root),
+    };
+    let host = DesktopHost::start_with_paths(workspace(&root, &project)).expect("the owner starts");
+    let report = super::toolchain::report().expect("the host says which Rust it found");
+    println!("FINDER-RUST {report:?}");
+    println!("FINDER-WORDS {}", report.words());
+    let mut session = Session::connect(host.endpoint()).expect("session");
+    let indexed = session.index(project.to_str().expect("UTF-8 project path"));
+    assert!(indexed.is_ok(), "the owner refused a plain Rust crate on a Finder launch: {indexed:?}");
+    let canonical = project.canonicalize().expect("canonical project");
+    assert_eq!(listed(&mut session), vec![(canonical.to_string_lossy().into_owned(), RowState::Ready)]);
+    let rows = session.health().expect("health").row_count();
+    println!("FINDER-ROWS {rows}");
+    drop(session);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_finder_launch_compiles_rust_with_the_rust_the_person_installed() {
+    let home = std::env::var_os("HOME").expect("HOME");
+    let expected = super::toolchain::find_rust(
+        &|name| match name {
+            "HOME" => Some(home.clone()),
+            "PATH" => Some(FINDER_PATH.into()),
+            _ => None,
+        },
+        &[
+            (PathBuf::from("/opt/homebrew/bin"), super::toolchain::Place::Homebrew),
+            (PathBuf::from("/usr/local/bin"), super::toolchain::Place::Homebrew),
+        ],
+    );
+    let super::toolchain::Rust::Found { rustc: expected, .. } = expected else {
+        panic!("this machine has no Rust a person installed (rustup or Homebrew): {expected:?}")
+    };
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", "host::embedded_owner_tests::finder_launch_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env_clear()
+        .env("HOME", &home)
+        .env("PATH", FINDER_PATH)
+        .output()
+        .expect("the child runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "the Finder launch failed:\n{stdout}\n{stderr}");
+    assert!(stdout.contains("1 passed"), "the child ran its test: {stdout}");
+    // libtest prints `test NAME ... ` before the test's own output, on one line.
+    let said = |tag: &str| stdout.lines().find_map(|line| line.find(tag).map(|at| line[at..].to_owned())).unwrap_or_default();
+    let selected = said("FINDER-RUST");
+    assert!(
+        selected.contains(&format!("rustc: {:?}", expected)),
+        "the owner compiled with the Rust the person installed ({}): {selected}",
+        expected.display()
+    );
+    let words = said("FINDER-WORDS");
+    assert!(words.contains(&format!("at {}", expected.display())), "the window can say which Rust: {words}");
+}
+
 /// A C# project. The owner has no C# authority unless `NUDOX_ROSLYN_HELPER`
 /// names one, and the development shell does not, so its compile is refused
 /// (`Unavailable { language: CSharp, stage: LowerIr }`) after its source has

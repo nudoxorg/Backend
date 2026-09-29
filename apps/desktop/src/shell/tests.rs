@@ -306,6 +306,9 @@ pub(crate) struct Rig {
     pub shell: Entity<Shell>,
     pub graph: UiEntityGraph,
     pub cx: &'static mut VisualTestContext,
+    /// How long [`Rig::settle`] waits, in real time, for reads that are in
+    /// flight (a fake engine answers at once; a real owner takes seconds).
+    pub patience: Duration,
 }
 
 /// Opens a real shell window at `route` (after an Orbit start, so the
@@ -373,6 +376,7 @@ pub(crate) fn rig_with_engine(
         shell,
         graph,
         cx: visual,
+        patience: Duration::from_secs(20),
     };
     rig.settle();
     if let Some(route) = route {
@@ -404,7 +408,7 @@ impl Rig {
         /// something reschedules itself (a timer that notifies a render that
         /// arms the timer again), and this says so instead of spinning a CPU.
         const ROUNDS: usize = 40;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + self.patience;
         let mut rounds = 0;
         loop {
             self.cx.run_until_parked();
@@ -415,20 +419,30 @@ impl Rig {
             let frames = self.cx.update(|window, cx| window.simulate_next_frame(cx));
             self.draw();
             let (queued, running) = self.graph.store.read_with(self.cx, |store, _| store.pool_load());
-            if frames == 0 && queued == 0 && running == 0
-                && !self.graph.root.read_with(self.cx, |root, _| root.has_pending_work())
-                && self.shell.read_with(self.cx, |shell, cx| shell.graph_ready(cx)) {
+            let asking = frames > 0
+                || self.graph.root.read_with(self.cx, |root, _| root.has_pending_work())
+                || !self.shell.read_with(self.cx, |shell, cx| shell.graph_ready(cx));
+            let reading = queued > 0 || running > 0;
+            if !asking && !reading {
                 self.draw();
                 return;
             }
-            rounds += 1;
+            // Only the shell asking again is held to the rounds: a read in
+            // flight is waiting on real work, which the deadline bounds.
+            if asking {
+                rounds += 1;
+            }
             assert!(
                 rounds <= ROUNDS,
                 "the shell never settled: after {ROUNDS} rounds of 700 ms of virtual time it still asks for {frames} frame(s), \
                  {queued} queued and {running} running read(s); renders so far {:?}",
                 self.counts()
             );
-            assert!(Instant::now() < deadline, "the shell never settled");
+            assert!(
+                Instant::now() < deadline,
+                "the shell never settled: after {:?} of real time {queued} read(s) are queued and {running} running",
+                self.patience
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -819,6 +833,59 @@ fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     let (ask, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
     assert!(!ask, "esc closed Ask");
     assert_eq!(rig.route(), page_route("RelationLabel"), "and nothing else moved");
+}
+
+/// Settings › Keys lists every key a person can press, the sidebar's own
+/// (typing narrows, the `G` chords) beside the shell's table and the graph's.
+#[gpui::test]
+fn settings_keys_lists_the_sidebars_keys_beside_the_shells_and_the_graphs(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Help));
+    let said = rig.said();
+    for words in ["open what the focus stands on", "In the sidebar", "narrow the list as you type; the last row widens to Find", "G C  G V  G R  G U", "In the graph"] {
+        assert!(said.iter().any(|line| line == words), "Settings › Keys says {words:?}: {said:#?}");
+    }
+    let at = |words: &str| said.iter().position(|line| line == words).unwrap_or(usize::MAX);
+    assert!(at("In the sidebar") < at("In the graph"), "the sidebar's keys come before the graph's");
+}
+
+/// GAPS D5: Esc closes Settings, whether the keyboard is still where ⌘,
+/// found it or a person has just clicked one of Settings' own controls; the
+/// page under it is where it was.
+#[gpui::test]
+fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAppContext) {
+    use crate::navigation::Overlay;
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let overlay = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
+    let drawn = |rig: &mut Rig, words: &str| super::fit_tests::painted(rig).texts.iter().any(|text| text.content == words);
+    rig.keys("cmd-,");
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "⌘, opened Settings");
+    assert!(drawn(&mut rig, "Contrast"), "and Settings is drawn");
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), None, "Esc closed Settings");
+    assert!(!drawn(&mut rig, "Contrast"), "and it is gone from the window");
+    assert_eq!(rig.route(), page_route("RelationLabel"), "the page under it did not move");
+
+    rig.keys("cmd-,");
+    // A segmented choice paints its own label (it is not a probe text): find
+    // it where gpui painted it.
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+    rig.repaint();
+    let choice = rig
+        .cx
+        .update(|window, _| window.painted_texts().iter().find(|text| text.text.as_ref() == "Compact").map(|text| text.bounds.center()))
+        .expect("Settings paints the Compact density");
+    rig.cx.simulate_click(choice, Modifiers::default());
+    rig.settle();
+    assert_eq!(
+        rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().density),
+        crate::model::DensityPreference::Compact,
+        "the click chose Compact"
+    );
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "a click on a control keeps Settings open");
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), None, "Esc closed Settings after a click in it");
+    assert!(!drawn(&mut rig, "Contrast"), "and it is gone from the window");
 }
 
 #[gpui::test]

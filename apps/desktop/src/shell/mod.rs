@@ -73,4 +73,5 @@ mod fluid_tests;
 pub use frame::{Frame, FrameInput, ShelfMode};
 pub use reader::Way;
 pub use keys::bindings as key_bindings;
+pub(crate) use keys::{Command as KeyCommand, TABLE as KEY_TABLE};
 pub use root::{RenderCounts, Shell, open_shell};

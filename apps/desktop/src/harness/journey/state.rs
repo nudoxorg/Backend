@@ -209,19 +209,21 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) -> Result<()
 /// runs in, and the cache of materialized states.
 #[derive(Clone, Debug)]
 pub struct Store {
-    /// `.local/harness/w-journey-clean-live`: a user root (`workspace/`,
-    /// `starter/`), the Finder launch's layout (`host::paths::ambient_paths`).
+    /// `<home>/live`: a user root (`workspace/`, `starter/`), the Finder
+    /// launch's layout (`host::paths::ambient_paths`).
     pub live: PathBuf,
-    /// `.local/harness/w-journey-clean-states`.
+    /// `<home>/states`.
     pub states: PathBuf,
 }
 
 impl Store {
-    /// The journey lane's own directories.
+    /// The journey runner's own directories: `$NUDOX_JOURNEY_HOME`, else
+    /// `.local/harness/journeys`.
     #[must_use]
     pub fn lane() -> Self {
-        let harness = super::super::repo().join(".local/harness");
-        Self { live: harness.join("w-journey-clean-live"), states: harness.join("w-journey-clean-states") }
+        let home = std::env::var_os("NUDOX_JOURNEY_HOME")
+            .map_or_else(|| super::super::repo().join(".local/harness/journeys"), PathBuf::from);
+        Self { live: home.join("live"), states: home.join("states") }
     }
 
     /// The directory of the state under `key`.

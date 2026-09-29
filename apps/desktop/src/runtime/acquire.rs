@@ -17,7 +17,9 @@
 
 mod work;
 
-pub(crate) use work::{Dependency, Origin, dependencies, index_release};
+pub(crate) use work::{Dependency, NOT_CARGO, Origin};
+#[cfg(test)]
+pub(crate) use work::dependencies;
 
 use super::offload::Asker;
 use super::ui_graph::UiRootEntity;
@@ -45,6 +47,9 @@ pub(crate) enum Stage {
     Indexing,
     /// In the library: its page is this package.
     Added(PackageRef),
+    /// In the library, but the compiler could not finish it: the owner lists
+    /// it on the names its source declares, and said why, in these words.
+    Partial { page: PackageRef, words: Arc<str> },
     /// Not added, in the source's or the owner's words.
     Failed(Arc<str>),
 }
@@ -139,7 +144,8 @@ pub(crate) fn stage(release: &Release, asker: Asker, cx: &mut App) -> Option<Sta
 
 /// Adds `release` to the library, ahead of any project's packages. Asking
 /// again while it is under way, or once it is added, does nothing; asking
-/// again after it failed tries again.
+/// again after it failed, or after the compiler could not finish it, tries
+/// again.
 pub(crate) fn add(release: Release, root: WeakEntity<UiRootEntity>, cx: &mut App) {
     add_with(release, crate::host::registry::composed(), root, cx);
 }
@@ -148,7 +154,7 @@ pub(crate) fn add(release: Release, root: WeakEntity<UiRootEntity>, cx: &mut App
 pub(crate) fn add_with(release: Release, composition: Option<Composition>, root: WeakEntity<UiRootEntity>, cx: &mut App) {
     let additions = additions(cx);
     additions.root = Some(root);
-    if additions.entries.get(&release).is_some_and(|entry| !matches!(entry.stage, Stage::Failed(_))) {
+    if additions.entries.get(&release).is_some_and(|entry| !matches!(entry.stage, Stage::Failed(_) | Stage::Partial { .. })) {
         return;
     }
     let askers = additions.entries.remove(&release).map(|entry| entry.askers).unwrap_or_default();
@@ -162,24 +168,58 @@ pub(crate) fn add_with(release: Release, composition: Option<Composition>, root:
     cx.refresh_windows();
 }
 
-/// Adds every registry package the projects the owner just indexed build
-/// with. A project counts once it went from indexing to ready in this window
-/// (a restored or injected ready project is not re-read).
+/// Adds every registry package the projects the owner just answered for
+/// build with ([`just_indexed`]).
 pub(crate) fn follow_indexed_projects(before: Option<&AppSnapshot>, now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut App) {
     let Some(before) = before else { return };
+    for project in just_indexed(before, now) {
+        add_dependencies_with(project, crate::host::registry::composed(), root.clone(), cx);
+    }
+}
+
+/// The projects the owner answered for between `before` and `now`: each went
+/// from indexing to ready, or to refused (a project whose own code the
+/// compiler refused still builds with its packages, and they are readable).
+/// A restored or injected answer is not one ([`resume`] takes those).
+pub(crate) fn just_indexed(before: &AppSnapshot, now: &AppSnapshot) -> Vec<LocalProjectId> {
     let was_indexing = |project: &LocalProjectId| {
         before.workspace().projects.iter().any(|row| &row.id == project && matches!(row.phase, ProjectPhase::Indexing))
     };
-    let indexed = now
+    now.workspace()
+        .projects
+        .iter()
+        .filter(|row| matches!(row.phase, ProjectPhase::Ready | ProjectPhase::Failed) && was_indexing(&row.id))
+        .map(|row| row.id.clone())
+        .collect()
+}
+
+/// Adds the packages of every project the owner answered for in an earlier
+/// launch, once per window, when the owner is ready: a quit while they were
+/// being added resumes where it stopped. Packages the owner already lists are
+/// not compiled again (`work::Listed::Any`), so a relaunch costs one read of each
+/// project's packages and nothing more.
+pub(crate) fn resume(now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    let answered = now
         .workspace()
         .projects
         .iter()
-        .filter(|row| row.phase == ProjectPhase::Ready && was_indexing(&row.id))
+        .filter(|row| matches!(row.phase, ProjectPhase::Ready | ProjectPhase::Failed))
         .map(|row| row.id.clone())
         .collect::<Vec<_>>();
-    for project in indexed {
-        add_dependencies_with(project, crate::host::registry::composed(), root.clone(), cx);
+    for project in answered {
+        let asked = cx.try_global::<Additions>().is_some_and(|additions| additions.projects.contains_key(&project));
+        if !asked {
+            add_dependencies_with(project, crate::host::registry::composed(), root.clone(), cx);
+        }
     }
+}
+
+/// Whether the worker has work under way, or landed work the UI has not
+/// taken yet.
+pub(crate) fn working(cx: &App) -> bool {
+    cx.try_global::<Additions>().is_some_and(|additions| {
+        additions.queue.running() || !additions.mailbox.lock().unwrap_or_else(PoisonError::into_inner).is_empty()
+    })
 }
 
 /// Adds every registry package `project` builds with, through `composition`.
@@ -231,6 +271,13 @@ pub(crate) fn await_workers(deadline: std::time::Duration, cx: &App) -> bool {
     true
 }
 
+/// Lands what the worker posted now, without waiting for the drain task (a
+/// harness that holds one input instant while the owner works).
+#[cfg(feature = "visual-harness")]
+pub(crate) fn land_now(cx: &mut App) {
+    drain(cx);
+}
+
 /// Lands everything the worker posted: the views that asked redraw, and a
 /// release the owner indexed makes the window read its root again.
 fn drain(cx: &mut App) {
@@ -252,7 +299,7 @@ fn drain(cx: &mut App) {
     for landed in landed {
         match landed {
             Landed::Stage(release, stage) => {
-                added |= matches!(stage, Stage::Added(_));
+                added |= matches!(stage, Stage::Added(_) | Stage::Partial { .. });
                 let entry = additions.entries.entry(release.clone()).or_insert_with(|| Entry { stage: Stage::Queued, askers: Vec::new() });
                 entry.stage = stage;
                 tell(&entry.askers);

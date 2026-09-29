@@ -16,10 +16,15 @@ check library
   like "1 project · * packages" in shelf
   ground dark in reader
 
+# The project is ready; the packages its lock pins follow, one at a time,
+# from the local cargo cache (the Library says how many so far).
 needs product "installing a project indexes the crates its Cargo.lock pins, and the Library lists them (GAPS.md G15)"
+await like "All * packages toml_pin uses are in the library*" in reader within 40m
 check library-dependencies
   unlike "* · 0 packages" in shelf
+  like "All * packages toml_pin uses are in the library*" in reader
   text "toml" "serde" "toml_edit" "winnow" in reader
+  text "toml" "serde" "toml_edit" "winnow" in shelf
   like "* declarations from * of * files" in reader
   unlike "0 declarations *" in reader
 
@@ -35,9 +40,17 @@ check restored
   route like "package *toml_pin"
   text "toml-pin-fixture" in reader
   text "toml_pin" in shelf
-  like "1 project · * packages" in shelf
   ground dark in reader
 
 needs product "a finished index is persisted, so a relaunch does not index it again (GAPS.md G4)"
 check restored-ready
-  absent "indexing" "Compiling toml_pin and the packages it uses." in reader
+  absent "indexing" "Compiling toml_pin." in reader
+
+# Back to the Library by its key: everything the install brought is still there.
+key ctrl-1
+check library-restored
+  route like "orbit"
+  like "1 project · * packages" in shelf
+  unlike "* · 0 packages" in shelf
+  text "toml" "serde" "toml_edit" "winnow" in shelf
+  absent "indexing" "Compiling toml_pin." in reader

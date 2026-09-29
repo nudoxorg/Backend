@@ -5,9 +5,9 @@
 # src/lib.rs; toml 0.8.23's src/de.rs:41 in the local cargo cache.
 # gui-plan's "Start here" tour was removed from the package page on purpose
 # (W-Folio: no fixture-ranked tour), so stop 1 is reached through the page's
-# own outline instead.
+# own modules instead (a region opens in place into its cards).
 size 1440x900
-start from install frontends/rust/fixtures/toml_pin
+start from install-all frontends/rust/fixtures/toml_pin
 
 check orbit
   route like "orbit"
@@ -18,6 +18,12 @@ check your-project
   route like "package *toml_pin"
   text "toml-pin-fixture" in reader
   budget page-open <= 120ms
+
+# The page draws each module as a region of shingles; a click opens it in
+# place, its names as cards.
+click "lib" in reader
+check your-module
+  text "read_settings" "project_name" "Settings" in reader
 
 click "read_settings" in reader
 check your-item
@@ -42,6 +48,10 @@ check package
   text "toml" in reader
   line "0.8.23" in reader
   budget page-open <= 120ms
+
+click "de" in reader
+check toml-module
+  text "from_str" in reader
 
 click "from_str" in reader
 check stop-1

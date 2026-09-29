@@ -33,13 +33,26 @@ answer-picker {PROJECT}
 do indexed {PROJECT}
 
 # indexed PROJECT: the project is on the shelf and indexing; the owner's
-# work is awaited in real time (its stages are logged as they appear); then
-# it is ready.
+# work is awaited in real time (its stages are logged as they appear: the
+# project compiling, then each package its lock pins, "N of M"); then it is
+# ready. A launch from Finder has none of the dev shell's toolchain
+# variables: the app must find the person's own Rust, or the project stops.
 part indexed PROJECT:path
 check indexing-{PROJECT.name}
   text "{PROJECT.name}" in reader
   text "indexing" in reader
 await absent "indexing" in reader within 40m
+needs product "the app finds this Mac's Rust toolchain without the dev shell, so a Finder launch indexes the project (FINISH.md addendum: toolchain discovery)"
+await absent "stopped" in reader within 5s
 check installed-{PROJECT.name}
   text "{PROJECT.name}" in reader
   absent "indexing" "stopped" in reader
+  saw "Compiling {PROJECT.name}." in reader
+
+# install-all PROJECT: installed, and every package its lock pins is in the
+# library too (the state journeys that browse the packages start from).
+part install-all PROJECT:path
+do install {PROJECT}
+await like "All * packages {PROJECT.name} uses are in the library*" in reader within 40m
+check installed-all-{PROJECT.name}
+  like "All * packages {PROJECT.name} uses are in the library*" in reader

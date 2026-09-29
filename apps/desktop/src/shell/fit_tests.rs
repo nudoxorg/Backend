@@ -378,3 +378,39 @@ fn a_shelf_opened_over_a_narrow_window_does_not_reopen_when_the_window_narrows_a
     resize(&mut rig, 480.0, 640.0);
     assert!(!row(&painted(&mut rig)), "narrowing again did not ask for the shelf");
 }
+
+/// `ink4` draws rules and inactive ticks, never words: it fails 4.5:1 on
+/// every ground (`facet::tokens`, `the_inks_step_down_in_order_and_ink4_is_never_text`).
+/// GAPS.md D1 was the sidebar's "Type to narrow" set in it, failing the
+/// contrast lint on every Library frame. No text the shell sets names it.
+#[test]
+fn no_words_in_the_shell_are_set_in_ink4() {
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("the shell's sources").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let shell = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell");
+    let mut files = Vec::new();
+    sources(&shell, &mut files);
+    // Spelled in pieces, so this scan does not find itself.
+    let ink4 = ["palette.", "ink4"].concat();
+    let (argument, color) = (format!(", {ink4})"), format!("text_color({ink4}"));
+    let mut words = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("a source file");
+        for (index, line) in text.lines().enumerate() {
+            let set_as_text = (line.contains("text(") && line.contains(&argument)) || line.contains(&color);
+            if set_as_text && !line.trim_start().starts_with("//") {
+                words.push(format!("{}:{}: {}", file.strip_prefix(&shell).unwrap_or(file).display(), index + 1, line.trim()));
+            }
+        }
+    }
+    assert!(files.len() > 40, "the scan read the shell ({} files)", files.len());
+    assert!(words.is_empty(), "words set in ink4:\n{}", words.join("\n"));
+}

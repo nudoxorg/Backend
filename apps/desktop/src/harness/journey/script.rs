@@ -128,6 +128,9 @@ pub enum Until {
     Text(Vec<String>, Option<Area>),
     /// No string is on screen (in the area).
     Absent(Vec<String>, Option<Area>),
+    /// Some text on screen (in the area) matches the glob (`"All * packages
+    /// toml_pin uses are in the library."`).
+    Like(String, Option<Area>),
 }
 
 /// How the harness answers the native folder panel the product opened.
@@ -294,6 +297,26 @@ pub enum Assert {
     /// The one focused target is the one this route was left by (a click
     /// here, then a back): the focus came back with the route.
     FocusRestored,
+    /// What the app is doing (`state zone "shelf"`, `state held "2"`,
+    /// `state clipboard "nudox://*"`): one of the words
+    /// `look::state_words` reads, matched by the glob.
+    State {
+        /// Which: zone, focus, ask, peek, hints, hand, zen, shelf, drawer,
+        /// overlay, held, text, theme, clipboard.
+        key: String,
+        /// Its expected words (`*` any run).
+        glob: String,
+    },
+    /// The text is on screen (in the area) set at least this tall: its line
+    /// height in px, so a text scale is seen, not read from the settings.
+    Size {
+        /// The words.
+        text: String,
+        /// The least line height, in px.
+        at_least: f32,
+        /// Where.
+        area: Option<Area>,
+    },
     /// A budget holds.
     Budget {
         /// Which.
@@ -511,6 +534,21 @@ fn budget(rest: &str) -> Result<Assert, String> {
     Ok(Assert::Budget { what, limit_ms })
 }
 
+/// `size "WORDS" >= N [in AREA]`.
+fn size(rest: &str) -> Result<Assert, String> {
+    let usage = || format!("`size {rest}`: expected `size \"WORDS\" >= N [in AREA]`");
+    let toks = tokens(rest)?;
+    let (text, least, area) = match toks.as_slice() {
+        [Tok::Str(text), Tok::Word(op), Tok::Word(least)] if op == ">=" => (text, least, None),
+        [Tok::Str(text), Tok::Word(op), Tok::Word(least), Tok::Word(key), Tok::Word(area)] if op == ">=" && key == "in" => {
+            (text, least, Some(Area::parse(area)?))
+        }
+        _ => return Err(usage()),
+    };
+    let at_least = least.trim_end_matches("px").parse::<f32>().map_err(|_| usage())?;
+    Ok(Assert::Size { text: text.clone(), at_least, area })
+}
+
 /// One indented assert line.
 pub(super) fn assertion(line: &str) -> Result<Assert, String> {
     let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -558,8 +596,17 @@ pub(super) fn assertion(line: &str) -> Result<Assert, String> {
         "focus" if !rest.is_empty() => pick(rest).map(Assert::Focus),
         "link" if !rest.is_empty() => pick(rest).map(Assert::Link),
         "budget" => budget(rest),
+        "size" => size(rest),
+        "state" => {
+            const KEYS: [&str; 14] = ["zone", "focus", "ask", "peek", "hints", "hand", "zen", "shelf", "drawer", "overlay", "held", "text", "theme", "clipboard"];
+            let toks = tokens(rest)?;
+            match toks.as_slice() {
+                [Tok::Word(key), Tok::Str(glob)] if KEYS.contains(&key.as_str()) => Ok(Assert::State { key: key.clone(), glob: glob.clone() }),
+                _ => Err(format!("`state {rest}`: expected `state KEY \"GLOB\"`, KEY one of {}", KEYS.join(", "))),
+            }
+        }
         other => Err(format!(
-            "`{other}` is not an assert (route, route like, text, like, unlike, saw, ground, order, absent, line, link, focus, budget)"
+            "`{other}` is not an assert (route, route like, text, like, unlike, saw, ground, order, absent, line, link, focus, budget, size, state)"
         )),
     }
 }
@@ -588,7 +635,11 @@ fn await_step(rest: &str) -> Result<StepKind, String> {
     let until = match verb {
         "text" => Until::Text(list, area),
         "absent" => Until::Absent(list, area),
-        other => return Err(format!("`await {other}`: await `text` or `absent`")),
+        "like" => match list.as_slice() {
+            [glob] => Until::Like(glob.clone(), area),
+            _ => return Err("`await like \"GLOB\"`: one glob".to_owned()),
+        },
+        other => return Err(format!("`await {other}`: await `text`, `absent` or `like`")),
     };
     Ok(StepKind::Await { until, within: duration(within.trim())? })
 }

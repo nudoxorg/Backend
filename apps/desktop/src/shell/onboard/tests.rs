@@ -166,7 +166,8 @@ fn enter_adds_the_folder_and_lands_on_the_library_saying_what_it_is_doing(cx: &m
     for expected in [
         "toml_pin".to_owned(),
         "indexing".to_owned(),
-        "Compiling toml_pin and the packages it uses.".to_owned(),
+        "Compiling toml_pin.".to_owned(),
+        "Then each package it uses is indexed from your cargo cache, one at a time. A first install takes a few minutes.".to_owned(),
         "started just now".to_owned(),
     ] {
         assert!(said.iter().any(|line| *line == expected), "the Library does not say {expected:?}: {said:#?}");

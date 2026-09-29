@@ -22,6 +22,37 @@ pub(super) struct Seen {
     /// as a button's): the words are on screen, so a person reads them and a
     /// pick may name them. Built by [`painted_extras`].
     pub painted: Vec<TextSample>,
+    /// What the app is doing, in words (`zone reader`, `ask open`,
+    /// `held 2`, `text 125`, `clipboard nudox://…`): [`state_words`].
+    pub state: Vec<(String, String)>,
+}
+
+/// What the app is doing that a key can change, in words: the shell's
+/// chrome (the keyboard's zone and target, Ask, a peek, hints, the hand,
+/// zen, the shelf), the overlay, how many cards are held, the text scale,
+/// the theme, and what the clipboard holds.
+pub(super) fn state_words(cx: &mut gpui::App) -> Vec<(String, String)> {
+    use facet::ActiveFacet as _;
+    let Some(booted) = cx.try_global::<super::super::Booted>() else { return Vec::new() };
+    let (shell, store) = (booted.shell.clone(), booted.graph.store.clone());
+    let mut words: Vec<(String, String)> = shell.read(cx).chrome_words(cx).into_iter().map(|(key, value)| (key.to_owned(), value)).collect();
+    let snapshot = store.read(cx).snapshot();
+    let overlay = match snapshot.overlay() {
+        None => "none".to_owned(),
+        Some(crate::navigation::Overlay::Settings(page)) => format!("settings {}", page.as_str()),
+        Some(crate::navigation::Overlay::AddProject) => "add-project".to_owned(),
+        Some(crate::navigation::Overlay::CommandPalette) => "command-palette".to_owned(),
+        Some(crate::navigation::Overlay::Inbox) => "inbox".to_owned(),
+    };
+    words.push(("overlay".to_owned(), overlay));
+    words.push(("held".to_owned(), snapshot.session().hand.held().len().to_string()));
+    let facet = cx.facet();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a text scale is 50..300 %")]
+    words.push(("text".to_owned(), ((facet.text_scale * 100.0).round() as u32).to_string()));
+    words.push(("theme".to_owned(), format!("{:?}", facet.appearance).to_lowercase()));
+    let clipboard = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+    words.push(("clipboard".to_owned(), clipboard));
+    words
 }
 
 /// The painted lines of a frame (gpui's text trace) that no probe text

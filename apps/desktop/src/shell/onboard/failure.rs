@@ -79,6 +79,11 @@ impl Cause {
                     (None, Some(file)) => format!("The compiler could not finish reading {file}."),
                     (None, None) => "The compiler could not finish reading this project.".to_owned(),
                 }];
+                // Rust is found where people install it (`host::toolchain`);
+                // unavailable means none was, and the fix is theirs to make.
+                if unavailable.as_deref() == Some("Rust") {
+                    lines.push("Install Rust with rustup (rustup.rs) or Homebrew (brew install rust), then quit and reopen Nudox.".to_owned());
+                }
                 if *kept_last {
                     lines.push("The last good index of this project is still in use.".to_owned());
                 }

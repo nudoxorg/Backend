@@ -161,6 +161,11 @@ impl Host for ShellHost<'_> {
     }
 
     fn flow(&self) -> facet::motion::Flow {
-        self.disclosure.flow.clone()
+        // A page drawn away from the scroller (leaving, folding, under a
+        // plate) is inert: it stands where it was. A fresh flow places each
+        // part where it lays out, so a still copy neither glides (a moving
+        // part is drawn above the page, out of the fold's reach) nor moves
+        // the live page's springs.
+        if self.active { self.disclosure.flow.clone() } else { facet::motion::Flow::new("s6-inert") }
     }
 }

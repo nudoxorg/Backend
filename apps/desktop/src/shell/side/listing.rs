@@ -247,15 +247,25 @@ fn is_a_project(package_root: &str, package_name: &str, local: bool, project_pat
     local && (package_root == project_path || package_name == project_label)
 }
 
-fn library(inputs: &Inputs<'_>) -> Listing {
-    let workspace = inputs.snapshot.workspace();
-    let packages_of_yours = |package: &crate::model::pages::IndexedPackage| {
+/// The library's packages that are not one of your projects, in name order
+/// (then version), so a package is where a person looks for it. The
+/// sidebar's "In the library" and the Library page's ring list the same.
+pub(crate) fn beside_your_projects<'a>(
+    indexed: &'a [crate::model::pages::IndexedPackage],
+    workspace: &crate::model::WorkspaceState,
+) -> Vec<&'a crate::model::pages::IndexedPackage> {
+    let yours = |package: &crate::model::pages::IndexedPackage| {
         workspace.projects.iter().any(|project| is_a_project(package.package.as_str(), &package.name, package.package.is_local(), &project.path, &project.label))
     };
-    let library: Option<Vec<&crate::model::pages::IndexedPackage>> = inputs
-        .orbit
-        .and_then(|model| model.indexed.known())
-        .map(|list| list.iter().filter(|package| !packages_of_yours(package)).collect());
+    let mut list: Vec<_> = indexed.iter().filter(|package| !yours(package)).collect();
+    list.sort_by(|a, b| (a.name.as_ref(), a.package.version(), a.package.as_str()).cmp(&(b.name.as_ref(), b.package.version(), b.package.as_str())));
+    list
+}
+
+fn library(inputs: &Inputs<'_>) -> Listing {
+    let workspace = inputs.snapshot.workspace();
+    let library: Option<Vec<&crate::model::pages::IndexedPackage>> =
+        inputs.orbit.and_then(|model| model.indexed.known()).map(|list| beside_your_projects(list, workspace));
     let indexed = library.as_deref();
     let packages = indexed.map_or(0, <[_]>::len);
     let projects = workspace.projects.len();
@@ -264,7 +274,8 @@ fn library(inputs: &Inputs<'_>) -> Listing {
         if projects == 1 { "" } else { "s" },
         if packages == 1 { "" } else { "s" }
     );
-    let counts = Counts { contents: Some(packages), versions: None, rests_on: None, used_by: Some(projects) };
+    // The count is what the list shows: your projects and the packages beside them.
+    let counts = Counts { contents: Some(projects + packages), versions: None, rests_on: None, used_by: Some(projects) };
     let head = Head { title: Some(Title::Library { detail: detail.into() }), counts: Some(counts), ..Head::default() };
     let project_rows = || {
         workspace.projects.iter().map(|project| {
@@ -292,7 +303,8 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                         rows.push(Row::heading("In the library", list.len()));
                     }
                     let reading = crate::runtime::store::route_package(inputs.route);
-                    for package in list.iter().copied() {
+                    let apart = told_apart(list);
+                    for (package, apart) in list.iter().copied().zip(apart) {
                         let route = package_route(&package.package);
                         let mut item = Item::new(
                             RowId::Package(package.package.clone()),
@@ -307,6 +319,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                         if let Some(version) = package.package.version() {
                             item.trailing = Trailing::Words(version.to_owned().into());
                         }
+                        item.sub = apart;
                         rows.push(Row::Item(item));
                     }
                 }
@@ -325,6 +338,47 @@ fn library(inputs: &Inputs<'_>) -> Listing {
         Lens::RestsOn => rows.push(Row::Note("The library rests on nothing.".into())),
     }
     Listing { head, rows, matched: None }
+}
+
+/// What tells apart packages that share a name (two checkouts of one
+/// project, one folder name in two trees): for each local root whose name
+/// another row also has, the nearest folder above it that the others do not
+/// share, as a quiet word (`backend/…` beside `tree/…`). A registry release
+/// is told apart by its version, which its row already carries; a name no
+/// other row has needs nothing.
+pub(crate) fn told_apart(packages: &[&crate::model::pages::IndexedPackage]) -> Vec<Option<SharedString>> {
+    let folders = |package: &crate::model::pages::IndexedPackage| -> Vec<String> {
+        let path = package.package.as_str().trim_end_matches(['/', '\\']);
+        let mut parts: Vec<String> = path.split(['/', '\\']).filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect();
+        parts.pop();
+        parts
+    };
+    packages
+        .iter()
+        .enumerate()
+        .map(|(index, package)| {
+            if !package.package.is_local() {
+                return None;
+            }
+            let twins: Vec<Vec<String>> = packages
+                .iter()
+                .enumerate()
+                .filter(|(other, twin)| *other != index && twin.package.is_local() && twin.name == package.name)
+                .map(|(_, twin)| folders(twin))
+                .collect();
+            if twins.is_empty() {
+                return None;
+            }
+            let own = folders(package);
+            // The nearest folder, from the name up, where this root parts
+            // from every twin.
+            let depth = (1..=own.len()).find(|depth| {
+                twins.iter().all(|twin| twin.len() < *depth || twin[twin.len() - depth] != own[own.len() - depth])
+            })?;
+            let word = &own[own.len() - depth];
+            Some(if depth == 1 { format!("{word}/") } else { format!("{word}/…") }.into())
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- a package
@@ -700,6 +754,33 @@ mod tests {
                 Row::Note(words) => words.to_string(),
             })
             .collect()
+    }
+
+    fn indexed(root: &str) -> crate::model::pages::IndexedPackage {
+        let package = PackageRef::parse(root).expect("a package");
+        crate::model::pages::IndexedPackage { name: package.display_name().into(), package, readiness: crate::model::pages::Readiness::Ready }
+    }
+
+    /// Two roots with one name (a checkout and a copy of it) are told apart
+    /// by the nearest folder they do not share; a name no other row has, and
+    /// a registry release (its version is on its row), need nothing.
+    #[test]
+    fn two_packages_with_one_name_are_told_apart_by_the_nearest_folder_they_do_not_share() {
+        let list = [
+            indexed("/work/backend/apps/fixtures/lang/go/pflag"),
+            indexed("/work/backend/.local/tree/apps/fixtures/lang/go/pflag"),
+            indexed("/work/backend/apps/fixtures/lang/ts/zod"),
+            indexed("/work/one/present"),
+            indexed("/work/two/present"),
+            indexed("pkg:cargo/toml@0.8.23"),
+            indexed("pkg:cargo/toml@1.1.6"),
+        ];
+        let refs: Vec<_> = list.iter().collect();
+        let apart: Vec<Option<String>> = told_apart(&refs).into_iter().map(|word| word.map(|word| word.to_string())).collect();
+        assert_eq!(
+            apart,
+            vec![Some("backend/…".to_owned()), Some("tree/…".to_owned()), None, Some("one/".to_owned()), Some("two/".to_owned()), None, None]
+        );
     }
 
     #[test]

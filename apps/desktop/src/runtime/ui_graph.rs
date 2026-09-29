@@ -134,6 +134,14 @@ impl UiRootEntity {
         self.runtime.has_pending_work_besides_indexing()
     }
 
+    /// Takes every engine result the actor has delivered now, without
+    /// waiting for its wake task (a harness that holds one input instant
+    /// while the owner works).
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn drain_now(&mut self, cx: &mut Context<Self>) {
+        self.drain_engine(cx);
+    }
+
     /// Drains every engine result the actor has delivered.
     fn drain_engine(&mut self, cx: &mut Context<Self>) {
         let events = self.runtime.poll();
@@ -301,6 +309,8 @@ impl UiRootEntity {
         if let Some(moved) = crate::host::aside::take() {
             self.dispatch(Intent::LibraryRebuilding { kept_at: Arc::from(moved.display().to_string()) }, cx);
         }
+        // Packages an earlier launch was still adding are added now.
+        super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
     }
 
     /// Reads the owner's root again: something outside the project lane

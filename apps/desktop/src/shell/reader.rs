@@ -257,6 +257,35 @@ struct Staged {
     covered: bool,
     /// Fold / Unfold: the travelling gem, this frame.
     gem: Option<(facet::icons::Kind, Bounds<Pixels>)>,
+    /// Where the plate's edges are headed and how fast they move with `p`.
+    plate_course: Course,
+    /// The gem's, when it travels.
+    gem_course: Option<Course>,
+}
+
+/// Where a rectangle the plate's openness drives is headed, and how far each
+/// of its edges (left, top, right, bottom) moves per unit of openness at
+/// this frame: what the probe is told, so each edge is judged on its own
+/// curve (its bands are not the driver's).
+#[derive(Clone, Copy, Debug)]
+struct Course {
+    to: Bounds<Pixels>,
+    per_p: [f32; 4],
+}
+
+impl Course {
+    fn of(at: impl Fn(f32) -> Bounds<Pixels>, p: f32, target: f32) -> Self {
+        const STEP: f32 = 1e-3;
+        let (low, high) = ((p - STEP).max(0.0), (p + STEP).min(1.0));
+        let span = (high - low).max(1e-6);
+        let (a, b) = (edges(at(low)), edges(at(high)));
+        Self { to: at(target), per_p: [0, 1, 2, 3].map(|index| (b[index] - a[index]) / span) }
+    }
+}
+
+/// A rectangle's edges: left, top, right, bottom.
+fn edges(rect: Bounds<Pixels>) -> [f32; 4] {
+    [f32::from(rect.left()), f32::from(rect.top()), f32::from(rect.right()), f32::from(rect.bottom())]
 }
 
 /// The row a Close came back to, tinted periwinkle for a moment.
@@ -979,6 +1008,7 @@ impl Reader {
             _ => column,
         };
         let plate = plate_at(reader, column, transit.row, p);
+        let plate_course = Course::of(|p| plate_at(reader, column, transit.row, p), p, transit.carry.target());
         let height = f32::from(reader.size.height);
         let edge = transit.edge_local(now, height).map(|local| {
             let y = reader.top() + px(local);
@@ -990,15 +1020,17 @@ impl Reader {
         // The gem travels between the hero and the node on the plate's own
         // driver: a Fold's from the hero (p = 1) to the node (p = 0), an
         // Unfold's from the node to where the page lays its gem out.
-        let gem = match (transit.verb, transit.gem, transit.row) {
-            (Verb::Fold, Some((kind, hero)), Some(node)) => Some((kind, lerp_rect(node, hero, band(p, LANDED, 0.9)))),
+        let ends = match (transit.verb, transit.gem, transit.row) {
+            (Verb::Fold, Some((kind, hero)), Some(node)) => Some((kind, node, hero)),
             (Verb::Unfold, Some((kind, node)), _) => transit
                 .symbol
                 .as_ref()
                 .and_then(|symbol| facet::motion::shared::last_bounds(crate::shell::kit::shared_id(symbol), window, cx))
-                .map(|hero| (kind, lerp_rect(node, hero, band(p, LANDED, 0.9)))),
+                .map(|hero| (kind, node, hero)),
             _ => None,
         };
+        let gem = ends.map(|(kind, node, hero)| (kind, lerp_rect(node, hero, band(p, LANDED, 0.9))));
+        let gem_course = ends.map(|(_, node, hero)| Course::of(|p| lerp_rect(node, hero, band(p, LANDED, 0.9)), p, transit.carry.target()));
         let drift = if graph { 0.0 } else { DRIFT * scale };
         Some(Staged {
             verb: transit.verb,
@@ -1012,6 +1044,8 @@ impl Reader {
             has_row: transit.row.is_some(),
             covered: plate.size.width >= reader.size.width - px(0.5) && plate.size.height >= reader.size.height - px(0.5),
             gem,
+            plate_course,
+            gem_course,
         })
     }
 
@@ -1321,7 +1355,8 @@ impl Render for Reader {
         // A reflow moves whatever the keyboard stands on: bring it back
         // into view in the same frame.
         let laid_out = (self.core.width(), window.viewport_size().height, facet.text_scale, facet.density);
-        if self.laid_out.is_some_and(|last| last != laid_out) && self.targets.focused().is_some() {
+        let reflowed = self.laid_out.is_some_and(|last| last != laid_out) && self.targets.focused().is_some();
+        if reflowed {
             self.reveal.set(true);
         }
         self.laid_out = Some(laid_out);
@@ -1433,6 +1468,7 @@ impl Render for Reader {
                 targets: self.targets.clone(),
                 scroll: self.scroll.clone(),
                 frame: Rc::clone(&self.frame),
+                land: Vec::new(),
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
             let mut root = div().relative().size_full().text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
@@ -1486,11 +1522,24 @@ impl Render for Reader {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .child(div().w_full().px(pad).pt(top).pb(px(96.0 * scale)).child(stack));
+        // A reflow that scrolls to keep the focus in view lands the page's
+        // moving parts: a flight from where they were would carry the focus
+        // back off screen.
+        let land = if reflowed {
+            let mut flows = vec![self.ring_flow.clone()];
+            if let Some(symbol) = route_symbol(&current.route) {
+                flows.push(self.symbol_disclosure(&symbol).flow);
+            }
+            flows
+        } else {
+            Vec::new()
+        };
         let scroller = Reveal {
             pending: Rc::clone(&self.reveal),
             targets: self.targets.clone(),
             scroll: self.scroll.clone(),
             frame: Rc::clone(&self.frame),
+            land,
             child: scroller.into_any_element(),
         };
         let mut root = div().relative().size_full();
@@ -1603,7 +1652,7 @@ impl Reader {
         let epoch = facet::motion::epoch(cx);
         let millis = |at: Instant| at.saturating_duration_since(epoch).as_secs_f64() * 1000.0;
         let at_ms = millis(now);
-        let track = |key: String, value: f32, target: f32, velocity: f32, started_ms: f64, budget_ms: f64| facet::probe::TrackSample {
+        let track = |key: String, value: f32, target: f32, velocity: f32, started_ms: f64, budget_ms: f64, group: Option<&str>| facet::probe::TrackSample {
             key,
             kind: facet::probe::TrackKind::Spring,
             value,
@@ -1615,28 +1664,33 @@ impl Reader {
             live: true,
             overshoot_ratio: 0.0,
             overshoot_absolute: 0.0,
-            group: Some("reader.transit".to_owned()),
+            group: group.map(ToOwned::to_owned),
         };
         if let (Some(transit), Some(staged)) = (&self.transit, staged) {
             let (value, velocity) = transit.carry.sample(now);
             let started = millis(transit.carry.start());
             let budget = transit.carry.budget(0.001).as_secs_f64() * 1000.0;
-            let mut samples = vec![track("reader.carry".to_owned(), value, transit.carry.target(), velocity, started, budget)];
-            let plate = staged.plate;
-            for (edge, at) in [("left", plate.left()), ("top", plate.top()), ("right", plate.right()), ("bottom", plate.bottom())] {
-                samples.push(track(format!("reader.plate.{edge}"), f32::from(at), f32::from(at), 0.0, started, budget));
-            }
-            if let Some((_, gem)) = staged.gem {
-                for (edge, at) in [("left", gem.left()), ("top", gem.top()), ("right", gem.right()), ("bottom", gem.bottom())] {
-                    samples.push(track(format!("reader.gem.{edge}"), f32::from(at), f32::from(at), 0.0, started, budget));
+            let mut samples = vec![track("reader.carry".to_owned(), value, transit.carry.target(), velocity, started, budget, Some("reader.transit"))];
+            // The plate's and the gem's edges ride the driver through their
+            // own bands (the plate's floor lags its sides): each is told its
+            // own target and speed, and none claims lockstep with the driver.
+            const NAMES: [&str; 4] = ["left", "top", "right", "bottom"];
+            let publish_course = |name: &str, rect: Bounds<Pixels>, course: Course, samples: &mut Vec<facet::probe::TrackSample>| {
+                let (at, to) = (edges(rect), edges(course.to));
+                for index in 0..4 {
+                    samples.push(track(format!("reader.{name}.{}", NAMES[index]), at[index], to[index], course.per_p[index] * velocity, started, budget, None));
                 }
+            };
+            publish_course("plate", staged.plate, staged.plate_course, &mut samples);
+            if let (Some((_, gem)), Some(gem_course)) = (staged.gem, staged.gem_course) {
+                publish_course("gem", gem, gem_course, &mut samples);
             }
             for sample in samples {
                 facet::probe::record_track(cx, || sample);
             }
         }
         if let (Some(tint), Some(strength)) = (&self.tint, tint) {
-            let sample = track(format!("reader.tint.{}", tint.id), strength, 0.0, 0.0, millis(tint.start), 0.0);
+            let sample = track(format!("reader.tint.{}", tint.id), strength, 0.0, 0.0, millis(tint.start), 0.0, Some("reader.transit"));
             facet::probe::record_track(cx, || sample);
         }
     }
@@ -1654,6 +1708,8 @@ struct Reveal {
     /// Where the reader is laid out, in window space, for the next frame's
     /// plate.
     frame: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The page's flows, landed when a reflow scrolls to the focus.
+    land: Vec<facet::motion::Flow>,
     child: gpui::AnyElement,
 }
 
@@ -1717,6 +1773,9 @@ impl gpui::Element for Reveal {
             };
             if y != offset.y {
                 self.scroll.set_offset(point(offset.x, y));
+                for flow in &self.land {
+                    flow.land();
+                }
             }
         }
         self.child.prepaint(window, cx);
@@ -1911,14 +1970,17 @@ mod transit_tests {
         let before = shoot(&mut rig, 0, 0);
         // The package page's cards paint their words themselves (they are not
         // in `said`): what the old page says includes what it painted.
-        let old: Vec<String> = old.into_iter().chain(before.texts.iter().map(|text| text.text.to_string())).collect();
+        let old: Vec<String> = old.into_iter().chain(reading(&before).map(|text| text.text.to_string())).collect();
         let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
         let row_id = focused.expect("j focuses a row").to_string();
         let row = before.targets.iter().find(|(key, _)| *key == row_id).map(|(_, at)| *at).expect("the row is drawn");
         let shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("enter"), 400);
         assert!(matches!(rig.route(), Route::Symbol(_)), "enter opened a page");
         rig.settle();
-        let new = rig.said();
+        // The symbol page paints its words itself too (its crumb names the
+        // package): what the new page says includes what it paints.
+        let landed = shoot(&mut rig, 0, 0);
+        let new: Vec<String> = rig.said().into_iter().chain(reading(&landed).map(|text| text.text.to_string())).collect();
         let old_only = only(&old, &new);
         assert!(!old_only.is_empty(), "the pages differ: {old:?}");
 
@@ -1982,12 +2044,15 @@ mod transit_tests {
         let row_id = focused.expect("j focuses a row").to_string();
         let parent = rig.said();
         rig.keys("enter");
-        let page = rig.said();
+        // The symbol page paints its words itself (they are not all in
+        // `said`): what the page says includes what it painted.
+        let opened = shoot(&mut rig, 0, 0);
+        let page: Vec<String> = rig.said().into_iter().chain(reading(&opened).map(|text| text.text.to_string())).collect();
         let shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("cmd-["), 1000);
         assert!(matches!(rig.route(), Route::Package(_)), "back came home");
         // The package page's cards paint their words themselves (they are not
         // in `said`): what the parent says includes what it painted once home.
-        let parent: Vec<String> = parent.into_iter().chain(shots.last().into_iter().flat_map(|shot| shot.texts.iter().map(|text| text.text.to_string()))).collect();
+        let parent: Vec<String> = parent.into_iter().chain(shots.last().into_iter().flat_map(|shot| reading(shot).map(|text| text.text.to_string()))).collect();
         let page_only = only(&page, &parent);
         let row = shots
             .last()
@@ -2003,6 +2068,15 @@ mod transit_tests {
                 assert!(inside(plate, last), "the plate never grows: {last:?} then {plate:?} at {} ms", shot.at);
             }
             last = Some(plate);
+            // What the fold has taken from the plate shows the parent (so no
+            // frame has an empty reader): on the plate, the parent is only
+            // ever below every line of the page still folding on it.
+            let floor = shot
+                .texts
+                .iter()
+                .filter(|text| page_only.contains(text.text.as_ref()) && text.bounds.size.height > px(1.0))
+                .map(|text| text.bounds.bottom())
+                .fold(plate.top(), Pixels::max);
             for text in &shot.texts {
                 let content = text.text.to_string();
                 if page_only.contains(&content) && text.bounds.size.height > px(1.0) {
@@ -2010,8 +2084,16 @@ mod transit_tests {
                     folding += 1;
                 }
                 if parent_only.contains(&content) {
-                    assert!(!crosses(text.bounds, plate), "`{content}` (the parent's) is painted on the plate at {} ms", shot.at);
-                    uncovered.insert(content);
+                    if crosses(text.bounds, plate) {
+                        assert!(
+                            text.bounds.top() >= floor - px(0.5),
+                            "`{content}` (the parent's) is painted on the plate above the folding page at {} ms: {:?}, the page's lowest line ends at {floor:?}",
+                            shot.at,
+                            text.bounds
+                        );
+                    } else {
+                        uncovered.insert(content);
+                    }
                 }
             }
         }

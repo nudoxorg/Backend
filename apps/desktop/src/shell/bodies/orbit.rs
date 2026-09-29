@@ -131,9 +131,13 @@ pub(super) fn body(
                 // another line glides there (FLIP) instead of jumping.
                 let flow = ctx.ring_flow.clone();
                 flow.epoch((measure.density(), measure.scale().to_bits()));
-                for package in indexed.iter() {
+                // Your projects stand in the middle; the ring is what they
+                // use, in name order, one name told apart from its twin.
+                let around = crate::shell::side::beside_your_projects(indexed, &workspace);
+                let apart = crate::shell::side::told_apart(&around);
+                for (package, apart) in around.into_iter().zip(apart) {
                     let key = gpui::ElementId::Name(format!("orbit-chip-{}", package.package).into());
-                    ring = ring.child(flow.item(key, package_name(package, ctx, cx)));
+                    ring = ring.child(flow.item(key, package_name(package, apart, ctx, cx)));
                 }
                 leaves.push(Leaf::new(ring).wide());
             }
@@ -235,10 +239,12 @@ fn ago(ms: u64) -> String {
     }
 }
 
-fn package_name(package: &IndexedPackage, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
+fn package_name(package: &IndexedPackage, apart: Option<SharedString>, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
     let measure: Measure = ctx.measure;
     let palette: &Palette = ctx.palette;
     let name = ctx.say(package.name.to_string());
+    // What tells it apart from a twin of the same name, said with it.
+    let apart = apart.map(|apart| ctx.say(apart.to_string()));
     let id: SharedString = format!("orbit-package-{}", package.package).into();
     let route = package_route(&package.package);
     let links = ctx.links.clone();
@@ -274,6 +280,7 @@ fn package_name(package: &IndexedPackage, ctx: &mut Ctx<'_>, cx: &mut Context<Re
                 .hover(|style| style.bg(palette.tint))
                 .child(crate::shell::kit::kind_mark(Kind::Package, KindSize::Sm, &measure, palette))
                 .child(text(ty::MONO_ROW, &measure, ink).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                .children(apart.map(|apart| text(ty::MONO_SMALL, &measure, palette.ink3).flex_none().whitespace_nowrap().child(apart)))
                 .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
                 .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx))),
         )

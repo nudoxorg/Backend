@@ -57,6 +57,7 @@
 //! replayed calmly (each settled before the next), and the two settled frames
 //! must be pixel-identical.
 
+pub mod keys;
 mod look;
 mod machine;
 pub mod parts;
@@ -260,6 +261,18 @@ struct Runner {
     saw: BTreeMap<String, u8>,
 }
 
+/// A production launch ends the way a quit does ([`machine::quit`]), on
+/// every path out of the run: an error in the middle of a journey must be
+/// reported, not turned into gpui's leaked-handle panic by dropping an app
+/// whose owner watch still holds the root (GAPS.md D2).
+impl Drop for Runner {
+    fn drop(&mut self) {
+        if let (Some(session), Some(launched)) = (self.session.take(), self.launched.take()) {
+            machine::quit(session, launched);
+        }
+    }
+}
+
 impl Runner {
     fn new(session: Session, launched: Option<Launched>, live: Option<PathBuf>, size: (u32, u32), scale: u8, filming: bool) -> Self {
         Self {
@@ -342,14 +355,15 @@ impl Runner {
         let session = self.session()?;
         let (mut drawn, image) = session.frame(capture).map_err(err)?;
         drawn.at_ms += epoch;
-        let (ledger, complete, frame, state, painted) = session
+        let (ledger, complete, frame, state, painted, words) = session
             .update(|window, cx| {
                 let ledger = probe::take(cx);
                 let before = landed(cx);
                 let idle = quiet(cx);
                 let state = super::sample_state(cx, &ledger);
                 let painted = look::painted_extras(&ledger, window.painted_texts());
-                (ledger, idle && landed(cx) == before, shell_frame(cx), state, painted)
+                let words = look::state_words(cx);
+                (ledger, idle && landed(cx) == before, shell_frame(cx), state, painted, words)
             })
             .map_err(err)?;
         self.frames += 1;
@@ -368,6 +382,19 @@ impl Runner {
         stripped.targets.clear();
         stripped.stacks.clear();
         stripped.scrolls.clear();
+        // A relaunch is a new app: its motion clock starts again at 0, and
+        // what it animates is not the quit app's element carried on. Its
+        // tracks are put on the journey's one timeline and named apart, so
+        // the checks judge each launch's motion on its own.
+        if epoch > 0 {
+            #[allow(clippy::cast_precision_loss, reason = "virtual ms stay far below 2^52")]
+            let shift = epoch as f64;
+            for track in &mut stripped.tracks {
+                track.key = format!("{}@{}", track.key, epoch);
+                track.at_ms += shift;
+                track.started_ms += shift;
+            }
+        }
         self.observed.push(Observed {
             drawn,
             ledger: stripped,
@@ -388,6 +415,7 @@ impl Runner {
             complete,
             frame,
             painted,
+            state: words,
         };
         for area in std::iter::once(None).chain(AREAS.into_iter().map(Some)) {
             for text in seen.texts(area) {
@@ -503,9 +531,8 @@ impl Runner {
     /// Frames, in real time, until the owner's work shows `until`.
     fn await_until(&mut self, until: &Until, within: Duration, report: &mut String) -> Result<Result<(), String>, String> {
         let started = Instant::now();
-        let (words, area, present) = match until {
-            Until::Text(words, area) => (words, *area, true),
-            Until::Absent(words, area) => (words, *area, false),
+        let area = match until {
+            Until::Text(_, area) | Until::Absent(_, area) | Until::Like(_, area) => *area,
         };
         let mut shown = std::collections::BTreeSet::new();
         let mut logged = 0;
@@ -521,7 +548,11 @@ impl Runner {
                     let _ = writeln!(report, "           +{:>6.1} s  \"{}\"", started.elapsed().as_secs_f64(), clip(&short(text), 100));
                 }
             }
-            let holds = words.iter().all(|word| texts.contains(word) == present);
+            let holds = match until {
+                Until::Text(words, _) => words.iter().all(|word| texts.contains(word)),
+                Until::Absent(words, _) => words.iter().all(|word| !texts.contains(word)),
+                Until::Like(glob, _) => texts.iter().any(|text| script::glob(glob, text)),
+            };
             if holds {
                 let _ = writeln!(report, "           held after {:.1} s real ({} frames)", started.elapsed().as_secs_f64(), self.frames);
                 return Ok(Ok(()));
@@ -810,6 +841,22 @@ fn judge_one(runner: &Runner, seen: &Seen, image: &RgbaImage, route: Option<&Rou
                 .map(|(_, what, _)| format!("link {pick}: {what}"))
                 .map_err(|why| format!("link {pick}: {why}")),
         ],
+        Assert::State { key, glob } => {
+            let value = seen.state.iter().find(|(name, _)| name == key).map(|(_, value)| value.as_str());
+            vec![match value {
+                Some(value) if script::glob(glob, value) => Ok(format!("state {key} \"{glob}\": `{}`", clip(value, 100))),
+                Some(value) => Err(format!("state {key} \"{glob}\": `{}`", clip(value, 100))),
+                None => Err(format!("state {key}: the app does not say")),
+            }]
+        }
+        Assert::Size { text, at_least, area } => {
+            let shown = seen.texts(*area);
+            vec![match shown.iter().filter(|shown| &shown.content == text).map(|shown| shown.line_height).reduce(f32::max) {
+                Some(tall) if tall >= *at_least => Ok(format!("size \"{}\"{}: {tall:.1} px tall (at least {at_least:.1})", clip(text, 80), area_words(*area))),
+                Some(tall) => Err(format!("size \"{}\"{}: {tall:.1} px tall, not at least {at_least:.1}", clip(text, 80), area_words(*area))),
+                None => Err(format!("size \"{}\"{}: not on screen\n         {}", clip(text, 80), area_words(*area), seen.summary(*area))),
+            }]
+        }
         Assert::FocusRestored => {
             let here = route.map_or_else(|| "(no route)".to_owned(), describe);
             let focused = seen.focused();
@@ -1658,21 +1705,24 @@ fn command(args: &[String]) -> Result<Verdict, String> {
         }
     }
     let name = name.ok_or_else(usage)?;
-    let path = if Path::new(&name).is_file() {
-        PathBuf::from(&name)
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("journeys")
-            .join(format!("{name}.journey"))
-    };
-    let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(&name)
-        .to_owned();
     let parts = Parts::load(&Parts::dir())?;
-    let plan = Plan::parse(&stem, &path, &text, &parts)?;
+    // J11 is built from the key table, not read from a file.
+    let (plan, stem) = if name == "J11" {
+        (keys::plan(&parts)?, name.clone())
+    } else {
+        let path = if Path::new(&name).is_file() {
+            PathBuf::from(&name)
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("journeys").join(format!("{name}.journey"))
+        };
+        let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(&name)
+            .to_owned();
+        (Plan::parse(&stem, &path, &text, &parts)?, stem)
+    };
     // Journeys keep their own copy of the fixture index (same roots): a
     // journey runs for minutes and would hold the scenes' index lock.
     super::keep_index_in(

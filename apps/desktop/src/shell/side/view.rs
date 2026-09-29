@@ -156,7 +156,7 @@ impl Shelf {
                     .hover(|style| style.bg(palette.tint))
                     .child(kind_mark(chip.kind, KindSize::Sm, measure, palette))
                     .child(text(ty::MONO_SMALL, measure, palette.ink1).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(chip.name.clone()))
-                    .child(text(ty::MONO_SMALL, measure, palette.ink4).flex_none().child(hold::cap(card)))
+                    .child(text(ty::MONO_SMALL, measure, palette.ink3).flex_none().child(hold::cap(card)))
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
                         shelf.take_keyboard(cx);
                         let links = shelf.links.clone();
@@ -172,7 +172,7 @@ impl Shelf {
         let mut places = div().flex().flex_wrap().items_center().gap_x(measure.space(Space::Snug));
         for (index, step) in steps.iter().enumerate() {
             if index > 0 {
-                places = places.child(text(ty::MONO_SMALL, measure, palette.ink4).child("‹"));
+                places = places.child(text(ty::MONO_SMALL, measure, palette.ink3).child("‹"));
             }
             let route = step.route.clone();
             places = places.child(
@@ -192,7 +192,7 @@ impl Shelf {
             .flex()
             .flex_col()
             .gap(measure.space(Space::Hair))
-            .child(text(ty::LABEL, measure, palette.ink4).child("TRAIL"))
+            .child(text(ty::LABEL, measure, palette.ink3).child("TRAIL"))
             .child(places)
             .into_any_element()
     }
@@ -333,7 +333,7 @@ impl Shelf {
                 .into_any_element();
         }
         if self.narrow.is_empty() {
-            return line.child(text(ty::SMALL, measure, palette.ink4).child("Type to narrow")).into_any_element();
+            return line.child(text(ty::SMALL, measure, palette.ink3).child("Type to narrow")).into_any_element();
         }
         let mut line = line
             .child(text(ty::MONO_ROW, measure, palette.ink0).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().child(self.narrow.query().to_owned()))
@@ -369,7 +369,7 @@ impl Shelf {
                 .px(measure.space(Space::Roomy))
                 .pb(measure.space(Space::Hair))
                 .child(text(ty::LABEL, measure, palette.ink3).flex_none().whitespace_nowrap().child(words.to_uppercase()))
-                .children(count.map(|count| text(ty::MONO_SMALL, measure, palette.ink4).child(count.to_string())))
+                .children(count.map(|count| text(ty::MONO_SMALL, measure, palette.ink3).child(count.to_string())))
                 .into_any_element(),
             Row::Note(words) => div()
                 .h(height)
@@ -400,7 +400,7 @@ impl Shelf {
             .child(mark(item.mark, measure, palette))
             .child(self.name(item, ink, measure, palette));
         if let Some(sub) = item.sub.as_ref().filter(|_| self.form == SideForm::Full || matches!(item.mark, Mark::Release(_))) {
-            element = element.child(text(ty::MONO_SMALL, measure, palette.ink4).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(sub.clone()));
+            element = element.child(text(ty::MONO_SMALL, measure, palette.ink3).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(sub.clone()));
         }
         element = match &item.trailing {
             Trailing::Nothing => element,

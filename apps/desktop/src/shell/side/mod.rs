@@ -35,6 +35,8 @@ mod view;
 pub(crate) use outline::{is_test_module, shelf_name};
 #[cfg(test)]
 pub(crate) use row::TESTS_ROW;
+pub(crate) use input::KEYS;
+pub(crate) use listing::{beside_your_projects, told_apart};
 pub(crate) mod twin;
 
 use super::focus::{Act, Target, Targets};
@@ -46,7 +48,7 @@ use crate::navigation::{Intent, Overlay, Route};
 use crate::runtime::store::{Branch, DataStore};
 use facet::overlay::float;
 use facet::tokens::fluid::{SIDE, SideForm};
-use facet::{ActiveFacet as _, Measure};
+use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
     App, Context, InteractiveElement, IntoElement, KeystrokeEvent, ParentElement, Pixels, Render, ScrollStrategy, SharedString, Styled,
     Subscription, Task, UniformListScrollHandle, Window, div, px,
@@ -59,15 +61,6 @@ use row::{Do, Fold, Folds, Item, Row, RowId};
 use scope::{Crumbs, Scope};
 use state::{StateBook, WorkspaceCrate};
 use std::rc::Rc;
-
-/// Where along the column's travel (0 = spine, 1 = shelf) the shelf's rows and the spine's
-/// marks swap. The longest row ends near 63 % of the travel, so swapping between 60 % and
-/// 66 % means the rows are gone before the column's clip reaches their text. A fade that
-/// spans the whole travel lingers for 9–12 frames, and the legibility law allows a
-/// translucent text for only 2.
-const SWAP_AT: f32 = 0.60;
-/// How much of the travel the swap takes.
-const SWAP_OVER: f32 = 0.06;
 
 /// The place a route is: a book (the package as pinned, so reading another
 /// release of it is the same place) and the declaration on it. Following
@@ -735,12 +728,18 @@ impl Render for Shelf {
 
         // Where the column sits between spine and shelf (0 = spine, 1 = shelf), and how far
         // the content has swapped. The column glides on its spring; the content swaps
-        // quickly, near the point where the clip would start to cut the rows' text.
+        // quickly, before the clip can cut a word. The rows are laid out at the column's
+        // resting width, and the words that reach furthest right (a trailing count, the
+        // narrowing line's "N of M") end one roomy gutter inside it: the clip starts
+        // cutting as soon as the column has narrowed by that gutter. So the rows are gone
+        // by then, and come back only within that gutter of fully open (the legibility
+        // law: a translucent word is whole or gone, and never lingers).
+        let rest_measure = Measure::new(self.rest, &facet);
         let span = (self.rest - self.spine).max(px(1.0));
         let travel = ((width - self.spine) / span).clamp(0.0, 1.0);
-        let open = ((travel - SWAP_AT) / SWAP_OVER).clamp(0.0, 1.0);
+        let over = (rest_measure.space(Space::Roomy) / span).clamp(0.01, 0.5);
+        let open = ((travel - (1.0 - over)) / over).clamp(0.0, 1.0);
         let open = open * open * (3.0 - 2.0 * open);
-        let rest_measure = Measure::new(self.rest, &facet);
         self.form = self.core.modes().settle(&SIDE, rest_measure.fluid_room()).mode;
         let mut root = div()
             .id("shelf")

@@ -62,6 +62,12 @@ pub const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[
 /// Compatibility alias for callers that used the original name.
 pub const HARD_IGNORED_DIRECTORIES: &[&str] = DEFAULT_IGNORED_DIRECTORIES;
 
+/// The lock file an index owner holds in its workspace. A directory that
+/// holds one is an owner's state, never a project's source, wherever it
+/// lives: an owner whose workspace sits inside the folder it indexes would
+/// otherwise scan its own journal and see its own writes as source edits.
+pub const OWNER_WORKSPACE_MARKER: &str = "OWNER.lock";
+
 /// Returns whether a path component is one of Nudox's hard generated roots.
 #[must_use]
 pub fn is_hard_ignored_directory(name: &OsStr) -> bool {
@@ -401,6 +407,9 @@ impl DiscoveryPolicy {
         let Ok(relative) = path.strip_prefix(root) else {
             return false;
         };
+        if path.join(OWNER_WORKSPACE_MARKER).is_file() {
+            return false;
+        }
         let generated = relative
             .components()
             .any(|component| self.generated_component(component.as_os_str()));
@@ -745,6 +754,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn an_index_owners_workspace_inside_the_project_is_never_source() {
+        let scratch = Scratch::new("owner");
+        fs::create_dir_all(scratch.0.join("src")).expect("src");
+        fs::write(scratch.0.join("src/lib.rs"), b"pub fn one() {}").expect("source");
+        fs::create_dir_all(scratch.0.join("state/compiler")).expect("state");
+        fs::write(scratch.0.join("state/OWNER.lock"), b"").expect("lock");
+        fs::write(scratch.0.join("state/compiler/image.rs"), b"// generated").expect("state file");
+        let paths = DiscoveryPolicy::default()
+            .walk(&scratch.0)
+            .map(|entry| {
+                entry
+                    .expect("discovery")
+                    .path()
+                    .strip_prefix(&scratch.0)
+                    .expect("relative")
+                    .to_owned()
+            })
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, [PathBuf::from("src"), PathBuf::from("src/lib.rs")]);
     }
 
     #[test]

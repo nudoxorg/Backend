@@ -49,7 +49,7 @@ fn one(glyph: Glyph, measure: &Measure, palette: &Palette) -> AnyElement {
             run.into_any_element()
         }
         Glyph::Gone(gone) => text(ty::SMALL, measure, palette.coral.base).flex_none().whitespace_nowrap().child(gone.word()).into_any_element(),
-        Glyph::Members(members) => text(ty::MONO_SMALL, measure, palette.ink4).flex_none().whitespace_nowrap().child(members.to_string()).into_any_element(),
+        Glyph::Members(members) => text(ty::MONO_SMALL, measure, palette.ink3).flex_none().whitespace_nowrap().child(members.to_string()).into_any_element(),
     }
 }
 

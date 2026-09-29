@@ -299,6 +299,9 @@ pub(crate) struct Model {
     drifting: bool,
     /// The device-pixel grid layout lands on (px; 0 when exact).
     grid: f32,
+    /// The frame (its generation) whose layout changes land instead of
+    /// flowing ([`Flow::land`]).
+    landing: Option<u64>,
 }
 
 impl Model {
@@ -313,6 +316,7 @@ impl Model {
             drifted: false,
             drifting: false,
             grid: 0.0,
+            landing: None,
         }
     }
 
@@ -324,6 +328,7 @@ impl Model {
         self.drifted = std::mem::take(&mut self.drifting);
         let last = self.generation;
         self.generation += 1;
+        self.landing = None;
         let vanished = &mut self.vanished;
         self.records.retain(|key, record| {
             let kept = record.seen >= last;
@@ -348,6 +353,8 @@ impl Model {
     ) -> Placement {
         let carry = carried.layout;
         let (spring, epoch, generation) = (self.spring, self.epoch, self.generation);
+        // A landing frame is followed like reduced motion: nothing flies.
+        let reduced = reduced || self.landing == Some(generation);
         let record = self.records.entry(key.clone()).or_insert_with(|| Record {
             layout,
             x: Axis::default(),
@@ -652,6 +659,18 @@ impl Flow {
     /// Every item jumps to its layout.
     pub fn settle(&self) {
         self.inner.borrow_mut().model.settle();
+    }
+
+    /// This frame's layout changes land where they are laid out instead of
+    /// flowing (call it before the items are prepainted). For a viewport that
+    /// jumped under the items: a reader that scrolled to keep the keyboard's
+    /// focus in view after a reflow has already broken the continuity a
+    /// flight would keep, and a flight from where the part was would carry
+    /// the focus off screen.
+    pub fn land(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.model.landing = Some(inner.model.generation);
+        inner.model.settle();
     }
 
     /// Items tracked.

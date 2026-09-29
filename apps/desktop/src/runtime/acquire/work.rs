@@ -129,25 +129,55 @@ impl Queue {
 fn run(job: &Job, composition: &Composition, post: &(dyn Fn(Landed) + Send + Sync)) {
     match job {
         Job::Release(release) => {
-            index_release(composition, release, &|stage| post(Landed::Stage(release.clone(), stage)));
+            index_release(composition, release, Listed::Ready, &|stage| post(Landed::Stage(release.clone(), stage)));
         }
         Job::Dependencies(project) => {
-            let read = Session::connect(&composition.endpoint)
-                .map_err(|error| format!("the index could not be reached: {error}"))
-                .and_then(|mut session| dependencies(&mut session, composition.source.as_ref(), &project.path()));
+            let root = project.path();
+            let read = if root.join("Cargo.toml").is_file() {
+                Session::connect(&composition.endpoint)
+                    .map_err(|error| format!("the index could not be reached: {error}"))
+                    .and_then(|mut session| dependencies(&mut session, composition.source.as_ref(), &root))
+            } else {
+                Err(NOT_CARGO.to_owned())
+            };
             match read {
                 Ok(found) => {
                     let found: Arc<[Dependency]> = found.into();
                     post(Landed::Dependencies(project.clone(), Ok(Arc::clone(&found))));
                     for dependency in found.iter().filter(|dependency| matches!(dependency.origin, Origin::Registry(_))) {
                         let release = &dependency.release;
-                        index_release(composition, release, &|stage| post(Landed::Stage(release.clone(), stage)));
+                        reads_first();
+                        // A package the owner already lists, in any state, was
+                        // read once: a relaunch or a project indexed again does
+                        // not compile it again (a refusal stays the owner's).
+                        index_release(composition, release, Listed::Any, &|stage| post(Landed::Stage(release.clone(), stage)));
                     }
                 }
                 Err(words) => post(Landed::Dependencies(project.clone(), Err(Arc::from(words)))),
             }
         }
     }
+}
+
+/// Lets the window's reads through before the next compile of a project's
+/// packages holds the owner: what just landed is read (the Library, the page
+/// a person opened) before the next package starts (`runtime::traffic`). A
+/// release a person asked for starts at once.
+fn reads_first() {
+    super::super::traffic::yield_to_reads(std::time::Duration::from_millis(300), std::time::Duration::from_secs(10));
+}
+
+/// What a project that is not a Cargo project says about its packages: only a
+/// Rust project's packages come from the local cargo cache.
+pub(crate) const NOT_CARGO: &str = "only a Rust project's packages are added from the local cargo cache, and this folder has no Cargo.toml";
+
+/// How the owner already lists a release that is therefore not indexed again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Listed {
+    /// Indexed and ready.
+    Ready,
+    /// In any state, a refusal included.
+    Any,
 }
 
 /// The packages a project builds with on this machine, in the order they are
@@ -187,8 +217,8 @@ fn ordered(tree: &ProjectTree, source: &dyn RegistrySource) -> Vec<Dependency> {
 
 /// Resolves `release` through the source and has the owner index its tree,
 /// posting each stage it reaches; returns the last one. A release the owner
-/// already lists as ready is not indexed again.
-pub(crate) fn index_release(composition: &Composition, release: &Release, post: &dyn Fn(Stage)) -> Stage {
+/// already lists as `skip` says is not indexed again.
+pub(crate) fn index_release(composition: &Composition, release: &Release, skip: Listed, post: &dyn Fn(Stage)) -> Stage {
     let finish = |stage: Stage| {
         post(stage.clone());
         stage
@@ -207,7 +237,7 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, post: 
     let Some(coordinate) = tree.root.to_str() else { return failed(format!("{} is not UTF-8", tree.root.display())) };
     let started = std::time::Instant::now();
     let indexed = Session::connect(&composition.endpoint).and_then(|mut session| {
-        if listed_ready(&mut session, coordinate) {
+        if is_listed(&mut session, coordinate, skip) {
             return Ok(());
         }
         post(Stage::Indexing);
@@ -216,14 +246,21 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, post: 
     crate::runtime::trace::span("acquire.index", started, format_args!("{release}"));
     match (indexed, PackageRef::parse(coordinate)) {
         (Ok(()), Ok(package)) => finish(Stage::Added(package)),
+        // A compile the owner refused still lists the release, on the names
+        // its source declares: it is in the library, and says why it is thin.
+        (Err(error), Ok(package))
+            if Session::connect(&composition.endpoint).is_ok_and(|mut session| is_listed(&mut session, coordinate, Listed::Any)) =>
+        {
+            finish(Stage::Partial { page: package, words: Arc::from(error.to_string()) })
+        }
         (Err(error), _) => failed(format!("the index refused {release}: {error}")),
         (Ok(()), Err(error)) => failed(format!("{coordinate} is not a package address: {error:?}")),
     }
 }
 
-/// Whether the owner already lists `coordinate` as indexed and ready.
-fn listed_ready(session: &mut Session, coordinate: &str) -> bool {
+/// Whether the owner already lists `coordinate` as `listed` says.
+fn is_listed(session: &mut Session, coordinate: &str, listed: Listed) -> bool {
     let Ok(reply) = session.packages() else { return false };
     let backend_library::CommandReply::Packages(snapshot) = reply.reply else { return false };
-    snapshot.root.rows().iter().any(|row| row.label == coordinate && row.state == backend_library::RowState::Ready)
+    snapshot.root.rows().iter().any(|row| row.label == coordinate && (listed == Listed::Any || row.state == backend_library::RowState::Ready))
 }

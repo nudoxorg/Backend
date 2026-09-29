@@ -441,6 +441,7 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
             };
             // A panicking reader must not take the worker (and every later
             // read) down with it; it becomes one typed fault.
+            let _reading = super::traffic::Reading::begin();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 reader.read(&job.request, &context)
             }))

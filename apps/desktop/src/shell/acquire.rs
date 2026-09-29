@@ -44,7 +44,7 @@ fn adding_state(purl: &SharedString, asker: Asker, cx: &mut App) -> Adding {
         Some(Stage::Resolving) => Adding::Working(Step::Resolving),
         Some(Stage::Unpacking) => Adding::Working(Step::Unpacking),
         Some(Stage::Indexing) => Adding::Working(Step::Indexing),
-        Some(Stage::Added(package)) => Adding::Added { open: package.as_str().to_owned().into() },
+        Some(Stage::Added(package) | Stage::Partial { page: package, .. }) => Adding::Added { open: package.as_str().to_owned().into() },
         Some(Stage::Failed(reason)) => Adding::Failed(reason.to_string().into()),
     }
 }

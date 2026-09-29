@@ -25,6 +25,31 @@ use std::time::Duration;
 /// How long `G` waits for the letter of a lens before it is just a `g`.
 pub(super) const CHORD_WINDOW: Duration = Duration::from_millis(700);
 
+/// One key the sidebar answers while it has the keyboard, as Settings ›
+/// Keys lists it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct KeyDoc {
+    /// Its cap(s), as shown.
+    pub cap: &'static str,
+    /// What it does.
+    pub says: &'static str,
+}
+
+/// Every key the sidebar answers (click a row, or Tab to it, to give it the
+/// keyboard), in the order a newcomer needs them. Each one is read by
+/// [`decode`] and acted on by `Shelf::key`.
+pub(crate) const KEYS: &[KeyDoc] = &[
+    KeyDoc { cap: "a–z …", says: "narrow the list as you type; the last row widens to Find" },
+    KeyDoc { cap: "⌫", says: "take a letter back" },
+    KeyDoc { cap: "Esc", says: "clear the narrowing" },
+    KeyDoc { cap: "↑  ↓", says: "move along the list" },
+    KeyDoc { cap: "→  ←", says: "open a group or step into it; step back out" },
+    KeyDoc { cap: "Space", says: "peek at the row; again to put it away" },
+    KeyDoc { cap: "H", says: "hold the peeked row in the hand" },
+    KeyDoc { cap: "G C  G V  G R  G U", says: "Contents, Versions, Rests on, Used by" },
+    KeyDoc { cap: "G G", says: "the peeked row in the graph" },
+];
+
 /// One key the sidebar reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SideKey {

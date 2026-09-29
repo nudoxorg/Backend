@@ -369,6 +369,26 @@ impl Shell {
         (self.ask_open, self.peeking.is_some(), self.hints.is_some())
     }
 
+    /// What the shell's own chrome is doing, in words: the keyboard's zone
+    /// and target, the transients, the hand, zen and the shelf. A journey
+    /// that presses a key judges what the key did with these.
+    #[must_use]
+    pub fn chrome_words(&self, cx: &App) -> Vec<(&'static str, String)> {
+        let (zone, focused) = self.focus_state(cx);
+        let on = |open: bool| if open { "open" } else { "closed" }.to_owned();
+        vec![
+            ("zone", format!("{zone:?}").to_lowercase()),
+            ("focus", focused.map_or_else(|| "none".to_owned(), |id| id.to_string())),
+            ("ask", on(self.ask_open)),
+            ("peek", on(self.peeking.is_some())),
+            ("hints", on(self.hints.is_some())),
+            ("hand", on(self.hand_open)),
+            ("zen", if self.zen { "on" } else { "off" }.to_owned()),
+            ("shelf", self.frame.map_or_else(|| "none".to_owned(), |frame| format!("{:?}", frame.shelf).to_lowercase())),
+            ("drawer", on(self.shelf_over_open)),
+        ]
+    }
+
     /// Subscribes `notified` to every view the window draws (the root and
     /// each region): a notification is what dirties a real window, so tests
     /// count these to prove an idle window costs nothing.
