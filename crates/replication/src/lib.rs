@@ -42,13 +42,15 @@ pub use ir_generation_store::{
     HistoryReplayEntry, HistorySegmentDeltas, HistoryTypedV2JumboObject, HistoryTypedV2LocatorId,
     HistoryTypedV2RootClaim, HistoryTypedV2SegmentObject, LocalSemanticGeneration,
     LineageAttestationId, LineageAttestationVerifierV1, LineageCandidateGroupIdV1,
+    LineageConfirmationStatementV1,
     LineageEdgeIterV1, LineageEdgeSetErrorV1, LineageEdgeV1, LineageEdgeViewV1,
     LineageHistoryEvidenceV1, LineageKindV1, LineageSourceV1, LineageStatusV1,
     LineageStatusViewV1, LocalSemanticGenerationId, MAX_HISTORY_REPLAY_COMMITS,
     MAX_LINEAGE_CANDIDATES_PER_GROUP_V1, MAX_TYPED_LINEAGE_EDGES_V1,
     MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES, OwnedTypedLineageEdgeSetV1,
-    RejectLineageConfirmationsV1, SelectedHistoryRef,
+    RejectLineageConfirmationsV1, SelectedHistoryRef, UnprovenTypedLineageEdgeSetV1,
     TypedV2HistoryReplay, UnresolvedLineageReasonV1, UnpublishedHistoryProposal,
+    VerifiedLineageEdgeIterV1, VerifiedLineageEdgeViewV1, VerifiedLineageStatusV1,
     VerifiedTypedLineageEdgeSetV1, VerifiedLineageRootV2,
 };
 pub use ir_hydration::*;

@@ -60,11 +60,13 @@ pub(super) use provenance::decode_hex_digest;
 pub(crate) use v2::{TypedV2HistoryLocator, TypedV2HistoryPublicationSnapshot};
 pub use lineage::{
     BorrowedTypedLineageEdgeSetV1, LineageAttestationId, LineageAttestationVerifierV1,
+    LineageConfirmationStatementV1,
     LineageCandidateGroupIdV1, LineageEdgeSetErrorV1, LineageEdgeV1, LineageEdgeViewV1,
     LineageHistoryEvidenceV1, LineageKindV1, LineageSourceV1, LineageStatusV1,
     LineageStatusViewV1, LineageEdgeIterV1, OwnedTypedLineageEdgeSetV1,
-    RejectLineageConfirmationsV1, UnresolvedLineageReasonV1, VerifiedTypedLineageEdgeSetV1,
-    VerifiedLineageRootV2,
+    RejectLineageConfirmationsV1, UnresolvedLineageReasonV1, UnprovenTypedLineageEdgeSetV1,
+    VerifiedLineageEdgeIterV1, VerifiedLineageEdgeViewV1, VerifiedLineageStatusV1,
+    VerifiedTypedLineageEdgeSetV1, VerifiedLineageRootV2,
     MAX_LINEAGE_CANDIDATES_PER_GROUP_V1, MAX_TYPED_LINEAGE_EDGES_V1,
     MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES,
 };

@@ -2,8 +2,10 @@
 //!
 //! This is evidence about possible continuity, not a declaration-identity
 //! allocator. It never rewrites `DeclarationIdentity`, semantic rows, links,
-//! or either generation root. A history adapter still has to bind the edge-set
-//! object into the child V2 commit and provide verified readers/ancestry.
+//! or either generation root. V2 stores the exact bytes in its commit-rooted
+//! locator; full verification still requires a history adapter that proves
+//! the exact child/first-parent transition and supplies verified readers and
+//! ancestry.
 
 use std::cmp::Ordering;
 
@@ -83,6 +85,20 @@ impl LineageAttestationId {
     }
 
     /// Returns the exact proof-object identity.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Domain-separated digest of the exact transition and confirmed edge, with
+/// the attestation object ID omitted so a signature can be content-addressed
+/// without a self-reference cycle.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct LineageConfirmationStatementV1([u8; 32]);
+
+impl LineageConfirmationStatementV1 {
+    /// Returns the exact statement digest that an authority proof must cover.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
@@ -378,10 +394,22 @@ impl<'wire> BorrowedTypedLineageEdgeSetV1<'wire> {
         self.parent_commit
     }
 
+    /// Returns the claimed parent generation root as borrowed bytes.
+    #[must_use]
+    pub const fn parent_generation_claim(self) -> &'wire [u8; 32] {
+        self.parent_generation
+    }
+
     /// Returns the child-root claim as borrowed bytes.
     #[must_use]
     pub const fn child_generation_claim(self) -> &'wire [u8; 32] {
         self.child_generation
+    }
+
+    /// Validates canonical ordering, duplicate endpoints, reserved fields,
+    /// and complete ambiguity groups without asserting semantic membership.
+    pub(crate) fn validate_structure(self) -> Result<(), LineageEdgeSetErrorV1> {
+        self.verify_canonical_structure()
     }
 
     /// Checks roots, endpoint presence, ancestry, canonical ordering, candidate
@@ -399,11 +427,19 @@ impl<'wire> BorrowedTypedLineageEdgeSetV1<'wire> {
         {
             return Err(LineageEdgeSetErrorV1::GenerationRootMismatch);
         }
+        match context.is_direct_parent(context.child_commit(), self.parent_commit) {
+            Some(true) => {}
+            Some(false) => return Err(LineageEdgeSetErrorV1::NotDirectTransition),
+            None => return Err(LineageEdgeSetErrorV1::EvidenceUnavailable),
+        }
         self.verify_canonical_structure()?;
         for edge in self.edges() {
             verify_edge_context(edge, context, attestations)?;
         }
-        Ok(VerifiedTypedLineageEdgeSetV1 { view: self })
+        Ok(VerifiedTypedLineageEdgeSetV1 {
+            view: self,
+            child_commit: context.child_commit(),
+        })
     }
 
     fn verify_canonical_structure(self) -> Result<(), LineageEdgeSetErrorV1> {
@@ -499,6 +535,12 @@ impl<'wire> LineageEdgeViewV1<'wire> {
         self.source_commit
     }
 
+    /// Returns the claimed source generation root as borrowed bytes.
+    #[must_use]
+    pub const fn source_generation_claim(self) -> &'wire [u8; 32] {
+        self.source_generation
+    }
+
     /// Returns the original declaration identity.
     #[must_use]
     pub const fn source(self) -> DeclarationIdentity {
@@ -509,6 +551,12 @@ impl<'wire> LineageEdgeViewV1<'wire> {
     #[must_use]
     pub const fn target(self) -> DeclarationIdentity {
         self.target
+    }
+
+    /// Returns the exact generation root in which the target is claimed.
+    #[must_use]
+    pub const fn target_generation_claim(self) -> &'wire [u8; 32] {
+        self.target_generation
     }
 
     /// Returns this edge's status.
@@ -554,15 +602,26 @@ impl<'wire> LineageStatusViewV1<'wire> {
 
 /// Evidence needed to validate one transition. Implementations must resolve
 /// exact immutable history records and complete semantic readers; `None`
-/// means the fact is unavailable, not false. `is_strict_ancestor` must compare
-/// the named commit's verified generation root as well as ancestry.
+/// means the fact is unavailable, not false. `is_direct_parent` must bind the
+/// exact child commit. `is_strict_ancestor` must compare the named commit's
+/// verified generation root as well as ancestry.
 pub trait LineageHistoryEvidenceV1 {
+    /// Exact admitted child commit whose locator carries this edge set.
+    fn child_commit(&self) -> super::HistoryCommitId;
     /// Exact admitted parent commit.
     fn parent_commit(&self) -> super::HistoryCommitId;
     /// Exact already-verified parent V2 root.
     fn parent_generation(&self) -> VerifiedLineageRootV2;
     /// Exact already-verified child V2 root.
     fn child_generation(&self) -> VerifiedLineageRootV2;
+    /// Whether `parent` is the direct first parent of this exact child commit.
+    /// The edge wire omits its own child commit ID to avoid a hash cycle, so
+    /// the adapter must bind this relation from the admitted history record.
+    fn is_direct_parent(
+        &self,
+        child: super::HistoryCommitId,
+        parent: super::HistoryCommitId,
+    ) -> Option<bool>;
     /// Whether an identity exists in this exact verified historical reader.
     fn declaration_present(
         &self,
@@ -581,20 +640,19 @@ pub trait LineageHistoryEvidenceV1 {
     ) -> Option<bool>;
 }
 
-/// Validates an independently supplied confirmation proof for one exact edge.
-/// Heuristic similarity scores are not attestations.
+/// Validates an independently supplied proof over one exact transition
+/// statement. The statement digest excludes the proof object's own ID, so
+/// content-addressed signatures cannot be circular. Heuristic similarity
+/// scores are not attestations.
 pub trait LineageAttestationVerifierV1 {
-    /// Returns true only when the referenced immutable proof authorizes the
-    /// canonical record bytes under the exact parent commit and semantic roots.
-    /// The history-commit object is intentionally not included: the lineage
-    /// object is itself committed by the child commit, so including that ID
-    /// would form a hash cycle.
+    /// Returns true only when the referenced immutable proof verifies this
+    /// exact statement digest under the transition's committed roots.
     fn verifies(
         &self,
         parent_commit: super::HistoryCommitId,
         parent_generation: &[u8; 32],
         child_generation: &[u8; 32],
-        edge: LineageEdgeViewV1<'_>,
+        statement: LineageConfirmationStatementV1,
         attestation: &[u8; 32],
     ) -> bool;
 }
@@ -609,7 +667,7 @@ impl LineageAttestationVerifierV1 for RejectLineageConfirmationsV1 {
         _parent_commit: super::HistoryCommitId,
         _parent_generation: &[u8; 32],
         _child_generation: &[u8; 32],
-        _edge: LineageEdgeViewV1<'_>,
+        _statement: LineageConfirmationStatementV1,
         _attestation: &[u8; 32],
     ) -> bool {
         false
@@ -621,13 +679,16 @@ impl LineageAttestationVerifierV1 for RejectLineageConfirmationsV1 {
 #[derive(Clone, Copy, Debug)]
 pub struct VerifiedTypedLineageEdgeSetV1<'wire> {
     view: BorrowedTypedLineageEdgeSetV1<'wire>,
+    child_commit: super::HistoryCommitId,
 }
 
 impl<'wire> VerifiedTypedLineageEdgeSetV1<'wire> {
     /// Returns the unchanged borrowed edge stream.
     #[must_use]
-    pub fn edges(self) -> LineageEdgeIterV1<'wire> {
-        self.view.edges()
+    pub fn edges(self) -> VerifiedLineageEdgeIterV1<'wire> {
+        VerifiedLineageEdgeIterV1 {
+            inner: self.view.edges(),
+        }
     }
 
     /// Returns the exact parent commit and root claims this proof checked.
@@ -636,9 +697,174 @@ impl<'wire> VerifiedTypedLineageEdgeSetV1<'wire> {
         (self.view.parent_commit, self.view.parent_generation)
     }
 
+    /// Returns the exact child commit proven to directly descend from the
+    /// parent for the checked transition.
+    #[must_use]
+    pub const fn child_commit(self) -> super::HistoryCommitId {
+        self.child_commit
+    }
+
     /// Returns the exact child root claim this proof checked.
     #[must_use]
     pub const fn child_generation(self) -> &'wire [u8; 32] {
+        self.view.child_generation
+    }
+}
+
+/// A lineage edge yielded only from a fully verified edge set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedLineageEdgeViewV1<'wire> {
+    view: LineageEdgeViewV1<'wire>,
+}
+
+impl<'wire> VerifiedLineageEdgeViewV1<'wire> {
+    /// Returns the verified relationship kind.
+    #[must_use]
+    pub const fn kind(self) -> LineageKindV1 {
+        self.view.kind
+    }
+
+    /// Returns the exact source history commit.
+    #[must_use]
+    pub const fn source_commit(self) -> super::HistoryCommitId {
+        self.view.source_commit
+    }
+
+    /// Returns the exact source generation root.
+    #[must_use]
+    pub const fn source_generation_claim(self) -> &'wire [u8; 32] {
+        self.view.source_generation
+    }
+
+    /// Returns the exact target generation root checked by the edge set.
+    #[must_use]
+    pub const fn target_generation_claim(self) -> &'wire [u8; 32] {
+        self.view.target_generation
+    }
+
+    /// Returns the unchanged source declaration identity.
+    #[must_use]
+    pub const fn source(self) -> DeclarationIdentity {
+        self.view.source
+    }
+
+    /// Returns the unchanged target declaration identity.
+    #[must_use]
+    pub const fn target(self) -> DeclarationIdentity {
+        self.view.target
+    }
+
+    /// Returns an epistemic status that can be obtained only after history
+    /// checks and any required confirmation authority have passed.
+    #[must_use]
+    pub const fn status(self) -> VerifiedLineageStatusV1<'wire> {
+        match self.view.status {
+            LineageStatusViewV1::Confirmed { attestation } => {
+                VerifiedLineageStatusV1::Confirmed { attestation }
+            }
+            LineageStatusViewV1::Ambiguous {
+                group,
+                index,
+                count,
+            } => VerifiedLineageStatusV1::Ambiguous {
+                group,
+                index,
+                count,
+            },
+            LineageStatusViewV1::Unresolved { reason, evidence } => {
+                VerifiedLineageStatusV1::Unresolved { reason, evidence }
+            }
+        }
+    }
+}
+
+/// Exact-size iterator over edges whose set passed the configured verifiers.
+#[derive(Clone, Debug)]
+pub struct VerifiedLineageEdgeIterV1<'wire> {
+    inner: LineageEdgeIterV1<'wire>,
+}
+
+impl<'wire> Iterator for VerifiedLineageEdgeIterV1<'wire> {
+    type Item = VerifiedLineageEdgeViewV1<'wire>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|view| VerifiedLineageEdgeViewV1 { view })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl ExactSizeIterator for VerifiedLineageEdgeIterV1<'_> {}
+
+/// Status carried by a verified edge view. Its type is distinct from raw
+/// decoded claims, especially the `Confirmed` state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VerifiedLineageStatusV1<'wire> {
+    /// An external authority accepted the exact edge and transition proof.
+    Confirmed { attestation: &'wire [u8; 32] },
+    /// Complete alternatives; no member was selected as the winner.
+    Ambiguous {
+        group: &'wire [u8; 32],
+        index: u16,
+        count: u16,
+    },
+    /// The candidate remains unresolved after all known contradictions were
+    /// rejected and unavailable facts were recorded.
+    Unresolved {
+        reason: UnresolvedLineageReasonV1,
+        evidence: Option<&'wire [u8; 32]>,
+    },
+}
+
+/// Lineage bytes recovered from a commit-rooted V2 locator before historical
+/// declaration membership, ancestry, and any confirmation authority have
+/// been checked. Consumers may display these as unproven candidates only.
+#[derive(Clone, Copy, Debug)]
+pub struct UnprovenTypedLineageEdgeSetV1<'wire> {
+    view: BorrowedTypedLineageEdgeSetV1<'wire>,
+    child_commit: super::HistoryCommitId,
+}
+
+impl<'wire> UnprovenTypedLineageEdgeSetV1<'wire> {
+    pub(crate) const fn root_bound(
+        view: BorrowedTypedLineageEdgeSetV1<'wire>,
+        child_commit: super::HistoryCommitId,
+    ) -> Self {
+        Self { view, child_commit }
+    }
+
+    /// Returns the exact committed parent-to-child edge stream.
+    #[must_use]
+    pub const fn edges(self) -> LineageEdgeIterV1<'wire> {
+        self.view.edges()
+    }
+
+    /// Returns the parent commit ID committed in the edge-set header.
+    #[must_use]
+    pub const fn parent_commit(self) -> super::HistoryCommitId {
+        self.view.parent_commit
+    }
+
+    /// Returns the child history commit whose content-addressed locator
+    /// carried the exact edge bytes.
+    #[must_use]
+    pub const fn child_commit(self) -> super::HistoryCommitId {
+        self.child_commit
+    }
+
+    /// Returns the claimed parent semantic root.
+    #[must_use]
+    pub const fn parent_generation_claim(self) -> &'wire [u8; 32] {
+        self.view.parent_generation
+    }
+
+    /// Returns the child semantic root checked against cold V2 replay.
+    #[must_use]
+    pub const fn child_generation_claim(self) -> &'wire [u8; 32] {
         self.view.child_generation
     }
 }
@@ -676,6 +902,9 @@ pub enum LineageEdgeSetErrorV1 {
     /// Parent or child generation claims do not match verified roots.
     #[error("typed lineage edge set names the wrong generation roots")]
     GenerationRootMismatch,
+    /// The claimed parent is not the exact child's direct first parent.
+    #[error("typed lineage edge set does not describe the direct history transition")]
+    NotDirectTransition,
     /// A known history fact contradicts the edge's endpoint claim.
     #[error("typed lineage endpoint contradicts verified semantic contents")]
     EndpointMismatch,
@@ -774,7 +1003,13 @@ fn validate_owned_edges(edges: &[LineageEdgeV1]) -> Result<(), LineageEdgeSetErr
             edge.status,
             LineageStatusV1::Confirmed { attestation }
                 if attestation.as_bytes() == &[0; 32]
-        )
+        ) || match edge.status {
+            LineageStatusV1::Unresolved {
+                evidence: Some(evidence),
+                ..
+            } => evidence == [0; 32],
+            _ => false,
+        }
     }) {
         return Err(LineageEdgeSetErrorV1::InvalidEdge);
     }
@@ -981,17 +1216,40 @@ fn verify_edge_context<C: LineageHistoryEvidenceV1, A: LineageAttestationVerifie
         }
     }
     if let LineageStatusViewV1::Confirmed { attestation } = edge.status {
-        if !attestations.verifies(
+        let statement = confirmation_statement_digest(
             parent_commit,
             parent_root,
             child_root,
             edge,
+        );
+        if !attestations.verifies(
+            parent_commit,
+            parent_root,
+            child_root,
+            statement,
             attestation,
         ) {
             return Err(LineageEdgeSetErrorV1::UnattestedConfirmation);
         }
     }
     Ok(())
+}
+
+fn confirmation_statement_digest(
+    parent_commit: super::HistoryCommitId,
+    parent_generation: &[u8; 32],
+    child_generation: &[u8; 32],
+    edge: LineageEdgeViewV1<'_>,
+) -> LineageConfirmationStatementV1 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.semantic.lineage-confirmation-statement.v1\0");
+    hasher.update(parent_commit.as_bytes());
+    hasher.update(parent_generation);
+    hasher.update(child_generation);
+    // The fixed endpoint/status prefix includes `Confirmed` but deliberately
+    // excludes the trailing attestation ID in bytes 166..198.
+    hasher.update(&edge.canonical_record[..166]);
+    LineageConfirmationStatementV1(*hasher.finalize().as_bytes())
 }
 
 fn require_presence(
@@ -1133,7 +1391,9 @@ mod tests {
 
     #[derive(Clone)]
     struct ModelHistory {
+        child_commit: super::super::HistoryCommitId,
         parent_commit: super::super::HistoryCommitId,
+        direct_parent: bool,
         parent_generation: VerifiedLineageRootV2,
         child_generation: VerifiedLineageRootV2,
         parent_rows: BTreeSet<DeclarationIdentity>,
@@ -1146,9 +1406,13 @@ mod tests {
     }
 
     impl LineageHistoryEvidenceV1 for ModelHistory {
+        fn child_commit(&self) -> super::super::HistoryCommitId { self.child_commit }
         fn parent_commit(&self) -> super::super::HistoryCommitId { self.parent_commit }
         fn parent_generation(&self) -> VerifiedLineageRootV2 { self.parent_generation }
         fn child_generation(&self) -> VerifiedLineageRootV2 { self.child_generation }
+        fn is_direct_parent(&self, child: super::super::HistoryCommitId, parent: super::super::HistoryCommitId) -> Option<bool> {
+            Some(child == self.child_commit && parent == self.parent_commit && self.direct_parent)
+        }
         fn declaration_present(&self, commit: super::super::HistoryCommitId, root: &[u8; 32], identity: DeclarationIdentity) -> Option<bool> {
             if commit == self.parent_commit && root == self.parent_generation.as_bytes() {
                 return Some(self.parent_rows.contains(&identity));
@@ -1161,21 +1425,24 @@ mod tests {
         }
     }
 
-    struct TestAuthority(Option<[u8; 32]>);
+    struct TestAuthority {
+        attestation: Option<[u8; 32]>,
+        statement: Option<LineageConfirmationStatementV1>,
+    }
     impl LineageAttestationVerifierV1 for TestAuthority {
         fn verifies(
             &self,
             parent_commit: super::super::HistoryCommitId,
             parent_generation: &[u8; 32],
             child_generation: &[u8; 32],
-            edge: LineageEdgeViewV1<'_>,
+            statement: LineageConfirmationStatementV1,
             attestation: &[u8; 32],
         ) -> bool {
-            self.0 == Some(*attestation)
+            self.attestation == Some(*attestation)
                 && parent_commit == commit(1)
                 && parent_generation == &[2; 32]
                 && child_generation == &[3; 32]
-                && edge.canonical_record().len() == EDGE_BYTES
+                && self.statement == Some(statement)
         }
     }
 
@@ -1186,10 +1453,36 @@ mod tests {
     }
     fn context(parent_rows: &[DeclarationIdentity], child_rows: &[DeclarationIdentity]) -> ModelHistory {
         ModelHistory {
-            parent_commit: commit(1), parent_generation: root(2), child_generation: root(3),
+            child_commit: commit(3), parent_commit: commit(1), direct_parent: true,
+            parent_generation: root(2), child_generation: root(3),
             parent_rows: parent_rows.iter().copied().collect(), child_rows: child_rows.iter().copied().collect(),
             snapshots: BTreeMap::new(), ancestors: BTreeSet::new(),
         }
+    }
+
+    #[test]
+    fn rejects_a_skipped_intermediate_transition() {
+        let old = id(5, 1);
+        let new = id(5, 2);
+        let mut history = context(&[old], &[new]);
+        history.direct_parent = false;
+        let edge = LineageEdgeV1::new(
+            LineageKindV1::Rename,
+            LineageSourceV1::new(commit(1), root(2), old),
+            new,
+            LineageStatusV1::Unresolved {
+                reason: UnresolvedLineageReasonV1::InsufficientEvidence,
+                evidence: None,
+            },
+        );
+        assert_eq!(
+            make_wire(&[edge])
+                .borrow()
+                .expect("parse")
+                .verify(&history, &RejectLineageConfirmationsV1)
+                .unwrap_err(),
+            LineageEdgeSetErrorV1::NotDirectTransition
+        );
     }
     fn make_wire(edges: &[LineageEdgeV1]) -> OwnedTypedLineageEdgeSetV1 {
         OwnedTypedLineageEdgeSetV1::encode(commit(1), root(2), root(3), edges).expect("encode canonical edge set")
@@ -1340,6 +1633,12 @@ mod tests {
             LineageSourceV1::new(commit(1), root(2), old), new,
             LineageStatusV1::Confirmed { attestation: LineageAttestationId::from_bytes([0x33; 32]) });
         let wire = make_wire(&[edge]);
+        let first_row = wire.borrow().expect("parse").edges().next().expect("edge");
+        let statement = confirmation_statement_digest(commit(1), &[2; 32], &[3; 32], first_row);
+        let authority = TestAuthority {
+            attestation: Some([0x33; 32]),
+            statement: Some(statement),
+        };
         assert_eq!(
             wire.borrow()
                 .expect("parse")
@@ -1347,7 +1646,36 @@ mod tests {
                 .unwrap_err(),
             LineageEdgeSetErrorV1::UnattestedConfirmation
         );
-        assert!(wire.borrow().expect("parse").verify(&history, &TestAuthority(Some([0x33; 32]))).is_ok());
+        let verified = wire
+            .borrow()
+            .expect("parse")
+            .verify(&history, &authority)
+            .expect("exact transition authority");
+        assert_eq!(verified.child_commit(), commit(3));
+        assert!(matches!(
+            verified.edges().next().expect("verified edge").status(),
+            VerifiedLineageStatusV1::Confirmed { attestation } if attestation == &[0x33; 32]
+        ));
+
+        let other_id_edge = LineageEdgeV1::new(
+            LineageKindV1::Rename,
+            LineageSourceV1::new(commit(1), root(2), old),
+            new,
+            LineageStatusV1::Confirmed {
+                attestation: LineageAttestationId::from_bytes([0x44; 32]),
+            },
+        );
+        let other_id_wire = make_wire(&[other_id_edge]);
+        let second_row = other_id_wire
+            .borrow()
+            .expect("parse other attestation id")
+            .edges()
+            .next()
+            .expect("edge");
+        assert_eq!(
+            confirmation_statement_digest(commit(1), &[2; 32], &[3; 32], first_row),
+            confirmation_statement_digest(commit(1), &[2; 32], &[3; 32], second_row)
+        );
 
         // The same row proof is not portable across a different transition
         // root, even when that transition happens to contain the same rows.
@@ -1364,7 +1692,7 @@ mod tests {
             transplanted
                 .borrow()
                 .expect("parse transplanted proof")
-                .verify(&other_transition, &TestAuthority(Some([0x33; 32])))
+                .verify(&other_transition, &authority)
                 .unwrap_err(),
             LineageEdgeSetErrorV1::UnattestedConfirmation
         );
@@ -1380,6 +1708,24 @@ mod tests {
                     new,
                     LineageStatusV1::Confirmed {
                         attestation: LineageAttestationId::from_bytes([0; 32]),
+                    },
+                )],
+            ),
+            Err(LineageEdgeSetErrorV1::InvalidEdge)
+        );
+
+        assert_eq!(
+            OwnedTypedLineageEdgeSetV1::encode(
+                commit(1),
+                root(2),
+                root(3),
+                &[LineageEdgeV1::new(
+                    LineageKindV1::Rename,
+                    LineageSourceV1::new(commit(1), root(2), old),
+                    new,
+                    LineageStatusV1::Unresolved {
+                        reason: UnresolvedLineageReasonV1::InsufficientEvidence,
+                        evidence: Some([0; 32]),
                     },
                 )],
             ),

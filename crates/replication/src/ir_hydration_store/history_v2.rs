@@ -80,6 +80,71 @@ impl FileSemanticRangeStore {
         jumbo_limits: JumboRopeLimits,
         source: &mut S,
     ) -> Result<crate::HistoryAdmissionReceipt, String> {
+        self.admit_typed_v2_history_commit_inner(
+            target,
+            parents,
+            provenance,
+            manifest,
+            closure_claim,
+            segment_objects,
+            jumbo_objects,
+            None,
+            tier,
+            jumbo_limits,
+            source,
+        )
+    }
+
+    /// Admits a typed V2 commit with exact lineage edge bytes committed by its
+    /// immutable history locator. The edge set must name the chosen first
+    /// parent and this verified child generation; replay returns it explicitly
+    /// as unproven until a historical declaration reader/authority adapter is
+    /// available.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_typed_v2_history_commit_with_lineage<S: crate::SelectedGenerationSource>(
+        &self,
+        target: &crate::SemanticTargetKey,
+        parents: &[crate::HistoryCommitId],
+        provenance: [u8; 32],
+        manifest: &SemanticTypedPlaneManifestV2,
+        closure_claim: ArtifactClosureClaim,
+        segment_objects: &[HistoryTypedV2SegmentObject],
+        jumbo_objects: &[HistoryTypedV2JumboObject],
+        lineage: &crate::OwnedTypedLineageEdgeSetV1,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+        source: &mut S,
+    ) -> Result<crate::HistoryAdmissionReceipt, String> {
+        self.admit_typed_v2_history_commit_inner(
+            target,
+            parents,
+            provenance,
+            manifest,
+            closure_claim,
+            segment_objects,
+            jumbo_objects,
+            Some(lineage),
+            tier,
+            jumbo_limits,
+            source,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_typed_v2_history_commit_inner<S: crate::SelectedGenerationSource>(
+        &self,
+        target: &crate::SemanticTargetKey,
+        parents: &[crate::HistoryCommitId],
+        provenance: [u8; 32],
+        manifest: &SemanticTypedPlaneManifestV2,
+        closure_claim: ArtifactClosureClaim,
+        segment_objects: &[HistoryTypedV2SegmentObject],
+        jumbo_objects: &[HistoryTypedV2JumboObject],
+        lineage: Option<&crate::OwnedTypedLineageEdgeSetV1>,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+        source: &mut S,
+    ) -> Result<crate::HistoryAdmissionReceipt, String> {
         let gc_pin = self
             .store
             .pin_garbage_collection()
@@ -101,6 +166,7 @@ impl FileSemanticRangeStore {
             expected_segments,
             segment_objects,
             jumbo_objects,
+            lineage,
         )?;
         let decoded_manifest = locator.validate()?;
         if decoded_manifest != *manifest {
@@ -348,6 +414,7 @@ impl FileSemanticRangeStore {
             self.validate_history_ref_proof(target, kind, name, commit_id, ancestry)?;
         }
         Ok(crate::TypedV2HistoryReplay::new(commit, manifest, verified)
+            .with_lineage_edge_set(locator.lineage_edge_set.clone())
             .with_gc_pin(std::sync::Arc::new(gc_pin)))
     }
 }
@@ -1791,6 +1858,8 @@ mod tests {
                 1,
             )],
             jumbo: Vec::new(),
+            lineage_edge_set: None,
+            wire_revision: 15,
         };
         locator.validate().expect("canonical locator map");
         let error = expect_spool_error(
@@ -1894,6 +1963,8 @@ mod tests {
                 .expect("encode tier-shape manifest"),
             segments: mappings,
             jumbo: Vec::new(),
+            lineage_edge_set: None,
+            wire_revision: 15,
         };
         let spool = TypedV2HistorySpool {
             path: Some(spool_path),
@@ -1999,6 +2070,8 @@ mod tests {
                 ),
             ],
             jumbo: Vec::new(),
+            lineage_edge_set: None,
+            wire_revision: 15,
         };
         locator
             .validate()
@@ -2037,6 +2110,8 @@ mod tests {
             manifest: empty_manifest.canonical_bytes().expect("encode manifest"),
             segments: Vec::new(),
             jumbo: Vec::new(),
+            lineage_edge_set: None,
+            wire_revision: 15,
         };
         let extra = store
             .open_closure_claim(extra_claim)
@@ -2070,6 +2145,8 @@ mod tests {
                 object_id,
                 142,
             )],
+            lineage_edge_set: None,
+            wire_revision: 15,
         };
         wrong_kind_locator
             .validate()

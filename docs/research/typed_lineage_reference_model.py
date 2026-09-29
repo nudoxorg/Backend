@@ -65,7 +65,7 @@ def verify_reference(
     claim: EdgeSet,
     history: dict[str, Snapshot],
     trusted_attestations: frozenset[
-        tuple[str, str, str, tuple[object, ...], str]
+        tuple[str, str, str, str, tuple[object, ...], str]
     ] = frozenset(),
 ) -> tuple[Edge, ...]:
     """Check roots, identity membership, ancestry, ambiguity, and authority."""
@@ -73,7 +73,9 @@ def verify_reference(
     children = [
         snapshot
         for snapshot in history.values()
-        if snapshot.root == claim.child_root and parent.commit in snapshot.parents
+        if snapshot.root == claim.child_root
+        and snapshot.parents
+        and snapshot.parents[0] == parent.commit
     ]
     if parent.root != claim.parent_root or not children:
         raise Reject("generation-root-mismatch")
@@ -140,6 +142,7 @@ def verify_reference(
                 claim.parent_commit,
                 claim.parent_root,
                 claim.child_root,
+                edge.kind,
                 edge_pair(edge),
                 edge.attestation,
             )
@@ -200,6 +203,25 @@ class IndependentLineageOracleTests(unittest.TestCase):
                 forged = Edge("rename", "p", "root-p", before, wrong_target, "unresolved")
                 with self.assertRaisesRegex(Reject, "endpoint-presence-mismatch"):
                     verify_reference(EdgeSet("p", "root-p", "root-c", (forged,)), history)
+
+                # The same root/identity facts cannot skip an intermediate
+                # commit: lineage is one direct first-parent transition.
+                skipped = {
+                    "p": Snapshot("p", "root-p", (), frozenset({before})),
+                    "mid": Snapshot("mid", "root-mid", ("p",), frozenset()),
+                    "c": Snapshot("c", "root-c", ("mid",), frozenset({after})),
+                }
+                with self.assertRaisesRegex(Reject, "generation-root-mismatch"):
+                    verify_reference(EdgeSet("p", "root-p", "root-c", (edge,)), skipped)
+
+                # A merge's second parent is not the transition parent either.
+                merge_history = {
+                    "p": history["p"],
+                    "other": Snapshot("other", "root-other", (), frozenset()),
+                    "merge": Snapshot("merge", "root-c", ("other", "p"), frozenset({after})),
+                }
+                with self.assertRaisesRegex(Reject, "generation-root-mismatch"):
+                    verify_reference(EdgeSet("p", "root-p", "root-c", (edge,)), merge_history)
 
     def test_overload_ambiguity_is_complete_and_selects_no_winner(self) -> None:
         for width in range(2, 5):
@@ -292,7 +314,7 @@ class IndependentLineageOracleTests(unittest.TestCase):
             verify_reference(
                 EdgeSet("p", "root-p", "root-c", (edge,)),
                 history,
-                frozenset({("p", "root-p", "root-c", edge_pair(edge), "proof-1")}),
+                frozenset({("p", "root-p", "root-c", edge.kind, edge_pair(edge), "proof-1")}),
             ),
             (edge,),
         )
@@ -304,7 +326,7 @@ class IndependentLineageOracleTests(unittest.TestCase):
             verify_reference(
                 EdgeSet("p", "root-p", "root-alt", (edge,)),
                 other_transition,
-                frozenset({("p", "root-p", "root-c", edge_pair(edge), "proof-1")}),
+                frozenset({("p", "root-p", "root-c", edge.kind, edge_pair(edge), "proof-1")}),
             )
 
 

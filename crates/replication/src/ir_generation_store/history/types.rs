@@ -11,6 +11,8 @@ const HISTORY_SEGMENT_MAP_TAG: u8 = 7;
 const HISTORY_INDEX_INTENT_TAG: u8 = 8;
 const HISTORY_SEGMENT_MAP_COUNT_TAG: u8 = 9;
 const HISTORY_TYPED_V2_LOCATOR_TAG: u8 = 14;
+/// Locator wire carrying an optional root-bound typed lineage edge set.
+const HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG: u8 = 15;
 pub(super) const HISTORY_SEGMENT_MAP_EPOCH_TAG: u8 = 12;
 pub(super) const HISTORY_COMMIT_EPOCH_TAG: u8 = 13;
 const MAX_HISTORY_PARENTS: usize = 2;
@@ -898,6 +900,7 @@ pub struct TypedV2HistoryReplay {
     commit: AdmittedHistoryCommit,
     manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
     content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+    lineage_edge_set: Option<Vec<u8>>,
     _gc_pin: Option<std::sync::Arc<backend_store::GcPinGuard>>,
 }
 
@@ -911,8 +914,14 @@ impl TypedV2HistoryReplay {
             commit,
             manifest,
             content,
+            lineage_edge_set: None,
             _gc_pin: None,
         }
+    }
+
+    pub(crate) fn with_lineage_edge_set(mut self, bytes: Option<Vec<u8>>) -> Self {
+        self.lineage_edge_set = bytes;
+        self
     }
 
     /// Returns the immutable history commit whose exact V2 payload closure was
@@ -935,6 +944,34 @@ impl TypedV2HistoryReplay {
     #[must_use]
     pub const fn content(&self) -> &backend_semantic::ir::VerifiedTypedPlaneContentV2 {
         &self.content
+    }
+
+    /// Borrows exact lineage candidate bytes committed by this history
+    /// commit's V2 locator. The result is explicitly unproven: the child root
+    /// is cold-verified, while the parent root is matched to the direct
+    /// parent's persisted V2 claim. Replay does not expose a borrowed
+    /// declaration reader for parent/origin membership or authorize
+    /// confirmation attestations. Do not use it to alias or rewrite identity.
+    pub fn lineage_candidates(
+        &self,
+    ) -> Result<
+        Option<lineage::UnprovenTypedLineageEdgeSetV1<'_>>,
+        lineage::LineageEdgeSetErrorV1,
+    > {
+        let Some(bytes) = &self.lineage_edge_set else {
+            return Ok(None);
+        };
+        let view = lineage::BorrowedTypedLineageEdgeSetV1::parse(bytes)?;
+        if self.commit.parents().first().copied() != Some(view.parent_commit()) {
+            return Err(lineage::LineageEdgeSetErrorV1::EndpointMismatch);
+        }
+        if view.child_generation_claim() != self.content.generation_root().as_bytes() {
+            return Err(lineage::LineageEdgeSetErrorV1::GenerationRootMismatch);
+        }
+        Ok(Some(lineage::UnprovenTypedLineageEdgeSetV1::root_bound(
+            view,
+            self.commit.identity(),
+        )))
     }
 
     pub(crate) fn with_gc_pin(mut self, gc_pin: std::sync::Arc<backend_store::GcPinGuard>) -> Self {

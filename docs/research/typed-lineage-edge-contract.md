@@ -1,9 +1,12 @@
 # Typed immutable lineage-edge contract
 
-**Prototype base:** `d1d5a9a19` (`codex/index-compiler-tentpole`). The module
-`crates/replication/src/ir_generation_store/history/lineage.rs` is source-only
-in this change: no V2 history record points to it yet, and no Cargo command was
-run.
+**Implementation base:** `531d6c8c8` (`docs: map IR generation materialization policy`).
+The typed edge contract is implemented, and typed V2 history now has an
+additive locator wire revision that commits exact edge bytes through the
+existing locator ID in the history commit. The durable API is intentionally
+staged: cold replay returns candidates as `UnprovenTypedLineageEdgeSetV1`
+until a borrowed historical declaration reader and confirmation authority are
+available. No Cargo command was run in this source-only change.
 
 ## Contract
 
@@ -42,12 +45,22 @@ candidate sets are rejected. This proves the recorded alternatives are
 complete relative to the producer's declared set; it cannot prove the
 producer's similarity heuristic was good, so ambiguity never chooses a
 winner. `Confirmed` carries only an attestation object ID. Validation requires
-a caller-supplied `LineageAttestationVerifierV1` to validate that object for
-the exact canonical edge bytes and the parent commit, parent root, and child
-root. The child history commit ID is excluded because it commits to the
-lineage object and including it would form a hash cycle. The reject-all policy
-is the default. No
+a caller-supplied `LineageAttestationVerifierV1` to validate that object for a
+domain-separated digest of the exact canonical edge statement and the parent
+commit, parent root, and child root. The digest includes the `Confirmed` tag
+and all endpoints but omits the trailing attestation ID, preventing a
+content-addressed proof self-reference. The child history commit ID is
+excluded because it commits to the lineage object and including it would form
+a hash cycle. The reject-all policy is the default. No
 heuristic matcher or structural similarity score can mint confirmation.
+
+The verifier context also names the exact child history commit and proves
+that the header's parent is its direct first parent. A set cannot claim a
+multi-commit jump as a direct rename. Raw parsed `LineageEdgeViewV1` and
+`LineageStatusViewV1` remain claims; only `VerifiedTypedLineageEdgeSetV1`
+yields the distinct `VerifiedLineageEdgeViewV1` and
+`VerifiedLineageStatusV1` types. The owned encoder rejects a zero-valued
+`Some` evidence digest instead of silently converting it to wire `None`.
 
 No edge operation changes declaration family IDs, variant fingerprints,
 semantic row keys, links, or typed generation roots. A confirmed edge is
@@ -66,38 +79,46 @@ stable graph-link changes. Those are suitable inputs for a caller to collect
 direct additions and removals and then emit only `Ambiguous` or `Unresolved`
 candidate records.
 
-The V2 history cold verifier independently admits every typed family and
-returns `VerifiedTypedPlaneContentV2`, from which the exact V2 generation root
-can be captured. The current history `HistoryTypedV2RootClaim` commits the
-untrusted content root, generation root, FileStore closure, and locator, but
-does not include a lineage root. The cold typed history path verifies semantic
-content; it does not yet return a root-bound `SemanticReader` suitable for
-historical ancestry queries. Consequently this prototype deliberately has no
-adapter that accepts an arbitrary reader/root pair. An implementer of
-`LineageHistoryEvidenceV1` must bind each reader to the exact roots through
-cold V2 verification and must walk validated history records for ancestry.
+`HistoryTypedV2RootClaim` already commits the content root, generation root,
+FileStore closure, and locator ID. The new locator tag 15 optionally carries
+the exact lineage bytes; because the commit hash includes the locator ID, the
+same existing commit identity now binds the lineage without changing the V2
+commit body. The edge set names its exact child semantic root and parent
+commit/root but omits its own child commit ID, avoiding a hash cycle. Lineage
+bytes are retained in the commit's history locator metadata and follow its
+existing GC lifecycle. They are not added to the typed payload FileStore
+closure; the closure remains the exact segment/jumbo set.
 
-This keeps the API from becoming dead code only if V2 commit publication and
-replay use it end to end. The required next consumer seam is:
+The additive
+`admit_typed_v2_history_commit_with_lineage` path checks canonical edge framing,
+child root against the manifest and verified content, and parent commit/root
+against the first-parent commit record's persisted V2 root claim before commit
+admission. Cold replay rechecks that locator/commit binding, verifies child
+semantic contents, and requires the exact commit to remain reachable from the
+supplied named-ref tip. It does not yet cold-replay the parent payload.
+`TypedV2HistoryReplay::lineage_candidates` exposes the borrowed edge stream as
+`UnprovenTypedLineageEdgeSetV1`; this is the durable read consumer seam, with a
+type name that prevents it being mistaken for verified identity evidence.
+Tag-15 decode also validates edge framing, canonical order, endpoint
+uniqueness, and ambiguity-group completeness. The byte-for-byte locator ID
+check rejects payload mutation; child-root mismatch is rejected against the
+manifest; parent commit/root mutation is rejected against the first-parent
+commit record.
 
-1. Extend the child V2 history claim and codec with the lineage object ID. The
-   publisher must include the object in the exact FileStore closure before
-   commit admission; the history commit hash then binds the lineage root.
-2. On cold replay, read the edge-set object only after closure admission,
-   parse its bounded borrowed view, compare its roots with verified parent and
-   child content, and implement `LineageHistoryEvidenceV1` from verified
-   readers and commit ancestry. This is where `SemanticDiff` or
-   `SemanticEntityChanges` can supply exact direct add/delete facts without
-   allocating an `Ir`.
-3. Add one consumer that answers a user-visible lineage query or explains why
-   a candidate is ambiguous/unresolved. Do not retain and serialize these
-   records without a consumer.
+There is still no V2-backed `SemanticReader` or declaration-membership index
+returned by cold replay. The V2 verifier currently retains family commitments
+and bounded cross-family facts, not declaration rows. It also does not cold
+verify a resurrection's origin content or an external confirmation proof.
+Therefore replay does not mint `VerifiedTypedLineageEdgeSetV1` and callers
+must treat every returned candidate—including a stored `Confirmed` status—as
+unproven display metadata. A parent generation root that matches its history
+record is still a persisted claim until that parent closure is cold-replayed.
 
-No change to semantic identity is needed. The history commit must bind the
-edge-set object ID, but the edge set itself contains only the child generation
-root, not its own child history commit ID; this avoids a cycle. Current V2
-history rejects second-parent-only payload closures, so the first integration
-should remain first-parent-only rather than inventing merge ancestry semantics.
+No semantic identity changes are needed. Current V2 history rejects
+second-parent-only payload closures, so lineage remains first-parent-only and
+does not invent merge ancestry semantics. Locators retain the existing 24 MiB
+bound; a commit whose manifest, bridge vectors, and optional lineage bytes
+exceed that total is rejected without widening the accepted metadata budget.
 
 ## Row-tree and bridge-index constraint
 
@@ -134,6 +155,8 @@ The Rust module includes tests for exact parent/child root binding, complete
 ambiguity groups and group-ID collisions, strict resurrection ancestry with an
 exact origin root, and rejection of heuristic-only confirmation. Those Rust
 tests are authored but unrun because this assignment has no Cargo/build slot.
+V2 locator tests cover legacy tag-14 decoding, tag-15 byte commitment, child
+root mismatch, parent-commit mismatch, and a mutated lineage payload.
 The independent Python reference model in
 [`typed_lineage_reference_model.py`](typed_lineage_reference_model.py) runs
 generated small edit histories and fault mutations without calling the Rust

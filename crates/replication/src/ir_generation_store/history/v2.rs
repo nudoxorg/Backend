@@ -24,6 +24,11 @@ pub(crate) struct TypedV2HistoryLocator {
     pub(crate) manifest: Vec<u8>,
     pub(crate) segments: Vec<HistoryTypedV2SegmentObject>,
     pub(crate) jumbo: Vec<HistoryTypedV2JumboObject>,
+    /// Exact canonical candidate bytes, carried in the history metadata
+    /// object so the existing commit-rooted locator ID binds them without a
+    /// child-commit hash cycle or a change to the FileStore payload closure.
+    pub(crate) lineage_edge_set: Option<Vec<u8>>,
+    pub(crate) wire_revision: u8,
 }
 
 /// Immutable history metadata captured before cold V2 closure verification.
@@ -74,6 +79,7 @@ impl TypedV2HistoryLocator {
         expected_segments: usize,
         segments: &[HistoryTypedV2SegmentObject],
         jumbo: &[HistoryTypedV2JumboObject],
+        lineage_edge_set: Option<&OwnedTypedLineageEdgeSetV1>,
     ) -> Result<Self, String> {
         Self::preflight_admission_counts(expected_segments, segments.len(), jumbo.len())?;
         if manifest.len() > MAX_TYPED_V2_MANIFEST_BYTES {
@@ -95,10 +101,25 @@ impl TypedV2HistoryLocator {
         jumbo_map.extend_from_slice(jumbo);
         jumbo_map.sort_unstable_by(|left, right| jumbo_order(*left).cmp(&jumbo_order(*right)));
 
+        let lineage_edge_set = lineage_edge_set.map(|lineage| lineage.as_bytes().to_vec());
+        let wire_revision = if lineage_edge_set.is_some() {
+            HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG
+        } else {
+            HISTORY_TYPED_V2_LOCATOR_TAG
+        };
+        if let Some(bytes) = &lineage_edge_set {
+            if bytes.len() > MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES {
+                return Err("typed lineage edge set exceeds its byte bound".to_owned());
+            }
+            BorrowedTypedLineageEdgeSetV1::parse(bytes)
+                .map_err(|error| format!("parse typed lineage edge set: {error}"))?;
+        }
         let locator = Self {
             manifest,
             segments: segment_map,
             jumbo: jumbo_map,
+            lineage_edge_set,
+            wire_revision,
         };
         let _ = locator.validate()?;
         Ok(locator)
@@ -174,12 +195,49 @@ impl TypedV2HistoryLocator {
                 "typed V2 history rope object exceeds its kind-specific length bound".to_owned(),
             );
         }
+        if let Some(bytes) = &self.lineage_edge_set {
+            let lineage = BorrowedTypedLineageEdgeSetV1::parse(bytes)
+                .map_err(|error| format!("parse typed lineage edge set: {error}"))?;
+            lineage
+                .validate_structure()
+                .map_err(|error| format!("validate typed lineage structure: {error}"))?;
+            if lineage.child_generation_claim() != manifest.generation_root_claim().as_bytes() {
+                return Err("typed lineage edge set names a different child generation".to_owned());
+            }
+        }
         Ok(manifest)
+    }
+
+    fn validate_lineage_parent_binding(
+        &self,
+        parent: HistoryCommitId,
+        parent_generation: &[u8; 32],
+    ) -> Result<(), String> {
+        let Some(bytes) = &self.lineage_edge_set else {
+            return Ok(());
+        };
+        let lineage = BorrowedTypedLineageEdgeSetV1::parse(bytes)
+            .map_err(|error| format!("parse typed lineage edge set: {error}"))?;
+        if lineage.parent_commit() != parent {
+            return Err("typed lineage edge set names a different parent commit".to_owned());
+        }
+        if lineage.parent_generation_claim() != parent_generation {
+            return Err("typed lineage edge set names a different parent generation".to_owned());
+        }
+        Ok(())
     }
 
     fn encode_body(&self) -> Result<Vec<u8>, String> {
         let mut writer = Writer::new(MAX_HISTORY_TYPED_V2_LOCATOR_BYTES);
-        writer.header(HISTORY_TYPED_V2_LOCATOR_TAG)?;
+        let tag = match self.wire_revision {
+            HISTORY_TYPED_V2_LOCATOR_TAG => HISTORY_TYPED_V2_LOCATOR_TAG,
+            HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG => HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG,
+            _ => return Err("typed V2 history locator wire revision is invalid".to_owned()),
+        };
+        if tag == HISTORY_TYPED_V2_LOCATOR_TAG && self.lineage_edge_set.is_some() {
+            return Err("legacy typed V2 locator cannot carry lineage bytes".to_owned());
+        }
+        writer.header(tag)?;
         writer.sized_bytes(&self.manifest, MAX_TYPED_V2_MANIFEST_BYTES)?;
         writer.u32(u32::try_from(self.segments.len()).map_err(|error| error.to_string())?)?;
         for segment in &self.segments {
@@ -196,6 +254,15 @@ impl TypedV2HistoryLocator {
             writer.fixed(&object.id)?;
             writer.fixed(object.object.as_bytes())?;
             writer.u64(object.byte_length)?;
+        }
+        if tag == HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG {
+            match &self.lineage_edge_set {
+                None => writer.u8(0)?,
+                Some(bytes) => {
+                    writer.u8(1)?;
+                    writer.sized_bytes(bytes, MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES)?;
+                }
+            }
         }
         let bytes = writer.finish();
         if bytes.len() > MAX_HISTORY_TYPED_V2_LOCATOR_BYTES {
@@ -393,6 +460,21 @@ pub(super) fn validate_typed_v2_locator_binding(
     {
         return Err("typed V2 history commit roots differ from its locator manifest".to_owned());
     }
+    if locator.lineage_edge_set.is_some() {
+        let parent = record
+            .parents
+            .first()
+            .copied()
+            .ok_or_else(|| "root typed V2 commit cannot carry parent lineage".to_owned())?;
+        let parent_record = load_history_commit(
+            &target_root.join("history").join("commits"),
+            parent,
+        )?;
+        let HistoryGenerationRoot::TypedV2(parent_claim) = parent_record.generation_root else {
+            return Err("typed lineage edge set parent is not a V2 commit".to_owned());
+        };
+        locator.validate_lineage_parent_binding(parent, parent_claim.generation_root.as_bytes())?;
+    }
     Ok(())
 }
 
@@ -437,7 +519,12 @@ pub(super) fn decode_typed_v2_locator(
         return Err("typed V2 history locator identity does not match its bytes".to_owned());
     }
     let mut reader = Reader::new(content);
-    reader.header(HISTORY_TYPED_V2_LOCATOR_TAG)?;
+    let wire_revision = match content.get(5).copied() {
+        Some(HISTORY_TYPED_V2_LOCATOR_TAG) => HISTORY_TYPED_V2_LOCATOR_TAG,
+        Some(HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG) => HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG,
+        _ => return Err("typed V2 history locator header is invalid".to_owned()),
+    };
+    reader.header(wire_revision)?;
     let manifest = reader.sized_bytes(MAX_TYPED_V2_MANIFEST_BYTES)?.to_vec();
     let segment_count = usize::try_from(reader.u32()?).map_err(|error| error.to_string())?;
     if segment_count > backend_semantic::ir::MAX_TYPED_PLANE_SEGMENTS_V2
@@ -480,11 +567,26 @@ pub(super) fn decode_typed_v2_locator(
             byte_length,
         });
     }
+    let lineage_edge_set = if wire_revision == HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG {
+        match reader.u8()? {
+            0 => None,
+            1 => Some(
+                reader
+                    .sized_bytes(MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES)?
+                    .to_vec(),
+            ),
+            _ => return Err("typed V2 locator lineage marker is invalid".to_owned()),
+        }
+    } else {
+        None
+    };
     reader.finish()?;
     let locator = TypedV2HistoryLocator {
         manifest,
         segments,
         jumbo,
+        lineage_edge_set,
+        wire_revision,
     };
     let _ = locator.validate()?;
     if locator.encode_body()?.as_slice() != content {
@@ -786,14 +888,71 @@ mod tests {
         let files =
             LocalSemanticGenerationFiles::open(&directory.0).expect("open generation files");
         let manifest = empty_manifest();
+        let empty_lineage = |parent: u8| {
+            let mut bytes = Vec::with_capacity(108);
+            bytes.extend_from_slice(b"IRLEDGE1");
+            bytes.extend_from_slice(&[parent; 32]);
+            bytes.extend_from_slice(&[0x66; 32]);
+            bytes.extend_from_slice(&[10; 32]);
+            bytes.extend_from_slice(&0_u32.to_be_bytes());
+            bytes
+        };
         let locator = TypedV2HistoryLocator {
             manifest: manifest.canonical_bytes().expect("encode manifest"),
             segments: Vec::new(),
             jumbo: Vec::new(),
+            lineage_edge_set: Some(empty_lineage(0x55)),
+            wire_revision: HISTORY_TYPED_V2_LOCATOR_LINEAGE_TAG,
+        };
+        let changed_lineage = TypedV2HistoryLocator {
+            lineage_edge_set: Some(empty_lineage(0x56)),
+            ..locator.clone()
         };
         let identity = files
             .typed_v2_locator_identity(&locator)
             .expect("identify canonical locator");
+        assert!(locator.validate_lineage_parent_binding(
+            HistoryCommitId::from_bytes([0x55; 32]),
+            &[0x66; 32],
+        ).is_ok());
+        assert_ne!(
+            identity,
+            files
+                .typed_v2_locator_identity(&changed_lineage)
+                .expect("lineage bytes affect the committed locator root")
+        );
+        let mut wrong_child_root = empty_lineage(0x55);
+        wrong_child_root[72] ^= 1;
+        let wrong_child_locator = TypedV2HistoryLocator {
+            lineage_edge_set: Some(wrong_child_root),
+            ..locator.clone()
+        };
+        assert!(wrong_child_locator.validate().is_err());
+
+        let wrong_parent_locator = TypedV2HistoryLocator {
+            lineage_edge_set: Some(empty_lineage(0x56)),
+            ..locator.clone()
+        };
+        assert!(wrong_parent_locator
+            .validate_lineage_parent_binding(
+                HistoryCommitId::from_bytes([0x55; 32]),
+                &[0x66; 32],
+            )
+            .is_err());
+
+        let mut tampered_body = locator.encode_body().expect("encode tag-15 body");
+        let lineage_offset = tampered_body
+            .windows(b"IRLEDGE1".len())
+            .position(|window| window == b"IRLEDGE1")
+            .expect("tag-15 payload is present");
+        tampered_body[lineage_offset + 8] ^= 1;
+        let tampered_identity = typed_v2_locator_identity(&tampered_body);
+        let mut tampered_bytes = Vec::new();
+        tampered_bytes.extend_from_slice(tampered_identity.as_bytes());
+        tampered_bytes.extend_from_slice(&tampered_body);
+        let tampered_checksum = blake3::hash(&tampered_bytes);
+        tampered_bytes.extend_from_slice(tampered_checksum.as_bytes());
+        assert!(decode_typed_v2_locator(&tampered_bytes, identity).is_err());
         assert_eq!(
             files
                 .stage_typed_v2_locator(&target, commit, locator.clone())
@@ -805,6 +964,27 @@ mod tests {
                 .stage_typed_v2_locator(&target, commit, locator.clone())
                 .expect("retry locator staging"),
             identity
+        );
+        let legacy_locator = TypedV2HistoryLocator {
+            manifest: locator.manifest.clone(),
+            segments: Vec::new(),
+            jumbo: Vec::new(),
+            lineage_edge_set: None,
+            wire_revision: HISTORY_TYPED_V2_LOCATOR_TAG,
+        };
+        let legacy_body = legacy_locator.encode_body().expect("encode legacy locator");
+        let legacy_identity = typed_v2_locator_identity(&legacy_body);
+        let mut legacy_bytes = Vec::new();
+        legacy_bytes.extend_from_slice(legacy_identity.as_bytes());
+        legacy_bytes.extend_from_slice(&legacy_body);
+        let legacy_checksum = blake3::hash(&legacy_bytes);
+        legacy_bytes.extend_from_slice(legacy_checksum.as_bytes());
+        assert_eq!(
+            decode_typed_v2_locator(&legacy_bytes, legacy_identity)
+                .expect("decode legacy locator")
+                .encode_body()
+                .expect("re-encode legacy locator"),
+            legacy_body
         );
         drop(files);
 
