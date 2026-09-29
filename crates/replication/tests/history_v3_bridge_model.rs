@@ -332,7 +332,7 @@ fn registry() -> RelationAdmissionRegistry {
 }
 
 fn relation_shape() -> LazyTreeMetadataShape {
-    LazyTreeMetadataShape::new(33, 109, 64, 256, 6, 12)
+    LazyTreeMetadataShape::new(33, 109, 64, 1024, 18, 6)
 }
 
 fn payload_bytes(family: u8, ordinal: usize, salt: u64) -> Vec<u8> {
@@ -1396,6 +1396,32 @@ fn v3_bridge_lazy_path_copy_matches_oracle_after_cold_reopen_and_gc() {
     eprintln!("V3 bridge model: cold verify clustered batch");
     let (clustered_token, clustered_read, clustered_rows) =
         verify_cold(&store, &temp.path, commit, &body).expect("cold-verify clustered bridge");
+    eprintln!(
+        "V3 bridge metrics clustered-write: frontier={}B nodes-written={} relation-write={}B relation-read={}B/{} reads payload-write={}B closure-index-write={}B verified-payload={}B selected-metadata-write={}B metadata-peak={}B RSS={}→{}KiB",
+        clustered_write.lazy_frontier_bytes,
+        clustered_write.relation_nodes_written,
+        clustered_write.relation_object_bytes,
+        clustered_write.relation_node_read_bytes,
+        clustered_write.relation_node_reads,
+        clustered_write.payload_object_bytes_written,
+        clustered_write.closure_index_bytes,
+        clustered_write.closure_verified_payload_bytes,
+        clustered_write.index_metadata_bytes_written,
+        clustered_write.peak_metadata_bytes,
+        clustered_write.rss_before_kib.unwrap_or_default(),
+        clustered_write.rss_after_kib.unwrap_or_default(),
+    );
+    eprintln!(
+        "V3 bridge metrics clustered-cold: bridge-read={}B/{} nodes closure-index-read={}B/{} nodes payload-read={}B/{} objects RSS={}→{}KiB",
+        clustered_read.bridge_node_bytes,
+        clustered_read.bridge_node_reads,
+        clustered_read.closure_index_bytes,
+        clustered_read.closure_index_node_reads,
+        clustered_read.payload_bytes,
+        clustered_read.payload_reads,
+        clustered_read.rss_before_kib.unwrap_or_default(),
+        clustered_read.rss_after_kib.unwrap_or_default(),
+    );
     assert_eq!(clustered_token.row_count, oracle.len());
     assert_eq!(clustered_token.generation_root, semantic_root(&oracle));
     assert_eq!(clustered_rows, oracle);
@@ -1427,6 +1453,32 @@ fn v3_bridge_lazy_path_copy_matches_oracle_after_cold_reopen_and_gc() {
     eprintln!("V3 bridge model: cold verify scattered batch");
     let (scattered_token, scattered_read, scattered_rows) =
         verify_cold(&store, &temp.path, commit, &body).expect("cold-verify scattered bridge");
+    eprintln!(
+        "V3 bridge metrics scattered-write: frontier={}B nodes-written={} relation-write={}B relation-read={}B/{} reads payload-write={}B closure-index-write={}B verified-payload={}B selected-metadata-write={}B metadata-peak={}B RSS={}→{}KiB",
+        scattered_write.lazy_frontier_bytes,
+        scattered_write.relation_nodes_written,
+        scattered_write.relation_object_bytes,
+        scattered_write.relation_node_read_bytes,
+        scattered_write.relation_node_reads,
+        scattered_write.payload_object_bytes_written,
+        scattered_write.closure_index_bytes,
+        scattered_write.closure_verified_payload_bytes,
+        scattered_write.index_metadata_bytes_written,
+        scattered_write.peak_metadata_bytes,
+        scattered_write.rss_before_kib.unwrap_or_default(),
+        scattered_write.rss_after_kib.unwrap_or_default(),
+    );
+    eprintln!(
+        "V3 bridge metrics scattered-cold: bridge-read={}B/{} nodes closure-index-read={}B/{} nodes payload-read={}B/{} objects RSS={}→{}KiB",
+        scattered_read.bridge_node_bytes,
+        scattered_read.bridge_node_reads,
+        scattered_read.closure_index_bytes,
+        scattered_read.closure_index_node_reads,
+        scattered_read.payload_bytes,
+        scattered_read.payload_reads,
+        scattered_read.rss_before_kib.unwrap_or_default(),
+        scattered_read.rss_after_kib.unwrap_or_default(),
+    );
     assert_eq!(scattered_token.row_count, oracle.len());
     assert_eq!(scattered_token.generation_root, semantic_root(&oracle));
     assert_eq!(scattered_rows, oracle);
