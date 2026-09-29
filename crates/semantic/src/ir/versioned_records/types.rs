@@ -16,7 +16,8 @@ mod wire;
 
 pub(super) use crate::ir::declaration_plane_key;
 pub use catalog::{
-    CheckedTypesFamilyV2, TypesReferenceV2, TypesRowDomainV2, validate_types_family_v2,
+    CheckedTypesFamilyV2, TypesFamilyVerificationLimitsV2, TypesReferenceV2, TypesRowDomainV2,
+    validate_types_family_v2, validate_types_family_v2_with_limits,
 };
 pub use plan::{TypedRecordPlan, TypesClosureSemantics, TypesRowHandle, TypesRows};
 pub(super) fn validate_record(

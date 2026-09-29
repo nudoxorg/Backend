@@ -643,6 +643,18 @@ fn untrusted_root_requires_exact_complete_records() {
 }
 
 #[test]
+fn tagged_payload_identity_commits_the_row_tag_without_copying() {
+    let typed = RowPayload::from_tagged_bytes(2, b"value").expect("valid tagged payload");
+    let documentation = RowPayload::from_tagged_bytes(5, b"value").expect("valid tagged payload");
+    let materialized = RowPayload::from_bytes(&[2, b'v', b'a', b'l', b'u', b'e'])
+        .expect("materialized comparison payload");
+
+    assert_eq!(typed.byte_len(), 5);
+    assert_ne!(typed.id(), documentation.id());
+    assert_eq!(typed.id(), materialized.id());
+}
+
+#[test]
 fn memory_accounting_separates_referenced_payloads_from_resident_index() {
     let index = StableRowIndex::from_sorted_rows(&fixture_rows(20)).expect("valid index");
     let memory = index.memory_usage().expect("representable accounting");

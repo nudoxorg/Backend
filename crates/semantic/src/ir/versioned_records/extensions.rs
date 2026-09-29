@@ -13,7 +13,10 @@ mod plan;
 mod tests;
 mod wire;
 
-pub use catalog::{CheckedLanguageExtensionFamilyV2, validate_language_extension_family_v2};
+pub use catalog::{
+    CheckedLanguageExtensionFamilyV2, LanguageExtensionVerificationLimitsV2,
+    validate_language_extension_family_v2, validate_language_extension_family_v2_with_limits,
+};
 pub use plan::{
     LanguageExtensionRows, encode_language_extension_plane,
     verify_language_extension_plane_against_reader,

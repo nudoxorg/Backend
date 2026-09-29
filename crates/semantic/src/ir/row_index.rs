@@ -155,6 +155,29 @@ impl RowPayload {
         })
     }
 
+    /// Hashes a canonical row tag and payload as one value without building a
+    /// temporary tagged buffer. The stored byte length remains the exact
+    /// payload length; the content identity also changes when the tag changes.
+    pub fn from_tagged_bytes(tag: u8, bytes: &[u8]) -> Result<Self, StableRowIndexError> {
+        let byte_len = u64::try_from(bytes.len()).map_err(|_| StableRowIndexError::Overflow)?;
+        let hashed_len = bytes
+            .len()
+            .checked_add(1)
+            .ok_or(StableRowIndexError::Overflow)?;
+        let schema = SchemaIdentity::new(
+            SemanticRowPayloadSchema::DOMAIN,
+            SemanticRowPayloadSchema::TYPE,
+            SemanticRowPayloadSchema::VERSION,
+        );
+        let mut hasher = ObjectVersionHasher::new(schema, hashed_len)?;
+        hasher.update(&[tag])?;
+        hasher.update(bytes)?;
+        Ok(Self {
+            id: RowPayloadId(hasher.finish_version::<SemanticRowPayloadSchema>()?),
+            byte_len,
+        })
+    }
+
     /// Returns the content identity.
     #[must_use]
     pub const fn id(self) -> RowPayloadId {

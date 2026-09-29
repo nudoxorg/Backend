@@ -32,15 +32,18 @@ mod types;
 mod wire;
 pub use declarations::{CoreDeclarationRows, DocumentationRows, encode_declaration_planes};
 pub use extensions::{
-    CheckedLanguageExtensionFamilyV2, LanguageExtensionRows, encode_language_extension_plane,
-    validate_language_extension_family_v2, verify_language_extension_plane_against_reader,
+    CheckedLanguageExtensionFamilyV2, LanguageExtensionRows, LanguageExtensionVerificationLimitsV2,
+    encode_language_extension_plane, validate_language_extension_family_v2,
+    validate_language_extension_family_v2_with_limits,
+    verify_language_extension_plane_against_reader,
 };
 pub use occurrences::{OccurrenceHandle, OccurrenceRows};
 pub use relations::RelationRows;
 pub use source_provenance::{SourceProvenanceHandle, SourceProvenanceRows};
 pub use types::{
-    CheckedTypesFamilyV2, TypedRecordPlan, TypesClosureSemantics, TypesReferenceV2,
-    TypesRowDomainV2, TypesRowHandle, TypesRows, validate_types_family_v2,
+    CheckedTypesFamilyV2, TypedRecordPlan, TypesClosureSemantics, TypesFamilyVerificationLimitsV2,
+    TypesReferenceV2, TypesRowDomainV2, TypesRowHandle, TypesRows, validate_types_family_v2,
+    validate_types_family_v2_with_limits,
 };
 
 /// One compact handle to a row in the borrowed canonical reader.

@@ -8,6 +8,48 @@ use super::wire::parse_types_row;
 
 const TYPES_FAMILY_ROOT_DOMAIN: &[u8] = b"backend.semantic.ir.types-family-root.v2\0";
 
+/// Explicit resource ceiling for one standalone Types-family verification.
+/// Aggregate verification derives this from its standard or large-package
+/// policy and also enforces its stricter complete-inventory budgets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TypesFamilyVerificationLimitsV2 {
+    max_payload_bytes: u64,
+    max_rows: u64,
+    max_references: u64,
+}
+
+impl TypesFamilyVerificationLimitsV2 {
+    /// Standard bounded local validation policy.
+    pub const fn standard() -> Self {
+        Self {
+            max_payload_bytes: 64 * 1024 * 1024,
+            max_rows: 500_000,
+            max_references: 1_000_000,
+        }
+    }
+
+    /// Higher bounded tier for larger semantic packages.
+    pub const fn large_package() -> Self {
+        Self {
+            max_payload_bytes: 512 * 1024 * 1024,
+            max_rows: 2_000_000,
+            max_references: 8_000_000,
+        }
+    }
+
+    pub(crate) const fn bounded(
+        max_payload_bytes: u64,
+        max_rows: u64,
+        max_references: u64,
+    ) -> Self {
+        Self {
+            max_payload_bytes,
+            max_rows,
+            max_references,
+        }
+    }
+}
+
 /// Closed row domain advertised by a checked Types-family reference catalog.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum TypesRowDomainV2 {
@@ -75,6 +117,14 @@ impl CheckedTypesFamilyV2 {
     pub fn from_records<'bytes>(
         records: impl IntoIterator<Item = ([u8; 32], u8, &'bytes [u8])>,
     ) -> Result<Self, SemanticPlaneRecordError> {
+        Self::from_records_with_limits(records, TypesFamilyVerificationLimitsV2::standard())
+    }
+
+    /// Strictly admits the complete record sequence under an explicit tier.
+    pub fn from_records_with_limits<'bytes>(
+        records: impl IntoIterator<Item = ([u8; 32], u8, &'bytes [u8])>,
+        limits: TypesFamilyVerificationLimitsV2,
+    ) -> Result<Self, SemanticPlaneRecordError> {
         let mut row_keys = Vec::new();
         let mut row_domains = Vec::new();
         let mut edge_offsets = Vec::new();
@@ -90,6 +140,8 @@ impl CheckedTypesFamilyV2 {
         let mut family_hasher = blake3::Hasher::new();
         family_hasher.update(TYPES_FAMILY_ROOT_DOMAIN);
         let mut row_count = 0_u64;
+        let mut payload_bytes = 0_u64;
+        let mut reference_count = 0_u64;
         for (key, tag, payload) in records {
             if previous.is_some_and(|prior| prior >= key) {
                 return Err(SemanticPlaneRecordError::RecordOrder);
@@ -97,6 +149,12 @@ impl CheckedTypesFamilyV2 {
             let parsed = parse_types_row(key, tag, payload)?;
             let payload_length =
                 u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+            payload_bytes = payload_bytes
+                .checked_add(payload_length)
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            if payload_bytes > limits.max_payload_bytes {
+                return Err(SemanticPlaneRecordError::RowTooLarge);
+            }
             family_hasher.update(&key);
             family_hasher.update(&[tag]);
             family_hasher.update(&payload_length.to_be_bytes());
@@ -104,6 +162,23 @@ impl CheckedTypesFamilyV2 {
             row_count = row_count
                 .checked_add(1)
                 .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            if row_count > limits.max_rows {
+                return Err(SemanticPlaneRecordError::RowTooLarge);
+            }
+            let row_references = parsed
+                .references
+                .len()
+                .checked_add(parsed.declaration_references.len())
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            reference_count = reference_count
+                .checked_add(
+                    u64::try_from(row_references)
+                        .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?,
+                )
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            if reference_count > limits.max_references {
+                return Err(SemanticPlaneRecordError::RowTooLarge);
+            }
             match (parsed.root_identity, parsed.root_type_present) {
                 (Some(identity), Some(present)) => {
                     root_identities
@@ -367,8 +442,18 @@ fn enqueue_reachable(index: usize, visited: &mut [u8], pending: &mut Vec<usize>)
 pub fn validate_types_family_v2<'bytes>(
     segments: impl IntoIterator<Item = crate::ir::CanonicalSemanticPlaneSegmentView<'bytes>>,
 ) -> Result<CheckedTypesFamilyV2, SemanticPlaneRecordError> {
+    validate_types_family_v2_with_limits(segments, TypesFamilyVerificationLimitsV2::standard())
+}
+
+/// Validates a complete Types family under an explicit resource tier.
+pub fn validate_types_family_v2_with_limits<'bytes>(
+    segments: impl IntoIterator<Item = crate::ir::CanonicalSemanticPlaneSegmentView<'bytes>>,
+    limits: TypesFamilyVerificationLimitsV2,
+) -> Result<CheckedTypesFamilyV2, SemanticPlaneRecordError> {
     let mut records = Vec::new();
     let mut previous = None;
+    let mut row_count = 0_u64;
+    let mut payload_bytes = 0_u64;
     for segment in segments {
         if segment.kind() != SemanticPlaneKind::Ir(SemanticIrPlane::Types) {
             return Err(SemanticPlaneRecordError::PlaneKind);
@@ -378,8 +463,22 @@ pub fn validate_types_family_v2<'bytes>(
                 return Err(SemanticPlaneRecordError::RecordOrder);
             }
             previous = Some(record.key());
+            row_count = row_count
+                .checked_add(1)
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            let payload_length = u64::try_from(record.payload().len())
+                .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+            payload_bytes = payload_bytes
+                .checked_add(payload_length)
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            if row_count > limits.max_rows || payload_bytes > limits.max_payload_bytes {
+                return Err(SemanticPlaneRecordError::RowTooLarge);
+            }
+            records
+                .try_reserve(1)
+                .map_err(SemanticPlaneRecordError::Allocation)?;
             records.push((record.key(), record.tag(), record.payload()));
         }
     }
-    CheckedTypesFamilyV2::from_records(records)
+    CheckedTypesFamilyV2::from_records_with_limits(records, limits)
 }
