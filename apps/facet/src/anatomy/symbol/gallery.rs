@@ -21,7 +21,7 @@ use crate::gallery::Scene;
 use crate::motion::presence::Presence;
 use crate::overlay::float;
 use crate::theme::ActiveFacet;
-use gpui::{AnyElement, AnyView, App, AppContext, Context, EntityId, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px};
+use gpui::{AnyElement, AnyView, App, AppContext, Context, EntityId, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
