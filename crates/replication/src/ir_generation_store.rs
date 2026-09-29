@@ -2999,14 +2999,30 @@ mod tests {
                 || {
                     if gc_batches == 0 {
                         gc_batches += 1;
-                        let mut progress = range_store
-                            .advance_history_gc(&generation.target)
-                            .expect("GC acquires its exclusive lease between proof batches");
-                        while !progress.complete() {
-                            progress = range_store
-                                .advance_history_gc(&generation.target)
-                                .expect("continue bounded history GC between proof batches");
-                        }
+                        let gc_calls = {
+                            let mut gc_calls = 0;
+                            let mut advance_after_cold_open = || {
+                                gc_calls += 1;
+                                let reopened = FileSemanticRangeStore::open(
+                                    FileStore::open(&cas_root, 16 * 1024 * 1024)
+                                        .expect("cold-open FileStore for history GC"),
+                                    limits,
+                                )
+                                .expect("cold-open history store between GC batches");
+                                reopened
+                                    .advance_history_gc(&generation.target)
+                                    .expect("GC acquires its exclusive lease between proof batches")
+                            };
+                            let mut progress = advance_after_cold_open();
+                            while !progress.complete() {
+                                progress = advance_after_cold_open();
+                            }
+                            gc_calls
+                        };
+                        assert!(
+                            gc_calls > 1,
+                            "the commit index forces a durable retention cursor resume"
+                        );
                         range_store
                             .compare_and_swap_history_ref(
                                 &generation.target,

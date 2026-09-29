@@ -277,18 +277,49 @@ fn decode_state(bytes: &[u8]) -> Result<RetentionState, String> {
     let compact_output_offset = reader.u64()?;
     let stats = decode_stats(&mut reader)?;
     reader.finish()?;
-    if phase == RetentionPhase::Mark
-        && (mark_offset != 0 || commit_sweep_offset != 0 || map_scan_offset != 0)
+    let before_map_scan = matches!(
+        phase,
+        RetentionPhase::Mark | RetentionPhase::SweepCommits | RetentionPhase::ScanCommitObjects
+    );
+    let before_generation_scan = matches!(
+        phase,
+        RetentionPhase::Mark
+            | RetentionPhase::SweepCommits
+            | RetentionPhase::ScanCommitObjects
+            | RetentionPhase::ScanMaps
+            | RetentionPhase::SweepMaps
+    );
+    let before_compaction = matches!(
+        phase,
+        RetentionPhase::Mark
+            | RetentionPhase::SweepCommits
+            | RetentionPhase::ScanCommitObjects
+            | RetentionPhase::ScanMaps
+            | RetentionPhase::SweepMaps
+            | RetentionPhase::ScanGenerations
+            | RetentionPhase::SweepGenerations
+    );
+    if mark_offset % super::HISTORY_INDEX_ENTRY_BYTES != 0
+        || commit_sweep_offset % super::HISTORY_INDEX_ENTRY_BYTES != 0
+        || phase == RetentionPhase::Mark
+            && (commit_sweep_offset != 0
+                || map_scan_offset != 0
+                || map_scan_count != 0
+                || generation_scan_offset != 0)
         || phase == RetentionPhase::SweepCommits && map_scan_offset != 0
-        || phase == RetentionPhase::ScanMaps && generation_scan_offset != 0
+        || before_map_scan && map_scan_count != 0
+        || before_generation_scan && generation_scan_offset != 0
         || !matches!(
             phase,
             RetentionPhase::CompactIndex | RetentionPhase::Cleanup | RetentionPhase::Complete
-        ) && compact_output_offset != 0
+        ) && compact_input_offset != 0
+        || before_compaction && compact_output_offset != 0
         || compact_input_offset % super::HISTORY_INDEX_ENTRY_BYTES != 0
         || compact_output_offset % super::HISTORY_INDEX_ENTRY_BYTES != 0
+        || compact_output_offset > compact_input_offset
+        || !before_map_scan && map_scan_count > map_scan_offset
         || phase == RetentionPhase::Complete
-            && map_scan_count < stats.live_maps.saturating_add(stats.reclaimed_maps)
+            && map_scan_offset < stats.live_maps.saturating_add(stats.reclaimed_maps)
     {
         return Err("semantic history retention cursors are invalid".to_owned());
     }
@@ -351,6 +382,53 @@ fn read_state(target_root: &Path) -> Result<Option<RetentionState>, String> {
     .as_deref()
     .map(decode_state)
     .transpose()
+}
+
+fn validate_index_cursors(target_root: &Path, state: &RetentionState) -> Result<(), String> {
+    // Call only after selecting a state whose input digest matches the current
+    // retention inputs. A mismatched state is reset before its old file bounds
+    // are compared to a changed index; published compaction is already moved
+    // to Cleanup by `recover_published_compaction`.
+    if matches!(
+        state.phase,
+        RetentionPhase::Cleanup | RetentionPhase::Complete
+    ) {
+        return Ok(());
+    }
+    let index_path = target_root.join("history").join("commit.index");
+    ensure_regular_file(&index_path)?;
+    let length = fs::metadata(&index_path).map_err(super::display_io)?.len();
+    if length % super::HISTORY_INDEX_ENTRY_BYTES != 0 {
+        return Err("semantic history commit index length is invalid".to_owned());
+    }
+    if state.mark_offset > length {
+        return Err("semantic history mark cursor exceeds the commit index".to_owned());
+    }
+    if state.phase != RetentionPhase::Mark && state.mark_offset != length {
+        return Err("semantic history mark cursor does not cover the commit index".to_owned());
+    }
+    if state.commit_sweep_offset > length {
+        return Err("semantic history sweep cursor exceeds the commit index".to_owned());
+    }
+    if matches!(
+        state.phase,
+        RetentionPhase::ScanCommitObjects
+            | RetentionPhase::ScanMaps
+            | RetentionPhase::SweepMaps
+            | RetentionPhase::ScanGenerations
+            | RetentionPhase::SweepGenerations
+            | RetentionPhase::CompactIndex
+    ) && state.commit_sweep_offset != length
+    {
+        return Err("semantic history sweep cursor does not cover the commit index".to_owned());
+    }
+    if state.phase == RetentionPhase::CompactIndex
+        && (state.compact_input_offset > length
+            || state.compact_output_offset > state.compact_input_offset)
+    {
+        return Err("semantic history compaction cursor exceeds the commit index".to_owned());
+    }
+    Ok(())
 }
 
 fn write_state(target_root: &Path, state: RetentionState) -> Result<(), String> {
@@ -1076,6 +1154,7 @@ pub(super) fn advance_retention(
     } else {
         init_state(digest)
     };
+    validate_index_cursors(target_root, &state)?;
     let work_root = ensure_work_layout(target_root, &digest)?;
     let _ = recover_delete_intent(target_root, &mut state)?;
     let mut processed = 0_usize;
@@ -1602,6 +1681,74 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn mark_cursor_resumes_at_aligned_offset_and_rejects_misaligned_or_unbounded_state() {
+        let directory = TestDirectory::create();
+        let history_root = directory.0.join("history");
+        fs::create_dir_all(&history_root).expect("create history directory");
+        let index_length = super::super::HISTORY_INDEX_ENTRY_BYTES * 4;
+        fs::write(
+            history_root.join("commit.index"),
+            vec![0; usize::try_from(index_length).expect("small index fixture")],
+        )
+        .expect("write bounded commit index fixture");
+
+        let mut state = init_state([0x53; 32]);
+        state.mark_offset = super::super::HISTORY_INDEX_ENTRY_BYTES * 2;
+        fs::write(
+            retention_state_path(&directory.0),
+            encode_state(state).expect("encode resumable Mark state"),
+        )
+        .expect("persist in-progress mark cursor");
+        let reopened = read_state(&directory.0)
+            .expect("cold-read persisted retention cursor")
+            .expect("retention cursor exists");
+        assert_eq!(reopened, state);
+        validate_index_cursors(&directory.0, &reopened)
+            .expect("aligned cursor within index resumes safely");
+
+        let mut misaligned = state;
+        misaligned.mark_offset += 1;
+        let bytes = encode_state(misaligned).expect("encode deliberately corrupt cursor");
+        assert!(
+            decode_state(&bytes)
+                .expect_err("misaligned index cursor is corrupt")
+                .contains("cursors are invalid")
+        );
+
+        let mut out_of_bounds = state;
+        out_of_bounds.mark_offset = index_length + super::super::HISTORY_INDEX_ENTRY_BYTES;
+        let bytes = encode_state(out_of_bounds).expect("encode out-of-range cursor");
+        let reopened = decode_state(&bytes).expect("alignment is structurally valid");
+        assert!(
+            validate_index_cursors(&directory.0, &reopened)
+                .expect_err("cursor beyond current index must fail closed")
+                .contains("mark cursor exceeds")
+        );
+
+        let mut completed_with_temp_reclamation = init_state([0x54; 32]);
+        completed_with_temp_reclamation.phase = RetentionPhase::Complete;
+        completed_with_temp_reclamation.map_scan_offset = 1;
+        completed_with_temp_reclamation.stats.reclaimed_maps = 1;
+        assert_eq!(
+            decode_state(
+                &encode_state(completed_with_temp_reclamation)
+                    .expect("encode completed map-temporary cleanup")
+            )
+            .expect("directory cursor includes reclaimed temporary map entries"),
+            completed_with_temp_reclamation
+        );
+        completed_with_temp_reclamation.map_scan_offset = 0;
+        assert!(
+            decode_state(
+                &encode_state(completed_with_temp_reclamation)
+                    .expect("encode incomplete completed-state cursor")
+            )
+            .expect_err("completed state must account for every reclaimed entry")
+            .contains("cursors are invalid")
+        );
     }
 
     fn map_delete_fixture(map_count: u32, include_map: bool) -> (TestDirectory, RetentionState) {
