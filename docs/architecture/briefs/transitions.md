@@ -90,7 +90,7 @@ FLIP is how things that *stay* move when layout changes. Law 2 still applies to 
 
    No arrival is drawn where a survivor still is.
 2. **A travelling row is a plate.** It carries its own opaque ground at full row height, and it is painted above the rows it passes. Two survivors crossing is then legal (one covers the other) *only if* the covered one's text is fully hidden. If both are partly visible at the crossing, stagger them instead: the row moving up goes first.
-3. **Text never scales.** `Resize::Scale` is for gems, heroes and marks. A card whose width changes reflows its text by snap at the epoch, under a clip that grows with the card. The description is never drawn at two widths.
+3. **Text never scales.** `Resize::Scale` is for gems, heroes and marks. A card whose width changes reflows its text by snap at the epoch, under a clip that grows with the card. The description is never drawn at two widths. *The one exception (ruling, 2026-09-28):* the shared name of an Open/Close is re-set in the title face at each frame's size as it grows from the row into the title. It is re-shaped each frame, never bitmap-scaled, so it is legible at every frame (PLAN §2a).
 4. **A shared name has one face per frame.** The row's name and the page's title are one text. The face swaps on frame one (the one allowed face change), and the text travels. Delete `crossfaded_name`.
 5. **Width-driven layout** (shelf collapse, pins column, text size) keeps the line you are reading still (the "Anchor" verb). Row names **roll** rightward with the width. They never cross-fade with the spine.
 
