@@ -68,6 +68,9 @@ pub(super) fn decode_history_commit(bytes: &[u8]) -> Result<HistoryCommitRecord,
     if parent_count > MAX_HISTORY_PARENTS {
         return Err("semantic history commit exceeds its parent bound".to_owned());
     }
+    if parent_count == 2 {
+        return Err("semantic history merge payload closure is unsupported".to_owned());
+    }
     let mut parents = Vec::with_capacity(parent_count);
     for _ in 0..parent_count {
         parents.push(HistoryCommitId(reader.fixed()?));
@@ -392,6 +395,30 @@ pub(super) fn bump_history_segment_map_epoch(history_root: &Path) -> Result<(), 
         .ok_or_else(|| "semantic history segment-map epoch overflows".to_owned())?;
     let mut writer = Writer::new(MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES - CHECKSUM_BYTES);
     writer.header(HISTORY_SEGMENT_MAP_EPOCH_TAG)?;
+    writer.u64(next)?;
+    let mut bytes = writer.finish();
+    bytes.extend_from_slice(blake3::hash(&bytes).as_bytes());
+    backend_platform::durable::write_private_atomic(&path, &bytes).map_err(display_io)
+}
+
+pub(super) fn bump_history_commit_epoch(history_root: &Path) -> Result<(), String> {
+    let path = history_root.join("commits.epoch");
+    let current = match read_optional_bounded(&path, MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES)? {
+        Some(bytes) => {
+            let body = checked_body(&bytes, MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES)?;
+            let mut reader = Reader::new(body);
+            reader.header(HISTORY_COMMIT_EPOCH_TAG)?;
+            let epoch = reader.u64()?;
+            reader.finish()?;
+            epoch
+        }
+        None => 0,
+    };
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| "semantic history commit epoch overflows".to_owned())?;
+    let mut writer = Writer::new(MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES - CHECKSUM_BYTES);
+    writer.header(HISTORY_COMMIT_EPOCH_TAG)?;
     writer.u64(next)?;
     let mut bytes = writer.finish();
     bytes.extend_from_slice(blake3::hash(&bytes).as_bytes());

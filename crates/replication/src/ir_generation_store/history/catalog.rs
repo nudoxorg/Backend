@@ -319,6 +319,7 @@ impl LocalSemanticGenerationFiles {
             Ok(existing) if existing == bytes => false,
             Ok(_) => return Err("immutable semantic history identity collision".to_owned()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                bump_history_commit_epoch(&target_root.join("history"))?;
                 backend_platform::durable::write_private_atomic(&path, &bytes)
                     .map_err(display_io)?;
                 true

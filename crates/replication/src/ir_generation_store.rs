@@ -1639,6 +1639,20 @@ mod tests {
         );
 
         let third = fixture(b"durable history third", 3, 93);
+        let commits_root = files
+            .target_root(&third.target)
+            .join("history")
+            .join("commits");
+        let commits_before = fs::read_dir(&commits_root)
+            .expect("enumerate admitted commits before interrupted admission")
+            .map(|entry| {
+                entry
+                    .expect("read commit directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
         arm_history_test_fault(HistoryTestFault::AfterHistoryCommit);
         assert!(
             commit(&files, &third, [third.stamp, third.stamp])
@@ -1652,6 +1666,40 @@ mod tests {
                 .expect("second HEAD remains")
                 .identity(),
             second_commit.identity()
+        );
+        let orphan_commit = fs::read_dir(&commits_root)
+            .expect("enumerate commit objects after interrupted admission")
+            .map(|entry| {
+                entry
+                    .expect("read commit directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .find(|name| !commits_before.contains(name))
+            .expect("interrupted admission leaves one unindexed commit object");
+        drop(files);
+        let files = LocalSemanticGenerationFiles::open(&directory.0)
+            .expect("cold reopen with an unindexed commit object");
+        let mut retention = files
+            .advance_history_gc(&third.target)
+            .expect("start orphan commit retention after restart");
+        while !retention.complete() {
+            assert!(
+                retention.processed_records() <= history::MAX_HISTORY_GC_BATCH_RECORDS,
+                "orphan commit sweep stays within its persisted work budget"
+            );
+            retention = files
+                .advance_history_gc(&third.target)
+                .expect("continue orphan commit retention after restart");
+        }
+        assert!(
+            retention.processed_records() <= history::MAX_HISTORY_GC_BATCH_RECORDS,
+            "one orphan commit retention cycle stays within its persisted work budget"
+        );
+        assert!(
+            !commits_root.join(&orphan_commit).exists(),
+            "unindexed commit objects are reclaimed after a crash"
         );
         let third_commit = commit(&files, &third, [third.stamp, third.stamp])
             .expect("retry immutable history commit and index admission");

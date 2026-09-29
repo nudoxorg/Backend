@@ -33,6 +33,7 @@ const RETENTION_DELETE_INTENT_NAME_BYTES: usize = 255;
 enum RetentionPhase {
     Mark,
     SweepCommits,
+    ScanCommitObjects,
     ScanMaps,
     SweepMaps,
     ScanGenerations,
@@ -54,6 +55,7 @@ impl RetentionPhase {
             Self::CompactIndex => 7,
             Self::Cleanup => 8,
             Self::Complete => 9,
+            Self::ScanCommitObjects => 10,
         }
     }
 
@@ -68,6 +70,7 @@ impl RetentionPhase {
             7 => Ok(Self::CompactIndex),
             8 => Ok(Self::Cleanup),
             9 => Ok(Self::Complete),
+            10 => Ok(Self::ScanCommitObjects),
             _ => Err("semantic history retention phase is invalid".to_owned()),
         }
     }
@@ -185,6 +188,10 @@ fn retention_input_digest(target_root: &Path) -> Result<[u8; 32], String> {
         &history_root.join("segment-map.epoch"),
         super::MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES,
     )?;
+    let commit_epoch = read_optional_bounded(
+        &history_root.join("commits.epoch"),
+        super::MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES,
+    )?;
     let record_epoch = read_optional_bounded(
         &target_root.join("records.epoch"),
         super::MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES,
@@ -192,11 +199,14 @@ fn retention_input_digest(target_root: &Path) -> Result<[u8; 32], String> {
     if let Some(bytes) = &map_epoch {
         validate_epoch(bytes, super::HISTORY_SEGMENT_MAP_EPOCH_TAG)?;
     }
+    if let Some(bytes) = &commit_epoch {
+        validate_epoch(bytes, super::HISTORY_COMMIT_EPOCH_TAG)?;
+    }
     if let Some(bytes) = &record_epoch {
         validate_epoch(bytes, super::super::RECORDS_EPOCH_TAG)?;
     }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.semantic.history-retention-input.v1\0");
+    hasher.update(b"backend.semantic.history-retention-input.v2\0");
     hasher.update(&refs_digest);
     if let Some(head) = head {
         hasher.update(&(head.len() as u64).to_be_bytes());
@@ -211,7 +221,7 @@ fn retention_input_digest(target_root: &Path) -> Result<[u8; 32], String> {
         hasher.update(&0_u64.to_be_bytes());
     }
     hasher.update(&index_length.to_be_bytes());
-    for epoch in [map_epoch, record_epoch] {
+    for epoch in [map_epoch, commit_epoch, record_epoch] {
         if let Some(epoch) = epoch {
             hasher.update(&(epoch.len() as u64).to_be_bytes());
             hasher.update(&epoch);
@@ -390,7 +400,7 @@ fn decode_delete_intent(bytes: &[u8]) -> Result<RetentionDeleteIntent, String> {
     };
     reader.finish()?;
     validate_delete_name(kind, &name)?;
-    if (kind == DeleteKind::Map) != old_map_count.is_some() {
+    if (kind == DeleteKind::Map && name.ends_with(".map")) != old_map_count.is_some() {
         return Err("semantic history delete intent is inconsistent".to_owned());
     }
     Ok(RetentionDeleteIntent {
@@ -410,6 +420,7 @@ fn validate_delete_name(kind: DeleteKind, name: &str) -> Result<(), String> {
     let suffix = match kind {
         DeleteKind::Map if name.ends_with(".map") => ".map",
         DeleteKind::Commit if name.ends_with(".commit") => ".commit",
+        DeleteKind::Map | DeleteKind::Commit if name.ends_with(".tmp") => ".tmp",
         DeleteKind::Generation if name.ends_with(".record") => ".record",
         DeleteKind::Generation if name.ends_with(".tmp") => ".tmp",
         _ => {
@@ -500,7 +511,7 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(super::display_io(error)),
     }
-    if intent.kind == DeleteKind::Commit {
+    if intent.kind == DeleteKind::Commit && intent.name.ends_with(".commit") {
         let identity = intent
             .name
             .strip_suffix(".commit")
@@ -535,23 +546,28 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
             );
         }
     }
-    let (reclaimed_count, reclaimed_bytes) = reclaimed_counters_mut(&mut state.stats, intent.kind);
-    let next_count = intent
-        .old_reclaimed_count
-        .checked_add(1)
-        .ok_or_else(|| "semantic history reclaimed-record counter overflows".to_owned())?;
-    let next_bytes = intent
-        .old_reclaimed_bytes
-        .checked_add(intent.byte_length)
-        .ok_or_else(|| "semantic history reclaimed-byte counter overflows".to_owned())?;
-    if *reclaimed_count == intent.old_reclaimed_count
-        && *reclaimed_bytes == intent.old_reclaimed_bytes
-    {
-        *reclaimed_count = next_count;
-        *reclaimed_bytes = next_bytes;
-        write_state(target_root, *state)?;
-    } else if *reclaimed_count != next_count || *reclaimed_bytes != next_bytes {
-        return Err("semantic history delete intent conflicts with retention counters".to_owned());
+    if !intent.name.ends_with(".tmp") {
+        let (reclaimed_count, reclaimed_bytes) =
+            reclaimed_counters_mut(&mut state.stats, intent.kind);
+        let next_count = intent
+            .old_reclaimed_count
+            .checked_add(1)
+            .ok_or_else(|| "semantic history reclaimed-record counter overflows".to_owned())?;
+        let next_bytes = intent
+            .old_reclaimed_bytes
+            .checked_add(intent.byte_length)
+            .ok_or_else(|| "semantic history reclaimed-byte counter overflows".to_owned())?;
+        if *reclaimed_count == intent.old_reclaimed_count
+            && *reclaimed_bytes == intent.old_reclaimed_bytes
+        {
+            *reclaimed_count = next_count;
+            *reclaimed_bytes = next_bytes;
+            write_state(target_root, *state)?;
+        } else if *reclaimed_count != next_count || *reclaimed_bytes != next_bytes {
+            return Err(
+                "semantic history delete intent conflicts with retention counters".to_owned(),
+            );
+        }
     }
     remove_candidate_marker(target_root, state, intent.kind, &intent.name)?;
     remove_file(&retention_delete_intent_path(target_root))?;
@@ -800,7 +816,7 @@ fn complete_delete(
     name: String,
     byte_length: u64,
 ) -> Result<(), String> {
-    let old_map_count = if kind == DeleteKind::Map {
+    let old_map_count = if kind == DeleteKind::Map && name.ends_with(".map") {
         let count_path = target_root.join("history").join("segment-map.count");
         let bytes = read_optional_bounded(&count_path, super::MAX_HISTORY_SEGMENT_MAP_COUNT_BYTES)?
             .ok_or_else(|| "semantic history segment-map count is missing".to_owned())?;
@@ -1073,11 +1089,16 @@ pub(super) fn advance_retention(
                     super::HISTORY_INDEX_DOMAIN,
                 )?;
                 for identity in ids {
-                    if history_gc_marked(
+                    let seen_marker = work_root
+                        .join("commit-seen")
+                        .join(format!("{}.seen", super::hex(identity.as_bytes())));
+                    let _ = insert_marker_once(&seen_marker)?;
+                    let live = history_gc_marked(
                         &history_gc_epoch_root(target_root, &refs_digest),
                         identity,
                         HistoryReachabilityClass::Live,
-                    )? {
+                    )?;
+                    if live {
                         process_live_commit(
                             target_root,
                             target,
@@ -1085,6 +1106,23 @@ pub(super) fn advance_retention(
                             identity,
                             &mut state.stats,
                         )?;
+                    } else {
+                        let commit_path =
+                            history_commit_path(&history_root.join("commits"), identity);
+                        match fs::symlink_metadata(&commit_path) {
+                            Ok(_) => {
+                                let record =
+                                    load_history_commit(&history_root.join("commits"), identity)?;
+                                if record.target != *target {
+                                    return Err(
+                                        "semantic history commit belongs to another target"
+                                            .to_owned(),
+                                    );
+                                }
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(super::display_io(error)),
+                        }
                     }
                     state.mark_offset = state
                         .mark_offset
@@ -1135,7 +1173,66 @@ pub(super) fn advance_retention(
                     processed += 1;
                 }
                 if done {
+                    state.phase = RetentionPhase::ScanCommitObjects;
+                    state.map_scan_offset = 0;
+                }
+                write_state(target_root, state)?;
+                if done {
+                    continue;
+                }
+            }
+            RetentionPhase::ScanCommitObjects => {
+                let commits_root = history_root.join("commits");
+                if !super::ensure_optional_directory(&commits_root)? {
                     state.phase = RetentionPhase::ScanMaps;
+                    write_state(target_root, state)?;
+                    continue;
+                }
+                let (entries, _next, done) =
+                    page_directory(&commits_root, state.map_scan_offset, budget - processed)?;
+                for entry in entries {
+                    let path = entry.path();
+                    ensure_regular_file(&path)?;
+                    let name = entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| "semantic history commit filename is not UTF-8".to_owned())?;
+                    if name.ends_with(".commit") {
+                        validate_delete_name(DeleteKind::Commit, &name)?;
+                        let stem = name.strip_suffix(".commit").ok_or_else(|| {
+                            "semantic history commit filename is malformed".to_owned()
+                        })?;
+                        let identity = HistoryCommitId(decode_hex_digest(stem)?);
+                        let record = load_history_commit(&commits_root, identity)?;
+                        if record.target != *target {
+                            return Err(
+                                "semantic history commit belongs to another target".to_owned()
+                            );
+                        }
+                        let seen_marker = work_root
+                            .join("commit-seen")
+                            .join(format!("{}.seen", super::hex(identity.as_bytes())));
+                        if !marker_exists(&seen_marker)? {
+                            ensure_candidate(&work_root, DeleteKind::Commit, &name)?;
+                        }
+                    } else if name.ends_with(".tmp") {
+                        validate_delete_name(DeleteKind::Commit, &name)?;
+                        ensure_candidate(&work_root, DeleteKind::Commit, &name)?;
+                    } else {
+                        return Err(
+                            "semantic history commit directory contains an unknown member"
+                                .to_owned(),
+                        );
+                    }
+                    state.map_scan_offset =
+                        state.map_scan_offset.checked_add(1).ok_or_else(|| {
+                            "semantic history commit scan cursor overflows".to_owned()
+                        })?;
+                    processed += 1;
+                }
+                if done {
+                    state.phase = RetentionPhase::ScanMaps;
+                    state.map_scan_offset = 0;
                 }
                 write_state(target_root, state)?;
                 if done {
@@ -1156,38 +1253,47 @@ pub(super) fn advance_retention(
                         .file_name()
                         .into_string()
                         .map_err(|_| "semantic history map filename is not UTF-8".to_owned())?;
-                    let stem = name.strip_suffix(".map").ok_or_else(|| {
-                        "semantic history map directory has an unknown member".to_owned()
-                    })?;
-                    if stem.len() != 64 {
-                        return Err("semantic history map filename is malformed".to_owned());
-                    }
-                    let segment = UntrustedSemanticSegmentId::from_raw(decode_hex_digest(stem)?);
-                    let bytes = read_optional_bounded(&path, MAX_HISTORY_SEGMENT_MAP_BYTES)?
-                        .ok_or_else(|| "semantic history map disappeared during scan".to_owned())?;
-                    let _ = decode_history_segment_mapping(&bytes, segment)?;
                     let length = fs::metadata(&path).map_err(super::display_io)?.len();
-                    state.map_scan_count = state
-                        .map_scan_count
-                        .checked_add(1)
-                        .ok_or_else(|| "semantic history map scan count overflows".to_owned())?;
-                    let live = marker_exists(
-                        &work_root
-                            .join("map-live")
-                            .join(format!("{}.mark", super::hex(segment.as_bytes()))),
-                    )?;
-                    if live {
-                        state.stats.live_maps =
-                            state.stats.live_maps.checked_add(1).ok_or_else(|| {
-                                "semantic history live-map counter overflows".to_owned()
+                    if name.ends_with(".map") {
+                        state.map_scan_count =
+                            state.map_scan_count.checked_add(1).ok_or_else(|| {
+                                "semantic history map scan count overflows".to_owned()
                             })?;
-                        state.stats.live_map_bytes = state
-                            .stats
-                            .live_map_bytes
-                            .checked_add(length)
-                            .ok_or_else(|| "semantic history live-map bytes overflow".to_owned())?;
-                    } else {
+                        validate_delete_name(DeleteKind::Map, &name)?;
+                        let stem = name.strip_suffix(".map").ok_or_else(|| {
+                            "semantic history map filename is malformed".to_owned()
+                        })?;
+                        let segment =
+                            UntrustedSemanticSegmentId::from_raw(decode_hex_digest(stem)?);
+                        let bytes = read_optional_bounded(&path, MAX_HISTORY_SEGMENT_MAP_BYTES)?
+                            .ok_or_else(|| {
+                                "semantic history map disappeared during scan".to_owned()
+                            })?;
+                        let _ = decode_history_segment_mapping(&bytes, segment)?;
+                        let live = marker_exists(
+                            &work_root
+                                .join("map-live")
+                                .join(format!("{}.mark", super::hex(segment.as_bytes()))),
+                        )?;
+                        if live {
+                            state.stats.live_maps =
+                                state.stats.live_maps.checked_add(1).ok_or_else(|| {
+                                    "semantic history live-map counter overflows".to_owned()
+                                })?;
+                            state.stats.live_map_bytes =
+                                state.stats.live_map_bytes.checked_add(length).ok_or_else(
+                                    || "semantic history live-map bytes overflow".to_owned(),
+                                )?;
+                        } else {
+                            ensure_candidate(&work_root, DeleteKind::Map, &name)?;
+                        }
+                    } else if name.ends_with(".tmp") {
+                        validate_delete_name(DeleteKind::Map, &name)?;
                         ensure_candidate(&work_root, DeleteKind::Map, &name)?;
+                    } else {
+                        return Err(
+                            "semantic history map directory has an unknown member".to_owned()
+                        );
                     }
                     state.map_scan_offset = state
                         .map_scan_offset

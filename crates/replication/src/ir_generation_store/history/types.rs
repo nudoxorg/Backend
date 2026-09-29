@@ -11,6 +11,7 @@ const HISTORY_SEGMENT_MAP_TAG: u8 = 7;
 const HISTORY_INDEX_INTENT_TAG: u8 = 8;
 const HISTORY_SEGMENT_MAP_COUNT_TAG: u8 = 9;
 pub(super) const HISTORY_SEGMENT_MAP_EPOCH_TAG: u8 = 12;
+pub(super) const HISTORY_COMMIT_EPOCH_TAG: u8 = 13;
 const MAX_HISTORY_PARENTS: usize = 2;
 const MAX_HISTORY_REFS: usize = 512;
 const MAX_REPLAY_COMMITS: usize = 32;

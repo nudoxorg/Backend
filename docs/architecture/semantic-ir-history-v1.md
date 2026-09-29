@@ -87,14 +87,14 @@ planes are not reconstructed by this V1 path.
 | Persistent commit ancestry and replay | Immutable commit DAG, cold metadata reopen, bounded first-parent replay pages | Replay does not yet emit a complete two-parent semantic merge plan |
 | Branches and tags | Named refs, expected-value CAS, atomic rename, navigation-only authority | The implicit branch is local cache history, not an index selection ref |
 | Patch deltas | Borrowed manifest-segment deltas using existing exact-root cursor checks | No materialized whole-snapshot patch archive |
-| Merge semantics | Commit decoding and ancestry validation understand up to two parents; first-parent DAG replay is paged | New two-parent proposals return typed `UnsupportedMergePayloadClosure` until payload closures are unioned; no three-way IR merge engine |
+| Merge semantics | First-parent DAG replay is paged, and V1 rejects persisted or proposed two-parent commits | Two-parent publication remains disabled until payload closures are unioned; no three-way IR merge engine |
 | GC and serving pins | Bounded indexed history mark/sweep, bridge-map reclamation, generation-record sweep, and append-index compaction; FileStore closure roots retain segment objects for named refs; segment and image readers pin against FileStore GC | Live bridge maps remain limited to 65,536 per target; long-lived readers delay collection; no scan-resistant whole-archive serving cache |
 | Cold checkout | V1 ordinal NXFI images can be reconstructed from retained segment closures after image pruning, forced FileStore GC, and restart, then read through the borrowed semantic view | V2 typed-plane checkout and hydration are not implemented; the V1 checkout reports `NeedsHydration` for missing segments or unsupported layouts |
 | Collision and failure handling | Domain-separated IDs, checksummed records, atomic ref catalog, fail-closed missing/corrupt live ancestry, retry-safe append and delete intents, and typed rejection of unmaterialized merge proposals | The full gated Cargo suite is pending |
 
 The retention regressions use deterministic fixtures to check ref deletion,
-index compaction recovery, bridge-map unlink recovery and reuse, fail-closed
-corruption, and a third-old segment read after retention, FileStore GC, and
-cold reopen. The full-image checkout path still needs its own end-to-end test.
-Cargo execution remains gated; formatting and static diff checks do not
-establish that this slice is production-ready.
+index compaction recovery, orphan-commit cleanup after a crash, bridge-map
+unlink recovery and reuse, fail-closed corruption, and a third-old segment and
+full-image checkout after retention, FileStore GC, and cold reopen. Cargo
+execution remains gated; formatting and static diff checks do not establish
+that this slice is production-ready.
