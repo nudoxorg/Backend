@@ -113,6 +113,49 @@ opt-level = 2
 [profile.dev.package.backend-engine]
 opt-level = 2
 
+# backend-desktop's --lib test binary stopped linking on 2026-09-28:
+# `ld: b(l) ARM64 branch out of range (-151592460 max is +/-128MB)`, a call
+# out of a gpui_ce_macos objc class-registration ctor, once __TEXT,__text
+# passed ~150MB. Confirmed by relink with cached objects that neither the
+# nixpkgs ld64-956.6 in this dev shell nor Apple's newer system linker
+# (/usr/bin/ld, ld-prime 1230.1) inserts a branch island for this call
+# pattern — a linker swap does not fix it. These are the largest opt-level-0
+# contributors to that section (rust-analyzer's query engine, used only by
+# the Rust language frontend, plus the local-service crate that links every
+# frontend together): optimizing them shrinks __text back under the range.
+# None of them are gpui/objc or anything GUI lanes rebuild. See
+# .local/lanes/wave6/tissue/LINK.md.
+[profile.dev.package.ra_ap_hir_ty]
+opt-level = 2
+[profile.dev.package.ra_ap_hir_def]
+opt-level = 2
+[profile.dev.package.ra_ap_hir_expand]
+opt-level = 2
+[profile.dev.package.ra_ap_hir]
+opt-level = 2
+[profile.dev.package.ra_ap_ide_db]
+opt-level = 2
+[profile.dev.package.ra_ap_syntax]
+opt-level = 2
+[profile.dev.package.backend-local-service]
+opt-level = 2
+# 2026-09-28 night: over again (-134 MB against the 128 MB range, W-Open I2). The next largest
+# opt-level-0 contributors that no GUI lane edits: the embedded SQL engine, search, networking,
+# the query engine, the TS parser. Sizes from the slot's debug rlibs: turso_core 143 MB,
+# tantivy 71, iroh 51, trustfall_core 22, oxc_ast 19, oxc_parser 16.
+[profile.dev.package.turso_core]
+opt-level = 2
+[profile.dev.package.tantivy]
+opt-level = 2
+[profile.dev.package.iroh]
+opt-level = 2
+[profile.dev.package.trustfall_core]
+opt-level = 2
+[profile.dev.package.oxc_ast]
+opt-level = 2
+[profile.dev.package.oxc_parser]
+opt-level = 2
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
