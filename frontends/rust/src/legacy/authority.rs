@@ -353,9 +353,9 @@ pub trait RustWorkspaceEditorBufferObserver {
     fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]);
 }
 
-/// Borrow-scoped observer for selected buffers plus two concrete rust-analyzer
-/// read surfaces: loaded VFS file contents and rejected `mod` candidates from
-/// RA's name-resolution `DefMap` diagnostics.
+/// Borrow-scoped observer for selected buffers plus three concrete compiler
+/// event surfaces: loaded RA VFS file contents, successful Rustdoc input reads,
+/// and rejected `mod` candidates from RA's name-resolution `DefMap` diagnostics.
 ///
 /// This is diagnostic evidence only. The VFS scan does not see failed VFS
 /// loader probes, and unresolved-module DefMap diagnostics do not cover arbitrary
@@ -407,7 +407,7 @@ pub struct RustWorkspaceReadFrontierSummary {
     pub rustdoc_inputs_visited: u64,
     /// Rustdoc include-file callbacks acknowledged by the observer.
     pub rustdoc_input_events_delivered: u64,
-    /// RA VFS or diagnostic declaration paths that could not be represented as UTF-8.
+    /// VFS, Rustdoc, or diagnostic paths that could not be represented as UTF-8.
     pub unsupported_paths: u64,
     /// The scan stopped at a fixed event/byte budget.
     pub truncated: bool,
