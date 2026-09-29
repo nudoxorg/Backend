@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     fs::{self, File},
-    io::{self, Read},
+    io::{self, Read, Write},
     path::Path,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -25,15 +25,78 @@ pub(super) fn frame(out: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 pub(super) fn digest(domain: &[u8], fields: &[&[u8]]) -> [u8; ID_BYTES] {
+    let mut hasher = begin_identity_hash(domain);
+    for field in fields {
+        append_field(&mut hasher, field);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn begin_identity_hash(domain: &[u8]) -> Hasher {
     let mut hasher = Hasher::new();
     hasher.update(b"backend.acquisition.identity.v1\0");
     hasher.update(&(domain.len() as u64).to_be_bytes());
     hasher.update(domain);
-    for field in fields {
-        hasher.update(&((*field).len() as u64).to_be_bytes());
-        hasher.update(field);
+    hasher
+}
+
+fn append_field(hasher: &mut Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
+/// Bounded writer for one length-framed identity field. The caller declares
+/// the byte count up front, so serialized identities can stream into the
+/// canonical identity grammar without building a second field-sized buffer.
+pub(super) struct IdentityFieldWriter {
+    hasher: Hasher,
+    expected: u64,
+    written: u64,
+}
+
+impl IdentityFieldWriter {
+    fn new(domain: &[u8], preceding_fields: &[&[u8]], expected: u64) -> Self {
+        let mut hasher = begin_identity_hash(domain);
+        for field in preceding_fields {
+            append_field(&mut hasher, field);
+        }
+        hasher.update(&expected.to_be_bytes());
+        Self {
+            hasher,
+            expected,
+            written: 0,
+        }
     }
-    *hasher.finalize().as_bytes()
+
+    fn finish(self) -> io::Result<[u8; ID_BYTES]> {
+        if self.written != self.expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity streamed field length mismatch",
+            ));
+        }
+        Ok(*self.hasher.finalize().as_bytes())
+    }
+}
+
+impl Write for IdentityFieldWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let length = u64::try_from(bytes.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "identity length overflow"))?;
+        if length > self.expected.saturating_sub(self.written) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity streamed field exceeds declared length",
+            ));
+        }
+        self.hasher.update(bytes);
+        self.written += length;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 macro_rules! identity {
@@ -44,6 +107,16 @@ macro_rules! identity {
         impl $name {
             pub(super) fn derive(fields: &[&[u8]]) -> Self {
                 Self(digest($domain, fields))
+            }
+
+            pub(super) fn derive_with_streamed_field(
+                preceding_fields: &[&[u8]],
+                field_length: u64,
+                write_field: impl FnOnce(&mut IdentityFieldWriter) -> io::Result<()>,
+            ) -> io::Result<Self> {
+                let mut writer = IdentityFieldWriter::new($domain, preceding_fields, field_length);
+                write_field(&mut writer)?;
+                Ok(Self(writer.finish()?))
             }
 
             /// Returns the fixed-width canonical identity bytes.

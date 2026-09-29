@@ -408,31 +408,11 @@ impl AcquisitionReceiptStore {
             limit: MAX_PRODUCT_FILE_BYTES,
         };
         serde_json::to_writer(&mut counter, body).map_err(json_error)?;
-
-        let identity_domain = b"acquisition-record";
-        let record_domain = b"backend.acquisition.product-record.v1\0";
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"backend.acquisition.identity.v1\0");
-        hasher.update(&(identity_domain.len() as u64).to_be_bytes());
-        hasher.update(identity_domain);
-        hasher.update(&(record_domain.len() as u64).to_be_bytes());
-        hasher.update(record_domain);
-        hasher.update(&counter.written.to_be_bytes());
-        let mut writer = HashingWriter {
-            hasher,
-            written: 0,
-            limit: counter.written,
-        };
-        serde_json::to_writer(&mut writer, body).map_err(json_error)?;
-        if writer.written != counter.written {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "acquisition product record changed while hashing",
-            ));
-        }
-        Ok(AcquisitionRecordId::from_encoded(
-            *writer.hasher.finalize().as_bytes(),
-        ))
+        AcquisitionRecordId::derive_with_streamed_field(
+            &[b"backend.acquisition.product-record.v1\0"],
+            counter.written,
+            |writer| serde_json::to_writer(writer, body).map_err(json_error),
+        )
     }
 
     fn load_record(
@@ -733,33 +713,6 @@ impl Write for CountingWriter {
                 "acquisition product record exceeds bound",
             ));
         }
-        self.written += length;
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-struct HashingWriter {
-    hasher: blake3::Hasher,
-    written: u64,
-    limit: u64,
-}
-
-impl Write for HashingWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let length = u64::try_from(bytes.len()).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "serialized length overflow")
-        })?;
-        if length > self.limit.saturating_sub(self.written) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "acquisition product record changed while hashing",
-            ));
-        }
-        self.hasher.update(bytes);
         self.written += length;
         Ok(bytes.len())
     }
@@ -1146,6 +1099,19 @@ mod tests {
             serde_json::to_vec(&owned).expect("owned delta JSON")
         );
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn streamed_identity_writer_rejects_a_wrong_declared_length() {
+        let too_long = AcquisitionRecordId::derive_with_streamed_field(&[], 1, |writer| {
+            writer.write_all(b"two bytes")
+        })
+        .expect_err("stream cannot exceed the declared field length");
+        assert_eq!(too_long.kind(), io::ErrorKind::InvalidData);
+
+        let too_short = AcquisitionRecordId::derive_with_streamed_field(&[], 2, |_| Ok(()))
+            .expect_err("stream must reach the declared field length");
+        assert_eq!(too_short.kind(), io::ErrorKind::InvalidData);
     }
 
     fn published_fixture() -> (AcquisitionRecoveryRecord, AcquisitionRequest) {
