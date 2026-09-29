@@ -381,6 +381,25 @@ fn assert_capability_truth(status: &Value, surface: &str) -> bool {
     unavailable.is_empty()
 }
 
+/// The polyglot fixture's Cargo.toml declares an empty `[dependencies]`, and
+/// the engine reads that from the indexed manifest (4369a8773): an empty
+/// record list with no fault is the truthful answer. Any record would be a
+/// false claim; a typed fault is still checked like every other lane.
+fn assert_dependencies_lane(value: &Value, surface: &str) -> bool {
+    if value["fault"].is_null() {
+        assert_eq!(value["answer"], "product", "dependencies changed answer kind");
+        let records = value["records"]
+            .as_array()
+            .unwrap_or_else(|| panic!("dependencies omitted typed records: {value}"));
+        assert!(
+            records.is_empty(),
+            "the fixture declares no dependencies, yet {surface} listed some: {value}"
+        );
+        return true;
+    }
+    assert_product_lane(value, "dependencies", surface)
+}
+
 fn assert_product_lane(value: &Value, lane: &str, surface: &str) -> bool {
     assert_eq!(value["answer"], "product", "{lane} changed answer kind");
     let records = value["records"]
@@ -511,7 +530,7 @@ fn production_surface_matrix_is_identity_equal_across_languages_and_restarts() {
     );
     assert_eq!(cli_outline["answer"], "outline");
     assert_eq!(cli_outline["package"]["coordinate"], package_coordinate);
-    let cli_dependencies_ready = assert_product_lane(&cli_dependencies, "dependencies", "cli");
+    let cli_dependencies_ready = assert_dependencies_lane(&cli_dependencies, "cli");
     let outline_ids = surface_matrix::outline_coordinates(&cli_outline);
     for coordinate in expected.keys() {
         assert!(
@@ -566,11 +585,8 @@ fn production_surface_matrix_is_identity_equal_across_languages_and_restarts() {
     assert_mcp_ok(&replies[&4], "outline");
     assert_eq!(surface_matrix::mcp_structured(&replies[&4]), &cli_outline);
     assert_mcp_ok(&replies[&5], "dependencies");
-    let mcp_dependencies_ready = assert_product_lane(
-        surface_matrix::mcp_structured(&replies[&5]),
-        "dependencies",
-        "mcp",
-    );
+    let mcp_dependencies_ready =
+        assert_dependencies_lane(surface_matrix::mcp_structured(&replies[&5]), "mcp");
     assert_eq!(mcp_dependencies_ready, cli_dependencies_ready);
     assert_eq!(
         surface_matrix::mcp_structured(&replies[&5]),
