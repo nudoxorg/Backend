@@ -48,9 +48,7 @@ const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
 
 fn compiler_lane_count() -> usize {
     #[cfg(feature = "cluster-process-journey-hooks")]
-    if std::env::var_os("BACKEND_JOURNEY_COMPILER_LANES")
-        .is_some_and(|value| value == "1")
-    {
+    if std::env::var_os("BACKEND_JOURNEY_COMPILER_LANES").is_some_and(|value| value == "1") {
         return 1;
     }
     COMPILER_LANE_COUNT
