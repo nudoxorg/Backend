@@ -296,6 +296,24 @@ pub struct VectorFacts {
     dimensions: usize,
 }
 
+/// Borrowed coordinates whose canonical payload, dimension, and finite-value
+/// invariants were established when their owning `VectorFacts` was created.
+/// Its private field prevents callers from manufacturing this proof wrapper
+/// around unchecked provider bytes.
+pub(super) struct AdmittedEncodedPoint<'a> {
+    coordinates: &'a [[u8; 4]],
+}
+
+impl AdmittedEncodedPoint<'_> {
+    /// Decodes the already-validated big-endian coordinate bytes without
+    /// repeating shape or finite-value checks in the per-candidate scorer.
+    pub(super) fn coordinates(&self) -> impl ExactSizeIterator<Item = f32> + '_ {
+        self.coordinates
+            .iter()
+            .map(|bytes| f32::from_bits(u32::from_be_bytes(*bytes)))
+    }
+}
+
 impl VectorFacts {
     /// Builds exact facts only when the durable relation is bound to this complete recipe.
     ///
@@ -386,6 +404,22 @@ impl VectorFacts {
             .payload(id)
             .map(|payload| VectorPoint::from_payload(id, payload))
             .transpose()
+    }
+
+    /// Returns one already-admitted point in its canonical big-endian payload
+    /// form without allocating decoded coordinates.
+    ///
+    /// The constructor validates every payload and binds its dimension to
+    /// these facts, so internal reranking can borrow the immutable bytes and
+    /// decode one coordinate at a time.
+    pub(super) fn encoded_point(&self, id: CandidateId) -> Option<AdmittedEncodedPoint<'_>> {
+        let payload = self.state.payload(id)?;
+        let bytes = payload.get(4..)?;
+        let (coordinates, remainder) = bytes.as_chunks::<4>();
+        if !remainder.is_empty() {
+            return None;
+        }
+        Some(AdmittedEncodedPoint { coordinates })
     }
 
     /// Iterates exact point identities in canonical relation order.

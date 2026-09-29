@@ -163,6 +163,153 @@ fn restarted_vector_index(
     VectorIndex::new(base, facts, source).expect("restarted index")
 }
 
+#[test]
+fn reopened_vector_facts_rerank_canonical_persisted_bytes_bit_exactly() {
+    let model = ModelVersion::from_value(&[0x28; 32]);
+    let dimensions = [1, 2, 3, 17, 384, 1536];
+    let metrics = [
+        Metric::CosineDistance,
+        Metric::EuclideanSquared,
+        Metric::NegativeDot,
+    ];
+
+    for (metric_index, metric) in metrics.into_iter().enumerate() {
+        for dimension in dimensions {
+            let query_values = (0..dimension)
+                .map(|index| test_coordinate(index, metric_index * 41 + 3))
+                .collect::<Vec<_>>();
+            let expected_points = (1..=3)
+                .map(|candidate| {
+                    let id = CandidateId::new(candidate).expect("valid candidate id");
+                    let values = (0..dimension)
+                        .map(|index| {
+                            test_coordinate(
+                                index,
+                                usize::try_from(candidate).expect("candidate fits") * 97
+                                    + metric_index,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (id, values)
+                })
+                .collect::<Vec<_>>();
+            let persisted_payloads = expected_points
+                .iter()
+                .map(|(id, values)| {
+                    (
+                        id.0,
+                        VectorPoint::new(*id, values.clone())
+                            .expect("finite test point")
+                            .to_payload(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let (binding, coverage) = binding(&persisted_payloads);
+            let payload_bytes = 4 + dimension * 4;
+            let limits = Limits {
+                max_candidates: 16,
+                max_tombstones: 16,
+                max_payload_bytes: payload_bytes,
+                max_total_payload_bytes: payload_bytes * 3,
+                max_page: 16,
+            };
+
+            // Rebuild the exact relation from its canonical stored payload
+            // bytes, as a reopened snapshot does after typed vectors are gone.
+            let reloaded_state = CandidateState::new(
+                binding,
+                coverage,
+                persisted_payloads
+                    .iter()
+                    .map(|(id, payload)| (CandidateId(*id), payload.clone()))
+                    .collect(),
+                limits,
+            )
+            .expect("reload canonical candidate payloads");
+            let facts =
+                VectorFacts::new(reloaded_state, model, metric, dimension).expect("reloaded facts");
+            let base = AnnBase::from_facts(&facts, SearchQuality::Exact, limits)
+                .expect("reloaded ANN base");
+            let source = MemorySource::new(
+                facts.binding(),
+                facts.coverage(),
+                expected_points.iter().map(|(id, _)| *id).collect(),
+                limits,
+            )
+            .expect("reloaded candidate source");
+            let index = VectorIndex::new(base, facts, source).expect("reloaded index");
+            let query = VectorQuery::new(model, metric, query_values.clone()).expect("query");
+            let result = index
+                .search(&query, expected_points.len(), limits)
+                .expect("score reloaded payloads");
+
+            let mut expected = expected_points
+                .iter()
+                .map(|(id, point)| {
+                    let score = match metric {
+                        Metric::EuclideanSquared => query_values
+                            .iter()
+                            .zip(point)
+                            .map(|(query, point)| {
+                                let difference = query - point;
+                                difference * difference
+                            })
+                            .sum(),
+                        Metric::CosineDistance => {
+                            let (dot, query_norm, point_norm) =
+                                query_values.iter().zip(point).fold(
+                                    (0.0_f32, 0.0_f32, 0.0_f32),
+                                    |(dot, query_norm, point_norm), (query, point)| {
+                                        (
+                                            dot + query * point,
+                                            query_norm + query * query,
+                                            point_norm + point * point,
+                                        )
+                                    },
+                                );
+                            if query_norm == 0.0 || point_norm == 0.0 {
+                                1.0
+                            } else {
+                                1.0 - dot / (query_norm.sqrt() * point_norm.sqrt())
+                            }
+                        }
+                        Metric::NegativeDot => -query_values
+                            .iter()
+                            .zip(point)
+                            .map(|(query, point)| query * point)
+                            .sum::<f32>(),
+                    };
+                    (*id, score)
+                })
+                .collect::<Vec<_>>();
+            expected.sort_by(|(left_id, left_score), (right_id, right_score)| {
+                left_score
+                    .total_cmp(right_score)
+                    .then_with(|| left_id.cmp(right_id))
+            });
+
+            assert_eq!(result.candidates.len(), expected.len());
+            for (candidate, (expected_id, expected_score)) in result.candidates.iter().zip(expected)
+            {
+                assert_eq!(candidate.id, expected_id, "{metric:?} d={dimension}");
+                assert_eq!(
+                    candidate.score.to_bits(),
+                    expected_score.to_bits(),
+                    "{metric:?} d={dimension} id={expected_id:?}"
+                );
+            }
+        }
+    }
+}
+
+fn test_coordinate(index: usize, salt: usize) -> f32 {
+    let mixed = index
+        .wrapping_mul(0x9e37)
+        .wrapping_add(salt.wrapping_mul(0x51));
+    let centered = i16::try_from(mixed % 4093).expect("test coordinate fits") - 2046;
+    f32::from(centered) / 4093.0
+}
+
 fn embedding_recipe() -> EmbeddingRecipe {
     EmbeddingRecipe {
         model: ModelVersion::from_value(&[8; 32]),

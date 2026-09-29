@@ -4,7 +4,7 @@ use super::provider::{
     AnnPage, AnnSource, ScoredCandidate, VectorSearchRequest, VectorSearchResult,
 };
 use super::quality::{combine_quality, quality_valid};
-use super::score::score;
+use super::score::{score, score_admitted};
 use crate::contracts::{CandidateSource, SearchQuality};
 use crate::delta::CandidateDelta;
 use crate::incremental::limits::{OverlayLimits, RefreshKind};
@@ -273,10 +273,7 @@ impl<S: AnnSource> VectorIndex<S> {
         {
             return Ok(true);
         }
-        self.facts
-            .point(id)
-            .map(|point| point.is_some())
-            .map_err(AdapterError::Extension)
+        Ok(self.facts.encoded_point(id).is_some())
     }
 
     /// Searches immutable base, unions fresh exact points, filters tombstones,
@@ -312,14 +309,17 @@ impl<S: AnnSource> VectorIndex<S> {
             }) {
                 continue;
             }
-            let point = self
+            let overlay_point = self
                 .overlay
                 .as_deref()
-                .and_then(|overlay| overlay.point(id))
-                .map_or_else(|| self.facts.point(id), |point| Ok(Some(point.clone())))
-                .map_err(AdapterError::Extension)?;
-            let Some(point) = point else { continue };
-            let score = score(self.base.metric(), query.values(), point.values());
+                .and_then(|overlay| overlay.point(id));
+            let score = if let Some(point) = overlay_point {
+                score(self.base.metric(), query.values(), point.values())
+            } else if let Some(point) = self.facts.encoded_point(id) {
+                score_admitted(self.base.metric(), query.values(), &point)
+            } else {
+                continue;
+            };
             if !score.is_finite() {
                 return Err(AdapterError::Extension(Error::MalformedInput));
             }
