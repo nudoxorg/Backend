@@ -1,9 +1,12 @@
-//! Canonical claim manifest for the V2 typed semantic-plane closure.
+//! Canonical claim manifest for the V2 typed semantic-plane closure, c007 wire
+//! revision 3.
 //!
 //! This is deliberately separate from [`SemanticPlaneManifest`](crate::ir::SemanticPlaneManifest),
 //! whose identity includes the V1 NXFI `GenerationId` and c003 image topology.
-//! V2 manifests name seven typed row families and their c004-compatible
-//! segment payloads. Decoding preserves only untrusted input and root claims;
+//! Wire revision 3 commits the per-family stable-key boundary algorithm and
+//! its byte limits alongside the seven typed row families and c004-compatible
+//! segment payloads. Revision 2 is rejected rather than reinterpreted. Decoding
+//! preserves only untrusted input and root claims;
 //! it never recreates a live coverage capability.
 
 use alloc::{boxed::Box, vec::Vec};
@@ -17,18 +20,22 @@ use thiserror::Error;
 use crate::ir::{
     AtomId, ImageProvenance, MAX_SEMANTIC_SEGMENT_BYTES, SemanticBuildIdentity,
     SemanticImageAuthority, SemanticImageFacts, SemanticInputWitness, SemanticIrPlane,
-    SemanticScopeClaim, SemanticScopeFacts, SourceIdentity, UntrustedSemanticContentRootV2,
+    SemanticPlaneSegmentBoundaryAlgorithm, SemanticPlaneSegmentBoundaryPolicy, SemanticScopeClaim,
+    SemanticScopeFacts, SourceIdentity, UntrustedSemanticContentRootV2,
     UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId,
 };
 use crate::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
 
 const MAGIC: [u8; 4] = *b"STPV";
-const WIRE_VERSION: u16 = 2;
+/// c007 wire revision carrying V2 typed-plane boundary policies.
+pub const SEMANTIC_TYPED_PLANE_MANIFEST_V2_WIRE_REVISION: u16 = 3;
+const WIRE_VERSION: u16 = SEMANTIC_TYPED_PLANE_MANIFEST_V2_WIRE_REVISION;
 const HEADER_BYTES: usize = MAGIC.len() + core::mem::size_of::<u16>();
 const FAMILY_COUNT: usize = 7;
 const BUILD_BYTES: usize = 32 * 6 + 2 + 1;
 const INPUT_CLAIM_BYTES: usize = 32 + 32 + 1;
 const SEGMENT_BYTES: usize = 32 + 32 + 4 + 8 + 32;
+const BOUNDARY_POLICY_BYTES: usize = 1 + 4 + 4 + 4;
 /// Bounds the canonical manifest itself. Payloads live in separate c004
 /// objects, so this ceiling covers descriptors and build/input claims only.
 pub const MAX_TYPED_PLANE_MANIFEST_V2_BYTES: usize = 8 * 1024 * 1024;
@@ -143,13 +150,13 @@ impl SemanticInputClaimV2 {
     }
 }
 
-/// FileStore schema for one canonical V2 typed-family manifest.
+/// FileStore schema for V2 typed-plane profile c007 wire revision 3.
 pub struct SemanticTypedPlaneManifestV2Schema;
 
 impl Schema for SemanticTypedPlaneManifestV2Schema {
     const DOMAIN: u8 = 0x7a;
     const TYPE: u16 = 0xc007;
-    const VERSION: u8 = 2;
+    const VERSION: u8 = SEMANTIC_TYPED_PLANE_MANIFEST_V2_WIRE_REVISION as u8;
     type Value = [u8];
 
     fn encode(value: &Self::Value, output: &mut Vec<u8>) {
@@ -157,7 +164,7 @@ impl Schema for SemanticTypedPlaneManifestV2Schema {
     }
 }
 
-/// Exact schema identity for a canonical V2 typed-family manifest object.
+/// Exact schema identity for V2 typed-plane profile c007 wire revision 3.
 pub const SEMANTIC_TYPED_PLANE_MANIFEST_V2_SCHEMA: SchemaIdentity = SchemaIdentity::new(
     SemanticTypedPlaneManifestV2Schema::DOMAIN,
     SemanticTypedPlaneManifestV2Schema::TYPE,
@@ -230,6 +237,7 @@ impl SemanticTypedPlaneSegmentClaimV2 {
 pub struct SemanticTypedPlaneFamilyDescriptorV2 {
     family: SemanticIrPlane,
     row_count: u64,
+    boundary_policy: SemanticPlaneSegmentBoundaryPolicy,
     segments: Box<[SemanticTypedPlaneSegmentClaimV2]>,
 }
 
@@ -240,12 +248,14 @@ impl SemanticTypedPlaneFamilyDescriptorV2 {
     pub fn from_untrusted_claims(
         family: SemanticIrPlane,
         row_count: u64,
+        boundary_policy: SemanticPlaneSegmentBoundaryPolicy,
         segments: Vec<SemanticTypedPlaneSegmentClaimV2>,
     ) -> Result<Self, SemanticTypedPlaneManifestV2Error> {
-        validate_family_claims(family, row_count, &segments)?;
+        validate_family_claims(family, row_count, boundary_policy, &segments)?;
         Ok(Self {
             family,
             row_count,
+            boundary_policy,
             segments: segments.into_boxed_slice(),
         })
     }
@@ -260,6 +270,12 @@ impl SemanticTypedPlaneFamilyDescriptorV2 {
     #[must_use]
     pub const fn row_count(&self) -> u64 {
         self.row_count
+    }
+
+    /// Closed algorithm and byte parameters committed for this family.
+    #[must_use]
+    pub const fn boundary_policy(&self) -> SemanticPlaneSegmentBoundaryPolicy {
+        self.boundary_policy
     }
 
     /// Ordered segment claims for this family.
@@ -352,6 +368,7 @@ impl SemanticTypedPlaneManifestV2 {
         for _ in 0..FAMILY_COUNT {
             let family = decode_family_kind(&mut reader)?;
             let row_count = reader.u64()?;
+            let boundary_policy = decode_boundary_policy(&mut reader)?;
             let segment_count = usize::try_from(reader.u32()?)
                 .map_err(|_| SemanticTypedPlaneManifestV2Error::CountOverflow)?;
             total_segments = total_segments
@@ -389,7 +406,10 @@ impl SemanticTypedPlaneManifestV2 {
                 )?);
             }
             families.push(SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
-                family, row_count, segments,
+                family,
+                row_count,
+                boundary_policy,
+                segments,
             )?);
         }
         reader.finish()?;
@@ -434,6 +454,7 @@ impl SemanticTypedPlaneManifestV2 {
         for family in &self.families {
             encode_family_kind(family.family, &mut output);
             output.extend_from_slice(&family.row_count.to_be_bytes());
+            encode_boundary_policy(family.boundary_policy, &mut output)?;
             output.extend_from_slice(
                 &u32::try_from(family.segments.len())
                     .map_err(|_| SemanticTypedPlaneManifestV2Error::CountOverflow)?
@@ -522,7 +543,12 @@ impl SemanticTypedPlaneManifestV2 {
                     observed: family.family,
                 });
             }
-            validate_family_claims(family.family, family.row_count, &family.segments)?;
+            validate_family_claims(
+                family.family,
+                family.row_count,
+                family.boundary_policy,
+                &family.segments,
+            )?;
             total_segments = total_segments
                 .checked_add(family.segments.len())
                 .ok_or(SemanticTypedPlaneManifestV2Error::CountOverflow)?;
@@ -575,7 +601,7 @@ impl SemanticTypedPlaneManifestV2 {
                 .checked_add(family.segments.len())
                 .ok_or(SemanticTypedPlaneManifestV2Error::CountOverflow)?;
             total = total
-                .checked_add(family_kind_length + 8 + 4)
+                .checked_add(family_kind_length + 8 + BOUNDARY_POLICY_BYTES + 4)
                 .and_then(|length| length.checked_add(segment_bytes))
                 .ok_or(SemanticTypedPlaneManifestV2Error::CountOverflow)?;
         }
@@ -708,9 +734,18 @@ pub enum SemanticTypedPlaneManifestV2Error {
     /// A segment has no rows, invalid key order, or invalid payload length.
     #[error("invalid V2 typed-plane segment descriptor at index {index}")]
     SegmentClaim { index: usize },
+    /// A family boundary policy names an algorithm not admitted by this wire version.
+    #[error("unknown V2 typed-plane boundary algorithm {0}")]
+    BoundaryAlgorithm(u8),
+    /// The family boundary policy has inconsistent or unsupported parameters.
+    #[error("invalid V2 typed-plane family boundary policy")]
+    BoundaryPolicy,
     /// Segment key ranges overlap or are not strictly increasing.
     #[error("V2 typed-plane segment ranges overlap or are out of order at index {index}")]
     SegmentOrder { index: usize },
+    /// A segment's claimed byte length exceeds its committed family policy.
+    #[error("V2 typed-plane segment at index {index} exceeds its boundary policy maximum")]
+    SegmentExceedsBoundaryPolicy { index: usize },
     /// The manifest repeats a semantic segment identity.
     #[error("V2 typed-plane manifest repeats a segment identity")]
     DuplicateSegmentId,
@@ -773,11 +808,15 @@ fn required_families(profile: LanguageProfile) -> [SemanticIrPlane; FAMILY_COUNT
 fn validate_family_claims(
     family: SemanticIrPlane,
     row_count: u64,
+    boundary_policy: SemanticPlaneSegmentBoundaryPolicy,
     segments: &[SemanticTypedPlaneSegmentClaimV2],
 ) -> Result<(), SemanticTypedPlaneManifestV2Error> {
     let mut observed_rows = 0_u64;
     for (index, segment) in segments.iter().copied().enumerate() {
         validate_segment_claim(segment, index)?;
+        if segment.byte_length > boundary_policy.maximum_bytes() as u64 {
+            return Err(SemanticTypedPlaneManifestV2Error::SegmentExceedsBoundaryPolicy { index });
+        }
         if index > 0 && segments[index - 1].last_key >= segment.first_key {
             return Err(SemanticTypedPlaneManifestV2Error::SegmentOrder { index });
         }
@@ -998,6 +1037,42 @@ fn encode_family_kind(family: SemanticIrPlane, output: &mut Vec<u8>) {
     }
 }
 
+fn encode_boundary_policy(
+    policy: SemanticPlaneSegmentBoundaryPolicy,
+    output: &mut Vec<u8>,
+) -> Result<(), SemanticTypedPlaneManifestV2Error> {
+    output.push(policy.algorithm() as u8);
+    output.extend_from_slice(
+        &u32::try_from(policy.minimum_bytes())
+            .map_err(|_| SemanticTypedPlaneManifestV2Error::CountOverflow)?
+            .to_be_bytes(),
+    );
+    output.extend_from_slice(
+        &u32::try_from(policy.target_bytes())
+            .map_err(|_| SemanticTypedPlaneManifestV2Error::CountOverflow)?
+            .to_be_bytes(),
+    );
+    output.extend_from_slice(
+        &u32::try_from(policy.maximum_bytes())
+            .map_err(|_| SemanticTypedPlaneManifestV2Error::CountOverflow)?
+            .to_be_bytes(),
+    );
+    Ok(())
+}
+
+fn decode_boundary_policy(
+    reader: &mut Reader<'_>,
+) -> Result<SemanticPlaneSegmentBoundaryPolicy, SemanticTypedPlaneManifestV2Error> {
+    let algorithm = reader.u8()?;
+    SemanticPlaneSegmentBoundaryAlgorithm::try_from(algorithm)
+        .map_err(SemanticTypedPlaneManifestV2Error::BoundaryAlgorithm)?;
+    let minimum = reader.u32()?;
+    let target = reader.u32()?;
+    let maximum = reader.u32()?;
+    SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(minimum, target, maximum)
+        .map_err(|_| SemanticTypedPlaneManifestV2Error::BoundaryPolicy)
+}
+
 fn decode_family_kind(
     reader: &mut Reader<'_>,
 ) -> Result<SemanticIrPlane, SemanticTypedPlaneManifestV2Error> {
@@ -1176,10 +1251,29 @@ mod tests {
     }
 
     fn empty_families() -> [SemanticTypedPlaneFamilyDescriptorV2; FAMILY_COUNT] {
-        required_families(build().profile()).map(|family| {
-            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(family, 0, Vec::new())
+        required_families(build().profile())
+            .into_iter()
+            .enumerate()
+            .map(|(index, family)| {
+                let minimum = 4096 + u32::try_from(index).expect("family index fits") * 256;
+                let target = minimum * 4;
+                let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+                    minimum,
+                    target,
+                    1024 * 1024,
+                )
+                .expect("family boundary policy is valid");
+                SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
+                    family,
+                    0,
+                    policy,
+                    Vec::new(),
+                )
                 .expect("explicit empty family is valid")
-        })
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("the closed family list has exactly seven entries")
     }
 
     fn input_claim(state: Coverage) -> SemanticInputClaimV2 {
@@ -1210,7 +1304,14 @@ mod tests {
             reopened
                 .families()
                 .iter()
-                .all(|family| { family.row_count() == 0 && family.segments().is_empty() })
+                .enumerate()
+                .all(|(index, family)| {
+                    family.row_count() == 0
+                        && family.segments().is_empty()
+                        && family.boundary_policy().minimum_bytes() == 4096 + index * 256
+                        && family.boundary_policy().target_bytes() == (4096 + index * 256) * 4
+                        && family.boundary_policy().maximum_bytes() == 1024 * 1024
+                })
         );
         assert_eq!(reopened.input_claim().coverage_state(), Coverage::Complete);
         let usage = reopened.resource_usage().expect("bounded resource usage");
@@ -1259,7 +1360,7 @@ mod tests {
             + INPUT_CLAIM_BYTES
             + 32
             + 32;
-        let first_segment_count_offset = family_count_offset + 1 + 1 + 8;
+        let first_segment_count_offset = family_count_offset + 1 + 1 + 8 + BOUNDARY_POLICY_BYTES;
 
         let mut excessive_count = encoded.clone();
         excessive_count[first_segment_count_offset..first_segment_count_offset + 4]
@@ -1278,6 +1379,42 @@ mod tests {
         assert_eq!(
             SemanticTypedPlaneManifestV2::decode(&truncated_under_limit),
             Err(SemanticTypedPlaneManifestV2Error::Truncated)
+        );
+    }
+
+    #[test]
+    fn decoder_rejects_unknown_or_invalid_family_boundary_policies() {
+        let encoded = manifest().canonical_bytes().expect("encode manifest");
+        let mut old_wire_revision = encoded.clone();
+        old_wire_revision[4..6].copy_from_slice(&2_u16.to_be_bytes());
+        assert_eq!(
+            SemanticTypedPlaneManifestV2::decode(&old_wire_revision),
+            Err(SemanticTypedPlaneManifestV2Error::Version(2)),
+            "wire revision 2 is not reinterpreted as a manifest with boundary policy"
+        );
+
+        let family_count_offset = HEADER_BYTES
+            + BUILD_BYTES
+            + image_facts_wire_len(facts())
+            + INPUT_CLAIM_BYTES
+            + 32
+            + 32;
+        let policy_offset = family_count_offset + 1 + 1 + 8;
+
+        let mut unknown_algorithm = encoded.clone();
+        unknown_algorithm[policy_offset] = 99;
+        assert_eq!(
+            SemanticTypedPlaneManifestV2::decode(&unknown_algorithm),
+            Err(SemanticTypedPlaneManifestV2Error::BoundaryAlgorithm(99))
+        );
+
+        let mut target_below_minimum = encoded;
+        let minimum = 4096_u32;
+        target_below_minimum[policy_offset + 1 + 4..policy_offset + 1 + 8]
+            .copy_from_slice(&(minimum - 1).to_be_bytes());
+        assert_eq!(
+            SemanticTypedPlaneManifestV2::decode(&target_below_minimum),
+            Err(SemanticTypedPlaneManifestV2Error::BoundaryPolicy)
         );
     }
 
@@ -1307,6 +1444,27 @@ mod tests {
             ),
             Err(SemanticTypedPlaneManifestV2Error::SegmentClaim { .. })
         ));
+
+        let bounded_policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(20, 40, 100)
+            .expect("test family policy is valid");
+        let over_policy_segment = SemanticTypedPlaneSegmentClaimV2::from_untrusted_claims(
+            [2; 32],
+            [2; 32],
+            1,
+            101,
+            UntrustedSemanticSegmentId::from_raw([3; 32]),
+        )
+        .expect("the segment claim is valid under the broad SPIR resource ceiling");
+        assert_eq!(
+            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
+                SemanticIrPlane::Documentation,
+                1,
+                bounded_policy,
+                vec![over_policy_segment],
+            ),
+            Err(SemanticTypedPlaneManifestV2Error::SegmentExceedsBoundaryPolicy { index: 0 }),
+            "family claims are rejected before payload reads when above committed max"
+        );
     }
 
     #[test]

@@ -26,6 +26,7 @@ mod range;
 mod reader;
 /// Immutable persistent index for stable-key semantic rows.
 pub mod row_index;
+mod segment_boundary_policy;
 mod semantic;
 mod semantic_data_view;
 mod semantic_discovery;
@@ -135,6 +136,10 @@ pub use reader::{
     IrCanonicalCoreEntities, IrCanonicalEntities, IrExtensionRows, ScopedExternalTargetIdentity,
     SemanticCoreReader, SemanticCursor, SemanticEntity, SemanticImageFacts, SemanticReader,
 };
+pub use segment_boundary_policy::{
+    CanonicalSemanticPlaneBoundaryFamilyVerifier, SemanticPlaneSegmentBoundaryAlgorithm,
+    SemanticPlaneSegmentBoundaryPolicy,
+};
 #[doc(hidden)]
 pub use semantic::{
     ArrayShape, AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
@@ -224,7 +229,8 @@ pub use type_facts::{
 };
 pub use typed_plane_manifest_v2::{
     MAX_TYPED_PLANE_MANIFEST_V2_BYTES, MAX_TYPED_PLANE_MANIFEST_V2_RESIDENT_BYTES,
-    MAX_TYPED_PLANE_SEGMENTS_V2, SEMANTIC_TYPED_PLANE_MANIFEST_V2_SCHEMA, SemanticInputClaimV2,
+    MAX_TYPED_PLANE_SEGMENTS_V2, SEMANTIC_TYPED_PLANE_MANIFEST_V2_SCHEMA,
+    SEMANTIC_TYPED_PLANE_MANIFEST_V2_WIRE_REVISION, SemanticInputClaimV2,
     SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
     SemanticTypedPlaneManifestV2Error, SemanticTypedPlaneManifestV2ResourceUsage,
     SemanticTypedPlaneManifestV2Schema, SemanticTypedPlaneSegmentClaimV2,

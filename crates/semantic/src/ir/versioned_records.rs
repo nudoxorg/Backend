@@ -12,6 +12,7 @@ use alloc::{boxed::Box, vec::Vec};
 
 use thiserror::Error;
 
+pub use super::segment_boundary_policy::SemanticPlaneSegmentBoundaryPolicy as CanonicalPlaneSegmentBoundaryPolicy;
 use crate::ir::{
     DeclarationIdentity, JumboRopeObjectSink, JumboRopeObjectSource, SemanticInputWitness,
     SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment, SemanticReader, SemanticSegmentId,
@@ -20,6 +21,7 @@ use crate::ir::{
 const MAGIC: [u8; 4] = *b"SPIR";
 const VERSION: u16 = 2;
 const HEADER_BYTES: usize = 4 + 2 + 1 + 4;
+pub(crate) const SPIR_HEADER_BYTES: usize = HEADER_BYTES;
 const RECORD_HEADER_BYTES: usize = 32 + 1 + 4;
 const INITIAL_PREFIX_BITS: u16 = 8;
 
@@ -333,6 +335,8 @@ pub struct CanonicalPlaneEncodingMetrics {
     segment_count: u64,
     output_bytes: u64,
     row_encode_calls: u64,
+    anchor_hash_rows: u64,
+    anchor_key_hash_bytes: u64,
     peak_row_scratch_capacity_bytes: u64,
     peak_segment_scratch_capacity_bytes: u64,
     peak_jumbo_rope_scratch_bytes: u64,
@@ -360,6 +364,16 @@ impl CanonicalPlaneEncodingMetrics {
     #[must_use]
     pub const fn row_encode_calls(self) -> u64 {
         self.row_encode_calls
+    }
+    /// Stable 32-byte row-key input bytes traversed by the opt-in ramp rule.
+    #[must_use]
+    pub const fn anchor_key_hash_bytes(self) -> u64 {
+        self.anchor_key_hash_bytes
+    }
+    /// Number of stable row keys hashed by the opt-in ramp rule.
+    #[must_use]
+    pub const fn anchor_hash_rows(self) -> u64 {
+        self.anchor_hash_rows
     }
     /// Largest reusable row scratch capacity observed during emission.
     #[must_use]
@@ -445,6 +459,12 @@ impl<'bytes> CanonicalSemanticPlaneRecordView<'bytes> {
     pub const fn payload(self) -> &'bytes [u8] {
         self.payload
     }
+
+    /// Exact row bytes in the enclosing SPIR stream, including fixed framing.
+    #[must_use]
+    pub const fn encoded_len(self) -> usize {
+        RECORD_HEADER_BYTES + self.payload.len()
+    }
 }
 
 /// Strict borrowed view of one verified `SPIR` segment.
@@ -480,6 +500,12 @@ impl<'bytes> CanonicalSemanticPlaneSegmentView<'bytes> {
     #[must_use]
     pub const fn row_count(self) -> u32 {
         self.row_count
+    }
+
+    /// Exact SPIR byte length including its fixed header.
+    #[must_use]
+    pub const fn encoded_len(self) -> usize {
+        HEADER_BYTES + self.rows.len()
     }
 
     /// Reopens the already validated borrowed records without allocating.
@@ -672,7 +698,7 @@ where
     Encoder: CanonicalPlaneRowEncoder + ?Sized,
     Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
 {
-    stream_canonical_plane_family_inner(reader, encoder, input, maximum_bytes, None, sink)
+    stream_canonical_plane_family_inner(reader, encoder, input, maximum_bytes, None, None, sink)
 }
 
 /// Encodes one complete row family while persisting jumbo field values through
@@ -696,6 +722,61 @@ where
         encoder,
         input,
         maximum_bytes,
+        None,
+        Some(jumbo_sink),
+        sink,
+    )
+}
+
+/// Encodes one complete family with the opt-in stable-key hash-ramp policy.
+///
+/// Existing APIs keep their historical prefix/size cut rule. This explicit
+/// entry point has a separate policy that must be recorded by any durable
+/// manifest before consumers can treat its ranges as canonical.
+pub fn stream_canonical_plane_family_with_stable_key_anchors<Reader, Encoder, Sink>(
+    reader: &Reader,
+    encoder: &Encoder,
+    input: SemanticInputWitness,
+    policy: CanonicalPlaneSegmentBoundaryPolicy,
+    sink: &mut Sink,
+) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
+where
+    Reader: SemanticReader + ?Sized,
+    Encoder: CanonicalPlaneRowEncoder + ?Sized,
+    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+{
+    stream_canonical_plane_family_inner(
+        reader,
+        encoder,
+        input,
+        policy.maximum_bytes(),
+        Some(policy),
+        None,
+        sink,
+    )
+}
+
+/// Encodes a complete family with the stable-key hash-ramp policy while persisting
+/// jumbo field values through the caller's existing object CAS.
+pub fn stream_canonical_plane_family_with_jumbo_and_stable_key_anchors<Reader, Encoder, Sink>(
+    reader: &Reader,
+    encoder: &Encoder,
+    input: SemanticInputWitness,
+    policy: CanonicalPlaneSegmentBoundaryPolicy,
+    jumbo_sink: &mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>,
+    sink: &mut Sink,
+) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
+where
+    Reader: SemanticReader + ?Sized,
+    Encoder: CanonicalPlaneRowEncoder + ?Sized,
+    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+{
+    stream_canonical_plane_family_inner(
+        reader,
+        encoder,
+        input,
+        policy.maximum_bytes(),
+        Some(policy),
         Some(jumbo_sink),
         sink,
     )
@@ -706,6 +787,7 @@ fn stream_canonical_plane_family_inner<Reader, Encoder, Sink>(
     encoder: &Encoder,
     input: SemanticInputWitness,
     maximum_bytes: usize,
+    boundary_policy: Option<CanonicalPlaneSegmentBoundaryPolicy>,
     mut jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
     sink: &mut Sink,
 ) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
@@ -717,6 +799,9 @@ where
     if !matches!(encoder.kind(), SemanticPlaneKind::Ir(_)) {
         return Err(SemanticPlaneRecordError::IrKindRequired.into());
     }
+    let SemanticPlaneKind::Ir(family) = encoder.kind() else {
+        return Err(SemanticPlaneRecordError::IrKindRequired.into());
+    };
     if maximum_bytes == 0 || maximum_bytes > crate::ir::MAX_SEMANTIC_SEGMENT_BYTES {
         return Err(SemanticPlaneRecordError::InvalidByteCeiling {
             observed: maximum_bytes,
@@ -753,9 +838,26 @@ where
     let mut peak_segment_scratch = 0_usize;
     let mut peak_jumbo_rope_scratch = 0_u64;
     let mut peak_tracked_scratch_upper_bound = 0_u64;
+    let mut anchor_hash_rows = 0_u64;
+    let mut anchor_key_hash_bytes = 0_u64;
     for row in &keys.rows {
         let prefix = prefix_value(&row.key, INITIAL_PREFIX_BITS);
-        if segment_rows > 0 && current_prefix != Some(prefix) {
+        let anchor_cut = if let Some(policy) = boundary_policy {
+            if segment_rows > 0 && policy.hashes_candidate(segment_bytes.len()) {
+                anchor_hash_rows = anchor_hash_rows
+                    .checked_add(1)
+                    .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+                anchor_key_hash_bytes = anchor_key_hash_bytes
+                    .checked_add(32)
+                    .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+            }
+            segment_rows > 0 && policy.cuts_before(family, segment_bytes.len(), &row.key)
+        } else {
+            false
+        };
+        let legacy_prefix_cut =
+            boundary_policy.is_none() && segment_rows > 0 && current_prefix != Some(prefix);
+        if legacy_prefix_cut || anchor_cut {
             emit_stream_segment(
                 encoder.kind(),
                 input,
@@ -886,11 +988,13 @@ where
         segment_count,
         output_bytes,
         row_encode_calls: row_count,
+        anchor_hash_rows,
         peak_row_scratch_capacity_bytes: row_scratch_capacity,
         peak_segment_scratch_capacity_bytes: segment_scratch_capacity,
         peak_jumbo_rope_scratch_bytes: peak_jumbo_rope_scratch,
         peak_tracked_scratch_upper_bound_bytes: peak_tracked_scratch_upper_bound,
         row_index_capacity_bytes: key_capacity,
+        anchor_key_hash_bytes,
     })
 }
 
@@ -1011,6 +1115,46 @@ pub fn decode_semantic_plane_segment<'bytes>(
     }
     descriptor.admit(kind, bytes)?;
     decode_semantic_plane_segment_structure(kind, descriptor, bytes)
+}
+
+/// Reopens every segment in a complete family and verifies its committed
+/// stable-key ramp cuts, target behavior, and hard encoded-size ceiling.
+///
+/// Per-segment decoding alone cannot prove that a family used canonical
+/// boundaries. This verifier walks all rows in order, recomputes every
+/// expected anchor/target/forced cut, and compares those cuts with the supplied
+/// segment starts. The policy must come from trusted, durably committed
+/// metadata; callers must not infer it from the segment bytes. Streaming V2
+/// admission should use [`CanonicalSemanticPlaneBoundaryFamilyVerifier`]
+/// directly so it need not retain the family payload inventory.
+pub fn verify_canonical_semantic_plane_segment_boundaries(
+    kind: SemanticPlaneKind,
+    descriptors: &[SemanticPlaneSegment],
+    payloads: &[&[u8]],
+    policy: CanonicalPlaneSegmentBoundaryPolicy,
+    expected_rows: u64,
+) -> Result<(), SemanticPlaneRecordError> {
+    let SemanticPlaneKind::Ir(family) = kind else {
+        return Err(SemanticPlaneRecordError::IrKindRequired);
+    };
+    if descriptors.len() != payloads.len() {
+        return Err(SemanticPlaneRecordError::SegmentCount {
+            expected: descriptors.len(),
+            observed: payloads.len(),
+        });
+    }
+    let mut verifier =
+        super::segment_boundary_policy::CanonicalSemanticPlaneBoundaryFamilyVerifier::begin_family(
+            family, policy,
+        );
+    for (descriptor, payload) in descriptors.iter().zip(payloads) {
+        let view = decode_semantic_plane_segment(kind, descriptor, payload)?;
+        verifier.push_segment(view)?;
+    }
+    verifier.finish(
+        expected_rows,
+        u64::try_from(descriptors.len()).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?,
+    )
 }
 
 /// Checks the row-plane grammar after the caller has established exact
@@ -1331,6 +1475,19 @@ pub enum SemanticPlaneRecordError {
     /// The requested bounded segment size is outside the supported limit.
     #[error("canonical segment ceiling {observed} is invalid; maximum is {maximum}")]
     InvalidByteCeiling { observed: usize, maximum: usize },
+    /// Stable-key policy byte range is invalid or exceeds the closed u32 wire form.
+    #[error("canonical segment boundary range {minimum}..={target}..={maximum} is invalid")]
+    InvalidSegmentBoundaryRange {
+        minimum: usize,
+        target: usize,
+        maximum: usize,
+    },
+    /// A boundary-policy parameter could not be represented in its wire type.
+    #[error("canonical segment boundary policy parameter is out of range")]
+    BoundaryPolicyRange,
+    /// One or more family segments do not follow the selected canonical cut policy.
+    #[error("semantic plane segment boundaries are not canonical for the supplied policy")]
+    NonCanonicalSegmentBoundary,
     /// Two logical rows produced the same stable key.
     #[error("canonical plane rows have a stable-key collision")]
     StableKeyCollision,
@@ -1406,6 +1563,12 @@ pub enum SemanticPlaneRecordError {
     /// Supplied payload cardinality differs from canonical family output.
     #[error("plane inventory has {observed} segments; expected {expected}")]
     SegmentCount { expected: usize, observed: usize },
+    /// Complete-family segment count differs from its durable policy claim.
+    #[error("boundary verifier observed {observed} segments; manifest claims {expected}")]
+    BoundaryFamilySegmentCount { expected: u64, observed: u64 },
+    /// Complete-family row count differs from its durable policy claim.
+    #[error("boundary verifier observed {observed} rows; manifest claims {expected}")]
+    BoundaryFamilyRowCount { expected: u64, observed: u64 },
     /// Stable payload bytes differ from the complete reader projection.
     #[error("versioned plane payload differs from its canonical reader projection")]
     PlaneOracleMismatch,
@@ -2040,6 +2203,248 @@ mod tests {
     }
 
     #[test]
+    fn stable_key_anchor_cuts_reverify_complete_family_and_reject_valid_but_noncanonical_splits() {
+        let base = image(128, None);
+        let input = witness();
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Documentation);
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(300, 768, 1024)
+            .expect("stable key boundary policy is valid");
+        let mut canonical = OwnedPlaneSegments::default();
+        let metrics = stream_canonical_plane_family_with_stable_key_anchors(
+            &base,
+            &DocumentationRows,
+            input,
+            policy,
+            &mut canonical,
+        )
+        .expect("stable-key family streams under the committed ramp policy");
+        assert_eq!(metrics.row_count(), 128);
+        assert_eq!(metrics.row_encode_calls(), 128);
+        assert!(metrics.anchor_key_hash_bytes() > 0);
+        assert_eq!(
+            metrics.anchor_hash_rows() * 32,
+            metrics.anchor_key_hash_bytes()
+        );
+        assert!(
+            canonical
+                .segments
+                .iter()
+                .all(|segment| segment.bytes().len() <= policy.maximum_bytes())
+        );
+        let descriptors = canonical
+            .segments
+            .iter()
+            .map(|segment| segment.metadata().expect("segment descriptor"))
+            .collect::<Vec<_>>();
+        let payloads = canonical
+            .segments
+            .iter()
+            .map(|segment| segment.bytes())
+            .collect::<Vec<_>>();
+        verify_canonical_semantic_plane_segment_boundaries(
+            kind,
+            &descriptors,
+            &payloads,
+            policy,
+            metrics.row_count(),
+        )
+        .expect("cold family verifier recomputes all anchor and maximum-size cuts");
+        assert!(
+            descriptors.len() < metrics.row_count() as usize,
+            "the source policy groups multiple rows, giving the alternate-policy check a discriminating family"
+        );
+
+        let singleton_policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+            HEADER_BYTES as u32,
+            HEADER_BYTES as u32,
+            1024,
+        )
+        .expect("singleton policy has valid hard limits");
+        let mut singleton_family = OwnedPlaneSegments::default();
+        let singleton_metrics = stream_canonical_plane_family_with_stable_key_anchors(
+            &image(1, None),
+            &DocumentationRows,
+            input,
+            singleton_policy,
+            &mut singleton_family,
+        )
+        .expect("one record larger than target but below maximum is valid at terminal EOF");
+        assert_eq!(singleton_metrics.row_count(), 1);
+        assert_eq!(singleton_metrics.segment_count(), 1);
+        assert!(singleton_family.segments[0].bytes().len() > singleton_policy.target_bytes());
+        let singleton_descriptor = singleton_family.segments[0]
+            .metadata()
+            .expect("terminal singleton descriptor");
+        let singleton_payload = singleton_family.segments[0].bytes();
+        verify_canonical_semantic_plane_segment_boundaries(
+            kind,
+            &[singleton_descriptor],
+            &[singleton_payload],
+            singleton_policy,
+            1,
+        )
+        .expect("the cold verifier preserves terminal singleton and target-oversize semantics");
+
+        let alternate_policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+            HEADER_BYTES as u32,
+            HEADER_BYTES as u32,
+            1024,
+        )
+        .expect("alternate policy is valid");
+        assert!(matches!(
+            verify_canonical_semantic_plane_segment_boundaries(
+                kind,
+                &descriptors,
+                &payloads,
+                alternate_policy,
+                metrics.row_count(),
+            ),
+            Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary)
+        ));
+
+        let singleton_view =
+            decode_semantic_plane_segment(kind, &singleton_descriptor, singleton_payload)
+                .expect("the large terminal record remains a strict-valid row");
+        let row = singleton_view
+            .records()
+            .next()
+            .expect("singleton record exists");
+        let observed = HEADER_BYTES + row.encoded_len();
+        let smaller_ceiling = u32::try_from(observed - 1).expect("fixture row size fits u32");
+        let too_small_policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+            HEADER_BYTES as u32,
+            HEADER_BYTES as u32,
+            smaller_ceiling,
+        )
+        .expect("smaller single-row ceiling is valid policy metadata");
+        let mut rejected_singleton = OwnedPlaneSegments::default();
+        assert!(matches!(
+            stream_canonical_plane_family_with_stable_key_anchors(
+                &image(1, None),
+                &DocumentationRows,
+                input,
+                too_small_policy,
+                &mut rejected_singleton,
+            ),
+            Err(CanonicalPlaneStreamError::Encoding(
+                SemanticPlaneRecordError::OversizedRow { .. }
+            ))
+        ));
+
+        let mut individually_valid_single_rows = Vec::new();
+        for segment in &canonical.segments {
+            let descriptor = segment.metadata().expect("canonical segment descriptor");
+            let view = decode_semantic_plane_segment(kind, &descriptor, segment.bytes())
+                .expect("canonical segment locally decodes");
+            for record in view.records() {
+                let mut bytes = Vec::new();
+                begin_segment(kind, &mut bytes).expect("single-row header fits");
+                let row_length = u32::try_from(record.payload().len()).expect("row length fits");
+                bytes.extend_from_slice(&record.key());
+                bytes.push(record.tag());
+                bytes.extend_from_slice(&row_length.to_be_bytes());
+                bytes.extend_from_slice(record.payload());
+                bytes[7..11].copy_from_slice(&1_u32.to_be_bytes());
+                individually_valid_single_rows.push(CanonicalSemanticPlaneSegmentPayload {
+                    kind,
+                    first_key: record.key(),
+                    last_key: record.key(),
+                    row_count: 1,
+                    input,
+                    bytes: bytes.into_boxed_slice(),
+                });
+            }
+        }
+        let split_descriptors = individually_valid_single_rows
+            .iter()
+            .map(|segment| segment.metadata().expect("single-row descriptor"))
+            .collect::<Vec<_>>();
+        let split_payloads = individually_valid_single_rows
+            .iter()
+            .map(|segment| segment.bytes())
+            .collect::<Vec<_>>();
+        for (descriptor, payload) in split_descriptors.iter().zip(&split_payloads) {
+            decode_semantic_plane_segment(kind, descriptor, payload)
+                .expect("every adversarial range split is individually valid");
+        }
+        assert!(matches!(
+            verify_canonical_semantic_plane_segment_boundaries(
+                kind,
+                &split_descriptors,
+                &split_payloads,
+                policy,
+                metrics.row_count(),
+            ),
+            Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary)
+        ));
+    }
+
+    #[test]
+    fn stable_key_ramp_hash_skew_falls_back_to_the_hard_byte_ceiling() {
+        let family = SemanticIrPlane::Documentation;
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(256, 512, 512)
+            .expect("stable key boundary policy is valid");
+        let mut non_anchor_keys = Vec::new();
+        for value in 0_u16..4096 {
+            let mut key = [0_u8; 32];
+            key[30..].copy_from_slice(&value.to_be_bytes());
+            if super::super::segment_boundary_policy::stable_key_family_hash(family, &key) >> 60
+                == 0xF
+            {
+                non_anchor_keys.push(key);
+            }
+        }
+        assert!(non_anchor_keys.len() > 128);
+        assert!(non_anchor_keys.windows(2).all(|pair| pair[0] < pair[1]));
+
+        let frame_bytes = 120_usize;
+        let mut segment_bytes = HEADER_BYTES;
+        let mut segment_sizes = Vec::new();
+        for key in &non_anchor_keys {
+            let projected = segment_bytes + frame_bytes;
+            let forced_cut = projected > policy.maximum_bytes();
+            let anchor_cut = policy.cuts_before(family, segment_bytes, key);
+            assert!(
+                !anchor_cut,
+                "crafted keys collide in the same non-anchor hash-prefix bucket"
+            );
+            if forced_cut {
+                segment_sizes.push(segment_bytes);
+                segment_bytes = HEADER_BYTES;
+            }
+            segment_bytes += frame_bytes;
+            assert!(segment_bytes <= policy.maximum_bytes());
+        }
+        segment_sizes.push(segment_bytes);
+        assert!(segment_sizes.len() > 32);
+        assert!(
+            segment_sizes
+                .iter()
+                .all(|size| *size <= policy.maximum_bytes())
+        );
+    }
+
+    #[test]
+    fn stable_boundary_hash_is_domain_separated_by_family_and_full_key() {
+        let family = SemanticIrPlane::Documentation;
+        let key = [0x5A; 32];
+        let changed_key = [0x5B; 32];
+        let documentation_hash =
+            super::super::segment_boundary_policy::stable_key_family_hash(family, &key);
+        assert_ne!(
+            documentation_hash,
+            super::super::segment_boundary_policy::stable_key_family_hash(
+                SemanticIrPlane::Core,
+                &key,
+            )
+        );
+        assert_ne!(
+            documentation_hash,
+            super::super::segment_boundary_policy::stable_key_family_hash(family, &changed_key,)
+        );
+    }
+
+    #[test]
     fn relation_and_occurrence_rows_are_coordinate_independent_and_preserve_multiplicity() {
         let forward = graph_image(false, false);
         let reordered = graph_image(true, false);
@@ -2292,7 +2697,7 @@ mod tests {
             .expect("validator drains malformed content");
         assert!(matches!(
             validator.finish(),
-            Err(declarations::DocsWireValidationError::Grammar)
+            Err(SemanticPlaneRecordError::RowGrammar)
         ));
 
         let mut trailing = valid;
@@ -2303,7 +2708,7 @@ mod tests {
             .expect("validator drains trailing bytes");
         assert!(matches!(
             validator.finish(),
-            Err(declarations::DocsWireValidationError::Grammar)
+            Err(SemanticPlaneRecordError::RowGrammar)
         ));
     }
 
