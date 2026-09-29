@@ -27,11 +27,16 @@ mod declarations;
 mod occurrences;
 mod relations;
 mod source_provenance;
+mod types;
 mod wire;
 pub use declarations::{CoreDeclarationRows, DocumentationRows, encode_declaration_planes};
 pub use occurrences::{OccurrenceHandle, OccurrenceRows};
 pub use relations::RelationRows;
-pub use source_provenance::SourceProvenanceRows;
+pub use source_provenance::{SourceProvenanceHandle, SourceProvenanceRows};
+pub use types::{
+    CheckedTypesFamilyV2, TypedRecordPlan, TypesClosureSemantics, TypesReferenceV2,
+    TypesRowDomainV2, TypesRowHandle, TypesRows, validate_types_family_v2,
+};
 
 /// One compact handle to a row in the borrowed canonical reader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1009,6 +1014,9 @@ fn validate_record(
         SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance) => {
             source_provenance::validate_record(kind, key, tag, payload)
         }
+        SemanticPlaneKind::Ir(SemanticIrPlane::Types) => {
+            types::validate_record(kind, key, tag, payload)
+        }
         _ => Err(SemanticPlaneRecordError::UnsupportedFamily),
     }
 }
@@ -1721,5 +1729,41 @@ mod tests {
             512,
         )
         .expect("exact source family oracle");
+    }
+
+    #[test]
+    fn relation_representative_source_survives_atom_and_observation_reordering() {
+        let first = representative_image(false);
+        let second = representative_image(true);
+        let before = encode_canonical_plane_family(&first, &SourceProvenanceRows, witness(), 512)
+            .expect("first source family");
+        let after = encode_canonical_plane_family(&second, &SourceProvenanceRows, witness(), 512)
+            .expect("reordered source family");
+        assert_eq!(ids(&before), ids(&after));
+        assert_eq!(
+            before
+                .iter()
+                .map(|segment| segment.row_count() as usize)
+                .sum::<usize>(),
+            3,
+            "two declarations and their relation each own one source row"
+        );
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance);
+        let records = before
+            .iter()
+            .map(|segment| {
+                let descriptor = segment.metadata().expect("source descriptor");
+                decode_semantic_plane_segment(kind, &descriptor, segment.bytes())
+                    .expect("source row grammar")
+                    .records()
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records.iter().filter(|record| record.tag() == 2).count(),
+            1,
+            "representative relation source cannot disappear behind occurrences"
+        );
     }
 }

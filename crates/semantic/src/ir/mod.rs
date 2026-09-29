@@ -222,8 +222,9 @@ pub use versioned_records::{
     CanonicalSemanticPlaneSegmentPayload, CanonicalSemanticPlaneSegmentRef,
     CanonicalSemanticPlaneSegmentSink, CanonicalSemanticPlaneSegmentView, CoreDeclarationRows,
     DocumentationRows, MeasuredCanonicalPlaneEncoding, OccurrenceHandle, OccurrenceRows,
-    RelationRows, SemanticPlaneRecordError, SourceProvenanceRows, declaration_plane_key,
-    decode_semantic_plane_segment, encode_canonical_plane_family,
+    RelationRows, SemanticPlaneRecordError, SourceProvenanceHandle, SourceProvenanceRows,
+    TypedRecordPlan, TypesRows, declaration_plane_key, decode_semantic_plane_segment,
+    encode_canonical_plane_family,
     encode_canonical_plane_family_measured, encode_declaration_planes,
     stream_canonical_plane_family, verify_semantic_plane_family_against_reader,
 };
