@@ -273,7 +273,8 @@ impl RenderOnce for Stamp {
         let verdict = verdict(&self.facts);
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
         let motion = touch.motion.clone();
-        let open = motion.animate(track(&self.id, "open"), if touch.hovered || touch.focused || self.held == Pose::Held { 1.0 } else { 0.0 }, spec::LIFT, window, cx);
+        let wanted = touch.hovered || touch.focused || self.held == Pose::Held;
+        let open = motion.animate(track(&self.id, "open"), if wanted { 1.0 } else { 0.0 }, super::state::plate(wanted), window, cx);
         let open = open.clamp(0.0, 1.05);
         let hover = motion.animate(track(&self.id, "hover"), if touch.hovered { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
         let tone = ink_of(verdict.tone, palette);

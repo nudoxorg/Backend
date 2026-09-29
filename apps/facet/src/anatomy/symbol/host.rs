@@ -7,7 +7,7 @@ use super::view::Verb;
 use crate::anatomy::page::{Door, Doors, Fold};
 use crate::motion::presence::Presence;
 use gpui::{AnyElement, App, Bounds, Pixels, SharedString, Window};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -82,13 +82,10 @@ impl Ui {
 }
 
 /// What the page remembers between frames, outside the shell's state: where
-/// its sections were laid out (for "scroll to") and which side of the
-/// rail's breakpoint it last drew (so a width that hovers at the edge does
-/// not flicker).
+/// its sections were laid out (for "scroll to").
 #[derive(Debug, Default)]
 pub struct Spots {
     map: RefCell<BTreeMap<Sec, Bounds<Pixels>>>,
-    beside: Cell<Option<bool>>,
 }
 
 impl Spots {
@@ -107,17 +104,6 @@ impl Spots {
     /// Records `bounds` under `section`.
     pub fn record(&self, section: Sec, bounds: Bounds<Pixels>) {
         self.map.borrow_mut().insert(section, bounds);
-    }
-
-    /// Whether the rail was beside the page the last frame.
-    #[must_use]
-    pub fn beside(&self) -> Option<bool> {
-        self.beside.get()
-    }
-
-    /// Remembers the rail's side.
-    pub fn set_beside(&self, beside: bool) {
-        self.beside.set(Some(beside));
     }
 }
 

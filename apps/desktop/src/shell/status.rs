@@ -10,6 +10,7 @@ use crate::model::AppSnapshot;
 use crate::runtime::store::{Branch, DataStore};
 use facet::tokens::{TypeRole, ty};
 use facet::{ActiveFacet as _, Measure, Space, Typeset as _};
+use std::time::{Duration, Instant};
 use gpui::{App, Context, ElementId, IntoElement, ParentElement, Pixels, Render, SharedString, Styled, Window, div, px};
 
 /// The address for a status bar `width` wide, in the lines it is set in and
@@ -99,17 +100,31 @@ pub(crate) struct Status {
     links: Links,
     /// Where the reader column starts (the hand's marks start 20 px in).
     reader_left: Pixels,
-    /// Redraws once the first-card whisper has had its time.
-    whisper_timer: Option<gpui::Task<()>>,
-    /// The whisper this foot first drew, and when (the motion clock).
-    whisper_seen: Option<(crate::model::hand::Held, std::time::Instant)>,
+    /// The first-card whisper this foot is drawing, if any.
+    whisper: Option<Whisper>,
     /// The hand at rest.
     marks: super::hand::Marks,
     opening: Option<SharedString>,
 }
 
 /// How long the first-card whisper stays.
-const WHISPER_MS: u64 = 2_400;
+const WHISPER: Duration = Duration::from_millis(2_400);
+
+/// The first card ever held, as the foot first drew it: which, when (the
+/// motion clock, virtual under the harness), and the timer that redraws the
+/// foot once the whisper has had its time.
+struct Whisper {
+    held: crate::model::hand::Held,
+    since: Instant,
+    timer: Option<gpui::Task<()>>,
+}
+
+impl Whisper {
+    /// How much of its time is left `now`: `None` once it has had it all.
+    fn left(&self, now: Instant) -> Option<Duration> {
+        WHISPER.checked_sub(now.saturating_duration_since(self.since))
+    }
+}
 
 impl Status {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
@@ -117,8 +132,7 @@ impl Status {
             core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::GraphFocus, Branch::Hand]),
             links,
             reader_left: px(0.0),
-            whisper_timer: None,
-            whisper_seen: None,
+            whisper: None,
             marks: super::hand::Marks::default(),
             opening: None,
         }
@@ -181,21 +195,26 @@ impl Render for Status {
             // the frame that first drew it.
             let now = facet::motion::now(cx);
             let whisper = snapshot.session().whisper.clone().and_then(|held| {
-                let since = match &self.whisper_seen {
-                    Some((seen, at)) if seen.same(&held) => *at,
-                    _ => {
-                        self.whisper_seen = Some((held.clone(), now));
-                        now
-                    }
-                };
-                let age = u64::try_from(now.saturating_duration_since(since).as_millis()).unwrap_or(u64::MAX);
-                (age < WHISPER_MS).then(|| (held, WHISPER_MS - age))
+                if !self.whisper.as_ref().is_some_and(|seen| seen.held.same(&held)) {
+                    self.whisper = Some(Whisper { held: held.clone(), since: now, timer: None });
+                }
+                let seen = self.whisper.as_mut()?;
+                let left = seen.left(now)?;
+                // One timer per whisper: it redraws the foot when the time is up.
+                if seen.timer.is_none() {
+                    seen.timer = Some(cx.spawn(async move |status, cx| {
+                        cx.background_executor().timer(left).await;
+                        let _ = status.update(cx, |status, cx| {
+                            if let Some(seen) = status.whisper.as_mut() {
+                                seen.timer = None;
+                            }
+                            cx.notify();
+                        });
+                    }));
+                }
+                Some(held)
             });
-            let words = whisper.map(|(held, left_ms)| {
-                self.whisper_timer = Some(cx.spawn(async move |status, cx| {
-                    cx.background_executor().timer(std::time::Duration::from_millis(left_ms)).await;
-                    let _ = status.update(cx, |_, cx| cx.notify());
-                }));
+            let words = whisper.map(|held| {
                 let name = view
                     .cards
                     .iter()

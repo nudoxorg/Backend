@@ -8,7 +8,7 @@
 //! function, what the generic is at this call. Nothing here guesses a line:
 //! a use with no line text is not read at all.
 
-use super::super::view::{Ctx, Do, Kind, Use, Uses, Verb};
+use super::super::view::{Ctx, Do, Kind, Use, Uses, Verb, View};
 use super::text::last_segment;
 
 /// The relation the index gave a use.
@@ -68,8 +68,29 @@ pub struct Reader {
     pub members: Vec<(String, Do)>,
     /// Its cases (an enum's variants), matched on and built.
     pub cases: Vec<String>,
+    /// Its public fields, read as `.field`.
+    pub fields: Vec<String>,
     /// It has a generic parameter whose choice is worth reading.
     pub generic: bool,
+}
+
+impl Reader {
+    /// The reader of a page's lines: what its symbol is, its members and cases.
+    #[must_use]
+    pub fn of(view: &View) -> Self {
+        use super::super::view::Shape;
+        let mut members = Vec::new();
+        for group in &view.verbs {
+            members.extend(group.rows.iter().map(|row| (row.name.clone(), group.verb)));
+        }
+        let (mut cases, mut fields) = (Vec::new(), Vec::new());
+        match &view.shape {
+            Some(Shape::OneOf(shape)) => cases.extend(shape.iter().map(|case| case.name.clone())),
+            Some(Shape::Holds { fields: shape, .. }) => fields.extend(shape.iter().map(|field| field.name.clone())),
+            _ => {}
+        }
+        Self { name: view.head.name.clone(), kind: view.head.kind, members, cases, fields, generic: !view.generics.is_empty() }
+    }
 }
 
 /// Whether a file is a test's.
@@ -164,7 +185,7 @@ fn verb_of(site: &Site, reader: &Reader) -> (Verb, Option<String>) {
         return (Verb::AsksFor, None);
     }
     // A member reached: `Name::member` (exact) or `.member(` (by name).
-    if let Some((member, doing, qualified)) = member_of(text, name, reader) {
+    if let Some((member, doing, qualified)) = member_of(text, name, reader, site.exact) {
         let verb = match doing {
             Do::Makes => Verb::Makes,
             Do::Reads => Verb::Reads,
@@ -174,11 +195,14 @@ fn verb_of(site: &Site, reader: &Reader) -> (Verb, Option<String>) {
         let _ = qualified;
         return (verb, Some(member));
     }
+    if let Some(field) = field_of(text, reader) {
+        return (Verb::Reads, Some(field));
+    }
     if let Some(case) = case_of(text, name, reader) {
         let matching = is_match_line(text);
         return (if matching { Verb::Matches } else { Verb::Makes }, Some(case));
     }
-    if is_construction(text, name) {
+    if is_construction(text, name) || builds_from_text(text) {
         return (Verb::Makes, None);
     }
     match site.rel {
@@ -199,10 +223,20 @@ fn is_impl(text: &str, name: &str) -> bool {
     (t.starts_with("impl") && contains_word(t, name) && t.contains(" for ")) || (t.starts_with("class ") && t.contains(name) && (t.contains("extends") || t.contains("implements") || t.contains('(')))
 }
 
+/// The text before a name with the module path in front of it dropped:
+/// `fn f(v: &serde_json::` → `fn f(v: &`.
+fn before_path(before: &str) -> &str {
+    let mut text = before.trim_end();
+    while let Some(rest) = text.strip_suffix("::") {
+        text = rest.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '$').trim_end();
+    }
+    text
+}
+
 /// `T: Serialize`, `+ Serialize`, `impl Serialize`, `where S: Serializer`.
 fn asks_for(text: &str, name: &str) -> bool {
     let Some((at, _)) = mark_of(text, name) else { return false };
-    let before = text[..at].trim_end();
+    let before = before_path(&text[..at]);
     before.ends_with(':') && !before.ends_with("::") || before.ends_with('+') || before.ends_with("impl") || before.ends_with("dyn") || before.ends_with("where")
 }
 
@@ -210,22 +244,39 @@ fn is_match_line(text: &str) -> bool {
     text.contains("=>") || text.contains("if let ") || text.contains("matches!(") || text.contains("while let ") || text.trim_start().starts_with("match ") || text.contains("instanceof") || text.trim_start().starts_with("case ")
 }
 
+/// `from_str::<Value>(…)`, `from_slice`, `to_value(`, `json!(`: making one from something else.
+fn builds_from_text(text: &str) -> bool {
+    ["from_str", "from_slice", "from_reader", "from_value", "to_value", "json!"].iter().any(|word| text.contains(word))
+}
+
 fn is_construction(text: &str, name: &str) -> bool {
     text.contains(&format!("{name}::new(")) || text.contains(&format!("{name}::default(")) || text.contains(&format!("{name} {{")) && !text.trim_start().starts_with("struct ") && !text.contains("impl") || text.contains(&format!("new {name}("))
 }
 
-fn member_of(text: &str, name: &str, reader: &Reader) -> Option<(String, Do, bool)> {
+fn member_of(text: &str, name: &str, reader: &Reader, resolved: bool) -> Option<(String, Do, bool)> {
     for (member, doing) in &reader.members {
         if text.contains(&format!("{name}::{member}(")) || text.contains(&format!("{name}::{member})")) || text.contains(&format!("{name}::{member},")) {
             return Some((member.clone(), *doing, true));
         }
     }
     for (member, doing) in &reader.members {
-        if *doing != Do::Makes && contains_word(text, name) && (text.contains(&format!(".{member}(")) || text.contains(&format!(".{member}\n")) || text.ends_with(&format!(".{member}"))) {
+        let dotted = text.contains(&format!(".{member}(")) || text.contains(&format!(".{member},")) || text.contains(&format!(".{member})")) || text.contains(&format!(".{member} ")) || text.ends_with(&format!(".{member}"));
+        // The type in the line, or the index resolved the use to this type.
+        if *doing != Do::Makes && (contains_word(text, name) || resolved) && dotted {
             return Some((member.clone(), *doing, false));
         }
     }
     None
+}
+
+/// `x.field` where `field` is one of its fields and is not called.
+fn field_of(text: &str, reader: &Reader) -> Option<String> {
+    reader.fields.iter().find(|field| {
+        text.match_indices(&format!(".{field}")).any(|(at, _)| {
+            let after = text[at + 1 + field.len()..].chars().next();
+            !after.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '(')
+        })
+    }).cloned()
 }
 
 fn case_of(text: &str, name: &str, reader: &Reader) -> Option<String> {
@@ -235,7 +286,7 @@ fn case_of(text: &str, name: &str, reader: &Reader) -> Option<String> {
 /// What a line that names a type does with it, from the line itself.
 fn type_verb(text: &str, name: &str) -> Verb {
     let Some((at, end)) = mark_of(text, name) else { return Verb::Names };
-    let before = text[..at].trim_end();
+    let before = before_path(&text[..at]);
     let after = text[end..].trim_start();
     if before.ends_with("&mut") || before.ends_with("&mut ") {
         return Verb::Changes;
@@ -249,8 +300,9 @@ fn type_verb(text: &str, name: &str) -> Verb {
     if text.trim_start().starts_with("let ") && text[..at].contains(':') && !text[..at].contains('=') {
         return Verb::Makes;
     }
+    // `Vec<Value>` after a `let` is the same thing made; elsewhere it is held.
     if before.ends_with('<') || before.ends_with(',') && text[..at].contains('<') {
-        return Verb::Holds;
+        return if text.trim_start().starts_with("let ") { Verb::Makes } else { Verb::Holds };
     }
     let field = text.trim_start();
     let field = field.strip_prefix("pub ").unwrap_or(field);
@@ -334,6 +386,7 @@ mod tests {
             kind: Kind::Enum,
             members: vec![("as_str".into(), Do::Reads), ("as_array_mut".into(), Do::Changes), ("try_into".into(), Do::UsesUp), ("from".into(), Do::Makes)],
             cases: vec!["Null".into(), "Array".into(), "String".into()],
+            fields: Vec::new(),
             generic: false,
         }
     }
@@ -359,7 +412,7 @@ mod tests {
 
     #[test]
     fn traits_are_derived_implemented_or_asked_for() {
-        let r = Reader { name: "Serialize".into(), kind: Kind::Trait, members: Vec::new(), cases: Vec::new(), generic: false };
+        let r = Reader { name: "Serialize".into(), kind: Kind::Trait, members: Vec::new(), cases: Vec::new(), fields: Vec::new(), generic: false };
         let v = |text: &str, rel: Rel| read(&site("src/a.rs", text, rel), &r).verb;
         assert_eq!(v("#[derive(Debug, Serialize)]", Rel::TypeReference), Verb::Derives);
         assert_eq!(v("impl Serialize for Event {", Rel::Implements), Verb::Implements);

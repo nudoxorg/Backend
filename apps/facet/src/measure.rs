@@ -460,6 +460,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn big_text_behaves_like_a_small_window() {
         // 200 % text on 1440 px is a 720 design px room, the same as 720 px at 100 %.
         assert_eq!(at(1440.0, 2.0, Density::Comfortable).room(), Room::Slim);

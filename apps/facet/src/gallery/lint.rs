@@ -5,7 +5,7 @@
 //! |---|---|
 //! | `clip` | a text box is narrower than its text (clip overflow) or than its widest word (wrap overflow) and draws no ellipsis, or shorter than one line |
 //! | `overlap` | two texts of one [`crate::probe::region`] overlap by more than 1 px in both axes |
-//! | `offscreen` | a focusable element is not entirely inside the viewport |
+//! | `offscreen` | a focusable element is not entirely inside the viewport, or a text lies wholly past its left or right edge with no scroll container reaching it |
 //! | `target` | a clickable element is smaller than 24 x 24 px |
 //! | `contrast` | the ink painted in a text box against the ground painted around it is under 4.5:1 (3:1 for large text: 24 px, or 18.66 px at weight 700) |
 //!
@@ -16,6 +16,8 @@
 
 use super::json::Json;
 use crate::probe::Ledger;
+use crate::probe::rules::{overlap, stranded};
+pub use crate::probe::rules::{fully_visible, visible_bounds};
 use backend_gui_harness::{Viewport, contrast_ratio};
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -95,51 +97,6 @@ pub struct Linted {
     pub lowest_contrast: Option<(String, f32)>,
 }
 
-fn intersection(a: &crate::probe::BoundsSample, b: &crate::probe::BoundsSample) -> (f32, f32) {
-    let width = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
-    let height = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
-    (width, height)
-}
-
-/// Native visibility affects pixel/overlap checks, never intrinsic layout metrics.
-/// Returns the part of a text sample actually inside its paint clip and viewport.
-///
-/// Intrinsic layout bounds remain available on [`crate::probe::TextSample`]; this
-/// helper is for screen-visibility checks only.
-#[must_use]
-pub fn visible_bounds(text: &crate::probe::TextSample, width: f32, height: f32) -> Option<crate::probe::BoundsSample> {
-    let bounds = &text.bounds;
-    let clip = text.paint_clip.as_ref();
-    let x = bounds.x.max(clip.map_or(0.0, |b| b.x)).max(0.0);
-    let y = bounds.y.max(clip.map_or(0.0, |b| b.y)).max(0.0);
-    let right = (bounds.x + bounds.width).min(clip.map_or(width, |b| b.x + b.width)).min(width);
-    let bottom = (bounds.y + bounds.height).min(clip.map_or(height, |b| b.y + b.height)).min(height);
-    (right > x && bottom > y).then(|| crate::probe::BoundsSample {
-        key: bounds.key.clone(), x, y, width: right - x, height: bottom - y,
-    })
-}
-
-/// Whether every point in a text sample's intrinsic box is inside its paint
-/// clip and the viewport. Use this before making an exact-string visibility
-/// assertion; [`visible_bounds`] alone also reports partially clipped text.
-#[must_use]
-pub fn fully_visible(text: &crate::probe::TextSample, width: f32, height: f32) -> bool {
-    let bounds = &text.bounds;
-    if bounds.x < 0.0
-        || bounds.y < 0.0
-        || bounds.x + bounds.width > width
-        || bounds.y + bounds.height > height
-    {
-        return false;
-    }
-    text.paint_clip.as_ref().is_none_or(|clip| {
-        bounds.x >= clip.x
-            && bounds.y >= clip.y
-            && bounds.x + bounds.width <= clip.x + clip.width
-            && bounds.y + bounds.height <= clip.y + clip.height
-    })
-}
-
 /// Measures the contrast of the ink in a logical box of `image` (painted at
 /// `scale`): the ground is the most common colour, the ink the pixel that
 /// contrasts with it most. `None` when the box has no pixels on the image or
@@ -193,6 +150,17 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
     let (width, height) = (viewport.width as f32, viewport.height as f32);
     for text in &ledger.texts {
         out.coverage.texts += 1;
+        if let Some(side) = stranded(text, &ledger.scrolls, width) {
+            out.lints.push(Lint {
+                rule: Rule::Offscreen,
+                key: text.key.clone(),
+                detail: format!(
+                    "`{}` at ({:.1}, {:.1}) {:.1}x{:.1} lies wholly past the {} edge of the {width:.0} px viewport, \
+                     and no scroll container's content reaches it",
+                    text.content, text.bounds.x, text.bounds.y, text.bounds.width, text.bounds.height, side.name()
+                ),
+            });
+        }
         if text.clipped_without_ellipsis() {
             out.lints.push(Lint {
                 rule: Rule::Clip,
@@ -254,7 +222,7 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
                 continue;
             }
             let (Some(a_visible), Some(b_visible)) = (visible_bounds(a, width, height), visible_bounds(b, width, height)) else { continue; };
-            let (w, h) = intersection(&a_visible, &b_visible);
+            let (w, h) = overlap(&a_visible, &b_visible);
             if w > 1.0 && h > 1.0 {
                 out.lints.push(Lint {
                     rule: Rule::Overlap,

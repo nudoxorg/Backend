@@ -54,6 +54,34 @@ pub enum ReadFailure {
     Cancelled,
 }
 
+/// One page the launch snapshot keeps: its key and its value are one value,
+/// so a page can never be seeded into another family's slot (or saved under
+/// another page's name).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SeedEntry {
+    /// A declaration page.
+    Symbol(SymbolRef, Arc<SymbolPage>),
+    /// A source view.
+    Source(SymbolRef, Arc<SourceView>),
+    /// A package dossier.
+    Package(PackageRef, Arc<PackageDossier>),
+    /// The Orbit model.
+    Orbit(Arc<OrbitModel>),
+}
+
+impl SeedEntry {
+    /// The page key this entry fills.
+    #[must_use]
+    pub fn key(&self) -> PageKey {
+        match self {
+            Self::Symbol(symbol, _) => PageKey::Symbol(symbol.clone()),
+            Self::Source(symbol, _) => PageKey::Source(symbol.clone()),
+            Self::Package(package, _) => PageKey::Package(package.clone()),
+            Self::Orbit(_) => PageKey::Orbit,
+        }
+    }
+}
+
 /// Outcome of admitting one landing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Landing {
@@ -67,49 +95,113 @@ pub enum Landing {
     Unchanged,
 }
 
-/// Cheap identity of one slot's visible state, for equality-gated views.
+/// Cheap identity of one slot's visible state, for equality-gated views: it
+/// moves on every visible change, and only then.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Stamp(u64);
+
+impl Stamp {
+    const UNSEEN: Self = Self(0);
+
+    const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+/// Which fetch owns a slot: every fetch allocates a new one, and a result is
+/// admitted only when it names the slot's current one.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Generation(u64);
+
+impl Generation {
+    const FIRST: Self = Self(1);
+
+    /// A generation by number (a test names one).
+    #[must_use]
+    pub const fn new(number: u64) -> Self {
+        Self(number)
+    }
+
+    /// The next one (never zero, even when the count wraps).
+    const fn next(self) -> Self {
+        Self(match self.0.wrapping_add(1) {
+            0 => 1,
+            next => next,
+        })
+    }
+}
+
+/// A logical access time, for least-recently-used eviction.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+struct Tick(u64);
+
+impl Tick {
+    const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+/// How a running fetch treats what the slot shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Manner {
+    /// The slot turned "working" when it began; its result replaces the value.
+    Loud,
+    /// A revalidation of a launch-snapshot value: nothing visible changed
+    /// when it began, and an equal value changes nothing when it lands.
+    Quiet,
+}
+
+/// Whether a fetch owns a slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Fetch {
+    /// No fetch is running.
+    Idle,
+    /// This one is.
+    Running { generation: Generation, manner: Manner },
+}
+
+/// Where a slot's value came from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Provenance {
+    /// Read from the owner.
+    Live,
+    /// From the launch snapshot, and no owner has confirmed it yet (W-Open
+    /// I2): its next fetch is quiet.
+    Seeded,
+}
 
 #[derive(Debug)]
 struct Slot<T> {
     resource: Resource<T>,
-    /// Generation of the fetch that owns the slot; 0 before any fetch.
-    generation: u64,
-    /// Whether `generation` is still running.
-    inflight: bool,
-    /// Visible revision; bumps on every visible change.
-    revision: u64,
+    fetch: Fetch,
+    /// Visible revision; moves on every visible change.
+    revision: Stamp,
     /// Logical access time for LRU eviction.
-    used: u64,
+    used: Tick,
     /// Root the running (or last) fetch was issued at.
     asked_at: Option<VersionedRoot>,
-    /// The value came from the launch snapshot and no owner has confirmed
-    /// it yet (W-Open I2): its next fetch is quiet.
-    seeded: bool,
-    /// The running fetch is a quiet revalidation: it changed nothing
-    /// visible when it began, and an equal value changes nothing when it
-    /// lands.
-    quiet: bool,
+    provenance: Provenance,
 }
 
 impl<T> Slot<T> {
-    const fn new(used: u64) -> Self {
+    const fn new(used: Tick) -> Self {
         Self {
             resource: Resource::not_yet(),
-            generation: 0,
-            inflight: false,
-            revision: 0,
+            fetch: Fetch::Idle,
+            revision: Stamp::UNSEEN,
             used,
             asked_at: None,
-            seeded: false,
-            quiet: false,
+            provenance: Provenance::Live,
         }
+    }
+
+    const fn running(&self) -> bool {
+        matches!(self.fetch, Fetch::Running { .. })
     }
 
     /// Whether a fetch is needed to show this slot at `root`.
     fn wants_fetch(&self, root: VersionedRoot) -> bool {
-        if self.inflight {
+        if self.running() {
             return false;
         }
         match self.asked_at {
@@ -140,9 +232,9 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         key: &K,
         root: VersionedRoot,
         force: bool,
-        clock: u64,
-        generation: u64,
-    ) -> Option<u64> {
+        clock: Tick,
+        generation: Generation,
+    ) -> Option<Generation> {
         if !self.map.contains_key(key) {
             self.evict_for_insert();
             self.map.insert(key.clone(), Slot::new(clock));
@@ -152,22 +244,21 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         if !(force || slot.wants_fetch(root)) {
             return None;
         }
-        slot.generation = generation;
-        slot.inflight = true;
         slot.asked_at = Some(root);
         // A snapshot value is revalidated quietly: it stays exactly as drawn
         // (no "working", no stamp) until a different value lands.
-        slot.quiet = slot.seeded && !force;
-        if !slot.quiet {
+        let manner = if slot.provenance == Provenance::Seeded && !force { Manner::Quiet } else { Manner::Loud };
+        slot.fetch = Fetch::Running { generation, manner };
+        if manner == Manner::Loud {
             slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).working();
-            slot.revision = slot.revision.wrapping_add(1);
+            slot.revision = slot.revision.next();
         }
         Some(generation)
     }
 
     /// Fills a slot from the launch snapshot, current at `root` (the
     /// unserved root at launch). A slot a fetch already owns is left alone.
-    fn seed(&mut self, key: &K, value: T, root: VersionedRoot, clock: u64) -> bool {
+    fn seed(&mut self, key: &K, value: T, root: VersionedRoot, clock: Tick) -> bool {
         if !self.map.contains_key(key) {
             self.evict_for_insert();
             self.map.insert(key.clone(), Slot::new(clock));
@@ -175,14 +266,14 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         let Some(slot) = self.map.get_mut(key) else {
             return false;
         };
-        if slot.inflight || slot.resource.loaded_value().is_some() {
+        if slot.running() || slot.resource.loaded_value().is_some() {
             return false;
         }
         slot.used = clock;
         slot.asked_at = Some(root);
         slot.resource = Resource::loaded_at(value, root);
-        slot.seeded = true;
-        slot.revision = slot.revision.wrapping_add(1);
+        slot.provenance = Provenance::Seeded;
+        slot.revision = slot.revision.next();
         true
     }
 
@@ -192,16 +283,16 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         let Some(slot) = self.map.get_mut(key) else {
             return false;
         };
-        if !slot.seeded || slot.inflight {
+        if slot.provenance != Provenance::Seeded || slot.running() {
             return false;
         }
-        slot.seeded = false;
+        slot.provenance = Provenance::Live;
         slot.asked_at = Some(root);
         slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).rebased(root);
         true
     }
 
-    fn touch(&mut self, key: &K, clock: u64) {
+    fn touch(&mut self, key: &K, clock: Tick) {
         if let Some(slot) = self.map.get_mut(key) {
             slot.used = clock;
         }
@@ -213,7 +304,7 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             let victim = self
                 .map
                 .iter()
-                .filter(|(_, slot)| !slot.inflight)
+                .filter(|(_, slot)| !slot.running())
                 .min_by_key(|(_, slot)| slot.used)
                 .map(|(key, _)| key.clone());
             match victim {
@@ -230,7 +321,7 @@ impl<K: Ord + Clone, T> Slots<K, T> {
     fn land(
         &mut self,
         key: &K,
-        generation: u64,
+        generation: Generation,
         result: Result<T, ReadFailure>,
         merge: impl FnOnce(Option<&T>, T) -> T,
     ) -> Landing
@@ -240,15 +331,18 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         let Some(slot) = self.map.get_mut(key) else {
             return Landing::Superseded;
         };
-        if slot.generation != generation || !slot.inflight {
+        let Fetch::Running { generation: running, manner } = slot.fetch else {
+            return Landing::Superseded;
+        };
+        if running != generation {
             return Landing::Superseded;
         }
-        slot.inflight = false;
+        slot.fetch = Fetch::Idle;
         let root = slot.asked_at;
-        if std::mem::take(&mut slot.quiet) {
+        if manner == Manner::Quiet {
             match (&result, root) {
                 (Ok(value), Some(root)) if slot.resource.loaded_value() == Some(value) => {
-                    slot.seeded = false;
+                    slot.provenance = Provenance::Live;
                     slot.resource =
                         std::mem::replace(&mut slot.resource, Resource::not_yet()).rebased(root);
                     return Landing::Unchanged;
@@ -258,7 +352,7 @@ impl<K: Ord + Clone, T> Slots<K, T> {
                     slot.asked_at = None;
                     return Landing::Unchanged;
                 }
-                (Ok(_), _) => slot.seeded = false,
+                (Ok(_), _) => slot.provenance = Provenance::Live,
                 // A failed revalidation keeps the value it could not confirm.
                 (Err(_), _) => {}
             }
@@ -283,24 +377,24 @@ impl<K: Ord + Clone, T> Slots<K, T> {
                 previous.resting()
             }
         };
-        slot.revision = slot.revision.wrapping_add(1);
+        slot.revision = slot.revision.next();
         Landing::Applied
     }
 
-    fn cancel(&mut self, key: &K) -> Option<u64> {
+    fn cancel(&mut self, key: &K) -> Option<Generation> {
         let slot = self.map.get_mut(key)?;
-        if !slot.inflight {
+        let Fetch::Running { generation, manner } = slot.fetch else {
             return None;
-        }
-        slot.inflight = false;
+        };
+        slot.fetch = Fetch::Idle;
         slot.asked_at = None;
-        if std::mem::take(&mut slot.quiet) {
+        if manner == Manner::Quiet {
             // Nothing visible began, so nothing visible ends.
-            return Some(slot.generation);
+            return Some(generation);
         }
         slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).resting();
-        slot.revision = slot.revision.wrapping_add(1);
-        Some(slot.generation)
+        slot.revision = slot.revision.next();
+        Some(generation)
     }
 
     fn get(&self, key: &K) -> Resource<T> {
@@ -310,18 +404,18 @@ impl<K: Ord + Clone, T> Slots<K, T> {
     }
 
     fn stamp(&self, key: &K) -> Stamp {
-        Stamp(self.map.get(key).map_or(0, |slot| slot.revision))
+        self.map.get(key).map_or(Stamp::UNSEEN, |slot| slot.revision)
     }
 
     fn seeded(&self, key: &K) -> bool {
-        self.map.get(key).is_some_and(|slot| slot.seeded)
+        self.map.get(key).is_some_and(|slot| slot.provenance == Provenance::Seeded)
     }
 
-    fn inflight(&self, key: &K) -> Option<u64> {
-        self.map
-            .get(key)
-            .filter(|slot| slot.inflight)
-            .map(|slot| slot.generation)
+    fn inflight(&self, key: &K) -> Option<Generation> {
+        match self.map.get(key)?.fetch {
+            Fetch::Running { generation, .. } => Some(generation),
+            Fetch::Idle => None,
+        }
     }
 }
 
@@ -359,8 +453,8 @@ pub struct PageStore {
     orbit: Slots<(), OrbitModel>,
     health: Slots<(), HealthModel>,
     browse: Slots<crate::model::browse::BrowseKey, crate::model::browse::BrowseValue>,
-    clock: u64,
-    next_generation: u64,
+    clock: Tick,
+    next_generation: Generation,
 }
 
 impl Default for PageStore {
@@ -465,8 +559,8 @@ impl PageStore {
             orbit: Slots::new(1),
             health: Slots::new(1),
             browse: Slots::new(4),
-            clock: 0,
-            next_generation: 1,
+            clock: Tick(0),
+            next_generation: Generation::FIRST,
         }
     }
 
@@ -474,23 +568,23 @@ impl PageStore {
     /// or asked at an older root), starts a fetch: the slot turns working
     /// (keeping any last good value) and the new generation is returned.
     /// Returns `None` when the slot is current or already in flight.
-    pub fn begin(&mut self, key: &PageKey, root: VersionedRoot) -> Option<u64> {
+    pub fn begin(&mut self, key: &PageKey, root: VersionedRoot) -> Option<Generation> {
         self.begin_with(key, root, false)
     }
 
     /// Starts a fetch even when the slot is current (retry, "load more").
-    pub fn begin_forced(&mut self, key: &PageKey, root: VersionedRoot) -> Option<u64> {
+    pub fn begin_forced(&mut self, key: &PageKey, root: VersionedRoot) -> Option<Generation> {
         self.begin_with(key, root, true)
     }
 
-    fn begin_with(&mut self, key: &PageKey, root: VersionedRoot, force: bool) -> Option<u64> {
-        self.clock = self.clock.wrapping_add(1);
+    fn begin_with(&mut self, key: &PageKey, root: VersionedRoot, force: bool) -> Option<Generation> {
+        self.clock = self.clock.next();
         let clock = self.clock;
         let generation = self.next_generation;
         let started = dispatch!(self, key, |slots, k| slots
             .begin(k, root, force, clock, generation));
         if started.is_some() {
-            self.next_generation = self.next_generation.wrapping_add(1).max(1);
+            self.next_generation = self.next_generation.next();
         }
         started
     }
@@ -500,17 +594,16 @@ impl PageStore {
     /// next fetch is quiet: [`Landing::Unchanged`] when the value is equal).
     /// Returns whether the slot took it (a family the snapshot does not
     /// keep, a slot in flight or already holding a value, does not).
-    pub fn seed(&mut self, key: &PageKey, value: PageValue, root: VersionedRoot) -> bool {
-        self.clock = self.clock.wrapping_add(1);
+    pub fn seed(&mut self, entry: SeedEntry, root: VersionedRoot) -> bool {
+        self.clock = self.clock.next();
         let clock = self.clock;
-        match (key, value) {
-            (PageKey::Symbol(symbol), PageValue::Symbol(page)) => self.symbols.seed(symbol, page, root, clock),
-            (PageKey::Source(symbol), PageValue::Source(view)) => self.sources.seed(symbol, view, root, clock),
-            (PageKey::Package(package), PageValue::Package(dossier)) => {
-                self.packages.seed(package, dossier, root, clock)
+        match entry {
+            SeedEntry::Symbol(symbol, page) => self.symbols.seed(&symbol, Arc::unwrap_or_clone(page), root, clock),
+            SeedEntry::Source(symbol, view) => self.sources.seed(&symbol, Arc::unwrap_or_clone(view), root, clock),
+            SeedEntry::Package(package, dossier) => {
+                self.packages.seed(&package, Arc::unwrap_or_clone(dossier), root, clock)
             }
-            (PageKey::Orbit, PageValue::Orbit(model)) => self.orbit.seed(&(), model, root, clock),
-            _ => false,
+            SeedEntry::Orbit(model) => self.orbit.seed(&(), Arc::unwrap_or_clone(model), root, clock),
         }
     }
 
@@ -528,7 +621,7 @@ impl PageStore {
 
     /// Records an access without starting a fetch.
     pub fn touch(&mut self, key: &PageKey) {
-        self.clock = self.clock.wrapping_add(1);
+        self.clock = self.clock.next();
         let clock = self.clock;
         dispatch!(self, key, |slots, k| slots.touch(k, clock));
     }
@@ -538,7 +631,7 @@ impl PageStore {
     pub fn land(
         &mut self,
         key: &PageKey,
-        generation: u64,
+        generation: Generation,
         result: Result<PageValue, ReadFailure>,
     ) -> Landing {
         match (key, result) {
@@ -615,13 +708,13 @@ impl PageStore {
     }
 
     /// Cancels the running fetch for `key`, returning its generation.
-    pub fn cancel(&mut self, key: &PageKey) -> Option<u64> {
+    pub fn cancel(&mut self, key: &PageKey) -> Option<Generation> {
         dispatch!(self, key, |slots, k| slots.cancel(k))
     }
 
     /// Returns the generation of the running fetch for `key`.
     #[must_use]
-    pub fn inflight(&self, key: &PageKey) -> Option<u64> {
+    pub fn inflight(&self, key: &PageKey) -> Option<Generation> {
         dispatch_ref!(self, key, |slots, k| slots.inflight(k))
     }
 

@@ -3,10 +3,13 @@
 //! in display type, its own words beneath, a line of what it holds, then the
 //! cards grouped by what they are (types, functions, traits, values).
 
-use super::cards::{CardFacts, columns, symbol_card};
+use super::cards::{CardFacts, symbol_card};
 use super::state::{Extent, Pick};
 use super::text::{key, one, wrap};
+use crate::fluid::Modes;
 use crate::measure::{Measure, Space};
+use crate::motion::Flow;
+use crate::tokens::fluid::FOLIO_CARDS;
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Family, TypeRole, ty};
 use gpui::{AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div};
@@ -115,10 +118,15 @@ pub fn group_of(facts: &CardFacts) -> &'static str {
 const ORDER: [&str; 4] = ["Types", "Functions", "Traits", "Values"];
 
 impl RenderOnce for ModuleView {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let palette = cx.palette();
         let measure = self.measure;
-        let (_, width) = columns(&measure, 262.0);
+        // As many columns as fit; a change of count carries the cards to their
+        // new places instead of jumping them.
+        let columns = Modes::keyed(key(&self.id, "modes"), window, cx).columns(&FOLIO_CARDS, measure.fluid_room(), measure.space(Space::Roomy));
+        let width = columns.column.width();
+        let flow = Flow::scoped("folio-cards", cx);
+        flow.epoch((columns.epoch, columns.count));
         let card = |index: usize| {
             let facts = self.cards[index].clone();
             let mut card = symbol_card(key(&self.id, format!("card-{index}")), facts, &measure).width(width).at(self.at.clone()).lit(if self.lit == Some(index) { Pick::Lit } else { Pick::Rest });
@@ -126,10 +134,11 @@ impl RenderOnce for ModuleView {
                 card = card.on_open(move |window, cx| open(index, window, cx));
             }
             let element = card.into_any_element();
-            match &self.wrap {
+            let element = match &self.wrap {
                 Some(wrap) => wrap(index, element),
                 None => element,
-            }
+            };
+            flow.item(key(&self.id, format!("flow-{index}")), element).into_any_element()
         };
         let grid = |indices: &[usize]| {
             div().flex().flex_wrap().gap(measure.space(Space::Roomy)).children(indices.iter().map(|i| card(*i)))

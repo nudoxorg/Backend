@@ -19,6 +19,7 @@
 
 use crate::Set;
 use crate::controls::{IconButtonSize, icon_button};
+use crate::fluid::{Modes, Room};
 use crate::icons::{self, Icon, IconSize, Kind, Stroke, variant_path};
 use crate::measure::Measure;
 use crate::motion::presence::{Act, Axis, Extent};
@@ -28,6 +29,7 @@ use crate::paint::geom::{Fill, Poly, pt};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use crate::tokens::motion::{GLIDE, STD};
+use crate::tokens::fluid::{BEADS, Beads};
 use crate::tokens::{Face, Palette, TypeRole, geo};
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
@@ -196,25 +198,29 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// The plan for an effective window width. The breakpoints are the
-    /// flow targets' container queries (`max-width` is inclusive): at 1100
-    /// the oldest bead is already gone, at 760 every bead, at 520 the
-    /// buttons.
+    /// The plan for a titlebar in `mode` (`facet::tokens::fluid::BEADS`, held
+    /// through its hysteresis band by whoever draws the bar).
     #[must_use]
-    pub fn at(effective: f32) -> Self {
-        let beads = effective > 760.0;
+    pub const fn of(mode: Beads) -> Self {
+        let beads = matches!(mode, Beads::Some | Beads::All);
         Self {
-            behind: if effective > 1100.0 {
-                3
-            } else if beads {
-                2
-            } else {
-                0
+            behind: match mode {
+                Beads::All => 3,
+                Beads::Some => 2,
+                Beads::Bare | Beads::Buttons => 0,
             },
             ahead: beads,
             fill: !beads,
-            buttons: effective > 520.0,
+            buttons: !matches!(mode, Beads::Bare),
         }
+    }
+
+    /// The plan for a window `effective` design px wide, with no history:
+    /// the plain edges of the ladder (a tool or a test that has no bar to
+    /// remember the mode; a live bar reads [`Plan::of`] through its `Modes`).
+    #[must_use]
+    pub fn at(effective: f32) -> Self {
+        Self::of(BEADS.at(Room::new(px(effective), 1.0)))
     }
 }
 
@@ -422,7 +428,7 @@ impl RenderOnce for Titlebar {
         let palette = cx.palette();
         let measure = self.measure;
         let s = measure.scale();
-        let plan = Plan::at(measure.effective());
+        let plan = Plan::of(Modes::keyed(ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "beads".into()), window, cx).settle(&BEADS, measure.fluid_room()).mode);
         let id = self.id.clone();
         let motion = Motion::scoped(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "tb".into()), cx);
         let height = px(f32::from(geo::TITLEBAR) * s);
@@ -800,14 +806,29 @@ mod tests {
     fn the_thread_degrades_at_the_flow_targets_breakpoints() {
         let wide = Plan::at(1440.0);
         assert_eq!((wide.behind, wide.ahead, wide.fill, wide.buttons), (3, true, false, true));
-        // `max-width: 1100px` is inclusive: at exactly 1100 the oldest bead is gone.
-        assert_eq!(Plan::at(1100.0).behind, 2);
-        assert_eq!(Plan::at(1100.5).behind, 3);
-        let slim = Plan::at(760.0);
+        // With no history the ladder reads its plain edges: at 1100 the oldest bead is there.
+        assert_eq!(Plan::at(1100.0).behind, 3);
+        assert_eq!(Plan::at(1099.5).behind, 2);
+        let slim = Plan::at(759.5);
         assert_eq!((slim.behind, slim.ahead, slim.fill), (0, false, true));
-        assert!(Plan::at(761.0).ahead);
-        assert!(!Plan::at(520.0).buttons && Plan::at(521.0).buttons);
+        assert!(Plan::at(760.0).ahead);
+        assert!(!Plan::at(519.5).buttons && Plan::at(520.0).buttons);
         // 200 % text on a 1440 window behaves like 720.
         assert_eq!(Plan::at(1440.0 / 2.0), Plan::at(720.0));
+    }
+
+    #[test]
+    fn a_live_bar_holds_its_plan_through_the_band() {
+        use crate::fluid::{Modes, Room};
+        use crate::tokens::fluid::BEADS;
+        use gpui::px;
+        // A titlebar dragged narrower across 760: the beads hold until 16 px past the edge.
+        let modes = Modes::new();
+        let plan = |width: f32| Plan::of(modes.settle(&BEADS, Room::new(px(width), 1.0)).mode);
+        assert!(plan(800.0).ahead);
+        assert!(plan(750.0).ahead, "inside the band on the way down: held");
+        assert!(!plan(740.0).ahead, "past it: gone");
+        assert!(!plan(770.0).ahead, "inside the band on the way up: held");
+        assert!(plan(780.0).ahead, "past it: back");
     }
 }

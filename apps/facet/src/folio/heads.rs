@@ -16,7 +16,6 @@ use crate::controls::button::wire;
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::marks::badges::{Glyph, glyph};
 use crate::measure::{Measure, Space};
-use crate::motion::spec;
 use crate::overlay::dialog::{self, Dialog, DialogButton};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::probe;
@@ -280,7 +279,8 @@ impl RenderOnce for HeadsUp {
         let scale = measure.scale();
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
         let motion = touch.motion.clone();
-        let open = motion.animate(track(&self.id, "open"), if touch.hovered || touch.focused || self.held == Pose::Held { 1.0 } else { 0.0 }, spec::LIFT, window, cx).clamp(0.0, 1.05);
+        let wanted = touch.hovered || touch.focused || self.held == Pose::Held;
+        let open = motion.animate(track(&self.id, "open"), if wanted { 1.0 } else { 0.0 }, super::state::plate(wanted), window, cx).clamp(0.0, 1.05);
         let findings = self.findings.clone();
         let warns = findings.iter().filter(|f| f.tone == Tone::Warn).count();
         let chip = CHIP * scale;

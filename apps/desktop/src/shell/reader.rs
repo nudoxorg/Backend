@@ -362,6 +362,13 @@ pub(crate) struct Reader {
     descents: u64,
     last_way: Option<Way>,
     places: Vec<Place>,
+    /// The Library's ring of names: its own flow, so a name that wraps to
+    /// another line glides there (one per reader, not one per app).
+    ring_flow: facet::motion::Flow,
+    /// The key of the place the last frame drew as the current page: what a
+    /// page change leaves. A place no frame drew (a route another one
+    /// superseded in the same instant) was never on screen.
+    painted: Option<u64>,
     /// A place change seen, waiting for the next render to start it.
     arrival: Option<Arrival>,
     /// The place change in flight.
@@ -404,6 +411,8 @@ impl Reader {
             overlay: snapshot.overlay(),
             descents: 0,
             last_way: None,
+            painted: None,
+            ring_flow: facet::motion::Flow::new("orbit-ring"),
             places: vec![Place {
                 key: 0,
                 route: snapshot.route().clone(),
@@ -587,6 +596,16 @@ impl Reader {
     }
 
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>) {
+        // A place no frame drew was never on screen, so it is not what this
+        // change leaves: three routes in one instant (A, B, C) are one change
+        // from A to C, not a skeleton for B leaving and one for C arriving.
+        // Drop each unpainted place (the first one, before any frame, stays:
+        // there is nothing older) and arrive from the last one painted.
+        let collapsed = drop_unpainted(&mut self.places, self.painted);
+        if collapsed && let Some(last) = self.places.last() {
+            self.route = last.route.clone();
+            self.overlay = last.overlay;
+        }
         if self.route != *next {
             self.package_outline_expanded = false;
         }
@@ -601,7 +620,7 @@ impl Reader {
             }
         };
         let way = if overlay != self.overlay && self.route == *next { Way::Across } else { way };
-        if let Some(current) = self.places.last_mut() {
+        if !collapsed && let Some(current) = self.places.last_mut() {
             current.lens = self.lens;
         }
         let arrival = self.plan(next, overlay, way);
@@ -721,13 +740,17 @@ impl Reader {
                 let reversed = live.as_ref().filter(|transit| {
                     transit.verb == Verb::Close && route_of(&self.places, transit.inside) == arriving
                 });
-                let transit = match reversed {
-                    Some(transit) => {
+                // An Open still in flight from the same page goes on to the newer
+                // route: the plate keeps opening and the page on it is the new one.
+                let retargeted = live.as_ref().filter(|transit| transit.verb == Verb::Open && transit.outside == arrival.leaving);
+                let transit = match (reversed, retargeted) {
+                    (Some(transit), _) => {
                         let mut carry = transit.carry;
                         carry.retarget(1.0, now);
                         Transit { verb: Verb::Open, inside: arrival.key, find: None, row_id: None, carry, start: now, fold: None, print_after: PRINT_AFTER, ..transit.clone() }
                     }
-                    None => Transit {
+                    (None, Some(transit)) => Transit { inside: arrival.key, ..transit.clone() },
+                    (None, None) => Transit {
                         verb: Verb::Open,
                         inside: arrival.key,
                         outside: arrival.leaving,
@@ -1040,7 +1063,7 @@ impl Reader {
             folio,
             beside,
             content,
-            wide_measure: _,
+            wide_measure,
             wide,
             gutter,
             margin,
@@ -1048,10 +1071,17 @@ impl Reader {
             folio_measure,
         } = *layout;
         let gap = folio_measure.space(Space::Wide);
-        let mut column = div().flex().flex_col().gap(gap).w(folio + beside).max_w(content);
+        // A page with a wide block (a table, a ring of names) gets a column as
+        // wide as that block may be; its prose keeps the reading column,
+        // centred in it.
+        let any_wide = leaves.iter().any(|leaf| leaf.wide);
+        let reading = folio + beside;
+        let column_width = if any_wide { wide_measure.width().max(reading).min(content) } else { reading };
+        let mut column = div().flex().flex_col().gap(gap).w(column_width).max_w(content);
         for leaf in leaves {
+            let is_wide = leaf.wide;
             // Each block prints under the one edge (reading order, by clip).
-            column = column.child(print(edge, match (leaf.note, wide) {
+            let block = match (leaf.note, wide) {
                 (Some(note), true) => div()
                     .flex()
                     .items_start()
@@ -1084,10 +1114,43 @@ impl Reader {
                     )
                     .into_any_element(),
                 (None, _) => leaf.main,
-            }));
+            };
+            let block = if any_wide && !is_wide {
+                div().w(reading).max_w_full().mx_auto().child(block).into_any_element()
+            } else {
+                block
+            };
+            column = column.child(print(edge, block));
         }
         column
     }
+}
+
+/// Drops from the end of `places` every place no frame drew (`painted` is the
+/// key of the one the last frame drew as current): a route another one
+/// superseded before the reader rendered was never on screen, so it is not a
+/// page that can leave. The oldest place stays whether or not it was drawn
+/// (there is nothing older). Whether any went.
+/// Whether the pages `keys` name have their content in the store (a
+/// declaration, a package, the Library): what a reader that draws them shows
+/// is the page, not its skeleton. Pages with no read of their own (the
+/// graph, Find, settings) are always their content.
+fn content_loaded(store: &DataStore, keys: &[PageKey]) -> bool {
+    keys.iter().all(|key| match key {
+        PageKey::Symbol(symbol) => store.symbol(symbol).is_loaded(),
+        PageKey::Package(package) => store.package(package).is_loaded(),
+        PageKey::Orbit => store.orbit().is_loaded(),
+        PageKey::Source(_) | PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => true,
+    })
+}
+
+fn drop_unpainted(places: &mut Vec<Place>, painted: Option<u64>) -> bool {
+    let mut dropped = false;
+    while places.len() > 1 && places.last().is_some_and(|place| Some(place.key) != painted) {
+        places.pop();
+        dropped = true;
+    }
+    dropped
 }
 
 /// One page the reader shows (or is still showing on its way out).
@@ -1205,7 +1268,9 @@ impl Reader {
                 measure: layout.folio_measure,
                 note: if layout.wide { Measure::new(layout.margin, facet) } else { layout.folio_measure },
                 wide: layout.wide_measure,
+                content: Measure::new(layout.content, facet),
                 modes: self.core.modes().clone(),
+                ring_flow: self.ring_flow.clone(),
                 palette,
                 reveal: facet.reveal,
                 links: &links,
@@ -1282,6 +1347,12 @@ impl Render for Reader {
         let Some(current) = self.places.last().cloned() else {
             return div();
         };
+        // A page counts as painted once it drew its content: a skeleton "on its
+        // way" is not a page that can leave (a route that supersedes it cuts
+        // past it, and the change in flight goes on to the newer route).
+        if content_loaded(self.links.store.read(cx), &place_keys(&current.route, current.overlay)) {
+            self.painted = Some(current.key);
+        }
         // The place change in flight, this frame (window space).
         let reader = self.frame.get();
         if let Some(arrival) = self.arrival.take()
@@ -1467,8 +1538,21 @@ impl Render for Reader {
                     let page = self.still_page(&current, self.scroll.offset(), below, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
                     root = root.child(div().id("parent-below").absolute().top_0().left_0().size_full().child(page));
                 }
+                // What the fold has taken from the plate is the parent, not an
+                // empty ground: the page it came back from shows through as the
+                // leaving page folds away, so there is no frame with an empty
+                // reader between the one and the other.
+                let folded = staged.edge.map(|edge| {
+                    let top = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
+                    Bounds::from_corners(point(staged.plate.left(), top), staged.plate.bottom_right())
+                });
                 let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, staged.inside_drift, &snapshot, &layout, &facet, cx);
-                root = root.child(plate_ground(&staged)).child(div().id("leaving-plate").absolute().top_0().left_0().size_full().child(page));
+                root = root.child(plate_ground(&staged));
+                if let Some(folded) = folded.filter(|folded| folded.size.height > Pixels::ZERO && folded.size.width > Pixels::ZERO) {
+                    let parent = self.still_page(&current, self.scroll.offset(), folded, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                    root = root.child(div().id("parent-folded").absolute().top_0().left_0().size_full().child(parent));
+                }
+                root = root.child(div().id("leaving-plate").absolute().top_0().left_0().size_full().child(page));
             }
             (Some(staged), Some(_), _) if staged.verb == Verb::Unfold => {
                 // The node's plate opens into the page over the graph; the
@@ -1684,6 +1768,32 @@ mod transit_tests {
         tint: Vec<(String, f32)>,
         targets: Vec<(String, Bounds<Pixels>)>,
         texts: Vec<PaintedText>,
+    }
+
+    /// A place in the reader's list, for the list's own rules.
+    fn place(key: u64, route: Route) -> super::Place {
+        super::Place { key, route, overlay: None, way: super::Way::Across, lens: super::Lens::Reference, from: None, opened: None, hop: false }
+    }
+
+    /// Three routes in one turn (A painted, then B, then C, no frame between)
+    /// leave the list holding A: B was never on screen, so what leaves is A,
+    /// not B's "on its way" skeleton. The oldest place is never dropped, and
+    /// a place the last frame drew is kept.
+    #[test]
+    fn a_place_no_frame_drew_is_not_a_page_to_leave() {
+        let (a, b, c) = (place(1, Route::World), place(2, package()), place(3, Route::World));
+        let mut places = vec![a.clone(), b.clone(), c.clone()];
+        assert!(super::drop_unpainted(&mut places, Some(1)), "B and C were never drawn");
+        assert_eq!(places.iter().map(|place| place.key).collect::<Vec<_>>(), vec![1], "only A, the last page painted, is left to leave");
+        let mut places = vec![a.clone(), b.clone(), c.clone()];
+        assert!(super::drop_unpainted(&mut places, Some(2)));
+        assert_eq!(places.iter().map(|place| place.key).collect::<Vec<_>>(), vec![1, 2], "B was drawn, C was not");
+        let mut places = vec![a.clone()];
+        assert!(!super::drop_unpainted(&mut places, None), "the first place stays, drawn or not");
+        assert_eq!(places.len(), 1);
+        let mut places = vec![a, b, c];
+        assert!(!super::drop_unpainted(&mut places, Some(3)), "the current place was drawn: nothing to drop");
+        assert_eq!(places.len(), 3);
     }
 
     fn package() -> Route {

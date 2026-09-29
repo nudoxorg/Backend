@@ -15,6 +15,7 @@ use crate::shell::kit::{HoverIntent, package_route, quiet, text};
 use crate::shell::reader::Reader;
 use facet::icons::Kind;
 use facet::marks::{DepFacts, DepKind, Eco, EcoFacts, dep_line, ecosystem_mark};
+use facet::tokens::fluid::PACKAGE_GEM;
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
@@ -102,7 +103,7 @@ pub(super) fn body(
     // territory wants the room the reader has.
     let measure = page_measure(ctx);
     let byline = ready.as_deref().map(data::byline).unwrap_or_default();
-    let hero = hero(&dossier, &active, &name, &byline, &measure, ctx);
+    let hero = hero(&dossier, &active, &name, &byline, &measure, ctx, cx);
     let id = format!("folio-{}", pin.as_ref().map_or_else(|| dossier.package.as_str().to_owned(), |pin| pin.as_str().to_owned()));
     // A click on a card left this page: that card's module is open again on
     // coming back.
@@ -131,20 +132,13 @@ pub(super) fn body(
     leaves
 }
 
-/// The measure of the page: the room the reader has, up to a cap, rather
-/// than the reading column's width. The reader's scroller reports its own
-/// bounds once it has been laid out; before that the reading column is all
-/// there is.
+/// The measure of the page: the room the reader gives it this frame (the
+/// window's, never a frame behind), up to a cap, rather than the reading
+/// column's width.
 fn page_measure(ctx: &Ctx<'_>) -> Measure {
-    let viewport = ctx.reader_scroll.bounds().size.width;
     let scale = ctx.measure.scale();
-    let column = ctx.measure.width();
-    if viewport <= column {
-        return ctx.measure;
-    }
-    let pad = ctx.measure.within(viewport).fluid(22.0, 40.0);
-    let content = (viewport - pad * 2.0).max(column);
-    ctx.measure.within(content.min(px(PAGE_MAX * scale)))
+    let room = ctx.content.width().max(ctx.measure.width());
+    ctx.content.within(room.min(px(PAGE_MAX * scale)))
 }
 
 /// The widest the folio grows, px at 100 % text.
@@ -157,13 +151,21 @@ fn hero(
     byline: &[SharedString],
     measure: &Measure,
     ctx: &mut Ctx<'_>,
+    cx: &gpui::App,
 ) -> AnyElement {
     let palette = ctx.palette;
     let record = dossier.record.known();
     let name = ctx.say(name.to_owned());
-    let mut words = div().flex().flex_col().gap(measure.space(Space::Tight)).child(text(ty::HERO, measure, palette.ink0).child(name));
+    // The name is never ellipsized: it wraps at identifier boundaries and
+    // steps down only when one segment cannot fit the room beside the gem.
+    let gem = PACKAGE_GEM.at(measure.fluid_room());
+    let room = (measure.width() - gem - measure.space(Space::Wide)).max(px(120.0));
+    let (lines, role) = crate::shell::text_fit::fit_name(&name, ty::HERO, measure, room, cx);
+    ctx.hero.extend(lines.iter().map(|line| SharedString::from(line.clone())));
+    let mut words = div().flex().flex_col().gap(measure.space(Space::Tight)).child(crate::shell::text_fit::name_lines(&lines, role, palette.ink0));
     if let Some(description) = record.and_then(|record| record.description.known()) {
-        let lede = ctx.say(description.to_string());
+        // A Cargo description wraps its lines in the manifest; the page wraps its own.
+        let lede = ctx.say(description.split_whitespace().collect::<Vec<_>>().join(" "));
         words = words.child(text(ty::LEDE, measure, palette.ink2).max_w(measure.width() * 0.9).child(lede));
     }
     // Who made it, read from its manifest (labelled: not an index fact).
@@ -214,8 +216,10 @@ fn hero(
                 .flex()
                 .items_center()
                 .gap(measure.space(Space::Wide))
-                .child(facet::paint::gem(Kind::Package).size(f32::from(measure.fluid(48.0, 64.0))))
-                .child(words),
+                .min_w_0()
+                .child(facet::paint::gem(Kind::Package).size(f32::from(gem)).flex_none())
+                // The words take what the gem leaves, and wrap inside it.
+                .child(words.flex_1().min_w_0()),
         )
         .child(marks)
         .into_any_element()

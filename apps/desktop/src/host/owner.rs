@@ -12,10 +12,10 @@
 use super::lease::{DesktopHost, HostError, HostMode};
 use crate::core::VersionedRoot;
 use crate::model::ServiceMode;
-use crate::runtime::owner::{OwnerGate, OwnerState};
+use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
 use backend_client::Session;
 use backend_runtime::WorkspacePaths;
-use std::sync::Arc;
+use std::panic::AssertUnwindSafe;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -41,46 +41,68 @@ impl Drop for OwnerThread {
     }
 }
 
+/// What a started owner hands the window: the host to keep alive until the
+/// app quits, the root it answered at, and how this window reached it.
+struct Started<H> {
+    host: H,
+    key: VersionedRoot,
+    mode: ServiceMode,
+}
+
 /// Starts the owner for `paths` on its own thread. Returns at once.
 pub(crate) fn spawn(paths: WorkspacePaths, gate: OwnerGate) -> Option<OwnerThread> {
+    spawn_with(gate, move |gate| {
+        start(&paths, gate).map(|(host, key)| {
+            let mode = match host.mode() {
+                HostMode::Embedded => ServiceMode::Embedded,
+                HostMode::Attached => ServiceMode::Attached,
+            };
+            Started { host, key, mode }
+        })
+    })
+}
+
+/// [`spawn`] over any way of starting an owner (a test's panics).
+fn spawn_with<H>(
+    gate: OwnerGate,
+    starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String> + Send + 'static,
+) -> Option<OwnerThread> {
     let owner = gate.clone();
     match std::thread::Builder::new()
         .name("nudox-owner".to_owned())
-        .spawn(move || run(&paths, &owner))
+        .spawn(move || run(&owner, starter))
     {
         Ok(join) => Some(OwnerThread {
             gate,
             join: Some(join),
         }),
         Err(error) => {
-            gate.publish(OwnerState::Failed(Arc::from(format!(
-                "the owner's thread could not start: {error}"
-            ))));
+            gate.publish(OwnerState::Failed(OwnerFault::Host(format!("the owner's thread could not start: {error}").into())));
             None
         }
     }
 }
 
-fn run(paths: &WorkspacePaths, gate: &OwnerGate) {
+/// The owner thread's life: start, publish, wait for the app to quit; or
+/// publish why not and wait for "Try again". A start that panics is that
+/// fault ([`OwnerFault::Panicked`]), never a thread that vanished with every
+/// worker waiting on a gate nobody will open.
+fn run<H>(gate: &OwnerGate, mut starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String>) {
     loop {
-        match start(paths, gate) {
-            Ok((host, key)) => {
-                let mode = match host.mode() {
-                    HostMode::Embedded => ServiceMode::Embedded,
-                    HostMode::Attached => ServiceMode::Attached,
-                };
+        let fault = match std::panic::catch_unwind(AssertUnwindSafe(|| starter(gate))) {
+            Ok(Ok(Started { host, key, mode })) => {
                 gate.publish(OwnerState::Ready { key, mode });
                 gate.await_close();
                 drop(host);
                 return;
             }
-            Err(message) => {
-                gate.publish(OwnerState::Failed(Arc::from(message)));
-                // `restart` publishes `Starting` itself.
-                if !gate.await_restart() {
-                    return;
-                }
-            }
+            Ok(Err(message)) => OwnerFault::Host(message.into()),
+            Err(panic) => OwnerFault::Panicked(crate::runtime::offload::describe(panic.as_ref())),
+        };
+        gate.publish(OwnerState::Failed(fault));
+        // `restart` publishes `Starting` itself.
+        if !gate.await_restart() {
+            return;
         }
     }
 }
@@ -97,7 +119,7 @@ fn start(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, Versi
             Ok(opened) => return Ok(opened),
             Err(message) => {
                 if attempt == 0 {
-                    gate.publish(OwnerState::Failed(Arc::from(message.as_str())));
+                    gate.publish(OwnerState::Failed(OwnerFault::from(message.as_str())));
                 }
                 last = message;
             }
@@ -128,4 +150,43 @@ fn attempt_once(paths: &WorkspacePaths) -> Result<(DesktopHost, VersionedRoot), 
 
 fn describe(error: &HostError) -> String {
     format!("reach the local service at {}: {error}", error.operand())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn settle(gate: &OwnerGate, done: impl Fn(&OwnerState) -> bool) -> OwnerState {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let state = gate.state();
+            if done(&state) {
+                return state;
+            }
+            assert!(Instant::now() < deadline, "the owner thread never published: {state:?}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn an_owner_that_panics_is_a_typed_fault_on_the_gate_and_a_retry_can_start_it() {
+        let gate = OwnerGate::starting();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&attempts);
+        let thread = spawn_with(gate.clone(), move |_| {
+            assert!(counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0, "the host tripped over its own lease");
+            Ok(Started { host: (), key: VersionedRoot::unserved(), mode: ServiceMode::Embedded })
+        })
+        .expect("the owner thread");
+        let failed = settle(&gate, |state| matches!(state, OwnerState::Failed(_)));
+        let OwnerState::Failed(OwnerFault::Panicked(what)) = failed else { panic!("not a panic fault: {failed:?}") };
+        assert!(what.contains("the host tripped over its own lease"), "the fault says what panicked: {what}");
+        assert!(gate.wait().is_err(), "a worker waiting on the gate is released with the fault, not left waiting");
+        // "Try again" starts it again, and this time it answers.
+        assert!(gate.restart());
+        settle(&gate, |state| matches!(state, OwnerState::Ready { .. }));
+        drop(thread);
+    }
 }

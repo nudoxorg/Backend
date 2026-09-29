@@ -26,7 +26,7 @@ use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
-    Gap, GapReason, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation, SearchQuery,
+    Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation, SearchQuery,
     SymbolRef,
 };
 use backend_client::{ClientError, Session};
@@ -106,7 +106,7 @@ pub struct ReadJob {
     /// What to read.
     pub request: ReadRequest,
     /// Store generation the result must match to land.
-    pub generation: u64,
+    pub generation: Generation,
     /// Scheduling class.
     pub priority: Priority,
     /// Cancellation shared with the store.
@@ -121,7 +121,7 @@ pub struct ReadOutcome {
     /// Resource the result lands in.
     pub key: PageKey,
     /// Generation the job was issued with.
-    pub generation: u64,
+    pub generation: Generation,
     /// Worker that ran it.
     pub worker: usize,
     /// Scheduling class it ran at.
@@ -191,7 +191,15 @@ impl OutlineCache {
 }
 
 /// The job one worker is running: its key, generation, and token.
-type Running = Option<(PageKey, u64, CancellationToken)>;
+#[derive(Clone, Debug)]
+struct RunningJob {
+    key: PageKey,
+    generation: Generation,
+    cancel: CancellationToken,
+}
+
+/// What a worker is running, if anything.
+type Running = Option<RunningJob>;
 
 #[derive(Debug, Default)]
 struct Queue {
@@ -295,9 +303,9 @@ impl ReadPool {
                 true
             }
         });
-        for (key, generation, token) in queue.running.iter().flatten() {
-            if *key == job.key && *generation != job.generation {
-                token.cancel();
+        for running in queue.running.iter().flatten() {
+            if running.key == job.key && running.generation != job.generation {
+                running.cancel.cancel();
             }
         }
         queue.jobs.push_back(job);
@@ -333,9 +341,9 @@ impl ReadPool {
             }
         });
         let mut found = queue.jobs.len() != before;
-        for (running, _, token) in queue.running.iter().flatten() {
-            if running == key {
-                token.cancel();
+        for running in queue.running.iter().flatten() {
+            if running.key == *key {
+                running.cancel.cancel();
                 found = true;
             }
         }
@@ -371,8 +379,8 @@ impl ReadPool {
             for job in queue.jobs.drain(..) {
                 job.cancel.cancel();
             }
-            for (_, _, token) in queue.running.iter().flatten() {
-                token.cancel();
+            for running in queue.running.iter().flatten() {
+                running.cancel.cancel();
             }
         }
         self.shared.ready.notify_all();
@@ -413,7 +421,7 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                 }
                 if let Some(job) = next_job(&mut queue, worker) {
                     if let Some(slot) = queue.running.get_mut(worker) {
-                        *slot = Some((job.key.clone(), job.generation, job.cancel.clone()));
+                        *slot = Some(RunningJob { key: job.key.clone(), generation: job.generation, cancel: job.cancel.clone() });
                     }
                     break job;
                 }
@@ -1296,6 +1304,7 @@ mod tests {
     }
 
     fn job(name: &str, generation: u64, priority: Priority) -> ReadJob {
+        let generation = Generation::new(generation);
         let symbol = SymbolRef::new(name).expect("symbol");
         ReadJob {
             key: PageKey::Symbol(symbol.clone()),
@@ -1358,7 +1367,7 @@ mod tests {
         let first = harness.outcomes(1);
         assert_eq!(
             (first[0].key.clone(), first[0].generation),
-            (key("slow-k"), 1)
+            (key("slow-k"), Generation::new(1))
         );
         assert_eq!(first[0].result, Err(ReadFailure::Cancelled));
         harness.release("slow-q");
@@ -1372,8 +1381,8 @@ mod tests {
         assert_eq!(
             ran,
             [
-                ("symbol slow-k".to_owned(), 4),
-                ("symbol slow-q".to_owned(), 3)
+                ("symbol slow-k".to_owned(), Generation::new(4)),
+                ("symbol slow-q".to_owned(), Generation::new(3))
             ]
         );
     }

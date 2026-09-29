@@ -268,6 +268,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one journey: embed, attach, index, read the revision")]
     fn one_gui_embeds_and_every_other_surface_attaches_to_that_owner() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -279,7 +280,7 @@ mod tests {
         let data = project.join("state");
         let endpoint =
             PathBuf::from("/tmp").join(format!("nudox-h-{}-{nonce}.sock", std::process::id()));
-        fs::create_dir_all(project.join("src")).expect("create project");
+        crate::host::private_dir(&project.join("src")).expect("create project");
         fs::write(
             project.join("Cargo.toml"),
             b"[package]\nname='embedded-proof'\nversion='0.1.0'\nedition='2024'\n",

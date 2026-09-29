@@ -123,8 +123,8 @@ mod tests {
         assert_eq!(tried[1].args, ["/w/a.rs:7"]);
         let none = Recorder { ran: RefCell::new(Vec::new()), works: vec![] };
         let tried = open(&none, None, "/w/a.rs", 7);
-        assert_eq!(tried.len(), 4, "code, zed, the platform's opener: all tried");
-        assert_eq!(tried[3].args, ["/w/a.rs"]);
+        assert_eq!(tried.len(), 3, "code, zed, the platform's opener: all tried");
+        assert_eq!(tried[2].args, ["/w/a.rs"]);
     }
 
     #[test]

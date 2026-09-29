@@ -29,7 +29,7 @@ pub(super) enum Tone {
 }
 
 /// The violet pill of a generic parameter.
-fn pill(env: &Env<'_>, i: &Ink, name: &str) -> AnyElement {
+fn pill(env: &Env<'_>, i: &Ink, key: &Key, name: &str) -> AnyElement {
     div()
         .flex()
         .items_center()
@@ -39,9 +39,7 @@ fn pill(env: &Env<'_>, i: &Ink, name: &str) -> AnyElement {
         .h(env.s(20.0))
         .px(env.k(6.0))
         .bg(i.violet)
-        .set(roles::PILL, &env.m)
-        .text_color(i.g0)
-        .child(SharedString::from(name.to_owned()))
+        .child(said(env, &key.field("name"), name.to_owned(), roles::PILL, i.g0))
         .into_any_element()
 }
 
@@ -52,9 +50,12 @@ pub(super) fn ty_el(env: &Env<'_>, cards: &Cards, key: &Key, ty: &Ty, tone: Tone
     let i = ink(env.p);
     let mut row = div().flex().flex_wrap().items_center().gap_x(env.k(7.0)).gap_y(env.k(4.0)).min_w_0();
     if let Some(generic) = &ty.generic {
-        let pill = pill(env, &i, generic);
+        let pill = pill(env, &i, &key.field("pill"), generic);
         let pill = match cards.generic(generic) {
-            Some(request) => float::trigger(key.field("pill").id(), move |bounds| request(bounds), pill).into_any_element(),
+            Some(request) => {
+                let trigger = key.field("pill");
+                float::trigger(trigger.id(), move |bounds| request(&trigger, bounds), pill).into_any_element()
+            }
             None => pill,
         };
         row = row.child(pill);
@@ -74,7 +75,8 @@ pub(super) fn ty_el(env: &Env<'_>, cards: &Cards, key: &Key, ty: &Ty, tone: Tone
         }
         if tone == Tone::Error && ty.link.is_none() {
             if let Some(request) = cards.error() {
-                el = float::trigger(key.field("card").id(), move |bounds| request(bounds), el).into_any_element();
+                let trigger = key.field("card");
+                el = float::trigger(trigger.id(), move |bounds| request(&trigger, bounds), el).into_any_element();
             }
         }
         row = row.child(el);

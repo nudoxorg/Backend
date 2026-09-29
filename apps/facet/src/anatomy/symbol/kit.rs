@@ -219,6 +219,12 @@ pub(super) enum Ellipsis {
     Start,
 }
 
+/// [`wrapped`] for code that holds only the measure (a float card).
+pub(super) fn wrapped_in(m: &Measure, key: &Key, content: impl Into<SharedString>, role: TypeRole, color: Hsla) -> AnyElement {
+    let content = content.into();
+    probe::text(key.id(), content.clone(), m.role(role), 1.0, TextOverflow::Wrap, div().set(role, m).text_color(color).min_w_0().child(content)).into_any_element()
+}
+
 /// Text that gives way with an ellipsis.
 pub(super) fn truncated(env: &Env<'_>, key: &Key, content: impl Into<SharedString>, role: TypeRole, color: Hsla, gives: Ellipsis) -> AnyElement {
     let content = content.into();

@@ -377,7 +377,8 @@ fn the_owners_revision_is_the_root_its_subscription_hydrates() {
 mod launch_snapshot {
     use super::*;
     use crate::model::pages::{DocFragment, SymbolPage};
-    use crate::runtime::snapshot::{Keep, Kept, SnapshotFile, kept_keys};
+    use crate::model::pages::SeedEntry;
+    use crate::runtime::snapshot::{Keep, SnapshotFile, kept_keys};
     use crate::runtime::store::StoreEvent;
     use crate::shell::Shell;
     use crate::shell::tests::{dossier, page, page_route, symbol};
@@ -434,9 +435,9 @@ mod launch_snapshot {
         file.write(
             root,
             &[
-                (PageKey::Symbol(symbol(NAME)), Kept::Symbol(Arc::new(symbol_page))),
-                (PageKey::Package(package()), Kept::Package(Arc::new(dossier()))),
-                (PageKey::Orbit, Kept::Orbit(Arc::new(orbit()))),
+                SeedEntry::Symbol(symbol(NAME), Arc::new(symbol_page)),
+                SeedEntry::Package(package(), Arc::new(dossier())),
+                SeedEntry::Orbit(Arc::new(orbit())),
             ],
         )
         .expect("save");
@@ -513,6 +514,31 @@ mod launch_snapshot {
 
         fn says(&mut self, words: &str) -> bool {
             self.said().iter().any(|text| text.contains(words))
+        }
+
+        /// Every text the window paints, on a frame that repaints everything
+        /// (the probe records what draws, and only what draws). It changes
+        /// region render counts, so a test calls it outside the window it
+        /// counts.
+        fn painted(&mut self) -> Vec<String> {
+            self.cx.update(|_, cx| facet::probe::enable(cx));
+            self.cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let ledger = self.cx.update(|_, cx| facet::probe::take(cx));
+            self.cx.update(|_, cx| facet::probe::disable(cx));
+            ledger.texts.into_iter().map(|text| text.content).collect()
+        }
+
+        /// Whether the page the store holds says `words` in its docs (what
+        /// the reader will paint once it draws it).
+        fn stored_docs_say(&mut self, words: &str) -> bool {
+            self.graph.store.read_with(self.cx, |store, _| {
+                store.symbol(&symbol(NAME)).loaded_value().is_some_and(|page| {
+                    page.docs.iter().any(|fragment| matches!(fragment, DocFragment::Text(text) if text.contains(words)))
+                })
+            })
         }
 
         fn submitted(&mut self) -> u64 {
@@ -620,10 +646,10 @@ mod launch_snapshot {
 
         // The first frame: the page itself, not a skeleton, with no owner.
         draw(opened.cx);
-        let first = opened.said();
+        let first = opened.painted();
         assert!(
             first.iter().any(|text| text.contains("names one relation group"))
-                && !first.iter().any(|text| text.contains("on its way")),
+                && !opened.says("on its way"),
             "the first frame is the page the window was left on: {first:?}"
         );
         assert_eq!(opened.submitted(), 0, "painted from the snapshot, not from a read");
@@ -692,7 +718,7 @@ mod launch_snapshot {
             paint(opened.cx);
             assert!(!opened.says("on its way"), "a revalidation never shows a wait");
             let asked = opened.latch.asked();
-            if opened.says(landed)
+            if opened.stored_docs_say(landed)
                 && asked.contains(&symbol_key())
                 && asked.contains(&package_key())
                 && !inflight(opened)
@@ -723,7 +749,7 @@ mod launch_snapshot {
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, true);
         paint(opened.cx);
-        assert!(opened.says("names one relation group"), "{:?}", opened.said());
+        assert!(opened.painted().iter().any(|text| text.contains("names one relation group")), "the snapshot's page is painted");
         let stamps = opened.stamps();
         let (before, after) = revalidate(&mut opened, &gate, served("now"), "names one relation group");
         assert_eq!(opened.stamps(), stamps, "no stamp moved");
@@ -739,6 +765,7 @@ mod launch_snapshot {
             opened.events.borrow(),
             opened.latch.asked()
         );
+        assert!(opened.painted().iter().any(|text| text.contains("names one relation group")), "and the page is still what it painted");
     }
 
     #[gpui::test]
@@ -747,11 +774,11 @@ mod launch_snapshot {
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, true);
         paint(opened.cx);
-        assert!(opened.says("Stale words from the last launch."), "{:?}", opened.said());
+        let stale = opened.painted();
+        assert!(stale.iter().any(|text| text.contains("Stale words from the last launch.")), "{stale:?}");
         let (symbol_before, package_before) = opened.stamps();
         let now = served("now");
         let (before, after) = revalidate(&mut opened, &gate, now, "names one relation group");
-        assert!(!opened.says("Stale words from the last launch."), "the stale words are gone");
         let (symbol_after, package_after) = opened.stamps();
         assert_ne!(symbol_after, symbol_before, "the changed page moved");
         assert_eq!(
@@ -768,6 +795,9 @@ mod launch_snapshot {
             "the shelf (drawn from the unchanged dossier and Orbit) and the status line did not redraw: {before:?} -> {after:?}"
         );
         eprintln!("stale row: region renders {before:?} -> {after:?}");
+        let fresh = opened.painted();
+        assert!(!fresh.iter().any(|text| text.contains("Stale words from the last launch.")), "the stale words are gone: {fresh:?}");
+        assert!(fresh.iter().any(|text| text.contains("names one relation group")), "the owner's words are painted: {fresh:?}");
 
         // At rest, the route's pages are saved for the next launch, at the
         // owner's root, as they are now.
@@ -785,9 +815,9 @@ mod launch_snapshot {
         assert_eq!(
             seed.pages,
             [
-                (symbol_key(), PageValue::Symbol(page(NAME))),
-                (package_key(), PageValue::Package(dossier())),
-                (PageKey::Orbit, PageValue::Orbit(orbit())),
+                SeedEntry::Symbol(symbol(NAME), Arc::new(page(NAME))),
+                SeedEntry::Package(package(), Arc::new(dossier())),
+                SeedEntry::Orbit(Arc::new(orbit())),
             ],
             "the next launch paints what this one shows now"
         );
@@ -808,10 +838,9 @@ mod launch_snapshot {
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, false);
         draw(opened.cx);
-        let first = opened.said();
+        let first = opened.painted();
         assert!(
-            first.iter().any(|text| text.contains("on its way"))
-                && !first.iter().any(|text| text.contains("names one relation group")),
+            opened.says("on its way") && !first.iter().any(|text| text.contains("names one relation group")),
             "a snapshot that does not check out is never painted: {first:?}"
         );
         assert!(file.path().with_extension("bad").exists(), "it is kept aside as .bad");
@@ -841,11 +870,11 @@ mod launch_snapshot {
             notice.contains("as you left it") && notice.contains("could not own /tmp/demo"),
             "the window says the page is the one it was left on, and why: {notice}"
         );
-        let said = opened.said();
+        let painted = opened.painted();
         assert!(
-            said.iter().any(|text| text.contains("names one relation group"))
-                && !said.iter().any(|text| text == "READ-TRANSPORT"),
-            "the page stays, not a fault plate: {said:?}"
+            painted.iter().any(|text| text.contains("names one relation group"))
+                && !painted.iter().any(|text| text == "READ-TRANSPORT"),
+            "the page stays, not a fault plate: {painted:?}"
         );
         assert_eq!(opened.submitted(), 0, "a failed owner is never dialled");
     }

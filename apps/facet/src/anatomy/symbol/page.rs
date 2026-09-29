@@ -13,6 +13,7 @@ use super::kit::{Env, caps, ink, prose, roles, said};
 use super::layout::{Layout, Side};
 use super::side::{kind_mark, rail};
 use super::view::{Uses, View};
+use crate::fluid::Modes;
 use crate::icons::KindSize;
 use crate::measure::Measure;
 use crate::tokens::Palette;
@@ -100,10 +101,10 @@ fn header(env: &Env<'_>, view: &View, chrome: Chrome) -> AnyElement {
 
 /// The page for `view`, with the workspace's `uses`, in the room `measure`
 /// describes.
-pub fn page(view: &View, uses: &Uses, chrome: Chrome, measure: &Measure, palette: &'static Palette, host: &dyn Host) -> AnyElement {
+pub fn page(view: &View, uses: &Uses, chrome: Chrome, measure: &Measure, palette: &'static Palette, host: &dyn Host, modes: &Modes) -> AnyElement {
     let ui = host.ui();
     let spots = host.spots();
-    let lay = Layout::of(measure, &spots);
+    let lay = Layout::of(measure, modes);
     let env = Env { m: measure.within(lay.main), p: palette, host, lay };
     let cards: Cards = card::prepare(&env, view, uses);
     let mut main = div().flex().flex_col().min_w_0().w(lay.main).child(header(&env, view, chrome));
@@ -160,8 +161,7 @@ pub fn page(view: &View, uses: &Uses, chrome: Chrome, measure: &Measure, palette
 #[must_use]
 pub fn gem(view: &View, measure: &Measure, palette: &'static Palette) -> AnyElement {
     let host = super::host::Fixed::new(super::host::Ui::default());
-    let spots = host.spots();
-    let env = Env { m: *measure, p: palette, host: &host, lay: Layout::of(measure, &spots) };
+    let env = Env { m: *measure, p: palette, host: &host, lay: Layout::of(measure, &Modes::new()) };
     kind_mark(&env, view.head.kind, KindSize::Md)
 }
 

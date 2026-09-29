@@ -476,14 +476,18 @@ pub(super) fn past(package: &PackageRef, at: &str, cx: &mut gpui::App) -> Past {
 /// The ticker for a dossier: its recorded releases, with the dates the
 /// release fixture knows, and the pin from the route.
 pub(super) fn ticker(dossier: &PackageDossier, source: Option<&SourceFacts>, pin: Option<&str>, reading: Option<&str>, today: &str, cx: &mut gpui::App) -> Option<Rc<TickerFacts>> {
-    let versions = dossier.versions.known()?;
-    if versions.is_empty() {
-        return None;
-    }
     // Every release the registry's index cache knows, dated; the ones the
-    // index has read are the ones whose names the page can show.
+    // index has read are the ones whose names the page can show. This holds
+    // for a crate the library indexed from an unpacked registry directory
+    // too, whose version list the dossier does not carry: the pin is the
+    // release whose names are read then.
     if let Some(published) = source.map(|s| &s.releases).filter(|r| r.len() > 1) {
-        let read = |version: &str| versions.iter().any(|entry| entry.version.as_ref() == version || facet::marks::semver::short(&entry.version) == facet::marks::semver::short(version));
+        let versions = dossier.versions.known();
+        let same = |a: &str, b: &str| a == b || facet::marks::semver::short(a) == facet::marks::semver::short(b);
+        let read = |version: &str| match versions {
+            Some(list) => list.iter().any(|entry| same(entry.version.as_ref(), version)),
+            None => pin.is_some_and(|pin| same(pin, version)),
+        };
         let releases: Vec<Release> = published
             .iter()
             .map(|release| Release {
@@ -494,6 +498,10 @@ pub(super) fn ticker(dossier: &PackageDossier, source: Option<&SourceFacts>, pin
             })
             .collect();
         return Some(Rc::new(TickerFacts::new(&releases, pin, today).reading(reading)));
+    }
+    let versions = dossier.versions.known()?;
+    if versions.is_empty() {
+        return None;
     }
     let dated = crate::runtime::fixture_releases::release_data(&dossier.package, cx);
     let releases: Vec<Release> = versions

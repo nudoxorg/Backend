@@ -34,6 +34,8 @@ mod page_tests;
 mod place;
 mod uses;
 
+pub(crate) use uses::in_flight;
+
 pub(super) fn body(
     place: &Route,
     route: &SymbolRoute,
@@ -59,7 +61,7 @@ pub(super) fn body(
     let view = facet::anatomy::symbol::compile(&facts);
     // What your packages do with it, read from their own files.
     let workspace = match uses::ask(&symbol, &page, cx) {
-        uses::Reading::Ready(sites) => facet::anatomy::symbol::derive::uses::read_all(&sites, &uses::reader_of(&view)),
+        uses::Reading::Ready(sites) => facet::anatomy::symbol::derive::uses::read_all(&sites, &facet::anatomy::symbol::derive::uses::Reader::of(&view)),
         uses::Reading::Reading => facet::anatomy::symbol::view::Uses { all: Vec::new(), elsewhere: Some("Reading the lines your packages use it on…".to_owned()) },
     };
     let view = facet::anatomy::symbol::with_uses(view, &workspace);
@@ -77,10 +79,10 @@ pub(super) fn body(
         scroll: ctx.reader_scroll.clone(),
         said: std::cell::RefCell::new(Vec::new()),
     };
-    let lay = facet::anatomy::symbol::layout::Layout::of(&ctx.measure, &facet::anatomy::symbol::Host::spots(&host));
+    let lay = facet::anatomy::symbol::layout::Layout::of(&ctx.measure, &ctx.modes);
     let title = title(&page, &facts.name, facts.owner.as_deref(), lay.main, ctx, cx);
     let gem = gem(&page, &view, ctx);
-    let element = facet::anatomy::symbol::page(&view, &workspace, Chrome { gem, title }, &ctx.measure, ctx.palette, &host);
+    let element = facet::anatomy::symbol::page(&view, &workspace, Chrome { gem, title }, &ctx.measure, ctx.palette, &host, &ctx.modes);
     for said in host.take_said() {
         ctx.say(said);
     }

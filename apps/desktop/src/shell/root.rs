@@ -34,6 +34,7 @@ use crate::runtime::UiEntityGraph;
 use facet::fluid::{Modes, Room};
 use facet::motion::{Motion, spec};
 use facet::paint::ground;
+use facet::tokens::fluid::{ASK, ASK_PANEL, COLUMNS_SHARE, Float};
 use facet::tokens::geo;
 use facet::{ActiveFacet as _, Measure, Reveal};
 use gpui::{
@@ -129,6 +130,9 @@ impl Shell {
         let pins = new_region(&links, cx, |store| Pins::new(links.clone(), store));
         let ask_links = links.clone();
         let ask = cx.new(|cx| Ask::new(ask_links, window, cx));
+        // The titlebar draws the query in the bar's place while Ask is open.
+        let ask_field = ask.read(cx).input().clone();
+        titlebar.update(cx, |titlebar, _| titlebar.set_ask_input(ask_field));
         reader.update(cx, |reader, _| {
             reader.targets.set_active(true);
         });
@@ -1138,25 +1142,42 @@ impl Shell {
         Some(layer.into_any_element())
     }
 
-    fn ask_layer(&self, cx: &App) -> Option<AnyElement> {
+    /// Ask's results: a plate over the shelf's column below the titlebar
+    /// (which draws the query itself), a panel from 320 to 440 px as the
+    /// window grows and a sheet across it on a phone (`facet::tokens::fluid::ASK`,
+    /// held through its hysteresis band). The rest of the page is veiled; a click
+    /// on the veil puts Ask away.
+    fn ask_layer(&self, frame: &Frame, status: f32, viewport: gpui::Size<Pixels>, cx: &App) -> Option<AnyElement> {
         if !self.ask_open {
             return None;
         }
         let palette = cx.facet().palette();
         let links = self.links.clone();
+        let width = match self.modes.settle(&ASK, frame.room).mode {
+            Float::Panel => ASK_PANEL.at(frame.room),
+            Float::Sheet => viewport.width,
+        };
         Some(
             div()
                 .id("ask-veil")
                 .absolute()
-                .inset_0()
+                .top(frame.titlebar)
+                .bottom(px(status))
+                .left_0()
+                .right_0()
                 .bg(palette.veil)
-                .flex()
-                .justify_center()
-                .pt(px(72.0 * cx.facet().text_scale))
                 .on_click(move |_, _, cx| links.dispatch(Intent::DismissOverlay, cx))
-                .child(
+                // The plate is there once there is a query for it to answer:
+                // an empty plate is not something to look at.
+                .children(self.ask.read(cx).shows().then(|| {
                     div()
                         .id("ask-frame")
+                        .debug_selector(|| "ask-plate".to_owned())
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(0.0))
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .capture_key_down({
                             let ask = self.ask.clone();
@@ -1172,8 +1193,8 @@ impl Shell {
                                 _ => {}
                             }
                         })
-                        .child(self.ask.clone()),
-                )
+                        .child(self.ask.clone())
+                }))
                 .into_any_element(),
         )
     }
@@ -1265,8 +1286,9 @@ impl Render for Shell {
         // Structural changes animate (the shelf becoming a spine, the pins
         // column arriving); a window drag inside one mode tracks directly,
         // because the targets do not move.
-        let shelf_width = self.motion.animate("shelf-w", f32::from(frame.shelf_width), spec::SETTLE, window, cx);
-        let pins_width = self.motion.animate("pins-w", f32::from(frame.pins_width), spec::SETTLE, window, cx);
+        let columns_cap = f32::from(viewport.width) * COLUMNS_SHARE.at(frame.room);
+        let shelf_width = self.motion.animate("shelf-w", f32::from(frame.shelf_width), spec::SETTLE, window, cx).min(columns_cap);
+        let pins_width = self.motion.animate("pins-w", f32::from(frame.pins_width), spec::SETTLE, window, cx).min((columns_cap - shelf_width).max(0.0));
         let spine = geo::KSPINE * scale;
         self.shelf.update(cx, |shelf, _| shelf.set_rest(frame.shelf_body, spine));
         self.shelf_over.update(cx, |shelf, _| shelf.set_rest(frame.drawer, spine));
@@ -1448,7 +1470,7 @@ impl Render for Shell {
         }
         self.publish_stack(cx);
         let float = float::layer(window, cx);
-        root.children(self.ask_layer(cx))
+        root.children(self.ask_layer(&frame, status_height, viewport, cx))
             .children(self.hint_layer(cx))
             .child(float)
     }

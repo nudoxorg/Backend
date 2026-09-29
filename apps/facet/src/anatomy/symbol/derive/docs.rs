@@ -4,12 +4,12 @@
 
 use super::super::facts::{Facts, Section, SectionKind};
 use super::super::view::{Block, Docs};
-use super::text::{first_sentence, lower_first, plain};
+use super::text::{clean, first_sentence, lower_first, plain};
 
 /// The first paragraph of the docs, its first sentence: the lede.
 pub(super) fn lede(facts: &Facts) -> Option<String> {
     facts.docs.iter().find_map(|block| match block {
-        Block::Para(text) => Some(first_sentence(text)),
+        Block::Para(text) => Some(first_sentence(&clean(text))),
         _ => None,
     })
 }
@@ -32,7 +32,8 @@ pub(super) fn docs(facts: &Facts) -> Docs {
             }
             Block::Para(text) if first => {
                 first = false;
-                let head = first_sentence(text);
+                let text = clean(text);
+                let head = first_sentence(&text);
                 let rest = text.strip_prefix(head.as_str()).map_or("", str::trim);
                 if !rest.is_empty() {
                     blocks.push(Block::Para(rest.to_owned()));
@@ -43,6 +44,8 @@ pub(super) fn docs(facts: &Facts) -> Docs {
                 skip = false;
                 blocks.push(block.clone());
             }
+            Block::Para(text) => blocks.push(Block::Para(clean(text))),
+            Block::Item(text) => blocks.push(Block::Item(clean(text))),
             _ => blocks.push(block.clone()),
         }
     }

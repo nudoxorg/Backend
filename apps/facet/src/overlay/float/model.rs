@@ -59,19 +59,21 @@ impl FloatKind {
     #[must_use]
     pub const fn rest_delay(self) -> Duration {
         match self {
-            Self::Tip => ms(450),
-            Self::Peek | Self::Lens => ms(350),
+            Self::Tip | Self::Peek | Self::Lens => ms(350),
             Self::Menu => ms(0),
         }
     }
 
-    /// How long an unheld card waits before it closes.
+    /// How long an unheld card waits before it closes. A tip cannot be
+    /// entered, so it waits only the jitter of a pointer crossing its
+    /// trigger; cards a pointer may travel into wait for that journey (the
+    /// aim triangle holds them while it lasts).
     #[must_use]
     pub const fn grace(self) -> Duration {
         match self {
-            Self::Tip => ms(90),
-            Self::Peek | Self::Lens => ms(160),
-            Self::Menu => ms(220),
+            Self::Tip => ms(30),
+            Self::Peek | Self::Lens => ms(100),
+            Self::Menu => ms(120),
         }
     }
 
@@ -89,9 +91,9 @@ impl FloatKind {
     #[must_use]
     pub const fn exit(self) -> Duration {
         match self {
-            Self::Tip => ms(110),
-            Self::Peek | Self::Lens => ms(150),
-            Self::Menu => ms(120),
+            Self::Tip => ms(90),
+            Self::Peek | Self::Lens => ms(120),
+            Self::Menu => ms(100),
         }
     }
 
@@ -233,7 +235,7 @@ impl Presence {
                 if progress >= 1.0 {
                     return Bands::all(self.to);
                 }
-                unfurl::at(from, self.to >= self.from, self.schedule(offset, progress))
+                unfurl::at(from, unfurl::Run::toward(self.from, self.to), self.schedule(offset, progress))
             }
         }
     }
@@ -279,12 +281,12 @@ impl Presence {
             Path::Unfurl { from, offset } => {
                 // The bands' mean, differentiated across a millisecond of
                 // schedule (each band is piecewise smooth on its window).
-                let entering = self.to >= self.from;
+                let run = unfurl::Run::toward(self.from, self.to);
                 let ms = self.schedule(offset, progress);
                 let per_second = (self.schedule(offset, 1.0) - offset) / span;
                 let h = 0.5;
-                let after = unfurl::at(from, entering, ms + h).mean();
-                let before = unfurl::at(from, entering, (ms - h).max(offset)).mean();
+                let after = unfurl::at(from, run, ms + h).mean();
+                let before = unfurl::at(from, run, (ms - h).max(offset)).mean();
                 (after - before) / (ms + h - (ms - h).max(offset)) * per_second
             }
         }
@@ -333,9 +335,9 @@ impl Presence {
             },
             Path::Unfurl { .. } => {
                 let from = self.bands(now);
-                let entering = to >= value;
-                let offset = unfurl::resume(from, entering);
-                let end = if entering { unfurl::ENTER_MS } else { unfurl::EXIT_MS };
+                let run = unfurl::Run::toward(value, to);
+                let offset = unfurl::resume(from, run);
+                let end = run.ms();
                 Self {
                     from: value,
                     to,

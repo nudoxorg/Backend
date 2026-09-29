@@ -152,7 +152,10 @@ fn dossier(package: &PackageRef) -> Option<PackageDossier> {
                 Some(VersionEntry {
                     package: package.at(&release.version)?,
                     version: Arc::from(release.version.as_str()),
-                    standing: release.standing,
+                    standing: match release.standing {
+                        facet::folio::state::Standing::Yanked => Standing::Yanked,
+                        facet::folio::state::Standing::Available => Standing::Available,
+                    },
                     current: release.version == pinned,
                 })
             })
@@ -439,7 +442,8 @@ fn main() {
     };
     let mut shots = Vec::new();
     for (label, package) in [("toml", &toml), ("tokio", &tokio), ("serde_json", &serde_json), ("present", &present)] {
-        for (width, height) in [(1024, 700), (1440, 900), (2560, 1440)] {
+        // Phones are taller than the fold: the whole page is what is looked at.
+        for (width, height) in [(320, 2000), (390, 2000), (430, 2000), (800, 900), (1024, 700), (1440, 900), (2560, 1440)] {
             shots.push(still(&format!("{label}-{width}"), package, width, height));
         }
     }

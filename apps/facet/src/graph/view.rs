@@ -159,6 +159,8 @@ pub struct GraphView {
     hover_a: f32,
     flow_a: f32,
     reading_a: f32,
+    /// The layout modes the view is in (the focus card beside the map or under it).
+    modes: crate::fluid::Modes,
     hover_terr: Option<Terr>,
     prism: Option<Prism>,
     frame: Option<PrismFrame>,
@@ -288,6 +290,7 @@ impl GraphView {
             hover_a: 0.0,
             flow_a: 0.0,
             reading_a: 0.0,
+            modes: crate::fluid::Modes::new(),
             hover_terr: None,
             prism: None,
             frame: None,
@@ -1608,29 +1611,69 @@ impl GraphView {
     }
 
     /// The package › module under the camera, and the altitude.
-    fn where_line(&self) -> Option<(SharedString, Option<SharedString>, &'static str)> {
+    fn where_line(&self) -> Option<WhereLine> {
         let (scene, view, rig) = (self.scene.as_ref()?, self.view.as_ref()?, self.rig.as_ref()?);
-        let k = view.k(&rig.cam);
-        let level = if k < 0.9 {
-            "world"
-        } else if k < 3.0 {
-            "packages"
-        } else if k < 12.0 {
-            "modules"
-        } else if k < 40.0 {
-            "symbols"
-        } else {
-            "members"
-        };
+        let altitude = Altitude::of(view.k(&rig.cam));
         #[allow(clippy::cast_possible_truncation)]
         let at = scene.territory_at(rig.cam.x as f32, rig.cam.y as f32);
-        let pkg = at.map(|t| self.world.packages[t.pkg as usize].name.clone());
-        let module = at.and_then(|t| t.module).filter(|_| k > 1.5).map(|m| {
+        let package = at.map(|t| self.world.packages[t.pkg as usize].name.clone());
+        let module = at.and_then(|t| t.module).filter(|_| view.k(&rig.cam) > 1.5).map(|m| {
             let path = &self.world.modules[m as usize].path;
             if path.is_empty() { SharedString::new_static("(root)") } else { path.clone() }
         });
-        Some((pkg.unwrap_or_default(), module, level))
+        Some(WhereLine { package: package.unwrap_or_default(), module, altitude })
     }
+}
+
+/// How far into the world the camera is: the word the where-line ends with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Altitude {
+    /// The whole world.
+    World,
+    /// Packages fill the view.
+    Packages,
+    /// Modules fill the view.
+    Modules,
+    /// Symbols fill the view.
+    Symbols,
+    /// Members fill the view.
+    Members,
+}
+
+impl Altitude {
+    /// The altitude at camera scale `k`.
+    fn of(k: f64) -> Self {
+        if k < 0.9 {
+            Self::World
+        } else if k < 3.0 {
+            Self::Packages
+        } else if k < 12.0 {
+            Self::Modules
+        } else if k < 40.0 {
+            Self::Symbols
+        } else {
+            Self::Members
+        }
+    }
+
+    /// The word the where-line shows.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::World => "world",
+            Self::Packages => "packages",
+            Self::Modules => "modules",
+            Self::Symbols => "symbols",
+            Self::Members => "members",
+        }
+    }
+}
+
+/// What the camera is looking at, in words: the package and module under
+/// its centre, and how far in it is.
+struct WhereLine {
+    package: SharedString,
+    module: Option<SharedString>,
+    altitude: Altitude,
 }
 
 /// A frame's inputs, owned (the painter must not borrow the view).
@@ -1712,7 +1755,7 @@ fn readable_frame(scene: &Scene, view: &View, room: &View, bounds: Box2, source:
     view.frame_in(Box2 { x0: x - half_w, y0: y - half_h, x1: x + half_w, y1: y + half_h }, room, pad)
 }
 
-fn chain_margin(view: &View) -> f64 { if view.w < 640.0 { 2.8 } else { 1.9 } }
+fn chain_margin(view: &View) -> f64 { f64::from(crate::tokens::fluid::CHAIN_MARGIN.at(crate::fluid::Room::new(px(view.w), 1.0))) }
 
 /// Reading provenance is constant-time: symbol endpoints, one shared module
 /// or package, and an explicit selected relation. Motion classifies the route
@@ -2049,7 +2092,7 @@ impl GraphView {
             let card = self.focus_card(i, &measure, window.modifiers().platform, cx);
             root = root.child(MeasuredCard { child: card, view: cx.entity() });
         } else { self.card_bounds = None; }
-        if let Some((pkg, module, level)) = self.where_line() {
+        if let Some(WhereLine { package: pkg, module, altitude }) = self.where_line() {
             let mut line = div()
                 .absolute()
                 .left(px(18.0))
@@ -2066,7 +2109,7 @@ impl GraphView {
             if let Some(m) = module {
                 line = line.child(div().text_color(palette.ink3.hsla()).child("›")).child(m);
             }
-            line = line.child(div().ml(px(8.0)).child(graph_text("graph-where-level", level, ty::STATUS, &measure, palette.ink2, crate::probe::TextOverflow::Clip)));
+            line = line.child(div().ml(px(8.0)).child(graph_text("graph-where-level", altitude.word(), ty::STATUS, &measure, palette.ink2, crate::probe::TextOverflow::Clip)));
             if self.state.exploration.tour().is_none() {
                 if let Some(package) = self.tour_package().filter(|&package| self.discovery.as_ref().and_then(|discovery| discovery.package_tour(package)).is_some_and(Tour::shown)) {
                     line = line.child(div().id("graph-start-here").cursor_pointer().ml(px(8.0)).flex().items_center().gap(px(5.0))
@@ -2342,7 +2385,10 @@ impl GraphView {
                 .child(key("R", "reach"))
                 .children(tour_eligible.then(|| key("T", "start here")))
                 .child(key("esc", "back out"));
-        let content_w = if f32::from(measure.width()) < 640.0 { f32::from(measure.width()) - 24.0 - 36.0 } else { card_w - 36.0 };
+        // The card is a card beside the map or a sheet under it, held through
+        // its hysteresis band so a window on the edge does not flip it.
+        let below = self.modes.settle(&crate::tokens::fluid::CARD, measure.fluid_room()).mode == crate::tokens::fluid::Card::Below;
+        let content_w = if below { f32::from(measure.width()) - 24.0 - 36.0 } else { card_w - 36.0 };
         let content_w = content_w.max(1.0);
         let body = hints::StableHints::new(body.w(px(content_w)).flex_shrink_0(), hint.w(px(content_w)).flex_shrink_0(), show_keys, content_w, (reading_plate_height(self.view) - 32.0).max(4.0), self.focus_scroll.clone(), self.hint_metrics.clone());
         cut()
@@ -2353,7 +2399,7 @@ impl GraphView {
             .absolute()
             .map(|card| {
                 // Narrow: the card moves under the map, full width.
-                if f32::from(measure.width()) < 640.0 {
+                if below {
                     card.left(px(12.0)).right(px(12.0)).bottom(px(40.0))
                 } else {
                     card.right(px(16.0)).top(px(14.0)).w(px(card_w))
@@ -3230,16 +3276,16 @@ mod tests {
         let survey = View { x: 0.0, y: 0.0, w: 1440.0, h: 900.0 }.frame(scene.layout.bounds, 30.0);
         let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Cam(survey), window, cx));
         frames(cx, 30);
-        let before = view.read_with(cx, |v, _| v.where_line().expect("initial context").2);
+        let before = view.read_with(cx, |v, _| v.where_line().expect("initial context").altitude);
         cx.update(|_, cx| { crate::probe::take(cx); });
         view.update(cx, |v, cx| v.set_focus(Some(3), true, cx));
         frame(cx);
-        let expected = view.read_with(cx, |v, _| v.where_line().expect("sampled reading context").2);
+        let expected = view.read_with(cx, |v, _| v.where_line().expect("sampled reading context").altitude);
         assert_ne!(before, expected, "the reduced jump must change altitude for a meaningful chrome assertion");
         let ledger = cx.update(|_, cx| crate::probe::take(cx));
         let levels: Vec<_> = ledger.texts.iter().filter(|text| text.key == "graph-where-level").collect();
         assert!(!levels.is_empty(), "the first reduced draw must paint the actual breadcrumb");
-        assert!(levels.iter().all(|text| text.content == expected), "every breadcrumb in the first draw must use the sampled camera: {levels:?}");
+        assert!(levels.iter().all(|text| text.content == expected.word()), "every breadcrumb in the first draw must use the sampled camera: {levels:?}");
         cx.simulate_resize(gpui::size(px(480.0), px(600.0)));
         cx.update(|_, cx| set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx));
         frames(cx, 30);

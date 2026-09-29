@@ -123,7 +123,7 @@ fn relation(name: &str, kind: DeclarationKind) -> Relation {
 
 fn as_str() -> SymbolPage {
     page(
-        decl("mod.rs", 492, "as_str", DeclarationKind::Method),
+        decl("mod.rs", 492, "Value::as_str", DeclarationKind::Method),
         "pub fn as_str(&self) -> Option<&str>",
         Some("If the `Value` is a String, returns the associated str. Returns None otherwise."),
         Vec::new(),
@@ -287,7 +287,7 @@ fn value_is_a_fork_whose_cases_hold_things_in_words(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_method_that_may_give_nothing_says_when(cx: &mut TestAppContext) {
-    let (_rig, ledger) = open(cx, "mod.rs", 492, "as_str", 1440.0);
+    let (_rig, ledger) = open(cx, "mod.rs", 492, "Value::as_str", 1440.0);
     assert_eq!(says(&ledger, "s6-kind").as_deref(), Some("METHOD"));
     assert_eq!(says(&ledger, "s6-recv-type-word").as_deref(), Some("Value"));
     assert_eq!(says(&ledger, "s6-recv-says").as_deref(), Some("reads it"));
@@ -334,6 +334,43 @@ fn typescript_keeps_its_declared_types(cx: &mut TestAppContext) {
     assert_eq!(says(&ledger, "s6-port-0-type-word").as_deref(), Some("anything"));
     assert_eq!(says(&ledger, "s6-port-1-optional").as_deref(), Some("optional"));
     assert!(says(&ledger, "s6-block-how").is_none(), "declared types need no note");
+}
+
+/// Rests the pointer on `key`'s text (its own box) and lets the card rise.
+fn rest_on(rig: &mut Rig, ledger: &Ledger, key: &str) -> Ledger {
+    let at = texts(ledger, key).first().map(|t| (t.bounds.x + t.bounds.width / 2.0, t.bounds.y + t.bounds.height / 2.0)).unwrap_or_else(|| panic!("`{key}` is not painted"));
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.cx.simulate_mouse_move(gpui::point(gpui::px(at.0), gpui::px(at.1)), None, gpui::Modifiers::default());
+    for _ in 0..3 {
+        rig.frame(120);
+    }
+    rig.repaint();
+    rig.cx.update(|_, cx| facet::probe::take(cx))
+}
+
+/// The generic's pill is a door into progressive disclosure: resting on it
+/// says its role in words and what it must be.
+#[gpui::test]
+fn resting_on_a_generic_says_what_it_must_be(cx: &mut TestAppContext) {
+    let (mut rig, ledger) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    assert!(texts(&ledger, "s6-card-").is_empty(), "no card until you rest on something");
+    let card = rest_on(&mut rig, &ledger, "s6-gives-type-pill-name");
+    assert_eq!(says(&card, "s6-card-gen-title").as_deref(), Some("you choose it"));
+    assert_eq!(says(&card, "s6-card-gen-says").as_deref(), Some("You choose it: whatever you read the input into."));
+    assert_eq!(says(&card, "s6-card-gen-must-title").is_some() || says(&card, "s6-card-gen-must").is_some(), true);
+    assert_eq!(says(&card, "s6-card-gen-must").as_deref(), Some("IT MUST BE"));
+    assert_eq!(says(&card, "s6-card-gen-bound-0-name").as_deref(), Some("Deserialize"));
+    assert_eq!(says(&card, "s6-card-gen-bound-0-means").as_deref(), Some("can be read by serde (any format)"));
+}
+
+/// The error type opens its kinds.
+#[gpui::test]
+fn resting_on_the_error_says_what_it_is(cx: &mut TestAppContext) {
+    let (mut rig, ledger) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    let card = rest_on(&mut rig, &ledger, "s6-fail-type-word");
+    let keys: Vec<&str> = card.texts.iter().filter(|t| t.key.contains("card") || t.key.contains("fail")).map(|t| t.key.as_str()).collect();
+    assert_eq!(says(&card, "s6-card-err-title").as_deref(), Some("Error"), "{keys:?}");
+    assert!(says(&card, "s6-card-err-when").is_some_and(|when| when.starts_with("This conversion can fail if the structure")), "the docs' own words");
 }
 
 /// Real lines, read from the local files at the index's spans; picking a

@@ -11,6 +11,7 @@ use super::kit::{Env, Ellipsis, Ink, Stop, caps, head, ink, joint, prose, roles,
 use super::view::{Block, Case, Docs, Fails, Field, Group, Outcomes, Owed, Row, Shape};
 use crate::anatomy::page::named_as;
 use crate::anatomy::unroll::unroll;
+use crate::tokens::fluid::{Cells, Rows};
 use gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Pixels, StatefulInteractiveElement, Styled, div};
 
 fn section(env: &Env<'_>, sec: Sec) -> gpui::Stateful<gpui::Div> {
@@ -117,7 +118,7 @@ pub(super) fn docs(env: &Env<'_>, docs: &Docs) -> Option<AnyElement> {
 pub(super) fn fails(env: &Env<'_>, cards: &Cards, fails: &Fails) -> AnyElement {
     let i = ink(env.p);
     let key = Key::of(Part::Sec(Sec::Fails));
-    let mut top = div().flex().flex_wrap().items_baseline().gap(env.k(10.0)).child(div().flex_none().child(ty_el(env, cards, &key.field("type"), &fails.ty, Tone::Error)));
+    let mut top = div().flex().flex_wrap().items_start().gap(env.k(10.0)).child(div().flex_none().child(ty_el(env, cards, &key.field("type"), &fails.ty, Tone::Error)));
     if !fails.when.trim().is_empty() {
         top = top.child(div().min_w_0().flex_1().child(prose(env, &key.field("when"), &fails.when, roles::BODY, i.ink1)));
     }
@@ -132,7 +133,7 @@ pub(super) fn fails(env: &Env<'_>, cards: &Cards, fails: &Fails) -> AnyElement {
                     .flex()
                     .items_center()
                     .gap(env.k(8.0))
-                    .child(mark(if dim { G::Verb(super::view::Verb::Names) } else { G::Fail }, env.p, 11.0 * env.m.scale()))
+                    .child(mark(if dim { G::Impossible } else { G::Fail }, env.p, 11.0 * env.m.scale()))
                     .child(said(env, &kk.field("name"), kind.name.clone(), roles::PACKAGE, if dim { i.ink3 } else { i.ink0 }))
                     .child(said(env, &kk.field("doc"), kind.doc.clone(), roles::DOC, if dim { i.ink3 } else { i.ink2 })),
             );
@@ -160,7 +161,7 @@ fn name_width(env: &Env<'_>, names: impl Iterator<Item = usize>) -> Pixels {
 /// Whether case and field rows stack their name, type and doc: a room too
 /// narrow for three columns.
 fn stacked(env: &Env<'_>) -> bool {
-    env.m.effective() < 760.0
+    env.lay.rows == Rows::Stacked
 }
 
 fn hue_alpha(color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
@@ -211,7 +212,7 @@ fn case_row(env: &Env<'_>, cards: &Cards, case: &Case, n: usize, total: usize, w
         holds = holds.child(said(env, &key.field("nothing"), "nothing inside", roles::DOC, i.ink3));
     } else {
         for (k, ty) in case.holds.iter().enumerate() {
-            holds = holds.child(div().flex_none().child(ty_el(env, cards, &key.at(k).field("holds"), ty, Tone::Plain)));
+            holds = holds.child(div().flex_none().child(ty_el(env, cards, &key.field("holds").at(k), ty, Tone::Plain)));
         }
     }
     let cells = RowCells {
@@ -332,8 +333,9 @@ fn method_row(env: &Env<'_>, row: &Row, key: &Key) -> AnyElement {
         .px(env.k(4.0))
         .py(env.k(5.0))
         .child(door(env, &i, key, &row.name, row.link.as_deref(), roles::METHOD))
-        .child(div().min_w_0().flex_1().child(truncated(env, &key.field("sig"), sig, roles::SIG, i.ink3, Ellipsis::End)))
-        .child(outcome_marks(env, row.outcomes));
+        .child(div().min_w_0().child(truncated(env, &key.field("sig"), sig, roles::SIG, i.ink3, Ellipsis::End)))
+        .child(outcome_marks(env, row.outcomes))
+        .child(div().flex_1());
     if row.yours > 0 {
         line = line.child(
             div()
@@ -386,7 +388,7 @@ pub(super) fn verbs(env: &Env<'_>, groups: &[Group]) -> Option<AnyElement> {
         .child(div().size(env.s(6.0)).rounded_full().bg(i.mint))
         .child(said(env, &key.field("aside"), "your workspace uses it", roles::ASIDE, i.ink3))
         .into_any_element();
-    let two = env.m.effective() >= 900.0;
+    let two = env.lay.cells == Cells::Two;
     let cells: Vec<AnyElement> = groups.iter().enumerate().map(|(n, g)| group(env, g, n)).collect();
     let body = if two {
         let mut rows: Vec<AnyElement> = Vec::new();

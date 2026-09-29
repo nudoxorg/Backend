@@ -9,6 +9,7 @@
 //! `Nudox-Design-System/v4/shots/`, not prose.
 
 pub mod float;
+pub(crate) mod deadline;
 pub mod lens;
 pub mod text;
 pub mod peek;

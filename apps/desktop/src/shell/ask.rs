@@ -226,6 +226,11 @@ impl Ask {
         }
     }
 
+    /// Whether the plate has anything to answer: a query was asked.
+    pub(crate) const fn shows(&self) -> bool {
+        self.query.is_some()
+    }
+
     fn choices(&self, cx: &App) -> Vec<Choice> {
         let Some(query) = &self.query else { return Vec::new() };
         let snapshot = self.links.snapshot(cx);

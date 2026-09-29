@@ -3,7 +3,7 @@
 //! remembers which module is open; everything it draws comes from `facet`.
 
 use super::data::{Diffs, ModuleData, Past, Side};
-use super::fluid::{self, Columns, Tracks};
+use super::fluid::{self, Tracks};
 use crate::navigation::Intent;
 use crate::shell::focus::{Act, Recall, Target, Targets};
 use crate::shell::kit::{package_route, symbol_route};
@@ -17,7 +17,10 @@ use facet::folio::features::{FeatureFacts, features};
 use facet::folio::heads::{Finding, heads};
 use facet::folio::module::module as module_view;
 use facet::folio::rail::rail;
+use facet::fluid::Modes;
 use facet::motion::Flow;
+use facet::motion::flow::FlowItem;
+use facet::tokens::fluid::Crest;
 use facet::folio::shingles::{ModuleFacts, ShingleFacts, shingles};
 use facet::folio::state::{Extent, Fold, Time, Use};
 use facet::folio::text::{key, one};
@@ -42,9 +45,6 @@ struct Nav {
     lit: Option<SharedString>,
     /// Whether the full berg is showing.
     berg: Fold,
-    /// How many crest cells shared a row last frame (a window resting on an
-    /// edge keeps its arrangement, see `fluid`).
-    columns: Option<Columns>,
 }
 
 /// Everything the folio draws.
@@ -165,16 +165,31 @@ impl Folio {
             None => crest::unread(key(&self.id, "weight"), "Weight", source_words("lines of code"), cell_w, measure).into_any_element(),
         };
         let cell = |name: &str, element: AnyElement| flow.item(key(&self.id, format!("flow-{name}")), element);
-        div()
-            .flex()
-            .flex_wrap()
-            .items_start()
-            .gap(tracks.gap)
-            .child(cell("licence", crest::stamp(key(&self.id, "licence"), self.facts.licence.clone(), stamp_w, measure).into_any_element()))
-            .child(cell("heads", heads_cell))
-            .child(cell("weight", weight_cell))
-            .child(cell("advisories", crest::advisories(key(&self.id, "advisories"), self.facts.advisories.clone(), cell_w, measure).into_any_element()))
-            .into_any_element()
+        let cells = [
+            cell("licence", crest::stamp(key(&self.id, "licence"), self.facts.licence.clone(), stamp_w, measure).into_any_element()),
+            cell("heads", heads_cell),
+            cell("weight", weight_cell),
+            cell("advisories", crest::advisories(key(&self.id, "advisories"), self.facts.advisories.clone(), cell_w, measure).into_any_element()),
+        ];
+        // The rows are the arrangement's, named, never left to a wrap: the
+        // cells sum to their row's width, and a wrap would drop the last one
+        // onto a row of its own at the first pixel of error.
+        let row = |cells: Vec<FlowItem>| div().flex().items_start().gap(tracks.gap).children(cells);
+        let mut cells = cells.into_iter();
+        match tracks.crest {
+            Crest::Four => row(cells.collect()).into_any_element(),
+            Crest::Two => {
+                let (first, second): (Vec<_>, Vec<_>) = cells.enumerate().partition(|(index, _)| *index < 2);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tracks.gap)
+                    .child(row(first.into_iter().map(|(_, cell)| cell).collect()))
+                    .child(row(second.into_iter().map(|(_, cell)| cell).collect()))
+                    .into_any_element()
+            }
+            Crest::One => div().flex().flex_col().gap(tracks.gap).children(cells.by_ref().map(|cell| row(vec![cell]))).into_any_element(),
+        }
     }
 
     /// The banner that says the page is in the past.
@@ -215,14 +230,15 @@ impl Folio {
             )
             .child(one(key(&self.id, "words"), words, BANNER_WORD, palette.ink1, measure))
             .child(div().flex_1())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(measure.space(Space::Snug))
-                    .child(one(key(&self.id, "back"), "back to your pin", BANNER_WORD, palette.ink2, measure))
-                    .child(facet::controls::kbd("esc", measure)),
-            )
+            // The way out of the past, always in reach.
+            .child({
+                let links = self.links.clone();
+                facet::controls::button(key(&self.id, "back"), "back to your pin", measure)
+                    .ghost()
+                    .size(facet::Control::Small)
+                    .key("esc")
+                    .on_click(move |_window, cx| links.dispatch(Intent::SetRelease(None), cx))
+            })
             .into_any_element()
     }
 }
@@ -307,10 +323,12 @@ impl RenderOnce for Folio {
             Some(open) => self.open_module(open, &nav_value, &nav, &measure),
         };
 
-        let tracks = fluid::tracks(&measure, nav_value.columns);
-        nav.update(cx, |nav, _| nav.columns = Some(tracks.columns));
+        // How many cells share a row is held by the page's own memory of its
+        // modes; a change carries the cells to their new places.
+        let modes = Modes::keyed(key(&self.id, "modes"), window, cx);
+        let tracks = fluid::tracks(&measure, &modes);
         let flow = Flow::scoped("package-crest", cx);
-        flow.epoch((tracks.columns, facet.text_scale.to_bits()));
+        flow.epoch((tracks.epoch, facet.text_scale.to_bits()));
         let crest = self.crest(&tracks, &flow, &measure, &nav, nav_value.berg);
         let berg_panel = facts.berg.as_ref().filter(|_| nav_value.berg == Fold::Open).map(|facts_berg| {
             let links = self.links.clone();
@@ -332,7 +350,8 @@ impl RenderOnce for Folio {
         // features step aside, the ticker stays (it is where versions live),
         // and the module's rail and cards take the room.
         let dedicated = open_at.is_some_and(|open| facts.modules[open].extent() == Extent::Page);
-        let ticker_block = ticker_row.map(|row| div().flex().flex_col().gap(measure.space(Space::Roomy)).child(row).children(banner));
+        // The banner is not the ticker's: with no ticker the past still says so.
+        let ticker_block = (ticker_row.is_some() || banner.is_some()).then(|| div().flex().flex_col().gap(measure.space(Space::Roomy)).children(ticker_row).children(banner));
         let column = div().id(self.id.clone()).flex().flex_col().w(measure.width()).gap(measure.space(Space::Wide));
         if dedicated {
             return column.children(ticker_block).child(territory);

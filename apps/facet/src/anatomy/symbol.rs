@@ -8,6 +8,7 @@
 
 pub mod derive;
 mod body;
+mod board;
 mod call;
 mod card;
 #[cfg(feature = "gallery")]

@@ -106,49 +106,82 @@ fn inverse(curve: Bezier, value: f32) -> f32 {
     low
 }
 
+/// Which way an unfurl runs: the card opening (its bands rise) or closing
+/// (they fall).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Run {
+    /// Opening.
+    Entering,
+    /// Closing.
+    Leaving,
+}
+
+impl Run {
+    /// The way a presence that goes from `from` to `to` runs.
+    #[must_use]
+    pub fn toward(from: f32, to: f32) -> Self {
+        if to >= from { Self::Entering } else { Self::Leaving }
+    }
+
+    /// The schedule's length, ms.
+    #[must_use]
+    pub const fn ms(self) -> f32 {
+        match self {
+            Self::Entering => ENTER_MS,
+            Self::Leaving => EXIT_MS,
+        }
+    }
+}
+
 /// Where on its schedule a segment that starts from `from` begins, ms: the
 /// latest time at which no band of the fresh schedule is ahead of `from`.
 #[must_use]
-pub fn resume(from: Bands, entering: bool) -> f32 {
+pub fn resume(from: Bands, run: Run) -> f32 {
     let from = from.get();
     let latest = (0..3).map(|band| {
         let value = from[band];
-        if entering {
-            let (start, end) = ENTER[band];
-            if value <= 0.0 {
-                start
-            } else if value >= 1.0 {
-                ENTER_MS
-            } else {
-                start + (end - start) * inverse(GLIDE, value)
+        match run {
+            Run::Entering => {
+                let (start, end) = ENTER[band];
+                if value <= 0.0 {
+                    start
+                } else if value >= 1.0 {
+                    ENTER_MS
+                } else {
+                    start + (end - start) * inverse(GLIDE, value)
+                }
             }
-        } else {
-            let (start, end) = EXIT[band];
-            if value >= 1.0 {
-                start
-            } else if value <= 0.0 {
-                EXIT_MS
-            } else {
-                start + (end - start) * inverse(exit_curve(band), 1.0 - value)
+            Run::Leaving => {
+                let (start, end) = EXIT[band];
+                if value >= 1.0 {
+                    start
+                } else if value <= 0.0 {
+                    EXIT_MS
+                } else {
+                    start + (end - start) * inverse(exit_curve(band), 1.0 - value)
+                }
             }
         }
     });
-    latest.fold(f32::INFINITY, f32::min).clamp(0.0, if entering { ENTER_MS } else { EXIT_MS })
+    latest.fold(f32::INFINITY, f32::min).clamp(0.0, run.ms())
 }
 
 /// The bands `ms` into a schedule (entering or leaving) that a segment
-/// joined at [`resume`]`(from, entering)`: each band holds where it was
-/// until the fresh schedule passes it.
+/// joined at [`resume`]`(from, run)`: each band holds where it was until the
+/// fresh schedule passes it.
 #[must_use]
-pub fn at(from: Bands, entering_: bool, ms: f32) -> Bands {
-    let fresh = if entering_ { entering(ms) } else { leaving(ms) }.get();
+pub fn at(from: Bands, run: Run, ms: f32) -> Bands {
+    let fresh = match run {
+        Run::Entering => entering(ms),
+        Run::Leaving => leaving(ms),
+    }
+    .get();
     let from = from.get();
     let mut bands = [0.0; 3];
     for band in 0..3 {
-        bands[band] = if entering_ {
-            from[band].max(fresh[band])
-        } else {
-            from[band].min(fresh[band])
+        bands[band] = match run {
+            Run::Entering => from[band].max(fresh[band]),
+            Run::Leaving => from[band].min(fresh[band]),
         };
     }
     Bands::from_array(bands)
@@ -177,22 +210,29 @@ mod tests {
         assert_eq!(leaving(EXIT_MS), Bands::CLOSED);
     }
 
+    /// Two poses agree to the precision the bisection in `inverse` has (a
+    /// reversal resumes from where the bands are, to within a hair).
+    fn near(a: Bands, b: Bands) -> bool {
+        a.get().iter().zip(b.get()).all(|(a, b)| (a - b).abs() < 1e-5)
+    }
+
     #[test]
     fn a_reversal_goes_on_from_where_every_band_is() {
         for stop in [10.0, 50.0, 90.0, 110.0, 130.0, 180.0, 219.0] {
             let pose = entering(stop);
-            let offset = resume(pose, false);
-            let first = at(pose, false, offset);
-            assert_eq!(first, pose, "leaving at +{stop} jumped");
+            let offset = resume(pose, Run::Leaving);
+            let first = at(pose, Run::Leaving, offset);
+            assert!(near(first, pose), "leaving at +{stop} jumped: {first:?} vs {pose:?}");
             // Something moves at once, nothing ever rises while leaving.
-            let next = at(pose, false, offset + 4.0);
+            let next = at(pose, Run::Leaving, offset + 4.0);
             assert!(next.mean() < pose.mean(), "leaving at +{stop} stalled: {pose:?} -> {next:?}");
         }
         for stop in [20.0, 100.0, 150.0, 250.0, 290.0] {
             let pose = leaving(stop);
-            let offset = resume(pose, true);
-            assert_eq!(at(pose, true, offset), pose, "re-entering at +{stop} jumped");
-            let next = at(pose, true, offset + 4.0);
+            let offset = resume(pose, Run::Entering);
+            let first = at(pose, Run::Entering, offset);
+            assert!(near(first, pose), "re-entering at +{stop} jumped: {first:?} vs {pose:?}");
+            let next = at(pose, Run::Entering, offset + 4.0);
             assert!(next.mean() > pose.mean(), "re-entering at +{stop} stalled: {pose:?} -> {next:?}");
         }
     }

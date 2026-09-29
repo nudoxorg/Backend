@@ -51,6 +51,10 @@ fn cache_dirs() -> Vec<PathBuf> {
 /// Where the sparse index caches `name`: `1/x`, `2/xy`, `3/x/xyz`, `ab/cd/abcdef`.
 fn cache_relative(name: &str) -> PathBuf {
     let n = name.to_lowercase();
+    // Crate names are ASCII; anything else (or nothing) has no cache entry.
+    if n.is_empty() || !n.is_ascii() {
+        return PathBuf::new();
+    }
     match n.len() {
         1 => Path::new("1").join(&n),
         2 => Path::new("2").join(&n),

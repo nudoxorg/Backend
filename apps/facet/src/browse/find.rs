@@ -321,6 +321,10 @@ impl RenderOnce for Find {
         }).or_else(|| if empty || loose_selected.is_some() { None } else { model.candidates.first().map(|candidate| (candidate, candidate.answers.first())) });
         let split = Modes::keyed(child(&self.id, "modes"), window, cx).settle(&FIND, m.fluid_room());
         let wide = split.mode == Split::Beside;
+        // The inspector arrives once the rows have moved out of its column (they glide
+        // from full width to the narrower list): text never crosses text.
+        let motion = crate::motion::Motion::scoped(gpui::SharedString::from(format!("find-mode-{:?}", self.id)), cx);
+        let arrived = split.progress(&motion, window, cx) >= 0.5;
         let (list_m, inspect_m) = if wide {
             let inspector = FIND_INSPECTOR.at(m.fluid_room());
             (m.within(m.width() - inspector - m.space(Space::Section)), m.within(inspector))
@@ -359,7 +363,7 @@ impl RenderOnce for Find {
             list = list.child(words(child(&self.id, "empty"), "No recorded match yet. Try a package name or an item such as from_str.", ty::LEDE, p.ink2, &list_m));
         }
         let mut spread = div().flex().items_start().gap(m.space(Space::Section)).child(list);
-        if wide && let Some((candidate, answer)) = resolved {
+        if wide && arrived && let Some((candidate, answer)) = resolved {
             spread = spread.child(div().w(inspect_m.width()).child(inspector(&child(&self.id, "inspect"), candidate, answer, &state, &self.actions, !updating, &inspect_m, cx)));
         }
         page = page.child(spread);
@@ -406,9 +410,10 @@ fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected:
     let held = state.read(cx).held.contains(&key);
     let toggle = state.clone();
     let held_candidate = HeldPackage::from_candidate(candidate);
-    let mut title = div().flex().items_center().gap(m.space(Space::Roomy))
+    // The name keeps a floor of its own: what does not fit beside it (the version, the button) wraps under it.
+    let mut title = div().flex().flex_wrap().items_center().gap_x(m.space(Space::Roomy)).gap_y(m.space(Space::Tight))
         .child(crate::paint::gem(Kind::Package).size(22.0 * m.scale()))
-        .child(div().min_w_0().flex_1().child(words(child(id, "name"), candidate.name.clone(), ty::MONO_ROW, if active { p.ink0 } else { p.ink1 }, m)));
+        .child(div().min_w(px(96.0 * m.scale())).flex_1().child(words_ellipsis(child(id, "name"), candidate.name.clone(), ty::MONO_ROW, if active { p.ink0 } else { p.ink1 }, m)));
     if let Some(version) = &candidate.version { title = title.child(words(child(id, "version"), version.clone(), ty::MONO_SMALL, p.ink2, m)); }
     title = title.child(button(child(id, "hold"), if held { "Held" } else { "Compare" }, m).ghost().size(Control::Small).icon(if held { Icon::Pin } else { Icon::Split })
         .disabled(!held && state.read(cx).held.packages().len() == 4)

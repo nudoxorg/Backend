@@ -2,6 +2,8 @@
 //! sweep that reverses across a threshold), the mode memory, the grid, and
 //! the transition through `facet::motion`.
 
+#![allow(clippy::float_cmp, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use super::*;
 use crate::motion::Motion;
 use crate::theme::{Facet, set_facet};
@@ -371,16 +373,16 @@ fn reduced_motion_swaps_at_once_but_stays_hysteretic(cx: &mut TestAppContext) {
 /// The list only shrinks: a file on it with no hit left fails the test, so a
 /// finished file cannot stay listed.
 const KNOWN: &[&str] = &[
-    "facet/src/anatomy.rs",
+    // The symbol page (W-Sym6): ADOPT.md, "the symbol page".
     "facet/src/anatomy/gallery.rs",
     "facet/src/anatomy/page.rs",
     "facet/src/anatomy/page/gallery.rs",
     "facet/src/anatomy/prism.rs",
-    "facet/src/anatomy/symbol/body.rs",
-    "facet/src/anatomy/symbol/gallery.rs",
-    "facet/src/anatomy/symbol/layout.rs",
+    // The rose: read `ROSE` through the page's `Modes` and hand it to `Rose::list`.
+    "facet/src/data/rose.rs",
+    // The comb (W-Folio's marks): a mode of its own, ADOPT.md.
     "facet/src/marks/version.rs",
-    "desktop/src/shell/bodies/package/fluid.rs",
+    // The legacy class enum, kept until nothing calls `Measure::room`.
     "facet/src/measure.rs",
 ];
 
@@ -398,16 +400,38 @@ const EXEMPT: &[&str] = &[
 
 /// The names a width goes by. A line that compares one of these with a number
 /// of three or more digits is a breakpoint.
-const WIDTHS: &[&str] = &["width", "effective", ".w ", ".w<", ".w>", "avail", "vw ", "room."];
+const WIDTHS: &[&str] = &["width", "effective", ".w ", ".w<", ".w>", " w ", "avail", "vw ", "room."];
 
-/// Whether `line` compares a width with a literal of three or more digits
-/// (`w < 900.0`, `effective() >= 760.0`, `640.0 <= w`).
+/// Whether `line` compares a width with a bare number: a literal of three or
+/// more digits (`w < 900.0`, `effective() >= 760.0`, `640.0 <= w`), or a
+/// named constant (`effective >= ENTER`, `w >= FOUR_FROM - STICKY`).
 fn hand_rolled(line: &str) -> bool {
     let code = line.split("//").next().unwrap_or_default();
     if !WIDTHS.iter().any(|name| code.contains(name)) {
         return false;
     }
     let bytes = code.as_bytes();
+    // A named breakpoint a width is compared with (`ENTER`, `ONE_COLUMN_BELOW`,
+    // `FOUR_FROM`): an ALL_CAPS name that says which side of an edge it is.
+    let constant_at = |from: usize| {
+        let name = bytes[from..].iter().take_while(|byte| byte.is_ascii_uppercase() || **byte == b'_').count();
+        let word = &code[from..from + name];
+        let breakpoint = ["BELOW", "ABOVE", "FROM", "ENTER", "LEAVE", "NARROW", "WIDE", "BREAK"].iter().any(|part| word.contains(part));
+        breakpoint && !bytes.get(from + name).is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    };
+    // What stands before the operator: the width's name.
+    let width_before = |op: usize| {
+        let mut end = op;
+        while end > 0 && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || matches!(bytes[start - 1], b'_' | b'.' | b'(' | b')')) {
+            start -= 1;
+        }
+        let name = &code[start..end];
+        name.ends_with("effective()") || name.ends_with("effective") || name.ends_with("width") || name.ends_with("width()") || name == "w" || name.ends_with(".w")
+    };
     let literal_at = |from: usize| {
         let digits = bytes[from..].iter().take_while(|byte| byte.is_ascii_digit()).count();
         digits >= 3 && !bytes.get(from + digits).is_some_and(u8::is_ascii_alphabetic)
@@ -428,7 +452,7 @@ fn hand_rolled(line: &str) -> bool {
         while bytes.get(after) == Some(&b' ') {
             after += 1;
         }
-        if literal_at(after) {
+        if literal_at(after) || (constant_at(after) && width_before(at)) {
             return true;
         }
         let mut before = at;
@@ -455,18 +479,28 @@ fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             sources(&path, out);
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
+        } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("rs")) {
             out.push(path);
         }
     }
 }
 
-/// The offending lines of a source file: the code before its test module.
+/// The offending lines of a source file: the code before its test module (the
+/// first `#[cfg(test)]` that is followed by a `mod`; a `#[cfg(test)]` on a
+/// statement or a field is not the end of the code).
 fn offences(source: &str) -> Vec<(usize, String)> {
-    source
-        .lines()
+    let lines: Vec<&str> = source.lines().collect();
+    let end = lines
+        .iter()
         .enumerate()
-        .take_while(|(_, line)| line.trim() != "#[cfg(test)]")
+        .find(|(index, line)| {
+            line.trim() == "#[cfg(test)]"
+                && lines[index + 1..].iter().map(|next| next.trim()).find(|next| !next.is_empty() && !next.starts_with("#[")).is_some_and(|next| next.starts_with("mod ") || next.starts_with("pub mod "))
+        })
+        .map_or(lines.len(), |(index, _)| index);
+    lines[..end]
+        .iter()
+        .enumerate()
         .filter(|(_, line)| !line.trim_start().starts_with("//"))
         .filter(|(_, line)| hand_rolled(line))
         .map(|(index, line)| (index + 1, line.trim().to_owned()))
@@ -482,6 +516,9 @@ fn the_scanner_sees_a_breakpoint_and_only_a_breakpoint() {
         "if 1100.0 <= avail { two }",
         "        room.w < 900.0",
         "let beds = effective>760.0;",
+        "Some(true) => effective >= LEAVE,",
+        "Columns::Four => w >= FOUR_FROM - STICKY,",
+        "env.m.effective() < STACK_BELOW",
     ] {
         assert!(hand_rolled(line), "missed a breakpoint: {line}");
     }
@@ -493,6 +530,8 @@ fn the_scanner_sees_a_breakpoint_and_only_a_breakpoint() {
         "let w = width; // was < 900.0",
         "map(|x| x => y)",
         "let a = width << 3;",
+        "if width < MAX {",
+        "if w < limit {",
     ] {
         assert!(!hand_rolled(line), "flagged what is not a breakpoint: {line}");
     }

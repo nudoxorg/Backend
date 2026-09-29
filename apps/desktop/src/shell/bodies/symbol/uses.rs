@@ -172,20 +172,10 @@ pub(super) fn ask(symbol: &SymbolRef, page: &SymbolPage, cx: &mut App) -> Readin
     }
 }
 
-/// The reader of a page's lines: what its symbol is, its members and cases.
-pub(super) fn reader_of(view: &facet::anatomy::symbol::View) -> Reader {
-    use facet::anatomy::symbol::view::Shape;
-    let mut members = Vec::new();
-    for group in &view.verbs {
-        members.extend(group.rows.iter().map(|row| (row.name.clone(), group.verb)));
-    }
-    let mut cases = Vec::new();
-    match &view.shape {
-        Some(Shape::OneOf(shape)) => cases.extend(shape.iter().map(|case| case.name.clone())),
-        Some(Shape::Holds { fields, .. }) => members.extend(fields.iter().map(|field| (field.name.clone(), facet::anatomy::symbol::view::Do::Reads))),
-        _ => {}
-    }
-    Reader { name: view.head.name.clone(), kind: view.head.kind, members, cases, generic: !view.generics.is_empty() }
+/// How many declaration pages are still reading their lines: the harness
+/// waits for none before it captures, so a still never shows the placeholder.
+pub(crate) fn in_flight(cx: &App) -> usize {
+    cx.try_global::<Service>().map_or(0, |service| service.entries.values().filter(|entry| matches!(entry, Entry::Reading)).count())
 }
 
 /// The package a coordinate belongs to, for the header's path.

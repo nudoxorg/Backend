@@ -50,6 +50,8 @@ pub enum ModeId {
     Crest,
     /// The package page's cards: as many columns as fit.
     Folio,
+    /// The rose: a field of four directions, or four quiet lines.
+    Rose,
     /// A gallery scene's own columns (lab pages, the marks gallery).
     Lab,
 }
@@ -79,6 +81,7 @@ impl ModeId {
             Self::SymbolPrism => "symbol-prism",
             Self::Crest => "crest",
             Self::Folio => "folio",
+            Self::Rose => "rose",
             Self::Lab => "lab",
         }
     }

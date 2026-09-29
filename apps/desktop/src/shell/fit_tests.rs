@@ -4,16 +4,19 @@
 //! it, and reads the probe ledger of the painted frame: every text box the
 //! shell drew, every interactive box, the shell's own frame decision. The
 //! assertions are about what is painted where (no text over other text, no
-//! text cut by a window edge, the shelf in the state the width calls for),
-//! never about how many of something there are.
+//! text cut by a window edge, no text laid out where nothing shows it, the
+//! shelf in the state the width calls for), never about how many of
+//! something there are. The layout rules are `facet::probe::rules`, the same
+//! functions the harness lint calls.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use super::root::Shell;
 use super::tests::{Rig, page_route, rig};
 use crate::core::LocalProjectId;
 use crate::navigation::{BrowseRoute, Intent, OrbitRoute, PackageLane, PackageRoute, Route, SettingsPage};
-use facet::probe::{BoundsSample, Ledger, TextSample};
+use facet::probe::rules::{overlap, stranded, visible_bounds};
+use facet::probe::{BoundsSample, Ledger};
 use gpui::{Modifiers, TestAppContext, point, px, size};
 
 /// The window sizes the review sweeps (`.local/lanes/wave6/fit/sweep.py`).
@@ -25,6 +28,10 @@ pub(crate) const SIZES: [(f32, f32); 6] = [
     (1920.0, 1080.0),
     (2560.0, 1440.0),
 ];
+
+/// The phone windows the design has to hold (`W-Fluid.md`: 320x568, 360x640,
+/// 390x844).
+pub(crate) const PHONES: [(f32, f32); 3] = [(320.0, 568.0), (360.0, 640.0), (390.0, 844.0)];
 
 /// One thing wrong with a painted frame.
 #[derive(Clone, Debug)]
@@ -39,22 +46,12 @@ impl std::fmt::Display for Finding {
     }
 }
 
-/// The part of a text box that is actually on screen: inside the window and
-/// inside the clip its ancestors set.
-fn visible(text: &TextSample, width: f32, height: f32) -> Option<BoundsSample> {
-    let bounds = &text.bounds;
-    let clip = text.paint_clip.as_ref();
-    let x = bounds.x.max(clip.map_or(0.0, |b| b.x)).max(0.0);
-    let y = bounds.y.max(clip.map_or(0.0, |b| b.y)).max(0.0);
-    let right = (bounds.x + bounds.width).min(clip.map_or(width, |b| b.x + b.width)).min(width);
-    let bottom = (bounds.y + bounds.height).min(clip.map_or(height, |b| b.y + b.height)).min(height);
-    (right > x && bottom > y).then(|| BoundsSample { key: bounds.key.clone(), x, y, width: right - x, height: bottom - y })
-}
-
 /// What is wrong with the frame `ledger` recorded in a `width` x `height`
-/// window: text cut mid-glyph, text hanging past an edge of the window or
-/// of the clip that holds it, text over other text of its region, and
-/// interactive boxes past the window's edge that nothing scrolls into reach.
+/// window: text cut mid-glyph, text hanging past a side edge of the window or
+/// of the clip that holds it, text laid out wholly past the window's left or
+/// right edge where nothing scrolls it into reach, text over other text of
+/// its region, and interactive boxes past the window's edge that nothing
+/// scrolls into reach.
 pub(crate) fn findings(ledger: &Ledger, width: f32, height: f32) -> Vec<Finding> {
     let mut out = Vec::new();
     // `graph-test-*` records are the jump bar's test-only second publication of
@@ -74,11 +71,22 @@ pub(crate) fn findings(ledger: &Ledger, width: f32, height: f32) -> Vec<Finding>
                 ),
             });
         }
-        let Some(seen) = visible(text, width, height) else {
+        if let Some(side) = stranded(text, &ledger.scrolls, width) {
+            out.push(Finding {
+                rule: "stranded",
+                what: format!(
+                    "`{}` at ({:.0}, {:.0}) {:.0}x{:.0} lies wholly past the {} edge of the {width:.0} px window [{}]",
+                    text.content, text.bounds.x, text.bounds.y, text.bounds.width, text.bounds.height, side.name(), text.key
+                ),
+            });
+        }
+        let Some(seen) = visible_bounds(text, width, height) else {
             continue;
         };
-        let (lost_x, lost_y) = (text.bounds.width - seen.width, text.bounds.height - seen.height);
-        if lost_x > 1.0 || lost_y > 1.0 {
+        // Sideways only: a line straddling the bottom of the window is a page that
+        // scrolls, not a defect (a box shorter than its line is the `clip` rule's).
+        let lost_x = text.bounds.width - seen.width;
+        if lost_x > 1.0 {
             out.push(Finding {
                 rule: "edge",
                 what: format!(
@@ -93,11 +101,10 @@ pub(crate) fn findings(ledger: &Ledger, width: f32, height: f32) -> Vec<Finding>
             if a.region != b.region || a.key == b.key {
                 continue;
             }
-            let (Some(a_seen), Some(b_seen)) = (visible(a, width, height), visible(b, width, height)) else {
+            let (Some(a_seen), Some(b_seen)) = (visible_bounds(a, width, height), visible_bounds(b, width, height)) else {
                 continue;
             };
-            let w = (a_seen.x + a_seen.width).min(b_seen.x + b_seen.width) - a_seen.x.max(b_seen.x);
-            let h = (a_seen.y + a_seen.height).min(b_seen.y + b_seen.height) - a_seen.y.max(b_seen.y);
+            let (w, h) = overlap(&a_seen, &b_seen);
             if w > 1.0 && h > 1.0 {
                 out.push(Finding {
                     rule: "overlap",
@@ -133,6 +140,15 @@ pub(crate) fn resize(rig: &mut Rig, width: f32, height: f32) {
     rig.settle();
 }
 
+/// A scratch directory that goes when the test does, whether it passes or panics.
+struct RemoveOnDrop(std::path::PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 pub(crate) fn package_route() -> Route {
     Route::Package(PackageRoute {
         project: None,
@@ -160,32 +176,93 @@ fn scenes() -> Vec<(&'static str, Route, Option<SettingsPage>)> {
     ]
 }
 
-/// Survey, not a gate: prints what the frame at every size says for every
-/// scene. Run with `--nocapture` to read it.
+/// Resizes the rig's window to `width` x `height` and returns the findings of
+/// the frame it painted, with the shell's own frame decision for the message.
+fn findings_at(rig: &mut Rig, width: f32, height: f32) -> (String, Vec<Finding>) {
+    resize(rig, width, height);
+    let frame = rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame");
+    let ledger = painted(rig);
+    let found = findings(&ledger, width, height);
+    (format!("shelf {:?}, reader {:.0} px, {} texts", frame.shelf, f32::from(frame.reader_width(px(width))), ledger.texts.len()), found)
+}
+
+/// Every screen, at the six sizes the review sweeps, paints nothing wrong:
+/// no text cut mid-glyph, none hanging past an edge, none laid out where
+/// nothing shows it, none over other text, no focusable past the window.
 #[gpui::test]
-fn survey_every_scene_at_every_size(cx: &mut TestAppContext) {
+fn every_screen_paints_clean_at_the_review_sizes(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), SIZES[3].0, SIZES[3].1);
+    let mut wrong = Vec::new();
     for (name, route, settings) in scenes() {
         rig.go(Intent::Navigate(route));
         if let Some(page) = settings {
             rig.go(Intent::OpenSettings(page));
         }
         for (width, height) in SIZES {
-            resize(&mut rig, width, height);
-            let frame = rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame");
-            let ledger = painted(&mut rig);
-            let found = findings(&ledger, width, height);
-            eprintln!(
-                "[fit] {name:<8} {width:>4.0}x{height:<4.0} shelf {:?} reader {:>5.0} px  texts {:>3}  findings {}",
-                frame.shelf,
-                f32::from(frame.reader_width(px(width))),
-                ledger.texts.len(),
-                found.len()
-            );
-            for finding in &found {
-                eprintln!("[fit]     {finding}");
-            }
+            let (frame, found) = findings_at(&mut rig, width, height);
+            wrong.extend(found.iter().map(|finding| format!("{name} {width:.0}x{height:.0} ({frame}): {finding}")));
         }
+    }
+    assert!(wrong.is_empty(), "{} findings:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// The screens the shell lays out itself (Library, Settings, the graph's
+/// frame) fit a phone at 320x568, 360x640 and 390x844. The package and symbol
+/// pages fail here today (their own layouts: lede past the edge, a strip
+/// 200 px beyond it); they are gated by their own lanes' tests, not this one.
+#[gpui::test]
+fn the_shells_own_screens_fit_a_phone(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), SIZES[3].0, SIZES[3].1);
+    let mut wrong = Vec::new();
+    for (name, route, settings) in scenes().into_iter().filter(|(name, _, _)| matches!(*name, "library" | "settings")) {
+        rig.go(Intent::Navigate(route));
+        if let Some(page) = settings {
+            rig.go(Intent::OpenSettings(page));
+        }
+        for (width, height) in PHONES {
+            let (frame, found) = findings_at(&mut rig, width, height);
+            wrong.extend(found.iter().map(|finding| format!("{name} {width:.0}x{height:.0} ({frame}): {finding}")));
+        }
+    }
+    assert!(wrong.is_empty(), "{} findings:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// The gate above is only worth something if `findings` can fail: it reads a
+/// pinned ledger the way the harness lint does, and names each thing wrong.
+#[test]
+fn findings_name_what_is_wrong_with_a_pinned_frame() {
+    use facet::probe::{TextOverflow, TextSample};
+    let sample = |key: &str, x: f32, y: f32, width: f32, natural: f32| TextSample {
+        key: key.to_owned(),
+        bounds: BoundsSample { key: key.to_owned(), x, y, width, height: 16.0 },
+        paint_clip: None,
+        natural_width: natural,
+        overflow: TextOverflow::Clip,
+        content: key.to_owned(),
+        min_width: natural,
+        line_height: 16.0,
+        size: 14.0,
+        weight: 400.0,
+        region: Some("page".to_owned()),
+    };
+    let ledger = Ledger {
+        texts: vec![
+            sample("fits", 10.0, 10.0, 80.0, 80.0),
+            sample("needs-room", 100.0, 10.0, 40.0, 90.0),
+            sample("cut-by-edge", 330.0, 10.0, 60.0, 60.0),
+            sample("past-edge", 400.0, 10.0, 60.0, 60.0),
+            sample("on-top", 12.0, 10.0, 40.0, 40.0),
+            sample("straddles-the-fold", 10.0, 630.0, 80.0, 80.0),
+        ],
+        ..Ledger::default()
+    };
+    let found = findings(&ledger, 360.0, 640.0);
+    let rules = found.iter().map(|finding| (finding.rule, finding.what.split('[').next_back().unwrap_or_default().trim_end_matches(']').to_owned())).collect::<Vec<_>>();
+    for wanted in [("clip", "needs-room"), ("edge", "cut-by-edge"), ("stranded", "past-edge"), ("overlap", "fits + on-top")] {
+        assert!(rules.iter().any(|(rule, key)| (*rule, key.as_str()) == wanted), "no `{}` finding for `{}`: {found:#?}", wanted.0, wanted.1);
+    }
+    for fine in ["[fits]", "[straddles-the-fold]"] {
+        assert!(!found.iter().any(|finding| finding.what.contains(fine)), "{fine} is not a finding (a fit, a page that scrolls): {found:#?}");
     }
 }
 
@@ -201,6 +278,7 @@ fn the_librarys_project_tile_does_not_keep_its_own_target_list_alive(cx: &mut Te
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
     let folder = std::env::temp_dir().join(format!("nudox-fit-project-{}", std::process::id()));
     std::fs::create_dir_all(&folder).expect("project folder");
+    let _removed_at_the_end = RemoveOnDrop(folder.clone());
     let project = LocalProjectId::from_path(&folder).expect("project identity");
     rig.go(Intent::AddProject { project });
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));

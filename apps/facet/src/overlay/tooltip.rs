@@ -1,6 +1,6 @@
 //! The tooltip: a chamfered `plate3` chip on the float layer
 //! ([`FloatKind::Tip`]), not a mechanism of its own. One tip per window, a
-//! 450 ms rest, a warm sweep between tipped things (the second tip swaps in
+//! 350 ms rest, a warm sweep between tipped things (the second tip swaps in
 //! at once and the chip glides over), a quick rise and fade.
 //!
 //! ```ignore

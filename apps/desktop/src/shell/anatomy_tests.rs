@@ -263,7 +263,7 @@ fn case_names(ledger: &Ledger) -> Vec<String> {
     ledger
         .texts
         .iter()
-        .filter(|text| text.key.starts_with("page-case-") && text.key.ends_with("-name"))
+        .filter(|text| text.key.starts_with("s6-case-") && text.key.ends_with("-name"))
         .map(|text| text.content.clone())
         .collect()
 }
@@ -273,40 +273,20 @@ fn an_enum_page_draws_its_fork_in_place_of_its_code(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
-    assert_eq!(at(&ledger, "page-count-0"), ["one of"]);
-    assert_eq!(at(&ledger, "page-count-1"), ["2"]);
-    assert_eq!(case_names(&ledger), ["Typed", "Related"], "one tine per variant, in order");
-    assert_eq!(at(&ledger, "page-case-0-carries-0-tok-0"), ["SemanticLinkKind"], "Typed carries its payload, in words");
-    assert_eq!(at(&ledger, "page-case-0-acc-0"), ["is_typed"], "the accessor that reads Typed sits on its tine");
+    assert_eq!(at(&ledger, "s6-shape-head-count"), ["one of 2"]);
+    assert_eq!(case_names(&ledger), ["Typed", "Related"], "one row per variant, in order");
+    assert_eq!(at(&ledger, "s6-case-0-holds-0-word"), ["SemanticLinkKind"], "Typed holds its payload, in words");
+    assert_eq!(at(&ledger, "s6-case-1-nothing"), ["nothing inside"], "Related holds nothing");
+    // The methods, by what they do with it.
+    assert_eq!(at(&ledger, "s6-group-0-head"), ["Reads it"]);
+    assert_eq!(at(&ledger, "s6-group-0-method-0-name"), ["as_str"]);
+    assert_eq!(at(&ledger, "s6-group-0-method-1-name"), ["is_typed"]);
     let said = rig.said();
     assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "the fork replaces the declaration's code: {said:#?}");
     assert!(!ledger.texts.iter().any(|text| text.key.contains("prism")), "the prism stays in the graph");
     for gone in ["Reference", "Relations", "Usage", "History", "made of", "is", "from", "to"] {
         assert!(!said.iter().any(|line| line == gone), "`{gone}` (a tab or the relation list) is still said: {said:#?}");
     }
-}
-
-#[gpui::test]
-fn getting_one_draws_the_world_s_routes_as_rails(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    install(&mut rig);
-    let ledger = painted(&mut rig);
-    assert_eq!(at(&ledger, "page-section-Getting"), ["Getting one"]);
-    assert_eq!(at(&ledger, "page-rail-0-verb"), ["relation_label"], "the world's maker is the rail's step");
-    assert!(
-        !ledger.texts.iter().any(|sample| sample.content.contains("in this world make one")),
-        "no maker count in prose; the count rides the stub",
-    );
-}
-
-#[gpui::test]
-fn who_uses_it_shows_the_statements_callers_write(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    install(&mut rig);
-    let ledger = painted(&mut rig);
-    assert_eq!(at(&ledger, "page-section-Uses"), ["Who uses it"], "one page, no Usage tab");
-    assert_eq!(at(&ledger, "page-site-0-caller"), ["print_labels"], "captioned with its caller");
-    assert_eq!(at(&ledger, "page-site-0-code"), ["let label = RelationLabel::Related;"], "the line itself, not only where it is");
 }
 
 #[gpui::test]

@@ -1245,10 +1245,16 @@ impl Render for Map {
         }
         let root = root.child(
             // Bottom right: the where-line owns the bottom left (W-Flip R-T2-1).
+            // It gives way to the where-line on a narrow window: it never takes
+            // more than 62 % of the map, and says so with an ellipsis.
             div()
                 .absolute()
                 .bottom(px(8.0))
                 .right(px(16.0))
+                .max_w(gpui::relative(0.62))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .text_size(px(11.0))
                 .child(
                     self.load_error

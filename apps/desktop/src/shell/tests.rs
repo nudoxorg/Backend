@@ -446,25 +446,25 @@ impl Rig {
 #[gpui::test]
 fn a_page_renders_its_real_content_through_the_shell(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let painted = |key: &str| ledger.texts.iter().filter(|text| text.key == key).map(|text| text.content.clone()).collect::<Vec<_>>();
     let said = rig.said();
-    // The drawn page: the name, the lede, the fork (one tine per variant,
-    // what each carries, the accessor that reads it), then What it does.
-    for expected in [
-        "RelationLabel",
-        "The readable label of RelationLabel.",
-        "one of 2",
-        "Typed",
-        "SemanticLinkKind",
-        "is_typed",
-        "Related",
-        "What it does",
-        "as_str",
-    ] {
-        assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
-    }
-    // A variant's doc is its peek, never a line at rest; the tabs and the
-    // relation list are gone.
-    for gone in ["A relation whose kind is known.", "One of", "Reference", "Relations", "Usage", "History"] {
+    // The drawn page: the name, the lede, what it is (a fork, one row per
+    // variant with what each holds, in words), then what you can do with it.
+    assert!(said.iter().any(|line| line == "RelationLabel"), "the name is not on screen: {said:#?}");
+    assert_eq!(painted("s6-kind"), ["ENUM"]);
+    assert_eq!(painted("s6-lede"), ["The readable label of RelationLabel."]);
+    assert_eq!(painted("s6-shape-head-count"), ["one of 2"]);
+    assert_eq!(painted("s6-case-0-name"), ["Typed"]);
+    assert_eq!(painted("s6-case-0-holds-0-word"), ["SemanticLinkKind"]);
+    assert_eq!(painted("s6-case-1-name"), ["Related"]);
+    assert_eq!(painted("s6-group-0-head"), ["Reads it"]);
+    assert_eq!(painted("s6-group-0-method-0-name"), ["as_str"]);
+    // A variant's doc is its line on the row; the tabs and the relation list
+    // are gone, and source lives in Code.
+    for gone in ["One of", "Reference", "Relations", "Usage", "History"] {
         assert!(!said.iter().any(|line| line == gone), "{gone:?} is still on screen: {said:#?}");
     }
     assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "source lives in Code: {said:#?}");
@@ -813,13 +813,17 @@ fn hint_mode_labels_every_visible_target_and_a_code_activates_one(cx: &mut TestA
 #[gpui::test]
 fn the_regions_degrade_with_the_window_and_the_text(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 2560.0, 1440.0);
+    // Dragged narrower: each mode holds through the 32 px band around its
+    // edge (`facet::fluid`), so 899 is still a shelf and 639 still a spine.
     for (width, shelf) in [
         (2560.0, super::ShelfMode::Shelf),
         (1440.0, super::ShelfMode::Shelf),
         (1100.0, super::ShelfMode::Shelf),
-        (899.0, super::ShelfMode::Spine),
+        (899.0, super::ShelfMode::Shelf),
+        (880.0, super::ShelfMode::Spine),
         (760.0, super::ShelfMode::Spine),
-        (639.0, super::ShelfMode::Hidden),
+        (639.0, super::ShelfMode::Spine),
+        (620.0, super::ShelfMode::Hidden),
         (480.0, super::ShelfMode::Hidden),
     ] {
         rig.cx.simulate_resize(size(px(width), px(900.0)));

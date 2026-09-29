@@ -28,6 +28,15 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::rc::Rc;
 
+/// Where along the column's travel (0 = spine, 1 = shelf) the shelf's rows and the spine's
+/// marks swap. The longest row ends near 63 % of the travel, so swapping between 60 % and
+/// 66 % means the rows are gone before the column's clip reaches their text. A fade that
+/// spans the whole travel lingers for 9–12 frames, and the legibility law allows a
+/// translucent text for only 2.
+const SWAP_AT: f32 = 0.60;
+/// How much of the travel the swap takes.
+const SWAP_OVER: f32 = 0.06;
+
 /// One shelf row, flattened.
 #[derive(Clone)]
 struct Row {
@@ -282,9 +291,12 @@ impl Render for Shelf {
         }
         self.rows = Rc::new(rows);
 
-        // Where the column sits between spine and shelf: 0 = spine, 1 = shelf.
+        // Where the column sits between spine and shelf (0 = spine, 1 = shelf), and how far
+        // the content has swapped. The column glides on its spring; the content swaps
+        // quickly, near the point where the clip would start to cut the rows' text.
         let span = (self.rest - self.spine).max(px(1.0));
-        let open = ((width - self.spine) / span).clamp(0.0, 1.0);
+        let travel = ((width - self.spine) / span).clamp(0.0, 1.0);
+        let open = ((travel - SWAP_AT) / SWAP_OVER).clamp(0.0, 1.0);
         let open = open * open * (3.0 - 2.0 * open);
         let rest_measure = Measure::new(self.rest, &facet);
         let mut root = div()

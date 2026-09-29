@@ -16,9 +16,52 @@
 use crate::core::VersionedRoot;
 use crate::model::ServiceMode;
 use gpui::{App, Entity};
+use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::task::{Poll, Waker};
+use std::time::{Duration, Instant};
+
+/// How long an owner may take to answer before the window says it did not.
+/// An embedded start takes seconds; this bounds a host that hangs, so a page
+/// never waits on it for ever and "Try again" has something to retry.
+pub const PATIENCE: Duration = Duration::from_mins(1);
+
+/// Why the owner is not answering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OwnerFault {
+    /// The host said it could not start, in its own words.
+    Host(Arc<str>),
+    /// The owner's thread panicked, and said so.
+    Panicked(Arc<str>),
+    /// Nothing answered within the patience.
+    Silent(Duration),
+    /// The window closed before the owner answered.
+    Closed,
+}
+
+impl fmt::Display for OwnerFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Host(words) => formatter.write_str(words),
+            Self::Panicked(what) => write!(formatter, "the index's thread panicked: {what}"),
+            Self::Silent(waited) => write!(formatter, "the index did not answer within {} s", waited.as_secs()),
+            Self::Closed => formatter.write_str("the window closed before the index answered"),
+        }
+    }
+}
+
+impl From<&str> for OwnerFault {
+    fn from(words: &str) -> Self {
+        Self::Host(Arc::from(words))
+    }
+}
+
+impl From<String> for OwnerFault {
+    fn from(words: String) -> Self {
+        Self::Host(Arc::from(words))
+    }
+}
 
 /// What the window knows about its owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,16 +76,16 @@ pub enum OwnerState {
         /// Embedded in this process, or attached to a live one.
         mode: ServiceMode,
     },
-    /// Could not start, in the host's own words.
-    Failed(Arc<str>),
+    /// Could not start, or stopped answering.
+    Failed(OwnerFault),
 }
 
 /// The one place the owner's state lives; cheap to clone and `Send`.
 #[derive(Clone)]
 pub struct OwnerGate(Arc<Shared>);
 
-impl std::fmt::Debug for OwnerGate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for OwnerGate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("OwnerGate").field(&self.state()).finish()
     }
 }
@@ -60,6 +103,8 @@ struct Inner {
     waker: Option<Waker>,
     /// A restart was asked for (the page's "Try again" after a failure).
     restart: bool,
+    /// When the state last changed: how long a start has been waited for.
+    since: Instant,
     /// The app is quitting: the owner thread lets its host go.
     closed: bool,
 }
@@ -85,6 +130,7 @@ impl OwnerGate {
                 epoch: 0,
                 waker: None,
                 restart: false,
+                since: Instant::now(),
                 closed: false,
             }),
             changed: Condvar::new(),
@@ -107,10 +153,11 @@ impl OwnerGate {
             let mut inner = self.lock();
             match &state {
                 OwnerState::Ready { .. } => crate::runtime::trace::mark("owner.ready", "gate"),
-                OwnerState::Failed(message) => crate::runtime::trace::mark("owner.failed", message),
+                OwnerState::Failed(fault) => crate::runtime::trace::mark("owner.failed", fault),
                 OwnerState::Starting => crate::runtime::trace::mark("owner.starting", "gate"),
             }
             inner.state = state;
+            inner.since = Instant::now();
             inner.epoch = inner.epoch.wrapping_add(1);
             inner.waker.take()
         };
@@ -125,21 +172,33 @@ impl OwnerGate {
     /// # Errors
     /// The owner's failure, in its own words; also when the app quits
     /// before it answered.
-    pub fn wait(&self) -> Result<(), Arc<str>> {
+    pub fn wait(&self) -> Result<(), OwnerFault> {
+        self.wait_for(PATIENCE)
+    }
+
+    /// [`Self::wait`] with its own patience: gives up with
+    /// [`OwnerFault::Silent`] once the owner has been starting for `patience`.
+    ///
+    /// # Errors
+    /// The owner's fault; the window closing; or the patience running out.
+    pub fn wait_for(&self, patience: Duration) -> Result<(), OwnerFault> {
         let mut inner = self.lock();
         loop {
             match &inner.state {
                 OwnerState::Ready { .. } => return Ok(()),
-                OwnerState::Failed(message) => return Err(Arc::clone(message)),
-                OwnerState::Starting if inner.closed => {
-                    return Err(Arc::from("the window closed before the index answered"));
-                }
+                OwnerState::Failed(fault) => return Err(fault.clone()),
+                OwnerState::Starting if inner.closed => return Err(OwnerFault::Closed),
                 OwnerState::Starting => {
+                    let left = patience.saturating_sub(inner.since.elapsed());
+                    if left.is_zero() {
+                        return Err(OwnerFault::Silent(patience));
+                    }
                     inner = self
                         .0
                         .changed
-                        .wait(inner)
-                        .unwrap_or_else(PoisonError::into_inner);
+                        .wait_timeout(inner, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
                 }
             }
         }
@@ -213,9 +272,39 @@ impl OwnerGate {
     }
 }
 
+impl OwnerGate {
+    /// The current state's epoch and whether it is a start still being
+    /// waited for.
+    fn starting_at(&self) -> Option<u64> {
+        let inner = self.lock();
+        matches!(inner.state, OwnerState::Starting).then_some(inner.epoch)
+    }
+
+    /// Publishes [`OwnerFault::Silent`] if the start that began at `epoch`
+    /// is still the state (a later publish is another start, or an answer).
+    fn give_up_on(&self, epoch: u64, patience: Duration) {
+        if self.starting_at() == Some(epoch) {
+            self.publish(OwnerState::Failed(OwnerFault::Silent(patience)));
+        }
+    }
+}
+
+/// After `patience`, a start nobody answered is a fault on the gate itself:
+/// the store shows it and "Try again" restarts it.
+fn watch_patience(gate: &OwnerGate, patience: Duration, cx: &mut App) {
+    let Some(epoch) = gate.starting_at() else { return };
+    let gate = gate.clone();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(patience).await;
+        gate.give_up_on(epoch, patience);
+    })
+    .detach();
+}
+
 /// Turns every published owner state into the window's data events, on the
 /// UI thread, for as long as the app runs.
 pub fn watch(gate: OwnerGate, root: Entity<super::UiRootEntity>, store: Entity<super::store::DataStore>, cx: &mut App) {
+    watch_patience(&gate, PATIENCE, cx);
     cx.spawn(async move |cx| {
         let mut seen = 0;
         loop {
@@ -223,13 +312,17 @@ pub fn watch(gate: OwnerGate, root: Entity<super::UiRootEntity>, store: Entity<s
             seen = epoch;
             // The task ends with the app (a spawned task is dropped with it).
             cx.update(|cx| match state {
-                OwnerState::Starting => store.update(cx, super::store::DataStore::owner_starting),
+                OwnerState::Starting => {
+                    // A restart is a new wait: its patience starts now.
+                    watch_patience(&gate, PATIENCE, cx);
+                    store.update(cx, super::store::DataStore::owner_starting);
+                }
                 OwnerState::Ready { key, mode } => {
                     root.update(cx, |root, cx| root.admit_owner(key, mode, cx));
                     store.update(cx, super::store::DataStore::owner_ready);
                 }
-                OwnerState::Failed(message) => {
-                    store.update(cx, |store, cx| store.owner_failed(&message, cx));
+                OwnerState::Failed(fault) => {
+                    store.update(cx, |store, cx| store.owner_failed(&fault, cx));
                 }
             });
         }
@@ -238,7 +331,7 @@ pub fn watch(gate: OwnerGate, root: Entity<super::UiRootEntity>, store: Entity<s
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
@@ -254,10 +347,10 @@ mod tests {
             received.recv_timeout(Duration::from_millis(80)).is_err(),
             "a worker must not pass the gate while the owner is starting"
         );
-        gate.publish(OwnerState::Failed(Arc::from("could not own the workspace")));
+        gate.publish(OwnerState::Failed("could not own the workspace".into()));
         assert_eq!(
             received.recv_timeout(Duration::from_secs(2)).expect("released"),
-            Err(Arc::from("could not own the workspace"))
+            Err(OwnerFault::from("could not own the workspace"))
         );
         thread.join().expect("join");
         assert!(gate.restart(), "a failed owner can be asked again");
@@ -289,12 +382,50 @@ mod tests {
         let mut task = std::task::Context::from_waker(waker);
         let mut first = Box::pin(gate.next(0));
         assert!(first.as_mut().poll(&mut task).is_pending(), "nothing was published yet");
-        gate.publish(OwnerState::Failed(Arc::from("no")));
+        gate.publish(OwnerState::Failed("no".into()));
         let Poll::Ready((epoch, state)) = first.as_mut().poll(&mut task) else {
             panic!("a publish resolves the watcher");
         };
-        assert_eq!(state, OwnerState::Failed(Arc::from("no")));
+        assert_eq!(state, OwnerState::Failed("no".into()));
         let mut second = Box::pin(gate.next(epoch));
         assert!(second.as_mut().poll(&mut task).is_pending(), "a seen state never resolves twice");
+    }
+
+    #[test]
+    fn an_owner_that_never_answers_is_a_typed_fault_after_the_patience_not_a_wait_for_ever() {
+        let gate = OwnerGate::starting();
+        let started = Instant::now();
+        assert_eq!(gate.wait_for(Duration::from_millis(60)), Err(OwnerFault::Silent(Duration::from_millis(60))));
+        assert!(started.elapsed() >= Duration::from_millis(60), "it waited the patience, no less");
+        assert_eq!(
+            OwnerFault::Silent(Duration::from_mins(1)).to_string(),
+            "the index did not answer within 60 s",
+            "and the window says it in words"
+        );
+        // A start that answers inside the patience is not a fault.
+        let answering = OwnerGate::starting();
+        let owner = answering.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            owner.publish(OwnerState::Ready { key: VersionedRoot::unserved(), mode: ServiceMode::Attached });
+        });
+        assert_eq!(answering.wait_for(Duration::from_secs(5)), Ok(()));
+        thread.join().expect("join");
+    }
+
+    #[test]
+    fn giving_up_names_only_the_start_it_was_waiting_for() {
+        let gate = OwnerGate::starting();
+        let epoch = gate.starting_at().expect("starting");
+        gate.publish(OwnerState::Ready { key: VersionedRoot::unserved(), mode: ServiceMode::Attached });
+        gate.give_up_on(epoch, PATIENCE);
+        assert!(matches!(gate.state(), OwnerState::Ready { .. }), "an owner that answered is never given up on");
+        gate.publish(OwnerState::Failed("gone".into()));
+        assert!(gate.restart());
+        gate.give_up_on(epoch, PATIENCE);
+        assert_eq!(gate.state(), OwnerState::Starting, "the old wait does not fail the new start");
+        let now = gate.starting_at().expect("starting again");
+        gate.give_up_on(now, PATIENCE);
+        assert_eq!(gate.state(), OwnerState::Failed(OwnerFault::Silent(PATIENCE)));
     }
 }

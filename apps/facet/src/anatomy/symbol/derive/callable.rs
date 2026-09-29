@@ -481,6 +481,13 @@ fn build(parsed: &Parsed, facts: &Facts) -> Derived {
     }
     // fails
     call.fails = failure(parsed, facts, &declared, &peeled.fails, go_fails, later);
+    // An option that turns the failure into nothing says when nothing comes.
+    if call.none.is_none()
+        && call.fails.is_some()
+        && let Some(option) = call.ports.iter().flat_map(|port| port.options.iter()).find(|option| option.change == Some(Change::FailsToNone))
+    {
+        call.none = Some(format!("only with {}", option.name));
+    }
     // An option that turns a failure into nothing: the call can give nothing too.
     Derived { call, generics }
 }
@@ -875,6 +882,19 @@ mod tests {
         assert_eq!(opt.options[0].change, Some(Change::FailsToNone));
         assert_eq!(opt.options[1].change, Some(Change::OneToMany));
         assert_eq!(opt.options[2].change, None);
+        assert_eq!(d.call.none.as_deref(), None, "no failure is documented here, so no nothing either");
+    }
+
+    #[test]
+    fn an_option_that_turns_a_failure_into_nothing_says_when_nothing_comes() {
+        let mut f = facts("which.sync", Lang::JavaScript, "const whichSync = (cmd, opt) => {");
+        f.sections = vec![
+            Section { kind: SectionKind::Parameters, body: String::new(), entries: vec![("opt".into(), "{object} options".into()), ("opt.nothrow".into(), "{boolean} give null instead of throwing".into())] },
+            Section { kind: SectionKind::Errors, body: String::new(), entries: vec![("Error".into(), "if it isn't on PATH, unless nothrow".into())] },
+        ];
+        let d = call(&f);
+        assert_eq!(d.call.none.as_deref(), Some("only with nothrow"));
+        assert!(d.call.fails.is_some());
     }
 
     #[test]

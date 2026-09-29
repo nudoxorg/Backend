@@ -11,6 +11,7 @@ pub(crate) mod fixture_world;
 pub(crate) mod graph_focus;
 pub mod mailbox;
 pub mod mapping;
+pub(crate) mod offload;
 pub mod owner;
 pub mod page_mapping;
 pub mod reads;
@@ -19,6 +20,7 @@ pub mod store;
 pub mod trace;
 pub mod ui_graph;
 pub mod wake;
+pub(crate) mod workspace_lines;
 pub mod wiring;
 
 #[cfg(test)]

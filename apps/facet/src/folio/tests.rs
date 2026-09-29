@@ -145,20 +145,36 @@ fn an_undocumented_card_says_so_and_a_card_in_the_past_names_what_happened(cx: &
 }
 
 #[gpui::test]
-fn resting_on_a_badge_opens_its_meaning_inside_it(cx: &mut TestAppContext) {
+fn resting_on_a_badge_floats_its_meaning_and_moves_nothing(cx: &mut TestAppContext) {
     let (cx, _) = open(cx, |_, cx, _| {
         let m = cx.facet().measure(px(400.0));
         let (name, kind, signature, doc) = TOML[0];
         symbol_card("c", rust_card(name, kind, signature, doc), &m).width(px(360.0)).into_any_element()
     });
-    assert!(!says(cx, "It returns a Result: an error is a normal outcome."), "a meaning was open at rest");
+    // The tip of the third badge (`can fail`) lives on the float layer under this key.
+    let tip = gpui::ElementId::NamedChild(std::sync::Arc::new(super::text::key(&gpui::ElementId::Name("c".into()), "badge-2")), "tip".into());
+    let floating = |cx: &mut VisualTestContext| cx.update(|window, cx| float::is_open(&tip, window, cx));
+    let card = |cx: &mut VisualTestContext| -> Vec<(String, [f32; 4])> {
+        ledger(cx).texts.iter().filter(|t| t.key.starts_with("c-")).map(|t| (t.key.clone(), [t.bounds.x, t.bounds.y, t.bounds.width, t.bounds.height])).collect()
+    };
+    let before = card(cx);
+    assert!(!floating(cx), "a meaning was open at rest");
     let (_, x, y, w, h) = text_at(cx, "badge-2-word").expect("the can-fail badge");
     move_to(cx, x + w * 0.5, y + h * 0.5);
-    advance(cx, 300);
-    assert!(says(cx, "It returns a Result: an error is a normal outcome."), "the meaning never opened: {:?}", said(cx));
+    advance(cx, 60);
+    assert!(!floating(cx), "the meaning opened with no rest: a pointer passing over a badge flashes it");
+    advance(cx, 500);
+    assert!(floating(cx), "the meaning never floated");
+    // The card lifts a little under a pointer, as one piece: nothing on it moves against the rest.
+    let after = card(cx);
+    assert_eq!(after.iter().map(|(k, _)| k).collect::<Vec<_>>(), before.iter().map(|(k, _)| k).collect::<Vec<_>>());
+    let lift = (after[0].1[0] - before[0].1[0], after[0].1[1] - before[0].1[1]);
+    for ((key, was), (_, is)) in before.iter().zip(&after) {
+        assert!((is[0] - was[0] - lift.0).abs() < 0.6 && (is[1] - was[1] - lift.1).abs() < 0.6 && (is[2] - was[2]).abs() < 0.6 && (is[3] - was[3]).abs() < 0.6, "`{key}` moved against the card ({was:?} to {is:?}, the card lifted {lift:?}): the tip must float, never reflow");
+    }
     move_to(cx, 5.0, 690.0);
-    advance(cx, 300);
-    assert!(!says(cx, "It returns a Result: an error is a normal outcome."), "the meaning stayed open after the pointer left");
+    advance(cx, 600);
+    assert!(!floating(cx), "the meaning stayed open after the pointer left");
 }
 
 // ------------------------------------------------------------------ shingles
@@ -353,6 +369,37 @@ fn the_licence_stamp_unfolds_in_place_and_folds_back(cx: &mut TestAppContext) {
     move_to(cx, 5.0, 690.0);
     advance(cx, 500);
     assert!(!said(cx).iter().any(|t| t.contains("keep the notice")), "the stamp stayed unfolded");
+}
+
+#[gpui::test]
+fn a_pointer_only_passing_over_the_stamp_or_the_hand_opens_nothing_and_resting_opens_it(cx: &mut TestAppContext) {
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(WIDTH - 40.0));
+        div()
+            .flex()
+            .gap(px(20.0))
+            .child(stamp("lic", Rc::new(LicenseFacts::new(Some("MIT OR Apache-2.0"), Some("MIT OR Apache-2.0"), "backend")), px(330.0), &m))
+            .child(heads("heads", "tokio", Rc::new(findings(&signals())), px(230.0), px(500.0), Nominal::px(124.0), &m))
+            .into_any_element()
+    });
+    let words = ["keep the notice", "Starts programs"];
+    let open = |cx: &mut VisualTestContext| words.iter().any(|w| said(cx).iter().any(|t| t.contains(w)));
+    // Across the stamp and out again in a few frames: nothing opens, at any moment.
+    let (_, x, y, w, h) = text_at(cx, "verdict").expect("the verdict");
+    for step in 0..8 {
+        move_to(cx, x + w * 0.5 - 40.0 + step as f32 * 12.0, y + h * 0.5);
+        advance(cx, 8);
+        assert!(!open(cx), "a plate opened while the pointer was only passing over it (step {step})");
+    }
+    move_to(cx, 5.0, 690.0);
+    advance(cx, 400);
+    assert!(!open(cx), "a plate opened after the pointer had gone");
+    // Resting opens it, after the house rest.
+    move_to(cx, x + w * 0.5, y + h * 0.5);
+    advance(cx, 40);
+    assert!(!open(cx), "it opened before the house rest");
+    advance(cx, 400);
+    assert!(open(cx), "resting on it never opened it");
 }
 
 fn signals() -> Signals {

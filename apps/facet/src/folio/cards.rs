@@ -284,11 +284,3 @@ impl RenderOnce for SymbolCard {
         hover_zone(body.opacity(shown), &touch, 9.0 * scale, true)
     }
 }
-
-/// How many columns of cards of at least `min` px fit in `measure`, and the
-/// width each takes.
-#[must_use]
-pub fn columns(measure: &Measure, min: f32) -> (usize, Pixels) {
-    let (count, one) = measure.columns(min, Space::Roomy, 6);
-    (count, one.width())
-}

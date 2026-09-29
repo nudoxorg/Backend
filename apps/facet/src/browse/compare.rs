@@ -378,6 +378,7 @@ fn aligned_row(id: &ElementId, row: &Alignment, active: bool, model: &Model, sta
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn operation_detail(id: &ElementId, row: &Alignment, model: &Model, state: &Entity<State>, actions: &Actions, modes: &Modes, m: &Measure, cx: &mut App) -> AnyElement {
     let p = cx.palette();
     let count = model.candidates.len().max(1);

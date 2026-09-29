@@ -161,6 +161,7 @@ mod tests {
             .expect("clock after epoch")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("nudox-cold-restart-{nonce}"));
+        crate::host::private_dir(&root).expect("a private root, as the owner requires");
         let first = ambient_paths(&root).expect("first ambient launch");
         first.initialize().expect("initialize first launch");
         let second = ambient_paths(&root).expect("cold restart launch");

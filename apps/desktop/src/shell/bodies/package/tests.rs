@@ -44,7 +44,11 @@ fn move_to(rig: &mut Rig, at: (f32, f32)) {
 
 /// A crate on disk that says a few things about itself.
 fn krate() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("nudox-folio-{}-present", std::process::id()));
+    // One directory per call: tests run in parallel, and one that rewrites a
+    // crate under another's feet reads an empty manifest.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nudox-folio-{}-{call}-present", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let write = |path: &str, body: &str| {
         let at = dir.join(path);
@@ -186,4 +190,171 @@ fn the_heads_up_hand_fans_out_and_a_click_opens_the_evidence_read_from_source(cx
     let evidence: Vec<&str> = ledger.texts.iter().map(|t| t.content.as_str()).filter(|c| c.starts_with("src/glyph.rs:")).collect();
     assert!(!evidence.is_empty(), "the sheet names the file and line of what it found: {:?}", ledger.texts.iter().map(|t| &t.content).collect::<Vec<_>>());
     assert!(ledger.texts.iter().any(|t| t.content.contains("Command::new(\"true\")")), "and shows the line");
+}
+
+// ------------------------------------------------------------------ widths
+
+use crate::shell::fit_tests::{findings, painted as painted_at, resize};
+
+/// Where every word of the folio is, by key: what a frame says about layout.
+fn folio_layout(ledger: &Ledger) -> Vec<(String, [f32; 4])> {
+    let mut out: Vec<(String, [f32; 4])> = ledger
+        .texts
+        .iter()
+        .filter(|t| t.key.contains("folio-") || t.key.starts_with("name:") || t.key.starts_with("mk-"))
+        .map(|t| (t.key.clone(), [t.bounds.x, t.bounds.y, t.bounds.width, t.bounds.height]))
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// The window is dragged narrow, wide, narrower and back: the page is what
+/// a window born at the final size would draw (the layout decisions are a
+/// function of the room and of the mode held through a band, never of the
+/// route the window took).
+#[gpui::test]
+fn a_page_after_a_resize_storm_equals_a_fresh_page(cx: &mut TestAppContext) {
+    let mut stormed = rig(cx, None, 1440.0, 900.0);
+    read_and_open(&mut stormed);
+    for (width, height) in [(800.0, 600.0), (2560.0, 1440.0), (1024.0, 700.0), (1440.0, 900.0)] {
+        resize(&mut stormed, width, height);
+    }
+    let after = folio_layout(&painted_at(&mut stormed));
+    let mut fresh = rig(cx, None, 1440.0, 900.0);
+    read_and_open(&mut fresh);
+    let born = folio_layout(&painted_at(&mut fresh));
+    assert!(!born.is_empty(), "the fresh page painted nothing");
+    assert_eq!(after.iter().map(|(k, _)| k).collect::<Vec<_>>(), born.iter().map(|(k, _)| k).collect::<Vec<_>>(), "the same words are on the page");
+    for ((key, was), (_, is)) in after.iter().zip(&born) {
+        for (axis, (a, b)) in was.iter().zip(is).enumerate() {
+            assert!((a - b).abs() <= 0.75, "`{key}` sits differently after a resize storm (axis {axis}): {was:?} against a fresh window's {is:?}");
+        }
+    }
+}
+
+/// From a phone to a big screen nothing of the folio hangs past the window's
+/// sides, is cut mid-glyph, or lies on other words. (Below the fold is the
+/// reader's to scroll; only the sides are held to the window.)
+#[gpui::test]
+fn the_page_holds_together_at_every_width(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    read_and_open(&mut rig);
+    for (width, height) in [(1440.0, 900.0), (320.0, 640.0), (360.0, 740.0), (390.0, 844.0), (430.0, 932.0), (480.0, 800.0), (600.0, 800.0), (768.0, 1024.0), (800.0, 600.0), (980.0, 700.0), (1024.0, 700.0), (1280.0, 800.0), (1920.0, 1080.0), (2560.0, 1440.0)] {
+        resize(&mut rig, width, height);
+        let ledger = painted_at(&mut rig);
+        let mine = |key: &str| key.contains("folio-") || key.starts_with("name:") || key.starts_with("mk-");
+        let ours: Vec<String> = findings(&ledger, width, height)
+            .into_iter()
+            .filter(|f| f.rule != "edge" && (f.what.contains("[folio-") || f.what.contains("[name:") || f.what.contains("[mk-")))
+            .map(|f| format!("{}: {}", f.rule, f.what))
+            .collect();
+        assert!(ours.is_empty(), "at {width} px the page has {} problems: {ours:#?}", ours.len());
+        for text in ledger.texts.iter().filter(|t| mine(&t.key) && !t.content.trim().is_empty()) {
+            assert!(
+                text.bounds.x >= -0.5 && text.bounds.x + text.bounds.width <= width + 0.5,
+                "at {width} px `{}` runs past the window's side: x {:.0}, {:.0} wide [{}]",
+                text.content,
+                text.bounds.x,
+                text.bounds.width,
+                text.key
+            );
+        }
+    }
+}
+
+
+// ------------------------------------------------------------------ releases
+
+/// A crate named like one the registry's index cache knows (`toml`), so its
+/// releases can be read the way the page reads them.
+fn krate_named_toml() -> PathBuf {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nudox-folio-{}-{call}-toml", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("dir");
+    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"toml\"\nversion = \"0.8.23\"\nlicense = \"MIT\"\n").expect("manifest");
+    std::fs::write(dir.join("src/lib.rs"), "//! toml.\npub struct Value;\n").expect("lib");
+    dir
+}
+
+/// The years of the ticker's axis, as painted.
+fn years(ledger: &Ledger) -> Vec<String> {
+    ledger.texts.iter().filter(|t| t.key.contains("-ticker-") && t.content.len() == 4 && t.content.starts_with("20")).map(|t| t.content.clone()).collect()
+}
+
+/// A package the library indexed from an unpacked registry directory has no
+/// version list in its dossier (a local root); the registry's own index
+/// cache still dates its releases, and the page reads them from there.
+#[gpui::test]
+fn a_local_root_gets_its_release_ticker_from_the_registry_cache(cx: &mut TestAppContext) {
+    if crate::model::source_facts::registry::releases("toml").len() < 2 {
+        return;
+    }
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let facts = source_facts::read(&krate_named_toml(), &std::collections::HashMap::new(), None).expect("the crate reads");
+    let package = package();
+    rig.cx.update(|_, cx| {
+        facet::probe::enable(cx);
+        source_facts::install(&package, Reading::Ready(Arc::new(facts)), cx);
+    });
+    rig.go(Intent::Navigate(package_route()));
+    let ledger = painted(&mut rig);
+    assert!(years(&ledger).len() >= 3, "the ticker's axis is dated: {:?}", ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>());
+    assert!(!ledger.targets.iter().any(|t| t.key.contains("folio-") && t.key.ends_with("-back")), "on the pin there is no way back to show");
+}
+
+/// Reading another release says so and offers the way out, on a page whose
+/// releases are unknown (no ticker): the banner is not the ticker's.
+#[gpui::test]
+fn the_past_says_so_and_offers_the_way_back_with_or_without_a_ticker(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
+    install(&mut rig);
+    rig.go(Intent::SetRelease(Some(crate::navigation::ReleaseId::new("0.3.0").expect("release"))));
+    let ledger = painted(&mut rig);
+    assert!(!has(&ledger, "-ticker-"), "the fixture package has no releases to draw");
+    assert_eq!(said(&ledger, "-reading").first().map(String::as_str), Some("Reading"), "the banner says the page is in the past");
+    assert_eq!(said(&ledger, "-at").first().map(String::as_str), Some("0.3.0"));
+    let back = ledger.targets.iter().find(|t| t.key.contains("folio-") && t.key.ends_with("-back")).unwrap_or_else(|| panic!("the way back is a button: {:?}", ledger.targets.iter().map(|t| &t.key).collect::<Vec<_>>()));
+    click(&mut rig, (back.bounds.x + back.bounds.width / 2.0, back.bounds.y + back.bounds.height / 2.0));
+    assert!(matches!(rig.route(), crate::navigation::Route::Package(route) if route.at.is_none()), "the way back returns to the pin: {:?}", rig.route());
+}
+
+/// The four crest cells' label rows, top to bottom: which cell sits on which line.
+fn crest_rows(ledger: &Ledger) -> Vec<Vec<&'static str>> {
+    let mut at: Vec<(f32, &'static str)> = Vec::new();
+    for (part, name) in [("licence-label", "licence"), ("heads-label", "heads"), ("weight-label", "weight"), ("advisories-label", "advisories")] {
+        if let Some(text) = ledger.texts.iter().find(|t| t.key.contains("folio-") && t.key.ends_with(part)) {
+            at.push((text.bounds.y, name));
+        }
+    }
+    at.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut rows: Vec<(f32, Vec<&'static str>)> = Vec::new();
+    for (y, name) in at {
+        match rows.last_mut() {
+            Some((top, row)) if (y - *top).abs() < 2.0 => row.push(name),
+            _ => rows.push((y, vec![name])),
+        }
+    }
+    rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// The crest is four cells in a row, two by two, or one under the other, and
+/// nothing else, at every width: never three and an orphan (the cells sum to
+/// their row, and a wrapped fourth used to drop onto a row of its own), and
+/// never fewer rows in a narrower window than in a wider one.
+#[gpui::test]
+fn the_crest_is_whole_rows_at_every_width_and_never_more_rows_when_wider(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    read_and_open(&mut rig);
+    let mut previous_rows = usize::MAX;
+    // Every width R-Folio saw go wrong (1440-1600 orphaned a fourth cell; 720 was one column wide of two), and each side of the arrangement's edges.
+    for width in [300, 360, 430, 460, 480, 560, 640, 720, 800, 960, 1000, 1024, 1152, 1280, 1360, 1440, 1500, 1600, 1700, 1920, 2560] {
+        resize(&mut rig, width as f32, 900.0);
+        let rows = crest_rows(&painted_at(&mut rig));
+        let shape: Vec<usize> = rows.iter().map(Vec::len).collect();
+        assert!(matches!(shape.as_slice(), [4] | [2, 2] | [1, 1, 1, 1]), "at {width} px the crest is {rows:?}");
+        assert!(rows.len() <= previous_rows, "at {width} px the crest has {} rows, more than at a narrower window ({previous_rows}): {rows:?}", rows.len());
+        previous_rows = rows.len();
+    }
 }

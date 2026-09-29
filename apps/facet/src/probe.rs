@@ -14,6 +14,8 @@ use gpui::{
 };
 use std::cell::RefCell;
 
+pub mod rules;
+
 /// Which engine or direct input produced a track sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TrackKind {

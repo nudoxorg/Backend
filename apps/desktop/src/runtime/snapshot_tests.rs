@@ -4,12 +4,16 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use super::*;
-use crate::model::pages::{DocFragment, RowKey};
+use crate::model::pages::{DocFragment, PackageRef, PageValue, RowKey, SymbolPage};
 use backend_library::DeclarationKind;
 use crate::runtime::actor::CancellationToken;
 use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadRequest};
 use crate::shell::tests::{Fixture, PACKAGE, dossier, page, symbol};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// A way to damage the file's bytes.
+type Corruption = Box<dyn Fn(&mut Vec<u8>)>;
 
 fn scratch(tag: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -68,45 +72,31 @@ fn rich_page(name: &str) -> SymbolPage {
     page
 }
 
-fn pages(name: &str) -> Vec<(PageKey, Kept, PageValue)> {
+fn pages(name: &str) -> Vec<SeedEntry> {
     let id = symbol(name);
-    let package = crate::model::pages::PackageRef::parse(PACKAGE).expect("package");
-    let symbol_page = rich_page(name);
+    let package = PackageRef::parse(PACKAGE).expect("package");
     let PageValue::Source(source) = fixture(&ReadRequest::Source(id.clone())) else {
         panic!("a source view")
     };
     let PageValue::Orbit(orbit) = fixture(&ReadRequest::Orbit) else {
         panic!("the orbit model")
     };
-    let dossier = dossier();
     vec![
-        (
-            PageKey::Symbol(id.clone()),
-            Kept::Symbol(Arc::new(symbol_page.clone())),
-            PageValue::Symbol(symbol_page),
-        ),
-        (
-            PageKey::Source(id),
-            Kept::Source(Arc::new(source.clone())),
-            PageValue::Source(source),
-        ),
-        (
-            PageKey::Package(package),
-            Kept::Package(Arc::new(dossier.clone())),
-            PageValue::Package(dossier),
-        ),
-        (PageKey::Orbit, Kept::Orbit(Arc::new(orbit.clone())), PageValue::Orbit(orbit)),
+        SeedEntry::Symbol(id.clone(), Arc::new(rich_page(name))),
+        SeedEntry::Source(id, Arc::new(source)),
+        SeedEntry::Package(package, Arc::new(dossier())),
+        SeedEntry::Orbit(Arc::new(orbit)),
     ]
 }
 
-fn write(dir: &Path, root: VersionedRoot, pages: &[(PageKey, Kept, PageValue)]) -> SnapshotFile {
+fn write(dir: &Path, root: VersionedRoot, pages: &[SeedEntry]) -> SnapshotFile {
     let file = SnapshotFile::in_data(dir);
-    let kept = pages
-        .iter()
-        .map(|(key, kept, _)| (key.clone(), kept.clone()))
-        .collect::<Vec<_>>();
-    assert!(file.write(root, &kept).expect("write") > 0);
+    assert!(file.write(root, pages).expect("write") > 0);
     file
+}
+
+fn keys(pages: &[SeedEntry]) -> Vec<PageKey> {
+    pages.iter().map(SeedEntry::key).collect()
 }
 
 #[test]
@@ -115,16 +105,14 @@ fn every_saved_page_reads_back_equal_field_for_field() {
     let root = served("equal", 3);
     let saved = pages("RelationLabel");
     let file = write(&dir, root, &saved);
-    let wanted = saved.iter().map(|(key, _, _)| key.clone()).collect::<Vec<_>>();
-    let seed = file.read(&wanted).expect("the snapshot reads back");
+    let seed = file.read(&keys(&saved)).expect("the snapshot reads back");
     assert!(seed.root.serves(root), "the root it was read at is the root it names");
     assert!(!seed.root.serves(served("equal", 4)), "a later root is not that root");
     assert!(!seed.root.serves(VersionedRoot::unserved()), "no page is current before an owner");
     assert_eq!(seed.pages.len(), saved.len());
-    for ((key, value), (saved_key, _, saved_value)) in seed.pages.iter().zip(&saved) {
-        assert_eq!(key, saved_key);
+    for (read, written) in seed.pages.iter().zip(&saved) {
         // Whole-value equality: a field the codec drops fails here, not in a count.
-        assert_eq!(value, saved_value, "{key:?} lost a field in the round trip");
+        assert_eq!(read, written, "{:?} lost a field in the round trip", written.key());
     }
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -136,17 +124,16 @@ fn only_the_asked_sections_are_read_and_a_missing_one_is_simply_absent() {
     let file = write(&dir, served("asked", 1), &saved);
     let absent = PageKey::Symbol(symbol("NeverSaved"));
     let seed = file
-        .read(&[absent, saved[2].0.clone()])
+        .read(&[absent, saved[2].key()])
         .expect("the snapshot reads back");
-    assert_eq!(seed.pages.len(), 1, "one asked page is in the file, one is not");
-    assert_eq!(seed.pages[0].1, saved[2].2);
+    assert_eq!(seed.pages, [saved[2].clone()], "one asked page is in the file, one is not");
     let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn a_corrupt_snapshot_is_ignored_whole_and_kept_as_bad() {
     let saved = pages("RelationLabel");
-    let wanted = saved.iter().map(|(key, _, _)| key.clone()).collect::<Vec<_>>();
+    let wanted = keys(&saved);
     let clean = {
         let dir = scratch("clean");
         let file = write(&dir, served("corrupt", 1), &saved);
@@ -162,7 +149,7 @@ fn a_corrupt_snapshot_is_ignored_whole_and_kept_as_bad() {
         .rposition(|window| window == b"present")
         .expect("a payload names the fixture package");
     assert!(letter > HEADER + table_len, "the letter is in a payload, not the table");
-    let corruptions: [(&str, Box<dyn Fn(&mut Vec<u8>)>); 6] = [
+    let corruptions: [(&str, Corruption); 6] = [
         ("a letter in a payload string", Box::new(move |bytes: &mut Vec<u8>| bytes[letter] ^= 0x20)),
         ("a payload byte", Box::new(|bytes: &mut Vec<u8>| {
             let last = bytes.len() - 2;
@@ -200,11 +187,7 @@ fn a_corrupt_snapshot_is_ignored_whole_and_kept_as_bad() {
 fn nothing_is_saved_before_an_owner_answers_and_no_file_is_no_seed() {
     let dir = scratch("unserved");
     let file = SnapshotFile::in_data(&dir);
-    let kept = pages("RelationLabel")
-        .into_iter()
-        .map(|(key, kept, _)| (key, kept))
-        .collect::<Vec<_>>();
-    assert_eq!(file.write(VersionedRoot::unserved(), &kept).expect("write"), 0);
+    assert_eq!(file.write(VersionedRoot::unserved(), &pages("RelationLabel")).expect("write"), 0);
     assert!(!file.path().exists());
     assert!(file.read(&[PageKey::Orbit]).is_none());
     assert!(!file.path().with_extension("bad").exists(), "an absent file is not a bad one");
@@ -214,7 +197,7 @@ fn nothing_is_saved_before_an_owner_answers_and_no_file_is_no_seed() {
 #[test]
 fn a_route_keeps_the_pages_it_draws_and_its_shelf_dossier() {
     use crate::navigation::View;
-    let package = PageKey::Package(crate::model::pages::PackageRef::parse(PACKAGE).expect("package"));
+    let package = PageKey::Package(PackageRef::parse(PACKAGE).expect("package"));
     let id = symbol("RelationLabel");
     let page = crate::shell::tests::view_route("RelationLabel", View::Page);
     assert_eq!(kept_keys(&page), [PageKey::Symbol(id.clone()), package.clone(), PageKey::Orbit]);
@@ -224,4 +207,28 @@ fn a_route_keeps_the_pages_it_draws_and_its_shelf_dossier() {
         [PageKey::Source(id.clone()), PageKey::Symbol(id), package, PageKey::Orbit]
     );
     assert_eq!(kept_keys(&Route::World), [PageKey::Orbit]);
+}
+
+#[test]
+fn a_family_the_snapshot_never_keeps_has_no_section_and_a_digest_is_hex_or_nothing() {
+    use crate::model::pages::SearchQuery;
+    let search = PageKey::Search(SearchQuery::new("Engine", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    assert!(SectionKey::of(&search).is_none() && SectionKey::of(&PageKey::Health).is_none(), "asked fresh every time");
+    assert!(SectionKey::of(&PageKey::Orbit).is_some());
+    let digest = Digest::of(b"a page");
+    let spelled = serde_json::to_string(&digest).expect("digest");
+    assert_eq!(spelled.len(), 66, "64 hex digits and two quotes: {spelled}");
+    assert_eq!(serde_json::from_str::<Digest>(&spelled).expect("reads back"), digest);
+    for refused in ["\"abc\"", &format!("\"{}\"", "g".repeat(64)), &format!("\"{}\"", "a".repeat(63))] {
+        assert!(serde_json::from_str::<Digest>(refused).is_err(), "{refused} is not a digest");
+    }
+}
+
+#[test]
+fn pages_read_by_another_build_are_not_current_at_the_root_they_name() {
+    let root = served("writer", 2);
+    let mut snapshot = SnapRoot::of(root);
+    assert!(snapshot.serves(root), "this build reads what this build wrote");
+    snapshot.writer.len += 1;
+    assert!(!snapshot.serves(root), "another build's mapping of the same root is another page");
 }

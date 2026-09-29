@@ -11,6 +11,7 @@ use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{HoverIntent, package_route, pending, quiet, text};
 use crate::shell::reader::Reader;
 use facet::icons::{Kind, KindSize};
+use facet::tokens::fluid::{EMPTY_GEM, PROJECT_GEM};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
@@ -48,7 +49,7 @@ pub(super) fn body(
                 .items_center()
                 .gap(measure.space(Space::Gutter))
                 .py(measure.space(Space::Chapter))
-                .child(facet::paint::gem(Kind::Module).size(56.0 * measure.scale()).opacity(0.5))
+                .child(facet::paint::gem(Kind::Module).size(f32::from(EMPTY_GEM.at(ctx.wide.fluid_room()))).opacity(0.5))
                 .child(text(ty::LEDE, &measure, palette.ink2).child(line))
                 .child(
                     facet::controls::button("add-folder", "Add a folder", &measure)
@@ -115,14 +116,14 @@ pub(super) fn body(
                     .flex_col()
                     .items_center()
                     .gap(measure.space(Space::Base))
-                    .child(facet::paint::gem(Kind::Module).size(44.0 * measure.scale()).opacity(if active { 1.0 } else { 0.8 }))
+                    .child(facet::paint::gem(Kind::Module).size(f32::from(PROJECT_GEM.at(ctx.wide.fluid_room()))).opacity(if active { 1.0 } else { 0.8 }))
                     .child(text(ty::HEAD, &measure, if active { palette.ink0 } else { palette.ink1 }).child(name))
                     .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)))
                     .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
             ),
         );
     }
-    leaves.push(Leaf::new(centre));
+    leaves.push(Leaf::new(centre).wide());
     // The packages around them.
     let orbit = store.orbit();
     match shown(&orbit) {
@@ -131,13 +132,13 @@ pub(super) fn body(
                 let mut ring = div().flex().flex_wrap().justify_center().gap(measure.space(Space::Roomy));
                 // The names wrap as the room changes; a name that moves to
                 // another line glides there (FLIP) instead of jumping.
-                let flow = facet::motion::Flow::scoped("orbit-ring", cx);
+                let flow = ctx.ring_flow.clone();
                 flow.epoch((measure.density(), measure.scale().to_bits()));
                 for package in indexed.iter() {
                     let key = gpui::ElementId::Name(format!("orbit-chip-{}", package.package).into());
                     ring = ring.child(flow.item(key, package_name(package, ctx, cx)));
                 }
-                leaves.push(Leaf::new(ring));
+                leaves.push(Leaf::new(ring).wide());
             }
         }
         Shown::Pending => leaves.push(Leaf::new(
@@ -254,9 +255,10 @@ fn package_name(package: &IndexedPackage, ctx: &mut Ctx<'_>, cx: &mut Context<Re
                 .gap(measure.space(Space::Snug))
                 .px(measure.space(Space::Base))
                 .h(measure.row())
+                .max_w_full()
                 .hover(|style| style.bg(palette.tint))
                 .child(crate::shell::kit::kind_mark(Kind::Package, KindSize::Sm, &measure, palette))
-                .child(text(ty::MONO_ROW, &measure, ink).child(name))
+                .child(text(ty::MONO_ROW, &measure, ink).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
                 .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
                 .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx))),
         )
