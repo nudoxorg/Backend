@@ -49,20 +49,42 @@ has a hard per-target limit of 65,536 unique mapping files. Each encoded map is
 110 bytes, for at most 7,208,960 bytes of map payload, plus filesystem
 metadata. The counter reserves capacity before writing a map; an interrupted
 reservation may conservatively consume a slot. Reaching the limit fails the
-commit before ref or `HEAD` publication. The V1 slice does not yet reclaim
-unreachable bridge files after branch deletion, so this fixed bound is an
-explicit interim retention policy; extending it requires bounded map
-mark/sweep under the same ref digest and owner lock.
-The current history sweep also leaves unreferenced local generation records on
-disk so replay metadata remains available. V1 has no generation-record
-compaction yet, so metadata usage is not bounded by the segment-map limit.
+commit before ref or `HEAD` publication. This is a hard safety bound, not a
+production retention policy: unreachable bridge maps are not reclaimed yet,
+so a long-lived store will eventually stop accepting new unique segments.
+Bounded ref-rooted bridge-map sweep and generation-record compaction remain
+release gates; the generation-record area is currently unbounded. The GC lane
+must reclaim maps and records only after marking both-parent reachability under
+the metadata-exclusive barrier.
+
+`FileSemanticRangeStore::checkout_history_image` now reconstructs the exact
+selected V1 image when its core plane has the producer's ordinal NXFI byte
+layout. It captures the selected commit ID once, holds the FileStore GC pin
+and owner lock to snapshot the reference, immutable generation, and closure.
+It drops the owner lock before reading segment bridges and immutable payloads,
+verifies each segment, and streams manifest-ordered bytes to a unique private
+bounded temporary file. It then verifies full image identity, `GenerationId`,
+and NXFI grammar before returning a borrowed `SemanticImageView` over an
+anonymous mapping. File leases let concurrent startup recovery skip active
+scratch files; abandoned files are removed within a bounded scan. The reader
+lease retains the GC pin, and reports segment-validation bytes, segment-copy
+bytes, scratch bytes written, and image-validation bytes. Missing payload or
+bridge records return a typed `NeedsHydration` value; non-ordinal V2 typed
+planes are not reconstructed by this V1 path.
 
 | Earlier `nudox-ir-vcs` behavior | Restored in V1 | Remaining boundary |
 | --- | --- | --- |
 | Persistent commit ancestry and replay | Immutable commit DAG, cold metadata reopen, bounded first-parent replay pages | Replay does not yet emit a complete two-parent semantic merge plan |
 | Branches and tags | Named refs, expected-value CAS, atomic rename, navigation-only authority | The implicit branch is local cache history, not an index selection ref |
 | Patch deltas | Borrowed manifest-segment deltas using existing exact-root cursor checks | No materialized whole-snapshot patch archive |
-| Merge semantics | Commits can name and validate up to two parents; mark/sweep follows both | No three-way IR merge engine; payload closure composition currently advances the first-parent line |
-| GC and serving pins | Bounded indexed history mark/sweep; FileStore closure roots retain segment objects for named refs; readers pin against FileStore GC | Generation records are not compacted; segment-ID bridge files have the hard 65,536-entry bound above; no scan-resistant whole-archive serving cache |
-| Cold checkout | Named-ref reads can serve verified segment ranges after forced FileStore GC and restart | Full NXFI image and `SemanticReader` checkout still need hydration/reconstruction |
-| Collision and failure handling | Domain-separated IDs, checksummed records, atomic ref catalog, fail-closed missing/corrupt live ancestry, retry-safe index intent | Cross-process fault tests and the full gated Cargo suite are pending |
+| Merge semantics | Commit decoding and ancestry validation understand up to two parents; first-parent DAG replay is paged | New two-parent proposals return typed `UnsupportedMergePayloadClosure` until payload closures are unioned; no three-way IR merge engine |
+| GC and serving pins | Bounded indexed history mark/sweep; FileStore closure roots retain segment objects for named refs; segment and image readers pin against FileStore GC | Bridge maps and generation records are not compacted; bridge maps hit the hard 65,536-entry exhaustion bound above; no scan-resistant whole-archive serving cache |
+| Cold checkout | V1 ordinal NXFI images can be reconstructed from retained segment closures after image pruning, forced FileStore GC, and restart, then read through the borrowed semantic view | V2 typed-plane checkout and hydration are not implemented; the V1 checkout reports `NeedsHydration` for missing segments or unsupported layouts |
+| Collision and failure handling | Domain-separated IDs, checksummed records, atomic ref catalog, fail-closed missing/corrupt live ancestry, retry-safe index intent, and typed rejection of unmaterialized merge proposals | Cross-process fault tests and the full gated Cargo suite are pending |
+
+The checkout regression builds three valid, distinct NXFI generations larger
+than one segment, prunes the oldest full-image cache object, pins the oldest
+commit with a tag, forces FileStore GC, cold-reopens, and checks the borrowed
+view and exact I/O counters. It also removes one bridge and checks the typed
+`NeedsHydration` result. Cargo execution remains gated; formatting and static
+diff checks alone do not establish that this slice is production-ready.

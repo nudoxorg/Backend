@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use backend_semantic::ir::{
@@ -27,6 +28,7 @@ const MAX_IMAGE_STAGE_SCAN: usize = 4096;
 const MAX_IMAGE_MEMBERS: usize = MAX_IMAGE_STAGE_SCAN * 2;
 const MAX_IMAGE_OBJECT_FILES: usize = 4096;
 const MAX_IMAGE_TARGETS: usize = 4096;
+static NEXT_HISTORY_VIEW_SCRATCH: AtomicU64 = AtomicU64::new(1);
 const LOCATOR_BYTES: usize = 4 + 4 + 32 + 32 + 32 + CHECKSUM_BYTES;
 
 /// Result class for reopening an image from the local semantic cache.
@@ -130,6 +132,64 @@ pub(super) struct LocalSemanticImageFiles {
     root: PathBuf,
 }
 
+/// Bounded scratch owner used while rebuilding a historical canonical image
+/// from verified ordinal segments. A crash leaves only a regular temporary
+/// file under `history-views`, which startup recovery removes.
+pub(super) struct HistoryImageScratch {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl HistoryImageScratch {
+    pub(super) fn file_mut(&mut self) -> Result<&mut File, String> {
+        self.file
+            .as_mut()
+            .ok_or_else(|| "historical semantic-image scratch is already finalized".to_owned())
+    }
+
+    pub(super) fn finish(
+        mut self,
+        identity: SemanticImageIdentity,
+        generation: GenerationId,
+        expected_length: u64,
+    ) -> Result<MappedSemanticImage, String> {
+        let file = self
+            .file
+            .take()
+            .ok_or_else(|| "historical semantic-image scratch is already finalized".to_owned())?;
+        file.sync_all().map_err(display_io)?;
+        let observed_length = file.metadata().map_err(display_io)?.len();
+        if observed_length != expected_length {
+            return Err(format!(
+                "historical semantic-image scratch length differs: expected {expected_length}, observed {observed_length}"
+            ));
+        }
+        let mapped = load_semantic_image_mmap(
+            &self.path,
+            identity,
+            generation,
+            MAX_SEMANTIC_IMAGE_BYTES as usize,
+        )
+        .map_err(|error| format!("verify reconstructed historical NXFI: {error}"))?;
+        // Release the file lease after the validated anonymous mapping exists.
+        // Startup recovery may win the unlink race; remove_file treats an
+        // already-removed private scratch path as successful cleanup.
+        drop(file);
+        remove_file(&self.path)?;
+        backend_platform::durable::sync_parent(&self.path).map_err(display_io)?;
+        Ok(mapped)
+    }
+}
+
+impl Drop for HistoryImageScratch {
+    fn drop(&mut self) {
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 impl LocalSemanticImageFiles {
     pub(super) fn open(state_root: &Path) -> Result<Self, String> {
         // macOS exposes the temporary directory through /var -> /private/var.
@@ -178,8 +238,58 @@ impl LocalSemanticImageFiles {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(display_io(error)),
             }
+            discard_history_view_scratch(&target.join("history-views"))?;
         }
         Ok(())
+    }
+
+    /// Starts a private bounded scratch file for one exact historical image.
+    /// The caller must hold a shared FileStore GC pin while using this lease.
+    pub(super) fn begin_history_image_scratch(
+        &self,
+        target: &SemanticTargetKey,
+        commit: crate::HistoryCommitId,
+        identity: SemanticImageIdentity,
+        expected_length: u64,
+    ) -> Result<HistoryImageScratch, String> {
+        if expected_length == 0 || expected_length > MAX_SEMANTIC_IMAGE_BYTES {
+            return Err("historical semantic-image length exceeds its bound".to_owned());
+        }
+        let target_root = self.target_root(target);
+        create_private_directory(&target_root)?;
+        let directory = target_root.join("history-views");
+        create_private_directory(&directory)?;
+        set_private_directory(&directory)?;
+        let commit_hex = hex(commit.as_bytes());
+        for _ in 0..32 {
+            let nonce = NEXT_HISTORY_VIEW_SCRATCH.fetch_add(1, Ordering::Relaxed);
+            let path = directory.join(format!(
+                "{commit_hex}-{}-{nonce:016x}.partial",
+                std::process::id()
+            ));
+            let file = match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(display_io(error)),
+            };
+            if let Err(error) =
+                set_private_file(&file).and_then(|()| file.lock().map_err(display_io))
+            {
+                drop(file);
+                let _ = fs::remove_file(&path);
+                return Err(error);
+            }
+            return Ok(HistoryImageScratch {
+                path,
+                file: Some(file),
+            });
+        }
+        Err("could not allocate a unique historical image scratch file".to_owned())
     }
 
     /// Looks up an exact selected image key, then independently reopens and
@@ -770,6 +880,67 @@ impl LocalSemanticImageFiles {
     }
 }
 
+fn discard_history_view_scratch(directory: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(display_io(error)),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("historical semantic-image scratch path is not a directory".to_owned());
+    }
+    let mut files = Vec::new();
+    let mut scanned = 0_usize;
+    for entry in fs::read_dir(directory).map_err(display_io)? {
+        scanned = scanned
+            .checked_add(1)
+            .ok_or_else(|| "historical semantic-image scratch count overflows".to_owned())?;
+        if scanned > MAX_IMAGE_OBJECT_FILES {
+            return Err("historical semantic-image scratch scan exceeds its bound".to_owned());
+        }
+        let entry = entry.map_err(display_io)?;
+        let path = entry.path();
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "historical semantic-image scratch name is not UTF-8".to_owned())?;
+        let stem = name.strip_suffix(".partial").ok_or_else(|| {
+            "historical semantic-image scratch directory contains an unknown member".to_owned()
+        })?;
+        let mut fields = stem.split('-');
+        let commit = fields.next().unwrap_or_default();
+        let process = fields.next().unwrap_or_default();
+        let nonce = fields.next().unwrap_or_default();
+        if !is_hex_digest(commit)
+            || process.is_empty()
+            || !process.bytes().all(|byte| byte.is_ascii_digit())
+            || nonce.len() != 16
+            || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || fields.next().is_some()
+        {
+            return Err("historical semantic-image scratch filename is malformed".to_owned());
+        }
+        ensure_regular_file(&path)?;
+        let lease = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(display_io)?;
+        match lease.try_lock() {
+            Ok(()) => {
+                drop(lease);
+                files.push(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(display_io(error)),
+        }
+    }
+    for path in files {
+        remove_file(&path)?;
+    }
+    Ok(())
+}
+
 struct RecoveredStage {
     stem: String,
     image: SemanticPlaneImageKey,
@@ -1258,6 +1429,46 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn concurrent_history_view_scratch_is_unique_and_recovered_only_after_release() {
+        let directory = TestDirectory::create();
+        let images = LocalSemanticImageFiles::open(&directory.0).expect("open image files");
+        let target = SemanticTargetKey::new(
+            "pkg:cargo/tentpole-app@1.2.3",
+            "pkg:cargo/tentpole-app@1.2.3",
+            LanguageProfile::Rust(RustEdition::Rust2024),
+        )
+        .expect("fixture target");
+        let commit = crate::HistoryCommitId::from_bytes([0x31; 32]);
+        let identity = SemanticImageIdentity::from_encoded_bytes(b"same historical image");
+        let first = images
+            .begin_history_image_scratch(&target, commit, identity, 1)
+            .expect("begin first checkout scratch");
+        let second = images
+            .begin_history_image_scratch(&target, commit, identity, 1)
+            .expect("begin concurrent checkout scratch");
+        assert_ne!(first.path, second.path);
+
+        // A second store open may recover crashes while these checkouts are
+        // in flight. File leases prevent it from deleting their private files.
+        let reopened = LocalSemanticImageFiles::open(&directory.0).expect("reopen image files");
+        reopened
+            .recover_stages()
+            .expect("recover stale scratch files");
+        assert!(first.path.exists());
+        assert!(second.path.exists());
+
+        let first_path = first.path.clone();
+        let second_path = second.path.clone();
+        drop(first);
+        drop(second);
+        reopened
+            .recover_stages()
+            .expect("remove released scratch files");
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
     }
 
     fn fixture() -> (

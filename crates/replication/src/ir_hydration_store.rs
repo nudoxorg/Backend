@@ -15,10 +15,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use backend_semantic::ir::{
     FacetChange, GenerationId, MAX_SEMANTIC_SEGMENT_BYTES, MappedSemanticImage, SemanticDiff,
-    SemanticEntityChange, SemanticImageIdentity, SemanticLinkChangeKind, SemanticPlaneCatalog,
-    SemanticPlaneImageKey, SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneSegment,
-    SemanticRangeRequest, SemanticSegmentId, SemanticSegmentVerifier, SemanticSnapshot,
-    UntrustedSemanticSegmentId,
+    SemanticEntityChange, SemanticImageIdentity, SemanticImageView, SemanticLinkChangeKind,
+    SemanticPlaneCatalog, SemanticPlaneImageKey, SemanticPlaneKind, SemanticPlaneManifest,
+    SemanticPlaneSegment, SemanticRangeRequest, SemanticSegmentId, SemanticSegmentVerifier,
+    SemanticSnapshot, UntrustedSemanticSegmentId,
 };
 use backend_store::{
     ArtifactBudget, ArtifactClosureClaim, ArtifactObjectReader, ClosureCompositionBudget,
@@ -143,6 +143,111 @@ impl HistorySegmentReader {
     pub fn read_range(&mut self, offset: u64, output: &mut [u8]) -> Result<usize, String> {
         self.reader.read_range(offset, output)
     }
+}
+
+/// Bounded payload I/O performed while rebuilding one historical V1 NXFI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoryImageIoStats {
+    /// Number of ordinal NXFI segments read from the retained closure.
+    segment_count: u32,
+    /// Exact semantic payload bytes read during per-segment admission.
+    segment_validation_bytes_read: u64,
+    /// Exact semantic payload bytes read again while streaming to scratch.
+    segment_copy_bytes_read: u64,
+    /// Exact bytes written to the private temporary image file.
+    scratch_bytes_written: u64,
+    /// Exact temporary-file bytes copied into the validated anonymous mapping.
+    image_bytes_read_for_validation: u64,
+}
+
+impl HistoryImageIoStats {
+    /// Returns the number of segments that formed the complete NXFI image.
+    #[must_use]
+    pub const fn segment_count(self) -> u32 {
+        self.segment_count
+    }
+
+    /// Returns bytes read from retained FileStore segment payloads.
+    #[must_use]
+    pub const fn segment_validation_bytes_read(self) -> u64 {
+        self.segment_validation_bytes_read
+    }
+
+    /// Returns bytes read from FileStore while copying segments to scratch.
+    #[must_use]
+    pub const fn segment_copy_bytes_read(self) -> u64 {
+        self.segment_copy_bytes_read
+    }
+
+    /// Returns bytes written to the private temporary file.
+    #[must_use]
+    pub const fn scratch_bytes_written(self) -> u64 {
+        self.scratch_bytes_written
+    }
+
+    /// Returns bytes copied from scratch into the validated anonymous mmap.
+    #[must_use]
+    pub const fn image_bytes_read_for_validation(self) -> u64 {
+        self.image_bytes_read_for_validation
+    }
+}
+
+/// A fully validated historical semantic image backed by an anonymous mmap.
+/// Its GC pin holds the exact retained segment closure until this lease drops.
+pub struct HistorySemanticImageReader {
+    commit: crate::HistoryCommitId,
+    image: MappedSemanticImage,
+    stats: HistoryImageIoStats,
+    _gc_pin: GcPinGuard,
+}
+
+impl HistorySemanticImageReader {
+    /// Returns the immutable history commit selected for this checkout.
+    #[must_use]
+    pub const fn commit(&self) -> crate::HistoryCommitId {
+        self.commit
+    }
+
+    /// Returns the exact NXFI byte identity verified during materialization.
+    #[must_use]
+    pub const fn image_identity(&self) -> SemanticImageIdentity {
+        self.image.identity()
+    }
+
+    /// Returns the exact NXFI generation verified during materialization.
+    #[must_use]
+    pub const fn generation(&self) -> GenerationId {
+        self.image.generation()
+    }
+
+    /// Returns bounded payload and scratch I/O counters for this checkout.
+    #[must_use]
+    pub const fn io_stats(&self) -> HistoryImageIoStats {
+        self.stats
+    }
+
+    /// Borrows the canonical validated semantic reader for this lease.
+    #[must_use]
+    pub fn view(&self) -> SemanticImageView<'_> {
+        self.image.view()
+    }
+}
+
+/// Result of opening the exact tip selected by one named history reference.
+pub enum HistoryImageCheckout {
+    /// The named reference's complete V1 ordinal NXFI image is resident and
+    /// passed whole-image identity and grammar admission.
+    Resident(HistorySemanticImageReader),
+    /// One or more required ordinal segments are absent, or this is not the
+    /// V1 ordinal-core layout that can be concatenated into NXFI bytes.
+    NeedsHydration {
+        /// Exact commit selected by the named reference.
+        commit: crate::HistoryCommitId,
+        /// Exact image key saved by the selected commit.
+        image: SemanticPlaneImageKey,
+        /// Exact full-image identity saved by the selected commit.
+        image_identity: SemanticImageIdentity,
+    },
 }
 
 impl VerifiedMappedSemanticSegment {
@@ -682,14 +787,15 @@ impl FileSemanticRangeStore {
     }
 
     /// Creates an unpublished history proposal for the current admitted
-    /// generation. Parents are ordered first-parent then optional merge
-    /// parent. The proposal has no authority to move the selected index head.
+    /// generation. V1 accepts only root and first-parent proposals until its
+    /// publisher can union both parents' retained payload closures. The
+    /// proposal has no authority to move the selected index head.
     pub fn propose_history_commit(
         &self,
         target: &crate::SemanticTargetKey,
         parents: &[crate::HistoryCommitId],
         provenance: [u8; 32],
-    ) -> Result<crate::UnpublishedHistoryProposal, String> {
+    ) -> Result<crate::UnpublishedHistoryProposal, crate::HistoryProposalError> {
         let _state_lock = self.acquire_state_lock()?;
         self.generations
             .propose_history_commit(target, parents, provenance)
@@ -894,6 +1000,179 @@ impl FileSemanticRangeStore {
             reader,
             _gc_pin: gc_pin,
         })
+    }
+
+    /// Checks out the exact tip selected by a named branch or tag. The V1
+    /// producer stored the full NXFI byte stream as ordinal chunks in its
+    /// `Ir(Core)` plane; this method concatenates those verified chunks into a
+    /// private bounded scratch file, validates the complete image, then
+    /// returns the existing mmap-backed semantic view. It keeps a shared
+    /// FileStore GC pin for the reader lease and returns `NeedsHydration` when
+    /// any chunk is missing or the manifest is not that V1 byte-chunk layout.
+    pub fn checkout_history_image(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+    ) -> Result<HistoryImageCheckout, String> {
+        let gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin historical semantic image: {error:?}"))?;
+        // Resolve the mutable name once while holding the state lock, and
+        // snapshot every durable locator before releasing it. The selected
+        // commit, generation record, and payload closure are immutable; the
+        // shared GC pin keeps their backing objects and bridge metadata alive
+        // while potentially large segment reads and image validation proceed.
+        let (commit, generation, closure) = {
+            let _state_lock = self.acquire_state_lock()?;
+            let Some(reference) = self.generations.history_ref(target, kind, name)? else {
+                return Err("historical semantic reference is missing".to_owned());
+            };
+            let commit = reference.commit();
+            let generation = self.generations.history_generation(target, commit)?;
+            let Some(payload_root) = self.generations.history_payload_root(target, commit)? else {
+                return Ok(HistoryImageCheckout::NeedsHydration {
+                    commit,
+                    image: generation.image(),
+                    image_identity: generation.image_identity(),
+                });
+            };
+            let closure = self
+                .store
+                .open_closure(payload_root.closure)
+                .map_err(|error| format!("open historical semantic payload closure: {error:?}"))?;
+            (commit, generation, closure)
+        };
+        let needs_hydration = || HistoryImageCheckout::NeedsHydration {
+            commit,
+            image: generation.image(),
+            image_identity: generation.image_identity(),
+        };
+        let core_kind = SemanticPlaneKind::Ir(backend_semantic::ir::SemanticIrPlane::Core);
+        let mut core_plane = None;
+        for plane in generation.manifest().planes() {
+            match plane.kind() {
+                SemanticPlaneKind::Ir(backend_semantic::ir::SemanticIrPlane::Core) => {
+                    if core_plane.replace(plane).is_some() {
+                        return Ok(needs_hydration());
+                    }
+                }
+                SemanticPlaneKind::Embeddings(_) => {}
+                SemanticPlaneKind::Ir(_) => return Ok(needs_hydration()),
+            }
+        }
+        let Some(core_plane) = core_plane else {
+            return Ok(needs_hydration());
+        };
+        if core_plane.segments().is_empty() {
+            return Ok(needs_hydration());
+        }
+        let mut image_length = 0_u64;
+        for (index, segment) in core_plane.segments().iter().enumerate() {
+            let ordinal = u64::try_from(index)
+                .map_err(|_| "historical NXFI segment ordinal overflows".to_owned())?;
+            let mut expected_key = [0; 32];
+            expected_key[24..].copy_from_slice(&ordinal.to_be_bytes());
+            if segment.first_key() != &expected_key
+                || segment.last_key() != &expected_key
+                || segment.row_count() != 1
+            {
+                return Ok(needs_hydration());
+            }
+            image_length = image_length
+                .checked_add(segment.byte_length())
+                .ok_or_else(|| "historical NXFI image length overflows".to_owned())?;
+        }
+        if image_length == 0 || image_length > crate::MAX_SEMANTIC_IMAGE_BYTES {
+            return Ok(needs_hydration());
+        }
+        let mut scratch = self.images.begin_history_image_scratch(
+            target,
+            commit,
+            generation.image_identity(),
+            image_length,
+        )?;
+        let mut segment_validation_bytes_read = 0_u64;
+        let mut segment_copy_bytes_read = 0_u64;
+        let mut scratch_bytes_written = 0_u64;
+        let mut segment_count = 0_u32;
+        for segment in core_plane.segments() {
+            let Some((mut reader, admitted)) = self.open_history_segment_from_closure(
+                target,
+                &generation,
+                &closure,
+                core_kind,
+                segment.id_claim(),
+            )?
+            else {
+                drop(scratch);
+                return Ok(needs_hydration());
+            };
+            if admitted.as_bytes() != segment.id_claim().as_bytes() {
+                return Err("historical NXFI chunk differs from its manifest claim".to_owned());
+            }
+            segment_validation_bytes_read = segment_validation_bytes_read
+                .checked_add(segment.byte_length())
+                .ok_or_else(|| "historical segment validation counter overflows".to_owned())?;
+            let mut offset = 0_u64;
+            let mut remaining = segment.byte_length();
+            let mut buffer = [0_u8; IO_BUFFER_BYTES];
+            while remaining > 0 {
+                let take = usize::try_from(remaining.min(IO_BUFFER_BYTES as u64))
+                    .map_err(|_| "historical NXFI read length exceeds address space".to_owned())?;
+                let read = reader.read_range(offset, &mut buffer[..take])?;
+                if read != take {
+                    return Err("historical NXFI chunk ended before its manifest length".to_owned());
+                }
+                scratch
+                    .file_mut()?
+                    .write_all(&buffer[..read])
+                    .map_err(display_io)?;
+                let observed = u64::try_from(read)
+                    .map_err(|_| "historical NXFI copy length overflows".to_owned())?;
+                segment_copy_bytes_read = segment_copy_bytes_read
+                    .checked_add(observed)
+                    .ok_or_else(|| "historical segment copy counter overflows".to_owned())?;
+                scratch_bytes_written = scratch_bytes_written
+                    .checked_add(observed)
+                    .ok_or_else(|| "historical scratch counter overflows".to_owned())?;
+                offset = offset
+                    .checked_add(observed)
+                    .ok_or_else(|| "historical NXFI segment offset overflows".to_owned())?;
+                remaining -= observed;
+            }
+            segment_count = segment_count
+                .checked_add(1)
+                .ok_or_else(|| "historical segment count overflows".to_owned())?;
+        }
+        if scratch_bytes_written != image_length {
+            return Err(
+                "historical NXFI chunks do not form their declared image length".to_owned(),
+            );
+        }
+        let image = scratch.finish(
+            generation.image_identity(),
+            generation.image().semantic_generation(),
+            image_length,
+        )?;
+        if image.identity() != generation.image_identity()
+            || image.generation() != generation.image().semantic_generation()
+        {
+            return Err("reconstructed NXFI differs from its admitted history identity".to_owned());
+        }
+        Ok(HistoryImageCheckout::Resident(HistorySemanticImageReader {
+            commit,
+            image,
+            stats: HistoryImageIoStats {
+                segment_count,
+                segment_validation_bytes_read,
+                segment_copy_bytes_read,
+                scratch_bytes_written,
+                image_bytes_read_for_validation: image_length,
+            },
+            _gc_pin: gc_pin,
+        }))
     }
 
     /// Reads one bounded page of first-parent snapshots. `next_cursor` pages

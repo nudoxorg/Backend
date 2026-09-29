@@ -69,9 +69,9 @@ mod history;
 pub(super) use history::HistoryPayloadRoot;
 pub use history::{
     AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
-    HistoryGenerationRoot, HistoryMaterialization, HistoryRefKind, HistoryRefName,
-    HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor, HistoryReplayEntry,
-    HistorySegmentDeltas, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
+    HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError, HistoryRefKind,
+    HistoryRefName, HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor,
+    HistoryReplayEntry, HistorySegmentDeltas, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
     UnpublishedHistoryProposal,
 };
 
@@ -1129,10 +1129,14 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    use backend_semantic::ir::DocInput;
     use backend_semantic::ir::{
-        GenerationId, LanguageProfile, RustEdition, SemanticBuildIdentity, SemanticInputWitness,
-        SemanticIrPlane, SemanticPlane, SemanticPlaneCatalogEntry, SemanticPlaneKind,
-        SemanticPlaneSegment, SemanticRangeRequest,
+        BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
+        FactAvailability, GenerationId, IrBuilder, ItemKind, LanguageProfile, ParentageAuthority,
+        RustEdition, SemanticBuildIdentity, SemanticInputWitness, SemanticIrPlane, SemanticPlane,
+        SemanticPlaneCatalogEntry, SemanticPlaneKind, SemanticPlaneSegment, SemanticRangeRequest,
+        TreeItemInput, VariantFingerprint, Visibility, encode_full_semantic_image,
+        full_semantic_image_len,
     };
     use backend_semantic::vocabulary::Stage;
     use backend_store::{FileStore, TypedObject};
@@ -1140,8 +1144,8 @@ mod tests {
 
     use crate::{
         AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, DurableSemanticSegmentStore,
-        FileSemanticRangeStore, IrResidencyDeltaHop, IrResidencyPath, SelectedSemanticPlane,
-        TransportLimits,
+        FileSemanticRangeStore, IrResidencyDeltaHop, IrResidencyPath, MAX_RANGE_BYTES,
+        SelectedSemanticPlane, TransportLimits,
     };
 
     use super::*;
@@ -1236,6 +1240,117 @@ mod tests {
             manifest,
             stamp,
         }
+    }
+
+    fn valid_nxfi_fixture(documentation: &str, revision: u64, root: u8) -> (Fixture, Vec<u8>) {
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let target = SemanticTargetKey::new(
+            "pkg:cargo/tentpole-app@1.2.3",
+            "pkg:cargo/tentpole-app@1.2.3",
+            profile,
+        )
+        .expect("fixture target");
+        let authority = EntityAuthorityFacts {
+            parentage: ParentageAuthority::Root,
+            members: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let versions = [EntityVersion {
+            family: DeclarationFamilyId::from_raw([root; 16]),
+            variant: VariantFingerprint::from_raw([root.wrapping_add(1); 16]),
+            core_payload: CorePayloadHash::from_raw([root.wrapping_add(2); 16]),
+        }];
+        let docs = [DocInput::Text(documentation)];
+        let items = [TreeItemInput {
+            name: b"historical-large-document",
+            kind: ItemKind::Module,
+            visibility: Visibility::Private,
+            authority,
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &docs,
+            attributes: &[],
+            source: None,
+            extension: None,
+        }];
+        let mut builder = IrBuilder::new();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .expect("build large-document IR");
+        let ir = builder.finish().expect("finish large-document IR");
+        let image_length = full_semantic_image_len(&ir).expect("plan full semantic image");
+        let mut image_bytes = vec![0; image_length];
+        encode_full_semantic_image(&ir, &mut image_bytes).expect("encode full semantic image");
+        assert!(image_bytes.len() > MAX_SEMANTIC_SEGMENT_BYTES);
+
+        let input = SemanticInputWitness::claimed([7; 32], ScopeRoot::from_bytes([8; 32]));
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let segments = image_bytes
+            .chunks(MAX_SEMANTIC_SEGMENT_BYTES)
+            .enumerate()
+            .map(|(index, payload)| {
+                let ordinal = u64::try_from(index).expect("small image segment ordinal");
+                let mut key = [0; 32];
+                key[24..].copy_from_slice(&ordinal.to_be_bytes());
+                SemanticPlaneSegment::from_payload_with_witness(kind, key, key, 1, payload, input)
+                    .expect("admit canonical ordinal NXFI segment")
+            })
+            .collect::<Vec<_>>();
+        let plane =
+            SemanticPlane::claimed(kind, segments, Coverage::Complete).expect("claim core plane");
+        let manifest = SemanticPlaneManifest::new(
+            GenerationId::from_canonical_bytes(&image_bytes),
+            SemanticBuildIdentity::new(
+                [1; 32],
+                [2; 32],
+                profile,
+                Stage::LowerIr,
+                [3; 32],
+                [4; 32],
+                [5; 32],
+                [6; 32],
+            ),
+            input,
+            vec![plane],
+        )
+        .expect("build canonical plane manifest");
+        let image = SemanticPlaneImageKey::from_manifest(0, &manifest);
+        let image_identity = SemanticImageIdentity::from_encoded_bytes(&image_bytes);
+        let manifest_length = u32::try_from(manifest.encode().expect("encode manifest").len())
+            .expect("manifest length fits");
+        let catalog = SemanticPlaneCatalog::new(vec![
+            SemanticPlaneCatalogEntry::new(image, manifest_length).expect("catalog entry"),
+        ])
+        .expect("build catalog");
+        let stamp = SelectedGenerationStamp::checked(
+            [9; 16],
+            profile,
+            [10; 32],
+            revision,
+            [root; 32],
+            [11; 32],
+            catalog.root(),
+        )
+        .expect("selected-generation stamp");
+        (
+            Fixture {
+                target,
+                catalog,
+                image,
+                image_identity,
+                manifest,
+                stamp,
+            },
+            image_bytes,
+        )
     }
 
     fn fixture_with_segments(
@@ -2000,7 +2115,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_semantic_roots_keep_fork_and_convergence_history_distinct() {
+    fn equal_semantic_roots_keep_forks_distinct_and_reject_unmaterialized_merges() {
         let directory = TestDirectory::create();
         let base = fixture(b"same semantic root", 1, 40);
         let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
@@ -2047,29 +2162,17 @@ mod tests {
         .expect("publish right branch");
         assert_eq!(left.manifest_root(), right.manifest_root());
         assert_ne!(left.identity(), right.identity());
-
-        let merge = admit_history(
-            &files,
-            &base,
-            &[left.identity(), right.identity()],
-            [0xaa; 32],
-        );
-        assert_eq!(merge.parents(), &[left.identity(), right.identity()]);
-        set_history_ref(
-            &files,
-            &base.target,
-            HistoryRefKind::Branch,
-            "converged",
-            None,
-            Some(merge.identity()),
-        )
-        .expect("publish converged branch");
+        assert_eq!(left.parents(), &[base_commit]);
+        assert_eq!(right.parents(), &[fork.identity()]);
         assert_eq!(
             files
-                .history_commit(&base.target, merge.identity())
-                .expect("reload converged commit")
-                .manifest_root(),
-            base.manifest.root()
+                .propose_history_commit(
+                    &base.target,
+                    &[left.identity(), right.identity()],
+                    [0xaa; 32],
+                )
+                .expect_err("merge must not advertise a first-parent-only payload closure"),
+            HistoryProposalError::UnsupportedMergePayloadClosure
         );
     }
 
@@ -2504,6 +2607,253 @@ mod tests {
             expected_bytes.len()
         );
         assert_eq!(actual, expected_bytes);
+    }
+
+    #[test]
+    fn third_old_nxfi_checkout_survives_image_prune_file_store_gc_and_cold_reopen() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let state_root = cas_root.join("semantic-hydration");
+        let file_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open semantic FileStore");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
+            .expect("open semantic history adapter");
+        let generations =
+            LocalSemanticGenerationFiles::open(&state_root).expect("open generation records");
+        let images = super::super::ir_image_store::LocalSemanticImageFiles::open(&state_root)
+            .expect("open local image cache");
+
+        let mut cached_images = Vec::new();
+        let mut first_snapshot = None;
+        let mut third_snapshot = None;
+        for (revision, root) in [(1_u64, 91_u8), (2, 92), (3, 93)] {
+            let documentation = format!("revision-{revision}: {}", "x".repeat(1_100_000));
+            let (generation, image_bytes) = valid_nxfi_fixture(&documentation, revision, root);
+            let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+            let plane = generation.manifest.plane(kind).expect("core plane");
+            let mut segment_objects = Vec::with_capacity(plane.segments().len());
+            let mut image_offset = 0_usize;
+            for segment in plane.segments() {
+                let byte_length = usize::try_from(segment.byte_length())
+                    .expect("segment byte length fits address space");
+                let image_end = image_offset
+                    .checked_add(byte_length)
+                    .expect("segment image range fits");
+                let payload = &image_bytes[image_offset..image_end];
+                let key = ObjectKey::<
+                    super::super::ir_hydration_store::SemanticSegmentPayload,
+                >::from_value(payload);
+                let object = TypedObject::from_value(&key, payload);
+                let object_id = file_store
+                    .write_object(&object)
+                    .expect("persist canonical NXFI segment object");
+                generations
+                    .persist_history_segment_mapping(
+                        &generation.target,
+                        segment.id_claim(),
+                        object_id,
+                        segment.byte_length(),
+                    )
+                    .expect("persist history segment bridge");
+                segment_objects.push((segment.id_claim(), object_id, segment.byte_length()));
+                image_offset = image_end;
+            }
+            assert_eq!(image_offset, image_bytes.len());
+
+            let payload_root = range_store
+                .compose_history_payload_root(&generation.target, &segment_objects)
+                .expect("compose cumulative segment closure");
+            let committed = generations
+                .commit_with_payload_root(
+                    &generation.target,
+                    generation.stamp,
+                    &generation.catalog,
+                    generation.image,
+                    generation.image_identity,
+                    &generation.manifest,
+                    payload_root,
+                    &mut TestAuthority::new(
+                        [generation.stamp, generation.stamp],
+                        [generation.image],
+                    ),
+                )
+                .expect("admit canonical selected generation");
+            let branch = generations
+                .history_ref(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    &HistoryRefName::new("local-cache").expect("local-cache ref"),
+                )
+                .expect("read local-cache branch")
+                .expect("local-cache branch exists");
+            if revision == 1 {
+                range_store
+                    .compare_and_swap_history_ref(
+                        &generation.target,
+                        HistoryRefKind::Tag,
+                        HistoryRefName::new("old-v1").expect("historical tag"),
+                        None,
+                        Some(branch.commit()),
+                    )
+                    .expect("pin first generation under a tag");
+            }
+
+            let retained_keys = cached_images
+                .iter()
+                .map(|(image, _identity)| *image)
+                .collect::<Vec<_>>();
+            let mut resume = None;
+            let total_length = u64::try_from(image_bytes.len()).expect("image length fits");
+            for (index, payload) in image_bytes.chunks(MAX_RANGE_BYTES).enumerate() {
+                let offset = u64::try_from(index)
+                    .expect("image page ordinal fits")
+                    .checked_mul(MAX_RANGE_BYTES as u64)
+                    .expect("page offset fits");
+                let byte_range = ByteRange::new(
+                    offset,
+                    u64::try_from(payload.len()).expect("page length fits"),
+                )
+                .expect("valid image page range");
+                resume = Some(
+                    images
+                        .stage_page(
+                            &generation.target,
+                            generation.image,
+                            generation.image_identity,
+                            total_length,
+                            byte_range,
+                            payload,
+                            &retained_keys,
+                        )
+                        .expect("stage a bounded image page"),
+                );
+            }
+            let mapped = images
+                .finish(
+                    &generation.target,
+                    resume.expect("image has at least one page"),
+                    &cached_images,
+                )
+                .expect("admit local canonical image");
+            assert_eq!(mapped.identity(), generation.image_identity);
+            drop(mapped);
+            cached_images.push((generation.image, generation.image_identity));
+            if cached_images.len() > 2 {
+                cached_images.remove(0);
+            }
+            images
+                .prune(&generation.target, cached_images.iter().copied())
+                .expect("retain only current and previous full images");
+            if revision == 1 {
+                first_snapshot = Some((
+                    committed.identity(),
+                    branch.commit(),
+                    generation,
+                    image_bytes,
+                ));
+            } else if revision == 3 {
+                third_snapshot = Some((branch.commit(), generation.image_identity));
+            }
+        }
+
+        let (first_generation_id, first_commit, first_generation, first_image) =
+            first_snapshot.expect("first generation snapshot");
+        let (third_commit, _third_identity) = third_snapshot.expect("third generation snapshot");
+        assert_ne!(first_commit, third_commit);
+        assert!(
+            images
+                .open_identity(
+                    &first_generation.target,
+                    first_generation.image_identity,
+                    first_generation.image.semantic_generation(),
+                )
+                .is_err()
+        );
+        drop(images);
+        drop(generations);
+        drop(range_store);
+        drop(file_store);
+
+        let reopened_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("cold-open FileStore");
+        let reopened = FileSemanticRangeStore::open(reopened_store, limits)
+            .expect("cold-open semantic history adapter");
+        reopened
+            .collect_garbage_with_history(
+                &first_generation.target,
+                backend_store::GcLimits::default(),
+            )
+            .expect("force GC with tag and branch closure roots");
+        drop(reopened);
+
+        let reopened = FileSemanticRangeStore::open(
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("reopen FileStore after forced GC"),
+            limits,
+        )
+        .expect("cold-reopen semantic history adapter after forced GC");
+        let old_tag = HistoryRefName::new("old-v1").expect("historical tag");
+        let reader = match reopened
+            .checkout_history_image(&first_generation.target, HistoryRefKind::Tag, &old_tag)
+            .expect("checkout historical full NXFI")
+        {
+            crate::HistoryImageCheckout::Resident(reader) => reader,
+            crate::HistoryImageCheckout::NeedsHydration { .. } => {
+                panic!("tagged V1 ordinal image should remain resident after GC")
+            }
+        };
+        assert_eq!(reader.commit(), first_commit);
+        assert_eq!(reader.image_identity(), first_generation.image_identity);
+        assert_eq!(
+            reader.generation(),
+            first_generation.image.semantic_generation()
+        );
+        assert_eq!(reader.view().canonical_entities().len(), 1);
+        let stats = reader.io_stats();
+        let expected_bytes = u64::try_from(first_image.len()).expect("image length fits");
+        assert_eq!(stats.segment_count(), 2);
+        assert_eq!(stats.segment_validation_bytes_read(), expected_bytes);
+        assert_eq!(stats.segment_copy_bytes_read(), expected_bytes);
+        assert_eq!(stats.scratch_bytes_written(), expected_bytes);
+        assert_eq!(stats.image_bytes_read_for_validation(), expected_bytes);
+        drop(reader);
+
+        let first_segment = first_generation
+            .manifest
+            .plane(SemanticPlaneKind::Ir(SemanticIrPlane::Core))
+            .expect("first core plane")
+            .segments()[0]
+            .id_claim();
+        let bridge = LocalSemanticGenerationFiles::open(&state_root)
+            .expect("open generation bridge files")
+            .target_root(&first_generation.target)
+            .join("history")
+            .join("segment-map")
+            .join(format!("{}.map", hex(first_segment.as_bytes())));
+        fs::remove_file(&bridge).expect("remove one historical bridge to simulate hydration gap");
+        assert!(matches!(
+            reopened
+                .checkout_history_image(
+                    &first_generation.target,
+                    HistoryRefKind::Tag,
+                    &old_tag,
+                )
+                .expect("missing bridge is a typed hydration state"),
+            crate::HistoryImageCheckout::NeedsHydration {
+                commit,
+                image,
+                image_identity,
+            } if commit == first_commit
+                && image == first_generation.image
+                && image_identity == first_generation.image_identity
+        ));
+        let generation = reopened
+            .history_commit(&first_generation.target, first_commit)
+            .expect("old commit metadata still available");
+        assert_eq!(generation.generation(), first_generation_id);
     }
 
     #[test]

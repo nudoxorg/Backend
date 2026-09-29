@@ -36,9 +36,10 @@ pub use identities::*;
 pub use ir_generation_store::{
     AdmittedHistoryCommit, HistoricalSemanticPlaneBinding, HistoryAdmissionReceipt,
     HistoryCommitId, HistoryGcProgress, HistoryGenerationRoot, HistoryMaterialization,
-    HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor,
-    HistoryReplayEntry, HistorySegmentDeltas, LocalSemanticGeneration, LocalSemanticGenerationId,
-    MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef, UnpublishedHistoryProposal,
+    HistoryProposalError, HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt, HistoryReplay,
+    HistoryReplayCursor, HistoryReplayEntry, HistorySegmentDeltas, LocalSemanticGeneration,
+    LocalSemanticGenerationId, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
+    UnpublishedHistoryProposal,
 };
 pub use ir_hydration::*;
 pub use ir_hydration_store::*;
