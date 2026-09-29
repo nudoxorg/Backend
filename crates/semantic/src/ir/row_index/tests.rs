@@ -151,10 +151,13 @@ fn batch_update_handles_insert_replace_delete_and_reuses_unchanged_nodes() {
     let next = prepared.commit();
 
     assert_eq!(next.get(&key(RowFamily::Core, 1)), Some(payload(b"one")));
-    assert_eq!(next.get(&key(RowFamily::Core, 2)), Some(payload(b"two")));
+    assert_eq!(
+        next.get(&key(RowFamily::Core, 2)),
+        Some(RowPayload::from_tagged_bytes(2, b"two").expect("tagged payload"))
+    );
     assert_eq!(
         next.get(&key(RowFamily::Core, 3)),
-        Some(payload(b"new three"))
+        Some(RowPayload::from_tagged_bytes(2, b"new three").expect("tagged payload"))
     );
     assert_eq!(next.get(&key(RowFamily::Core, 5)), None);
     assert_eq!(next.row_count(), 3);
