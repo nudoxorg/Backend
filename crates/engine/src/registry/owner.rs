@@ -1337,10 +1337,12 @@ fn content_store_error(error: ContentStoreError) -> AcquisitionError {
         ContentStoreError::LengthMismatch { .. }
         | ContentStoreError::TransferStateMismatch
         | ContentStoreError::TransferValidatorChanged
-        | ContentStoreError::TransferBusy
         | ContentStoreError::CorruptObject { .. }
         | ContentStoreError::InvalidArchivePath
         | ContentStoreError::DuplicateArchivePath => AcquisitionError::CorruptJournal,
+        ContentStoreError::TransferNeedsReopen | ContentStoreError::TransferBusy => {
+            AcquisitionError::StaleReservation
+        }
     }
 }
 
@@ -1372,6 +1374,18 @@ fn verify_receipt_objects(
 #[cfg(test)]
 mod immutable_object_tests {
     use super::*;
+
+    #[test]
+    fn ambiguous_or_busy_transfer_is_retryable() {
+        assert!(matches!(
+            content_store_error(ContentStoreError::TransferNeedsReopen),
+            AcquisitionError::StaleReservation
+        ));
+        assert!(matches!(
+            content_store_error(ContentStoreError::TransferBusy),
+            AcquisitionError::StaleReservation
+        ));
+    }
 
     #[test]
     fn concurrent_first_writers_publish_one_complete_object() {

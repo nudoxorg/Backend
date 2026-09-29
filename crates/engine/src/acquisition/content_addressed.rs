@@ -802,8 +802,8 @@ impl ContentAddressedStore {
             && let Some(bytes) = self.object_len(object)?
         {
             self.verify_object(object, maximum)?;
-            let parent = self
-                .object_path_for(object)
+            let object_path = self.object_path_for(object);
+            let parent = object_path
                 .parent()
                 .expect("object path has a fanout parent");
             sync_directory(parent)?;
