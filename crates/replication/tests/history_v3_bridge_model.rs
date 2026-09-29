@@ -1026,6 +1026,7 @@ fn apply_update(
     current_body: &CommitBody,
     oracle: &BTreeMap<BridgeKey, BridgeValue>,
     replacements: &[(BridgeKey, u64)],
+    batch_label: &str,
     fault: CrashPoint,
 ) -> Result<
     (
@@ -1040,6 +1041,10 @@ fn apply_update(
     let store_gc_pin = store
         .pin_garbage_collection()
         .expect("hold GC exclusion across V3 bridge publication");
+    eprintln!(
+        "V3 bridge model: start {batch_label} batch ({} replacements)",
+        replacements.len()
+    );
     let mut after_values = Vec::with_capacity(replacements.len());
     let mut payload_objects = Vec::with_capacity(replacements.len());
     let mut payload_object_bytes_written = 0_usize;
@@ -1063,7 +1068,12 @@ fn apply_update(
         .expect("admit base closure before edits");
     let (update, loader, new_node_objects, before_values) =
         changed_tree(store, current_body.bridge_root, &changes)
-            .expect("prepare typed V3 path-copy update");
+            .unwrap_or_else(|error| panic!("prepare {batch_label} V3 path-copy update: {error}"));
+    eprintln!(
+        "V3 bridge model: prepared {batch_label} frontier ({} nodes, {} bytes)",
+        update.changed_nodes().len(),
+        update.work().emitted_bytes
+    );
     let target_root = update.target().root().to_bytes();
     assert_ne!(
         target_root, current_body.bridge_root,
@@ -1231,7 +1241,8 @@ fn apply_update(
             &closure_changes,
             closure_budget,
         )
-        .expect("path-copy exact closure index");
+        .unwrap_or_else(|error| panic!("compose {batch_label} exact closure index: {error:?}"));
+    eprintln!("V3 bridge model: composed {batch_label} closure");
     let closure_receipt = pinned_closure.receipt();
     let mut target_rows = oracle.clone();
     for ((key, _), value) in replacements.iter().zip(after_values) {
@@ -1257,6 +1268,7 @@ fn apply_update(
     };
     let candidate_commit = write_commit(root_dir, &body)
         .expect("persist immutable typed V3 commit root before ref CAS");
+    eprintln!("V3 bridge model: wrote {batch_label} commit root");
     if fault == CrashPoint::AfterCommitRoot {
         drop(pinned_closure);
         drop(store_gc_pin);
@@ -1374,12 +1386,14 @@ fn v3_bridge_lazy_path_copy_matches_oracle_after_cold_reopen_and_gc() {
         &body,
         &oracle,
         &clustered,
+        "clustered",
         CrashPoint::None,
     )
     .expect("publish clustered V3 bridge path copy");
     commit = next_commit;
     body = next_body;
     oracle = next_oracle;
+    eprintln!("V3 bridge model: cold verify clustered batch");
     let (clustered_token, clustered_read, clustered_rows) =
         verify_cold(&store, &temp.path, commit, &body).expect("cold-verify clustered bridge");
     assert_eq!(clustered_token.row_count, oracle.len());
@@ -1403,12 +1417,14 @@ fn v3_bridge_lazy_path_copy_matches_oracle_after_cold_reopen_and_gc() {
         &body,
         &oracle,
         &scattered,
+        "scattered",
         CrashPoint::None,
     )
     .expect("publish scattered V3 bridge path copy");
     commit = next_commit;
     body = next_body;
     oracle = next_oracle;
+    eprintln!("V3 bridge model: cold verify scattered batch");
     let (scattered_token, scattered_read, scattered_rows) =
         verify_cold(&store, &temp.path, commit, &body).expect("cold-verify scattered bridge");
     assert_eq!(scattered_token.row_count, oracle.len());
@@ -1557,6 +1573,7 @@ fn v3_bridge_crash_points_preserve_old_or_new_ref_and_retry_by_cold_admission() 
         &body,
         &rows,
         &edits,
+        "after-node crash",
         CrashPoint::AfterNodePublish,
     )
     .expect_err("inject crash after relation node publish");
@@ -1579,6 +1596,7 @@ fn v3_bridge_crash_points_preserve_old_or_new_ref_and_retry_by_cold_admission() 
         &body,
         &rows,
         &edits,
+        "after-node retry",
         CrashPoint::None,
     )
     .expect("retry after orphan node sweep");
@@ -1597,6 +1615,7 @@ fn v3_bridge_crash_points_preserve_old_or_new_ref_and_retry_by_cold_admission() 
         &body_after_retry,
         &oracle_after_retry,
         &second_edits,
+        "after-commit crash",
         CrashPoint::AfterCommitRoot,
     )
     .expect_err("inject crash after immutable commit-root publication");
@@ -1621,6 +1640,7 @@ fn v3_bridge_crash_points_preserve_old_or_new_ref_and_retry_by_cold_admission() 
         &body_after_retry,
         &oracle_after_retry,
         &second_edits,
+        "after-commit retry",
         CrashPoint::None,
     )
     .expect("cold retry rebuilds swept unselected closure then CASes ref");
@@ -1636,6 +1656,7 @@ fn v3_bridge_crash_points_preserve_old_or_new_ref_and_retry_by_cold_admission() 
         &body_after_retry,
         &oracle_after_retry_2,
         &third_edits,
+        "after-ref crash",
         CrashPoint::AfterRefCas,
     )
     .expect_err("inject crash after ref CAS durability");
