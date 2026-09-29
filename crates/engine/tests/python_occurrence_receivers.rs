@@ -91,6 +91,18 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
     }
 }
 
+
+/// A resolved binding is right at either evidence tier: `Index` from the
+/// syntax lane alone, or `Oracle` when pyrefly is on PATH and confirms the
+/// site. These laws are about the binding, so they hold on machines with and
+/// without pyrefly (CI's compiler shell provisions it; a bare host may not).
+fn index_or_oracle(confidence: OccurrenceConfidence) -> bool {
+    matches!(
+        confidence,
+        OccurrenceConfidence::Index | OccurrenceConfidence::Oracle
+    )
+}
+
 #[test]
 fn python_receiver_occurrences_resolve_honestly() -> Result<(), TestError> {
     let executable = std::env::var_os("PATH")
@@ -705,7 +717,10 @@ fn assert_local_method_call(
     expected: EntityId,
     confidence: OccurrenceConfidence,
 ) -> Result<(), TestError> {
-    if call.occurrence.confidence != confidence {
+    let tier_matches = call.occurrence.confidence == confidence
+        || (confidence == OccurrenceConfidence::Index
+            && index_or_oracle(call.occurrence.confidence));
+    if !tier_matches {
         return Err(TestError::Falsified("local MethodCall confidence mismatch"));
     }
     if !matches!(
@@ -725,7 +740,7 @@ fn assert_universe_method_call(
 ) -> Result<(), TestError> {
     let method_name = core::str::from_utf8(method_name)
         .map_err(|_| TestError::Falsified("method name is not utf8"))?;
-    if call.occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(call.occurrence.confidence) {
         return Err(TestError::Falsified(
             "universe MethodCall confidence is not Index",
         ));
@@ -1364,7 +1379,7 @@ fn assert_local_field_access(
     if read.occurrence.kind != ReferenceKind::FieldAccess {
         return Err(TestError::Falsified("attribute read is not FieldAccess"));
     }
-    if read.occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(read.occurrence.confidence) {
         return Err(TestError::Falsified(
             "local FieldAccess confidence is not Index",
         ));
@@ -1387,7 +1402,7 @@ fn assert_universe_field_access(
     if read.occurrence.kind != ReferenceKind::FieldAccess {
         return Err(TestError::Falsified("attribute read is not FieldAccess"));
     }
-    if read.occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(read.occurrence.confidence) {
         return Err(TestError::Falsified(
             "universe FieldAccess confidence is not Index",
         ));
@@ -1939,7 +1954,7 @@ fn assert_local_index(
     ) {
         return Err(TestError::Falsified(label));
     }
-    if row.occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(row.occurrence.confidence) {
         return Err(TestError::Falsified(label));
     }
     Ok(())
@@ -1995,7 +2010,7 @@ fn assert_universe_method_named(
     ) {
         return Err(TestError::Falsified(label));
     }
-    if row.occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(row.occurrence.confidence) {
         return Err(TestError::Falsified(label));
     }
     Ok(())
@@ -2034,7 +2049,7 @@ fn assert_universe_field_named(
     ) {
         return Err(TestError::Falsified(label));
     }
-    if row.occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(row.occurrence.confidence) {
         return Err(TestError::Falsified(label));
     }
     Ok(())
@@ -3274,7 +3289,7 @@ def read(service: Child):
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
     assert_inherited_universe_field(reads[0], "service.note stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified(
             "service.note universe field confidence is Index",
         ));
@@ -3323,7 +3338,7 @@ def read(obj):
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
     assert_inherited_universe_field(reads[0], "plain receiver stays a universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified(
             "plain receiver universe field confidence is Index",
         ));
@@ -3411,7 +3426,7 @@ def read(service: WorkoutService):
             "service.score is not a workout.service package field key",
         ));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified(
             "service.score package field confidence is Index",
         ));
@@ -3607,7 +3622,7 @@ class Child(Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "two-arg super stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("two-arg super confidence is Index"));
     }
     if matches!(
@@ -3727,7 +3742,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "module-level super stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("module-level super confidence is Index"));
     }
     if matches!(
@@ -3777,7 +3792,7 @@ class Child(Base):
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(inner_calls[0], "nested super stays a universe key")?;
-    if inner_calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(inner_calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("nested super confidence is Index"));
     }
     if matches!(
@@ -3813,7 +3828,7 @@ class Child(Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "super.note stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("super.note confidence is Index"));
     }
     if matches!(
@@ -3849,7 +3864,7 @@ class Child(\"Base\"):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "quoted base keeps a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("quoted base confidence is Index"));
     }
     if matches!(
@@ -3885,7 +3900,7 @@ class Child(mod.Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "qualified base keeps a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("qualified base confidence is Index"));
     }
     if matches!(
@@ -4047,7 +4062,7 @@ class Child(A8):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "ninth base link stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("ninth base link confidence is Index"));
     }
     if matches!(
@@ -4087,7 +4102,7 @@ class Child(Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "ambiguous base methods stay a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("ambiguous base methods confidence is Index"));
     }
     if matches!(
@@ -4213,7 +4228,7 @@ class B(A):
         return Err(TestError::Falsified("A.read owns one MethodCall"));
     }
     assert_universe_method(a_calls[0], "cycle A.read stays a universe key")?;
-    if a_calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(a_calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("cycle A.read confidence is Index"));
     }
     if matches!(
@@ -4227,7 +4242,7 @@ class B(A):
         return Err(TestError::Falsified("B.read owns one MethodCall"));
     }
     assert_universe_method(b_calls[0], "cycle B.read stays a universe key")?;
-    if b_calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(b_calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("cycle B.read confidence is Index"));
     }
     if matches!(
@@ -4344,7 +4359,7 @@ class Child(Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "super(Base, self).note stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("super(Base, self).note confidence is Index"));
     }
     if matches!(
@@ -4474,7 +4489,7 @@ class Child(Base):
         reads[0],
         "super(Base, self).score stays a universe field key",
     )?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("super(Base, self).score confidence is Index"));
     }
     if matches!(
@@ -4572,7 +4587,7 @@ class Child(Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "super(Other, self).note stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("super(Other, self).note confidence is Index"));
     }
     if matches!(
@@ -4618,7 +4633,7 @@ class Child(Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "super(Child, obj).note stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("super(Child, obj).note confidence is Index"));
     }
     if matches!(
@@ -4656,7 +4671,7 @@ class Child(Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "super(Child).note stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("super(Child).note confidence is Index"));
     }
     if matches!(
@@ -4694,7 +4709,7 @@ class Child(Base):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "super(mod.Child, self).note stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified(
             "super(mod.Child, self).note confidence is Index",
         ));
@@ -4748,7 +4763,7 @@ class Child(Base):
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(inner_calls[0], "nested explicit super stays a universe key")?;
-    if inner_calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(inner_calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("nested explicit super confidence is Index"));
     }
     if matches!(
@@ -4837,7 +4852,7 @@ class Child(A7):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "super(Base, self) after last link stays a universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified(
             "super(Base, self) after last link confidence is Index",
         ));
@@ -5030,7 +5045,7 @@ def read(service: list[Child]):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "list[Child] receiver stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] universe method confidence is Index"));
     }
     if matches!(
@@ -5065,7 +5080,7 @@ def read(service: pkg.Child[int]):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "pkg.Child[int] receiver stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("pkg.Child[int] universe method confidence is Index"));
     }
     if matches!(
@@ -5223,7 +5238,7 @@ def read(service: WorkoutService[int]):
             "service.score is not a workout.service package field key",
         ));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("service.score package field confidence is Index"));
     }
     if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(_)) {
@@ -5266,7 +5281,7 @@ def read(service: WorkoutService[int]):
             "service.note() is not a workout.service package method key",
         ));
     }
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("service.note() package method confidence is Index"));
     }
     if matches!(&calls[0].occurrence.target, OccurrenceTarget::Local(_)) {
@@ -5491,7 +5506,7 @@ def read(service: Left | Right):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "Left | Right receiver stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("Left | Right universe method confidence is Index"));
     }
     if matches!(
@@ -5549,7 +5564,7 @@ def read(service: Left | Right):
             "Left | Right receiver stays a pypi universe field key",
         ));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("Left | Right universe field confidence is Index"));
     }
     if matches!(
@@ -5630,7 +5645,7 @@ def read(service: typing.Optional[Child]):
             "typing.Optional annotation attribute is not a pypi universe field key",
         ));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified(
             "typing.Optional annotation field confidence is Index",
         ));
@@ -5729,7 +5744,7 @@ def read(service: Child | int):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "Child | int receiver stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("Child | int universe method confidence is Index"));
     }
     if matches!(
@@ -5764,7 +5779,7 @@ def read(service: list[Child]):
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "list[Child] receiver stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] universe method confidence is Index"));
     }
     if matches!(
@@ -5853,7 +5868,7 @@ def read(service: WorkoutService | None):
             "service.score is not a workout.service package field key",
         ));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("service.score package field confidence is Index"));
     }
     if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(_)) {
@@ -6537,7 +6552,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "factory().note() stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("factory().note() universe method confidence is Index"));
     }
     if matches!(
@@ -6575,7 +6590,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "Child().note() stays an attribute universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("Child().note() universe confidence is Index"));
     }
     if matches!(
@@ -6612,7 +6627,7 @@ def read():
         return Err(TestError::Falsified("read owns two MethodCalls"));
     }
     assert_universe_method(calls[0], "pkg.Child().note() stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("pkg.Child().note() universe method confidence is Index"));
     }
     if matches!(
@@ -6650,7 +6665,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "Child.note() stays an attribute universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("Child.note() universe confidence is Index"));
     }
     if matches!(
@@ -7213,7 +7228,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "list[Child]().note() stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child]().note() universe method confidence is Index"));
     }
     if matches!(
@@ -7250,7 +7265,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "pkg.Child[int]().note() stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("pkg.Child[int]().note() universe method confidence is Index"));
     }
     if matches!(
@@ -7279,7 +7294,7 @@ def read():
             "pkg.Child[int]() records pkg.Child as a package field key",
         ));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("pkg.Child package field confidence is Index"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
@@ -7311,7 +7326,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "factory[int]().note() stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("factory[int]().note() universe method confidence is Index"));
     }
     if matches!(
@@ -7349,7 +7364,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "Child[int]().note() stays an attribute universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("Child[int]().note() universe confidence is Index"));
     }
     if matches!(
@@ -7387,7 +7402,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "Child[int].note() stays an attribute universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("Child[int].note() universe confidence is Index"));
     }
     if matches!(
@@ -7428,7 +7443,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "Child[int]().note() stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("Child[int]().note() universe method confidence is Index"));
     }
     if matches!(
@@ -7897,7 +7912,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "list[Child] local annotation stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] universe method confidence is Index"));
     }
     if matches!(
@@ -7954,7 +7969,7 @@ def read():
     ) {
         return Err(TestError::Falsified("pkg.Child stays a pypi package field key"));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("pkg.Child package field confidence is Index"));
     }
     if !matches!(
@@ -7967,7 +7982,7 @@ def read():
     ) {
         return Err(TestError::Falsified("obj.score stays a pypi universe field key"));
     }
-    if reads[1].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[1].occurrence.confidence) {
         return Err(TestError::Falsified("obj.score universe field confidence is Index"));
     }
     if matches!(
@@ -8015,7 +8030,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "two local annotations stay a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("two local annotations universe method confidence is Index"));
     }
     if matches!(
@@ -8430,7 +8445,7 @@ def outer():
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "intervening assignment stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("intervening assignment universe method confidence is Index"));
     }
     if matches!(
@@ -8511,7 +8526,7 @@ def outer():
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "annotation after nested def stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("annotation after nested def universe method confidence is Index"));
     }
     if matches!(
@@ -8553,7 +8568,7 @@ def outer():
         return Err(TestError::Falsified("inner owns one FieldAccess"));
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
     }
     if matches!(
@@ -8599,7 +8614,7 @@ def outer():
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "dotted annotation stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("dotted annotation universe method confidence is Index"));
     }
     if matches!(
@@ -8640,7 +8655,7 @@ def outer():
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
@@ -9073,7 +9088,7 @@ def outer(obj: Child):
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "intervening assignment stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("intervening assignment universe method confidence is Index"));
     }
     if matches!(
@@ -9193,7 +9208,7 @@ def outer(obj: list[Child]):
         return Err(TestError::Falsified("inner owns one FieldAccess"));
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
     }
     if matches!(
@@ -9237,7 +9252,7 @@ def outer(obj: pkg.Child):
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "dotted annotation stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("dotted annotation universe method confidence is Index"));
     }
     if matches!(
@@ -9276,7 +9291,7 @@ def outer(obj: Child):
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
@@ -9393,7 +9408,7 @@ def outer(obj: Child | Decoy):
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "ambiguous union stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("ambiguous union universe method confidence is Index"));
     }
     if matches!(
@@ -9435,7 +9450,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "use before assignment stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("use before assignment universe method confidence is Index"));
     }
     if matches!(
@@ -9474,7 +9489,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
@@ -9555,7 +9570,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "two Child classes stay a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("two Child classes universe method confidence is Index"));
     }
     if matches!(
@@ -9610,7 +9625,7 @@ def read():
     ) {
         return Err(TestError::Falsified("list[Child] read stays a pypi universe field key"));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
     }
     if matches!(
@@ -9658,7 +9673,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "nested class field stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("nested class field universe method confidence is Index"));
     }
     if matches!(
@@ -10023,7 +10038,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "assignment shadows module annotation")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("assignment universe method confidence is Index"));
     }
     if matches!(
@@ -10069,7 +10084,7 @@ def read():
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
     assert_universe_field(reads[0], "assignment read stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("assignment read universe field confidence is Index"));
     }
     if matches!(
@@ -10114,7 +10129,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "for-target obj stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("for-target universe method confidence is Index"));
     }
     if matches!(
@@ -10152,7 +10167,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "augassign shadows module annotation")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("augassign universe method confidence is Index"));
     }
     if matches!(
@@ -10192,7 +10207,7 @@ def outer():
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "outer assignment shadows module annotation")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("nested assignment universe method confidence is Index"));
     }
     if matches!(
@@ -10275,7 +10290,7 @@ def read(items):
         return Err(TestError::Falsified("read owns two MethodCalls"));
     }
     assert_universe_method(calls[0], "comprehension obj.note() stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("comprehension universe method confidence is Index"));
     }
     if matches!(
@@ -10405,7 +10420,7 @@ def outer():
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "nonlocal shadows module annotation")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("nonlocal universe method confidence is Index"));
     }
     if matches!(
@@ -10447,7 +10462,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "lambda parameter shadows module annotation")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("lambda parameter universe method confidence is Index"));
     }
     if matches!(
@@ -10585,7 +10600,7 @@ def read():
     ) {
         return Err(TestError::Falsified("list[Child] read stays a pypi universe field key"));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
     }
     if matches!(
@@ -10647,7 +10662,7 @@ def read():
     ) {
         return Err(TestError::Falsified("obj.score stays a pypi universe field key"));
     }
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("obj.score universe field confidence is Index"));
     }
     if matches!(
@@ -10737,7 +10752,7 @@ def read():
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
@@ -11351,7 +11366,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] universe field confidence is Index"));
     }
     if matches!(
@@ -12140,7 +12155,7 @@ def run():
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "shadowed Holder stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("shadowed Holder universe method confidence is Index"));
     }
     if matches!(
@@ -12182,7 +12197,7 @@ def run(obj: Holder):
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "unannotated child stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("unannotated child universe method confidence is Index"));
     }
     if matches!(
@@ -12231,7 +12246,7 @@ def run(obj: Holder):
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "two bases with same annotation stay a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("two bases universe method confidence is Index"));
     }
     if matches!(
@@ -12333,7 +12348,7 @@ def run(obj: Holder):
         return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] universe field confidence is Index"));
     }
     if matches!(
@@ -12621,7 +12636,7 @@ def run(obj: Holder | Decoy):
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "ambiguous union stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("ambiguous union universe method confidence is Index"));
     }
     if matches!(
@@ -13034,7 +13049,7 @@ class Holder:
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
     assert_universe_method(calls[0], "nested self stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("nested self universe method confidence is Index"));
     }
     if matches!(
@@ -13077,7 +13092,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "unannotated middle stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("unannotated middle universe method confidence is Index"));
     }
     if matches!(
@@ -13134,7 +13149,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "two-base second hop stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("two-base second hop universe method confidence is Index"));
     }
     if matches!(
@@ -13321,7 +13336,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "list[Child] middle stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] universe field confidence is Index"));
     }
     if matches!(
@@ -13371,7 +13386,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "dotted middle stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("dotted middle universe method confidence is Index"));
     }
     if matches!(
@@ -13414,7 +13429,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
@@ -13536,7 +13551,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "subscript middle stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("subscript middle universe method confidence is Index"));
     }
     if matches!(
@@ -13811,7 +13826,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "conflicting instance annotations stay a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("conflicting instance annotation universe method confidence is Index"));
     }
     if matches!(
@@ -13900,7 +13915,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "unannotated class-body child stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("unannotated class-body child universe method confidence is Index"));
     }
     if matches!(
@@ -14033,7 +14048,7 @@ class Holder:
         holder_calls[0],
         "Holder.run without instance annotation stays a pypi universe key",
     )?;
-    if holder_calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(holder_calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("Holder.run universe method confidence is Index"));
     }
     if matches!(
@@ -14214,7 +14229,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("list[Child] universe field confidence is Index"));
     }
     if matches!(
@@ -14268,7 +14283,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "pkg.Child read stays a pypi universe field key")?;
-    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(reads[0].occurrence.confidence) {
         return Err(TestError::Falsified("pkg.Child universe read confidence is Index"));
     }
     if matches!(
@@ -14309,7 +14324,7 @@ class Holder:
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
     assert_universe_method(calls[0], "Child without note stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+    if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(

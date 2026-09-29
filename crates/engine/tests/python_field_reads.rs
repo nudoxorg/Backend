@@ -302,6 +302,18 @@ fn occurrences<'a>(
     Ok(rows)
 }
 
+
+/// A resolved binding is right at either evidence tier: `Index` from the
+/// syntax lane alone, or `Oracle` when pyrefly is on PATH and confirms the
+/// site. These laws are about the binding, so they hold on machines with and
+/// without pyrefly (CI's compiler shell provisions it; a bare host may not).
+fn index_or_oracle(confidence: OccurrenceConfidence) -> bool {
+    matches!(
+        confidence,
+        OccurrenceConfidence::Index | OccurrenceConfidence::Oracle
+    )
+}
+
 #[test]
 fn python_field_reads_lower_honestly() -> Result<(), TestError> {
     let (fragment, module) = compile_fixture(SOURCE)?;
@@ -460,7 +472,7 @@ fn local_field_access<'a>(
         .filter(|row| {
             row.occurrence.kind == ReferenceKind::FieldAccess
                 && row.owner == owner
-                && row.occurrence.confidence == OccurrenceConfidence::Index
+                && index_or_oracle(row.occurrence.confidence)
                 && matches!(
                     row.occurrence.target,
                     OccurrenceTarget::Local(target) if target == field
@@ -483,7 +495,7 @@ fn local_method_call<'a>(
         .filter(|row| {
             row.occurrence.kind == ReferenceKind::MethodCall
                 && row.owner == owner
-                && row.occurrence.confidence == OccurrenceConfidence::Index
+                && index_or_oracle(row.occurrence.confidence)
                 && matches!(
                     row.occurrence.target,
                     OccurrenceTarget::Local(target) if target == method
@@ -506,7 +518,7 @@ fn universe_field_access<'a>(
         .filter(|row| {
             row.occurrence.kind == ReferenceKind::FieldAccess
                 && row.owner == owner
-                && row.occurrence.confidence == OccurrenceConfidence::Index
+                && index_or_oracle(row.occurrence.confidence)
                 && matches!(
                     &row.occurrence.target,
                     OccurrenceTarget::Foreign(key)
@@ -1155,7 +1167,12 @@ fn python_super_child_field_does_not_hide_base_method() -> Result<(), TestError>
 }
 
 #[test]
-fn python_super_ambiguous_bases_stays_universe() -> Result<(), TestError> {
+// Two same-file bases both declare `note`. Zero-argument `super()` follows the
+// MRO to the first base that declares it, so the read binds `Left.note` and
+// never `Right.note` (9a1917cbe replaced the older "ambiguous bases stay
+// universe" rule; py_super_two_bases_targets_left_note_not_right is the
+// method-call twin).
+fn python_super_two_bases_field_read_targets_left() -> Result<(), TestError> {
     let source = b"class Left:\n    note: str\n\nclass Right:\n    note: str\n\nclass Child(Left, Right):\n    def read(self):\n        return super().note\n";
     let (fragment, module) = compile_fixture(source)?;
     let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
@@ -1166,7 +1183,9 @@ fn python_super_ambiguous_bases_stays_universe() -> Result<(), TestError> {
     if left_note == right_note {
         return Err(TestError::Falsified("Left.note and Right.note are one field"));
     }
-    pin_universe_field_access(source, &module, &decoded, &atoms, &rows, b"read", "note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, left_note)?;
+    assert_no_local_target(&rows, read, ReferenceKind::FieldAccess, right_note)?;
     Ok(())
 }
 
