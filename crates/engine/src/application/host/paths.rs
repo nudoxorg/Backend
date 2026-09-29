@@ -207,6 +207,18 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         name: &str,
     ) -> ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY> {
         let mut candidates = ArrayVec::new();
+        if cfg!(windows) {
+            if let Some(home) = home {
+                push_candidate(
+                    &mut candidates,
+                    home.join(".cargo").join("bin").join(windows_exe_name(name)),
+                );
+            }
+            for path in path_env_candidates(name) {
+                push_candidate(&mut candidates, path);
+            }
+            return candidates;
+        }
         push_candidate(&mut candidates, Path::new("/opt/homebrew/bin").join(name));
         push_candidate(&mut candidates, Path::new("/usr/local/bin").join(name));
         if let Some(home) = home {
@@ -405,6 +417,26 @@ pub(super) fn canonicalize_existing(
         path: path.to_path_buf().into_boxed_path(),
         source,
     })
+}
+
+/// Appends the `.exe` suffix Windows requires for `fs::metadata` to match a
+/// native tool binary; `first_existing` checks the exact file name and does
+/// not perform the PATHEXT-style resolution `CreateProcess` would.
+fn windows_exe_name(name: &str) -> String {
+    format!("{name}.exe")
+}
+
+/// Native tools on Windows are conventionally installed to a directory the
+/// user already added to `PATH` (rustup's `.cargo\bin`, an MSI installer's
+/// Program Files entry, winget's shims, ...) rather than to one of a handful
+/// of fixed Unix/Nix locations, so search it directly instead of guessing
+/// vendor-specific install roots.
+fn path_env_candidates(name: &str) -> impl Iterator<Item = PathBuf> {
+    let exe_name = windows_exe_name(name);
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(move |path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(move |directory| directory.join(&exe_name))
 }
 
 fn push_candidate(candidates: &mut ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY>, candidate: PathBuf) {

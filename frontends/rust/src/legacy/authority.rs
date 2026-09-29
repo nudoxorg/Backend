@@ -12,7 +12,7 @@ use std::{
 };
 
 use backend_semantic::vocabulary::RustEdition;
-use ra_ap_base_db::{EditionedFileId, SourceDatabase, all_crates};
+use ra_ap_base_db::{EditionedFileId, SourceDatabase, relevant_crates};
 use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
@@ -39,15 +39,34 @@ pub struct RustProject {
     pub edition: RustEdition,
 }
 
+/// Canonicalizes without the Windows `\\?\` verbatim prefix `Path::canonicalize`
+/// adds there. rust-analyzer's cargo-metadata-driven workspace load reports
+/// file paths in ordinary (non-verbatim) form, so a verbatim query path never
+/// matches the VFS entries it indexed and every lookup fails closed with
+/// `SourceNotLoaded` even though the file exists and loaded successfully.
+fn canonicalize_for_authority(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = path.canonicalize()?;
+    if !cfg!(windows) {
+        return Ok(canonical);
+    }
+    let text = canonical.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        Ok(PathBuf::from(format!(r"\\{unc}")))
+    } else if let Some(drive) = text.strip_prefix(r"\\?\") {
+        Ok(PathBuf::from(drive.to_owned()))
+    } else {
+        Ok(canonical)
+    }
+}
+
 impl RustProject {
     pub(crate) fn validate_root(root: impl AsRef<Path>) -> Result<PathBuf, RustAuthorityError> {
-        let root =
-            root.as_ref()
-                .canonicalize()
-                .map_err(|source| RustAuthorityError::ProjectRoot {
-                    path: root.as_ref().to_path_buf(),
-                    source,
-                })?;
+        let root = canonicalize_for_authority(root.as_ref()).map_err(|source| {
+            RustAuthorityError::ProjectRoot {
+                path: root.as_ref().to_path_buf(),
+                source,
+            }
+        })?;
         let manifest = root.join("Cargo.toml");
         if !manifest.is_file() {
             return Err(RustAuthorityError::MissingManifest { path: manifest });
@@ -83,18 +102,17 @@ impl RustProject {
         toolchain: &RustToolchain,
         edition: RustEdition,
     ) -> Result<Self, RustAuthorityError> {
-        let root =
-            root.as_ref()
-                .canonicalize()
-                .map_err(|source| RustAuthorityError::ProjectRoot {
-                    path: root.as_ref().to_path_buf(),
-                    source,
-                })?;
+        let root = canonicalize_for_authority(root.as_ref()).map_err(|source| {
+            RustAuthorityError::ProjectRoot {
+                path: root.as_ref().to_path_buf(),
+                source,
+            }
+        })?;
         let manifest = root.join("Cargo.toml");
         if !manifest.is_file() {
             return Err(RustAuthorityError::MissingManifest { path: manifest });
         }
-        let source_path = source_path.as_ref().canonicalize().map_err(|source| {
+        let source_path = canonicalize_for_authority(source_path.as_ref()).map_err(|source| {
             RustAuthorityError::ProjectSource {
                 path: source_path.as_ref().to_path_buf(),
                 source,
@@ -188,15 +206,16 @@ impl RustProject {
                 path: source_path.clone(),
             },
         )?;
-        // `all_crates` is topologically ordered, so shared roots resolve to the first
-        // crate in the loader's deterministic crate-graph order.
-        let observed_edition = all_crates(&database)
-            .iter()
-            .find_map(|krate| {
-                let root_file_id = krate.root_file_id(&database);
-                (root_file_id.file_id(&database) == file_id)
-                    .then_some(root_file_id.edition(&database))
-            })
+        // Edition is a crate-wide setting, so any file the crate owns shares
+        // its root's edition; the file need not itself be that root. A
+        // caller-selected source is ordinarily a submodule (a `mod` target,
+        // not `lib.rs`/`main.rs`), so requiring an exact root-file match here
+        // would fail closed on every such file. `relevant_crates` is
+        // topologically ordered, so a file shared by several crates resolves
+        // to the first crate in the loader's deterministic crate-graph order.
+        let observed_edition = relevant_crates(&database, file_id)
+            .first()
+            .map(|krate| krate.root_file_id(&database).edition(&database))
             .ok_or_else(|| RustAuthorityError::SourceNotLoaded {
                 path: source_path.clone(),
             })?;
