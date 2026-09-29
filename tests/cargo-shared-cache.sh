@@ -82,7 +82,8 @@ printf '%s\n' '#!/bin/sh' 'exit 0' > "$test_root/bin/sccache"
 chmod +x "$test_root/bin/sccache"
 
 {
-  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+  # A sandboxed builder has no /usr/bin/env; name bash by its real path.
+  printf '%s\n' "#!$(command -v bash)" 'set -euo pipefail'
   sed \
     -e "s|@cargo@|$test_root/bin/cargo|g" \
     -e "s|@git@|$test_root/bin/git|g" \
