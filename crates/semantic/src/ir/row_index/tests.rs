@@ -22,6 +22,62 @@ fn fixture_rows(count: usize) -> Vec<(StableRowKey, RowPayload)> {
         .collect()
 }
 
+fn modeled_payload(family: RowFamily, case: usize, ordinal: u64, marker: u8) -> RowPayload {
+    let mut bytes = [0_u8; 11];
+    bytes[0] = marker;
+    bytes[1] = u8::try_from(case).expect("property case fits in one byte");
+    bytes[2] = family.code();
+    bytes[3..].copy_from_slice(&ordinal.to_be_bytes());
+    payload(&bytes)
+}
+
+fn oracle_diff(
+    before: &BTreeMap<StableRowKey, RowPayload>,
+    after: &BTreeMap<StableRowKey, RowPayload>,
+) -> Vec<(StableRowKey, Option<RowPayload>, Option<RowPayload>)> {
+    let keys: BTreeSet<_> = before.keys().chain(after.keys()).copied().collect();
+    keys.into_iter()
+        .filter_map(|key| {
+            let before_value = before.get(&key).copied();
+            let after_value = after.get(&key).copied();
+            (before_value != after_value).then_some((key, before_value, after_value))
+        })
+        .collect()
+}
+
+fn observed_diff(
+    diff: &[StableRowIndexDiffEntry<'_, '_>],
+) -> Vec<(StableRowKey, Option<RowPayload>, Option<RowPayload>)> {
+    diff.iter()
+        .map(|change| match change {
+            StableRowIndexDiffEntry::Insert { key, after } => (*key, None, Some(**after)),
+            StableRowIndexDiffEntry::Replace { key, before, after } => {
+                (*key, Some(**before), Some(**after))
+            }
+            StableRowIndexDiffEntry::Delete { key, before } => (*key, Some(**before), None),
+        })
+        .collect()
+}
+
+fn replay_diff(
+    rows: &mut BTreeMap<StableRowKey, RowPayload>,
+    changes: &[StableRowIndexDiffEntry<'_, '_>],
+) {
+    for change in changes {
+        match change {
+            StableRowIndexDiffEntry::Insert { key, after } => {
+                assert!(rows.insert(*key, **after).is_none());
+            }
+            StableRowIndexDiffEntry::Replace { key, before, after } => {
+                assert_eq!(rows.insert(*key, **after), Some(**before));
+            }
+            StableRowIndexDiffEntry::Delete { key, before } => {
+                assert_eq!(rows.remove(key), Some(**before));
+            }
+        }
+    }
+}
+
 #[test]
 fn payload_claim_binds_exact_length_and_preimage() {
     let admitted = payload(b"semantic row A");
@@ -235,7 +291,7 @@ fn two_root_diff_matches_btree_map_oracle_for_insert_delete_replace() {
 
     let before_map: BTreeMap<_, _> = before
         .range(StableRowRange::new(None, None).expect("unbounded range"))
-        .expect("valid complete range")
+        .expect("valid full range")
         .map(|entry| (*entry.key, *entry.payload))
         .collect();
     let mut expected = Vec::new();
@@ -257,7 +313,7 @@ fn two_root_diff_matches_btree_map_oracle_for_insert_delete_replace() {
 
     let after_map: BTreeMap<_, _> = after
         .range(StableRowRange::new(None, None).expect("unbounded range"))
-        .expect("valid complete range")
+        .expect("valid full range")
         .map(|entry| (*entry.key, *entry.payload))
         .collect();
     assert_eq!(after_map, oracle);
@@ -301,6 +357,191 @@ fn two_root_diff_handles_empty_and_different_height_roots() {
             .all(|entry| matches!(entry, StableRowIndexDiffEntry::Insert { .. }))
     );
     assert_eq!(height_change.work().decoded_rows, 0);
+}
+
+#[test]
+fn structured_multifamily_diffs_match_oracle_and_replay_across_boundary_edits() {
+    // Seventy-two deterministic cardinality/edit combinations exercise
+    // family boundaries and leaf repartitioning without fuzz-test runtime.
+    const CARDINALITIES: [usize; 24] = [
+        0, 1, 2, 3, 31, 63, 64, 65, 127, 255, 256, 257, 383, 511, 512, 513, 700, 736, 737, 768,
+        1_000, 1_023, 17, 129,
+    ];
+
+    for case in 0..72 {
+        let cardinality = CARDINALITIES[case % CARDINALITIES.len()];
+        let mut before_model = BTreeMap::new();
+        let mut family_bounds = [(0_u64, 0_usize); 7];
+        for (family_index, family) in RowFamily::ALL.into_iter().enumerate() {
+            let family_start = 2_000_u64
+                .checked_add(
+                    u64::try_from(family_index)
+                        .expect("seven family indexes fit")
+                        .checked_mul(5_000)
+                        .expect("family key offset fits"),
+                )
+                .expect("family key offset fits");
+            let variation = (case * 11 + family_index * 7) % 15;
+            let count = cardinality.saturating_sub(variation);
+            family_bounds[family_index] = (family_start, count);
+            for offset in 0..count {
+                let ordinal = family_start
+                    .checked_add(u64::try_from(offset).expect("row offset fits"))
+                    .expect("row key fits");
+                before_model.insert(
+                    key(family, ordinal),
+                    modeled_payload(family, case, ordinal, 0),
+                );
+            }
+        }
+
+        let mut pending = BTreeMap::<StableRowKey, Option<RowPayload>>::new();
+        if case % 12 != 0 {
+            for (family_index, family) in RowFamily::ALL.into_iter().enumerate() {
+                let (family_start, count) = family_bounds[family_index];
+                if count != 0 {
+                    match (case + family_index) % 4 {
+                        0 => {
+                            pending.insert(key(family, family_start), None);
+                        }
+                        1 => {
+                            let ordinal = family_start
+                                + u64::try_from(count / 2).expect("middle row offset fits");
+                            pending.insert(
+                                key(family, ordinal),
+                                Some(modeled_payload(family, case, ordinal, 1)),
+                            );
+                        }
+                        2 => {
+                            let ordinal = family_start
+                                + u64::try_from(count - 1).expect("last row offset fits");
+                            pending.insert(key(family, ordinal), None);
+                        }
+                        _ => {
+                            let ordinal = family_start
+                                + u64::try_from(count / 3).expect("replacement row offset fits");
+                            pending.insert(
+                                key(family, ordinal),
+                                Some(modeled_payload(family, case, ordinal, 2)),
+                            );
+                        }
+                    }
+                }
+
+                match (case * 3 + family_index) % 6 {
+                    0 => {
+                        let ordinal = family_start - 1;
+                        pending.insert(
+                            key(family, ordinal),
+                            Some(modeled_payload(family, case, ordinal, 3)),
+                        );
+                    }
+                    1 => {
+                        let ordinal =
+                            family_start + u64::try_from(count).expect("end boundary offset fits");
+                        pending.insert(
+                            key(family, ordinal),
+                            Some(modeled_payload(family, case, ordinal, 4)),
+                        );
+                    }
+                    2 => {
+                        let end_ordinal =
+                            family_start + u64::try_from(count).expect("end boundary offset fits");
+                        for (ordinal, marker) in [(family_start - 1, 3), (end_ordinal, 4)] {
+                            pending.insert(
+                                key(family, ordinal),
+                                Some(modeled_payload(family, case, ordinal, marker)),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut after_model = before_model.clone();
+        for (key, after) in &pending {
+            if let Some(payload) = after {
+                after_model.insert(*key, *payload);
+            } else {
+                assert!(after_model.remove(key).is_some());
+            }
+        }
+
+        let before_rows: Vec<_> = before_model
+            .iter()
+            .map(|(key, value)| (*key, *value))
+            .collect();
+        let before = StableRowIndex::from_sorted_rows(&before_rows).expect("valid model root");
+        let mut changes: Vec<_> = pending
+            .iter()
+            .map(|(key, after)| StableRowIndexChange::new(*key, *after))
+            .collect();
+        if case % 9 == 0 {
+            if let Some(key) = before_model.keys().find(|key| !pending.contains_key(*key)) {
+                changes.push(StableRowIndexChange::unchanged(*key));
+            }
+        }
+        changes.sort_by_key(|change| change.key);
+        let after = before
+            .prepare_update(&changes)
+            .expect("strictly ordered model frontier")
+            .commit();
+
+        let target_rows: Vec<_> = after_model
+            .iter()
+            .map(|(key, value)| (*key, *value))
+            .collect();
+        let rebuilt = StableRowIndex::from_sorted_rows(&target_rows).expect("valid oracle root");
+        assert_eq!(after.root(), rebuilt.root(), "case {case}: update root");
+
+        let forward = before.diff(&after).expect("forward root diff");
+        assert_eq!(
+            forward.before_root(),
+            before.root(),
+            "case {case}: source root"
+        );
+        assert_eq!(
+            forward.after_root(),
+            rebuilt.root(),
+            "case {case}: target root"
+        );
+        assert_eq!(forward.work().decoded_rows, 0, "case {case}: decoded rows");
+        let expected = oracle_diff(&before_model, &after_model);
+        let observed = observed_diff(forward.entries());
+        assert_eq!(observed, expected, "case {case}: diff");
+        assert!(
+            observed.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "case {case}: ordering"
+        );
+
+        let mut replayed = before_model.clone();
+        replay_diff(&mut replayed, forward.entries());
+        assert_eq!(replayed, after_model, "case {case}: forward replay");
+        assert_eq!(
+            replayed,
+            oracle_from_index(&after),
+            "case {case}: indexed replay"
+        );
+
+        let reverse = after.diff(&before).expect("reverse root diff");
+        assert_eq!(
+            observed_diff(reverse.entries()),
+            oracle_diff(&after_model, &before_model)
+        );
+        replay_diff(&mut replayed, reverse.entries());
+        assert_eq!(replayed, before_model, "case {case}: reverse replay");
+        assert_eq!(reverse.before_root(), after.root());
+        assert_eq!(reverse.after_root(), before.root());
+    }
+}
+
+fn oracle_from_index(index: &StableRowIndex) -> BTreeMap<StableRowKey, RowPayload> {
+    index
+        .range(StableRowRange::new(None, None).expect("unbounded range"))
+        .expect("valid full range")
+        .map(|entry| (*entry.key, *entry.payload))
+        .collect()
 }
 
 #[test]
