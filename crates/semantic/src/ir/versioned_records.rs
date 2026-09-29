@@ -24,6 +24,7 @@ const RECORD_HEADER_BYTES: usize = 32 + 1 + 4;
 const INITIAL_PREFIX_BITS: u16 = 8;
 
 mod declarations;
+mod wire;
 pub use declarations::{CoreDeclarationRows, DocumentationRows, encode_declaration_planes};
 
 /// One compact handle to a row in the borrowed canonical reader.
