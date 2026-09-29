@@ -1,0 +1,120 @@
+{
+  "declaration_reorder": {
+    "canonical_image_bytes_after": 6889505,
+    "canonical_image_bytes_before": 6889505,
+    "canonical_image_equal": true,
+    "canonical_ordinal": {
+      "base_segments": 7,
+      "fetched_bytes": 0,
+      "fetched_segments": 0,
+      "planner_read_bytes_pair": 13779010,
+      "removed_bytes": 0,
+      "removed_segments": 0,
+      "reused_bytes": 6889505,
+      "reused_segments": 7,
+      "root_equal": true,
+      "segment_hash_bytes_pair": 13779010,
+      "target_segments": 7
+    },
+    "encounter_order_ordinal": {
+      "base_segments": 7,
+      "fetched_bytes": 6889513,
+      "fetched_segments": 7,
+      "planner_read_bytes_pair": 13779026,
+      "removed_bytes": 6889513,
+      "removed_segments": 7,
+      "reused_bytes": 0,
+      "reused_segments": 0,
+      "root_equal": false,
+      "segment_hash_bytes_pair": 13779026,
+      "target_segments": 7
+    },
+    "encounter_stream_bytes_after": 6889513,
+    "encounter_stream_bytes_before": 6889513,
+    "interpretation": "reordering is a no-op for the model's canonical serializer and stable-key planners; the encounter-order stream is a sensitivity control, not a claim about production NXFI ordering",
+    "operation": "reverse declaration encounter order without changing rows",
+    "stable_key_cdc": {
+      "base_segments": 11,
+      "fetched_bytes": 0,
+      "fetched_segments": 0,
+      "planner_read_bytes_pair": 13778944,
+      "removed_bytes": 0,
+      "removed_segments": 0,
+      "reused_bytes": 6889472,
+      "reused_segments": 11,
+      "root_equal": true,
+      "segment_hash_bytes_pair": 13778944,
+      "target_segments": 11
+    },
+    "stable_key_prefix_8bit": {
+      "base_segments": 256,
+      "fetched_bytes": 0,
+      "fetched_segments": 0,
+      "planner_read_bytes_pair": 13778944,
+      "removed_bytes": 0,
+      "removed_segments": 0,
+      "reused_bytes": 6889472,
+      "reused_segments": 256,
+      "root_equal": true,
+      "segment_hash_bytes_pair": 13778944,
+      "target_segments": 256
+    },
+    "stable_keys_unchanged": true
+  },
+  "inherited_fixture_coverage": {
+    "front_mid_tail_insert_delete": "ir_delta_locality.py rows_for_case/run",
+    "random_repeated_periodic_bytes": "ir_delta_locality.py jumbo_case",
+    "source_of_existing_8192_numbers": "ir_delta_locality_8192.json"
+  },
+  "provenance": "source-independent deterministic model built from ir_delta_locality.py; SHA-256 stand-in object IDs; no compiler, CAS, or network execution",
+  "rows": 8192,
+  "utf8_documentation_edit": {
+    "interpretation": "a documentation payload edit preserves the logical row key in this fixture; actual compiler reuse still requires a complete producer read-frontier proof",
+    "operation": "replace one valid UTF-8 documentation value at the middle row",
+    "ordinal_1mib": {
+      "base_segments": 7,
+      "fetched_bytes": 3743805,
+      "fetched_segments": 4,
+      "planner_read_bytes_pair": 13779065,
+      "removed_bytes": 3743804,
+      "removed_segments": 4,
+      "reused_bytes": 3145728,
+      "reused_segments": 3,
+      "root_equal": false,
+      "segment_hash_bytes_pair": 13779065,
+      "target_segments": 7
+    },
+    "stable_key_cdc": {
+      "base_segments": 11,
+      "fetched_bytes": 829254,
+      "fetched_segments": 1,
+      "planner_read_bytes_pair": 13778999,
+      "removed_bytes": 829253,
+      "removed_segments": 1,
+      "reused_bytes": 6060246,
+      "reused_segments": 10,
+      "root_equal": false,
+      "segment_hash_bytes_pair": 13778999,
+      "target_segments": 11
+    },
+    "stable_key_prefix_8bit": {
+      "base_segments": 256,
+      "fetched_bytes": 22735,
+      "fetched_segments": 1,
+      "planner_read_bytes_pair": 13778999,
+      "removed_bytes": 22734,
+      "removed_segments": 1,
+      "reused_bytes": 6866765,
+      "reused_segments": 255,
+      "root_equal": false,
+      "segment_hash_bytes_pair": 13778999,
+      "target_segments": 256
+    },
+    "stable_keys_unchanged": true,
+    "target_logical_id": 4096,
+    "value_after": "caf\u00e9",
+    "value_before": "cafe",
+    "value_bytes_after": 5,
+    "value_bytes_before": 4
+  }
+}
