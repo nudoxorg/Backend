@@ -128,6 +128,12 @@ impl UiRootEntity {
         self.runtime.has_pending_work()
     }
 
+    /// [`Self::has_pending_work`] apart from indexing (journey harness).
+    #[must_use]
+    pub fn has_pending_work_besides_indexing(&self) -> bool {
+        self.runtime.has_pending_work_besides_indexing()
+    }
+
     /// Drains every engine result the actor has delivered.
     fn drain_engine(&mut self, cx: &mut Context<Self>) {
         let events = self.runtime.poll();
@@ -273,6 +279,7 @@ impl UiRootEntity {
                 self.dispatch_runtime(Intent::RetryIndex(project), cx);
                 self.schedule_pending_indexes(cx);
             }
+            Intent::AddRelease(release) => super::acquire::add(release, cx.weak_entity(), cx),
             other => self.dispatch_runtime(other, cx),
         }
     }
@@ -280,7 +287,7 @@ impl UiRootEntity {
     /// The owner answered (W-Open I1): its root replaces the unserved one,
     /// and the root read (project, catalog) is asked again at it — the one
     /// asked at startup waited behind the owner at the unserved basis.
-    pub fn admit_owner(
+    pub(crate) fn admit_owner(
         &mut self,
         key: crate::core::VersionedRoot,
         mode: crate::model::ServiceMode,
@@ -289,6 +296,18 @@ impl UiRootEntity {
         self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
         let request = self.runtime.allocate_request();
         self.dispatch_runtime(Intent::RefreshRoot { basis: key, request }, cx);
+        // An index an earlier build wrote was set aside while the owner
+        // started: say so, and index the shelf's projects again.
+        if let Some(moved) = crate::host::aside::take() {
+            self.dispatch(Intent::LibraryRebuilding { kept_at: Arc::from(moved.display().to_string()) }, cx);
+        }
+    }
+
+    /// Reads the owner's root again: something outside the project lane
+    /// changed what it serves (a release added to the library).
+    pub(crate) fn refresh_root(&mut self, cx: &mut Context<Self>) {
+        let request = self.runtime.allocate_request();
+        self.dispatch_runtime(Intent::RefreshRoot { basis: self.snapshot().key(), request }, cx);
     }
 
     fn dispatch_runtime(&mut self, intent: Intent, cx: &mut Context<Self>) {
@@ -321,6 +340,20 @@ impl UiRootEntity {
             });
         });
         self.folder_picker_task = Some(task);
+    }
+
+    /// Answers the native folder panel this root opened, as a person would
+    /// (`Some(folders)` chosen, `None` cancelled), when nothing can click it:
+    /// the journey harness's one allowed substitution. The answer takes the
+    /// task's own path (`folder_picker_outcome`, then the same queued intent).
+    /// `false`: no panel is open.
+    pub(crate) fn answer_folder_picker(&mut self, chosen: Option<Vec<PathBuf>>, cx: &mut Context<Self>) -> bool {
+        if self.folder_picker_task.take().is_none() {
+            return false;
+        }
+        let outcome = chosen.map_or(FolderPickerOutcome::Cancelled, folder_picker_outcome);
+        self.queue(Intent::FolderPickerResult { outcome }, cx);
+        true
     }
 
     fn schedule_pending_indexes(&mut self, cx: &mut Context<Self>) {
@@ -364,6 +397,7 @@ impl UiRootEntity {
     }
 
     fn apply_events(&mut self, events: Vec<RuntimeEvent>, cx: &mut Context<Self>) {
+        let before = self.published.clone();
         for event in events {
             match event {
                 RuntimeEvent::SnapshotChanged(snapshot) => {
@@ -389,6 +423,8 @@ impl UiRootEntity {
             }
         }
         self.publish_snapshot(cx);
+        // A project the owner just indexed brings the packages it builds with.
+        super::acquire::follow_indexed_projects(before.as_deref(), &self.snapshot(), cx.weak_entity(), cx);
         // Cold restart restores durable Indexing rows without an ephemeral
         // request; reattach them once through the typed intent path.
         self.schedule_pending_indexes(cx);
@@ -516,7 +552,7 @@ impl UiEntityGraph {
     /// ([`super::owner::watch`]). `None`: the owner already answered.
     /// `keep` paints the launch snapshot's pages meanwhile and saves the
     /// route's pages for the next launch (W-Open I2).
-    pub fn install_with_owner(
+    pub(crate) fn install_with_owner(
         cx: &mut App,
         runtime: DesktopRuntime,
         persistence: Option<PersistentState>,

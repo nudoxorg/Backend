@@ -125,9 +125,42 @@ impl WorkspaceProject {
     }
 }
 
+/// Something the window says once, calmly, at the top of the Library, and
+/// then lets go of when it is dismissed. Never persisted: it describes this
+/// launch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Note {
+    /// The saved session could not be read (damaged, too large, or written
+    /// by a version this one must not reinterpret). Nothing was deleted:
+    /// the file was kept, and this launch started from the defaults.
+    StateKept {
+        /// Where the unreadable file was kept.
+        backup: Arc<str>,
+        /// Why it could not be admitted, in the words persistence gives.
+        why: Arc<str>,
+    },
+    /// The saved session could not even be opened (its file is unreadable
+    /// here). This launch started from the defaults and will not write over
+    /// it.
+    StateUnread {
+        /// The file.
+        path: Arc<str>,
+        /// What the operating system said.
+        why: Arc<str>,
+    },
+    /// The index an earlier version wrote was set aside, and the projects on
+    /// the shelf are being indexed again.
+    LibraryRebuilding {
+        /// Where the earlier index was moved to.
+        kept_at: Arc<str>,
+    },
+}
+
 /// Project lifecycle evidence shared by onboarding, the shelf, and settings.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct WorkspaceState {
+    /// What the window has to say about this launch, until dismissed.
+    pub notes: Arc<[Note]>,
     /// One row for every local folder in the shelf.
     pub projects: Arc<[WorkspaceProject]>,
     /// Lossless identity of the active shelf project.
@@ -342,9 +375,21 @@ pub enum ConnectionStatus {
     Disconnected,
 }
 
+/// The window's size in logical pixels, as the person left it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowSize {
+    /// Width in logical pixels.
+    pub width: u32,
+    /// Height in logical pixels.
+    pub height: u32,
+}
+
 /// Persistent shell and local-first settings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SettingsState {
+    /// The window's size when it was last resized (`None`: never resized,
+    /// the window opens at its own size).
+    pub window: Option<WindowSize>,
     /// Whether reduced motion is requested.
     pub reduced_motion: bool,
     /// Whether the shelf is open.
@@ -378,6 +423,7 @@ pub struct SettingsState {
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
+            window: None,
             reduced_motion: false,
             shelf_open: true,
             context_open: true,

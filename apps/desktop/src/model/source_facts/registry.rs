@@ -19,6 +19,8 @@ pub struct Published {
     pub date: Option<String>,
     /// Whether its publisher withdrew it.
     pub standing: Standing,
+    /// The archive's sha256 (lowercase hex) as the registry published it.
+    pub checksum: Option<String>,
 }
 
 fn cargo_home() -> Option<PathBuf> {
@@ -83,6 +85,7 @@ pub fn releases(name: &str) -> Vec<Published> {
             version: version.to_owned(),
             date: value.get("pubtime").and_then(|v| v.as_str()).and_then(|t| t.get(..10)).map(str::to_owned),
             standing: if value.get("yanked").and_then(serde_json::Value::as_bool).unwrap_or(false) { Standing::Yanked } else { Standing::Available },
+            checksum: value.get("cksum").and_then(|v| v.as_str()).map(str::to_owned),
         });
     }
     out.sort_by(|a, b| semver::cmp(&a.version, &b.version));

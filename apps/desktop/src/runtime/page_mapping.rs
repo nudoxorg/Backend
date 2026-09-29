@@ -1283,6 +1283,7 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
                 .unwrap_or_else(|| Gap::new(GapReason::ReadFailed, "members were not read")),
         )
     };
+    let references = references(inputs.references, outline);
     SymbolPage {
         package: coordinate.package().map_or_else(
             || {
@@ -1307,7 +1308,10 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             neighbourhood,
             inputs.related.as_ref().err().cloned(),
         ),
-        references: references(inputs.references, outline),
+        // The lines your files hold at each span are read by the caller, which
+        // may touch the disk; the mapping stays pure.
+        workspace: Arc::from([]),
+        references,
         outline: outline_position(centre, outline, inputs.outline.as_ref().err().cloned()),
         identity,
     }

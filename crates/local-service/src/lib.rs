@@ -30,6 +30,7 @@ use backend_engine::{
 use std::fmt;
 use std::path::Path;
 
+pub use backend_engine::application::LocalHostVariable;
 pub use embedded::{EmbeddedLocalService, ServiceStart, start_or_attach};
 pub use listener::{
     DEFAULT_IDLE_TIMEOUT, FilesystemPeerPolicy, ListenerConfig, ListenerError, ListenerShutdown,

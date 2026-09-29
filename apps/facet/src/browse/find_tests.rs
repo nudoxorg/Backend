@@ -45,7 +45,7 @@ fn mounted_find_arrows_reveal_offscreen_choice_without_pointer_auto_scroll(cx: &
     let mut actions = actions(&reads, &opened);
     actions.scroll = scroll.clone();
     let candidates = (0..8).map(|at| Candidate { key: format!("package-{at}").into(), name: format!("Package {at}").into(),
-        version: None, indexed: true, summary: None, facts: vec![], answers: vec![] }).collect();
+        version: None, indexed: true, summary: None, facts: vec![], answers: vec![], offer: None }).collect();
     let model = Arc::new(Model { query: "package".into(), candidates, loose: vec![], coverage: vec![], more_answers: false, loading: false });
     let (host, cx) = cx.add_window_view(|window, cx| {
         let state = cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx));
@@ -92,6 +92,7 @@ fn actions(reads: &Rc<RefCell<Vec<SharedString>>>, opened: &Rc<RefCell<Vec<Share
         refine: Rc::new(move |query, _| reads.borrow_mut().push(query)),
         open_symbol: Rc::new(move |key, _, _| opened.borrow_mut().push(key)),
         open_code: Rc::new(|_, _, _| {}), open_package: Rc::new(|_, _, _| {}), compare: Rc::new(|_, _, _| {}),
+        acquire: None,
     }
 }
 fn edit(state: &Entity<State>, text: &str, cx: &mut VisualTestContext) {
@@ -180,4 +181,34 @@ fn pending_read_preserves_snapshot_and_input_but_external_back_cancels_dirty_tim
     advance(cx, 200);
     state.read_with(cx, |state, cx| assert_eq!(state.input.read(cx).value(), "Deserialize"));
     assert_eq!(reads.borrow().len(), count, "external navigation cancels the dirty local query");
+}
+
+/// W-Acquire: adding a release changes its address (the offer's package URL
+/// becomes the tree the owner indexed); the selection follows the release.
+#[gpui::test]
+fn the_selection_follows_a_release_the_library_just_added(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let callbacks = actions(&reads, &opened);
+    let offer = |library: Option<&str>| crate::browse::acquire::Offer {
+        release: "pkg:cargo/smallvec@1.16.2".into(), label: "smallvec 1.16.2".into(),
+        place: crate::browse::acquire::Place::Unpacked, library: library.map(Into::into),
+    };
+    let candidate = |key: &str, library: Option<&str>| Candidate { key: key.into(), name: "smallvec".into(), version: Some("1.16.2".into()),
+        indexed: library.is_some(), summary: None, facts: vec![], answers: vec![], offer: Some(offer(library)) };
+    let older = Candidate { key: "/cache/smallvec-1.16.0".into(), name: "smallvec".into(), version: Some("1.16.0".into()), indexed: true,
+        summary: None, facts: vec![], answers: vec![], offer: None };
+    let before = Arc::new(Model { query: "smallvec".into(), candidates: vec![candidate("pkg:cargo/smallvec@1.16.2", None), older.clone()], loose: vec![], coverage: vec![], more_answers: false, loading: false });
+    let after = Arc::new(Model { query: "smallvec".into(), candidates: vec![older, candidate("/cache/smallvec-1.16.2", Some("/cache/smallvec-1.16.2"))], loose: vec![], coverage: vec![], more_answers: false, loading: false });
+    let (host, cx) = cx.add_window_view(|window, cx| Host { state: cx.new(|cx| {
+        let mut state = State::new(before.query.clone(), callbacks.clone(), window, cx);
+        state.accept(&before, &callbacks, window, cx);
+        state.selected = Some(Selection::Package("pkg:cargo/smallvec@1.16.2".into()));
+        state
+    }) });
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    cx.update(|window, cx| state.update(cx, |state, cx| state.accept(&after, &callbacks, window, cx)));
+    assert_eq!(state.read_with(cx, |state, _| state.selected.clone()), Some(Selection::Package("/cache/smallvec-1.16.2".into())),
+        "the added release stays selected at its new address, not the first candidate");
 }

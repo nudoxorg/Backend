@@ -666,6 +666,17 @@ pub fn is_open(key: &ElementId, window: &Window, cx: &mut App) -> bool {
         .any(|card| card.is_open() && card.key == *key)
 }
 
+/// Whether any menu is open: an open menu owns the plain keys (arrows, ↵,
+/// type-ahead), so what binds them elsewhere steps aside.
+#[must_use]
+pub fn menu_open(window: &Window, cx: &mut App) -> bool {
+    state(window, cx)
+        .borrow()
+        .model
+        .cards()
+        .any(|card| card.is_open() && card.kind == FloatKind::Menu)
+}
+
 /// The keys of the pinned cards, newest first.
 #[must_use]
 pub fn pins(window: &Window, cx: &mut App) -> Vec<ElementId> {

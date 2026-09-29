@@ -123,6 +123,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             implemented_by: Known::Known(Arc::from([])),
         },
         references: Known::Unknown(unknown(GapReason::NoSemanticPublication)),
+        workspace: Arc::from([]),
         outline: Known::Unknown(unknown(GapReason::NotServed)),
     }
 }
@@ -314,6 +315,19 @@ pub(crate) fn rig(cx: &mut TestAppContext, route: Option<Route>, width: f32, hei
 }
 
 pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, width: f32, height: f32, pool: ReadPool) -> Rig {
+    rig_with_engine(cx, route, width, height, pool, RootOnly)
+}
+
+/// [`rig_with_reads`] over an engine of the caller's (an index that fails,
+/// say), instead of the one that answers only the root.
+pub(crate) fn rig_with_engine(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+) -> Rig {
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -330,7 +344,7 @@ pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, widt
     workspace.host = LocalProjectId::from_path(&folder).ok();
     snapshot = snapshot.with_workspace(workspace);
     snapshot = snapshot.with_session(SessionState::default());
-    let actor = EngineActor::start(RootOnly, 8).expect("actor");
+    let actor = EngineActor::start(engine, 8).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool)));
     let window_graph = UiEntityGraph {
@@ -385,7 +399,13 @@ impl Rig {
 
     /// Lets reads land and motion finish, drawing as a platform would.
     pub(crate) fn settle(&mut self) {
+        /// Rounds of 700 ms of virtual time: 28 s, longer than any motion
+        /// budget. A shell still asking for work after that is not settling:
+        /// something reschedules itself (a timer that notifies a render that
+        /// arms the timer again), and this says so instead of spinning a CPU.
+        const ROUNDS: usize = 40;
         let deadline = Instant::now() + Duration::from_secs(20);
+        let mut rounds = 0;
         loop {
             self.cx.run_until_parked();
             self.draw();
@@ -401,6 +421,13 @@ impl Rig {
                 self.draw();
                 return;
             }
+            rounds += 1;
+            assert!(
+                rounds <= ROUNDS,
+                "the shell never settled: after {ROUNDS} rounds of 700 ms of virtual time it still asks for {frames} frame(s), \
+                 {queued} queued and {running} running read(s); renders so far {:?}",
+                self.counts()
+            );
             assert!(Instant::now() < deadline, "the shell never settled");
             std::thread::sleep(Duration::from_millis(2));
         }

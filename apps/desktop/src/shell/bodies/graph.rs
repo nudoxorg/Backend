@@ -593,6 +593,7 @@ impl Map {
                 visit: snapshot.route().clone(),
                 root: snapshot.key(),
                 message: Arc::from(error.as_str()),
+                retry: None,
             });
         self.links
             .store

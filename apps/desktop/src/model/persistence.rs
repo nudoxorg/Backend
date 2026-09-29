@@ -4,7 +4,7 @@ use super::snapshot::{AppSnapshot, SessionState, ShelfItem, ShelfState};
 use super::workspace::{
     AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
     MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState,
-    ZoomPreference, WorkspaceProject, WorkspaceState,
+    ZoomPreference, WindowSize, WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::LocalProjectId;
 use crate::navigation::{Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
@@ -207,6 +207,15 @@ fn symbol_route(
         .unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
 }
 
+/// The window's size when it was last resized, in logical pixels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedWindow {
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+}
+
 /// Versioned, forward-compatible desktop state file.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PersistedDesktopState {
@@ -268,6 +277,9 @@ pub struct PersistedDesktopState {
     /// The first-card whisper has been shown (once per install).
     #[serde(default)]
     pub hand_whispered: bool,
+    /// The window's size when it was last resized (absent in older files).
+    #[serde(default)]
+    pub window: Option<PersistedWindow>,
 }
 
 fn default_true() -> bool {
@@ -302,6 +314,7 @@ impl Default for PersistedDesktopState {
             cache_days: 14,
             hand: Vec::new(),
             hand_whispered: false,
+            window: None,
         }
     }
 }
@@ -450,6 +463,21 @@ pub enum PersistenceRecovery {
         /// Why the canonical path could not be admitted.
         reason: PersistenceRecoveryReason,
     },
+}
+
+impl PersistenceRecovery {
+    /// What the window says about this recovery, when there is anything to
+    /// say: an unreadable session was kept, and this launch started fresh.
+    #[must_use]
+    pub fn note(&self) -> Option<super::workspace::Note> {
+        match self {
+            Self::Current | Self::Missing => None,
+            Self::Preserved { backup, reason } => Some(super::workspace::Note::StateKept {
+                backup: Arc::from(backup.display().to_string()),
+                why: Arc::from(reason.to_string()),
+            }),
+        }
+    }
 }
 
 /// Closed reason vocabulary for persistence recovery and support diagnostics.
@@ -750,6 +778,10 @@ impl PersistentState {
                 })
                 .collect(),
             hand_whispered: snapshot.session().whispered,
+            window: snapshot
+                .settings()
+                .window
+                .map(|window| PersistedWindow { width: window.width, height: window.height }),
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
@@ -899,6 +931,7 @@ impl PersistentState {
     #[must_use]
     pub fn cold_settings(&self, state: &PersistedDesktopState) -> SettingsState {
         SettingsState {
+            window: state.window.map(|window| WindowSize { width: window.width, height: window.height }),
             reduced_motion: state.reduced_motion,
             shelf_open: state.shelf_open,
             context_open: state.context_open,
@@ -1006,6 +1039,7 @@ impl PersistentState {
             .map(|project| project.id.clone())
             .or_else(|| projects.first().map(|project| project.id.clone()));
         WorkspaceState {
+            notes: Arc::from([]),
             active,
             host: None,
             projects: projects.into(),

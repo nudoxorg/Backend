@@ -7,8 +7,8 @@
 //! board's own derivation.
 
 use super::derive::uses::{Reader, Rel, Site, read_all};
-use super::facts::{Facts, Member, Owes, Receives, Section, SectionKind, Site as Source};
-use super::view::{Block, Do, Kind, Lang, Uses, View};
+use super::facts::{Facts, Implementors, Member, Owes, Receives, Section, SectionKind, Site as Source};
+use super::view::{Block, Kind, Lang, Uses, View};
 use super::{compile, with_uses};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -168,7 +168,10 @@ pub(crate) fn facts_of(v: &Value) -> Facts {
             });
         }
     }
-    facts.implementors = v.get("implementors").and_then(|i| i.get("total")).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+    facts.implementors = v.get("implementors").and_then(|i| {
+        let number = |field: &str| i.get(field).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+        Some(Implementors { total: number("total")?, crates: number("crates")?, derived: number("derived") })
+    });
     for item in v.get("implements").and_then(Value::as_array).into_iter().flatten() {
         facts.implements.push((text(item, "name"), text(item, "how") == "derive"));
     }
@@ -252,6 +255,7 @@ pub(crate) fn sites_of(v: &Value) -> Vec<Site> {
                 file,
                 line: u32::try_from(u.get("line").and_then(Value::as_u64).unwrap_or(1)).unwrap_or(1),
                 text: text(u, "text"),
+                mark: None,
                 rel,
                 exact: u.get("approx").is_none(),
             }

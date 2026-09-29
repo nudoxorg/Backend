@@ -76,7 +76,9 @@ impl ClangAuthorityEnvironment {
         &self.resource_dir
     }
 
-    /// Canonical sysroot reported by the selected driver, if it has one.
+    /// Canonical sysroot reported by the selected driver, if it has one: its
+    /// `-print-sysroot` answer, or for a driver that rejects that query (Apple's
+    /// Clang, the Nix wrapper) the `-isysroot` its verbose dump names.
     #[must_use]
     pub fn sysroot(&self) -> Option<&Path> {
         self.sysroot.as_deref()
@@ -988,6 +990,49 @@ mod tests {
             environment.load_configured_libclang(),
             Err(ClangAuthorityError::LibclangEnvironmentMismatch { .. })
         ));
+    }
+
+    /// The Nix wrapper and Apple's Clang answer `-print-sysroot` with "unknown
+    /// argument" (exit 1) and name the SDK as `-isysroot` in their verbose
+    /// dump. The authority a desktop owner boots on must still carry that SDK.
+    #[cfg(unix)]
+    #[test]
+    fn a_driver_that_rejects_print_sysroot_still_hands_libclang_its_sysroot() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("temporary fixture");
+        let (driver, libclang) = fixture_toolchain(temp.path(), "wrapper");
+        let sysroot = temp.path().join("wrapper").join("sysroot");
+        let include = temp.path().join("wrapper").join("include");
+        let resource = temp.path().join("wrapper").join("resource");
+        let script = format!(
+            "#!/bin/sh\ncase \"$1\" in\n  -print-resource-dir) printf '%s\\n' {};;\n  -print-sysroot) echo \"clang: error: unknown argument: '-print-sysroot'\" >&2; exit 1;;\n  -v) printf ' \"/x/clang\" -cc1 -isysroot %s -x c++ -\\n#include <...> search starts here:\\n %s\\nEnd of search list.\\n' {} {} >&2;;\n  *) exit 2;;\nesac\n",
+            shell_quote(&resource),
+            shell_quote(&sysroot),
+            shell_quote(&include),
+        );
+        fs::write(&driver, script).expect("rewrite the driver as the wrapper");
+        fs::set_permissions(&driver, fs::Permissions::from_mode(0o755)).expect("executable driver");
+
+        let environment = ClangAuthorityEnvironment::probe(&driver, &libclang)
+            .expect("a driver that rejects -print-sysroot is admitted");
+
+        assert_eq!(
+            environment.sysroot(),
+            Some(sysroot.canonicalize().unwrap().as_path())
+        );
+        let package = temp.path().join("package");
+        fs::create_dir_all(&package).expect("package root");
+        let entry = package.join("entry.cpp");
+        fs::write(&entry, "int main() { return 0; }\n").expect("entry source");
+        let project = ClangProject::open_with_environment(&package, &entry, environment)
+            .expect("selected project");
+        assert!(
+            project.arguments().iter().any(|argument| argument
+                == &format!("--sysroot={}", sysroot.canonicalize().unwrap().display())),
+            "libclang is given the SDK the driver names: {:?}",
+            project.arguments()
+        );
     }
 
     #[cfg(unix)]

@@ -9,6 +9,7 @@
 //! a use with no line text is not read at all.
 
 use super::super::view::{Ctx, Do, Kind, Use, Uses, Verb, View};
+use std::ops::Range;
 use super::text::last_segment;
 
 /// The relation the index gave a use.
@@ -51,6 +52,9 @@ pub struct Site {
     pub line: u32,
     /// The line's text, trimmed.
     pub text: String,
+    /// Where the reference is in `text`, as the index's span says; none when
+    /// the place was matched by name and only the line is known.
+    pub mark: Option<Range<usize>>,
     /// What the index says the relation is.
     pub rel: Rel,
     /// The index resolved it (rather than matched a name).
@@ -111,26 +115,28 @@ fn last_segment_of_path(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// The byte range of `name` as a whole word in `text`.
-#[must_use]
-pub fn mark_of(text: &str, name: &str) -> Option<(usize, usize)> {
+/// The byte ranges of `name` as a whole word in `text`, in order.
+fn marks_of<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = Range<usize>> + 'a {
     let name = last_segment(name);
-    if name.is_empty() {
-        return None;
-    }
-    text.match_indices(name).find_map(|(at, _)| {
+    text.match_indices(name).filter_map(move |(at, _)| {
         let before = text[..at].chars().next_back();
         let after = text[at + name.len()..].chars().next();
         let boundary = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-        (boundary(before) && boundary(after)).then_some((at, at + name.len()))
+        (!name.is_empty() && boundary(before) && boundary(after)).then_some(at..at + name.len())
     })
+}
+
+/// The byte range of the first `name` as a whole word in `text`.
+#[must_use]
+pub fn mark_of(text: &str, name: &str) -> Option<Range<usize>> {
+    marks_of(text, name).next()
 }
 
 /// Reads one site.
 #[must_use]
 pub fn read(site: &Site, reader: &Reader) -> Use {
     let text = site.text.as_str();
-    let mark = mark_of(text, &reader.name);
+    let mark = site.mark.clone().or_else(|| mark_of(text, &reader.name));
     let (verb, member) = verb_of(site, reader);
     let fill = if reader.generic && matches!(reader.kind, Kind::Function | Kind::Method) { fill_of(text, &reader.name) } else { None };
     Use {
@@ -166,13 +172,120 @@ fn starts_import(text: &str) -> bool {
         || t.starts_with("const ") && t.contains("require(")
 }
 
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
+}
+
+/// A reference and what stands on either side of it: the classifier reads
+/// the token where the index put it, not the first place its name appears.
+struct Around<'a> {
+    /// The whole line.
+    line: &'a str,
+    /// Everything before the token.
+    before: &'a str,
+    /// The token.
+    token: &'a str,
+    /// Everything after it.
+    after: &'a str,
+}
+
+impl<'a> Around<'a> {
+    fn of(line: &'a str, mark: &Range<usize>) -> Option<Self> {
+        (mark.start < mark.end && mark.end <= line.len() && line.is_char_boundary(mark.start) && line.is_char_boundary(mark.end))
+            .then(|| Self { line, before: &line[..mark.start], token: &line[mark.clone()], after: &line[mark.end..] })
+    }
+
+    /// What is before the token, with the module path in front of it dropped.
+    fn lead(&self) -> &'a str {
+        before_path(self.before)
+    }
+
+    /// The name after `::` or `.` that follows the token.
+    fn next(&self) -> Option<&'a str> {
+        let rest = self.after.strip_prefix("::").or_else(|| self.after.strip_prefix('.'))?;
+        let end = rest.find(|c: char| !is_word_char(c)).unwrap_or(rest.len());
+        (end > 0).then(|| &rest[..end])
+    }
+
+    /// Whether the token stands where a value is taken apart rather than made.
+    fn in_pattern(&self) -> bool {
+        let head = self.before.trim_start();
+        let lets = ["let ", "if let ", "while let ", "else if let ", "} else if let "].iter().any(|lead| head.starts_with(lead));
+        (self.after.contains("=>") && !self.before.contains("=>"))
+            || (lets && !self.before.contains('=') && self.after.contains('='))
+            || self.before.contains("matches!(")
+            || head.starts_with("case ")
+            || self.lead().ends_with("instanceof")
+            || self.before.contains("isinstance(")
+    }
+
+    /// Whether the token is inside a `derive(...)` list.
+    fn in_derive(&self) -> bool {
+        self.before.rfind("derive(").is_some_and(|open| !self.before[open..].contains(')'))
+    }
+
+    /// Whether what follows assigns to it: `x.count = 1`, `x.count += 1`.
+    fn assigned(&self) -> bool {
+        let after = self.after.trim_start();
+        (after.starts_with('=') && !after.starts_with("==") && !after.starts_with("=>"))
+            || ["+=", "-=", "*=", "/=", "|=", "&=", "^=", "%=", "<<=", ">>="].iter().any(|op| after.starts_with(op))
+    }
+}
+
+/// What the symbol is when a token names it: itself, one of its members, one
+/// of its cases or one of its fields.
+enum Role<'a> {
+    Itself,
+    Member(&'a str, Do),
+    Case(&'a str),
+    Field(&'a str),
+}
+
+impl Reader {
+    fn role(&self, token: &str) -> Role<'_> {
+        if last_segment(&self.name) == token {
+            return Role::Itself;
+        }
+        if let Some((member, doing)) = self.members.iter().find(|(member, _)| member == token) {
+            return Role::Member(member, *doing);
+        }
+        if let Some(case) = self.cases.iter().find(|case| *case == token) {
+            return Role::Case(case);
+        }
+        if let Some(field) = self.fields.iter().find(|field| *field == token) {
+            return Role::Field(field);
+        }
+        Role::Itself
+    }
+
+    /// Where the reference is on a line the index gave no span for: the
+    /// symbol's own name, or else the first of its members, cases or fields
+    /// reached through a path or a dot (a bare word is only a last resort).
+    fn find(&self, text: &str) -> Option<Range<usize>> {
+        if let Some(mark) = mark_of(text, &self.name) {
+            return Some(mark);
+        }
+        let names = self.members.iter().map(|(name, _)| name).chain(&self.cases).chain(&self.fields);
+        names
+            .flat_map(|name| marks_of(text, name))
+            .map(|mark| {
+                let reached = text[..mark.start].ends_with('.') || text[..mark.start].ends_with("::");
+                (!reached, mark.start, mark)
+            })
+            .min_by_key(|(bare, start, _)| (*bare, *start))
+            .map(|(_, _, mark)| mark)
+    }
+}
+
 fn verb_of(site: &Site, reader: &Reader) -> (Verb, Option<String>) {
     let text = site.text.as_str();
     let name = last_segment(&reader.name);
+    let mark = site.mark.clone().or_else(|| reader.find(text));
+    let around = mark.as_ref().and_then(|mark| Around::of(text, mark));
     if matches!(site.rel, Rel::Imports | Rel::Reexports) || starts_import(text) {
         return (Verb::Imports, None);
     }
-    if text.contains("derive(") && contains_word(text, name) {
+    if around.as_ref().map_or_else(|| text.contains("derive(") && contains_word(text, name), Around::in_derive) {
         return (Verb::Derives, None);
     }
     if matches!(site.rel, Rel::Implements | Rel::Inherits | Rel::Overrides) || is_impl(text, name) {
@@ -181,36 +294,78 @@ fn verb_of(site: &Site, reader: &Reader) -> (Verb, Option<String>) {
     if matches!(reader.kind, Kind::Function | Kind::Method) {
         return (Verb::Calls, None);
     }
-    if matches!(reader.kind, Kind::Trait) && asks_for(text, name) {
+    let Some(around) = around else { return (from_relation(site.rel).unwrap_or(Verb::Names), None) };
+    if matches!(reader.kind, Kind::Trait) && asks_for(&around) {
         return (Verb::AsksFor, None);
     }
-    // A member reached: `Name::member` (exact) or `.member(` (by name).
-    if let Some((member, doing, qualified)) = member_of(text, name, reader, site.exact) {
-        let verb = match doing {
-            Do::Makes => Verb::Makes,
-            Do::Reads => Verb::Reads,
-            Do::Changes => Verb::Changes,
-            Do::UsesUp => Verb::UsesUp,
-        };
-        let _ = qualified;
-        return (verb, Some(member));
+    match reader.role(around.token) {
+        Role::Member(member, doing) => {
+            // A member reached by its bare name is only this type's when the
+            // index resolved it or the type is on the line.
+            let path = around.before.trim_end().ends_with("::") || around.before.trim_end().ends_with('.');
+            if path && (site.exact || contains_word(text, name)) {
+                return (verb_of_do(doing), Some(member.to_owned()));
+            }
+            (from_relation(site.rel).unwrap_or(Verb::Names), None)
+        }
+        Role::Field(field) => {
+            let verb = if around.before.trim_end().ends_with('.') {
+                if around.assigned() { Verb::Changes } else { Verb::Reads }
+            } else if around.after.trim_start().starts_with(':') {
+                Verb::Makes
+            } else {
+                Verb::Reads
+            };
+            (verb, Some(field.to_owned()))
+        }
+        Role::Case(case) => (if around.in_pattern() { Verb::Matches } else { Verb::Makes }, Some(case.to_owned())),
+        Role::Itself => itself(&around, reader, site),
     }
-    if let Some(field) = field_of(text, reader) {
-        return (Verb::Reads, Some(field));
+}
+
+/// The type's own name: what stands after it says what the place does.
+fn itself(around: &Around<'_>, reader: &Reader, site: &Site) -> (Verb, Option<String>) {
+    if let Some(next) = around.next() {
+        if let Some(case) = reader.cases.iter().find(|case| *case == next) {
+            return (if around.in_pattern() { Verb::Matches } else { Verb::Makes }, Some(case.clone()));
+        }
+        if let Some((member, doing)) = reader.members.iter().find(|(member, _)| member == next) {
+            return (verb_of_do(*doing), Some(member.clone()));
+        }
+        if matches!(next, "new" | "default" | "with_capacity" | "empty") {
+            return (Verb::Makes, None);
+        }
     }
-    if let Some(case) = case_of(text, name, reader) {
-        let matching = is_match_line(text);
-        return (if matching { Verb::Matches } else { Verb::Makes }, Some(case));
+    let after = around.after.trim_start();
+    if after.starts_with('{') && !declares(around.lead()) || after.starts_with('(') {
+        return (if around.in_pattern() { Verb::Matches } else { Verb::Makes }, None);
     }
-    if is_construction(text, name) || builds_from_text(text) {
+    if around.in_pattern() && after.starts_with("=>") {
+        return (Verb::Matches, None);
+    }
+    if builds_from_text(around.line) {
         return (Verb::Makes, None);
     }
-    match site.rel {
-        Rel::Calls | Rel::MethodCall => (Verb::Calls, None),
-        Rel::Reads => (Verb::Reads, None),
-        Rel::Writes => (Verb::Changes, None),
-        Rel::Documents => (Verb::Names, None),
-        _ => (type_verb(text, name), None),
+    (from_relation(site.rel).unwrap_or_else(|| type_verb(around)), None)
+}
+
+/// What the index's relation alone says a place does, when it says.
+const fn from_relation(rel: Rel) -> Option<Verb> {
+    match rel {
+        Rel::Calls | Rel::MethodCall => Some(Verb::Calls),
+        Rel::Reads => Some(Verb::Reads),
+        Rel::Writes => Some(Verb::Changes),
+        Rel::Documents => Some(Verb::Names),
+        _ => None,
+    }
+}
+
+fn verb_of_do(doing: Do) -> Verb {
+    match doing {
+        Do::Makes => Verb::Makes,
+        Do::Reads => Verb::Reads,
+        Do::Changes => Verb::Changes,
+        Do::UsesUp => Verb::UsesUp,
     }
 }
 
@@ -223,25 +378,25 @@ fn is_impl(text: &str, name: &str) -> bool {
     (t.starts_with("impl") && contains_word(t, name) && t.contains(" for ")) || (t.starts_with("class ") && t.contains(name) && (t.contains("extends") || t.contains("implements") || t.contains('(')))
 }
 
+/// Whether what precedes a name declares it (`struct`, `enum`, `impl`, `class`).
+fn declares(lead: &str) -> bool {
+    ["struct", "enum", "impl", "trait", "class", "interface", "type", "union"].iter().any(|word| lead.ends_with(word))
+}
+
 /// The text before a name with the module path in front of it dropped:
 /// `fn f(v: &serde_json::` → `fn f(v: &`.
 fn before_path(before: &str) -> &str {
     let mut text = before.trim_end();
     while let Some(rest) = text.strip_suffix("::") {
-        text = rest.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '$').trim_end();
+        text = rest.trim_end_matches(is_word_char).trim_end();
     }
     text
 }
 
 /// `T: Serialize`, `+ Serialize`, `impl Serialize`, `where S: Serializer`.
-fn asks_for(text: &str, name: &str) -> bool {
-    let Some((at, _)) = mark_of(text, name) else { return false };
-    let before = before_path(&text[..at]);
+fn asks_for(around: &Around<'_>) -> bool {
+    let before = around.lead();
     before.ends_with(':') && !before.ends_with("::") || before.ends_with('+') || before.ends_with("impl") || before.ends_with("dyn") || before.ends_with("where")
-}
-
-fn is_match_line(text: &str) -> bool {
-    text.contains("=>") || text.contains("if let ") || text.contains("matches!(") || text.contains("while let ") || text.trim_start().starts_with("match ") || text.contains("instanceof") || text.trim_start().starts_with("case ")
 }
 
 /// `from_str::<Value>(…)`, `from_slice`, `to_value(`, `json!(`: making one from something else.
@@ -249,63 +404,28 @@ fn builds_from_text(text: &str) -> bool {
     ["from_str", "from_slice", "from_reader", "from_value", "to_value", "json!"].iter().any(|word| text.contains(word))
 }
 
-fn is_construction(text: &str, name: &str) -> bool {
-    text.contains(&format!("{name}::new(")) || text.contains(&format!("{name}::default(")) || text.contains(&format!("{name} {{")) && !text.trim_start().starts_with("struct ") && !text.contains("impl") || text.contains(&format!("new {name}("))
-}
-
-fn member_of(text: &str, name: &str, reader: &Reader, resolved: bool) -> Option<(String, Do, bool)> {
-    for (member, doing) in &reader.members {
-        if text.contains(&format!("{name}::{member}(")) || text.contains(&format!("{name}::{member})")) || text.contains(&format!("{name}::{member},")) {
-            return Some((member.clone(), *doing, true));
-        }
-    }
-    for (member, doing) in &reader.members {
-        let dotted = text.contains(&format!(".{member}(")) || text.contains(&format!(".{member},")) || text.contains(&format!(".{member})")) || text.contains(&format!(".{member} ")) || text.ends_with(&format!(".{member}"));
-        // The type in the line, or the index resolved the use to this type.
-        if *doing != Do::Makes && (contains_word(text, name) || resolved) && dotted {
-            return Some((member.clone(), *doing, false));
-        }
-    }
-    None
-}
-
-/// `x.field` where `field` is one of its fields and is not called.
-fn field_of(text: &str, reader: &Reader) -> Option<String> {
-    reader.fields.iter().find(|field| {
-        text.match_indices(&format!(".{field}")).any(|(at, _)| {
-            let after = text[at + 1 + field.len()..].chars().next();
-            !after.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '(')
-        })
-    }).cloned()
-}
-
-fn case_of(text: &str, name: &str, reader: &Reader) -> Option<String> {
-    reader.cases.iter().find(|case| text.contains(&format!("{name}::{case}")) || text.contains(&format!("{name}.{case}"))).cloned()
-}
-
-/// What a line that names a type does with it, from the line itself.
-fn type_verb(text: &str, name: &str) -> Verb {
-    let Some((at, end)) = mark_of(text, name) else { return Verb::Names };
-    let before = before_path(&text[..at]);
-    let after = text[end..].trim_start();
-    if before.ends_with("&mut") || before.ends_with("&mut ") {
+/// What a line that names a type does with it, from what stands around it.
+fn type_verb(around: &Around<'_>) -> Verb {
+    let before = around.lead();
+    let after = around.after.trim_start();
+    if before.ends_with("&mut") {
         return Verb::Changes;
     }
     if before.ends_with('&') {
         return Verb::Reads;
     }
-    if text.contains("->") && text.find("->").is_some_and(|arrow| arrow < at) {
+    let head = around.line.trim_start();
+    if around.before.contains("->") {
         return Verb::Makes;
     }
-    if text.trim_start().starts_with("let ") && text[..at].contains(':') && !text[..at].contains('=') {
+    if head.starts_with("let ") && around.before.contains(':') && !around.before.contains('=') {
         return Verb::Makes;
     }
     // `Vec<Value>` after a `let` is the same thing made; elsewhere it is held.
-    if before.ends_with('<') || before.ends_with(',') && text[..at].contains('<') {
-        return if text.trim_start().starts_with("let ") { Verb::Makes } else { Verb::Holds };
+    if before.ends_with('<') || before.ends_with(',') && around.before.contains('<') {
+        return if head.starts_with("let ") { Verb::Makes } else { Verb::Holds };
     }
-    let field = text.trim_start();
-    let field = field.strip_prefix("pub ").unwrap_or(field);
+    let field = head.strip_prefix("pub ").unwrap_or(head);
     if before.ends_with(':') && (after.starts_with(',') || after.is_empty()) && !field.starts_with("let ") && !field.starts_with("fn ") {
         return Verb::Holds;
     }
@@ -320,7 +440,7 @@ fn type_verb(text: &str, name: &str) -> Verb {
 #[must_use]
 pub fn fill_of(text: &str, function: &str) -> Option<String> {
     let name = last_segment(function);
-    if let Some((at, end)) = mark_of(text, name) {
+    if let Some(Range { start: at, end }) = mark_of(text, name) {
         let after = &text[end..];
         if let Some(rest) = after.strip_prefix("::<")
             && let Some((inner, _)) = super::text::balanced(&format!("<{rest}"), 0)
@@ -377,7 +497,7 @@ mod tests {
     use super::*;
 
     fn site(file: &str, text: &str, rel: Rel) -> Site {
-        Site { package: "engine".into(), file: file.into(), path: format!("/w/{file}"), line: 10, text: text.into(), rel, exact: true }
+        Site { package: "engine".into(), file: file.into(), path: format!("/w/{file}"), line: 10, text: text.into(), mark: None, rel, exact: true }
     }
 
     fn value_reader() -> Reader {
@@ -410,6 +530,46 @@ mod tests {
         assert_eq!(v("x.as_str()", Rel::Reads).verb, Verb::Reads);
     }
 
+    /// The place at the `nth` whole-word `token` on the line, as the index would span it.
+    fn at(text: &str, token: &str, nth: usize, rel: Rel) -> Site {
+        let mark = marks_of(text, token).nth(nth).expect("the token is on the line");
+        Site { mark: Some(mark), ..site("src/a.rs", text, rel) }
+    }
+
+    #[test]
+    fn the_token_where_the_index_put_it_says_what_the_place_does() {
+        let value = value_reader();
+        let verb = |text: &str, token: &str, nth: usize| {
+            let read = read(&at(text, token, nth, Rel::TypeReference), &value);
+            (read.verb, read.member)
+        };
+        // A pattern is left of the arrow; the same case right of it is made.
+        assert_eq!(verb("Some(serde_json::Value::Null) => Absent,", "Value", 0), (Verb::Matches, Some("Null".into())));
+        assert_eq!(verb("other => serde_json::Value::Null,", "Value", 0), (Verb::Makes, Some("Null".into())));
+        assert_eq!(verb("if let Value::Array(items) = v {", "Value", 0), (Verb::Matches, Some("Array".into())));
+        assert_eq!(verb("assert!(matches!(v, Value::Array(_)));", "Value", 0), (Verb::Matches, Some("Array".into())));
+        assert_eq!(verb("let v = Value::Array(items);", "Value", 0), (Verb::Makes, Some("Array".into())));
+        // One line, two references: each is read where it stands.
+        assert_eq!(verb("fn wrap(v: &Value) -> Value {", "Value", 0).0, Verb::Reads);
+        assert_eq!(verb("fn wrap(v: &Value) -> Value {", "Value", 1).0, Verb::Makes);
+        // A member reached through a path or a dot, by the member's own token.
+        assert_eq!(verb("row.get(\"a\").and_then(Value::as_str)", "as_str", 0), (Verb::Reads, Some("as_str".into())));
+        assert_eq!(verb("map.as_array_mut().unwrap().clear();", "as_array_mut", 0), (Verb::Changes, Some("as_array_mut".into())));
+    }
+
+    #[test]
+    fn a_field_is_read_or_changed_where_its_token_stands() {
+        let info = Reader { name: "AllocationInfo".into(), kind: Kind::Struct, members: Vec::new(), cases: Vec::new(), fields: vec!["count_total".into()], generic: false };
+        let verb = |text: &str, nth: usize| {
+            let read = read(&at(text, "count_total", nth, Rel::Reads), &info);
+            (read.verb, read.member)
+        };
+        assert_eq!(verb("assert_eq!(info.count_total, 3);", 0), (Verb::Reads, Some("count_total".into())));
+        assert_eq!(verb("count_total: info.count_total,", 1), (Verb::Reads, Some("count_total".into())), "the second one is the read");
+        assert_eq!(verb("count_total: info.count_total,", 0), (Verb::Makes, Some("count_total".into())), "the first one names a field of the struct being made");
+        assert_eq!(verb("stats.count_total += 1;", 0), (Verb::Changes, Some("count_total".into())));
+    }
+
     #[test]
     fn traits_are_derived_implemented_or_asked_for() {
         let r = Reader { name: "Serialize".into(), kind: Kind::Trait, members: Vec::new(), cases: Vec::new(), fields: Vec::new(), generic: false };
@@ -440,8 +600,8 @@ mod tests {
     #[test]
     fn the_name_is_marked_where_it_stands() {
         let text = "let v = serde_json::Value::as_str;";
-        let (a, b) = mark_of(text, "Value").expect("marked");
-        assert_eq!(&text[a..b], "Value");
+        let mark = mark_of(text, "Value").expect("marked");
+        assert_eq!(&text[mark], "Value");
         assert_eq!(mark_of("ValueError(x)", "Value"), None);
     }
 }

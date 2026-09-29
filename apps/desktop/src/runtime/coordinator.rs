@@ -312,8 +312,15 @@ impl DesktopRuntime {
             self.retire_lane(request, inflight.lane);
             match map_event(&self.snapshot, event) {
                 Ok(snapshot) => {
+                    // An index that finished, failed or was stopped changes what
+                    // the shelf says about a project; a relaunch must find it as
+                    // it was left, not wait for the next intent to write it.
+                    let shelf_moved = snapshot.workspace().projects != self.snapshot.workspace().projects;
                     self.snapshot = Arc::new(snapshot);
                     events.push(RuntimeEvent::SnapshotChanged(Arc::clone(&self.snapshot)));
+                    if shelf_moved {
+                        events.push(RuntimeEvent::PersistRequested(Arc::clone(&self.snapshot)));
+                    }
                     events.push(RuntimeEvent::RequestCompleted {
                         request,
                         succeeded: true,
@@ -351,6 +358,14 @@ impl DesktopRuntime {
     #[must_use]
     pub fn has_pending_work(&self) -> bool {
         !self.inflight.is_empty() || self.actor.queued_events() != 0
+    }
+
+    /// [`Self::has_pending_work`] apart from indexing, which is one owner
+    /// call that runs for minutes: the journey harness waits for everything
+    /// else a frame shows and awaits indexing as its own step.
+    #[must_use]
+    pub fn has_pending_work_besides_indexing(&self) -> bool {
+        self.inflight.values().any(|request| request.index_project.is_none()) || self.actor.queued_events() != 0
     }
 
     /// Takes the wake signal the actor raises after delivering each result.

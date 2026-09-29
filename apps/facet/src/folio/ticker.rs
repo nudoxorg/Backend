@@ -23,9 +23,8 @@ use crate::probe::{self, TextOverflow, TextSample};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
-    AnyElement, App, Bounds, DispatchPhase, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, SharedString, Style, Styled, Window, div, px,
+    App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Style, Window, px,
 };
 use std::rc::Rc;
 use std::sync::Arc;
@@ -234,8 +233,6 @@ const LABEL: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::MONO_SMALL };
 struct State {
     pointer: Option<f32>,
     dragging: bool,
-    walk: Option<usize>,
-    handle: FocusHandle,
     motion: Motion,
 }
 
@@ -246,6 +243,7 @@ pub struct Ticker {
     measure: Measure,
     on_travel: Option<Rc<dyn Fn(usize, &mut Window, &mut App)>>,
     rest: Option<f32>,
+    stand: Option<usize>,
 }
 
 /// A ticker for `facts`, as wide as `measure` gives it.
@@ -257,12 +255,31 @@ pub fn ticker(id: impl Into<ElementId>, facts: Rc<TickerFacts>, measure: &Measur
         measure: *measure,
         on_travel: None,
         rest: None,
+        stand: None,
     }
 }
 
+/// Where the bar of release `tick` sits at rest, relative to the ticker's own
+/// corner, as a box a host can put a keyboard door on.
+#[must_use]
+pub fn door(facts: &TickerFacts, measure: &Measure, tick: usize) -> Bounds<Pixels> {
+    let s = measure.scale();
+    let xs = facts.positions(f32::from(measure.width()), PAD * s);
+    let x = xs.get(tick).copied().unwrap_or(0.0);
+    Bounds::new(gpui::point(px(x - 5.0 * s), px(TOP * s)), gpui::size(px(10.0 * s), px(BARS * s)))
+}
+
 impl Ticker {
-    /// Called with the release index chosen: on press, on every release the
-    /// drag crosses, and on the keys.
+    /// The release the host's keyboard stands on: its bar is hot, its label
+    /// rides it (one keyboard system: the host's targets, not the element's).
+    #[must_use]
+    pub const fn stand(mut self, tick: Option<usize>) -> Self {
+        self.stand = tick;
+        self
+    }
+
+    /// Called with the release index chosen: on press and on every release the
+    /// drag crosses.
     #[must_use]
     pub fn on_travel(mut self, on_travel: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_travel = Some(Rc::new(on_travel));
@@ -291,7 +308,6 @@ impl IntoElement for Ticker {
 /// What the ticker keeps between layout and paint.
 pub struct TickerLayout {
     state: Entity<State>,
-    keys: AnyElement,
 }
 
 impl Element for Ticker {
@@ -313,54 +329,12 @@ impl Element for Ticker {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, TickerLayout) {
-        let state = window.use_keyed_state("ticker", cx, |_, cx| State {
-            pointer: None,
-            dragging: false,
-            walk: None,
-            handle: cx.focus_handle().tab_stop(true),
-            motion: Motion::new(),
-        });
-        let handle = state.read(cx).handle.clone();
-        let keys_state = state.clone();
-        let facts = self.facts.clone();
-        let on_travel = self.on_travel.clone();
-        let mut keys = div()
-            .id("keys")
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .track_focus(&handle)
-            .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                let n = facts.ticks.len();
-                if n == 0 {
-                    return;
-                }
-                let key = event.keystroke.key.as_str();
-                let current = keys_state.read(cx).walk.or(facts.reading).or(facts.pin).unwrap_or(n - 1);
-                let next = match key {
-                    "left" => current.saturating_sub(1),
-                    "right" => (current + 1).min(n - 1),
-                    "home" => 0,
-                    "end" => n - 1,
-                    _ => return,
-                };
-                keys_state.update(cx, |state, cx| {
-                    state.walk = Some(next);
-                    cx.notify();
-                });
-                if let Some(travel) = &on_travel {
-                    travel(next, window, cx);
-                }
-                cx.stop_propagation();
-            })
-            .into_any_element();
-        let keys_id = keys.request_layout(window, cx);
+        let state = window.use_keyed_state("ticker", cx, |_, _| State { pointer: None, dragging: false, motion: Motion::new() });
         let mut style = Style::default();
         style.size.width = px(f32::from(self.measure.width())).into();
         style.size.height = px(self.height()).into();
         style.flex_shrink = 0.0;
-        (window.request_layout(style, [keys_id], cx), TickerLayout { state, keys })
+        (window.request_layout(style, [], cx), TickerLayout { state })
     }
 
     fn prepaint(
@@ -368,11 +342,10 @@ impl Element for Ticker {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        layout: &mut TickerLayout,
+        _layout: &mut TickerLayout,
         window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> Hitbox {
-        layout.keys.prepaint(window, cx);
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
 
@@ -389,7 +362,6 @@ impl Element for Ticker {
     ) {
         let palette = cx.palette();
         let s = self.measure.scale();
-        layout.keys.paint(window, cx);
         let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let width = f32::from(bounds.size.width);
         let facts = self.facts.clone();
@@ -398,9 +370,9 @@ impl Element for Ticker {
         let (radius, distortion) = (RADIUS * s, DISTORTION);
         let xs = facts.positions(width, pad);
 
-        let (pointer, motion, focused) = {
+        let (pointer, motion) = {
             let state = layout.state.read(cx);
-            (state.pointer, state.motion.clone(), state.handle.is_focused(window) && window.last_input_was_keyboard())
+            (state.pointer, state.motion.clone())
         };
         let pointer = pointer.or(self.rest);
         let magnify = motion.animate(ElementId::NamedChild(Arc::new(self.id.clone()), "magnify".into()), if pointer.is_some() { 1.0 } else { 0.0 }, spec::REVEAL, window, cx);
@@ -408,8 +380,9 @@ impl Element for Ticker {
         let shown = |x: f32| x + (fisheye(x, anchor, radius, distortion) - x) * magnify;
         let sx: Vec<f32> = xs.iter().map(|x| shown(*x)).collect();
 
-        // Which bar is hot: the nearest within reach of the pointer, or the walk.
-        let walk = layout.state.read(cx).walk.filter(|_| focused);
+        // Which bar is hot: the nearest within reach of the pointer, or the
+        // one the host's keyboard stands on.
+        let walk = self.stand;
         let hot = pointer
             .and_then(|p| {
                 sx.iter()

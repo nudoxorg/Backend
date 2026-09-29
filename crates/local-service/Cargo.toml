@@ -9,6 +9,9 @@ publish = false
 [features]
 search-bench = []
 cluster-process-journey-hooks = ["backend-store-s3/test-support"]
+# Builders for hosts' tests of states this build cannot write on its own
+# (`builtin::write_state_from_another_build`).
+test-support = []
 
 [dependencies]
 backend-compile = { path = "../compile" }

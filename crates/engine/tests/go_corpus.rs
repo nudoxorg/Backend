@@ -606,7 +606,7 @@ fn production_go_authority_scopes_a_multi_package_module_to_its_owning_package()
         source: &source,
         declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
-        authority: owner.input(),
+        authority: owner.input(&path),
         control: CompileControl {
             deadline: Instant::now() + Duration::from_secs(300),
             cancelled: &cancelled,

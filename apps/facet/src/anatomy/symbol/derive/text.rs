@@ -111,8 +111,10 @@ pub(super) fn clean(markup: &str) -> String {
         out.push_str(&rest[..at]);
         let after = &rest[at + 2..];
         let Some(end) = after.find("`]") else {
+            // No closer: not a code link. Leave the rest for the link pass.
             out.push_str(&rest[at..]);
-            return out;
+            rest = "";
+            break;
         };
         let inner = &after[..end];
         let mut tail = &after[end + 2..];
@@ -253,6 +255,23 @@ pub(super) fn plain(markup: &str) -> String {
         }
     }
     squash(&out)
+}
+
+/// A description of a kind of failure without its lead-in: "The error was
+/// caused by a failure to read" says "a failure to read".
+pub(super) fn lead_out(doc: &str) -> String {
+    let lower = doc.to_ascii_lowercase();
+    let mut rest = doc.trim();
+    for subject in ["the error", "this error", "the failure", "this failure", "the problem", "this kind"] {
+        for verb in [" was caused by ", " is caused by ", " is due to ", " was due to ", " happens when ", " occurs when "] {
+            let lead = format!("{subject}{verb}");
+            if lower.starts_with(&lead) {
+                rest = &doc[lead.len()..];
+                return rest.trim().trim_end_matches('.').to_owned();
+            }
+        }
+    }
+    rest.trim_end_matches('.').to_owned()
 }
 
 /// `text` with its first letter in lower case.

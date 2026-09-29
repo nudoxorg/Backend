@@ -678,12 +678,10 @@ fn hit_side(measure: &Measure) -> Pixels {
     px((24.0 * measure.scale()).max(24.0))
 }
 
-/// Whether one of the jump bar's menus (back's places, a segment's
-/// siblings) is open.
+/// Whether a menu is open (the jump bar's back places and siblings, the
+/// symbol page's package menu): it owns the plain keys.
 pub(crate) fn menu_open(window: &Window, cx: &mut App) -> bool {
-    std::iter::once(gpui::ElementId::from(SharedString::from("jump-back-menu")))
-        .chain((0..8).flat_map(|index| [format!("jump-siblings-{index}"), format!("jump-siblings-{index}-tests")]).map(|key| gpui::ElementId::from(SharedString::from(key))))
-        .any(|key| facet::overlay::float::is_open(&key, window, cx))
+    facet::overlay::float::menu_open(window, cx)
 }
 
 /// Opens the siblings of segment `index` under it: the outline level it

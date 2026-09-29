@@ -10,13 +10,14 @@
 
 use super::board::{board, board_dir};
 use super::host::{Act, Change, Host, Spots, Ui};
-use super::key::{FoldKey, Key, Sec};
-use super::kit::{Env, ink, roles, said};
+use super::key::{FoldKey, Key, PortName, Sec, Slot};
+use super::kit::{Env, ink, recorded, recorded_after, said};
 use super::layout::Layout;
 use super::view::{Uses, View};
 use super::{Chrome, page};
 use crate::anatomy::page::{Door, Doors, Fold, Still};
 use crate::gallery::Scene;
+use crate::motion::Flow;
 use crate::motion::presence::Presence;
 use crate::overlay::float;
 use crate::theme::ActiveFacet;
@@ -34,7 +35,7 @@ pub(crate) const SCENES: &[Scene] = &[
     Scene { id: "sym6-alloc", title: "AllocationInfo: a struct with public fields (board: symbol6 rs-AllocationInfo)", size: READER, build: |_, cx| scene("rs-AllocationInfo", &[], cx) },
     Scene { id: "sym6-serialize", title: "serde::Serialize: a trait (board: symbol6 rs-Serialize)", size: READER, build: |_, cx| scene("rs-Serialize", &[], cx) },
     Scene { id: "sym6-py-match", title: "re.match: Python with no type hints (board: symbol6 py-re.match)", size: READER, build: |_, cx| scene("py-re.match", &[], cx) },
-    Scene { id: "sym6-js-which", title: "which.sync: JavaScript, an options object, unfolded (board: symbol6 js-which.sync &opts=opt)", size: READER, build: |_, cx| scene("js-which.sync", &[FoldKey::Options("opt".to_owned())], cx) },
+    Scene { id: "sym6-js-which", title: "which.sync: JavaScript, an options object, unfolded (board: symbol6 js-which.sync &opts=opt)", size: READER, build: |_, cx| scene("js-which.sync", &[FoldKey::Options(PortName::new("opt"))], cx) },
 ];
 
 // ------------------------------------------------------------------ the scene
@@ -44,6 +45,7 @@ struct State {
     open: BTreeSet<FoldKey>,
     presences: BTreeMap<FoldKey, Presence>,
     spots: Rc<Spots>,
+    flow: Flow,
 }
 
 struct GalleryHost {
@@ -107,8 +109,10 @@ impl Host for GalleryHost {
         None
     }
 
-    fn target(&self, _: &Key, _: SharedString, _: Act, element: AnyElement) -> AnyElement {
-        element
+    fn target(&self, key: &Key, _: SharedString, _: Act, element: AnyElement) -> AnyElement {
+        // Published like the shell's walk does, so lint sees every stop and
+        // holds it to the 24 px rule.
+        crate::probe::target(key.id(), crate::probe::Target { clickable: true, focusable: true, ..crate::probe::Target::default() }, element).into_any_element()
     }
 
     fn reveal(&self, _: Sec) -> Act {
@@ -117,6 +121,10 @@ impl Host for GalleryHost {
 
     fn spots(&self) -> Rc<Spots> {
         Rc::clone(&self.state.borrow().spots)
+    }
+
+    fn flow(&self) -> Flow {
+        self.state.borrow().flow.clone()
     }
 }
 
@@ -130,7 +138,7 @@ fn scene(id: &str, open: &[FoldKey], cx: &mut App) -> AnyView {
     let Some((view, uses)) = board(id) else {
         return cx.new(|_: &mut Context<Missing>| Missing(id.to_owned())).into();
     };
-    let state = Rc::new(RefCell::new(State { ui: Ui::default(), open: open.iter().cloned().collect(), presences: BTreeMap::new(), spots: Spots::new() }));
+    let state = Rc::new(RefCell::new(State { ui: Ui::default(), open: open.iter().cloned().collect(), presences: BTreeMap::new(), spots: Spots::new(), flow: Flow::new("sym6-gallery") }));
     cx.new(|_: &mut Context<SymbolScene>| SymbolScene { view, uses, state }).into()
 }
 
@@ -157,16 +165,17 @@ impl Render for SymbolScene {
         let lay = Layout::of(&measure, &modes);
         let env = Env { m: measure.within(lay.main), p: palette, host: &host, lay };
         let i = ink(palette);
-        let title = div().flex().items_baseline().self_start().child(said(&env, &Key::of(super::key::Part::Kind).field("title"), self.view.head.name.clone(), crate::tokens::scale::DISPLAY, i.ink0)).into_any_element();
-        let _ = roles::NAME;
+        let title = div().flex().items_baseline().self_start().child(said(&env, &Key::of(super::key::Part::Kind).field(Slot::Title), self.view.head.name.clone(), crate::tokens::scale::DISPLAY, i.ink0)).into_any_element();
         let gem = super::gem(&self.view, &measure, palette);
         let element = page(&self.view, &self.uses, Chrome { gem, title }, &measure, palette, &host, &modes);
-        div()
-            .size_full()
-            .relative()
-            .overflow_hidden()
-            .bg(palette.g1.hsla())
-            .child(div().id("sym6-scroll").size_full().overflow_y_scroll().child(div().px(pad).pt(top).pb(px(120.0)).child(element)))
-            .child(float::layer(window, cx))
+        // The scene's scroll container tells the probe how far it scrolls, so lint knows the page below the fold is reachable.
+        let content = Rc::new(std::cell::Cell::new(gpui::Bounds::<gpui::Pixels>::default()));
+        let record_content = Rc::clone(&content);
+        let inner = recorded(move |bounds, _| record_content.set(bounds), div().px(pad).pt(top).pb(px(120.0)).child(element).into_any_element());
+        let scroll = recorded_after(
+            move |viewport, cx| crate::probe::record_scroll(cx, &gpui::ElementId::Name("sym6-scroll".into()), viewport, content.get()),
+            div().id("sym6-scroll").size_full().overflow_y_scroll().child(inner).into_any_element(),
+        );
+        div().size_full().relative().overflow_hidden().bg(palette.g1.hsla()).child(scroll).child(float::layer(window, cx))
     }
 }

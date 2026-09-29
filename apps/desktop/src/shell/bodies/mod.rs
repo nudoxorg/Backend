@@ -20,7 +20,6 @@ mod symbol;
 
 /// How many declaration pages are still reading their lines (the harness
 /// waits for none before a capture).
-pub(crate) use symbol::in_flight as symbol_lines_in_flight;
 
 
 use super::focus::Targets;

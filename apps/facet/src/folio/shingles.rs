@@ -14,12 +14,14 @@
 //!   (its own words, what it holds, what you use); a shingle swells and
 //!   wears its name on a small plate. All of it inside the map.
 //! - **Click** a region (or a shingle in it) to open the module; **the
-//!   keyboard** walks regions with the arrows and Enter opens.
+//!   keyboard** is the host's (one system: every region is a target it walks
+//!   with `j`/`k`), and the region it stands on is rested on with [`Shingles::rest`].
 //! - **The past.** A shingle whose name changed, went or is not yet there at
 //!   the release being read wears amber, coral or a ghost, and the regions
 //!   take the warmer tint.
 
 use super::cards::Change;
+use super::flight::{Carrying, Stone};
 use super::state::{Extent, Time, Use};
 use crate::data::text::{shape, shape_fit};
 use crate::measure::Measure;
@@ -28,9 +30,8 @@ use crate::probe::{self, TextOverflow, TextSample};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Family, TypeRole, ty};
 use gpui::{
-    AnyElement, App, Bounds, DispatchPhase, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
-    ParentElement, Pixels, SharedString, Style, Styled, Window, div, px,
+    App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style, Window, px,
 };
 use std::rc::Rc;
 
@@ -237,33 +238,6 @@ impl Layout {
             region.origin.1 + (index / region.columns) as f32 * pitch,
         ))
     }
-
-    /// The region nearest `from` in `direction` (`left`, `right`, `up`,
-    /// `down`), for the keyboard walk.
-    #[must_use]
-    pub fn neighbour(&self, from: usize, direction: &str) -> Option<usize> {
-        let here = self.regions.get(from)?;
-        let centre = |r: &Region| (r.rect.0 + r.rect.2 * 0.5, r.rect.1 + r.rect.3 * 0.5);
-        let (cx, cy) = centre(here);
-        self.regions
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != from)
-            .filter_map(|(i, r)| {
-                let (x, y) = centre(r);
-                let (dx, dy) = (x - cx, y - cy);
-                let ok = match direction {
-                    "left" => dx < -1.0 && dy.abs() < here.rect.3,
-                    "right" => dx > 1.0 && dy.abs() < here.rect.3,
-                    "up" => dy < -1.0,
-                    "down" => dy > 1.0,
-                    _ => false,
-                };
-                ok.then_some((i, dx.abs() + dy.abs() * 2.0))
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(i, _)| i)
-    }
 }
 
 /// What the map does when something is opened: `(module, shingle)`.
@@ -271,8 +245,6 @@ pub type Open = Rc<dyn Fn(usize, Option<usize>, &mut Window, &mut App)>;
 
 struct State {
     hover: Option<Spot>,
-    walk: Option<usize>,
-    handle: FocusHandle,
 }
 
 /// The map (see [`shingles`]).
@@ -284,6 +256,7 @@ pub struct Shingles {
     open: Option<usize>,
     rest: Option<Spot>,
     on_open: Option<Open>,
+    on_carry: Option<Rc<dyn Fn(Carrying, &mut Window, &mut App)>>,
 }
 
 /// A shingle map of `modules` as wide as `measure` gives it.
@@ -297,6 +270,7 @@ pub fn shingles(id: impl Into<ElementId>, modules: Rc<[ModuleFacts]>, measure: &
         open: None,
         rest: None,
         on_open: None,
+        on_carry: None,
     }
 }
 
@@ -330,6 +304,15 @@ impl Shingles {
         self
     }
 
+    /// Called just before `on_open` when a region is clicked, with the
+    /// shingles of the module as they are on screen (window coordinates), so
+    /// the host can carry them to the cards.
+    #[must_use]
+    pub fn on_carry(mut self, on_carry: impl Fn(Carrying, &mut Window, &mut App) + 'static) -> Self {
+        self.on_carry = Some(Rc::new(on_carry));
+        self
+    }
+
     fn k(&self) -> f32 {
         self.measure.scale() * (0.94 + 0.42 * self.measure.t())
     }
@@ -348,10 +331,10 @@ impl Shingles {
 /// map's own corner, for a map of `modules` drawn at `measure`: what a host
 /// needs to give the keyboard a door onto each region.
 #[must_use]
-pub fn rects(modules: &[ModuleFacts], measure: &Measure) -> Vec<(f32, f32, f32, f32)> {
+pub fn rects(modules: &[ModuleFacts], measure: &Measure) -> Vec<Bounds<Pixels>> {
     let k = measure.scale() * (0.94 + 0.42 * measure.t());
     let sizes: Vec<(usize, usize)> = modules.iter().map(|m| (m.name.chars().count(), m.shingles.len())).collect();
-    layout(&sizes, f32::from(measure.width()), k).regions.iter().map(|region| region.rect).collect()
+    layout(&sizes, f32::from(measure.width()), k).regions.iter().map(|region| Bounds::new(gpui::point(px(region.rect.0), px(region.rect.1)), gpui::size(px(region.rect.2), px(region.rect.3)))).collect()
 }
 
 impl IntoElement for Shingles {
@@ -364,7 +347,6 @@ impl IntoElement for Shingles {
 /// What the map keeps between layout and paint.
 pub struct MapLayout {
     state: Entity<State>,
-    keys: AnyElement,
     layout: Layout,
 }
 
@@ -387,66 +369,13 @@ impl Element for Shingles {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, MapLayout) {
-        let state = window.use_keyed_state("shingles", cx, |_, cx| State {
-            hover: None,
-            walk: None,
-            handle: cx.focus_handle().tab_stop(true),
-        });
+        let state = window.use_keyed_state("shingles", cx, |_, _| State { hover: None });
         let layout = self.layout();
-        let handle = state.read(cx).handle.clone();
-        let keys_state = state.clone();
-        let keys_layout = layout.clone();
-        let count = self.modules.len();
-        let modules = self.modules.clone();
-        let on_open = self.on_open.clone();
-        let mut keys = div()
-            .id("keys")
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .track_focus(&handle)
-            .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                let key = event.keystroke.key.as_str();
-                let walk = keys_state.read(cx).walk;
-                match key {
-                    "left" | "right" | "up" | "down" => {
-                        let next = match walk {
-                            None if count > 0 => Some(0),
-                            Some(from) => keys_layout.neighbour(from, key).or(Some(from)),
-                            None => None,
-                        };
-                        keys_state.update(cx, |state, cx| {
-                            state.walk = next;
-                            cx.notify();
-                        });
-                        cx.stop_propagation();
-                    }
-                    "enter" | "space" => {
-                        if let (Some(module), Some(open)) = (walk, &on_open)
-                            && module < modules.len()
-                        {
-                            open(module, None, window, cx);
-                            cx.stop_propagation();
-                        }
-                    }
-                    "escape" if walk.is_some() => {
-                        keys_state.update(cx, |state, cx| {
-                            state.walk = None;
-                            cx.notify();
-                        });
-                        cx.stop_propagation();
-                    }
-                    _ => {}
-                }
-            })
-            .into_any_element();
-        let keys_id = keys.request_layout(window, cx);
         let mut style = Style::default();
         style.size.width = px(f32::from(self.measure.width())).into();
         style.size.height = px(layout.height + self.foot() + 8.0 * self.measure.scale()).into();
         style.flex_shrink = 0.0;
-        (window.request_layout(style, [keys_id], cx), MapLayout { state, keys, layout })
+        (window.request_layout(style, [], cx), MapLayout { state, layout })
     }
 
     fn prepaint(
@@ -454,12 +383,10 @@ impl Element for Shingles {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        layout: &mut MapLayout,
+        _layout: &mut MapLayout,
         window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> Hitbox {
-        layout.keys.prepaint(window, cx);
-        let _ = cx;
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
 
@@ -479,14 +406,12 @@ impl Element for Shingles {
         let k = map.layout.k;
         let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let width = f32::from(bounds.size.width);
-        map.keys.paint(window, cx);
-        let (hover, walk, focused) = {
-            let state = map.state.read(cx);
-            (state.hover.or(self.rest), state.walk, state.handle.is_focused(window) && window.last_input_was_keyboard())
-        };
+        // What is lit: what the pointer is on, else what the host rests it on
+        // (the keyboard's focus, a scene).
+        let hover = map.state.read(cx).hover.or(self.rest);
         let lit_region = match hover {
             Some(Spot::Region(i) | Spot::Shingle(i, _)) => Some(i),
-            None => walk.filter(|_| focused),
+            None => None,
         };
         let modules = self.modules.clone();
         let stone = STONE * k;
@@ -694,7 +619,11 @@ impl Element for Shingles {
             });
         }
         if let Some(on_open) = self.on_open.clone() {
-            let (hitbox, state) = (hitbox.clone(), map.state.clone());
+            let hitbox = hitbox.clone();
+            let on_carry = self.on_carry.clone();
+            let (time, k) = (self.time, map.layout.k);
+            let hit_layout = map.layout.clone();
+            let carried = self.modules.clone();
             window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hitbox.is_hovered(window) {
                     return;
@@ -705,8 +634,19 @@ impl Element for Shingles {
                         Spot::Region(i) => (i, None),
                         Spot::Shingle(i, j) => (i, Some(j)),
                     };
-                    let handle = state.read(cx).handle.clone();
-                    window.focus(&handle, cx);
+                    if let Some(on_carry) = &on_carry {
+                        let stone = STONE * k;
+                        let stones = carried[module]
+                            .shingles
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, shingle)| {
+                                let (x, y) = hit_layout.shingle(module, index)?;
+                                Some(Stone { from: Bounds::new(gpui::point(px(ox + x), px(oy + y)), gpui::size(px(stone), px(stone))), ink: shingle_ink(shingle, time, palette) })
+                            })
+                            .collect();
+                        on_carry(Carrying { module, stones }, window, cx);
+                    }
                     on_open(module, shingle, window, cx);
                 }
             });
@@ -849,16 +789,6 @@ mod tests {
         // Off the map is nothing.
         assert_eq!(l.at(&mods, -20.0, -20.0), None);
         let _: &Layout = &l;
-    }
-
-    #[test]
-    fn the_keyboard_walks_to_the_nearest_region_in_a_direction() {
-        let l = layout(&modules(&[12; 24]), 800.0, 1.0);
-        let right = l.neighbour(0, "right");
-        assert!(right.is_some(), "a row has a right neighbour");
-        assert_eq!(l.neighbour(0, "left"), None);
-        let down = l.neighbour(0, "down");
-        assert!(down.is_some_and(|i| l.regions[i].rect.1 > l.regions[0].rect.1), "down goes to a later row");
     }
 
     #[test]

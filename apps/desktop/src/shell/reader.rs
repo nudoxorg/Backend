@@ -40,6 +40,7 @@ use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{Overlay, Route, View};
 use crate::runtime::store::{Branch, DataStore, StoreEvent};
+use facet::anatomy::symbol::key::FoldKey;
 use facet::motion::{Carry, Edge, Presence, band, masked, offset, print};
 use facet::tokens::ty;
 use facet::tokens::fluid::{NOTES, Notes, READER_PAD, READER_TOP, WIDE_FOLIO};
@@ -53,56 +54,49 @@ use std::rc::Rc;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-/// A disclosure has a semantic identity, never a position in a render.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) enum SymbolFold {
-    /// A fold of the simple symbol page.
-    Page(facet::anatomy::symbol::key::FoldKey),
-    Relations(&'static str),
-    RelationPackage(&'static str, u32),
-    IndexedRelationPage(&'static str, usize),
-    Methods(crate::model::pages::Receiver),
-    Member(String),
-    Capabilities,
-    Docs,
-    Uses,
-}
-
 /// Kept per declaration across lens changes; bounded to protect long sessions.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct SymbolDisclosure {
     scope: String,
-    open: BTreeSet<SymbolFold>,
-    unrolls: Rc<std::cell::RefCell<std::collections::BTreeMap<SymbolFold, Presence>>>,
+    /// The folds the page has open, by what they are (never by a position in a render).
+    open: BTreeSet<FoldKey>,
+    unrolls: Rc<std::cell::RefCell<std::collections::BTreeMap<FoldKey, Presence>>>,
     /// The simple page's own state: the list's filters.
     pub(crate) ui: facet::anatomy::symbol::Ui,
-    /// What the page remembers between frames (where its sections are, which
-    /// side of the rail's breakpoint it drew).
+    /// What the page remembers between frames (where its sections are).
     pub(crate) spots: Rc<facet::anatomy::symbol::Spots>,
+    /// The page's own flow, so its parts spring when its layout changes mode
+    /// and one declaration's parts never flow into another's.
+    pub(crate) flow: facet::motion::Flow,
+}
+
+/// A route that is not a declaration has no disclosure to keep.
+impl Default for SymbolDisclosure {
+    fn default() -> Self {
+        Self {
+            scope: String::new(),
+            open: BTreeSet::new(),
+            unrolls: Rc::default(),
+            ui: facet::anatomy::symbol::Ui::default(),
+            spots: Rc::default(),
+            flow: facet::motion::Flow::new("symbol-page"),
+        }
+    }
 }
 
 impl SymbolDisclosure {
-    fn for_symbol(symbol: &crate::model::pages::SymbolRef) -> Self { Self { scope: symbol.as_str().to_owned(), ..Self::default() } }
-    pub(crate) fn is_open(&self, fold: &SymbolFold) -> bool { self.open.contains(fold) }
-    pub(crate) fn indexed_relation_page(&self, label: &'static str) -> usize {
-        self.open.iter().find_map(|fold| match fold {
-            SymbolFold::IndexedRelationPage(word, page) if *word == label => Some(*page),
-            _ => None,
-        }).unwrap_or(0)
+    fn for_symbol(symbol: &crate::model::pages::SymbolRef) -> Self {
+        Self { scope: symbol.as_str().to_owned(), flow: facet::motion::Flow::new(format!("symbol-page-{}", symbol.as_str())), ..Self::default() }
     }
-    pub(crate) fn unroll(&self, fold: SymbolFold) -> Presence {
+    pub(crate) fn is_open(&self, fold: &FoldKey) -> bool { self.open.contains(fold) }
+    pub(crate) fn unroll(&self, fold: FoldKey) -> Presence {
         let mut unrolls = self.unrolls.borrow_mut();
         if unrolls.len() >= 128 && !unrolls.contains_key(&fold) {
             if let Some(key) = unrolls.keys().next().cloned() { unrolls.remove(&key); }
         }
         unrolls.entry(fold.clone()).or_insert_with(|| Presence::new(format!("symbol-unroll-{}-{fold:?}", self.scope))).clone()
     }
-    fn toggle(&mut self, fold: SymbolFold) {
-        if let SymbolFold::IndexedRelationPage(label, page) = &fold {
-            self.open.retain(|item| !matches!(item, SymbolFold::IndexedRelationPage(word, _) if word == label));
-            if *page > 0 { self.open.insert(fold.clone()); }
-            return;
-        }
+    fn toggle(&mut self, fold: FoldKey) {
         if !self.open.remove(&fold) && self.open.len() < 128 { self.open.insert(fold); }
     }
 }
@@ -522,6 +516,7 @@ impl Reader {
         }
     }
 
+    /// The disclosure of `symbol`, made when there is none.
     pub(crate) fn symbol_disclosure(&mut self, symbol: &crate::model::pages::SymbolRef) -> SymbolDisclosure {
         if let Some((_, state)) = self.symbol_disclosures.iter().find(|(key, _)| key == symbol) { return state.clone(); }
         let state = SymbolDisclosure::for_symbol(symbol);
@@ -530,27 +525,23 @@ impl Reader {
         state
     }
 
-    pub(crate) fn toggle_symbol(&mut self, symbol: crate::model::pages::SymbolRef, fold: SymbolFold, cx: &mut Context<Self>) {
+    /// Changes `symbol`'s disclosure (kept most recent last, at most 24) and repaints.
+    fn with_disclosure(&mut self, symbol: crate::model::pages::SymbolRef, change: impl FnOnce(&mut SymbolDisclosure), cx: &mut Context<Self>) {
         let mut state = self.symbol_disclosures.iter().position(|(key, _)| key == &symbol)
             .map(|at| self.symbol_disclosures.remove(at).1).unwrap_or_else(|| SymbolDisclosure::for_symbol(&symbol));
-        state.toggle(fold);
+        change(&mut state);
         self.symbol_disclosures.push((symbol, state));
         if self.symbol_disclosures.len() > 24 { self.symbol_disclosures.remove(0); }
         cx.notify();
+    }
+
+    pub(crate) fn toggle_symbol(&mut self, symbol: crate::model::pages::SymbolRef, fold: FoldKey, cx: &mut Context<Self>) {
+        self.with_disclosure(symbol, |state| state.toggle(fold), cx);
     }
 
     /// Applies a change to the simple page's state (its filters).
     pub(crate) fn change_symbol(&mut self, symbol: crate::model::pages::SymbolRef, change: &facet::anatomy::symbol::Change, cx: &mut Context<Self>) {
-        let mut state = self.symbol_disclosures.iter().position(|(key, _)| key == &symbol)
-            .map(|at| self.symbol_disclosures.remove(at).1).unwrap_or_else(|| SymbolDisclosure::for_symbol(&symbol));
-        state.ui = state.ui.clone().apply(change);
-        self.symbol_disclosures.push((symbol, state));
-        if self.symbol_disclosures.len() > 24 { self.symbol_disclosures.remove(0); }
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_current_symbol(&mut self, fold: SymbolFold, cx: &mut Context<Self>) {
-        if let Some(symbol) = route_symbol(&self.route) { self.toggle_symbol(symbol, fold, cx); }
+        self.with_disclosure(symbol, |state| state.ui = state.ui.clone().apply(change), cx);
     }
 
     pub(crate) fn toggle_package_outline(&mut self, cx: &mut Context<Self>) {

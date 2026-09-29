@@ -11,7 +11,7 @@ use super::features::{FeatureFacts, FeatureNode, features};
 use super::fixture::{self, MPSC, TOML};
 use super::heads::{Place, Sighting, Signals, findings, heads};
 use super::shingles::{ModuleFacts, ShingleFacts, shingles};
-use super::state::{Extent, Fold, Names, Nominal, Pick, Standing, Time, Use};
+use super::state::{Extent, Fold, Names, Nominal, Pick, Standing, Time, Unsafe, Use};
 use super::ticker::{Release, TickerFacts, ticker};
 use crate::icons::Lang;
 use crate::marks::badges::Item;
@@ -228,16 +228,16 @@ fn resting_on_a_shingle_names_it_on_a_plate_and_a_click_opens_its_module_at_it(c
     assert_eq!(log.borrow().as_slice(), ["open 1 Some(2)"]);
 }
 
+/// The keyboard is the host's (one system for the page): the region it stands
+/// on is rested on, and the foot reads it as it reads a hovered one.
 #[gpui::test]
-fn the_keyboard_walks_regions_and_enter_opens_the_one_it_is_on(cx: &mut TestAppContext) {
-    let (cx, log) = open(cx, map());
-    cx.update(|window, cx| window.focus_next(cx));
-    frame(cx);
-    cx.simulate_keystrokes("right right");
-    advance(cx, 60);
-    assert_eq!(text_at(cx, "foot-name").map(|t| t.0), Some(fixture::TOKIO_MODULES[1].0.to_owned()), "the first arrow lands on the first region, the second on the next");
-    cx.simulate_keystrokes("enter");
-    assert_eq!(log.borrow().as_slice(), ["open 1 None"]);
+fn a_region_the_host_rests_on_reads_itself_in_the_foot(cx: &mut TestAppContext) {
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(WIDTH - 40.0));
+        let modules: Vec<ModuleFacts> = fixture::TOKIO_MODULES.iter().enumerate().map(|(i, (name, n))| ModuleFacts::new(*name, fixture::shingles(i, *n))).collect();
+        shingles("map", modules.into(), &m).rest(Some(crate::folio::shingles::Spot::Region(1))).into_any_element()
+    });
+    assert_eq!(text_at(cx, "foot-name").map(|t| t.0), Some(fixture::TOKIO_MODULES[1].0.to_owned()), "the foot names the region the host rests on");
 }
 
 // ------------------------------------------------------------------ ticker
@@ -437,6 +437,20 @@ fn the_heads_up_hand_fans_out_with_words_and_a_click_opens_the_sheet_of_evidence
     assert!(sheet.iter().any(|t| t == "src/process/unix/pidfd_reaper.rs:234"), "the evidence names its file and line: {sheet:?}");
     assert!(sheet.iter().any(|t| t == "src/net/addr.rs:3"), "{sheet:?}");
     assert!(sheet.iter().any(|t| t == "Command::new(\"uname\")"), "and shows the line: {sheet:?}");
+}
+
+/// A hand of one finding says it at rest (a lone icon in an otherwise empty
+/// tile says nothing); a hand of several keeps to icons until it is rested on
+/// (`the_heads_up_hand_fans_out...`).
+#[gpui::test]
+fn a_lone_finding_says_its_words_at_rest(cx: &mut TestAppContext) {
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(WIDTH - 40.0));
+        let forbids = Signals { unsafe_code: Unsafe::Forbidden, ..Signals::default() };
+        heads("heads", "present", Rc::new(findings(&forbids)), px(246.0), px(900.0), Nominal::px(124.0), &m).into_any_element()
+    });
+    let rest = said(cx);
+    assert!(rest.iter().any(|t| t == "Forbids unsafe code"), "the only finding is said, not just drawn: {rest:?}");
 }
 
 // ------------------------------------------------------------------ features

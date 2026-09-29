@@ -20,6 +20,21 @@ pub const MAIN: f32 = 860.0;
 pub const RAIL: f32 = 280.0;
 /// The gap between them at 100 % text.
 pub const GAP: f32 = 56.0;
+/// About how wide one character of code is at 100 % text.
+const CODE_CHAR: f32 = 7.5;
+
+/// How many characters of code fit on a place's row in a column `width` wide
+/// (at 100 % text) whose file column is `place` wide: the glyph, the gaps and
+/// the fill chip take their share; on a row too narrow to hold the code beside
+/// its file, the code has a row to itself.
+fn code_chars(width: f32, place: f32) -> usize {
+    const GLYPH: f32 = 22.0;
+    const GAPS_AND_FILL: f32 = 60.0 + 150.0;
+    const LEAST_BESIDE: f32 = 200.0;
+    let beside = width - GLYPH - place - GAPS_AND_FILL;
+    let room = if beside < LEAST_BESIDE { width - GLYPH } else { beside };
+    (room.max(0.0) / CODE_CHAR) as usize
+}
 
 /// Where the rail sits.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,14 +60,31 @@ pub struct Layout {
     pub label: f32,
     /// The width of a place's file column, at 100 % text.
     pub place: f32,
+    /// How many characters of a code line fit beside a place's file.
+    pub code: usize,
     /// Whether the room is a phone's.
     pub screen: Screen,
     /// How case and field rows are set.
     pub rows: Rows,
     /// How many columns method groups take.
     pub cells: Cells,
-    /// How many times the rail has changed sides (a `Flow`'s epoch).
-    pub epoch: Epoch,
+    /// How many times each arrangement has changed (a `Flow`'s epoch).
+    pub epoch: Epochs,
+}
+
+/// How many times each of the page's arrangements has changed its mind: what
+/// a [`Flow`](crate::motion::Flow) is told so the parts that moved spring to
+/// their new places instead of jumping.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct Epochs {
+    /// The rail moved beside or below.
+    pub rail: Epoch,
+    /// Case and field rows stacked or spread.
+    pub rows: Epoch,
+    /// Method groups took one column or two.
+    pub cells: Epoch,
+    /// The room became a phone's or a window's.
+    pub screen: Epoch,
 }
 
 fn design(value: Pixels, scale: f32) -> f32 {
@@ -75,6 +107,7 @@ impl Layout {
             }
             Rail::Below => (room.width(), Side::Below),
         };
+        let (screen, rows, cells) = (modes.settle(&SYMBOL_PHONE, room), modes.settle(&SYMBOL_ROWS, reader), modes.settle(&SYMBOL_CELLS, reader));
         Self {
             main,
             side,
@@ -82,10 +115,11 @@ impl Layout {
             section: design(SYMBOL_SECTION.at(room), scale),
             label: design(SYMBOL_LABEL.at(room), scale),
             place: design(SYMBOL_PLACE.at(room), scale),
-            screen: modes.settle(&SYMBOL_PHONE, room).mode,
-            rows: modes.settle(&SYMBOL_ROWS, reader).mode,
-            cells: modes.settle(&SYMBOL_CELLS, reader).mode,
-            epoch: rail.epoch,
+            code: code_chars(design(main, scale), design(SYMBOL_PLACE.at(room), scale)),
+            screen: screen.mode,
+            rows: rows.mode,
+            cells: cells.mode,
+            epoch: Epochs { rail: rail.epoch, rows: rows.epoch, cells: cells.epoch, screen: screen.epoch },
         }
     }
 }
@@ -132,5 +166,26 @@ mod tests {
             last = now;
         }
         assert_eq!(last.screen, Screen::Window);
+    }
+
+    #[test]
+    fn the_code_a_place_row_holds_grows_with_the_room_and_a_phone_gives_it_a_row_of_its_own() {
+        let modes = Modes::new();
+        let phone = Layout::of(&at(320.0), &modes).code;
+        let tablet = Layout::of(&at(700.0), &modes).code;
+        let wide = Layout::of(&at(1096.0), &modes).code;
+        assert!((25..=45).contains(&phone), "a phone holds a line's worth beside nothing: {phone}");
+        assert!(tablet > phone && wide > 45, "{phone} {tablet} {wide}");
+    }
+
+    #[test]
+    fn a_mode_that_changes_is_an_epoch_so_the_parts_that_move_can_flow() {
+        let modes = Modes::new();
+        let start = Layout::of(&at(1200.0), &modes).epoch;
+        assert_eq!(Layout::of(&at(1190.0), &modes).epoch, start, "a drag inside a mode is not an epoch");
+        let below = Layout::of(&at(900.0), &modes).epoch;
+        assert_ne!(below.rail, start.rail, "the rail moving under the page is one");
+        assert_eq!(Layout::of(&at(880.0), &modes).epoch, below, "and the next width is not");
+        assert_ne!(Layout::of(&at(320.0), &modes).epoch.screen, below.screen, "so is a phone");
     }
 }

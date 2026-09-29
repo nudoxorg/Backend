@@ -1141,7 +1141,7 @@ fn compose_find(
     check(context.cancel)?;
     let indexed = engine.probe(Probe::Packages);
     check(context.cancel)?;
-    let query_text = query.map(|query| backend_library::ProductText::new(query.text.to_string())).transpose().map_err(|_| shape("find query"))?;
+    let query_text = query.map(|query| ProductText::new(query.text.to_string())).transpose().map_err(|_| shape("find query"))?;
     let catalog = engine.surface(SurfaceCommand::Explore { query: query_text, limit: EXPLORE_LIMIT });
     check(context.cancel)?;
     let indexed_rows = match &indexed {
@@ -1152,7 +1152,8 @@ fn compose_find(
         Ok(SurfaceReply::Explored(records)) => Some(records.as_ref()),
         _ => None,
     };
-    let packages = super::browse_reads::find_packages(query.map_or("", |query| query.text.as_ref()), indexed_rows.as_deref().unwrap_or_default(), catalog_rows.unwrap_or_default());
+    let registry = crate::host::registry::composed();
+    let packages = super::browse_reads::find_packages(query.map_or("", |query| query.text.as_ref()), indexed_rows.as_deref().unwrap_or_default(), catalog_rows.unwrap_or_default(), registry.as_ref().map(|composed| composed.source.as_ref()));
     let package_coverage = if indexed_rows.is_some() && catalog_rows.is_some() {
         Known::Known(())
     } else {
@@ -1294,17 +1295,11 @@ mod tests {
         }
 
         fn outcomes(&self, count: usize) -> Vec<ReadOutcome> {
-            let deadline = Instant::now() + Duration::from_secs(10);
             let mut outcomes = Vec::new();
-            while outcomes.len() < count {
+            crate::runtime::wait::until(format!("{count} outcomes arrived"), || {
                 outcomes.extend(self.pool.drain());
-                assert!(
-                    Instant::now() < deadline,
-                    "only {} outcomes arrived",
-                    outcomes.len()
-                );
-                thread::sleep(Duration::from_millis(1));
-            }
+                outcomes.len() >= count
+            });
             outcomes
         }
     }

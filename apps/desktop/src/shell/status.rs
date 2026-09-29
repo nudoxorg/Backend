@@ -111,19 +111,34 @@ pub(crate) struct Status {
 const WHISPER: Duration = Duration::from_millis(2_400);
 
 /// The first card ever held, as the foot first drew it: which, when (the
-/// motion clock, virtual under the harness), and the timer that redraws the
-/// foot once the whisper has had its time.
+/// motion clock, virtual under the harness), and where it is in its time.
 struct Whisper {
     held: crate::model::hand::Held,
     since: Instant,
-    timer: Option<gpui::Task<()>>,
+    phase: WhisperPhase,
+}
+
+/// Where a whisper is: heard until its timer fires, then spent. The timer
+/// ENDS it: the foot never asks a clock again whether the whisper is over
+/// (a clock that disagrees with the timer would start it again, for ever).
+enum WhisperPhase {
+    /// Showing; the timer redraws the foot with the whisper spent.
+    Heard(gpui::Task<()>),
+    /// Over: it is not said again.
+    Spent,
 }
 
 impl Whisper {
-    /// How much of its time is left `now`: `None` once it has had it all.
+    /// How much of its time is left `now` (the motion clock): `None` once it
+    /// has had it all.
     fn left(&self, now: Instant) -> Option<Duration> {
-        WHISPER.checked_sub(now.saturating_duration_since(self.since))
+        whisper_left(self.since, now)
     }
+}
+
+/// How much of a whisper begun at `since` is left at `now`.
+fn whisper_left(since: Instant, now: Instant) -> Option<Duration> {
+    WHISPER.checked_sub(now.saturating_duration_since(since))
 }
 
 impl Status {
@@ -186,6 +201,7 @@ impl Render for Status {
         }
         let (focus, notice) = (store.graph_focus().cloned(), store.notice().cloned());
         let speaks = graph_speaks(&snapshot, focus.as_ref(), notice.as_ref());
+        let retry = retry_button(notice.as_ref(), &snapshot, &self.links, &measure);
         let hand = snapshot.session().hand.clone();
         if !speaks || !hand.is_empty() {
             let view = crate::runtime::fixture_world::hand_view(&hand, cx);
@@ -196,23 +212,26 @@ impl Render for Status {
             let now = facet::motion::now(cx);
             let whisper = snapshot.session().whisper.clone().and_then(|held| {
                 if !self.whisper.as_ref().is_some_and(|seen| seen.held.same(&held)) {
-                    self.whisper = Some(Whisper { held: held.clone(), since: now, timer: None });
-                }
-                let seen = self.whisper.as_mut()?;
-                let left = seen.left(now)?;
-                // One timer per whisper: it redraws the foot when the time is up.
-                if seen.timer.is_none() {
-                    seen.timer = Some(cx.spawn(async move |status, cx| {
-                        cx.background_executor().timer(left).await;
+                    // Heard from the frame that first drew it, for its time.
+                    let timer = cx.spawn(async move |status, cx| {
+                        cx.background_executor().timer(WHISPER).await;
                         let _ = status.update(cx, |status, cx| {
                             if let Some(seen) = status.whisper.as_mut() {
-                                seen.timer = None;
+                                seen.phase = WhisperPhase::Spent;
                             }
                             cx.notify();
                         });
-                    }));
+                    });
+                    self.whisper = Some(Whisper { held: held.clone(), since: now, phase: WhisperPhase::Heard(timer) });
                 }
-                Some(held)
+                let seen = self.whisper.as_mut()?;
+                match seen.phase {
+                    WhisperPhase::Heard(_) if seen.left(now).is_some() => Some(held),
+                    WhisperPhase::Heard(_) | WhisperPhase::Spent => {
+                        seen.phase = WhisperPhase::Spent;
+                        None
+                    }
+                }
             });
             let words = whisper.map(|held| {
                 let name = view
@@ -240,12 +259,43 @@ impl Render for Status {
                     .gap(measure.space(Space::Roomy))
                     .children(self.marks.render(&view, &self.links, &measure, palette, window, cx))
                     .children(words)
-                    .children(said),
+                    .children(said)
+                    .children(retry),
             );
         }
         let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), self.core.width(), cx);
+        if retry.is_some() {
+            return foot.px(measure.space(Space::Roomy)).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(measure.space(Space::Roomy))
+                    .child(div().flex().flex_col().min_w(px(0.0)).children(said_lines(lines, role, palette.ink3.hsla())))
+                    .children(retry),
+            );
+        }
         foot.px(measure.space(Space::Roomy)).children(said_lines(lines, role, palette.ink3.hsla()))
     }
+}
+
+/// "Try again" beside a notice that has something to retry (the index could
+/// not start: asking for the page again starts the owner again).
+fn retry_button(
+    notice: Option<&crate::runtime::graph_focus::Notice>,
+    snapshot: &AppSnapshot,
+    links: &Links,
+    measure: &Measure,
+) -> Option<gpui::AnyElement> {
+    let notice = notice.filter(|notice| notice.active(snapshot))?;
+    let key = notice.retry.clone()?;
+    let links = links.clone();
+    Some(
+        facet::controls::button("status-retry", "Try again", measure)
+            .size(facet::Control::Small)
+            .ghost()
+            .on_click(move |_, cx| links.retry(key.clone(), cx))
+            .into_any_element(),
+    )
 }
 
 /// The graph's line(s), each published to the probe as `address:{n}:…`.
@@ -262,4 +312,22 @@ fn said_lines(lines: Vec<String>, role: facet::tokens::TypeRole, color: gpui::Hs
                 )
                 .into_any_element()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A whisper has its 2.4 s and no more; whether it is over is decided by
+    /// its own time and its timer, never by a clock asked again and again.
+    #[test]
+    fn a_whisper_has_two_and_four_tenths_seconds() {
+        let since = Instant::now();
+        assert_eq!(whisper_left(since, since), Some(WHISPER));
+        assert_eq!(whisper_left(since, since + Duration::from_millis(1_000)), Some(Duration::from_millis(1_400)));
+        assert_eq!(whisper_left(since, since + WHISPER), Some(Duration::ZERO), "the last instant is still its own");
+        assert_eq!(whisper_left(since, since + WHISPER + Duration::from_millis(1)), None);
+        let earlier = since.checked_sub(Duration::from_secs(1)).unwrap_or(since);
+        assert_eq!(whisper_left(since, earlier), Some(WHISPER), "a clock that steps back does not stretch it");
+    }
 }

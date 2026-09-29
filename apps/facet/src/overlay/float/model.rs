@@ -87,7 +87,19 @@ impl FloatKind {
         }
     }
 
-    /// Exit duration (full).
+    /// An unfurl card's whole exit (its body rolls up in the first 120 ms
+    /// of [`super::UNFURL_EXIT`], then the edge and the underline follow).
+    /// A tip runs it three quarters as long, so its body is gone 90 ms after
+    /// its grace: 120 ms after the pointer left.
+    #[must_use]
+    pub const fn unfurl_exit(self) -> Duration {
+        match self {
+            Self::Tip => ms(225),
+            Self::Peek | Self::Lens | Self::Menu => super::UNFURL_EXIT,
+        }
+    }
+
+    /// Exit duration (full) of a card that does not unfurl.
     #[must_use]
     pub const fn exit(self) -> Duration {
         match self {
@@ -1376,7 +1388,7 @@ impl Model {
 
     fn close_index(&mut self, index: usize, now: Instant) {
         let exit = self.duration(if self.cards[index].unfurl {
-            super::UNFURL_EXIT
+            self.cards[index].kind.unfurl_exit()
         } else {
             self.cards[index].kind.exit()
         });

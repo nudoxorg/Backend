@@ -2,8 +2,9 @@
 //! do, its releases, and how we know its types.
 
 use super::super::facts::Facts;
-use super::super::view::{Cap, CapMark, Kind, Origin, Outcomes, Rail, Release, Sibling, SourceAt};
+use super::super::view::{Cap, CapMark, Kind, Outcomes, Rail, Release, Sibling, SourceAt};
 use super::callable::callable;
+use super::known::{Chip, Std};
 
 /// The rail for a page.
 pub(super) fn rail(facts: &Facts, untyped: bool) -> Rail {
@@ -73,7 +74,7 @@ fn affinity(current: &[String], other: &[String]) -> usize {
 
 /// What differs, in words: `from_slice` beside `from_str` reads "slice",
 /// or what its signature takes when it is read ("from bytes").
-fn differs(facts: &Facts, current: &[String], name: &str, signature: Option<&str>) -> String {
+fn differs(facts: &Facts, current: &[String], name: &str, kind: Kind, signature: Option<&str>) -> String {
     let other = words(name);
     let lead = current.iter().zip(&other).take_while(|(a, b)| a == b).count();
     let tail: Vec<&str> = other[lead.min(other.len())..].iter().map(String::as_str).collect();
@@ -89,7 +90,8 @@ fn differs(facts: &Facts, current: &[String], name: &str, signature: Option<&str
             return format!("{} {}", other[0], port.ty.word);
         }
     }
-    if tail.is_empty() { words(name).join(" ") } else { tail.join(" ") }
+    // Nothing differs in the words of the name: say what it is instead of saying its name twice.
+    if tail.is_empty() { kind.word().to_owned() } else { tail.join(" ") }
 }
 
 fn siblings(facts: &Facts) -> Vec<Sibling> {
@@ -123,7 +125,7 @@ fn siblings(facts: &Facts) -> Vec<Sibling> {
             Sibling {
                 name: beside.name.clone(),
                 kind: beside.kind,
-                differs: differs(facts, &current, &beside.name, beside.signature.as_deref()),
+                differs: differs(facts, &current, &beside.name, beside.kind, beside.signature.as_deref()),
                 outcomes,
                 link: beside.link.clone(),
             }
@@ -131,29 +133,15 @@ fn siblings(facts: &Facts) -> Vec<Sibling> {
         .collect()
 }
 
-/// The traits it implements as chips: the ones the board names get their
+/// The traits it implements as chips: the ones the language names get their
 /// mark and words; the rest show their name.
 fn caps(facts: &Facts) -> Vec<Cap> {
     let mut out: Vec<Cap> = Vec::new();
     for (name, derived) in &facts.implements {
-        let (mark, word) = match name.as_str() {
-            "Clone" => (CapMark::Copy, "copies"),
-            "Copy" => (CapMark::Copy, "copies by assignment"),
-            "PartialEq" => (CapMark::Eq, "compares with =="),
-            "Eq" | "IntoDeserializer" | "StdError" | "Send" | "Sync" | "Unpin" | "UnwindSafe" | "RefUnwindSafe" => continue,
-            "PartialOrd" | "Ord" => (CapMark::Order, "orders"),
-            "Hash" => (CapMark::Hash, "can be a map key"),
-            "Debug" => (CapMark::Debug, "prints for debugging"),
-            "Display" => (CapMark::Print, "prints"),
-            "Default" => (CapMark::Default, "has a default"),
-            "Serialize" => (CapMark::Ser, "serde can write it"),
-            "Deserialize" => (CapMark::De, "serde can read one"),
-            "FromStr" => (CapMark::FromStr, "parses from text"),
-            "Index" => (CapMark::Index, "v[i] works"),
-            "Deserializer" => (CapMark::Reader, "is itself a reader of serde data"),
-            "Error" => (CapMark::Error, "is an error"),
-            "Iterator" | "IntoIterator" => (CapMark::Iter, "loops"),
-            other => (CapMark::Other, other),
+        let (mark, word) = match Std::of(name).map_or(Chip::Named, Std::chip) {
+            Chip::Hidden => continue,
+            Chip::Says(mark, word) => (mark, word),
+            Chip::Named => (CapMark::Other, name.as_str()),
         };
         if out.iter().any(|cap| cap.word == word && cap.mark == mark && mark != CapMark::Other) {
             continue;
@@ -164,12 +152,6 @@ fn caps(facts: &Facts) -> Vec<Cap> {
         out.push(Cap { name: name.clone(), word: word.to_owned(), mark, derived: *derived });
     }
     out
-}
-
-/// The origin note for a call's types, for tests.
-#[allow(dead_code)]
-pub(super) const fn undeclared_origin() -> Origin {
-    Origin::Code
 }
 
 #[cfg(test)]

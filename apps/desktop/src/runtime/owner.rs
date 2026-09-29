@@ -63,6 +63,18 @@ impl From<String> for OwnerFault {
     }
 }
 
+/// Which publish a state was. The gate counts them, so a watcher can say
+/// "after the last one I saw" and a patience can say "the start that began
+/// at this one".
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Epoch(u64);
+
+impl Epoch {
+    const fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
 /// What the window knows about its owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::large_enum_variant, reason = "a handful are published per process")]
@@ -98,7 +110,7 @@ struct Shared {
 struct Inner {
     state: OwnerState,
     /// Bumps on every publish; the UI watcher remembers the last it saw.
-    epoch: u64,
+    epoch: Epoch,
     /// The UI watcher, parked until the next publish.
     waker: Option<Waker>,
     /// A restart was asked for (the page's "Try again" after a failure).
@@ -127,7 +139,7 @@ impl OwnerGate {
         Self(Arc::new(Shared {
             inner: Mutex::new(Inner {
                 state,
-                epoch: 0,
+                epoch: Epoch::default(),
                 waker: None,
                 restart: false,
                 since: Instant::now(),
@@ -158,7 +170,7 @@ impl OwnerGate {
             }
             inner.state = state;
             inner.since = Instant::now();
-            inner.epoch = inner.epoch.wrapping_add(1);
+            inner.epoch = inner.epoch.next();
             inner.waker.take()
         };
         self.0.changed.notify_all();
@@ -258,7 +270,7 @@ impl OwnerGate {
 
     /// Resolves with the first state published after epoch `seen` (at once
     /// when one already was), and that state's epoch.
-    pub fn next(&self, seen: u64) -> impl Future<Output = (u64, OwnerState)> + 'static {
+    pub fn next(&self, seen: Epoch) -> impl Future<Output = (Epoch, OwnerState)> + 'static {
         let gate = self.clone();
         std::future::poll_fn(move |task| {
             let mut inner = gate.lock();
@@ -275,14 +287,14 @@ impl OwnerGate {
 impl OwnerGate {
     /// The current state's epoch and whether it is a start still being
     /// waited for.
-    fn starting_at(&self) -> Option<u64> {
+    fn starting_at(&self) -> Option<Epoch> {
         let inner = self.lock();
         matches!(inner.state, OwnerState::Starting).then_some(inner.epoch)
     }
 
     /// Publishes [`OwnerFault::Silent`] if the start that began at `epoch`
     /// is still the state (a later publish is another start, or an answer).
-    fn give_up_on(&self, epoch: u64, patience: Duration) {
+    fn give_up_on(&self, epoch: Epoch, patience: Duration) {
         if self.starting_at() == Some(epoch) {
             self.publish(OwnerState::Failed(OwnerFault::Silent(patience)));
         }
@@ -303,10 +315,10 @@ fn watch_patience(gate: &OwnerGate, patience: Duration, cx: &mut App) {
 
 /// Turns every published owner state into the window's data events, on the
 /// UI thread, for as long as the app runs.
-pub fn watch(gate: OwnerGate, root: Entity<super::UiRootEntity>, store: Entity<super::store::DataStore>, cx: &mut App) {
+pub(crate) fn watch(gate: OwnerGate, root: Entity<super::UiRootEntity>, store: Entity<super::store::DataStore>, cx: &mut App) {
     watch_patience(&gate, PATIENCE, cx);
     cx.spawn(async move |cx| {
-        let mut seen = 0;
+        let mut seen = Epoch::default();
         loop {
             let (epoch, state) = gate.next(seen).await;
             seen = epoch;
@@ -380,7 +392,7 @@ mod tests {
         let gate = OwnerGate::starting();
         let waker = Waker::noop();
         let mut task = std::task::Context::from_waker(waker);
-        let mut first = Box::pin(gate.next(0));
+        let mut first = Box::pin(gate.next(Epoch::default()));
         assert!(first.as_mut().poll(&mut task).is_pending(), "nothing was published yet");
         gate.publish(OwnerState::Failed("no".into()));
         let Poll::Ready((epoch, state)) = first.as_mut().poll(&mut task) else {

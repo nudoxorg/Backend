@@ -881,6 +881,22 @@ pub mod fluid {
     /// The marks gallery's hero gem: 48 on a phone, 64 from 640.
     pub const MARK_GEM: Length = Length::new(&[stop(320.0, 48.0), stop(640.0, 64.0)]);
 
+    // ---- The sidebar ----
+
+    /// How the sidebar sets its lens strip and its rows for the room it has.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum SideForm {
+        /// A lens you are not on shows its chord letter instead of its
+        /// word, and a row drops the quiet words after its name.
+        Tight,
+        /// Every lens says its word, every row its quiet words.
+        Full,
+    }
+
+    /// The sidebar is Full from 232 design px (its floor is 200, its
+    /// default 264).
+    pub const SIDE: Ladder<SideForm> = Ladder::new(ModeId::Side, &[rung(SideForm::Tight, 0.0), rung(SideForm::Full, 232.0)]);
+
     /// The marks gallery's dependency line sits beside the marks from 760.
     pub const HERO_DEPS: Ladder<Split> = Ladder::new(ModeId::Lab, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)]);
 
@@ -1005,10 +1021,23 @@ pub mod fluid {
         Field,
     }
 
-    /// The rose is a list up to 560 and a field above (`data/rose.rs`
-    /// `LIST_BELOW`); the page reads it through its `Modes` and hands the
-    /// result to `Rose::list(..)`.
+    /// The rose is four quiet lines below 560 and a field above; `Rose` reads
+    /// it through a `Modes` of its own (`data/rose.rs`), and `Rose::list(..)`
+    /// still forces one.
     pub const ROSE: Ladder<Form> = Ladder::new(ModeId::Rose, &[rung(Form::List, 0.0), rung(Form::Field, 560.0)]);
+
+    /// How a version comb is drawn.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Comb {
+        /// A band of ticks: all a column this narrow can hold.
+        Band,
+        /// The style the comb was asked for.
+        Asked,
+    }
+
+    /// A comb is a band below 240 and the style it was asked for above
+    /// (`marks/version.rs`), held 32 px through the edge.
+    pub const COMB: Ladder<Comb> = Ladder::new(ModeId::Comb, &[rung(Comb::Band, 0.0), rung(Comb::Asked, 240.0)]);
 
     /// How many cells of the package page's crest share a row.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

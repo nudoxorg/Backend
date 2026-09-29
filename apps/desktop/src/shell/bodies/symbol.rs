@@ -34,8 +34,6 @@ mod page_tests;
 mod place;
 mod uses;
 
-pub(crate) use uses::in_flight;
-
 pub(super) fn body(
     place: &Route,
     route: &SymbolRoute,
@@ -59,11 +57,8 @@ pub(super) fn body(
     let history = history_of(&package, &page, cx);
     let facts = facts::facts(&page, &package, &companions, &history);
     let view = facet::anatomy::symbol::compile(&facts);
-    // What your packages do with it, read from their own files.
-    let workspace = match uses::ask(&symbol, &page, cx) {
-        uses::Reading::Ready(sites) => facet::anatomy::symbol::derive::uses::read_all(&sites, &facet::anatomy::symbol::derive::uses::Reader::of(&view)),
-        uses::Reading::Reading => facet::anatomy::symbol::view::Uses { all: Vec::new(), elsewhere: Some("Reading the lines your packages use it on…".to_owned()) },
-    };
+    // What your packages do with it: the lines the page carries, read.
+    let workspace = facet::anatomy::symbol::derive::uses::read_all(&uses::sites(&page), &facet::anatomy::symbol::derive::uses::Reader::of(&view));
     let view = facet::anatomy::symbol::with_uses(view, &workspace);
 
     let disclosure = ctx.symbol_disclosure.clone();

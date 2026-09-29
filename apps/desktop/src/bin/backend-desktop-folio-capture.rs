@@ -456,6 +456,18 @@ fn main() {
     // Motion is eased on the harness clock, which moves before an act, not
     // after: every act is followed by a frame with nothing to do.
     shots.push(staged("tokio-region", &tokio, vec![vec![], vec![Act::Hover("region-sync::mpsc")], vec![]]));
+    // The shingles of a clicked module in the air: frames 40 ms apart from the click.
+    shots.push(Shot {
+        frames: vec![0, 1000, 1040, 1080, 1120, 1180, 1500],
+        acts: vec![vec![], vec![Act::Click("region-sync::mpsc")], vec![], vec![], vec![], vec![], vec![]],
+        ..still("tokio-flight", &tokio, 1440, 1100)
+    });
+    // The berg dropping in: frames 40 ms apart from the click.
+    shots.push(Shot {
+        frames: vec![0, 1000, 1040, 1080, 1120, 1180, 1500],
+        acts: vec![vec![], vec![Act::Click("weight-label")], vec![], vec![], vec![], vec![], vec![]],
+        ..still("tokio-berg-open", &tokio, 1440, 900)
+    });
     shots.push(staged("tokio-module", &tokio, vec![vec![], vec![Act::Click("region-sync::mpsc")], vec![Act::Away], vec![]]));
     shots.push(staged("tokio-heads", &tokio, vec![vec![], vec![Act::HoverAt("heads-label", 0.0, 27.0)], vec![]]));
     shots.push(staged("tokio-heads-sheet", &tokio, vec![vec![], vec![Act::HoverAt("heads-label", 0.0, 27.0)], vec![Act::ClickAt("heads-label", 0.0, 27.0)], vec![]]));

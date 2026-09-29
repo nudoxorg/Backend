@@ -1,36 +1,142 @@
-//! The journey script: acts (the `storm --replay` language, untimed), picks
-//! of what a person points at, and checkpoints of content asserts.
+//! The journey line grammar: acts (the `storm --replay` language, untimed),
+//! picks of what a person points at, the steps a production journey adds
+//! (`await`, `answer-picker`, `restart`), and checkpoints of content asserts.
+//! Assembling lines into a plan (headers, `do PART`, `needs`) is
+//! [`super::plan`]'s.
 
 use super::super::route;
 use backend_gui_harness::{Act, Script};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
-/// A parsed journey.
-#[derive(Clone, Debug)]
-pub struct Journey {
-    /// The file's stem (`J1`).
-    pub name: String,
-    /// Where it was read from.
-    pub source: PathBuf,
-    /// The window's logical size.
-    pub size: (u32, u32),
-    /// The boot route, in harness route words.
-    pub start: String,
-    /// The steps in order.
-    pub steps: Vec<Step>,
+/// Where a line was written: a file and its 1-based line (a Rust call site
+/// for a plan built in code).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Site {
+    /// The file.
+    pub file: Arc<Path>,
+    /// The 1-based line.
+    pub line: usize,
 }
 
-/// One step with its line.
+impl Site {
+    /// `file:line`.
+    #[must_use]
+    pub fn new(file: &Path, line: usize) -> Self {
+        Self { file: Arc::from(file), line }
+    }
+}
+
+impl std::fmt::Display for Site {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown = super::look::short(&self.file.display().to_string()).replace("<repo>/apps/desktop/journeys/", "");
+        write!(f, "{shown}:{}", self.line)
+    }
+}
+
+/// The sites a step came through: the journey's own line first (a `do`
+/// line when the step comes from a part), the line that wrote it last.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Origin(pub Vec<Site>);
+
+impl Origin {
+    /// One site.
+    #[must_use]
+    pub fn at(site: Site) -> Self {
+        Self(vec![site])
+    }
+
+    /// This origin, then `site` (a part's line, used from here).
+    #[must_use]
+    pub fn then(&self, site: Site) -> Self {
+        let mut sites = self.0.clone();
+        sites.push(site);
+        Self(sites)
+    }
+
+    /// The line that wrote the step.
+    #[must_use]
+    pub fn last(&self) -> Option<&Site> {
+        self.0.last()
+    }
+}
+
+impl std::fmt::Display for Origin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, site) in self.0.iter().enumerate() {
+            if index > 0 {
+                f.write_str(" > ")?;
+            }
+            write!(f, "{site}")?;
+        }
+        Ok(())
+    }
+}
+
+/// One step, with where it came from.
 #[derive(Clone, Debug)]
 pub struct Step {
-    /// 1-based line in the script.
-    pub line: usize,
-    /// The line as written.
+    /// The sites it came through (journey line first).
+    pub origin: Origin,
+    /// The line as delivered (parameters substituted).
     pub text: String,
     /// What it does.
     pub kind: StepKind,
     /// The detour taken when the step cannot be done: acts or a pointer.
+    /// Taking it still fails the step.
     pub otherwise: Option<Box<StepKind>>,
+    /// A product or data gap this step waits on: when it fails, the journey
+    /// is BLOCKED with these words, not FAIL.
+    pub needs: Option<Gap>,
+}
+
+/// What kind of gap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GapKind {
+    /// A feature the product does not have yet.
+    Product,
+    /// Data the index cannot serve yet.
+    Data,
+}
+
+impl GapKind {
+    /// The report spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Product => "product",
+            Self::Data => "data",
+        }
+    }
+}
+
+/// A named gap (`needs product "…"`): the verdict's words when the step it
+/// gates fails.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Gap {
+    /// Product or data.
+    pub kind: GapKind,
+    /// What is missing, in the words GAPS.md uses.
+    pub what: String,
+}
+
+/// What an `await` waits for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Until {
+    /// Every string is on screen (in the area).
+    Text(Vec<String>, Option<Area>),
+    /// No string is on screen (in the area).
+    Absent(Vec<String>, Option<Area>),
+}
+
+/// How the harness answers the native folder panel the product opened.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PickerAnswer {
+    /// The person chose these folders (absolute).
+    Folders(Vec<PathBuf>),
+    /// The person cancelled.
+    Cancel,
 }
 
 /// What a step does.
@@ -49,6 +155,19 @@ pub enum StepKind {
     Settle,
     /// Virtual time passes.
     Wait(u64),
+    /// Real time passes, frames drawn, until the owner's work shows the
+    /// condition (indexing runs for minutes on real threads).
+    Await {
+        /// The condition.
+        until: Until,
+        /// The real-time bound.
+        within: Duration,
+    },
+    /// The native folder panel the product opened is answered.
+    AnswerPicker(PickerAnswer),
+    /// Quit (the app's quit handlers run, the owner stops) and launch again
+    /// on the same machine state, through the production launch path.
+    Restart,
     /// A named checkpoint.
     Check {
         /// Its name.
@@ -143,10 +262,24 @@ impl std::fmt::Display for Pick {
 /// One assertion on a settled checkpoint frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Assert {
-    /// The route, exactly (harness route words).
+    /// The route, exactly (harness route words, resolved on the fixture).
     Route(String),
+    /// The route as exact words matches this glob (`*` any run): the
+    /// production machine's route check, which needs no fixture to resolve.
+    RouteLike(String),
     /// Each string is on screen (in the area), exactly.
     Text(Vec<String>, Option<Area>),
+    /// Some visible text (in the area) is exactly matched by the glob
+    /// (`"* declarations from * of * files"`): the evidence quotes it.
+    Like(String, Option<Area>),
+    /// No visible text (in the area) is matched by the glob.
+    Unlike(String, Option<Area>),
+    /// The area's pixels, averaged, read dark or light: the theme as the
+    /// frame shows it, not as the model says.
+    Ground(Tone, Option<Area>),
+    /// Each string was on screen (in the area) in some frame drawn since the
+    /// previous checkpoint: what a person saw while waiting.
+    Saw(Vec<String>, Option<Area>),
     /// The strings are on screen in this paint order.
     Order(Vec<String>, Option<Area>),
     /// None of the strings is on screen.
@@ -168,6 +301,15 @@ pub enum Assert {
         /// The limit in ms.
         limit_ms: f64,
     },
+}
+
+/// How a ground reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Tone {
+    /// Mean luminance under 0.35.
+    Dark,
+    /// Mean luminance over 0.65.
+    Light,
 }
 
 /// A measured budget.
@@ -198,12 +340,12 @@ impl Budget {
 
 /// A token: a quoted string or a bare word.
 #[derive(Clone, Debug, PartialEq)]
-enum Tok {
+pub(super) enum Tok {
     Str(String),
     Word(String),
 }
 
-fn tokens(text: &str) -> Result<Vec<Tok>, String> {
+pub(super) fn tokens(text: &str) -> Result<Vec<Tok>, String> {
     let mut out = Vec::new();
     let mut chars = text.trim().chars().peekable();
     loop {
@@ -301,7 +443,7 @@ fn pick(text: &str) -> Result<Pick, String> {
 }
 
 /// Splits `line` at the first ` else ` outside quotes.
-fn split_else(line: &str) -> (&str, Option<&str>) {
+pub(super) fn split_else(line: &str) -> (&str, Option<&str>) {
     let mut quoted = false;
     let bytes = line.as_bytes();
     let mut index = 0;
@@ -339,6 +481,12 @@ fn acts(text: &str) -> Result<Vec<Act>, String> {
     Ok(script.events.into_iter().map(|event| event.act).collect())
 }
 
+/// Whether an act injects a product intent instead of reaching the window
+/// as a person's input (`route`, and the settings acts): only a detour may.
+pub(super) fn injects(act: &Act) -> bool {
+    act.is_setting()
+}
+
 fn budget(rest: &str) -> Result<Assert, String> {
     let words = rest.split_whitespace().collect::<Vec<_>>();
     let (what, limit) = match words.as_slice() {
@@ -363,15 +511,40 @@ fn budget(rest: &str) -> Result<Assert, String> {
     Ok(Assert::Budget { what, limit_ms })
 }
 
-fn assertion(line: &str) -> Result<Assert, String> {
+/// One indented assert line.
+pub(super) fn assertion(line: &str) -> Result<Assert, String> {
     let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
     let rest = rest.trim();
     match verb {
+        "route" if rest.starts_with("like ") => {
+            let toks = tokens(&rest[5..])?;
+            match toks.as_slice() {
+                [Tok::Str(glob)] => Ok(Assert::RouteLike(glob.clone())),
+                _ => Err("`route like \"GLOB\"`: one quoted glob".to_owned()),
+            }
+        }
         "route" if !rest.is_empty() => {
             route::parse(rest)?;
             Ok(Assert::Route(rest.to_owned()))
         }
         "text" => strings_in(rest).map(|(list, area)| Assert::Text(list, area)),
+        "saw" => strings_in(rest).map(|(list, area)| Assert::Saw(list, area)),
+        "ground" => {
+            let (tone, area) = rest.split_once(" in ").map_or((rest, None), |(tone, area)| (tone.trim(), Some(area.trim())));
+            let tone = match tone {
+                "dark" => Tone::Dark,
+                "light" => Tone::Light,
+                other => return Err(format!("`ground {other}`: `ground dark|light [in AREA]`")),
+            };
+            Ok(Assert::Ground(tone, area.map(Area::parse).transpose()?))
+        }
+        "like" | "unlike" => {
+            let (list, area) = strings_in(rest)?;
+            let [glob] = list.as_slice() else {
+                return Err(format!("`{verb} \"GLOB\" [in AREA]`: one glob"));
+            };
+            Ok(if verb == "like" { Assert::Like(glob.clone(), area) } else { Assert::Unlike(glob.clone(), area) })
+        }
         "order" => {
             let (list, area) = strings_in(rest)?;
             if list.len() < 2 {
@@ -386,21 +559,68 @@ fn assertion(line: &str) -> Result<Assert, String> {
         "link" if !rest.is_empty() => pick(rest).map(Assert::Link),
         "budget" => budget(rest),
         other => Err(format!(
-            "`{other}` is not an assert (route, text, order, absent, line, link, focus, budget)"
+            "`{other}` is not an assert (route, route like, text, like, unlike, saw, ground, order, absent, line, link, focus, budget)"
         )),
     }
 }
 
-fn step_kind(text: &str) -> Result<StepKind, String> {
+/// `20m`, `90s`, `1500ms`.
+fn duration(word: &str) -> Result<Duration, String> {
+    let (number, unit) = word
+        .find(|c: char| !c.is_ascii_digit())
+        .map_or((word, ""), |at| word.split_at(at));
+    let value = number.parse::<u64>().map_err(|_| format!("`{word}` is not a duration (20m, 90s, 1500ms)"))?;
+    match unit {
+        "ms" => Ok(Duration::from_millis(value)),
+        "s" => Ok(Duration::from_secs(value)),
+        "m" => Ok(Duration::from_secs(value * 60)),
+        _ => Err(format!("`{word}` is not a duration (20m, 90s, 1500ms)")),
+    }
+}
+
+/// `await text|absent "S"… [in AREA] within DURATION`.
+fn await_step(rest: &str) -> Result<StepKind, String> {
+    let (condition, within) = rest
+        .rsplit_once(" within ")
+        .ok_or_else(|| "`await text|absent \"S\"… [in AREA] within DURATION`".to_owned())?;
+    let (verb, strings) = condition.trim().split_once(' ').unwrap_or((condition.trim(), ""));
+    let (list, area) = strings_in(strings)?;
+    let until = match verb {
+        "text" => Until::Text(list, area),
+        "absent" => Until::Absent(list, area),
+        other => return Err(format!("`await {other}`: await `text` or `absent`")),
+    };
+    Ok(StepKind::Await { until, within: duration(within.trim())? })
+}
+
+/// A path a journey names: repo-relative, and it must exist.
+pub(super) fn repo_path(word: &str) -> Result<PathBuf, String> {
+    let path = super::super::repo().join(word);
+    path.canonicalize().map_err(|error| format!("`{word}` is not a path under the repository: {error}"))
+}
+
+/// One step line (not a header, not `do`, not `needs`).
+pub(super) fn step_kind(text: &str) -> Result<StepKind, String> {
     let (verb, rest) = text.split_once(' ').unwrap_or((text, ""));
     let rest = rest.trim();
     match verb {
         "settle" if rest.is_empty() => Ok(StepKind::Settle),
+        "restart" if rest.is_empty() => Ok(StepKind::Restart),
         "wait" => rest
             .trim_end_matches("ms")
             .parse::<u64>()
             .map(StepKind::Wait)
             .map_err(|_| format!("`wait {rest}`: expected a time in ms")),
+        "await" => await_step(rest),
+        "answer-picker" => match rest {
+            "cancel" => Ok(StepKind::AnswerPicker(PickerAnswer::Cancel)),
+            "" => Err("`answer-picker PATH…|cancel`".to_owned()),
+            paths => paths
+                .split_whitespace()
+                .map(repo_path)
+                .collect::<Result<Vec<_>, _>>()
+                .map(|folders| StepKind::AnswerPicker(PickerAnswer::Folders(folders))),
+        },
         "hover" | "click" => match acts(text) {
             Ok(acts) => Ok(StepKind::Acts(acts)),
             Err(_) => pick(rest).map(|pick| StepKind::Pointer {
@@ -412,95 +632,6 @@ fn step_kind(text: &str) -> Result<StepKind, String> {
     }
 }
 
-impl Journey {
-    /// Parses a journey script.
-    ///
-    /// # Errors
-    /// The first line that does not parse, with its number.
-    pub fn parse(name: &str, source: &Path, text: &str) -> Result<Self, String> {
-        let mut journey = Self {
-            name: name.to_owned(),
-            source: source.to_path_buf(),
-            size: (1440, 900),
-            start: "orbit".to_owned(),
-            steps: Vec::new(),
-        };
-        for (index, raw) in text.lines().enumerate() {
-            let line = index + 1;
-            let fail =
-                |message: String| format!("{}:{line}: {message}\n    {raw}", source.display());
-            let trimmed = raw.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            if raw.starts_with(char::is_whitespace) {
-                let Some(Step {
-                    kind: StepKind::Check { asserts, .. },
-                    ..
-                }) = journey.steps.last_mut()
-                else {
-                    return Err(fail("an indented assert belongs under a `check NAME`".to_owned()));
-                };
-                asserts.push(assertion(trimmed).map_err(fail)?);
-                continue;
-            }
-            let (verb, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
-            match verb {
-                "size" => {
-                    let (width, height) = rest
-                        .split_once('x')
-                        .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
-                        .ok_or_else(|| fail(format!("`{rest}` is not WxH")))?;
-                    journey.size = (width, height);
-                }
-                "start" => {
-                    route::parse(rest).map_err(fail)?;
-                    rest.trim().clone_into(&mut journey.start);
-                }
-                "check" => {
-                    if rest.is_empty() {
-                        return Err(fail("`check` needs a name".to_owned()));
-                    }
-                    journey.steps.push(Step {
-                        line,
-                        text: trimmed.to_owned(),
-                        kind: StepKind::Check {
-                            name: rest.to_owned(),
-                            asserts: Vec::new(),
-                        },
-                        otherwise: None,
-                    });
-                }
-                _ => {
-                    let (main, otherwise) = split_else(trimmed);
-                    let kind = step_kind(main).map_err(fail)?;
-                    let otherwise = otherwise
-                        .map(|detour| match step_kind(detour)? {
-                            kind @ (StepKind::Acts(_) | StepKind::Pointer { .. }) => Ok(Box::new(kind)),
-                            _ => Err("a detour is acts or a click/hover".to_owned()),
-                        })
-                        .transpose()
-                        .map_err(fail)?;
-                    journey.steps.push(Step {
-                        line,
-                        text: trimmed.to_owned(),
-                        kind,
-                        otherwise,
-                    });
-                }
-            }
-        }
-        if !journey
-            .steps
-            .iter()
-            .any(|step| matches!(step.kind, StepKind::Check { .. }))
-        {
-            return Err(format!("{}: a journey needs at least one `check`", source.display()));
-        }
-        Ok(journey)
-    }
-}
-
 /// `*` matches any run of characters; everything else is literal.
 #[must_use]
 pub(super) fn glob(pattern: &str, key: &str) -> bool {
@@ -509,7 +640,7 @@ pub(super) fn glob(pattern: &str, key: &str) -> bool {
         return pattern == key;
     }
     let (first, last) = (parts[0], parts[parts.len() - 1]);
-    if !key.starts_with(first) || !key[first.len()..].ends_with(last) {
+    if key.len() < first.len() + last.len() || !key.starts_with(first) || !key[first.len()..].ends_with(last) {
         return false;
     }
     let mut rest = &key[first.len()..key.len() - last.len()];
@@ -524,8 +655,8 @@ pub(super) fn glob(pattern: &str, key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Area, Assert, Budget, Journey, Pick, StepKind, glob, pick, split_else, strings_in};
-    use std::path::Path;
+    use super::{Area, Assert, Pick, PickerAnswer, StepKind, Until, assertion, glob, pick, split_else, step_kind, strings_in};
+    use std::time::Duration;
 
     #[test]
     fn globs_match_whole_keys() {
@@ -534,6 +665,8 @@ mod tests {
         assert!(glob("pkg-*::from_str*", "pkg-rust:toml::from_str#12"));
         assert!(glob("resume", "resume"));
         assert!(!glob("resume", "resume-2"));
+        // A key shorter than the glob's fixed ends never matches (no slice panic).
+        assert!(!glob("abc*abc", "abc"));
     }
 
     #[test]
@@ -558,30 +691,28 @@ mod tests {
     }
 
     #[test]
-    fn a_journey_parses_steps_and_asserts() {
-        let text = "size 1440x900\nstart orbit\n# a comment\nkey cmd-k\ntype \"toml Value\"\nclick orbit-package-* else route orbit\nclick \"Spawn\" in reader else click x*\nsettle\nwait 120\ncheck home\n  route orbit\n  text \"a\" \"b\" in reader\n  order \"a\" \"b\"\n  line \"Io, Spawn\"\n  focus x*\n  budget page-open <= 120ms\n  link \"a\" after \"b\"\n  focus restored\n";
-        let journey = Journey::parse("J0", Path::new("J0.journey"), text).expect("parses");
-        assert_eq!(journey.steps.len(), 7);
-        assert!(matches!(journey.steps[2].kind, StepKind::Pointer { click: true, pick: Pick::Probe(_) }));
-        assert!(journey.steps[2].otherwise.is_some());
-        assert!(matches!(journey.steps[3].kind, StepKind::Pointer { pick: Pick::Text { .. }, .. }));
-        assert!(matches!(journey.steps[3].otherwise.as_deref(), Some(StepKind::Pointer { click: true, .. })));
-        let StepKind::Check { asserts, .. } = &journey.steps[6].kind else {
-            panic!("the last step is a check");
+    fn production_steps_and_asserts_parse() {
+        let StepKind::Await { until, within } = step_kind(r#"await absent "indexing" in reader within 20m"#).expect("await") else {
+            panic!("not an await");
         };
-        assert_eq!(asserts[0], Assert::Route("orbit".to_owned()));
-        assert_eq!(asserts[1], Assert::Text(vec!["a".to_owned(), "b".to_owned()], Some(Area::Reader)));
-        assert_eq!(
-            asserts[5],
-            Assert::Budget {
-                what: Budget::PageOpen,
-                limit_ms: 120.0
-            }
-        );
-        assert_eq!(asserts[7], Assert::FocusRestored);
-        assert!(matches!(&asserts[6], Assert::Link(Pick::Text { after, .. }) if after == &vec!["b".to_owned()]));
-        assert!(Journey::parse("J0", Path::new("J0"), "  text \"a\"\ncheck x\n").is_err());
-        assert!(Journey::parse("J0", Path::new("J0"), "key j @100\ncheck x\n").is_err());
-        assert!(Journey::parse("J0", Path::new("J0"), "route elsewhere\ncheck x\n").is_err());
+        assert_eq!(until, Until::Absent(vec!["indexing".to_owned()], Some(Area::Reader)));
+        assert_eq!(within, Duration::from_secs(1200));
+        assert!(step_kind(r#"await text "x" within soon"#).is_err());
+        assert!(step_kind(r#"await "x" within 2m"#).is_err());
+        assert!(matches!(step_kind("restart"), Ok(StepKind::Restart)));
+        assert!(matches!(step_kind("answer-picker cancel"), Ok(StepKind::AnswerPicker(PickerAnswer::Cancel))));
+        let Ok(StepKind::AnswerPicker(PickerAnswer::Folders(folders))) = step_kind("answer-picker frontends/rust/fixtures/toml_pin") else {
+            panic!("a repo folder answers the picker");
+        };
+        assert!(folders[0].is_absolute() && folders[0].ends_with("frontends/rust/fixtures/toml_pin"));
+        assert!(step_kind("answer-picker no/such/folder").is_err(), "a folder that does not exist is refused at parse");
+        assert_eq!(assertion(r#"route like "package *toml_pin""#), Ok(Assert::RouteLike("package *toml_pin".to_owned())));
+        assert_eq!(assertion(r#"saw "Compiling" in reader"#), Ok(Assert::Saw(vec!["Compiling".to_owned()], Some(Area::Reader))));
+        assert_eq!(assertion(r#"like "* declarations from *" in reader"#), Ok(Assert::Like("* declarations from *".to_owned(), Some(Area::Reader))));
+        assert_eq!(assertion(r#"unlike "0 declarations *""#), Ok(Assert::Unlike("0 declarations *".to_owned(), None)));
+        assert!(assertion(r#"like "a" "b""#).is_err(), "one glob");
+        assert_eq!(assertion("ground dark in reader"), Ok(Assert::Ground(super::Tone::Dark, Some(Area::Reader))));
+        assert_eq!(assertion("ground light"), Ok(Assert::Ground(super::Tone::Light, None)));
+        assert!(assertion("ground grey").is_err());
     }
 }

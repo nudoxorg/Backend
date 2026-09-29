@@ -328,6 +328,11 @@ fn reference_record_tag(record: &CompilerInputTreeRecordV2) -> u8 {
         CompilerInputTreeRecordV2::PresentFile { .. } => 3,
         CompilerInputTreeRecordV2::AbsentPath { .. } => 4,
         CompilerInputTreeRecordV2::DirectoryListing { .. } => 5,
+        CompilerInputTreeRecordV2::EnvironmentVariablePresent { .. } => 6,
+        CompilerInputTreeRecordV2::EnvironmentVariableAbsent { .. } => 7,
+        CompilerInputTreeRecordV2::GeneratedInput { .. } => 8,
+        CompilerInputTreeRecordV2::ToolchainInput { .. } => 9,
+        CompilerInputTreeRecordV2::ExternalInput { .. } => 10,
     }
 }
 

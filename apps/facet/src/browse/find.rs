@@ -3,6 +3,7 @@
 //! The search and qualification are producer evidence; no popularity score or
 //! project-use count is manufactured here.
 
+use super::acquire::{AddActions, Adding, Offer, add_control};
 use super::view::{KeyboardReveal, child, words, words_ellipsis};
 use crate::controls::button::button;
 use crate::fluid::Modes;
@@ -52,6 +53,9 @@ pub struct Candidate {
     /// Actual known facts only; unavailable facts have a coverage note instead.
     pub facts: Vec<(SharedString, SharedString)>,
     pub answers: Vec<Answer>,
+    /// A registry release behind the candidate, which can be added to the
+    /// library (or already is).
+    pub offer: Option<Offer>,
 }
 
 /// Find's immutable reading. Rows retain producer order.
@@ -81,6 +85,8 @@ pub struct Actions {
     pub open_code: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
     pub open_package: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
     pub compare: Rc<dyn Fn(Vec<SharedString>, &mut Window, &mut App)>,
+    /// Adding an offered release to the library; `None`: nothing is offered.
+    pub acquire: Option<AddActions>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,11 +203,26 @@ impl State {
         Self { input, route_query: query, refine, actions, keyboard: vec![], loaded_query: None, snapshot: None, submitted: None, generation: 0, selected: None, reveal, held,
             all_packages: false, all_answers: false, source: false, pending: None, _subscriptions: vec![subscription] }
     }
+    /// A release added to the library changes its address (the offer's
+    /// package URL becomes the tree the owner indexed): the selection follows
+    /// the release, so the person keeps looking at what they added.
+    fn follow_added_release(&mut self, model: &Model) {
+        let (Some(Selection::Package(key)), Some(previous)) = (&self.selected, &self.snapshot) else { return };
+        if model.candidates.iter().any(|candidate| &candidate.key == key) { return; }
+        let Some(release) = previous.candidates.iter().find(|candidate| &candidate.key == key).and_then(|candidate| candidate.offer.as_ref()).map(|offer| offer.release.clone()) else { return };
+        if let Some(moved) = model.candidates.iter().find(|candidate| candidate.offer.as_ref().is_some_and(|offer| offer.release == release)) {
+            self.selected = Some(Selection::Package(moved.key.clone()));
+        }
+    }
+
     fn accept(&mut self, model: &Arc<Model>, actions: &Actions, window: &mut Window, cx: &mut Context<Self>) {
         self.refine = Rc::clone(&actions.refine);
         self.actions = actions.clone();
         self.loaded_query = (!model.loading).then(|| model.query.clone());
-        if !model.loading { self.snapshot = Some(Arc::clone(&model)); }
+        if !model.loading {
+            self.follow_added_release(model);
+            self.snapshot = Some(Arc::clone(&model));
+        }
         if self.route_query != model.query {
             let local = self.submitted.as_ref() == Some(&model.query);
             self.route_query = model.query.clone();
@@ -356,7 +377,7 @@ impl RenderOnce for Find {
             list = list.child(if selected.as_ref() == Some(&Selection::Answer(answer.key.clone())) { state.read(cx).reveal.selected(row) } else { row.into_any_element() });
         }
         if let Some(answer) = loose_selected {
-            let unqualified = Candidate { key: "".into(), name: "Declaration".into(), version: None, indexed: true, summary: None, facts: vec![], answers: vec![] };
+            let unqualified = Candidate { key: "".into(), name: "Declaration".into(), version: None, indexed: true, summary: None, facts: vec![], answers: vec![], offer: None };
             list = list.child(inspector(&child(&self.id, "loose-inspect"), &unqualified, Some(answer), &state, &self.actions, !updating, &list_m, cx));
         }
         if model.candidates.is_empty() && model.loose.is_empty() {
@@ -453,7 +474,12 @@ fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected:
 fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, _state: &Entity<State>, actions: &Actions, enabled: bool, m: &Measure, cx: &mut App) -> AnyElement {
     let p = cx.palette();
     let mut detail = div().flex().flex_col().gap(m.space(Space::Base)).py(m.space(Space::Base));
-    detail = detail.child(words(child(id, "care"), if candidate.indexed { "INDEXED HERE" } else { "CATALOG RECORD" }, ty::CAPTION, p.ink2, m));
+    let care = match &candidate.offer {
+        Some(offer) if offer.library.is_none() => if offer.place.offline() { "ON THIS MACHINE" } else { "IN THE REGISTRY" },
+        _ if candidate.indexed => "INDEXED HERE",
+        _ => "CATALOG RECORD",
+    };
+    detail = detail.child(words(child(id, "care"), care, ty::CAPTION, p.ink2, m));
     let title = answer.map_or(&candidate.name, |answer| &answer.name);
     let kind = answer.map_or(Kind::Package, |answer| answer.kind);
     detail = detail.child(div().flex().items_center().gap(m.space(Space::Base))
@@ -491,6 +517,13 @@ fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, _st
                 .child(words(child(id, format!("fact-{at}-label")), label.clone(), ty::CAPTION, p.ink2, m))
                 .child(words(child(id, format!("fact-{at}-value")), value.clone(), ty::SMALL, p.ink1, m)));
         }
+    }
+    // A release not in the library yet has no page to explore: it is added.
+    // One added here keeps saying so (and opens) once the library has it.
+    let offered = candidate.offer.as_ref().zip(actions.acquire.as_ref())
+        .filter(|(offer, acquire)| offer.library.is_none() || (acquire.state)(&offer.release, cx) != Adding::Idle);
+    if answer.is_none() && let Some((offer, acquire)) = offered {
+        return detail.child(add_control(child(id, "acquire"), offer, acquire, m, cx)).into_any_element();
     }
     if answer.is_none() && !candidate.key.is_empty() {
         let open = Rc::clone(&actions.open_package);

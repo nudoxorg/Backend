@@ -11,7 +11,7 @@ use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{HoverIntent, package_route, pending, quiet, text};
 use crate::shell::reader::Reader;
 use facet::icons::{Kind, KindSize};
-use facet::tokens::fluid::{EMPTY_GEM, PROJECT_GEM};
+use facet::tokens::fluid::PROJECT_GEM;
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
@@ -29,7 +29,7 @@ pub(super) fn body(
 ) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let mut leaves = Vec::new();
+    let mut leaves = crate::shell::onboard::library::notes(snapshot, ctx);
     if let Some(leaf) = resume(snapshot, ctx, cx) {
         leaves.push(leaf);
     }
@@ -40,23 +40,15 @@ pub(super) fn body(
         .and_then(|model| model.indexed.known().map(|indexed| indexed.len()))
         .unwrap_or(0);
     if workspace.projects.is_empty() && indexed == 0 {
-        let line = ctx.say("Nothing on the shelf yet. Add a folder and its dependencies arrive here.");
-        let links = ctx.links.clone();
-        leaves.push(Leaf::new(
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(measure.space(Space::Gutter))
-                .py(measure.space(Space::Chapter))
-                .child(facet::paint::gem(Kind::Module).size(f32::from(EMPTY_GEM.at(ctx.wide.fluid_room()))).opacity(0.5))
-                .child(text(ty::LEDE, &measure, palette.ink2).child(line))
-                .child(
-                    facet::controls::button("add-folder", "Add a folder", &measure)
-                        .primary()
-                        .on_click(move |_, cx| links.dispatch(Intent::OpenFolderPicker, cx)),
-                ),
-        ));
+        // A Library the index could not answer is not an empty one: say why
+        // it could not, with the way to try again, before offering a first run.
+        let orbit = store.orbit();
+        let fault = shown(&orbit);
+        if matches!(fault, Shown::Fault(_)) {
+            leaves.extend(super::state::not_ready(&fault, &PageKey::Orbit, "The Library", ctx, cx));
+        } else {
+            leaves.push(crate::shell::onboard::library::empty(ctx));
+        }
         return leaves;
     }
     // Your projects: the centre.
@@ -104,6 +96,8 @@ pub(super) fn body(
         let state = match project.phase {
             crate::model::ProjectPhase::Indexing => ctx.say("indexing"),
             crate::model::ProjectPhase::Failed => ctx.say("stopped"),
+            crate::model::ProjectPhase::Cancelling => ctx.say("stopping"),
+            crate::model::ProjectPhase::Cancelled => ctx.say("paused"),
             crate::model::ProjectPhase::Missing => ctx.say("folder missing"),
             _ => SharedString::default(),
         };
@@ -116,7 +110,7 @@ pub(super) fn body(
                     .flex_col()
                     .items_center()
                     .gap(measure.space(Space::Base))
-                    .child(facet::paint::gem(Kind::Module).size(f32::from(PROJECT_GEM.at(ctx.wide.fluid_room()))).opacity(if active { 1.0 } else { 0.8 }))
+                    .child(crate::shell::onboard::library::tile_gem(project, f32::from(PROJECT_GEM.at(ctx.wide.fluid_room())), active, ctx))
                     .child(text(ty::HEAD, &measure, if active { palette.ink0 } else { palette.ink1 }).child(name))
                     .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)))
                     .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
@@ -124,6 +118,9 @@ pub(super) fn body(
         );
     }
     leaves.push(Leaf::new(centre).wide());
+    leaves.extend(crate::shell::onboard::library::indexing(snapshot, ctx, cx));
+    leaves.extend(crate::shell::onboard::failure::stopped(&workspace.projects, ctx, cx));
+    leaves.push(crate::shell::onboard::library::add_another(ctx));
     // The packages around them.
     let orbit = store.orbit();
     match shown(&orbit) {
@@ -144,18 +141,36 @@ pub(super) fn body(
         Shown::Pending => leaves.push(Leaf::new(
             div().flex().justify_center().child(pending(px(360.0 * measure.scale()), ty::MONO_ROW, &measure, palette)),
         )),
-        Shown::Fault(error) => {
-            let words = ctx.say(format!("The packages around your projects could not be read: {}", error.message()));
-            leaves.push(Leaf::new(quiet(words, &measure, palette)));
+        fault @ Shown::Fault(_) => {
+            leaves.extend(super::state::not_ready(&fault, &PageKey::Orbit, "The packages around your projects", ctx, cx));
         }
         Shown::Unavailable(..) => {}
     }
-    if let Some(health) = store.health().loaded_value() {
-        let words = ctx.say(format!(
-            "{} declarations from {} of {} files",
-            health.rows, health.ingest.files_indexed, health.ingest.files_discovered
-        ));
-        leaves.push(Leaf::new(div().flex().justify_center().child(quiet(words, &measure, palette))));
+    // The counts describe the last revision the owner published. While a
+    // project is being indexed they describe something older than what is
+    // running, and "0 declarations from 0 of 0 files" reads as a result.
+    let running = workspace.projects.iter().any(|project| project.phase == crate::model::ProjectPhase::Indexing);
+    if let Some(health) = store.health().loaded_value().filter(|health| !running && health.rows > 0) {
+        let (packages, yours) = store.orbit().loaded_value().and_then(|model| model.indexed.known().map(|indexed| {
+            let yours = indexed.iter().filter(|package| workspace.projects.iter().any(|project| project.id.as_str() == package.package.as_str())).count();
+            (indexed.len(), yours)
+        })).unwrap_or((0, 0));
+        let arrival = crate::shell::onboard::library::Arrival {
+            ready_projects: workspace.projects.iter().filter(|project| project.phase == crate::model::ProjectPhase::Ready).count(),
+            packages,
+            yours,
+            declarations: health.rows,
+            files_indexed: health.ingest.files_indexed,
+            files_discovered: health.ingest.files_discovered,
+        };
+        let mut lines = div().flex().flex_col().items_center().gap(measure.space(Space::Snug));
+        for line in arrival.says() {
+            let words = ctx.say(line);
+            // `min_w(0)`: a text in a flex row is as wide as its one line unless it may shrink,
+            // and then wraps to the column (200 % text on a phone cut it on both sides).
+            lines = lines.child(quiet(words, &measure, palette).min_w(px(0.0)).text_center());
+        }
+        leaves.push(Leaf::new(div().flex().justify_center().child(lines)));
     }
     leaves
 }

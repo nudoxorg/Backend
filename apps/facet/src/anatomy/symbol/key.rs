@@ -23,6 +23,8 @@ pub enum Sec {
     Uses,
     /// The context rail.
     Rail,
+    /// The package picker's chip: where its menu opens.
+    Picker,
 }
 
 impl Sec {
@@ -36,6 +38,7 @@ impl Sec {
             Self::Verbs => "verbs",
             Self::Uses => "uses",
             Self::Rail => "rail",
+            Self::Picker => "picker-spot",
         }
     }
 }
@@ -148,6 +151,237 @@ impl Part {
     }
 }
 
+/// What one text or element of a part is: `s6-port-2-name` is a port's `Name`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Slot {
+    #[doc = "`across`"]
+    Across,
+    #[doc = "`all`"]
+    All,
+    #[doc = "`all-words`"]
+    AllWords,
+    #[doc = "`arrow`"]
+    Arrow,
+    #[doc = "`aside`"]
+    Aside,
+    #[doc = "`aside-loop`"]
+    AsideLoop,
+    #[doc = "`bound`"]
+    Bound,
+    #[doc = "`card`"]
+    Card,
+    #[doc = "`caret`"]
+    Caret,
+    #[doc = "`chooses`"]
+    Chooses,
+    #[doc = "`click`"]
+    Click,
+    #[doc = "`code`"]
+    Code,
+    #[doc = "`count`"]
+    Count,
+    #[doc = "`default`"]
+    Default,
+    #[doc = "`differs`"]
+    Differs,
+    #[doc = "`doc`"]
+    Doc,
+    #[doc = "`door`"]
+    Door,
+    #[doc = "`elsewhere`"]
+    Elsewhere,
+    #[doc = "`elsewhere-head`"]
+    ElsewhereHead,
+    #[doc = "`empty`"]
+    Empty,
+    #[doc = "`err`"]
+    Err,
+    #[doc = "`expand`"]
+    Expand,
+    #[doc = "`fill`"]
+    Fill,
+    #[doc = "`fill-clear`"]
+    FillClear,
+    #[doc = "`fill-clear-words`"]
+    FillClearWords,
+    #[doc = "`fill-words`"]
+    FillWords,
+    #[doc = "`flow`"]
+    Flow,
+    #[doc = "`foot`"]
+    Foot,
+    #[doc = "`gen`"]
+    Gen,
+    #[doc = "`group`"]
+    Group,
+    #[doc = "`head`"]
+    Head,
+    #[doc = "`holds`"]
+    Holds,
+    #[doc = "`how`"]
+    How,
+    #[doc = "`implementors`"]
+    Implementors,
+    #[doc = "`kind`"]
+    Kind,
+    #[doc = "`label`"]
+    Label,
+    #[doc = "`line`"]
+    Line,
+    #[doc = "`main`"]
+    Main,
+    #[doc = "`means`"]
+    Means,
+    #[doc = "`more`"]
+    More,
+    #[doc = "`more-words`"]
+    MoreWords,
+    #[doc = "`must`"]
+    Must,
+    #[doc = "`name`"]
+    Name,
+    #[doc = "`none`"]
+    None,
+    #[doc = "`note`"]
+    Note,
+    #[doc = "`nothing`"]
+    Nothing,
+    #[doc = "`open`"]
+    Open,
+    #[doc = "`optional`"]
+    Optional,
+    #[doc = "`options`"]
+    Options,
+    #[doc = "`options-words`"]
+    OptionsWords,
+    #[doc = "`packages`"]
+    Packages,
+    #[doc = "`pill`"]
+    Pill,
+    #[doc = "`place`"]
+    Place,
+    #[doc = "`places`"]
+    Places,
+    #[doc = "`role`"]
+    Role,
+    #[doc = "`run`"]
+    Run,
+    #[doc = "`says`"]
+    Says,
+    #[doc = "`sep`"]
+    Sep,
+    #[doc = "`sig`"]
+    Sig,
+    #[doc = "`source`"]
+    Source,
+    #[doc = "`sub`"]
+    Sub,
+    #[doc = "`takes`"]
+    Takes,
+    #[doc = "`tests`"]
+    Tests,
+    #[doc = "`title`"]
+    Title,
+    #[doc = "`ty`"]
+    Ty,
+    #[doc = "`type`"]
+    Type,
+    #[doc = "`unroll`"]
+    Unroll,
+    #[doc = "`when`"]
+    When,
+    #[doc = "`which`"]
+    Which,
+    #[doc = "`word`"]
+    Word,
+    #[doc = "`words`"]
+    Words,
+    #[doc = "`written`"]
+    Written,
+    #[doc = "`yours`"]
+    Yours,
+}
+
+impl Slot {
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Across => "across",
+            Self::All => "all",
+            Self::AllWords => "all-words",
+            Self::Arrow => "arrow",
+            Self::Aside => "aside",
+            Self::AsideLoop => "aside-loop",
+            Self::Bound => "bound",
+            Self::Card => "card",
+            Self::Caret => "caret",
+            Self::Chooses => "chooses",
+            Self::Click => "click",
+            Self::Code => "code",
+            Self::Count => "count",
+            Self::Default => "default",
+            Self::Differs => "differs",
+            Self::Doc => "doc",
+            Self::Door => "door",
+            Self::Elsewhere => "elsewhere",
+            Self::ElsewhereHead => "elsewhere-head",
+            Self::Empty => "empty",
+            Self::Err => "err",
+            Self::Expand => "expand",
+            Self::Fill => "fill",
+            Self::FillClear => "fill-clear",
+            Self::FillClearWords => "fill-clear-words",
+            Self::FillWords => "fill-words",
+            Self::Flow => "flow",
+            Self::Foot => "foot",
+            Self::Gen => "gen",
+            Self::Group => "group",
+            Self::Head => "head",
+            Self::Holds => "holds",
+            Self::How => "how",
+            Self::Implementors => "implementors",
+            Self::Kind => "kind",
+            Self::Label => "label",
+            Self::Line => "line",
+            Self::Main => "main",
+            Self::Means => "means",
+            Self::More => "more",
+            Self::MoreWords => "more-words",
+            Self::Must => "must",
+            Self::Name => "name",
+            Self::None => "none",
+            Self::Note => "note",
+            Self::Nothing => "nothing",
+            Self::Open => "open",
+            Self::Optional => "optional",
+            Self::Options => "options",
+            Self::OptionsWords => "options-words",
+            Self::Packages => "packages",
+            Self::Pill => "pill",
+            Self::Place => "place",
+            Self::Places => "places",
+            Self::Role => "role",
+            Self::Run => "run",
+            Self::Says => "says",
+            Self::Sep => "sep",
+            Self::Sig => "sig",
+            Self::Source => "source",
+            Self::Sub => "sub",
+            Self::Takes => "takes",
+            Self::Tests => "tests",
+            Self::Title => "title",
+            Self::Ty => "ty",
+            Self::Type => "type",
+            Self::Unroll => "unroll",
+            Self::When => "when",
+            Self::Which => "which",
+            Self::Word => "word",
+            Self::Words => "words",
+            Self::Written => "written",
+            Self::Yours => "yours",
+        }
+    }
+}
+
 /// One identified part: `s6-port-2-name`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Key(String);
@@ -167,14 +401,8 @@ impl Key {
 
     /// One of its texts or elements.
     #[must_use]
-    pub fn field(&self, name: &'static str) -> Self {
-        Self(format!("{}-{name}", self.0))
-    }
-
-    /// One of them by name (a generic `T`, a package).
-    #[must_use]
-    pub fn named(&self, name: &str) -> Self {
-        Self(format!("{}-{name}", self.0))
+    pub fn field(&self, slot: Slot) -> Self {
+        Self(format!("{}-{}", self.0, slot.word()))
     }
 
     /// The same part under a second index (a row of a group).
@@ -220,11 +448,35 @@ impl std::fmt::Display for Key {
     }
 }
 
+/// A port's name: the options object a fold opens belongs to it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PortName(String);
+
+impl PortName {
+    /// The port called `name`.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+}
+
+/// A case's name: the row a fold opens belongs to it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CaseName(String);
+
+impl CaseName {
+    /// The case called `name`.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+}
+
 /// A fold (a disclosure that unrolls in place).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FoldKey {
     /// An options object.
-    Options(String),
+    Options(PortName),
     /// An example, by its place in the docs.
     Example(usize),
     /// The docs past the second block.
@@ -232,5 +484,5 @@ pub enum FoldKey {
     /// A method group's rows past the sixth.
     MoreMethods(super::view::Do),
     /// A case's or field's extra line.
-    More(String),
+    More(CaseName),
 }

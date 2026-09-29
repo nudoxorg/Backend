@@ -9,7 +9,6 @@
 
 use super::state::{Fit, Nominal, Pose};
 use super::text::{ellipsis, key, one, wrap};
-use crate::Set;
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::marks::badges::{Glyph, glyph};
 use crate::marks::license::LicenseFacts;
@@ -100,7 +99,7 @@ pub fn seal(g: Glyph, size: f32, ink: Hsla) -> impl IntoElement {
             fill.paint(window, ink);
             let inner = w.min(h) * 0.5;
             let at = Bounds::new(gpui::point(px(cx - inner * 0.5), px(cy - inner * 0.5)), gpui::size(px(inner), px(inner)));
-            crate::marks::badges::glyph::paint(window, at, g, ink);
+            glyph::paint(window, at, g, ink);
         },
     )
     .flex_none()
@@ -256,6 +255,13 @@ pub fn stamp(id: impl Into<ElementId>, facts: Rc<LicenseFacts>, width: Pixels, m
 }
 
 impl Stamp {
+    /// The pose the stamp is held in (`Held`: unfolded whatever the pointer does).
+    #[must_use]
+    pub const fn pose(mut self, pose: Pose) -> Self {
+        self.held = pose;
+        self
+    }
+
     /// Shows the stamp unfolded whatever the pointer does (scenes, tests).
     #[must_use]
     pub const fn open(mut self) -> Self {

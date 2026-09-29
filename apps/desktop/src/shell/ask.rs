@@ -196,6 +196,7 @@ impl Ask {
                     visit: snapshot.route().clone(),
                     root: snapshot.key(),
                     message: format!("{} has no page yet", choice.name).into(),
+                    retry: None,
                 };
                 self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
             }

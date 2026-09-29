@@ -22,6 +22,7 @@ use crate::model::{
 use crate::navigation::{PackageLane, PackageRoute, Route};
 use crate::runtime::owner::{OwnerGate, OwnerState};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
+use crate::runtime::wait;
 use crate::runtime::{
     DesktopRuntime, EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest,
     UiEntityGraph,
@@ -170,17 +171,12 @@ fn draw(cx: &mut VisualTestContext) {
     });
 }
 
-/// Draws until `done` holds (reads land on real threads), for at most 5 s.
+/// Draws until `done` holds (reads land on real threads).
 fn until(cx: &mut VisualTestContext, what: &str, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
+    wait::until(what, || {
         draw(cx);
-        if done(cx) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never: {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        done(cx)
+    });
 }
 
 #[gpui::test]
@@ -698,12 +694,13 @@ mod launch_snapshot {
             key: now,
             mode: ServiceMode::Attached,
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !opened.graph.store.read_with(opened.cx, |store, _| store.snapshot().key().same_authority(now)) {
-            paint(opened.cx);
-            assert!(Instant::now() < deadline, "the owner's root was never adopted");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait::until("the owner's root was adopted", || {
+            let adopted = opened.graph.store.read_with(opened.cx, |store, _| store.snapshot().key().same_authority(now));
+            if !adopted {
+                paint(opened.cx);
+            }
+            adopted
+        });
         for _ in 0..20 {
             paint(opened.cx);
             opened.cx.executor().advance_clock(Duration::from_millis(50));
@@ -713,21 +710,16 @@ mod launch_snapshot {
         let before = shell.read_with(opened.cx, |shell, cx| shell.render_counts(cx));
         opened.events.borrow_mut().clear();
         opened.latch.open();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            paint(opened.cx);
-            assert!(!opened.says("on its way"), "a revalidation never shows a wait");
-            let asked = opened.latch.asked();
-            if opened.stored_docs_say(landed)
-                && asked.contains(&symbol_key())
-                && asked.contains(&package_key())
-                && !inflight(opened)
-            {
-                break;
-            }
-            assert!(Instant::now() < deadline, "never: the owner's pages landed ({:?})", opened.latch.asked());
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        assert!(
+            wait::poll(wait::HUNG, || {
+                paint(opened.cx);
+                assert!(!opened.says("on its way"), "a revalidation never shows a wait");
+                let asked = opened.latch.asked();
+                opened.stored_docs_say(landed) && asked.contains(&symbol_key()) && asked.contains(&package_key()) && !inflight(opened)
+            }),
+            "never: the owner's pages landed ({:?})",
+            opened.latch.asked()
+        );
         for _ in 0..5 {
             paint(opened.cx);
             opened.cx.executor().advance_clock(Duration::from_millis(50));
@@ -802,16 +794,10 @@ mod launch_snapshot {
         // At rest, the route's pages are saved for the next launch, at the
         // owner's root, as they are now.
         opened.cx.executor().advance_clock(Duration::from_millis(1_600));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let seed = loop {
+        let seed = wait::until_some("the pages were saved at rest", || {
             opened.cx.run_until_parked();
-            let seed = file.read(&kept_keys(&page_route(NAME)));
-            if seed.as_ref().is_some_and(|seed| seed.root.serves(now)) {
-                break seed.expect("saved");
-            }
-            assert!(Instant::now() < deadline, "the pages were never saved at rest");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+            file.read(&kept_keys(&page_route(NAME))).filter(|seed| seed.root.serves(now))
+        });
         assert_eq!(
             seed.pages,
             [
@@ -853,19 +839,13 @@ mod launch_snapshot {
         let mut opened = open(cx, &gate, &file, false);
         draw(opened.cx);
         gate.publish(OwnerState::Failed("could not own /tmp/demo".into()));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let notice = loop {
+        let notice = wait::until_some("the failure was said", || {
             draw(opened.cx);
-            let notice = opened
+            opened
                 .graph
                 .store
-                .read_with(opened.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
-            if let Some(notice) = notice {
-                break notice;
-            }
-            assert!(Instant::now() < deadline, "the failure was never said");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+                .read_with(opened.cx, |store, _| store.notice().map(|notice| notice.message.to_string()))
+        });
         assert!(
             notice.contains("as you left it") && notice.contains("could not own /tmp/demo"),
             "the window says the page is the one it was left on, and why: {notice}"

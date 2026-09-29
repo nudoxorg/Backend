@@ -14,6 +14,7 @@ use super::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequ
 use super::coordinator::DesktopRuntime;
 use super::reads::ReadPool;
 use super::ui_graph::UiEntityGraph;
+use super::wait;
 use crate::core::{LocalProjectId, VersionedRoot};
 use crate::model::{AppSnapshot, ProjectPhase};
 use crate::navigation::Intent;
@@ -23,7 +24,7 @@ use gpui::{AnyWindowHandle, AppContext as _, Entity, Subscription, TestAppContex
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Answers the root at once and holds every index request until released.
 struct HeldIndexClient {
@@ -59,15 +60,14 @@ impl EngineClient for HeldIndexClient {
                 basis,
                 ..
             } => {
+                // Held until the test releases it, and the rig releases it when it
+                // ends, however it ends: the wait needs no wall-clock deadline of its
+                // own (the 30 s one it had panicked this thread on a loaded machine
+                // while the test was still measuring, and took the index with it).
                 let (lock, released) = &*self.release;
                 let mut open = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                let deadline = Instant::now() + Duration::from_secs(30);
                 while !*open {
-                    assert!(Instant::now() < deadline, "the index was never released");
-                    open = released
-                        .wait_timeout(open, Duration::from_millis(10))
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .0;
+                    open = released.wait(open).unwrap_or_else(PoisonError::into_inner);
                 }
                 let (key, revision) = next_key(*basis);
                 Ok(EngineDto::Index {
@@ -97,6 +97,14 @@ struct Rig {
     project: LocalProjectId,
     _views: Vec<Subscription>,
     _folder: std::path::PathBuf,
+}
+
+impl Drop for Rig {
+    /// Whatever ended the test, the held index is let go: its thread must not
+    /// outlive the app it answers (a blocked actor thread stalls the teardown).
+    fn drop(&mut self) {
+        release(self);
+    }
 }
 
 fn rig(cx: &mut TestAppContext) -> Rig {
@@ -180,15 +188,10 @@ fn draw(cx: &mut TestAppContext, rig: &Rig) {
 /// Plays vsyncs until one virtual second passes with no frame.
 fn settle(cx: &mut TestAppContext, rig: &Rig) {
     draw(cx, rig);
-    for _ in 0..400 {
+    wait::until("the window settled: a virtual second with no frame and an idle read pool", || {
         let (drawn, _) = vsync(cx, rig, 60);
-        let (queued, running) = rig.graph.store.read_with(cx, |store, _| store.pool_load());
-        if drawn == 0 && queued == 0 && running == 0 {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    panic!("the window never settled");
+        drawn == 0 && rig.graph.store.read_with(cx, |store, _| store.pool_activity()).is_idle()
+    });
 }
 
 fn phase(cx: &mut TestAppContext, rig: &Rig) -> Option<ProjectPhase> {
@@ -208,21 +211,16 @@ fn start_index(cx: &mut TestAppContext, rig: &Rig) {
     rig.graph.root.update(cx, |root, cx| {
         root.dispatch(Intent::AddProject { project }, cx);
     });
-    for _ in 0..500 {
+    wait::until("the index started", || {
         cx.run_until_parked();
-        let requested = rig.graph.root.read_with(cx, |root, _| {
+        rig.graph.root.read_with(cx, |root, _| {
             root.snapshot()
                 .workspace()
                 .projects
                 .iter()
                 .any(|item| item.phase == ProjectPhase::Indexing && item.request.is_some())
-        });
-        if requested {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    panic!("the index never started");
+        })
+    });
 }
 
 fn release(rig: &Rig) {
@@ -255,16 +253,10 @@ fn an_idle_shell_with_a_running_index_requests_no_frames(cx: &mut TestAppContext
 
     // The result wakes the window by itself: no frame loop carried it here.
     release(&rig);
-    let mut woke = false;
-    for _ in 0..2_000 {
+    wait::until("the finished index reached the root through the wake task", || {
         cx.run_until_parked();
-        if phase(cx, &rig) == Some(ProjectPhase::Ready) {
-            woke = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(woke, "the finished index reached the root through the wake task");
+        phase(cx, &rig) == Some(ProjectPhase::Ready)
+    });
     settle(cx, &rig);
     let (drawn, requested) = vsync(cx, &rig, 120);
     assert_eq!((drawn, requested), (0, 0), "then the window is idle again");

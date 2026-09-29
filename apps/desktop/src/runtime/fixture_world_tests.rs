@@ -17,6 +17,7 @@ use super::*;
 use crate::model::hand::HeldWhy;
 use crate::model::pages::PageKey;
 use crate::navigation::{Coordinate, OrbitRoute};
+use crate::runtime::wait;
 use crate::shell::tests::{PACKAGE, coordinate, page_route, view_route};
 use facet::graph::{Edge, Kind, Module, Node, Package, Rel};
 use gpui::{AppContext as _, Entity, IntoElement, ParentElement, Render, StyleRefinement, TestAppContext, VisualTestContext, Window, div};
@@ -190,12 +191,10 @@ fn a_hand_asked_while_the_world_is_still_loading_is_arranged_when_it_lands_not_l
     let first = cx.update(|cx| hand_view(&hand, cx));
     assert!(first.cards.iter().all(|card| card.kind == facet::icons::Kind::Unknown), "the first answer has no marks: the world is not there");
     assert!(cx.update(|cx| is_loading(cx)), "the window knows the world is on its way");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while cx.update(|cx| is_loading(cx)) {
+    wait::until("the hand was arranged", || {
         cx.run_until_parked();
-        assert!(Instant::now() < deadline, "the hand was never arranged");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        !cx.update(|cx| is_loading(cx))
+    });
     let arranged = cx.update(|cx| hand_view(&hand, cx));
     assert!(
         arranged.cards.iter().all(|card| card.kind != facet::icons::Kind::Unknown),
@@ -257,11 +256,7 @@ fn touching_a_card_walks_nothing_again_and_the_card_carries_its_new_time(cx: &mu
 fn a_world_thread_that_panics_is_one_typed_fault_not_a_hang() {
     let handle = Arc::new(WorldHandle::new());
     load_on_a_thread(&handle, || panic!("the snapshot is not a world"));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while handle.loaded.get().is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    let outcome = handle.loaded.get().expect("the world thread's panic left everyone waiting for ever");
+    let outcome = wait::until_some("the world thread's panic left everyone waiting for ever", || handle.loaded.get());
     assert!(
         matches!(outcome, Err(WorldFault::Panicked(what)) if what.contains("the snapshot is not a world")),
         "the fault says what happened: {:?}",
@@ -278,10 +273,7 @@ fn a_world_thread_that_panics_is_one_typed_fault_not_a_hang() {
 fn a_faulted_world_is_readable_by_the_window_and_leaves_the_hand_standing_apart(cx: &mut TestAppContext) {
     let handle = Arc::new(WorldHandle::new());
     load_on_a_thread(&handle, || Err(WorldFault::Malformed("not json".to_owned())));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while handle.loaded.get().is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait::until("the world thread reported its fault", || handle.loaded.get().is_some());
     cx.update(|cx| cx.set_global(WorldSlot(Arc::clone(&handle))));
     assert_eq!(cx.update(|cx| fault(cx)), Some(WorldFault::Malformed("not json".to_owned())), "the window can read why");
     let mut asking = window(cx, Hand::of([card("RelationLabel", 1)]));

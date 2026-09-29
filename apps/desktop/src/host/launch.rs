@@ -14,7 +14,8 @@
 use super::owner::OwnerThread;
 use crate::core::{ErrorValue, FaultCode, LocalProjectId, VersionedRoot};
 use crate::model::{
-    AppSnapshot, PersistedDesktopState, PersistenceRecovery, PersistentState, SessionState,
+    AppSnapshot, Note, PersistedDesktopState, PersistenceRecovery, PersistentState, SessionState,
+    WindowSize,
 };
 use crate::runtime::fixture_world::{LaunchNeed, launch_need};
 use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
@@ -26,15 +27,16 @@ use crate::runtime::{
 };
 use backend_runtime::WorkspacePaths;
 use gpui::{
-    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
+    App, AppContext as _, Bounds, Pixels, Size, TitlebarOptions, WindowBounds, WindowOptions, point, px,
 };
 use std::path::PathBuf;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-const WINDOW: (f32, f32) = (1380.0, 880.0);
-const MINIMUM: (f32, f32) = (320.0, 480.0);
+/// The size a window opens at, and the least it can be resized to.
+const OPENING: Size<Pixels> = Size { width: px(1380.0), height: px(880.0) };
+const LEAST: Size<Pixels> = Size { width: px(320.0), height: px(480.0) };
 /// Read sessions in the page-data pool; index/admin work has its own lane.
 const READ_SESSIONS: usize = 3;
 
@@ -160,8 +162,8 @@ pub(crate) fn prepare(
             );
         }
     };
-    let (persisted, persistence) = restore(&paths);
-    let snapshot = restored_snapshot(&paths, &project, &persisted);
+    let Restored { state: persisted, persistence, note } = restore(&paths);
+    let snapshot = restored_snapshot(&paths, &project, &persisted, note);
     let world_need = launch_need(snapshot.route(), &snapshot.session().hand);
     let keep = read_snapshot(paths.data(), snapshot.route());
     let client = BootClient::Local(Box::new(LocalEngineClient::gated(
@@ -191,20 +193,34 @@ pub(crate) fn prepare(
 /// The session file, admitted, and the store to save it to (`None` when it
 /// could not be read: a file this run could not read is never overwritten by
 /// it, and the window still opens on the default session).
-fn restore(paths: &WorkspacePaths) -> (PersistedDesktopState, Option<PersistentState>) {
+fn restore(paths: &WorkspacePaths) -> Restored {
     let persistence = PersistentState::at(paths.data().join("desktop-state.json"));
     match persistence.load_recovering() {
         Ok(admitted) => {
             if let PersistenceRecovery::Preserved { backup, reason } = &admitted.recovery {
                 eprintln!("backend-desktop: preserved unadmitted state at {}: {reason}", backup.display());
             }
-            (admitted.state, Some(persistence))
+            Restored { note: admitted.recovery.note(), state: admitted.state, persistence: Some(persistence) }
         }
         Err(error) => {
             eprintln!("backend-desktop: admit desktop state at {}: {error}", persistence.path().display());
-            (PersistedDesktopState::default(), None)
+            let unread = Note::StateUnread {
+                path: Arc::from(persistence.path().display().to_string()),
+                why: Arc::from(error.to_string()),
+            };
+            Restored { state: PersistedDesktopState::default(), persistence: None, note: Some(unread) }
         }
     }
+}
+
+/// What `desktop-state.json` gave back.
+struct Restored {
+    /// The admitted session (the default one when the file could not be read).
+    state: PersistedDesktopState,
+    /// Where to save it; `None` when the file could not be read.
+    persistence: Option<PersistentState>,
+    /// What the window says about it, when the file was not admitted as it was.
+    note: Option<Note>,
 }
 
 /// The session as it was left, at the unserved root: the owner's root
@@ -213,12 +229,16 @@ fn restored_snapshot(
     paths: &WorkspacePaths,
     project: &LocalProjectId,
     persisted: &PersistedDesktopState,
+    note: Option<Note>,
 ) -> AppSnapshot {
     let persistence = PersistentState::at(paths.data().join("desktop-state.json"));
     let host_project_admitted = super::paths::looks_like_project(paths.project());
     let (shelf, mut workspace) =
         persistence.cold_shelf(persisted, host_project_admitted.then_some(paths.project()));
     workspace.host = Some(project.clone());
+    if let Some(note) = note {
+        workspace.notes = Arc::from([note]);
+    }
     let settings = persistence.cold_settings(persisted);
     let restored = persistence.cold_reload(persisted);
     AppSnapshot::empty(VersionedRoot::unserved())
@@ -265,8 +285,9 @@ fn run(mut boot: Boot) {
     if let Some(need) = world_need {
         crate::runtime::fixture_world::preload(need);
     }
+    let window = snapshot.settings().window;
     let Some((runtime, reads)) = start_workers(snapshot, client, endpoint, &gate) else { return };
-    let parts = AppParts { runtime, persistence, reads, gate: gate.clone(), reading };
+    let parts = AppParts { runtime, persistence, reads, gate: gate.clone(), reading, window };
     let starting_platform = Instant::now();
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(facet::icons::Assets)
@@ -282,11 +303,13 @@ struct AppParts {
     reads: Option<ReadPool>,
     gate: OwnerGate,
     reading: Option<SnapshotRead>,
+    /// The size the person left the window at.
+    window: Option<WindowSize>,
 }
 
 /// The engine actor and the read pool, gated on the owner: both start now and
 /// wait for it in their own threads. `None` when the actor cannot start.
-fn start_workers(
+pub(crate) fn start_workers(
     snapshot: AppSnapshot,
     client: BootClient,
     endpoint: Option<PathBuf>,
@@ -320,7 +343,7 @@ fn start_workers(
 
 /// The platform's launch closure: assets, the data plane, the window.
 fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
-    let AppParts { runtime, persistence, reads, gate, reading } = parts;
+    let AppParts { runtime, persistence, reads, gate, reading, window: remembered } = parts;
     crate::runtime::trace::span("boot.platform", starting_platform, "Application::with_platform..run");
     let installing = Instant::now();
     if let Err(error) = install(cx) {
@@ -356,7 +379,7 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
     if let Ok(spec) = std::env::var("NUDOX_DEBUG_PAGE") {
         crate::runtime::debug_page::open_window(cx, graph.store.clone(), crate::runtime::debug_page::parse_keys(&spec));
     }
-    let options = window_options(cx);
+    let options = window_options(cx, remembered);
     let opening = Instant::now();
     if let Err(error) = cx.open_window(options, move |window, cx| {
         // Native window + renderer creation, before the root is built.
@@ -364,6 +387,7 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
         let building = Instant::now();
         let shell = crate::shell::open_shell(&graph, window, cx);
         crate::runtime::trace::span("boot.shell", building, "shell::open_shell");
+        super::window_size::remember(window, &graph.root, cx);
         // gpui_component::Root hosts the component layer the Ask field's input
         // engine (IME) expects; the shell is its view.
         cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
@@ -380,9 +404,8 @@ fn install(cx: &mut App) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     facet::fonts::install(cx)
 }
 
-fn window_options(cx: &mut App) -> WindowOptions {
-    let (width, height) = opening_size();
-    let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
+fn window_options(cx: &mut App, saved: Option<WindowSize>) -> WindowOptions {
+    let bounds = Bounds::centered(None, super::window_size::opening(saved, LEAST, OPENING), cx);
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -390,14 +413,10 @@ fn window_options(cx: &mut App) -> WindowOptions {
             appears_transparent: !cfg!(any(target_os = "linux", target_os = "freebsd")),
             traffic_light_position: Some(point(px(14.0), px(14.0))),
         }),
-        window_min_size: Some(size(px(MINIMUM.0), px(MINIMUM.1))),
+        window_min_size: Some(LEAST),
         app_id: Some("dev.nudox.desktop".to_owned()),
         ..WindowOptions::default()
     }
-}
-
-const fn opening_size() -> (f32, f32) {
-    WINDOW
 }
 
 #[cfg(test)]

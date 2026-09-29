@@ -18,10 +18,55 @@ pub(super) struct Seen {
     pub complete: bool,
     /// The shell's resolved layout (bars, shelf, pins).
     pub frame: Option<Frame>,
+    /// Painted text lines no probe text covers (a control's own label, such
+    /// as a button's): the words are on screen, so a person reads them and a
+    /// pick may name them. Built by [`painted_extras`].
+    pub painted: Vec<TextSample>,
+}
+
+/// The painted lines of a frame (gpui's text trace) that no probe text
+/// already names: same words, overlapping box. Faded-out ink is not text a
+/// person reads.
+pub(super) fn painted_extras(ledger: &Ledger, painted: &[gpui::PaintedText]) -> Vec<TextSample> {
+    painted
+        .iter()
+        .filter(|line| line.alpha > 0.05 && !line.text.trim().is_empty())
+        .map(|line| {
+            let bounds = BoundsSample {
+                key: format!("painted:{}", line.text),
+                x: f32::from(line.bounds.origin.x),
+                y: f32::from(line.bounds.origin.y),
+                width: f32::from(line.bounds.size.width),
+                height: f32::from(line.bounds.size.height),
+            };
+            TextSample {
+                key: bounds.key.clone(),
+                paint_clip: None,
+                natural_width: bounds.width,
+                overflow: facet::probe::TextOverflow::Wrap,
+                content: line.text.to_string(),
+                min_width: 0.0,
+                line_height: bounds.height,
+                size: bounds.height,
+                weight: 400.0,
+                region: None,
+                bounds,
+            }
+        })
+        .filter(|extra| {
+            !ledger.texts.iter().any(|text| {
+                text.content.trim() == extra.content.trim()
+                    && text.bounds.x < extra.bounds.x + extra.bounds.width
+                    && extra.bounds.x < text.bounds.x + text.bounds.width
+                    && text.bounds.y < extra.bounds.y + extra.bounds.height
+                    && extra.bounds.y < text.bounds.y + text.bounds.height
+            })
+        })
+        .collect()
 }
 
 /// `(left, top, right, bottom)` of `area` in logical px.
-fn rect(area: Area, frame: Option<&Frame>, viewport: Viewport) -> (f32, f32, f32, f32) {
+pub(super) fn rect(area: Area, frame: Option<&Frame>, viewport: Viewport) -> (f32, f32, f32, f32) {
     #[allow(clippy::cast_precision_loss)]
     let (width, height) = (viewport.width as f32, viewport.height as f32);
     let Some(frame) = frame else {
@@ -80,6 +125,7 @@ impl Seen {
         self.ledger
             .texts
             .iter()
+            .chain(self.painted.iter())
             // Exact text assertions may only name a string that is completely
             // visible. A partially clipped sample proves only that some glyphs
             // painted, not that the whole semantic string was readable.
@@ -360,6 +406,29 @@ impl Seen {
                 text.bounds.y,
                 short(&text.content)
             );
+        }
+        for extra in &self.painted {
+            let _ = writeln!(
+                out,
+                "   {}{:>5.0},{:<5.0} {:?}  (painted only: no probe text)",
+                if visible(&extra.bounds, self.viewport()) { " " } else { "*" },
+                extra.bounds.x,
+                extra.bounds.y,
+                short(&extra.content)
+            );
+        }
+        for stack in &self.ledger.stacks {
+            for entry in &stack.entries {
+                let _ = writeln!(
+                    out,
+                    "  float {} {} `{}` {:?}{}",
+                    stack.layer,
+                    entry.kind,
+                    short(&entry.key),
+                    entry.phase,
+                    entry.bounds.as_ref().map_or_else(String::new, |b| format!(" at ({:.0}, {:.0}) {:.0}x{:.0}", b.x, b.y, b.width, b.height))
+                );
+            }
         }
         let _ = writeln!(out, "  targets (paint order; F = focused, * = outside the window):");
         for target in &self.ledger.targets {

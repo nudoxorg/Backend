@@ -15,8 +15,9 @@ use facet::motion::{Motion, spec};
 use facet::paint::{Bevel, CutPaint, Edge, paint_cut};
 use facet::{ActiveFacet as _, Measure};
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, SharedString, Style, Window, point, px, size,
+    AnyElement, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
+    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style,
+    Window, point, px, size,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -173,6 +174,13 @@ pub(crate) struct Targets {
     layouts: Rc<RefCell<HashMap<SharedString, LayoutId>>>,
     /// The bevel's own motion store: its liveness is the bevel's alone.
     motion: Motion,
+    /// What Esc does on this page while it has something to fold (an open
+    /// module): rebuilt every render like the list, and never a clone of
+    /// this `Targets` (the same cycle the list guards against).
+    escape: Rc<RefCell<Option<Act>>>,
+    /// The declaration each target that is one stands for (twins: what a
+    /// hovered target lights elsewhere), rebuilt every render.
+    sources: Rc<RefCell<HashMap<SharedString, SymbolRef>>>,
 }
 
 impl Targets {
@@ -189,6 +197,19 @@ impl Targets {
     pub(crate) fn begin(&self) {
         let _ = self.list.with(Vec::clear);
         self.layouts.borrow_mut().clear();
+        self.escape.borrow_mut().take();
+        self.sources.borrow_mut().clear();
+    }
+
+    /// The page has something Esc folds (an open module): pressing it does
+    /// this, before anything of the shell's own that is not a transient.
+    pub(crate) fn on_escape(&self, act: Act) {
+        *self.escape.borrow_mut() = Some(act);
+    }
+
+    /// What Esc folds on this page, when something is open.
+    pub(crate) fn escape(&self) -> Option<Act> {
+        self.escape.borrow().clone()
     }
 
     /// The focused target's layout in this frame, once laid out.
@@ -202,7 +223,22 @@ impl Targets {
 
     /// Registers one target in walk order.
     pub(crate) fn push(&self, target: Target) {
+        if let Some(source) = &target.source {
+            self.sources.borrow_mut().insert(target.id.clone(), source.clone());
+        }
         let _ = self.list.with(|list| list.push(target));
+    }
+
+    /// Where the targets that stand for `symbol` were last painted (its
+    /// twins in this region).
+    pub(crate) fn twins_of(&self, symbol: &SymbolRef) -> Vec<Bounds<Pixels>> {
+        let bounds = self.bounds.borrow();
+        self.sources
+            .borrow()
+            .iter()
+            .filter(|(_, source)| *source == symbol)
+            .filter_map(|(id, _)| bounds.get(id).copied())
+            .collect()
     }
 
     /// Wraps `child` so its bounds are recorded under `id` at prepaint (and
@@ -210,9 +246,11 @@ impl Targets {
     pub(crate) fn track(&self, id: impl Into<SharedString>, child: impl IntoElement) -> Tracked {
         let id = id.into();
         let focused = self.is_focused(&id);
+        let source = self.sources.borrow().get(&id).cloned();
         Tracked {
             id,
             focused,
+            source,
             target: true,
             bounds: Rc::clone(&self.bounds),
             layouts: Rc::clone(&self.layouts),
@@ -226,6 +264,7 @@ impl Targets {
         Tracked {
             id: id.into(),
             focused: false,
+            source: None,
             target: false,
             bounds: Rc::clone(&self.bounds),
             layouts: Rc::clone(&self.layouts),
@@ -248,6 +287,11 @@ impl Targets {
         let changed = self.active != active;
         self.active = active;
         changed
+    }
+
+    /// Whether this zone has the keyboard.
+    pub(crate) const fn is_active(&self) -> bool {
+        self.active
     }
 
 
@@ -354,6 +398,8 @@ impl Targets {
 pub(crate) struct Tracked {
     id: SharedString,
     focused: bool,
+    /// The declaration it stands for: hovering it lights its twins.
+    source: Option<SymbolRef>,
     /// Published to the probe as a target (`track`), or only measured
     /// (`measure`: a part of a target, such as a row's name).
     target: bool,
@@ -372,7 +418,7 @@ impl IntoElement for Tracked {
 
 impl Element for Tracked {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -402,11 +448,11 @@ impl Element for Tracked {
         _state: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Option<Hitbox> {
         self.bounds.borrow_mut().insert(self.id.clone(), bounds);
         if !self.target {
             self.child.prepaint(window, cx);
-            return;
+            return None;
         }
         facet::probe::record_target(
             cx,
@@ -421,6 +467,7 @@ impl Element for Tracked {
             },
         );
         self.child.prepaint(window, cx);
+        self.source.as_ref().map(|_| window.insert_hitbox(bounds, HitboxBehavior::Normal))
     }
 
     fn paint(
@@ -429,11 +476,30 @@ impl Element for Tracked {
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _state: &mut (),
-        _prepaint: &mut (),
+        hitbox: &mut Option<Hitbox>,
         window: &mut Window,
         cx: &mut App,
     ) {
         self.child.paint(window, cx);
+        // Twins: the pointer on a declaration lights that declaration
+        // everywhere it stands (`side::twin`), and leaving puts it out.
+        if let (Some(source), Some(hitbox)) = (self.source.clone(), hitbox.clone()) {
+            let moved_source = source.clone();
+            window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble {
+                    if hitbox.is_hovered(window) {
+                        super::side::twin::light(Some(moved_source.clone()), cx);
+                    } else {
+                        super::side::twin::put_out(&moved_source, cx);
+                    }
+                }
+            });
+            window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+                if phase == DispatchPhase::Bubble {
+                    super::side::twin::put_out(&source, cx);
+                }
+            });
+        }
     }
 }
 

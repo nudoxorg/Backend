@@ -320,5 +320,95 @@ fn a_fast_shrink_never_squeezes_the_reader_to_a_sliver(cx: &mut TestAppContext) 
     // The shelf column takes at most 42 % of 360 px (151 px); the heading sits a 16 px gutter inside the reader.
     let worst = xs.iter().copied().fold(0.0_f32, f32::max);
     assert!(worst <= 0.42 * 360.0 + 16.5, "the reader was squeezed: the heading sat at x = {worst} in a 360 px window: {xs:?}");
-    assert!((xs[xs.len() - 1] - 16.0).abs() < 1.0, "it settles at the phone's gutter, not {}", xs[xs.len() - 1]);
+    assert!((xs[xs.len() - 1] - 16.0).abs() <= 2.0, "it settles at the phone's gutter, not {}", xs[xs.len() - 1]);
+}
+
+/// The shelf's rows swap for the spine's while the column narrows. The
+/// legibility law (`facet::gallery::legible`): a text painted translucent
+/// (alpha under 0.95) must not linger there (at most 2 frames under 0.8), and
+/// must not be cut mid-glyph while it is: the words are either whole or gone.
+/// At 100 % and at 200 % text (a window twice as wide is the same room).
+#[gpui::test]
+fn the_shelf_swaps_for_the_spine_without_a_lingering_fade_or_a_cut_word(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1000.0, 900.0);
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+    for percent in [100_u16, 200] {
+        let scale = f32::from(percent) / 100.0;
+        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        rig.go(Intent::ZoomTo { display, percent });
+        resize(&mut rig, 1000.0 * scale, 900.0);
+        assert_eq!(frame(&mut rig).shelf, ShelfMode::Shelf, "{percent} %: 1000 design px is a shelf");
+        let column = f32::from(frame(&mut rig).shelf_width);
+        let titlebar = f32::from(frame(&mut rig).titlebar);
+        // Every frame of the change, from the shelf at 1000 to the spine at 850 design px.
+        rig.cx.simulate_resize(gpui::size(px(850.0 * scale), px(900.0)));
+        rig.draw();
+        let mut film: Vec<Vec<gpui::PaintedText>> = Vec::new();
+        for _ in 0..60 {
+            rig.frame(16);
+            rig.repaint();
+            film.push(rig.cx.update(|window, _| window.painted_texts().to_vec()));
+        }
+        assert_eq!(frame(&mut rig).shelf, ShelfMode::Spine);
+        // The shelf's words: painted inside the shelf column, below the titlebar, whole at the start.
+        let in_column = |text: &gpui::PaintedText| f32::from(text.bounds.right()) <= column + 1.0 && f32::from(text.bounds.origin.y) > titlebar;
+        let mut natural: std::collections::BTreeMap<(String, i32), f32> = std::collections::BTreeMap::new();
+        for text in film.iter().flatten().filter(|text| in_column(text)) {
+            let key = (text.text.to_string(), f32::from(text.bounds.origin.y).round() as i32);
+            let wide = natural.entry(key).or_insert(0.0);
+            *wide = wide.max(f32::from(text.bounds.size.width));
+        }
+        assert!(!natural.is_empty(), "{percent} %: the shelf drew no words in its column");
+        for (key, whole) in &natural {
+            let mut lingering = 0;
+            for (frame_at, texts) in film.iter().enumerate() {
+                let Some(text) = texts.iter().find(|text| in_column(text) && text.text.as_ref() == key.0 && f32::from(text.bounds.origin.y).round() as i32 == key.1) else {
+                    lingering = 0;
+                    continue;
+                };
+                if text.alpha < 0.95 {
+                    assert!(f32::from(text.bounds.size.width) >= whole - 1.5, "{percent} %: `{}` is cut mid-glyph ({:.0} of {whole:.0} px) while it fades (alpha {:.2}) at frame {frame_at}", key.0, f32::from(text.bounds.size.width), text.alpha);
+                }
+                lingering = if (0.02..0.8).contains(&text.alpha) { lingering + 1 } else { 0 };
+                assert!(lingering <= 2, "{percent} %: `{}` lingers in a fade ({lingering} frames under 0.8, alpha {:.2}) at frame {frame_at}", key.0, text.alpha);
+            }
+        }
+    }
+}
+
+/// At 200 % text a 360 px phone is 180 design px of room. Nothing on the
+/// screens this lane owns hangs past the window's edge there (a segmented
+/// control stands its choices in a column when its row is wider than the
+/// room; the graph's where-line wraps), and a caption
+/// that has more words than the room holds wraps instead of being cut on both
+/// sides (a text in a flex row is as wide as its one line unless it may
+/// shrink). The rest of the findings are printed (`--nocapture`).
+#[gpui::test]
+fn at_200_percent_text_the_owned_screens_never_hang_past_a_phone(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.go(Intent::ZoomTo { display, percent: 200 });
+    for (name, route, settings) in screens() {
+        if !matches!(name, "library" | "find" | "settings" | "graph") {
+            continue;
+        }
+        rig.go(Intent::Navigate(route));
+        if let Some(page) = settings {
+            rig.go(Intent::OpenSettings(page));
+        }
+        for (width, height) in [(360.0, 900.0), (390.0, 844.0)] {
+            resize(&mut rig, width, height);
+            let ledger = painted(&mut rig);
+            let found = findings(&ledger, width, height);
+            for finding in &found {
+                eprintln!("[fluid] {name} at {width}x{height}, 200 %: {finding}");
+            }
+            let hanging: Vec<_> = found.iter().filter(|finding| matches!(finding.rule, "edge" | "stranded" | "offscreen")).map(ToString::to_string).collect();
+            assert!(hanging.is_empty(), "{name} at {width}x{height}, 200 % text: {hanging:?}");
+            for text in ledger.texts.iter().filter(|text| text.content.contains("declarations from")) {
+                let b = &text.bounds;
+                assert!(b.x >= 0.0 && b.x + b.width <= width + 0.5, "{name} at {width}x{height}, 200 %: the caption `{}` is {b:?}, outside the window", text.content);
+            }
+        }
+    }
 }

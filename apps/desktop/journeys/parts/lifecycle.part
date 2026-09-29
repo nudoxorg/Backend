@@ -1,0 +1,6 @@
+# The app's lifecycle, as a person lives it.
+
+# relaunch: quit (the app's quit handlers run, the owner stops and lets the
+# workspace go) and launch again on the same machine.
+part relaunch
+restart

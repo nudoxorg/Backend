@@ -45,7 +45,7 @@ pub(crate) fn release_data(package: &PackageRef, cx: &mut App) -> Option<&'stati
 
 /// [`release_data`] for the view `cx` belongs to: only it redraws when the
 /// fixture lands.
-#[cfg_attr(not(test), allow(dead_code, reason = "the shell's lens callers migrate to it (I3.md, migration)"))]
+#[cfg_attr(not(test), allow(dead_code, reason = "the shell's lens callers move to it (MIGRATE.md, R-Open3); delete this allow with that move"))]
 pub(crate) fn release_data_for<T: 'static>(package: &PackageRef, cx: &mut Context<T>) -> Option<&'static Crate> {
     let asker = Asker::View(cx.entity_id());
     release_data_asked_by(package, asker, cx)

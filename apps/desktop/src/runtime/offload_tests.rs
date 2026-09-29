@@ -210,3 +210,20 @@ fn a_seeded_value_is_there_at_once_with_no_work(cx: &mut TestAppContext) {
     assert_eq!(asking.renders.get(), 1, "and never redrew for it");
     assert_eq!(calls.load(Ordering::SeqCst), 0, "no work ran");
 }
+
+/// The teardown case: a value that lands while the test's app is being torn
+/// down (the flight is still running when the body returns) must leave no
+/// entity handle behind. gpui's leak detector panics the test at exit
+/// ("Exited with leaked handles") if one survives.
+#[gpui::test]
+fn a_value_that_lands_during_teardown_leaks_no_entity_handle(cx: &mut TestAppContext) {
+    let memo = Memo::new(slots(4), upper(&Arc::new(AtomicU32::new(0))));
+    let asking = window(cx, &memo, Some(1));
+    let idle = window(cx, &memo, None);
+    assert_eq!(memo.reading(), 1, "the asker's first render started the flight, and it has not landed");
+    // A caller with no view (`Asker::Everyone`) asks for another key the same way.
+    cx.update(|cx| memo.ask(&2, Asker::Everyone, cx));
+    assert_eq!(memo.reading(), 2, "two flights are running when the body returns");
+    // The windows and the memo go out of scope here, with both flights running.
+    let _ = (&asking, &idle);
+}

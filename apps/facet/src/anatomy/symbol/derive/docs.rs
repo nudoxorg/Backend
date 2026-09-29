@@ -46,7 +46,6 @@ pub(super) fn docs(facts: &Facts) -> Docs {
             }
             Block::Para(text) => blocks.push(Block::Para(clean(text))),
             Block::Item(text) => blocks.push(Block::Item(clean(text))),
-            _ => blocks.push(block.clone()),
         }
     }
     // Sections the docs' conventions carry (JSDoc, Python docstrings): the
@@ -178,8 +177,6 @@ pub(super) fn none_when(facts: &Facts) -> Option<String> {
                 // `If the Value is a String, returns …` → "if it isn't a String".
                 let lower_prev = previous.to_ascii_lowercase();
                 if let Some(at) = lower_prev.find(" is a ").or_else(|| lower_prev.find(" is an ")) {
-                    let article_end = lower_prev[at..].find("a").map_or(0, |i| i);
-                    let _ = article_end;
                     let rest = &previous[at + 4..];
                     let head = rest.split([',', ';']).next().unwrap_or(rest).trim();
                     return Some(format!("if it isn't {head}"));

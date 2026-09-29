@@ -78,6 +78,8 @@ actions!(
         CopyAddress,
         /// Tour this package in the graph.
         Tour,
+        /// Add a folder to the shelf.
+        AddFolder,
     ]
 );
 
@@ -155,6 +157,8 @@ pub(crate) enum Command {
     CopyAddress,
     /// T.
     Tour,
+    /// ⌘O.
+    AddFolder,
 }
 
 /// Where a row listens.
@@ -234,6 +238,7 @@ pub(crate) const TABLE: &[Key] = &[
     key(Command::HandCard5, "secondary-5", "⌘5", Scope::Shell, "the hand's fifth card"),
     key(Command::CopyAddress, "secondary-shift-c", "⌘⇧C", Scope::Shell, "copy the address"),
     key(Command::Tour, "t", "T", Scope::Plain, "tour this package in the graph"),
+    key(Command::AddFolder, "secondary-o", "⌘O", Scope::Shell, "add a folder"),
 ];
 
 /// The cap a command shows (its first row).
@@ -298,6 +303,7 @@ fn binding(key: &Key) -> KeyBinding {
         Command::HandCard5 => KeyBinding::new(chord, HandCard5, context),
         Command::CopyAddress => KeyBinding::new(chord, CopyAddress, context),
         Command::Tour => KeyBinding::new(chord, Tour, context),
+        Command::AddFolder => KeyBinding::new(chord, AddFolder, context),
     }
 }
 

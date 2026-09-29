@@ -44,6 +44,11 @@ use gpui::{
     WindowAppearance, div, px,
 };
 
+/// The drawer's paint priority: above every page's own deferred draws (a
+/// fanned hand of tiles is 1 or 2) and below the float layer (`float::PRIORITY`,
+/// 1000), so a card opened over the drawer still shows above it.
+const DRAWER_PRIORITY: usize = 100;
+
 /// How many times each region rendered (isolation tests, the harness).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RenderCounts {
@@ -177,6 +182,8 @@ impl Shell {
             // Any keystroke is a chord, not a hold: disarm a pending reveal.
             let _ = weak.update(cx, |shell, _| shell.hold.key_down());
         });
+        // Twins: what a hovered declaration lights elsewhere is drawn above the regions.
+        let twins = cx.observe_global::<super::side::twin::Lit>(|_, cx| cx.notify());
         let mut shell = Self {
             links,
             graph: UiEntityGraph {
@@ -214,7 +221,7 @@ impl Shell {
             },
             renders: 0,
             frame: None,
-            _subscriptions: vec![events, appearance, activation, moved, keystrokes],
+            _subscriptions: vec![events, appearance, activation, moved, keystrokes, twins],
         };
         shell.apply_facet(cx);
         shell.focus.focus(window, cx);
@@ -498,6 +505,7 @@ impl Shell {
     }
 
     fn sync_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        super::onboard::sync(&self.links, window, cx);
         let wants_ask = self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette);
         if wants_ask == self.ask_open {
             return;
@@ -544,6 +552,7 @@ impl Shell {
             visit: snapshot.route().clone(),
             root: snapshot.key(),
             message: format!("{} isn't in the index", query.text).into(),
+            retry: None,
         };
         self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
     }
@@ -728,7 +737,8 @@ impl Shell {
         self.set_zone(next, cx);
     }
 
-    fn set_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
+    /// The zone takes the keyboard (Tab, or a click in the sidebar).
+    pub(crate) fn set_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
         if zone == self.zone {
             return;
         }
@@ -959,6 +969,11 @@ impl Shell {
             cx.notify();
             return;
         }
+        // The page folds what it has open (a module) before it leaves the past.
+        if let Some(fold) = self.reader.read(cx).targets.escape() {
+            run(fold, window, cx);
+            return;
+        }
         // Viewing another release: Esc returns to the one you pin.
         if self.links.snapshot(cx).route().at().is_some() {
             self.links.dispatch(Intent::SetRelease(None), cx);
@@ -990,6 +1005,7 @@ impl Shell {
                     visit: snapshot.route().clone(),
                     root: snapshot.key(),
                     message: format!("{}::{}::{} isn't in the index", focus.package, focus.module, focus.name).into(),
+                    retry: None,
                 };
                 self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
                 return;
@@ -1302,7 +1318,7 @@ impl Render for Shell {
         });
         let over = frame.shelf_overlays && self.shelf_over_open;
         let drawer = f32::from(frame.drawer);
-        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx);
+        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx).min(columns_cap);
 
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -1387,6 +1403,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             }))
+            .on_action(cx.listener(|shell, _: &keys::AddFolder, _, cx| shell.links.dispatch(Intent::OpenAddProject, cx)))
             .on_modifiers_changed(cx.listener(|shell, event: &ModifiersChangedEvent, _, cx| {
                 shell.modifiers(event.modifiers, cx);
             }))
@@ -1428,34 +1445,45 @@ impl Render for Shell {
         }
         if over || over_x > -drawer + 0.5 {
             // The drawer's scrim: the page dims as the shelf slides over it,
-            // and a click on the strip of page left beside it puts it away.
+            // and a click on the strip of page left beside it puts it away. The
+            // whole is a deferred draw above the page's own (a fanned hand of
+            // tiles paints deferred too, and must not cover the drawer) and
+            // below the float layer's cards (`float::PRIORITY`).
             let opened = ((over_x + drawer) / drawer.max(1.0)).clamp(0.0, 1.0);
-            root = root
-                .child(
+            root = root.child(
+                gpui::deferred(
                     div()
-                        .id("shelf-scrim")
+                        .id("shelf-over")
                         .absolute()
                         .top(frame.titlebar)
                         .bottom(px(status_height))
                         .left_0()
                         .right_0()
-                        .bg(palette.veil.alpha(opened))
-                        .on_click(cx.listener(|shell, _, _, cx| {
-                            shell.shelf_over_open = false;
-                            cx.notify();
-                        })),
+                        .child(
+                            div()
+                                .id("shelf-scrim")
+                                .absolute()
+                                .inset_0()
+                                .bg(palette.veil.alpha(opened))
+                                .on_click(cx.listener(|shell, _, _, cx| {
+                                    shell.shelf_over_open = false;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("shelf-drawer")
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px(over_x))
+                                .w(frame.drawer)
+                                .bg(palette.g2)
+                                .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
+                        ),
                 )
-                .child(
-                    div()
-                        .id("shelf-drawer")
-                        .absolute()
-                        .top(frame.titlebar)
-                        .bottom(px(status_height))
-                        .left(px(over_x))
-                        .w(frame.drawer)
-                        .bg(palette.g2)
-                        .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
-                );
+                .with_priority(DRAWER_PRIORITY),
+            );
         }
         // A peek the layer closed by itself (pointer, click outside) is over.
         if let Some(key) = self.peeking.clone()
@@ -1470,8 +1498,23 @@ impl Render for Shell {
         }
         self.publish_stack(cx);
         let float = float::layer(window, cx);
+        // Twins: a ring on every other place the hovered declaration stands,
+        // each clipped to the region it is in (the shelf's rows, the page).
+        let twins = super::side::twin::lit(cx).and_then(|symbol| {
+            let list = self.shelf.read(cx).viewport();
+            let page = gpui::Bounds::new(
+                gpui::point(px(shelf_width), frame.titlebar),
+                gpui::size((viewport.width - px(shelf_width) - px(pins_width)).max(px(0.0)), (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))),
+            );
+            let regions = [
+                (list, self.shelf.read(cx).targets.twins_of(&symbol)),
+                (page, self.reader.read(cx).targets.twins_of(&symbol)),
+            ];
+            super::side::twin::rings(&regions, window.mouse_position(), cx)
+        });
         root.children(self.ask_layer(&frame, status_height, viewport, cx))
             .children(self.hint_layer(cx))
+            .children(twins)
             .child(float)
     }
 }

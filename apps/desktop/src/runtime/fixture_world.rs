@@ -104,12 +104,12 @@ impl From<WorldFault> for String {
     }
 }
 
-/// One world: what the thread loaded (set once, by that thread), and the
-/// producer table the hand's arrangement walks (built by the first hand that
-/// needs it, on whichever worker asks first).
 /// What loading the world came to.
 type Loaded = Result<LoadedWorld, WorldFault>;
 
+/// One world: what the thread loaded (set once, by that thread), and the
+/// producer table the hand's arrangement walks (built by the first hand that
+/// needs it, on whichever worker asks first).
 pub(crate) struct WorldHandle {
     loaded: OnceLock<Loaded>,
     producers: OnceLock<PreparedRecipes>,
@@ -213,7 +213,7 @@ pub(crate) fn launch_need(route: &Route, hand: &Hand) -> Option<LaunchNeed> {
     match route {
         Route::World => Some(LaunchNeed::Graph),
         Route::Symbol(symbol) if symbol.view == View::Graph => Some(LaunchNeed::Graph),
-        _ => (!hand.is_empty()).then_some(LaunchNeed::Hand),
+        Route::Orbit(_) | Route::Package(_) | Route::Symbol(_) => (!hand.is_empty()).then_some(LaunchNeed::Hand),
     }
 }
 
@@ -233,7 +233,7 @@ pub(crate) fn fault(cx: &App) -> Option<WorldFault> {
 
 /// Whether the world is still being loaded, or a hand's arrangement is still
 /// being walked: the harness waits for neither before it captures.
-#[cfg_attr(not(feature = "visual-harness"), allow(dead_code, reason = "only the visual harness's quiet() asks"))]
+#[cfg(any(test, feature = "visual-harness"))]
 pub(crate) fn is_loading(cx: &App) -> bool {
     let loading = world_of(cx).is_some_and(|world| world.loaded.get().is_none());
     loading || cx.try_global::<Hands>().is_some_and(|hands| hands.memo.reading() > 0)
@@ -474,7 +474,7 @@ pub(crate) fn hand_view(hand: &Hand, cx: &mut App) -> Rc<HandView> {
 
 /// [`hand_view`] for the view `cx` belongs to: only it redraws when the
 /// arrangement lands.
-#[cfg_attr(not(test), allow(dead_code, reason = "the shell's hand callers migrate to it (I3.md, migration)"))]
+#[cfg_attr(not(test), allow(dead_code, reason = "the shell's hand callers move to it (MIGRATE.md, R-Open3); delete this allow with that move"))]
 pub(crate) fn hand_view_for<T: 'static>(hand: &Hand, cx: &mut Context<T>) -> Rc<HandView> {
     let asker = Asker::View(cx.entity_id());
     hand_view_asked_by(hand, asker, cx)

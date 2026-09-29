@@ -3,11 +3,12 @@
 //! groups by what they do with the value.
 
 use super::super::facts::{Facts, Member, Owes, Receives};
-use super::super::view::{Case, Do, Field, Group, Kind, Lang, Origin, Outcomes, Owed, Row, Shape, Ty};
+use super::super::view::{Case, Do, Field, Group, Kind, Lang, Origin, Outcomes, Owed, Row, Shape, Ty, Yours};
 use super::callable::callable;
 use super::docs::row_doc;
+use super::known::Conv;
 use super::text::{balanced, split_top, squash, strip_leading};
-use super::words::{Cx, T, parse, peel, ty_of, word};
+use super::words::{Cx, T, parse, ty_of};
 
 fn cx<'a>(facts: &'a Facts, generics: &'a [String], link: &'a dyn Fn(&str) -> Option<String>) -> Cx<'a> {
     Cx { generics, owner: Some(facts.name.as_str()), link, origin: Origin::Declared }
@@ -77,7 +78,7 @@ fn one_of(facts: &Facts) -> Shape {
                 doc: row_doc(member.summary.as_deref()),
                 more: member.more.as_deref().map(super::text::plain).filter(|t| !t.is_empty()),
                 link: member.link.clone(),
-                yours: 0,
+                yours: Yours::default(),
             }
         })
         .collect();
@@ -104,8 +105,8 @@ fn union_cases(facts: &Facts) -> Option<Vec<Case>> {
                 let tree = parse(part);
                 let ty = ty_of(&tree, part, &cx);
                 match tree {
-                    T::Lit(_) => Case { name: part.to_owned(), holds: Vec::new(), doc: String::new(), more: None, link: None, yours: 0 },
-                    _ => Case { name: part.to_owned(), holds: vec![ty], doc: String::new(), more: None, link: None, yours: 0 },
+                    T::Lit(_) => Case { name: part.to_owned(), holds: Vec::new(), doc: String::new(), more: None, link: None, yours: Yours::default() },
+                    _ => Case { name: part.to_owned(), holds: vec![ty], doc: String::new(), more: None, link: None, yours: Yours::default() },
                 }
             })
             .collect(),
@@ -139,7 +140,7 @@ fn holds(facts: &Facts) -> Shape {
             doc: row_doc(member.summary.as_deref()),
             more: member.more.as_deref().map(super::text::plain).filter(|t| !t.is_empty()),
             link: member.link.clone(),
-            yours: 0,
+            yours: Yours::default(),
         });
     }
     Shape::Holds { fields, hidden }
@@ -195,26 +196,19 @@ fn merge_number(word: &str) -> &str {
     }
 }
 
-/// The methods in groups by verb: `From` collapsed into one row listing
-/// what it converts from, `FromStr` as `parse`.
+/// The methods in groups by verb. Signatures that share a name (a
+/// language's overloads, `From` for many types) become one row that lists
+/// what they take; `FromStr` reads as `parse`, the way you call it.
 pub(super) fn verbs(facts: &Facts) -> Vec<Group> {
-    if facts.does.is_empty() || !matches!(facts.kind, Kind::Enum | Kind::Struct | Kind::Alias | Kind::Trait | Kind::Other) {
+    // Trait members owed by an implementor are the shape, not the verbs.
+    if facts.does.is_empty() || !matches!(facts.kind, Kind::Enum | Kind::Struct | Kind::Alias | Kind::Other) {
         return Vec::new();
     }
     let mut groups: Vec<Group> = Vec::new();
-    let mut push = |verb: Do, row: Row| match groups.iter_mut().find(|g| g.verb == verb) {
-        Some(group) => group.rows.push(row),
-        None => groups.push(Group { verb, rows: vec![row] }),
-    };
-    let mut from: Option<Row> = None;
     for member in &facts.does {
-        // Trait members owed by an implementor are the shape, not the verbs.
-        if facts.kind == Kind::Trait {
-            continue;
-        }
         let verb = receives(member);
-        let call = member_call(facts, member);
-        let (takes, gives, outcomes) = call.map_or((Vec::new(), None, Outcomes::default()), |(t, g, o)| (t, g, o));
+        let (takes, gives, outcomes) = member_call(facts, member).unwrap_or_default();
+        let conv = Conv::of(facts.lang, &member.name);
         let mut row = Row {
             name: member.name.clone(),
             takes: takes.iter().map(|t| t.word.clone()).collect(),
@@ -223,58 +217,57 @@ pub(super) fn verbs(facts: &Facts) -> Vec<Group> {
             doc: row_doc(member.summary.as_deref()),
             link: member.link.clone(),
             yours: 0,
-            folded: false,
+            also: Vec::new(),
         };
-        if verb == Do::Makes && member.name == "from" {
-            let word = takes.first().map_or_else(|| "anything".to_owned(), |t| merge_number(&t.word).to_owned());
-            match &mut from {
-                Some(existing) => {
-                    if !existing.takes.contains(&word) {
-                        existing.takes.push(word);
-                    }
-                }
-                None => {
-                    row.takes = vec![word];
-                    row.gives = None;
-                    row.folded = true;
-                    row.doc = format!("{}::from(x) or x.into(), from any of these", facts.name);
-                    from = Some(row);
-                }
-            }
-            continue;
-        }
-        if verb == Do::Makes && member.name == "from_str" && member.signature.as_deref().is_some_and(|s| s.contains("Self::Err") || s.contains("Result")) {
-            row.name = "parse".to_owned();
-            row.takes = vec!["text".to_owned()];
+        if let Some(conv) = conv.filter(|_| verb == Do::Makes) {
+            row.doc = conv.doc(&facts.name);
+            row.takes = takes.first().map(|first| merge_number(&first.word).to_owned()).into_iter().collect();
             row.gives = None;
-            row.folded = true;
-            row.outcomes = Outcomes { fails: true, ..Outcomes::default() };
-            row.doc = "read one from text (str::parse)".to_owned();
+            if let Some(called) = conv.called().filter(|_| row.outcomes.fails) {
+                row.also.push(std::mem::replace(&mut row.name, called.to_owned()));
+                row.takes = vec!["text".to_owned()];
+                row.outcomes = Outcomes { fails: true, ..Outcomes::default() };
+            }
         }
-        push(verb, row);
-    }
-    if let Some(row) = from {
-        match groups.iter_mut().find(|g| g.verb == Do::Makes) {
-            Some(group) => group.rows.insert(0, row),
-            None => groups.push(Group { verb: Do::Makes, rows: vec![row] }),
+        let group = match groups.iter().position(|group| group.verb == verb) {
+            Some(at) => &mut groups[at],
+            None => {
+                groups.push(Group { verb, rows: Vec::new() });
+                groups.last_mut().unwrap_or_else(|| unreachable!("a group was just pushed"))
+            }
+        };
+        match group.rows.iter_mut().find(|earlier| earlier.name == row.name) {
+            Some(earlier) => overload(earlier, row),
+            None => group.rows.push(row),
         }
     }
     groups.sort_by_key(|group| group.verb);
+    for group in &mut groups {
+        // `From` leads the ways to make one.
+        if let Some(at) = group.rows.iter().position(|row| row.name == "from" && Conv::of(facts.lang, "from").is_some()) {
+            let row = group.rows.remove(at);
+            group.rows.insert(0, row);
+        }
+    }
     groups
 }
 
-/// Word for a type expression as given to `words` in tests.
-#[allow(dead_code)]
-pub(super) fn words_of(text: &str, facts: &Facts) -> String {
-    let generics: Vec<String> = Vec::new();
-    let link = |name: &str| facts.link(name).map(ToOwned::to_owned);
-    word(&parse(text), &cx(facts, &generics, &link))
-}
-
-/// What a type gives, peeled.
-#[allow(dead_code)]
-pub(super) fn gives_of(text: &str) -> bool {
-    peel(&parse(text)).inner.is_some()
+/// Folds another signature of the same name into `row`.
+fn overload(row: &mut Row, other: Row) {
+    for word in other.takes {
+        if !row.takes.contains(&word) {
+            row.takes.push(word);
+        }
+    }
+    if row.gives != other.gives {
+        row.gives = None;
+    }
+    row.outcomes = Outcomes {
+        fails: row.outcomes.fails || other.outcomes.fails,
+        none: row.outcomes.none || other.outcomes.none,
+        later: row.outcomes.later || other.outcomes.later,
+        many: row.outcomes.many || other.outcomes.many,
+    };
 }
 
 #[cfg(test)]

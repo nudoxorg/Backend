@@ -4,6 +4,7 @@
 //! cards grouped by what they are (types, functions, traits, values).
 
 use super::cards::{CardFacts, symbol_card};
+use super::flight::Marks;
 use super::state::{Extent, Pick};
 use super::text::{key, one, wrap};
 use crate::fluid::Modes;
@@ -40,6 +41,8 @@ pub struct ModuleView {
     measure: Measure,
     on_open: Option<Open>,
     wrap: Option<Wrap>,
+    marks: Option<Marks>,
+    carried: f32,
 }
 
 /// The module `name` of `package`, its `cards` set in `measure`.
@@ -57,6 +60,8 @@ pub fn module(id: impl Into<ElementId>, package: impl Into<SharedString>, name: 
         measure: *measure,
         on_open: None,
         wrap: None,
+        marks: None,
+        carried: 1.0,
     }
 }
 
@@ -86,6 +91,20 @@ impl ModuleView {
     #[must_use]
     pub const fn lit(mut self, lit: Option<usize>) -> Self {
         self.lit = lit;
+        self
+    }
+
+    /// Where the cards report their marks, for shingles flying to them.
+    #[must_use]
+    pub fn marks(mut self, marks: &Marks) -> Self {
+        self.marks = Some(marks.clone());
+        self
+    }
+
+    /// How far the module's shingles have come (`0..=1`).
+    #[must_use]
+    pub const fn carried(mut self, progress: f32) -> Self {
+        self.carried = progress;
         self
     }
 
@@ -129,7 +148,10 @@ impl RenderOnce for ModuleView {
         flow.epoch((columns.epoch, columns.count));
         let card = |index: usize| {
             let facts = self.cards[index].clone();
-            let mut card = symbol_card(key(&self.id, format!("card-{index}")), facts, &measure).width(width).at(self.at.clone()).lit(if self.lit == Some(index) { Pick::Lit } else { Pick::Rest });
+            let mut card = symbol_card(key(&self.id, format!("card-{index}")), facts, &measure).width(width).at(self.at.clone()).lit(if self.lit == Some(index) { Pick::Lit } else { Pick::Rest }).carried(self.carried);
+            if let Some(marks) = &self.marks {
+                card = card.mark(marks, index);
+            }
             if let Some(open) = self.on_open.clone() {
                 card = card.on_open(move |window, cx| open(index, window, cx));
             }

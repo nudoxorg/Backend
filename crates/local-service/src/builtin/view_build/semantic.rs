@@ -942,6 +942,9 @@ impl<'a> StructuralSites<'a> {
 /// entity by span start with the k-th structural declaration by line. A key
 /// whose two extractions disagree on the count, or whose semantic spans are
 /// not all captured, is ambiguous and keeps no site rather than a guess.
+/// Implementation blocks and parameters are not counted: they have no
+/// structural twin. A key with exactly one entity on each side pairs without
+/// a span.
 fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     session: &DocumentationSession<'_, Reader>,
     declarations: &[&'a backend_compile::SourceDeclaration],
@@ -965,6 +968,20 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     for entity in session.canonical_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
+        // An implementation block and a parameter have no structural twin: the
+        // tag query emits declarations, and only references for
+        // implementations, and it does not see parameters at all. Counting
+        // them in their name's family made every type with an `impl` (and
+        // every field named like a parameter) count more semantic entities
+        // than structural declarations, and the count rule below then dropped
+        // the type's own site along with theirs.
+        if matches!(
+            entity.entity.kind,
+            backend_semantic::ir::ItemKind::Implementation
+                | backend_semantic::ir::ItemKind::Parameter
+        ) {
+            continue;
+        }
         let family = declaration_family(declaration_kind(entity.entity.kind));
         semantic
             .entry((entity.name.to_vec(), family))
@@ -981,7 +998,12 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
         let Some(candidates) = structural.get(&(name, family)) else {
             continue;
         };
-        if candidates.len() != entities.len() || entities.iter().any(|(start, _)| start.is_none()) {
+        // The only entity of its name and family in the file needs no order to
+        // find its twin. Two or more are paired by span order, which needs
+        // every span.
+        if candidates.len() != entities.len()
+            || (entities.len() > 1 && entities.iter().any(|(start, _)| start.is_none()))
+        {
             continue;
         }
         entities.sort_by_key(|(start, _)| *start);

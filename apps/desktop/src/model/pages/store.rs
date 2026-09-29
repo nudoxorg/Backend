@@ -43,6 +43,37 @@ pub enum PageValue {
     Browse(crate::model::browse::BrowseValue),
 }
 
+/// One extractor per page family: the value if it is that family's, else
+/// `None` (a result that lands in a slot of another family). Written as
+/// `if let`, so no wildcard arm stands in for a family added later.
+macro_rules! family_of {
+    ($($name:ident: $variant:ident($page:ty)),+ $(,)?) => {
+        impl PageValue {
+            $(
+                fn $name(self) -> Option<$page> {
+                    if let Self::$variant(page) = self { Some(page) } else { None }
+                }
+            )+
+        }
+    };
+}
+
+family_of! {
+    symbol: Symbol(SymbolPage),
+    source: Source(SourceView),
+    package: Package(PackageDossier),
+    orbit: Orbit(OrbitModel),
+    health: Health(HealthModel),
+    browse: Browse(crate::model::browse::BrowseValue),
+}
+
+impl PageValue {
+    /// A search page, whether it is the first or a further one.
+    fn search(self) -> Option<SearchPage> {
+        if let Self::Search(page) | Self::SearchMore(page) = self { Some(page) } else { None }
+    }
+}
+
 /// Why a read produced no value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadFailure {
@@ -627,83 +658,26 @@ impl PageStore {
     }
 
     /// Admits one result if it names the slot's current generation.
-    #[allow(clippy::too_many_lines)] // one arm per page family
     pub fn land(
         &mut self,
         key: &PageKey,
         generation: Generation,
         result: Result<PageValue, ReadFailure>,
     ) -> Landing {
-        match (key, result) {
-            (PageKey::Symbol(symbol), result) => self.symbols.land(
-                symbol,
-                generation,
-                take(result, |value| match value {
-                    PageValue::Symbol(page) => Some(page),
-                    _ => None,
-                }),
-                |_, next| next,
-            ),
-            (PageKey::Source(symbol), result) => self.sources.land(
-                symbol,
-                generation,
-                take(result, |value| match value {
-                    PageValue::Source(view) => Some(view),
-                    _ => None,
-                }),
-                |_, next| next,
-            ),
-            (PageKey::Package(package), result) => self.packages.land(
-                package,
-                generation,
-                take(result, |value| match value {
-                    PageValue::Package(dossier) => Some(dossier),
-                    _ => None,
-                }),
-                |_, next| next,
-            ),
-            (PageKey::Search(query), result) => {
+        match key {
+            PageKey::Symbol(symbol) => self.symbols.land(symbol, generation, take(result, PageValue::symbol), replace),
+            PageKey::Source(symbol) => self.sources.land(symbol, generation, take(result, PageValue::source), replace),
+            PageKey::Package(package) => self.packages.land(package, generation, take(result, PageValue::package), replace),
+            PageKey::Search(query) => {
                 let append = matches!(result, Ok(PageValue::SearchMore(_)));
-                self.searches.land(
-                    query,
-                    generation,
-                    take(result, |value| match value {
-                        PageValue::Search(page) | PageValue::SearchMore(page) => Some(page),
-                        _ => None,
-                    }),
-                    move |previous, next| match previous {
-                        Some(previous) if append => append_search(previous, next),
-                        _ => next,
-                    },
-                )
+                self.searches.land(query, generation, take(result, PageValue::search), move |previous, next| match previous {
+                    Some(previous) if append => append_search(previous, next),
+                    _ => next,
+                })
             }
-            (PageKey::Orbit, result) => self.orbit.land(
-                &(),
-                generation,
-                take(result, |value| match value {
-                    PageValue::Orbit(model) => Some(model),
-                    _ => None,
-                }),
-                |_, next| next,
-            ),
-            (PageKey::Health, result) => self.health.land(
-                &(),
-                generation,
-                take(result, |value| match value {
-                    PageValue::Health(model) => Some(model),
-                    _ => None,
-                }),
-                |_, next| next,
-            ),
-            (PageKey::Browse(browse), result) => self.browse.land(
-                browse,
-                generation,
-                take(result, |value| match value {
-                    PageValue::Browse(value) => Some(value),
-                    _ => None,
-                }),
-                |_, next| next,
-            ),
+            PageKey::Orbit => self.orbit.land(&(), generation, take(result, PageValue::orbit), replace),
+            PageKey::Health => self.health.land(&(), generation, take(result, PageValue::health), replace),
+            PageKey::Browse(browse) => self.browse.land(browse, generation, take(result, PageValue::browse), replace),
         }
     }
 
@@ -798,18 +772,6 @@ impl PageStore {
         keys
     }
 
-    /// Returns the number of resident slots per family:
-    /// (symbols, sources, packages, searches).
-    #[must_use]
-    pub fn resident(&self) -> (usize, usize, usize, usize) {
-        (
-            self.symbols.map.len(),
-            self.sources.map.len(),
-            self.packages.map.len(),
-            self.searches.map.len(),
-        )
-    }
-
     /// Returns the activity of one slot.
     #[must_use]
     pub fn activity(&self, key: &PageKey) -> Activity {
@@ -823,6 +785,11 @@ impl PageStore {
             PageKey::Browse(browse) => self.browse.get(browse).activity(),
         }
     }
+}
+
+/// A landing replaces what was there.
+fn replace<T>(_previous: Option<&T>, next: T) -> T {
+    next
 }
 
 fn take<T>(
@@ -858,3 +825,7 @@ fn append_search(previous: &SearchPage, next: SearchPage) -> SearchPage {
         next: next.next,
     }
 }
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;

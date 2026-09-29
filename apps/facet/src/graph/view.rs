@@ -2073,7 +2073,11 @@ impl GraphView {
         // Find: a quiet field at the top left; results under it.
         let find_w = (f32::from(width) - 32.0).min(300.0);
         let find_measure = Measure::new(px(find_w), &facet);
-        let mut find_stack = div().absolute().left(px(16.0)).top(px(17.0)).w(px(find_w)).flex().flex_col().gap(px(8.0))
+        let mut find_stack = div().absolute().left(px(16.0)).top(px(17.0)).w(px(find_w)).max_w(px((f32::from(measure.width()) - 36.0).max(0.0)))
+                .max_w(px((f32::from(measure.width()) - 36.0).max(0.0)))
+                .flex()
+                .flex_wrap()
+                .flex_wrap().flex_col().gap(px(8.0))
             .child(MeasuredChrome::new("graph-find-bounds", div().relative().w_full()
                 .child(field("graph-find", &self.find, &find_measure).quiet().opaque().icon(Icon::Search))
                 .children((!self.state.find_open && window.modifiers().platform).then(|| {
@@ -2093,13 +2097,16 @@ impl GraphView {
             root = root.child(MeasuredCard { child: card, view: cx.entity() });
         } else { self.card_bounds = None; }
         if let Some(WhereLine { package: pkg, module, altitude }) = self.where_line() {
+            // Wraps between its parts (each stays on one line) and never runs past the window: at large text on
+            // a phone the level word stood wholly outside it.
             let mut line = div()
                 .absolute()
                 .left(px(18.0))
                 .bottom(px(21.0))
                 .flex()
                 .items_center()
-                .gap(px(10.0))
+                .gap_x(px(10.0))
+                .gap_y(px(2.0))
                 .whitespace_nowrap()
                 .set(ty::MONO_SMALL, &measure)
                 .text_color(palette.ink2.hsla());
@@ -2387,11 +2394,12 @@ impl GraphView {
                 .child(key("esc", "back out"));
         // The card is a card beside the map or a sheet under it, held through
         // its hysteresis band so a window on the edge does not flip it.
-        let below = self.modes.settle(&crate::tokens::fluid::CARD, measure.fluid_room()).mode == crate::tokens::fluid::Card::Below;
+        let settled = self.modes.settle(&crate::tokens::fluid::CARD, measure.fluid_room());
+        let below = settled.mode == crate::tokens::fluid::Card::Below;
         let content_w = if below { f32::from(measure.width()) - 24.0 - 36.0 } else { card_w - 36.0 };
         let content_w = content_w.max(1.0);
         let body = hints::StableHints::new(body.w(px(content_w)).flex_shrink_0(), hint.w(px(content_w)).flex_shrink_0(), show_keys, content_w, (reading_plate_height(self.view) - 32.0).max(4.0), self.focus_scroll.clone(), self.hint_metrics.clone());
-        cut()
+        let card = cut()
             .chamfer(Chamfer::Md)
             .bevel(Bevel::Rest)
             .plate(Plate::Flat)
@@ -2409,8 +2417,13 @@ impl GraphView {
             .py(px(16.0))
             .max_h(px(reading_plate_height(self.view)))
             .child(body)
-            .id("graph-focus-card")
-            .into_any_element()
+            .id("graph-focus-card");
+        // A change of mode carries the card from where it was to where it goes
+        // (it was a 588 px jump); its measured bounds stay the target, so the
+        // camera frames the room the card leaves in one step.
+        let flow = crate::motion::Flow::scoped("graph-card", cx);
+        flow.epoch(settled.epoch);
+        flow.item("graph-focus-card-flow", card).into_any_element()
     }
 }
 

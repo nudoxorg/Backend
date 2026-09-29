@@ -609,3 +609,19 @@ fn dragging_the_rider_scrubs_and_escape_brings_it_home() {
     );
     assert_eq!(one(&frames[1], "rider-comb-number"), "0.8.23", "Esc walked the rider home");
 }
+
+#[test]
+fn a_comb_is_a_band_below_240_design_px_and_the_asked_style_above() {
+    use crate::controls::comb::CombStyle;
+    use crate::measure::Measure;
+    use crate::theme::Facet;
+    let style = |width: f32, scale: f32| {
+        let facet = Facet { text_scale: scale, ..Facet::default() };
+        version_mark("c", fixture::version("toml"), &Measure::new(px(width), &facet)).style_for()
+    };
+    assert_eq!(style(239.0, 1.0), CombStyle::Band);
+    assert_eq!(style(241.0, 1.0), CombStyle::Rider, "the mark's own style above the edge");
+    assert_eq!(style(470.0, 2.0), CombStyle::Band, "200 % text: 235 design px");
+    assert_eq!(style(490.0, 2.0), CombStyle::Rider, "and 245 design px");
+    assert_eq!(style(80.0, 1.0), CombStyle::Band, "a sliver is a band, not nothing");
+}

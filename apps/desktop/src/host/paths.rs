@@ -56,7 +56,7 @@ pub(crate) fn discover() -> Result<WorkspacePaths, RuntimeError> {
 /// chosen. Keeping this pure over its root lets the cold-restart test prove
 /// that two ambient launches derive one workspace identity without mutating
 /// process environment variables.
-fn ambient_paths(user_root: &Path) -> Result<WorkspacePaths, RuntimeError> {
+pub(crate) fn ambient_paths(user_root: &Path) -> Result<WorkspacePaths, RuntimeError> {
     let data = user_root.join("workspace");
     let starter = user_root.join("starter");
     std::fs::create_dir_all(&starter).map_err(RuntimeError::Io)?;

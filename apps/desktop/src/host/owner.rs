@@ -138,6 +138,10 @@ fn attempt_once(paths: &WorkspacePaths) -> Result<(DesktopHost, VersionedRoot), 
     let starting = Instant::now();
     let host = DesktopHost::start_with_paths(paths.clone()).map_err(|error| describe(&error))?;
     crate::runtime::trace::span("boot.owner_start", starting, format_args!("{:?}", host.mode()));
+    if let Some(moved) = host.state_set_aside() {
+        super::aside::record(moved);
+    }
+    super::registry::publish(host.endpoint(), host.data());
     // One round trip for the root, where a full hydration of the view used
     // to be (406-581 ms on the fixture index, LEDGER §2.1-2).
     let asking = Instant::now();
@@ -156,18 +160,14 @@ fn describe(error: &HostError) -> String {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn settle(gate: &OwnerGate, done: impl Fn(&OwnerState) -> bool) -> OwnerState {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let state = gate.state();
-            if done(&state) {
-                return state;
-            }
-            assert!(Instant::now() < deadline, "the owner thread never published: {state:?}");
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        let mut state = gate.state();
+        crate::runtime::wait::until("the owner thread published the state the test waits for", || {
+            state = gate.state();
+            done(&state)
+        });
+        state
     }
 
     #[test]

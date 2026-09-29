@@ -73,7 +73,9 @@ fn find_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>) ->
     let refine_links = ctx.links.clone();
     let compare_links = ctx.links.clone();
     let reader = cx.weak_entity();
+    let acquire = Some(crate::shell::acquire::add_actions(&ctx.links, cx.entity_id()));
     facet::browse::find::Actions {
+        acquire,
         scroll: ctx.reader_scroll.clone(),
         initial_held: ctx.find_held.clone(),
         persist_held: Rc::new(move |held, cx| { let _ = reader.update(cx, |reader, cx| reader.set_find_held(held, cx)); }),

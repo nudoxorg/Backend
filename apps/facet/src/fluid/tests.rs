@@ -378,10 +378,6 @@ const KNOWN: &[&str] = &[
     "facet/src/anatomy/page.rs",
     "facet/src/anatomy/page/gallery.rs",
     "facet/src/anatomy/prism.rs",
-    // The rose: read `ROSE` through the page's `Modes` and hand it to `Rose::list`.
-    "facet/src/data/rose.rs",
-    // The comb (W-Folio's marks): a mode of its own, ADOPT.md.
-    "facet/src/marks/version.rs",
     // The legacy class enum, kept until nothing calls `Measure::room`.
     "facet/src/measure.rs",
 ];

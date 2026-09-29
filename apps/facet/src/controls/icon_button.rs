@@ -11,6 +11,7 @@ use super::state::{Look, Touch, hover_zone, track};
 use crate::icons::{Icon, IconSize, ui};
 use crate::measure::Measure;
 use crate::motion::{offset, spec};
+use crate::overlay::tooltip::Tipped as _;
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use gpui::{
@@ -226,11 +227,70 @@ impl RenderOnce for IconButton {
         let plate = plate
             .id(id)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
-        let plate = if active {
-            wire(plate, &touch, self.on_click).into_any_element()
-        } else {
-            plate.into_any_element()
-        };
-        hover_zone(plate, &touch, chamfer, active)
+        let plate = if active { wire(plate, &touch, self.on_click) } else { plate };
+        // The label is the button's tooltip (an icon says nothing until it is
+        // named): it rises after a rest, like every tip.
+        hover_zone(plate.tip(self.label), &touch, chamfer, active)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::icons::Icon;
+    use crate::overlay::float;
+    use crate::theme::{Facet, set_facet};
+    use gpui::{Context, IntoElement, ParentElement, Render, TestAppContext, VisualTestContext, div, point, size};
+    use std::time::Duration;
+
+    /// One icon button at the top left of a window with the float layer.
+    struct Bar;
+
+    impl Render for Bar {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let measure = Measure::new(window.viewport_size().width, &cx.facet());
+            div()
+                .size_full()
+                .child(div().absolute().left(px(40.0)).top(px(40.0)).child(icon_button("shelf", Icon::SideL, "Toggle the shelf", &measure)))
+                .child(float::layer(window, cx))
+        }
+    }
+
+    fn advance(cx: &mut VisualTestContext, millis: u64) {
+        cx.executor().advance_clock(Duration::from_millis(millis));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    /// An icon names itself: resting on the button raises a tip that says its
+    /// label, and leaving takes it away again.
+    #[gpui::test]
+    fn an_icon_button_shows_its_label_as_a_tip_after_a_rest(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx);
+            crate::probe::enable(cx);
+        });
+        let (_view, cx) = cx.add_window_view(|_, _| Bar);
+        cx.simulate_resize(size(px(600.0), px(300.0)));
+        advance(cx, 0);
+        let tip = || ElementId::NamedChild(std::sync::Arc::new("shelf".into()), "tip".into());
+        cx.simulate_mouse_move(point(px(52.0), px(52.0)), None, gpui::Modifiers::none());
+        advance(cx, 100);
+        assert!(!cx.update(|window, cx| float::is_open(&tip(), window, cx)), "no tip before its rest");
+        advance(cx, 400);
+        assert!(cx.update(|window, cx| float::is_open(&tip(), window, cx)), "the tip is up after its rest");
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        assert!(
+            ledger.texts.iter().any(|text| text.content == "Toggle the shelf"),
+            "the tip says the button's label: {:?}",
+            ledger.texts.iter().map(|text| text.content.clone()).collect::<Vec<_>>()
+        );
+        cx.simulate_mouse_move(point(px(500.0), px(250.0)), None, gpui::Modifiers::none());
+        advance(cx, 400);
+        assert!(!cx.update(|window, cx| float::is_open(&tip(), window, cx)), "the tip goes when the pointer does");
     }
 }

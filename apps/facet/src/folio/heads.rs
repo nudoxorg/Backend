@@ -21,7 +21,6 @@ use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::probe;
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
-use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, Styled, Window,
     deferred, div, px,
@@ -170,7 +169,9 @@ const NOTHING: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::SMALL };
 
 /// The chip's height and the stack's overlap, px at 100 %.
 const CHIP: f32 = 28.0;
-const OVERLAP: f32 = 14.0;
+/// How far a chip lies over the one before it at rest: little enough that each
+/// chip's glyph (7 to 21 px into its 28) shows whole.
+const OVERLAP: f32 = 6.0;
 
 /// The heads-up cell (see [`heads`]).
 #[derive(IntoElement)]
@@ -199,6 +200,11 @@ impl HeadsUp {
         self.held = Pose::Held;
         self
     }
+}
+
+/// Opens the sheet of `findings` (a click on the hand, or Enter on it).
+pub fn open_sheet(package: &str, findings: Rc<Vec<Finding>>, window: &mut Window, cx: &mut App) {
+    dialog::open(sheet(package, findings), window, cx);
 }
 
 /// The sheet every finding opens onto.
@@ -287,6 +293,9 @@ impl RenderOnce for HeadsUp {
         let overlap = OVERLAP * scale;
         let gap = f32::from(measure.space(Space::Snug));
         let pad = f32::from(measure.space(Space::Roomy));
+        // The step from one chip to the next at rest: the glyphs stay whole
+        // unless the cell is too narrow for that many, then they close up.
+        let step = rest_step(findings.len(), f32::from(self.width) - pad * 2.0, chip, overlap);
 
         // Each chip's full width when fanned out: glyph, word, count.
         let word_role = measure.role(WORD);
@@ -311,6 +320,9 @@ impl RenderOnce for HeadsUp {
             spots.push((x, row));
             x += w + gap;
         }
+        // One finding alone says its words at rest, when its cell holds them: a
+        // lone icon in an otherwise empty tile says nothing.
+        let lone = findings.len() == 1 && widths.first().is_some_and(|w| *w <= f32::from(self.width) - pad * 2.0);
         let rows = spots.last().map_or(1, |(_, r)| r + 1);
         let spread_used = spots.iter().zip(&widths).map(|((x, _), w)| x + w).fold(0.0, f32::max);
         let plate_w = f32::from(self.width) + (pad * 2.0 + spread_used - f32::from(self.width)).max(0.0) * open.min(1.0);
@@ -335,13 +347,14 @@ impl RenderOnce for HeadsUp {
         for (i, item) in findings.iter().enumerate() {
             let (spread_x, spread_row) = spots[i];
             #[allow(clippy::cast_precision_loss)]
-            let stacked_x = i as f32 * (chip - overlap);
+            let stacked_x = i as f32 * step;
             let x = stacked_x + (spread_x - stacked_x) * open.min(1.0);
             let y = spread_row as f32 * (chip + 4.0 * scale) * open.min(1.0);
-            let w = chip + (widths[i] - chip) * open.min(1.0);
+            let shown = if lone { 1.0 } else { open.min(1.0) };
+            let w = chip + (widths[i] - chip) * shown;
             let ink = ink_of(item.tone, palette);
             let mut inner = div().flex().items_center().h_full().gap(px(gap)).pl(px((chip - 14.0 * scale) * 0.5)).child(glyph(item.glyph, 14.0 * scale, ink));
-            if open > 0.03 {
+            if shown > 0.03 {
                 inner = inner.child(one(key(&self.id, format!("word-{i}")), item.word.clone(), WORD, palette.ink0, &measure));
                 if let Some(count) = item.count {
                     inner = inner.child(one(key(&self.id, format!("count-{i}")), count.to_string(), COUNT, ink, &measure));
@@ -376,7 +389,7 @@ impl RenderOnce for HeadsUp {
             .id(self.id.clone());
         let package = self.package.clone();
         let for_sheet = findings.clone();
-        let plate = wire(plate, &touch, Some(Rc::new(move |window: &mut Window, cx: &mut App| dialog::open(sheet(&package, for_sheet.clone()), window, cx))));
+        let plate = wire(plate, &touch, Some(Rc::new(move |window: &mut Window, cx: &mut App| open_sheet(&package, for_sheet.clone(), window, cx))));
         // The hover zone follows the plate as it grows.
         if open > 0.001 || touch.hovered || self.held == Pose::Held {
             // Fanned out it draws above its neighbours (drawn late, hit first).
@@ -390,7 +403,41 @@ impl RenderOnce for HeadsUp {
     }
 }
 
+/// The step from one chip to the next while the hand is closed: `chip` less
+/// `overlap`, unless `room` cannot hold `count` chips that far apart, then as
+/// close as the room asks (never under a quarter of a chip).
+fn rest_step(count: usize, room: f32, chip: f32, overlap: f32) -> f32 {
+    let wide = chip - overlap;
+    match count.checked_sub(1).and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0) {
+        Some(gaps) => wide.min(((room - chip) / f32::from(gaps)).max(chip * 0.25)),
+        None => wide,
+    }
+}
+
 /// The plate draws above its neighbours while it is open.
 fn open_priority(open: f32) -> usize {
     usize::from(open > 0.01) + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A chip's glyph sits 7 to 21 px into its 28: the next chip must start
+    /// past that, or only the top chip's glyph shows (the stack was unreadable).
+    #[test]
+    fn a_closed_hand_shows_every_glyph_whole_when_the_cell_holds_them() {
+        for count in 1..=6 {
+            let step = rest_step(count, 190.0, CHIP, OVERLAP);
+            assert!(step >= 21.0, "{count} chips step {step} px, which covers the glyph before it");
+        }
+    }
+
+    /// In a cell too narrow for the stack it closes up rather than leaving the cell.
+    #[test]
+    fn a_closed_hand_closes_up_in_a_narrow_cell_and_never_leaves_it() {
+        let step = rest_step(6, 100.0, CHIP, OVERLAP);
+        assert!(step < 21.0 && step >= CHIP * 0.25, "{step}");
+        assert!(step * 5.0 + CHIP <= 100.0 + 0.01, "six chips fit a 100 px cell at step {step}");
+    }
 }

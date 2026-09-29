@@ -44,6 +44,24 @@ use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// What the read pool is doing: jobs waiting for a worker, and jobs a worker
+/// is running.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PoolLoad {
+    /// Jobs no worker has taken yet.
+    pub queued: usize,
+    /// Jobs a worker is running.
+    pub running: usize,
+}
+
+impl PoolLoad {
+    /// Whether nothing is queued or running.
+    #[must_use]
+    pub const fn is_idle(self) -> bool {
+        self.queued == 0 && self.running == 0
+    }
+}
+
 /// One snapshot branch, as named by a change event.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Branch {
@@ -357,7 +375,7 @@ impl DataStore {
     /// [`Self::install`] for a window whose owner may not have answered yet
     /// (`None`: it has, as in the harness and tests), painting the launch
     /// snapshot's pages until it does (`keep`, W-Open I2).
-    pub fn install_with_owner(
+    pub(crate) fn install_with_owner(
         cx: &mut App,
         snapshot: Arc<AppSnapshot>,
         pool: Option<ReadPool>,
@@ -399,7 +417,7 @@ impl DataStore {
     ///
     /// # Errors
     /// The snapshot file's I/O error; nothing to save is `Ok(0)`.
-    pub fn save_now(&self) -> std::io::Result<usize> {
+    pub(crate) fn save_now(&self) -> std::io::Result<usize> {
         self.keeper.save_now(&self.pages, &self.snapshot)
     }
 
@@ -428,12 +446,20 @@ impl DataStore {
         &self.focused
     }
 
-    /// Returns the read pool's (queued, running) job counts.
+    /// What the read pool is doing now.
+    #[must_use]
+    pub fn pool_activity(&self) -> PoolLoad {
+        self.pool.as_ref().map_or_else(PoolLoad::default, |pool| PoolLoad { queued: pool.queued(), running: pool.running() })
+    }
+
+    /// The read pool's `(queued, running)` counts, as a tuple: the callers in
+    /// `harness.rs`, `shell/tests.rs`, the folio capture and `tests/` still
+    /// destructure one. They move to [`Self::pool_activity`] (MIGRATE.md, R-Open3),
+    /// then this goes.
     #[must_use]
     pub fn pool_load(&self) -> (usize, usize) {
-        self.pool
-            .as_ref()
-            .map_or((0, 0), |pool| (pool.queued(), pool.running()))
+        let PoolLoad { queued, running } = self.pool_activity();
+        (queued, running)
     }
 
     fn emit(&mut self, event: StoreEvent, cx: &mut Context<Self>) {
@@ -516,6 +542,7 @@ impl DataStore {
             visit: self.snapshot.route().clone(),
             root: self.snapshot.key(),
             message: Arc::from(format!("The world could not be read, so the graph and the hand's roads are missing. {fault}")),
+            retry: None,
         };
         self.world_fault = Some(fault);
         self.set_notice(Some(notice), cx);
@@ -724,7 +751,7 @@ impl DataStore {
     /// The owner answered, and its root is already admitted
     /// (`UiRootEntity::admit_owner`): every held page, and every page the
     /// route shows, is fetched now, at that root.
-    pub fn owner_ready(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
         let mut keys = self.owner.answered();
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -734,7 +761,7 @@ impl DataStore {
 
     /// The owner could not start: every held page, and every page the route
     /// shows, lands as a fault carrying the owner's words.
-    pub fn owner_failed(&mut self, fault: &OwnerFault, cx: &mut Context<Self>) {
+    pub(crate) fn owner_failed(&mut self, fault: &OwnerFault, cx: &mut Context<Self>) {
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -749,13 +776,15 @@ impl DataStore {
                 message: Arc::from(format!(
                     "The index could not start, so this is the page as you left it. {fault}"
                 )),
+                // "Try again" asks the page for itself again, which starts the owner.
+                retry: self.focused.iter().next().cloned(),
             };
             self.set_notice(Some(notice), cx);
         }
     }
 
     /// The owner is starting (again): pages asked from now on are held.
-    pub fn owner_starting(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
         if self.owner.starting() {
             cx.notify();
         }
@@ -1039,15 +1068,10 @@ mod tests {
 
         /// Runs the executor until `done` holds, letting worker threads land.
         fn until(&self, cx: &mut TestAppContext, done: impl Fn(&DataStore) -> bool) {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
+            crate::runtime::wait::until("the store reached the state the test waits for", || {
                 cx.run_until_parked();
-                if self.store.read_with(cx, |store, _| done(store)) {
-                    return;
-                }
-                assert!(Instant::now() < deadline, "condition never held");
-                std::thread::sleep(Duration::from_millis(1));
-            }
+                self.store.read_with(cx, |store, _| done(store))
+            });
         }
     }
 
@@ -1103,9 +1127,9 @@ mod tests {
         rig.until(cx, |store| store.symbol(&symbol("fast-new")).is_loaded());
         // The cancelled read never lands, even when its gate opens later.
         rig.open("slow-old");
-        cx.run_until_parked();
-        std::thread::sleep(Duration::from_millis(20));
-        cx.run_until_parked();
+        // Wait for the cancelled read to finish (its worker leaves the pool),
+        // not for a guessed 20 ms: only then is "it never lands" a claim.
+        rig.until(cx, |store| store.pool_activity().is_idle());
         assert!(
             rig.store
                 .read_with(cx, |store, _| store.symbol(&symbol("slow-old")).loaded_value().is_none())
@@ -1172,6 +1196,14 @@ mod tests {
             orbit.terminal(),
             crate::core::ResourceTerminal::Complete | crate::core::ResourceTerminal::Unavailable(_)
         ));
+    }
+
+    #[test]
+    fn a_pool_is_idle_only_when_nothing_is_queued_and_nothing_is_running() {
+        assert!(PoolLoad::default().is_idle(), "no jobs is idle");
+        assert!(!PoolLoad { queued: 1, running: 0 }.is_idle(), "a queued job is work");
+        assert!(!PoolLoad { queued: 0, running: 1 }.is_idle(), "a running job is work");
+        assert!(!PoolLoad { queued: 2, running: 3 }.is_idle(), "both is work");
     }
 }
 

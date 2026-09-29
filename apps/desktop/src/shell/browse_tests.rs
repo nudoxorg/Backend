@@ -39,7 +39,8 @@ fn owner() -> (backend_local_service::EmbeddedLocalService, PathBuf, PathBuf) {
     // `/tmp`, not `temp_dir()`: a long socket path exceeds `sockaddr_un`.
     let state = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}"));
     let endpoint = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}.sock"));
-    std::fs::create_dir_all(state.join("data")).expect("workspace");
+    // The owner refuses a state directory anyone else could enter: 0700, not the umask's 0755.
+    crate::host::private_dir(&state.join("data")).expect("workspace");
     let paths = backend_runtime::WorkspacePaths::discover(Some(repository()), Some(state.join("data")), Some(endpoint.clone()))
         .expect("workspace paths");
     paths.initialize().expect("initialize");

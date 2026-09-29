@@ -24,6 +24,10 @@ use std::rc::Rc;
 mod data;
 mod fluid;
 mod folio;
+mod target;
+use target::PageTarget;
+#[cfg(test)]
+mod regions_tests;
 #[cfg(test)]
 mod tests;
 
@@ -84,6 +88,7 @@ pub(super) fn body(
         at: at.as_ref().map(|at| at.as_str().to_owned().into()),
         pin: pin_version.clone().map(Into::into),
         documented: data::documented(&modules),
+        structure: data::structure(&modules, ready.as_deref()),
         outline_gap: match &dossier.outline {
             crate::model::pages::Known::Unknown(gap) => Some(crate::shell::kit::gap_words(gap)),
             _ => None,
@@ -108,8 +113,8 @@ pub(super) fn body(
     // A click on a card left this page: that card's module is open again on
     // coming back.
     let reopen = ctx.targets.left_by(place).and_then(|left| {
-        let symbol = left.strip_prefix("pkg-card-")?.to_owned();
-        facts.modules.iter().find(|m| m.items.iter().any(|i| i.symbol.as_str() == symbol)).map(|m| m.name.clone())
+        let PageTarget::Card(symbol) = PageTarget::parse(&left)? else { return None };
+        facts.modules.iter().find(|m| m.items.iter().any(|i| i.symbol == symbol)).map(|m| m.name.clone())
     });
     let folio = folio::Folio {
         id: id.into(),
@@ -126,6 +131,10 @@ pub(super) fn body(
     // Centred on the reading column it overflows.
     let overshoot = (measure.width() - ctx.measure.width()).max(px(0.0));
     let mut leaves = vec![Leaf::new(div().ml(-(overshoot * 0.5)).child(folio))];
+    // A registry release the owner has not indexed offers to be added (W-Acquire).
+    if let Some(offer) = crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure, cx) {
+        leaves.insert(0, Leaf::new(offer));
+    }
     if let Some(leaf) = readme(&dossier, ctx) {
         leaves.push(leaf);
     }

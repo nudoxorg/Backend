@@ -2,6 +2,7 @@
 //! show a project its own tree. The Library (your tree) comes first.
 
 pub mod library;
+pub mod acquire;
 pub mod action;
 pub mod find;
 pub mod compare;

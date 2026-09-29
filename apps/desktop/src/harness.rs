@@ -14,8 +14,9 @@
 //! reads are real I/O on real threads, so each boot declares a quiescence
 //! predicate: after the first frame and after every input instant the run
 //! waits in real time (virtual time stands still) until the read pool is
-//! empty, every result has landed, and the root has no engine work in
-//! flight. I/O then takes zero virtual time and a frame at a virtual time is
+//! empty, every result has landed, the root has no engine work in flight,
+//! and no off-thread cache (`runtime::offload`, the declaration lines) is
+//! still computing what a view asked for ([`in_flight`]). I/O then takes zero virtual time and a frame at a virtual time is
 //! a function of the script.
 //!
 //! The seams, each one line or one function: the window root is
@@ -43,6 +44,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub mod journey;
+mod install;
 mod refusals;
 mod startup;
 
@@ -175,6 +177,7 @@ fn tree_workspace(project: &LocalProjectId) -> WorkspaceState {
         active: Some(project.clone()),
         host: Some(project.clone()),
         path_error: None,
+        ..WorkspaceState::default()
     }
 }
 
@@ -249,7 +252,9 @@ fn utf8(path: &Path) -> Result<&str, String> {
 /// that exits mid-run, this one's reads fail.
 ///
 /// # Errors
-/// The owner cannot start, or indexing does not settle in 15 minutes.
+/// The owner cannot start, indexing does not settle in 15 minutes, or no root
+/// has anything to serve (an empty index: every page is the app's fault
+/// plate) and `NUDOX_HARNESS_ALLOW_EMPTY_INDEX` is not set.
 pub fn fixture() -> Result<&'static Fixture, String> {
     fixture_with_progress(|_| {})
 }
@@ -359,6 +364,7 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
         }
     }
     report_provenance(projects.len(), &preserved, &failed);
+    refuse_empty_index(projects.len(), &failed, EmptyIndex::from_env())?;
     let fixture: &'static Fixture = Box::leak(Box::new(Fixture { host, projects, preserved, failed }));
     *cached = Some(fixture);
     Ok(fixture)
@@ -479,6 +485,43 @@ fn await_settled(session: &mut Session, roots: &mut [Indexed]) -> Result<u64, St
         }
         std::thread::sleep(Duration::from_millis(300));
     }
+}
+
+/// The variable that allows a capture of an index with nothing in it.
+const ALLOW_EMPTY_INDEX: &str = "NUDOX_HARNESS_ALLOW_EMPTY_INDEX";
+
+/// Whether a capture of an index with nothing in it is wanted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EmptyIndex {
+    /// The boot fails.
+    Refuse,
+    /// The boot goes on: the captures are the app's fault plates, on purpose.
+    Allow,
+}
+
+impl EmptyIndex {
+    fn from_env() -> Self {
+        if std::env::var_os(ALLOW_EMPTY_INDEX).is_some() { Self::Allow } else { Self::Refuse }
+    }
+}
+
+/// A boot in which no root has anything to serve is not a capture of the
+/// product: every package and symbol page is the app's fault plate and the
+/// Library lists no package. Nobody should mistake it for a page result, so
+/// it fails, with the owner's first words, unless [`ALLOW_EMPTY_INDEX`] says
+/// the fault plates are what is wanted. A partial index is not empty, and
+/// roots that serve a preserved generation count as serving.
+fn refuse_empty_index(total: usize, failed: &[Refusal], empty: EmptyIndex) -> Result<(), String> {
+    if total == 0 || failed.len() < total || empty == EmptyIndex::Allow {
+        return Ok(());
+    }
+    let first = failed
+        .first()
+        .map(|refusal| format!("{}: {}", refusal.root.display(), refusal.reason.chars().take(160).collect::<String>()))
+        .unwrap_or_default();
+    Err(format!(
+        "the fixture index is empty: all {total} roots have nothing to serve, so every package and symbol page is the app's fault plate and the Library lists no package (first: {first}). Fix the index, or set {ALLOW_EMPTY_INDEX}=1 to capture the fault plates on purpose"
+    ))
 }
 
 /// Says once, on stderr, what the captures of this boot are made of: a run
@@ -635,6 +678,7 @@ fn open_owner(state: &Path, project: &Path) -> Result<(crate::DesktopHost, PathB
         match crate::DesktopHost::start_with_paths(paths.clone()) {
             Ok(host) => {
                 crate::runtime::trace::span("boot.owner_start", attaching, format_args!("{:?}", host.mode()));
+                crate::host::registry::publish(host.endpoint(), host.data());
                 return Ok((host, endpoint, state.to_path_buf()));
             }
             Err(error) if state_refused(&error) => return Err(Opening::Refused(error.to_string())),
@@ -919,6 +963,15 @@ fn read(fixture: &Fixture, request: &ReadRequest) -> Result<crate::model::pages:
 /// # Errors
 /// No fixture package matches.
 pub fn resolve_package(id: &str, fixture: &Fixture) -> Result<PackageRef, String> {
+    // A registry release (`anyhow-1.0.104`) that is not a fixture root reads
+    // at the tree the product's own source resolves it to (W-Acquire).
+    if !fixture.projects().iter().any(|project| project.ends_with(id))
+        && let Some(release) = crate::model::release::Release::from_stem(id)
+        && let Some(composed) = crate::host::registry::composed()
+        && let crate::model::release::Availability::Unpacked(tree) = composed.source.availability(&release)
+    {
+        return PackageRef::parse(utf8(&tree)?).map_err(|error| format!("package {id}: {error:?}"));
+    }
     let root = fixture
         .projects()
         .iter()
@@ -1050,7 +1103,12 @@ fn choose_outline_symbol_candidate(
 /// The booted graph of the window being captured.
 struct Booted {
     graph: UiEntityGraph,
-    fixture: &'static Fixture,
+    /// The fixture index the window reads; `None` on the production machine
+    /// (a journey's clean launch), whose owner is its own.
+    fixture: Option<&'static Fixture>,
+    /// The production machine's owner, as the window observes it: nothing is
+    /// quiet while it is still starting.
+    gate: Option<crate::runtime::owner::OwnerGate>,
     shell: gpui::Entity<crate::shell::Shell>,
     /// Render counts and landed reads at the previous annotation.
     last: std::cell::Cell<(crate::shell::RenderCounts, u64)>,
@@ -1176,7 +1234,8 @@ pub(super) fn mount(
         .update(cx, |root, cx| root.dispatch(Intent::ZoomTo { display, percent }, cx));
     cx.set_global(Booted {
         graph,
-        fixture,
+        fixture: Some(fixture),
+        gate: None,
         shell: shell.clone(),
         last: std::cell::Cell::new((crate::shell::RenderCounts::default(), 0)),
     });
@@ -1292,7 +1351,7 @@ fn sample_state(cx: &mut App, _: &facet::probe::Ledger) -> gallery::json::Json {
         ("graph", booted.shell.read(cx).graph_state(cx)),
         // What the pages are made of: a capture of preserved data says so.
         ("data", {
-            let data = booted.fixture.provenance();
+            let data = booted.fixture.map_or(Provenance { fresh: 0, preserved: 0, failed: 0 }, Fixture::provenance);
             Json::obj([("fresh", Json::num(data.fresh as f64)), ("preserved", Json::num(data.preserved as f64)), ("failed", Json::num(data.failed as f64))])
         }),
     ])
@@ -1327,12 +1386,12 @@ fn settings_intents(facet: &facet::Facet) -> Vec<Intent> {
 /// themselves in one process-wide number, so a NEW `Memo` is waited for
 /// without being listed here (`a_memo_nobody_registered_is_still_waited_for`);
 /// detached work that is not a `Memo` adds one line.
-fn in_flight(cx: &App) -> Vec<(&'static str, usize)> {
-    vec![
-        ("offload memos", crate::runtime::offload::in_flight()),
-        ("declaration lines", crate::shell::bodies::symbol_lines_in_flight(cx)),
-    ]
+fn in_flight() -> Vec<(&'static str, usize)> {
+    vec![("offload memos", crate::runtime::offload::in_flight())]
 }
+
+/// How long `route await additions` waits for the owner to index a release.
+const ADDITION_DEADLINE: Duration = Duration::from_secs(20 * 60);
 
 /// Nothing in flight: the read pool is empty, every finished read has
 /// landed (drained here), the root has no engine work pending, and no
@@ -1342,15 +1401,27 @@ fn quiet(cx: &mut App) -> bool {
         return startup::settled(cx);
     };
     let (store, root, shell) = (booted.graph.store.clone(), booted.graph.root.clone(), booted.shell.clone());
+    // The production machine (a journey's launch): nothing is quiet while the
+    // owner is still starting, and indexing (one owner call that runs for
+    // minutes) is awaited as a journey step, not here.
+    let production = booted.gate.as_ref().map(|gate| !matches!(gate.state(), crate::runtime::owner::OwnerState::Starting));
+    if production == Some(false) {
+        return false;
+    }
     store.update(cx, |store, cx| {
         store.drain(cx);
     });
     let idle_pool = store.read(cx).pool_load() == (0, 0);
+    let engine_idle = if production.is_some() {
+        !root.read(cx).has_pending_work_besides_indexing()
+    } else {
+        !root.read(cx).has_pending_work()
+    };
     idle_pool
-        && !root.read(cx).has_pending_work()
+        && engine_idle
         && shell.read(cx).graph_ready(cx)
         && !crate::runtime::fixture_world::is_loading(cx)
-        && in_flight(cx).iter().all(|(_, count)| *count == 0)
+        && in_flight().iter().all(|(_, count)| *count == 0)
 }
 
 /// Script acts without a platform event, through the product: settings
@@ -1389,7 +1460,21 @@ fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
         } else {
             MotionPreference::Reduced
         }),
+        // `route await additions` holds this instant until every release
+        // being added has been indexed (W-Acquire). An addition is not "in
+        // flight" for the quiet wait: the owner compiles it for longer than
+        // one wait allows, and a frame before this act shows its progress.
+        // Nothing is navigated.
+        Act::Route { target } if target.trim() == "await additions" => {
+            crate::runtime::acquire::await_workers(ADDITION_DEADLINE, cx);
+            return;
+        }
+        // A `route` act names fixture packages; the production machine has
+        // none (a journey refuses route detours there before they get here).
         Act::Route { target } => {
+            let Some(fixture) = fixture else {
+                return;
+            };
             match route::parse(target).and_then(|target| route::to_route(&target, fixture)) {
                 Ok(route) => Intent::Navigate(route),
                 Err(error) => panic!("route {target}: {error}"),
@@ -1411,7 +1496,7 @@ fn build(start: &'static str, window: &mut Window, cx: &mut App) -> AnyView {
 /// Every desktop scene: the real shell on the fixture, booted at a route.
 #[must_use]
 pub fn scenes() -> Vec<Scene> {
-    vec![
+    let mut scenes = vec![
         Scene {
             id: "desktop-orbit",
             title: "The desktop at home (Orbit) on the fixture index",
@@ -1490,6 +1575,14 @@ pub fn scenes() -> Vec<Scene> {
             size: (1440, 900),
             build: |window, cx| build("find no_such_symbol_w_pages_932", window, cx),
         },
+        // W-Acquire: a crate on this machine that the library does not have
+        // (anyhow is in the local cargo cache, not among the fixture roots).
+        Scene {
+            id: "desktop-find-offer",
+            title: "Find a crate this machine has and the library does not, and add it",
+            size: (1440, 900),
+            build: |window, cx| build("find anyhow", window, cx),
+        },
         Scene {
             id: "desktop-compare",
             title: "Compare toml with toml_edit and basic-toml",
@@ -1507,6 +1600,12 @@ pub fn scenes() -> Vec<Scene> {
             title: "serde_json::from_str, structured symbol page",
             size: (1440, 900),
             build: |window, cx| build("symbol serde_json-1.0.151::de::from_str kind=function path=src/de.rs", window, cx),
+        },
+        Scene {
+            id: "desktop-value-as-str",
+            title: "toml::Value::as_str: a method that may give nothing, structured symbol page",
+            size: (1440, 900),
+            build: |window, cx| build("symbol toml-0.8.23::value::Value::as_str kind=method path=src/value.rs", window, cx),
         },
         Scene {
             id: "desktop-serialize",
@@ -1544,7 +1643,9 @@ pub fn scenes() -> Vec<Scene> {
             size: (1440, 900),
             build: |window, cx| build("symbol serde_json-1.0.151::error::Error kind=struct path=src/error.rs", window, cx),
         },
-    ]
+    ];
+    scenes.extend(install::scenes());
+    scenes
 }
 
 #[cfg(test)]
@@ -1844,6 +1945,20 @@ mod tests {
     }
 
     #[test]
+    fn an_index_with_nothing_in_it_fails_the_boot_unless_a_capture_of_it_is_wanted() {
+        use super::{ALLOW_EMPTY_INDEX, EmptyIndex, Refusal, refuse_empty_index};
+        let refusal = |root: &str| Refusal { root: root.into(), reason: "Unavailable { language: Rust, stage: LowerIr }".to_owned() };
+        let all = [refusal("/fixture/present"), refusal("/fixture/runtime")];
+        let error = refuse_empty_index(2, &all, EmptyIndex::Refuse).expect_err("no root serves anything");
+        for said in ["all 2 roots have nothing to serve", "/fixture/present", "Unavailable { language: Rust", ALLOW_EMPTY_INDEX] {
+            assert!(error.contains(said), "the failure does not say `{said}`: {error}");
+        }
+        assert!(refuse_empty_index(2, &all, EmptyIndex::Allow).is_ok(), "the fault plates are wanted");
+        assert!(refuse_empty_index(3, &all, EmptyIndex::Refuse).is_ok(), "a root that serves (fresh or preserved) makes the index not empty");
+        assert!(refuse_empty_index(0, &[], EmptyIndex::Refuse).is_ok(), "no roots asked, none refused");
+    }
+
+    #[test]
     fn what_the_fixtures_pages_are_made_of_counts_fresh_preserved_and_failed_roots() {
         use super::{Provenance, provenance};
         assert_eq!(provenance(14, 0, 0), Provenance { fresh: 14, preserved: 0, failed: 0 });
@@ -1863,7 +1978,7 @@ mod tests {
         cx.update(|cx| {
             let _ = memo.ask(&7, Asker::Everyone, cx);
         });
-        let waiting = cx.update(|cx| in_flight(cx));
+        let waiting = in_flight();
         let memos = waiting.iter().find(|(name, _)| *name == "offload memos").map(|(_, count)| *count);
         assert!(memos.is_some_and(|count| count >= 1), "a memo's flight is not counted: {waiting:?}");
         cx.run_until_parked();

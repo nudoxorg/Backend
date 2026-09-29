@@ -6,7 +6,7 @@ use super::place;
 use crate::model::pages::{DeclRef, DocFragment, DocSection, Member, PackageRef, Receiver, SectionKind, SymbolPage};
 use backend_library::{DeclarationKind, Obligation};
 use facet::anatomy::history::{History, Was};
-use facet::anatomy::symbol::facts::{Beside, Facts, Member as FactMember, Owes, Receives, Section, SectionKind as FactSection, Site};
+use facet::anatomy::symbol::facts::{Beside, Facts, Implementors, Member as FactMember, Owes, Receives, Section, SectionKind as FactSection, Site};
 use facet::anatomy::symbol::view::{Block, Kind, Lang};
 
 /// The page's kind for an index kind.
@@ -277,7 +277,10 @@ pub(super) fn facts(page: &SymbolPage, package: &str, companions: &[(DeclRef, Op
     if let Some(up) = page.rose.up.known() {
         facts.implements = up.iter().filter(|relation| relation.decl.kind == Some(DeclarationKind::Trait) || matches!(relation.kind, crate::model::pages::RelationKind::Semantic(backend_library::SemanticLinkKind::Implements))).map(|relation| (relation.decl.name.to_string(), matches!(relation.arrival, crate::model::pages::Arrival::Auto))).collect();
     }
-    facts.implementors = page.rose.implemented_by.known().and_then(|doers| u32::try_from(doers.len()).ok()).filter(|n| *n > 0);
+    facts.implementors = page.rose.implemented_by.known().and_then(|doers| {
+        let crates: std::collections::BTreeSet<_> = doers.iter().filter_map(|relation| relation.decl.coordinate.package()).collect();
+        Some(Implementors { total: u32::try_from(doers.len()).ok().filter(|n| *n > 0)?, crates: u32::try_from(crates.len().max(1)).ok()?, derived: None })
+    });
     if let Some(outline) = page.outline.known() {
         facts.beside = outline
             .siblings

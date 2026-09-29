@@ -23,8 +23,6 @@
 //!
 //! A value is shared as an `Arc`; the work is a pure `Fn(&K) -> V`.
 
-#![cfg_attr(not(test), allow(dead_code, reason = "the views' `Memo::get` and the harness's `in_flight` are wired in the second passes (I3.md)"))]
-
 use gpui::{App, Context, EntityId};
 use std::any::Any;
 use std::cell::RefCell;
@@ -40,7 +38,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 /// How many values, in every memo in the process, are being computed or have
-/// been computed but not yet announced to the views that asked.
+/// been computed but not yet announced to the views that asked. (A harness
+/// waits for none before it captures; the product never asks.)
+#[cfg(any(test, feature = "visual-harness"))]
 #[must_use]
 pub(crate) fn in_flight() -> usize {
     IN_FLIGHT.load(Ordering::Relaxed)
@@ -50,6 +50,7 @@ pub(crate) fn in_flight() -> usize {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Asker {
     /// The one view that asked: only it is notified.
+    #[allow(dead_code, reason = "built by `Memo::get` and `hand_view_for`, which the shell callers move to (MIGRATE.md, R-Open3); delete this allow with that move")]
     View(EntityId),
     /// A caller that cannot name its view (a `&mut App` signature): every
     /// window redraws once. Migrate the caller to [`Memo::get`].
@@ -148,6 +149,7 @@ where
     }
 
     /// The value for `key`, asked for by the view `cx` belongs to.
+    #[allow(dead_code, reason = "the shell callers move to it (MIGRATE.md, R-Open3); delete this allow with that move")]
     pub(crate) fn get<T: 'static>(&self, key: &K, cx: &mut Context<T>) -> Answer<V> {
         self.ask(key, Asker::View(cx.entity_id()), cx)
     }
@@ -179,6 +181,7 @@ where
     }
 
     /// The value for `key` if it is there now; asks nothing, touches nothing.
+    #[cfg(test)]
     pub(crate) fn peek(&self, key: &K) -> Option<Arc<V>> {
         match &self.shared.inner.borrow().entries.get(key)?.state {
             State::Ready(value) => Some(Arc::clone(value)),
@@ -187,6 +190,7 @@ where
     }
 
     /// Forgets `key` (a failed one is asked again the next time).
+    #[cfg(test)]
     pub(crate) fn forget(&self, key: &K) {
         let mut inner = self.shared.inner.borrow_mut();
         if inner.entries.get(key).is_some_and(|entry| !matches!(entry.state, State::Reading)) {
@@ -194,7 +198,8 @@ where
         }
     }
 
-    /// Puts a value in as if it had been computed (a seed, or a test).
+    /// Puts a value in as if it had been computed (a test's stand-in for the work).
+    #[cfg(test)]
     pub(crate) fn seed(&self, key: K, value: V) {
         let mut inner = self.shared.inner.borrow_mut();
         inner.clock = inner.clock.next();
@@ -206,11 +211,13 @@ where
     }
 
     /// How many values are being computed by this memo.
+    #[cfg(any(test, feature = "visual-harness"))]
     pub(crate) fn reading(&self) -> usize {
         self.shared.inner.borrow().entries.values().filter(|entry| matches!(entry.state, State::Reading)).count()
     }
 
     /// How many keys are kept.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.shared.inner.borrow().entries.len()
     }

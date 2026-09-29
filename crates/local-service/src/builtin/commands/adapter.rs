@@ -524,7 +524,7 @@ impl CommandAdapter {
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
         let intent = match classify_add_target(&label)? {
-            AddTarget::LocalDirectory => index_project_intent_with_cluster_and_intent(
+            AddTarget::LocalDirectory => match index_project_intent_with_cluster_and_intent(
                 daemon,
                 package,
                 &label,
@@ -534,7 +534,18 @@ impl CommandAdapter {
                 &mut self.semantic_authority,
                 self.owner_cluster.as_deref(),
                 self.pending_stored_acks.as_ref(),
-            )?,
+            ) {
+                Ok(intent) => intent,
+                Err(refusal) => {
+                    // The source frontier commits before the compiler runs, so a
+                    // refused compile leaves that frontier durable. Publish it now:
+                    // the project is listed, on its structural rows, in the same
+                    // boot that names why it was refused, instead of staying out of
+                    // the view until the next command or restart.
+                    let _ = self.publish_view(daemon, None);
+                    return Err(refusal);
+                }
+            },
             AddTarget::PackageUrl => self.registry_intent(daemon, package, &label, request_id)?,
         };
         let committed = if let Some(intent) = intent {

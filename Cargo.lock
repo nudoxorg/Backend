@@ -918,6 +918,7 @@ dependencies = [
  "backend-replication",
  "backend-runtime",
  "blake3",
+ "flate2",
  "gpui-ce",
  "gpui_ce_components",
  "gpui_ce_platform",
