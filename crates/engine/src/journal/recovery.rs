@@ -176,7 +176,7 @@ impl<D: JournalCodec> HashChainJournal<D> {
         )
     }
 
-    fn open_streaming_with_mode_and_sync<F, S>(
+    pub(super) fn open_streaming_with_mode_and_sync<F, S>(
         path: impl AsRef<Path>,
         limits: JournalLimits,
         mut visitor: F,
