@@ -24,8 +24,10 @@ const RECORD_HEADER_BYTES: usize = 32 + 1 + 4;
 const INITIAL_PREFIX_BITS: u16 = 8;
 
 mod declarations;
+mod source_provenance;
 mod wire;
 pub use declarations::{CoreDeclarationRows, DocumentationRows, encode_declaration_planes};
+pub use source_provenance::SourceProvenanceRows;
 
 /// One compact handle to a row in the borrowed canonical reader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -506,7 +508,7 @@ where
     keys.rows
         .sort_unstable_by(|left, right| left.key.cmp(&right.key));
     if keys.rows.windows(2).any(|pair| pair[0].key == pair[1].key) {
-        return Err(SemanticPlaneRecordError::StableKeyCollision);
+        return Err(SemanticPlaneRecordError::StableKeyCollision.into());
     }
     let mut row_scratch = Vec::new();
     let mut segment_bytes = Vec::new();
@@ -994,6 +996,9 @@ fn validate_record(
         SemanticPlaneKind::Ir(SemanticIrPlane::Core | SemanticIrPlane::Documentation) => {
             declarations::validate_record(kind, key, tag, payload)
         }
+        SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance) => {
+            source_provenance::validate_record(kind, key, tag, payload)
+        }
         _ => Err(SemanticPlaneRecordError::UnsupportedFamily),
     }
 }
@@ -1021,7 +1026,7 @@ mod tests {
         BorrowedTree, CorePayloadHash, DeclarationFamilyId, DocInput, EntityAuthorityFacts,
         EntityVersion, FactAvailability, Ir, IrBuilder, ItemKind, ParentageAuthority,
         SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment,
-        SemanticSegmentId, TreeItemInput, VariantFingerprint, Visibility,
+        SemanticSegmentId, SourceSpan, TreeItemInput, VariantFingerprint, Visibility,
     };
     use backend_version::ScopeRoot;
 
@@ -1311,5 +1316,99 @@ mod tests {
             .expect("strict UTF-8 docs reopen");
         assert_eq!(view.row_count(), 1);
         assert_eq!(view.records().len(), 1);
+    }
+
+    #[test]
+    fn source_rows_preserve_exact_path_and_reject_reversed_span() {
+        let version = EntityVersion {
+            family: DeclarationFamilyId::from_raw([7; 16]),
+            variant: VariantFingerprint::from_raw([8; 16]),
+            core_payload: CorePayloadHash::from_raw([9; 16]),
+        };
+        let mut builder = IrBuilder::new();
+        let file = builder.intern_atom(b"src/\xff.rs").expect("source atom");
+        let source = SourceSpan::new(file, 3, 17).expect("valid half-open span");
+        let item = TreeItemInput {
+            name: b"source_item",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                source: FactAvailability::Captured,
+                source_file: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: Some(source),
+            extension: None,
+        };
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[version],
+                items: &[item],
+                links: &[],
+            })
+            .expect("source tree");
+        let ir = builder.finish().expect("source image");
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance);
+        let rows = encode_canonical_plane_family(&ir, &SourceProvenanceRows, witness(), 512)
+            .expect("source rows");
+        let row = &rows[0];
+        let descriptor = row.metadata().expect("descriptor");
+        let decoded = decode_semantic_plane_segment(kind, &descriptor, row.bytes())
+            .expect("strict source decoder");
+        let record = decoded.records().next().expect("one source row");
+        assert!(
+            record
+                .payload()
+                .windows(8)
+                .any(|bytes| bytes == b"src/\xff.rs")
+        );
+        let mut invalid = row.bytes().to_vec();
+        let last = invalid.len();
+        invalid[last - 8..last - 4].copy_from_slice(&18_u32.to_be_bytes());
+        let invalid_descriptor = SemanticPlaneSegment::from_payload_with_witness(
+            kind,
+            *row.first_key(),
+            *row.last_key(),
+            row.row_count(),
+            &invalid,
+            witness(),
+        )
+        .expect("self-consistent envelope");
+        assert!(matches!(
+            decode_semantic_plane_segment(kind, &invalid_descriptor, &invalid),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+    }
+
+    #[test]
+    fn documentation_edits_do_not_rewrite_source_provenance() {
+        let base = image(128, None);
+        let edited = image(128, Some(64));
+        let before = encode_canonical_plane_family(&base, &SourceProvenanceRows, witness(), 512)
+            .expect("base source rows");
+        let after = encode_canonical_plane_family(&edited, &SourceProvenanceRows, witness(), 512)
+            .expect("edited source rows");
+        assert_eq!(ids(&before), ids(&after));
+        let descriptors: Vec<_> = before
+            .iter()
+            .map(|segment| segment.metadata().expect("descriptor"))
+            .collect();
+        let payloads: Vec<_> = before.iter().map(|segment| segment.bytes()).collect();
+        verify_semantic_plane_family_against_reader(
+            &base,
+            &SourceProvenanceRows,
+            witness(),
+            &descriptors,
+            &payloads,
+            512,
+        )
+        .expect("exact source family oracle");
     }
 }
