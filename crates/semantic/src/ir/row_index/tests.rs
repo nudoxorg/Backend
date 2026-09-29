@@ -909,6 +909,144 @@ fn tagged_payload_identity_commits_the_row_tag_without_copying() {
 }
 
 #[test]
+fn rename_is_delete_plus_insert_and_survives_cold_reopen() {
+    let old_key = key(RowFamily::Core, 17);
+    let new_key = key(RowFamily::Core, 29);
+    let unchanged_payload = payload(b"same declaration bytes after rename");
+    let before = StableRowIndex::from_sorted_rows(&[(old_key, unchanged_payload)])
+        .expect("valid old generation");
+
+    // Stable identity follows the declaration key. Keeping its payload digest
+    // while changing the key still means a tombstone and an insertion.
+    let changes = [
+        StableRowIndexChange::new(old_key, None),
+        StableRowIndexChange::new(new_key, Some(unchanged_payload)),
+    ];
+    let prepared = before
+        .prepare_update(&changes)
+        .expect("ordered rename frontier");
+    assert_eq!(prepared.work().changed_keys, 2);
+    assert_eq!(prepared.work().row_payload_hash_bytes, 0);
+    let after = prepared.commit();
+    let target = BTreeMap::from([(new_key, unchanged_payload)]);
+    let reopened = index_from_oracle(&target);
+    assert_eq!(after.root(), reopened.root());
+
+    let diff = before.diff(&after).expect("rename diff");
+    assert!(matches!(
+        diff.entries(),
+        [
+            StableRowIndexDiffEntry::Delete { key: deleted, .. },
+            StableRowIndexDiffEntry::Insert { key: inserted, .. }
+        ] if *deleted == old_key && *inserted == new_key
+    ));
+
+    let cold = UntrustedStableRowIndexRoot::from_raw(after.root().as_bytes())
+        .admit_records(
+            &target
+                .iter()
+                .map(|(key, value)| (*key, *value))
+                .collect::<Vec<_>>(),
+        )
+        .expect("cold reconstruction admits the complete renamed row set");
+    assert_eq!(cold.root(), after.root());
+}
+
+#[test]
+fn complete_scan_oracle_catches_omitted_transitive_and_plane_changes() {
+    let mut before_model = BTreeMap::new();
+    for family in RowFamily::ALL {
+        before_model.insert(key(family, 41), payload(&[family.code(), 1]));
+    }
+    let before = index_from_oracle(&before_model);
+
+    // This modeled edit changes a referenced type and dependent declaration,
+    // relation, occurrence, and extension rows; docs and source provenance
+    // also change independently in the same generation. Embedding text has a
+    // separate recipe/input identity and is intentionally outside these seven
+    // IR families.
+    let mut after_model = before_model.clone();
+    for family in RowFamily::ALL {
+        after_model.insert(key(family, 41), payload(&[family.code(), 2]));
+    }
+    let rebuilt = index_from_oracle(&after_model);
+
+    // A producer that reports only the directly changed type row would leave
+    // derived rows stale. The complete-reader oracle must reject that target.
+    let incomplete = [StableRowIndexChange::new(
+        key(RowFamily::Types, 41),
+        after_model.get(&key(RowFamily::Types, 41)).copied(),
+    )];
+    let incomplete = before
+        .prepare_update(&incomplete)
+        .expect("sorted but incomplete producer claim");
+    assert_eq!(incomplete.work().changed_keys, 1);
+    let candidate = incomplete.commit();
+    assert_ne!(candidate.root(), rebuilt.root());
+
+    let expected = oracle_diff(&before_model, &after_model);
+    assert_eq!(expected.len(), RowFamily::ALL.len());
+    assert_eq!(
+        expected
+            .iter()
+            .map(|(key, _, _)| key.family())
+            .collect::<Vec<_>>(),
+        RowFamily::ALL.to_vec(),
+    );
+    let complete_changes = expected
+        .iter()
+        .map(|(key, _, after)| StableRowIndexChange::new(*key, *after))
+        .collect::<Vec<_>>();
+    let complete = before
+        .prepare_update(&complete_changes)
+        .expect("complete modeled frontier");
+    assert_eq!(complete.work().changed_keys, 7);
+    assert_eq!(complete.work().row_payload_hash_bytes, 0);
+    let complete = complete.commit();
+    assert_eq!(complete.root(), rebuilt.root());
+    assert_eq!(
+        before
+            .diff(&complete)
+            .expect("frontier diff")
+            .entries()
+            .len(),
+        7
+    );
+}
+
+#[test]
+fn empty_frontier_is_not_evidence_of_a_semantic_no_op() {
+    let key = key(RowFamily::Documentation, 83);
+    let before_rows = [(key, payload(b"old documentation"))];
+    let before = StableRowIndex::from_sorted_rows(&before_rows).expect("valid old rows");
+    let target_rows = [(key, payload(b"new documentation"))];
+    let target = StableRowIndex::from_sorted_rows(&target_rows).expect("full-scan target");
+
+    // The low-level update primitive can produce a zero-work root reuse from
+    // an empty claim. Comparing against the independently rebuilt target is
+    // the admission oracle that prevents that claim from being mistaken for
+    // a complete no-op proof.
+    let claimed_no_op = before.prepare_update(&[]).expect("empty sparse claim");
+    assert_eq!(claimed_no_op.work().changed_keys, 0);
+    assert_eq!(claimed_no_op.work().row_payload_hash_bytes, 0);
+    let claimed_no_op = claimed_no_op.commit();
+    assert_eq!(claimed_no_op.root(), before.root());
+    assert_ne!(claimed_no_op.root(), target.root());
+    assert_eq!(
+        before.diff(&target).expect("oracle diff").entries().len(),
+        1
+    );
+}
+
+fn index_from_oracle(rows: &BTreeMap<StableRowKey, RowPayload>) -> StableRowIndex {
+    let rows = rows
+        .iter()
+        .map(|(key, value)| (*key, *value))
+        .collect::<Vec<_>>();
+    StableRowIndex::from_sorted_rows(&rows).expect("oracle rows are strictly ordered")
+}
+
+#[test]
 fn memory_accounting_separates_referenced_payloads_from_resident_index() {
     let index = StableRowIndex::from_sorted_rows(&fixture_rows(20)).expect("valid index");
     let memory = index.memory_usage().expect("representable accounting");
