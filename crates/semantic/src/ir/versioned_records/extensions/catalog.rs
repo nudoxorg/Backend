@@ -139,7 +139,7 @@ impl CheckedLanguageExtensionFamilyV2Builder {
         tag: u8,
         payload: &[u8],
         types: &CheckedTypesFamilyV2,
-    ) -> Result<(), SemanticPlaneRecordError> {
+    ) -> Result<(), LanguageExtensionFamilyValidationError> {
         self.payload_bytes = self
             .payload_bytes
             .checked_add(
@@ -153,26 +153,49 @@ impl CheckedLanguageExtensionFamilyV2Builder {
         if self.payload_bytes > self.limits.max_payload_bytes
             || self.row_count > self.limits.max_rows
         {
-            return Err(SemanticPlaneRecordError::RowTooLarge);
+            return Err(SemanticPlaneRecordError::RowTooLarge.into());
         }
         self.row_keys
             .try_reserve(1)
             .map_err(SemanticPlaneRecordError::Allocation)?;
         if self.previous.is_some_and(|prior| prior >= key) {
-            return Err(SemanticPlaneRecordError::RecordOrder);
+            return Err(SemanticPlaneRecordError::RecordOrder.into());
         }
         let declaration_reference_count = self.declaration_references.len();
-        let parsed = parse_record_with_declarations(
+        let remaining_reference_budget = self
+            .limits
+            .max_references
+            .saturating_sub(self.reference_count)
+            .saturating_sub(1);
+        let aggregate_declaration_reference_limit = usize::try_from(remaining_reference_budget)
+            .ok()
+            .and_then(|remaining| declaration_reference_count.checked_add(remaining))
+            .unwrap_or(usize::MAX);
+        let parsed = match parse_record_with_declarations(
             SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(self.profile)),
             key,
             tag,
             payload,
             &mut self.declaration_references,
-            self.limits
-                .max_references
-                .saturating_sub(self.reference_count)
-                .saturating_sub(1),
-        )?;
+            remaining_reference_budget,
+        ) {
+            Ok(parsed) => parsed,
+            Err(SemanticPlaneRecordError::RowTooLarge) => {
+                super::wire::validate_record(
+                    SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(self.profile)),
+                    key,
+                    tag,
+                    payload,
+                )?;
+                if aggregate_declaration_reference_limit
+                    <= super::wire::MAX_EXTENSION_DECLARATION_REFERENCES
+                {
+                    return Err(LanguageExtensionFamilyValidationError::ReferenceLimitExceeded);
+                }
+                return Err(SemanticPlaneRecordError::RowTooLarge.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
         let added_declaration_references = self
             .declaration_references
             .len()
@@ -194,7 +217,7 @@ impl CheckedLanguageExtensionFamilyV2Builder {
             )
             .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
         if self.reference_count > self.limits.max_references {
-            return Err(SemanticPlaneRecordError::RowTooLarge);
+            return Err(LanguageExtensionFamilyValidationError::ReferenceLimitExceeded);
         }
         self.owners
             .try_reserve(1)

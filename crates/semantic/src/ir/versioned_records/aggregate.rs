@@ -982,7 +982,8 @@ where
                         .ok_or(SemanticTypedPlaneInventoryV2Error::CrossFamily {
                             fact: "missing Types stream builder",
                         })?
-                        .push(record.key(), record.tag(), record.payload())?,
+                        .push(record.key(), record.tag(), record.payload())
+                        .map_err(map_types_family_validation_error)?,
                     6 => extension_builder
                         .as_mut()
                         .ok_or(SemanticTypedPlaneInventoryV2Error::CrossFamily {
@@ -997,7 +998,8 @@ where
                                     fact: "missing checked Types family",
                                 },
                             )?,
-                        )?,
+                        )
+                        .map_err(map_extension_family_validation_error)?,
                     _ => {}
                 }
             }
@@ -1619,6 +1621,32 @@ fn map_jumbo_source_error<E: core::fmt::Display>(
     }
 }
 
+fn map_types_family_validation_error(
+    error: TypesFamilyValidationError,
+) -> SemanticTypedPlaneInventoryV2Error {
+    match error {
+        TypesFamilyValidationError::Record(error) => error.into(),
+        TypesFamilyValidationError::ReferenceLimitExceeded => {
+            SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                budget: "reference-count",
+            }
+        }
+    }
+}
+
+fn map_extension_family_validation_error(
+    error: LanguageExtensionFamilyValidationError,
+) -> SemanticTypedPlaneInventoryV2Error {
+    match error {
+        LanguageExtensionFamilyValidationError::Record(error) => error.into(),
+        LanguageExtensionFamilyValidationError::ReferenceLimitExceeded => {
+            SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                budget: "reference-count",
+            }
+        }
+    }
+}
+
 fn verify_manifest_claims(
     build: SemanticBuildIdentity,
     image_facts: SemanticImageFacts,
@@ -2043,14 +2071,7 @@ fn validate_cross_family_closure(
     );
     let types =
         validate_types_family_v2_with_limits_detailed(families[1].iter().copied(), family_limits)
-            .map_err(|error| match error {
-            TypesFamilyValidationError::Record(error) => error.into(),
-            TypesFamilyValidationError::ReferenceLimitExceeded => {
-                SemanticTypedPlaneInventoryV2Error::AggregateBudget {
-                    budget: "reference-count",
-                }
-            }
-        })?;
+            .map_err(map_types_family_validation_error)?;
     reference_scratch.charge_u64(types.reference_count())?;
     let relations = decode_relations(&families[2], &mut reference_scratch)?;
     let occurrences = decode_occurrences(&families[3], &mut reference_scratch)?;
@@ -2075,14 +2096,7 @@ fn validate_cross_family_closure(
         &core.captured_extension_owners,
         extension_limits,
     )
-    .map_err(|error| match error {
-        LanguageExtensionFamilyValidationError::Record(error) => error.into(),
-        LanguageExtensionFamilyValidationError::ReferenceLimitExceeded => {
-            SemanticTypedPlaneInventoryV2Error::AggregateBudget {
-                budget: "reference-count",
-            }
-        }
-    })?;
+    .map_err(map_extension_family_validation_error)?;
     reference_scratch.charge_u64(extensions.reference_count())?;
     types.verify_reachable_closure(extensions.types_references())?;
 
@@ -4472,12 +4486,16 @@ mod tests {
             under_budget_limits,
             Some(&mut admission),
         );
-        assert!(matches!(
-            under_budget,
-            Err(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
-                budget: "reference-count"
-            })
-        ));
+        assert!(
+            matches!(
+                under_budget,
+                Err(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                    budget: "reference-count"
+                })
+            ),
+            "unexpected reference-budget error: {:?}",
+            under_budget.as_ref().err()
+        );
 
         let missing_leaf = *persisted.leaf_order.first().expect("stored jumbo leaf");
         let mut partial_closure = persisted;

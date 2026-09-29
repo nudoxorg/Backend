@@ -184,22 +184,35 @@ impl CheckedTypesFamilyV2Builder {
         key: [u8; 32],
         tag: u8,
         payload: &[u8],
-    ) -> Result<(), SemanticPlaneRecordError> {
+    ) -> Result<(), TypesFamilyValidationError> {
         if self.previous.is_some_and(|prior| prior >= key) {
-            return Err(SemanticPlaneRecordError::RecordOrder);
+            return Err(SemanticPlaneRecordError::RecordOrder.into());
         }
         let remaining_references = self
             .limits
             .max_references
             .checked_sub(self.reference_count)
-            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            .ok_or(TypesFamilyValidationError::ReferenceLimitExceeded)?;
         let row_owner_reference = if tag == ROOT_TAG { 1 } else { 0 };
         let row_reference_limit = remaining_references
             .checked_sub(row_owner_reference)
-            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            .ok_or(TypesFamilyValidationError::ReferenceLimitExceeded)?;
         let row_reference_limit = usize::try_from(row_reference_limit)
-            .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
-        let parsed = parse_types_row_with_reference_limit(key, tag, payload, row_reference_limit)?;
+            .map_err(|_| TypesFamilyValidationError::ReferenceLimitExceeded)?;
+        let parsed =
+            match parse_types_row_with_reference_limit(key, tag, payload, row_reference_limit) {
+                Ok(parsed) => parsed,
+                Err(SemanticPlaneRecordError::RowTooLarge) => {
+                    super::wire::validate_record(
+                        SemanticPlaneKind::Ir(SemanticIrPlane::Types),
+                        key,
+                        tag,
+                        payload,
+                    )?;
+                    return Err(TypesFamilyValidationError::ReferenceLimitExceeded);
+                }
+                Err(error) => return Err(error.into()),
+            };
         let payload_length =
             u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
         self.payload_bytes = self
@@ -207,7 +220,7 @@ impl CheckedTypesFamilyV2Builder {
             .checked_add(payload_length)
             .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
         if self.payload_bytes > self.limits.max_payload_bytes {
-            return Err(SemanticPlaneRecordError::RowTooLarge);
+            return Err(SemanticPlaneRecordError::RowTooLarge.into());
         }
         self.family_hasher.update(&key);
         self.family_hasher.update(&[tag]);
@@ -218,7 +231,7 @@ impl CheckedTypesFamilyV2Builder {
             .checked_add(1)
             .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
         if self.row_count > self.limits.max_rows {
-            return Err(SemanticPlaneRecordError::RowTooLarge);
+            return Err(SemanticPlaneRecordError::RowTooLarge.into());
         }
         let row_references = parsed
             .references
@@ -233,7 +246,7 @@ impl CheckedTypesFamilyV2Builder {
             )
             .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
         if self.reference_count > self.limits.max_references {
-            return Err(SemanticPlaneRecordError::RowTooLarge);
+            return Err(TypesFamilyValidationError::ReferenceLimitExceeded);
         }
         match (parsed.root_identity, parsed.root_type_present) {
             (Some(identity), Some(present)) => {
@@ -247,7 +260,7 @@ impl CheckedTypesFamilyV2Builder {
                 self.root_type_presence.push((identity, present));
             }
             (None, None) => {}
-            _ => return Err(SemanticPlaneRecordError::RowGrammar),
+            _ => return Err(SemanticPlaneRecordError::RowGrammar.into()),
         }
         self.row_edges
             .try_reserve(parsed.references.len())
