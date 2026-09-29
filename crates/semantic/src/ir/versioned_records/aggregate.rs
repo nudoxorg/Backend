@@ -3329,7 +3329,7 @@ mod tests {
         rows: &[Vec<Row>; 7],
         tamper: Option<usize>,
         limits: SemanticTypedPlaneVerificationLimitsV2,
-        mut jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
+        jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
         split_documentation_at: Option<usize>,
     ) -> (
         Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>,
@@ -3403,7 +3403,7 @@ mod tests {
             &families,
             &mut source,
             limits,
-            jumbo_admission.as_deref_mut(),
+            jumbo_admission,
         );
         debug_assert_eq!(source.calls, source.requested_indices.len());
         (result, source.requested_indices, expected_calls)
