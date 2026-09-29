@@ -208,7 +208,10 @@ impl VectorPoint {
     /// non-finite coordinates.
     pub fn from_payload(id: CandidateId, payload: &[u8]) -> Result<Self, Error> {
         let admitted = AdmittedEncodedPoint::validate(payload, None)?;
-        let mut values = Vec::with_capacity(admitted.coordinates.len());
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(admitted.coordinates.len())
+            .map_err(|_| Error::SizeLimit)?;
         values.extend(admitted.coordinates());
         Self::new(id, values)
     }
