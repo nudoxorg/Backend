@@ -139,3 +139,18 @@ must show the same roots and failure behavior on cold/restart paths, bounded
 memory under scans, and a measured reduction in one of physical bytes read,
 spool I/O, or verified semantic rows for repeated exact generations. Report
 work counters separately from wall-clock timing.
+
+An independent standard-library-only model and its adversarial tests live in
+`docs/prototypes/ir_materialization_policy_model.py` and
+`docs/prototypes/test_ir_materialization_policy_model.py`. Run them with
+`python3 -m unittest docs.prototypes.test_ir_materialization_policy_model`; the
+model does not build or call the Rust implementation. Its A/B fixture produced
+matching payload/root oracles: three cold V2 replays read 3,072 physical bytes,
+write/read 1,536 spool bytes, and run the semantic verifier three times; the
+live-byte policy read 1,024 physical bytes, used no spool, ran the verifier
+twice, and served one exact-generation hot hit, with 1,550 peak logical bytes
+inside its 16,384-byte budget. The route baseline separately used two delta,
+two pristine, and two hot segment reads. In the scan trace, 102,400 bytes of
+one-pass generations (12.5 times an 8,192-byte policy budget) left the protected
+interactive generation resident; peak logical policy bytes were 8,115. These
+are model counters, not Rust measurements or wall-clock claims.
