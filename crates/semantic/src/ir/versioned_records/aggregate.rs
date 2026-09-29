@@ -1139,7 +1139,7 @@ fn verify_stream_manifest_claims(
                 || segment.row_count() == 0
                 || segment.byte_length() == 0
                 || segment.byte_length() > crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u64
-                || previous.is_some_and(|last| last >= *segment.first_key())
+                || previous.is_some_and(|last| last >= segment.first_key())
             {
                 return Err(SemanticTypedPlaneInventoryV2Error::SegmentOrder {
                     family: family.family(),
@@ -1213,7 +1213,8 @@ fn admitted_stream_segment<'payload>(
         *claim.last_key(),
         claim.row_count(),
         payload,
-    )?;
+    )
+    .map_err(SemanticPlaneRecordError::from)?;
     let Some(admitted_id) = descriptor.admitted_id() else {
         return Err(SemanticPlaneRecordError::MissingAdmittedId.into());
     };

@@ -646,7 +646,7 @@ fn validate_inventory_matches_manifest(
 }
 
 /// Failure to verify a cold typed semantic content and generation claim.
-#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum SemanticGenerationProofError {
     /// Strict payload decoding or complete family census failed.
     #[error("strict V2 typed-plane payload and family verification rejected the closure")]
