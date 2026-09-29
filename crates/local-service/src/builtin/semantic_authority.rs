@@ -2515,6 +2515,14 @@ impl SemanticAuthority {
         &mut self,
         daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     ) -> Result<(), BuiltinModelError> {
+        #[cfg(feature = "cluster-process-journey-hooks")]
+        let journey_trace = std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+            .is_some_and(|value| value.to_str() == Some("1"));
+        #[cfg(not(feature = "cluster-process-journey-hooks"))]
+        let journey_trace = false;
+        if journey_trace {
+            eprintln!("journey startup phase: reconcile_workspace begin");
+        }
         let mut desired =
             BTreeMap::<ProductSemanticPublicationKey, ProductSemanticPublicationRecord>::new();
         let mut after: Option<AuthorityNamespace> = None;
@@ -2551,7 +2559,19 @@ impl SemanticAuthority {
                     }
                     for selected in generations.iter() {
                         generation_after = Some(selected.generation());
+                        if journey_trace {
+                            eprintln!(
+                                "journey startup phase: reopen selected generation {} begin",
+                                selected.generation()
+                            );
+                        }
                         let (claim, record) = reopen_record(&self.store, selected)?;
+                        if journey_trace {
+                            eprintln!(
+                                "journey startup phase: reopen selected generation {} complete",
+                                selected.generation()
+                            );
+                        }
                         let history_key = key
                             .for_generation_bytes(*claim.binding().identity.as_ref())
                             .map_err(|error| BuiltinModelError(error.to_owned()))?;
@@ -2588,7 +2608,19 @@ impl SemanticAuthority {
                 .ok_or_else(|| {
                     BuiltinModelError("semantic authority head is absent from history".to_owned())
                 })?;
+                if journey_trace {
+                    eprintln!(
+                        "journey startup phase: reopen selected head generation {} begin",
+                        selected.generation()
+                    );
+                }
                 let (claim, record) = reopen_record(&self.store, &selected)?;
+                if journey_trace {
+                    eprintln!(
+                        "journey startup phase: reopen selected head generation {} complete",
+                        selected.generation()
+                    );
+                }
                 desired.insert(key.clone(), record);
                 self.remember_selection(key.clone(), claim, selected)?;
                 if let Some(observation) = futures_executor::block_on(
@@ -2691,6 +2723,9 @@ impl SemanticAuthority {
             )?;
             super::commands::commit_builtin_intent(daemon, 0, &intent)?;
         }
+        if journey_trace {
+            eprintln!("journey startup phase: reconcile_workspace complete");
+        }
         #[cfg(feature = "cluster-process-journey-hooks")]
         if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
             .is_some_and(|value| value.to_str() == Some("1"))
@@ -2698,8 +2733,12 @@ impl SemanticAuthority {
             // Exercise the ordinary production root policy before the
             // stronger journey-only remote residency policy. Pending worker
             // and captured-input closures must survive either pass.
+            eprintln!("journey startup phase: normal semantic GC begin");
             self.collect_garbage(GcLimits::default())?;
+            eprintln!("journey startup phase: normal semantic GC complete");
+            eprintln!("journey startup phase: remote-segment semantic GC begin");
             self.collect_garbage_with_remote_segments(GcLimits::default(), true)?;
+            eprintln!("journey startup phase: remote-segment semantic GC complete");
         }
         Ok(())
     }

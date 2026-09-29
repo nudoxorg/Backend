@@ -96,10 +96,10 @@ mod s3_publication;
 #[path = "builtin/semantic_authority.rs"]
 mod semantic_authority;
 pub use compiler_scope::{ProductCompilerScope, ProductCompilerTargetKind, product_compiler_scope};
-#[path = "builtin/versioned_planes.rs"]
-mod versioned_planes;
 #[path = "builtin/selected_full_image.rs"]
 mod selected_full_image;
+#[path = "builtin/versioned_planes.rs"]
+mod versioned_planes;
 #[path = "builtin/view_build/mod.rs"]
 mod view_build;
 use generation_residence::SemanticGenerationResidence;
@@ -1373,9 +1373,8 @@ pub(crate) fn compose_owner(
     )
     .map_err(|error| ProcessError::Profile(error.to_string()))?;
     let compiler_root = config.workspace.join("compiler");
-    backend_platform::durable::ensure_private_directory(&compiler_root).map_err(|error| {
-        ProcessError::Profile(format!("open private compiler state: {error}"))
-    })?;
+    backend_platform::durable::ensure_private_directory(&compiler_root)
+        .map_err(|error| ProcessError::Profile(format!("open private compiler state: {error}")))?;
     let embedding = backend_engine::application::EmbeddingRuntimeProvision::open(
         compiler_root.join("embedding.config"),
     )
@@ -1395,14 +1394,38 @@ pub(crate) fn compose_owner(
                 .open_with_embedding_runtime(embedding.runtime(), embedding.requirement()),
         }
         .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+        .is_some_and(|value| value.to_str() == Some("1"))
+    {
+        eprintln!("journey startup phase: SemanticAuthority::open begin");
+    }
     let mut semantic_authority = SemanticAuthority::open(&config.workspace)
         .map_err(|error| ProcessError::Profile(error.to_string()))?;
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+        .is_some_and(|value| value.to_str() == Some("1"))
+    {
+        eprintln!("journey startup phase: SemanticAuthority::open complete");
+    }
     let mut image_rows = view_build::ImageRowResidence::default();
     let mut generations = SemanticGenerationResidence::default();
     semantic_authority.install_image_loader(&mut generations);
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+        .is_some_and(|value| value.to_str() == Some("1"))
+    {
+        eprintln!("journey startup phase: reconcile_workspace call begin");
+    }
     semantic_authority
         .reconcile_workspace(&mut daemon)
         .map_err(|error| ProcessError::Profile(format!("reconcile semantic authority: {error}")))?;
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+        .is_some_and(|value| value.to_str() == Some("1"))
+    {
+        eprintln!("journey startup phase: reconcile_workspace call complete");
+    }
     // Admit optional semantic configuration without network I/O. Missing or
     // malformed remote settings remain a retained unavailable state and can
     // never delay the local owner or its lexical query path. The classification
@@ -1463,6 +1486,12 @@ pub(crate) fn compose_owner(
     // The workspace journal is authoritative. A crash can occur after a
     // workspace commit and between several bounded view-row publications;
     // repair that derived suffix before the listener becomes visible.
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+        .is_some_and(|value| value.to_str() == Some("1"))
+    {
+        eprintln!("journey startup phase: publish_builtin_view begin");
+    }
     let published = publish_builtin_view(
         &mut daemon,
         &compiler,
@@ -1476,6 +1505,12 @@ pub(crate) fn compose_owner(
     .map_err(|error| {
         embedded_host::view_refusal(&daemon, &error, "repair product view: ")
     })?;
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+        .is_some_and(|value| value.to_str() == Some("1"))
+    {
+        eprintln!("journey startup phase: publish_builtin_view complete");
+    }
     let published_roots = published.roots;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
     let mut sql_projection = futures_executor::block_on(
@@ -1491,11 +1526,23 @@ pub(crate) fn compose_owner(
         sql_projection.synchronize(daemon.engine().daemon().library().view()),
     )
     .map_err(|error| ProcessError::Profile(format!("align Turso projection: {error}")))?;
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+        .is_some_and(|value| value.to_str() == Some("1"))
+    {
+        eprintln!("journey startup phase: mark_projections_current begin");
+    }
     semantic_authority
         .mark_projections_current()
         .map_err(|error| {
             ProcessError::Profile(format!("advance semantic projection watermarks: {error}"))
         })?;
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
+        .is_some_and(|value| value.to_str() == Some("1"))
+    {
+        eprintln!("journey startup phase: mark_projections_current complete");
+    }
     let owner_cluster = cluster_dispatch::OwnerCompilerClusterRuntime::open_if_configured(
         &config.workspace,
         semantic_authority.store(),
@@ -1572,13 +1619,11 @@ pub(crate) fn compose_owner(
         // Opening the gateway composes its source owners lazily. Load their
         // durable catalog before reading dependency facts so cold projection
         // repair sees the same graph inputs as an ordinary command.
-        let catalog = registry
-            .catalog_projection()
-            .map_err(|error| {
-                ProcessError::Profile(format!(
-                    "open registry catalog for graph projection: {error}"
-                ))
-            })?;
+        let catalog = registry.catalog_projection().map_err(|error| {
+            ProcessError::Profile(format!(
+                "open registry catalog for graph projection: {error}"
+            ))
+        })?;
         futures_executor::block_on(sql_projection.synchronize_package_graph(
             daemon.engine().daemon().library().view().root(),
             &catalog.dependency_facts,

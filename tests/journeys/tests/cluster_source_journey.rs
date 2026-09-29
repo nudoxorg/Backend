@@ -7,7 +7,9 @@
 //! `.pending` record before ResultReceipt, after recovered Pending status before grant pages, after
 //! a live ResultReceipt before grant pages, before Turso selection, and at owner Stored intent and
 //! worker retirement. Cold recovery, valid-checksum tamper rejection, and final Applied are checked
-//! against both the v4 owner journal and Turso's independently selected head.
+//! against both the v4 owner journal and Turso's independently selected head. The final remote
+//! generation is then hydrated by a separate same-user client over the local range protocol,
+//! including a dropped reply, cold restart, durable resume, and stale-stamp rejection.
 
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 #![deny(unsafe_code)]
@@ -15,17 +17,20 @@
 #![allow(clippy::too_many_lines)]
 
 use backend_client::LocalSemanticIndexClient;
+use backend_engine::cluster_transport::{ClusterExecutionClass, ScopedClusterInvite};
 use backend_engine::package_key;
 use backend_extension_turso::{
     AuthorityNamespace, SelectedGeneration, SelectionOrigin, TursoAuthority,
 };
 use backend_replication::{
-    FileSemanticRangeStore, HydrationCredits, IrHydrationPoll, SemanticRangeClientProgress,
-    SemanticTargetKey, TransportLimits,
+    AuthenticatedLocalPeer, ByteRange, FileSemanticRangeStore, HydrationCredits, IrHydrationPoll,
+    LocalControlClient, LocalControlLimits, LocalControlRequest, LocalControlResponse, LocalStream,
+    SelectedGenerationStamp, SemanticRangeClientCheckpoint, SemanticRangeClientProgress,
+    SemanticRangeGet, SemanticTargetKey, TransportLimits,
 };
 use backend_semantic::ir::{SemanticIrPlane, SemanticPlaneKind};
-use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
-use backend_store::{ArtifactClosureClaim, FileStore, UntrustedObjectId};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
+use backend_store::{ArtifactClosureClaim, FileStore};
 use backend_store_s3::test_support::LoopbackS3;
 use serde_json::{Value, json};
 use std::ffi::OsString;
@@ -155,6 +160,14 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
+fn fixed_hex<const N: usize>(value: &str) -> [u8; N] {
+    assert_eq!(value.len(), N * 2, "unexpected fixed-width hex length");
+    std::array::from_fn(|index| {
+        u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .expect("valid fixed-width hexadecimal byte")
+    })
+}
+
 fn allocate_udp_loopback() -> SocketAddr {
     let socket = UdpSocket::bind("127.0.0.1:0").expect("allocate direct Iroh socket");
     let address = socket.local_addr().expect("read allocated Iroh socket");
@@ -279,6 +292,7 @@ impl CompilerProcessEnvironment {
 struct Locald {
     child: Option<Child>,
     stderr: Arc<Mutex<Vec<String>>>,
+    stderr_reader: Option<thread::JoinHandle<()>>,
     endpoint: PathBuf,
 }
 
@@ -326,7 +340,7 @@ impl Locald {
         }
         let mut child = command.spawn().expect("spawn production locald");
         let stderr = Arc::new(Mutex::new(Vec::new()));
-        if let Some(stream) = child.stderr.take() {
+        let stderr_reader = child.stderr.take().map(|stream| {
             let captured = Arc::clone(&stderr);
             thread::spawn(move || {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
@@ -335,11 +349,12 @@ impl Locald {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(line);
                 }
-            });
-        }
+            })
+        });
         let mut locald = Self {
             child: Some(child),
             stderr,
+            stderr_reader,
             endpoint: endpoint.to_path_buf(),
         };
         wait_for_socket(endpoint, &mut locald);
@@ -446,6 +461,13 @@ impl Locald {
             .join("\n")
     }
 
+    fn diagnostics_after_exit(&mut self) -> String {
+        if let Some(reader) = self.stderr_reader.take() {
+            let _ = reader.join();
+        }
+        self.diagnostics()
+    }
+
     fn assert_no_local_fallback(&self) {
         let diagnostics = self.diagnostics();
         assert!(
@@ -485,6 +507,9 @@ impl Drop for Locald {
             }
             let _ = child.wait();
         }
+        if let Some(reader) = self.stderr_reader.take() {
+            let _ = reader.join();
+        }
         let _ = std::fs::remove_file(&self.endpoint);
     }
 }
@@ -492,11 +517,12 @@ impl Drop for Locald {
 fn wait_for_socket(path: &Path, locald: &mut Locald) {
     let deadline = Instant::now() + DEADLINE;
     while Instant::now() < deadline {
-        assert!(
-            locald.running(),
-            "locald exited during startup: {}",
-            locald.diagnostics()
-        );
+        if !locald.running() {
+            panic!(
+                "locald exited during startup: {}",
+                locald.diagnostics_after_exit()
+            );
+        }
         if std::fs::symlink_metadata(path).is_ok_and(|metadata| {
             metadata.file_type().is_socket() && metadata.permissions().mode() & 0o777 == 0o600
         }) && UnixStream::connect(path).is_ok()
@@ -509,6 +535,438 @@ fn wait_for_socket(path: &Path, locald: &mut Locald) {
         "timed out waiting for locald {}: {}",
         path.display(),
         locald.diagnostics()
+    );
+}
+
+fn persist_client_checkpoint(path: &Path, bytes: &[u8]) {
+    let parent = path.parent().expect("client checkpoint parent");
+    std::fs::create_dir_all(parent).expect("create client checkpoint directory");
+    let temporary = path.with_extension("checkpoint.tmp");
+    let mut file = std::fs::File::create(&temporary).expect("create checkpoint temp file");
+    file.write_all(bytes)
+        .expect("write encoded client checkpoint");
+    file.sync_all().expect("fsync encoded client checkpoint");
+    std::fs::rename(&temporary, path).expect("atomically replace client checkpoint");
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .expect("fsync client checkpoint directory");
+}
+
+/// Pulls the exact remote-compiler selection into a separate local CAS, cutting the real
+/// authenticated local range stream after one durable page and restarting the owner daemon while
+/// recreating the client and storage handles before the remaining ranges. The first range is also
+/// replayed with an old frontier stamp to prove that sparse coverage only changes after
+/// current-selection admission.
+fn hydrate_remote_selected_core_with_restart(
+    root: &FixtureRoot,
+    endpoint: &Path,
+    workspace: &Path,
+    authority_secret: &Path,
+    environment: &CompilerProcessEnvironment,
+    project_label: &str,
+    coordinate: &str,
+    selected: &SelectedGeneration,
+    daemon: &mut Locald,
+    s3: &LoopbackS3,
+) {
+    // The owner was already running with remote-segment collection enabled. Reopen after the
+    // final compiler selection so its local cache is cold for that exact generation; the local
+    // range path must remain independent of whether the immutable segment is resident or in S3.
+    eprintln!("journey client phase: cold owner restart begin");
+    daemon.kill_now();
+    *daemon = Locald::launch_with_remote_segment_gc(
+        endpoint,
+        workspace,
+        authority_secret,
+        environment,
+        true,
+    );
+    eprintln!("journey client phase: cold owner restart complete");
+    assert!(daemon.running(), "cold owner exited before local hydration");
+
+    let target = SemanticTargetKey::new(
+        project_label.to_owned(),
+        coordinate.to_owned(),
+        LanguageProfile::Rust(RustEdition::Rust2024),
+    )
+    .expect("canonical remote compiler semantic target");
+    let client_store_path = root.path().join("local-client-semantic-cas");
+    create_private_directory(&client_store_path);
+    let checkpoint_path = root.path().join("local-client-core.checkpoint");
+    let limits = TransportLimits {
+        max_chunk: 16 * 1024,
+        ..TransportLimits::default()
+    };
+    let core = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+    let s3_ranges_before = s3.stats().range_gets;
+    let (
+        image,
+        manifest_root,
+        full_image_bytes,
+        full_image_pages,
+        first_range_bytes,
+        lost_response_bytes,
+    ) = {
+        let mut client = LocalSemanticIndexClient::connect(endpoint, target.clone())
+            .expect("connect authenticated local semantic client");
+        let catalog = client
+            .fetch_selected_catalog()
+            .expect("fetch selected remote-compiler catalog");
+        let stamp = catalog.selected_stamp();
+        assert_eq!(*stamp.namespace(), selected.namespace().namespace_id());
+        assert_eq!(stamp.selection_revision(), selected.generation());
+        assert_eq!(stamp.selected_root(), selected.target_root());
+        assert_eq!(stamp.closure_id(), selected.closure_id());
+        assert_eq!(
+            stamp.catalog_root().as_bytes(),
+            selected
+                .semantic_catalog_root()
+                .expect("remote compiler selection publishes its semantic catalog")
+        );
+        let (image, manifest) = catalog
+            .catalog()
+            .entries()
+            .iter()
+            .map(|entry| {
+                let image = entry.image();
+                let manifest = client
+                    .fetch_selected_manifest(image)
+                    .unwrap_or_else(|error| panic!("fetch selected image {image:?}: {error}"));
+                (image, manifest)
+            })
+            .find(|(_, manifest)| {
+                manifest
+                    .plane(core)
+                    .and_then(|plane| plane.segments().first())
+                    .is_some_and(|segment| segment.byte_length() > 16 * 1024)
+            })
+            .expect("remote compiler core IR must contain a multi-range segment");
+        assert_eq!(manifest.root(), image.manifest_root());
+        assert_eq!(manifest.semantic_generation(), image.semantic_generation());
+        let segment = manifest
+            .plane(core)
+            .and_then(|plane| plane.segments().first())
+            .expect("selected core segment exceeds one 16 KiB range");
+        assert!(segment.byte_length() > 16 * 1024);
+        let mut store = FileSemanticRangeStore::open(
+            FileStore::open(&client_store_path, 64 * 1024 * 1024)
+                .expect("open independent local-client FileStore"),
+            limits,
+        )
+        .expect("open independent local-client sparse range store");
+        let full_image = client
+            .fetch_selected_image(image, &store, 64 * 1024 * 1024, 4096)
+            .expect("fetch and admit exact selected NXFI image into the local CAS");
+        assert_eq!(full_image.image().generation(), image.semantic_generation());
+        let full_image_bytes = full_image.transferred_bytes();
+        let full_image_pages = full_image.page_requests();
+        let have_ids = client
+            .verified_local_segments(&manifest, image, core, &mut store)
+            .expect("inspect exact selected image in the empty client CAS");
+        assert!(
+            have_ids.is_empty(),
+            "client CAS must not alias owner storage"
+        );
+        let mut cursor = client
+            .new_cursor(&manifest, image, core, &have_ids, limits)
+            .expect("bind local range cursor to exact selected core plane");
+        let request = match client
+            .next_request(&mut cursor, None, HydrationCredits::new(1, 16 * 1024))
+            .expect("plan the first bounded selected range")
+        {
+            IrHydrationPoll::Request(request) => request,
+            other => panic!("expected the first selected range, got {other:?}"),
+        };
+        let first_range_bytes = client
+            .requested_bytes(&request)
+            .expect("measure first selected range");
+        assert_eq!(first_range_bytes, 16 * 1024);
+        let checkpoint = match client
+            .request_and_accept(&mut cursor, &request, &mut store, limits)
+            .expect("receive and durably stage the first real range")
+        {
+            SemanticRangeClientProgress::Staged {
+                coverage,
+                checkpoint,
+            } => {
+                assert_eq!(coverage.bytes().covered_bytes(), first_range_bytes);
+                assert_eq!(checkpoint.selected_stamp(), stamp);
+                assert_eq!(checkpoint.image(), image);
+                assert_eq!(
+                    checkpoint.range_request().byte_length,
+                    segment.byte_length()
+                );
+                checkpoint
+            }
+            SemanticRangeClientProgress::Complete(_) => {
+                panic!("a 16 KiB page incorrectly completed a larger segment")
+            }
+        };
+        persist_client_checkpoint(
+            &checkpoint_path,
+            &checkpoint
+                .encode()
+                .expect("encode durable sparse checkpoint"),
+        );
+
+        // A valid-shaped but stale stamp for the same object and byte interval must be rejected
+        // by locald before serving any bytes. This is a real framed request over the same
+        // authenticated local control transport as the production client.
+        let wrong_stamp = SelectedGenerationStamp::checked(
+            *stamp.namespace(),
+            stamp.profile(),
+            *stamp.source_coordinate(),
+            stamp
+                .selection_revision()
+                .checked_sub(1)
+                .expect("selected revisions are nonzero"),
+            *stamp.selected_root(),
+            *stamp.closure_id(),
+            stamp.catalog_root(),
+        )
+        .expect("construct a valid-shaped older selected stamp");
+        let stale_get = SemanticRangeGet {
+            request_id: 91_004,
+            target: target.clone(),
+            selected_stamp: wrong_stamp,
+            image,
+            range_request: checkpoint.range_request(),
+            byte_range: ByteRange::new(0, first_range_bytes).expect("first range bounds"),
+        };
+        let stream = LocalStream::connect(endpoint).expect("connect stale-range probe");
+        let _peer = AuthenticatedLocalPeer::authenticate(&stream, endpoint)
+            .expect("authenticate stale-range probe peer");
+        let mut raw = LocalControlClient::new(stream, LocalControlLimits::default());
+        let response = raw
+            .request(&LocalControlRequest::SemanticRangeGet {
+                request_id: stale_get.request_id,
+                payload: stale_get
+                    .encode()
+                    .expect("encode old-stamp semantic range")
+                    .into_boxed_slice(),
+            })
+            .expect("receive typed stale-selection rejection");
+        assert_eq!(
+            response,
+            LocalControlResponse::SemanticStaleSelection {
+                request_id: stale_get.request_id
+            },
+            "locald served a range claimed under an old selected stamp"
+        );
+        assert!(
+            client
+                .verified_local_segments(&manifest, image, core, &mut store)
+                .expect("recheck segment coverage after stale request")
+                .is_empty(),
+            "a wrong selected stamp advanced verified local segment coverage"
+        );
+        let (_, retained, retained_poll) = client
+            .resume_semantic_range(&checkpoint, &manifest, &[], limits, &mut store)
+            .expect("reopen only the already durable current-generation bytes");
+        assert_eq!(retained.bytes().covered_bytes(), first_range_bytes);
+        assert!(matches!(retained_poll, IrHydrationPoll::Request(_)));
+        let lost_response_bytes = checkpoint
+            .range_request()
+            .byte_length
+            .saturating_sub(first_range_bytes)
+            .min(16 * 1024);
+        assert!(lost_response_bytes > 0);
+        let retry_get = SemanticRangeGet {
+            request_id: 91_005,
+            target: target.clone(),
+            selected_stamp: stamp,
+            image,
+            range_request: checkpoint.range_request(),
+            byte_range: ByteRange::new(first_range_bytes, lost_response_bytes)
+                .expect("next missing range bounds"),
+        };
+        let stream = LocalStream::connect(endpoint).expect("connect dropped-response probe");
+        let _retry_peer = AuthenticatedLocalPeer::authenticate(&stream, endpoint)
+            .expect("authenticate dropped-response probe peer");
+        let mut raw = LocalControlClient::new(stream, LocalControlLimits::default());
+        raw.send(&LocalControlRequest::SemanticRangeGet {
+            request_id: retry_get.request_id,
+            payload: retry_get
+                .encode()
+                .expect("encode next selected range")
+                .into_boxed_slice(),
+        })
+        .expect("send one real range request before dropping its response");
+        // The peer can finish a read, but this process never accepts or checkpoints that reply.
+        // On restart the exact same interval must therefore remain in the missing set.
+        drop(raw);
+        assert!(
+            daemon.running(),
+            "owner exited during dropped range response"
+        );
+        (
+            image,
+            manifest.root(),
+            full_image_bytes,
+            full_image_pages,
+            first_range_bytes,
+            lost_response_bytes,
+        )
+    };
+
+    // Recreate locald and the client/store handles. The encoded checkpoint and fsynced CAS
+    // extents are the only state carried over this boundary.
+    daemon.kill_now();
+    *daemon = Locald::launch_with_remote_segment_gc(
+        endpoint,
+        workspace,
+        authority_secret,
+        environment,
+        true,
+    );
+    let checkpoint = SemanticRangeClientCheckpoint::decode(
+        &std::fs::read(&checkpoint_path).expect("read durable checkpoint after restart"),
+    )
+    .expect("decode exact-generation client checkpoint after restart");
+    let mut client = LocalSemanticIndexClient::connect(endpoint, target)
+        .expect("reconnect local semantic client after owner restart");
+    let catalog = client
+        .fetch_selected_catalog()
+        .expect("re-read selected catalog after owner restart");
+    assert_eq!(catalog.selected_stamp(), checkpoint.selected_stamp());
+    let manifest = client
+        .fetch_selected_manifest(image)
+        .expect("reopen exact selected manifest after restart");
+    assert_eq!(manifest.root(), manifest_root);
+    let mut store = FileSemanticRangeStore::open(
+        FileStore::open(&client_store_path, 64 * 1024 * 1024)
+            .expect("cold-reopen independent local-client FileStore"),
+        limits,
+    )
+    .expect("cold-reopen independent sparse range store");
+    let have_ids = client
+        .verified_local_segments(&manifest, image, core, &mut store)
+        .expect("check which exact-generation segments survived the client restart");
+    assert!(
+        have_ids.is_empty(),
+        "partial bytes cannot satisfy a segment ID"
+    );
+    let (mut cursor, durable_partial, mut poll) = client
+        .resume_semantic_range(&checkpoint, &manifest, &have_ids, limits, &mut store)
+        .expect("resume the same exact selection from its durable missing-object set");
+    assert_eq!(durable_partial.bytes().covered_bytes(), first_range_bytes);
+    let mut resumed_ranges = 0_usize;
+    let mut resumed_bytes = 0_u64;
+    let mut resumed_segments = 0_usize;
+    loop {
+        match poll {
+            IrHydrationPoll::Request(request) => {
+                let bytes = client
+                    .requested_bytes(&request)
+                    .expect("count each remaining selected byte range");
+                if resumed_ranges == 0 {
+                    assert_eq!(
+                        bytes, lost_response_bytes,
+                        "restart did not request again the range whose reply was dropped"
+                    );
+                }
+                resumed_ranges = resumed_ranges.saturating_add(1);
+                resumed_bytes = resumed_bytes.saturating_add(bytes);
+                let next_partial = match client
+                    .request_and_accept(&mut cursor, &request, &mut store, limits)
+                    .expect("receive resumed bytes through authenticated locald")
+                {
+                    SemanticRangeClientProgress::Staged {
+                        coverage,
+                        checkpoint,
+                    } => {
+                        persist_client_checkpoint(
+                            &checkpoint_path,
+                            &checkpoint.encode().expect("encode resumed checkpoint"),
+                        );
+                        Some(coverage)
+                    }
+                    SemanticRangeClientProgress::Complete(_) => {
+                        resumed_segments = resumed_segments.saturating_add(1);
+                        let _ = std::fs::remove_file(&checkpoint_path);
+                        None
+                    }
+                };
+                poll = client
+                    .next_request(
+                        &mut cursor,
+                        next_partial.as_ref(),
+                        HydrationCredits::new(1, 16 * 1024),
+                    )
+                    .expect("plan next missing range from durable coverage");
+            }
+            IrHydrationPoll::VerifyLocal(request) => {
+                client
+                    .verify_local_segment(&mut cursor, &request, &mut store)
+                    .expect("admit a sparse-complete segment from its durable CAS bytes");
+                resumed_segments = resumed_segments.saturating_add(1);
+                let _ = std::fs::remove_file(&checkpoint_path);
+                poll = client
+                    .next_request(&mut cursor, None, HydrationCredits::new(1, 16 * 1024))
+                    .expect("plan next segment after local identity admission");
+            }
+            IrHydrationPoll::NoCredits => panic!("hydration credits are nonzero"),
+            IrHydrationPoll::Exhausted => break,
+        }
+    }
+    assert!(resumed_ranges > 0, "restart did not resume any byte ranges");
+    assert!(
+        resumed_bytes > 0,
+        "restart did not transfer any missing bytes"
+    );
+    assert_eq!(
+        resumed_bytes.saturating_add(first_range_bytes),
+        manifest
+            .plane(core)
+            .expect("selected core plane")
+            .segments()
+            .iter()
+            .map(|segment| segment.byte_length())
+            .sum::<u64>(),
+        "the restarted transfer must account for every verified core byte exactly once"
+    );
+    let verified = client
+        .verified_local_segments(&manifest, image, core, &mut store)
+        .expect("verify every selected core segment from the local CAS");
+    let expected = manifest
+        .plane(core)
+        .expect("selected image contains core IR")
+        .segments()
+        .iter()
+        .map(|segment| *segment.id_claim().as_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        verified
+            .iter()
+            .map(|segment| *segment.as_bytes())
+            .collect::<Vec<_>>(),
+        expected,
+        "client only admits all bytes after they match this exact selected manifest"
+    );
+    let generation = client
+        .commit_local_generation(image, &manifest, core, &mut store)
+        .expect("commit exact selected generation after full core-plane verification");
+    assert_eq!(generation.selected_stamp(), catalog.selected_stamp());
+    assert_eq!(generation.image(), image);
+    let s3_ranges_after = s3.stats().range_gets;
+    assert!(
+        s3_ranges_after > s3_ranges_before,
+        "cold selected segment hydration did not fetch its immutable bytes from S3: before={s3_ranges_before}, after={s3_ranges_after}"
+    );
+    eprintln!(
+        "remote compiler -> selected index -> local client: generation={} full_image_bytes={} full_image_pages={} first_range_bytes={} retained_after_wrong_stamp_bytes={} dropped_response_bytes={} resumed_ranges={} resumed_bytes={} resumed_segments={} verified_core_segments={}/{} s3_range_gets={}",
+        selected.generation(),
+        full_image_bytes,
+        full_image_pages,
+        first_range_bytes,
+        first_range_bytes,
+        lost_response_bytes,
+        resumed_ranges,
+        resumed_bytes,
+        resumed_segments,
+        verified.len(),
+        expected.len(),
+        s3_ranges_after.saturating_sub(s3_ranges_before),
     );
 }
 
@@ -1471,11 +1929,31 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
     assert_eq!(INVENTORY_PATH_BEFORE.len(), INVENTORY_PATH_AFTER.len());
     std::fs::write(&cargo_manifest, CARGO_MANIFEST_BEFORE)
         .expect("write hidden compiler configuration");
-    std::fs::write(
-        project.join("src/lib.rs"),
+    let mut compiler_source = String::from(
         "pub fn remote_journey_helper() -> &'static str { \"helper\" }\n#[doc = include_str!(\"../Cargo.toml\")]\npub fn remote_journey_entry() -> &'static str { remote_journey_helper() }\n",
-    )
-    .expect("write the only compiler source");
+    );
+    // Keep the same one-file compiler fixture while making its canonical core plane larger than
+    // one production 16 KiB range. That forces the real client path through durable partial
+    // coverage and a resumable missing-object set instead of accidentally proving one-shot IO.
+    let bulk_function_count = std::env::var("BACKEND_JOURNEY_BULK_FUNCTIONS")
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .expect("BACKEND_JOURNEY_BULK_FUNCTIONS must be an integer")
+        })
+        .unwrap_or(1024);
+    assert!(
+        bulk_function_count > 0,
+        "bulk fixture must exercise Rust IR"
+    );
+    eprintln!("remote compiler fixture bulk functions: {bulk_function_count}");
+    for index in 0..bulk_function_count {
+        compiler_source.push_str(&format!(
+            "pub fn remote_journey_bulk_{index:04}() -> u64 {{ {index} }}\n"
+        ));
+    }
+    std::fs::write(project.join("src/lib.rs"), compiler_source)
+        .expect("write the only compiler source");
     assert_eq!(
         std::fs::read_dir(project.join("src"))
             .expect("read source directory")
@@ -1580,8 +2058,8 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
         Some(&environment),
     );
     assert_success(&scope_output, "operator compiler scope inspection");
-    let scope: Value = serde_json::from_slice(&scope_output.stdout)
-        .expect("parse operator compiler scope report");
+    let scope: Value =
+        serde_json::from_slice(&scope_output.stdout).expect("parse operator compiler scope report");
     assert_eq!(scope["target_kind"], "local");
     assert_eq!(scope["coordinate"], coordinate);
     assert_eq!(scope["namespace"], hex(&namespace.namespace_id()));
@@ -1589,9 +2067,39 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
     assert_eq!(scope["profile_name"], "rust-2024");
     assert_eq!(scope["stage"], "lower-ir");
     for field in ["recipe", "toolchain", "environment", "target_platform"] {
-        assert_eq!(scope[field], capability[field], "scope {field} differs from the production compiler probe");
+        assert_eq!(
+            scope[field], capability[field],
+            "scope {field} differs from the production compiler probe"
+        );
     }
     let capability = scope;
+
+    // Bind enrollment to a second real compiler-host probe at the worker's own runtime root,
+    // under the same cleaned process environment used by trust import. The owner-signed invite is
+    // host-trusted because this fixture invokes Cargo/rustc; compare the actual worker admission
+    // tuple before importing it rather than manufacturing a pure-parser claim.
+    let mut worker_probe = Command::new(env!("CARGO_BIN_EXE_backend-journey-cluster-probe"));
+    worker_probe.arg(worker_data.join("compiler-runtime"));
+    environment.apply(&mut worker_probe);
+    let worker_probe_output =
+        run_bounded(worker_probe, "worker compiler capability probe", DEADLINE);
+    assert_success(&worker_probe_output, "worker compiler capability probe");
+    let worker_capability: Value = serde_json::from_slice(&worker_probe_output.stdout)
+        .expect("parse worker compiler execution identity");
+    eprintln!(
+        "worker compiler probe: profile={} toolchain={} environment={} target_platform={} local_authority_fingerprint={}",
+        worker_capability["profile"],
+        worker_capability["toolchain"],
+        worker_capability["environment"],
+        worker_capability["target_platform"],
+        worker_capability["local_authority_fingerprint"],
+    );
+    for field in ["profile", "toolchain", "environment", "target_platform"] {
+        assert_eq!(
+            worker_capability[field], capability[field],
+            "worker's independently probed {field} differs from the owner-signed execution scope"
+        );
+    }
 
     let owner_udp = allocate_udp_loopback();
     let worker_udp = allocate_udp_loopback();
@@ -1689,6 +2197,53 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
         .lines()
         .find_map(|line| line.strip_prefix("Import this one-time token on the worker: "))
         .expect("one-time invite token");
+    let decoded_invite = ScopedClusterInvite::decode_token(invite)
+        .expect("decode the owner-issued private worker invite");
+    eprintln!(
+        "owner-issued invite execution class: {:?}",
+        decoded_invite.execution_class()
+    );
+    assert_eq!(
+        decoded_invite.execution_class(),
+        ClusterExecutionClass::TrustedCoordinatorHostExecution,
+        "the source fixture invokes Cargo/rustc and must receive the supported host-execution grant"
+    );
+    assert_eq!(
+        decoded_invite.profile(),
+        fixed_hex::<2>(
+            worker_capability["profile"]
+                .as_str()
+                .expect("worker profile identity")
+        ),
+        "decoded invite profile differs from independently admitted worker profile"
+    );
+    assert_eq!(
+        decoded_invite.toolchain(),
+        fixed_hex::<32>(
+            worker_capability["toolchain"]
+                .as_str()
+                .expect("worker toolchain identity")
+        ),
+        "decoded invite toolchain differs from independently admitted worker toolchain"
+    );
+    assert_eq!(
+        decoded_invite.environment(),
+        fixed_hex::<32>(
+            worker_capability["environment"]
+                .as_str()
+                .expect("worker execution environment identity")
+        ),
+        "decoded invite environment differs from independently admitted worker environment"
+    );
+    assert_eq!(
+        decoded_invite.target_platform(),
+        fixed_hex::<32>(
+            worker_capability["target_platform"]
+                .as_str()
+                .expect("worker target platform identity")
+        ),
+        "decoded invite target platform differs from independently admitted worker platform"
+    );
     let fingerprint = invite_text
         .lines()
         .find_map(|line| line.strip_prefix("Fingerprint: "))
@@ -1713,7 +2268,7 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
 
     let mut worker = Worker::launch(&worker_config, &worker_data, &environment);
     let mut daemon = Locald::launch(&endpoint, &workspace, &authority_secret, &environment);
-    let mut turso_runtime = tokio::runtime::Builder::new_current_thread()
+    let turso_runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("build selected-head observer runtime");
@@ -2657,6 +3212,18 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
     let final_head = selected_generation(&turso_runtime, &authority, &namespace);
     assert_eq!(final_head.generation(), 4);
     assert_eq!(*final_head.closure_id(), *live_selected.closure_id());
+    hydrate_remote_selected_core_with_restart(
+        &root,
+        &endpoint,
+        &workspace,
+        &authority_secret,
+        &environment,
+        &project_label,
+        &coordinate,
+        &final_head,
+        &mut daemon,
+        &s3,
+    );
     let live_page = cli_json(
         &endpoint,
         &workspace,
