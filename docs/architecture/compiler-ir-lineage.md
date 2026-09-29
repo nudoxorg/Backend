@@ -1,6 +1,7 @@
 # Compiler and IR lineage audit
 
-Audited against `1febd758f` on 2026-09-29. The compiler and semantic IR in this
+Historical ancestry audited against `1febd758f`; current status updated on
+2026-09-29. The compiler and semantic IR in this
 tree are established production foundations. New output-layout work must extend
 them. A matching commit message or tree on a sibling branch is historical
 context, not proof that the commit is an ancestor of this checkout.
@@ -34,7 +35,7 @@ The local client already uses checked hydration and bounded residency over
 these admitted segments. Embeddings have their own typed plane identity and
 segment path; do not add a parallel embedding authority.
 
-The main remaining layout gap is at the [compiler producer](../../crates/engine/src/application/compiler.rs):
+The main remaining production-layout gap is at the [compiler producer](../../crates/engine/src/application/compiler.rs):
 it builds a full canonical NXFI image, copies the staged complete image into
 an in-memory package buffer, then `versioned_planes` cuts it into fixed 1 MiB
 byte chunks with ordinal keys under one `Ir(Core)` plane. An early edit can
@@ -44,10 +45,21 @@ source provenance, and language extensions, but this producer does not yet
 emit those independent planes. Improve the producer and its full-image
 prerequisite incrementally while retaining the current manifest, verifier,
 input witnesses, selected-head authority, hydration cursor, CAS, object/closure
-machinery, and semantic diff. The [streaming target](compiler-artifact-streaming.md)
-is a design contract, not evidence that stable-key microsegments already ship.
+machinery, and semantic diff. The typed c007 revision-3 manifest and stable-key
+boundary verifier now exist, but the real seven-family producer still uses the
+older writer path. Fixture locality is therefore not production locality.
 
-Persistent IR commit/replay history is a distinct gap. The older Pijul-like
+Persistent IR commit/replay history is a distinct concern. The typed V2 history
+path now has durable commits, refs, GC roots, proof-bearing live publication,
+and a cold publication/replay path that verifies an exact FileStore closure
+before selecting a ref. Cold verification lends bounded segment buffers from a
+private spool; content proof alone still cannot certify that the compiler read
+every relevant input. Positive nonempty FileStore cold replay and real
+seven-family producer integration remain cutover gates. Lineage across
+renames/resurrections and compact path-copied physical bridges are not yet
+persisted.
+
+The older Pijul-like
 package, initially `workspace/nudox-ir-vcs` and later `workspace/ir-vcs`,
 supplied replay, branches/tags, archive serving, and a scan-resistant
 whole-archive `ServeCache` in active-history commits `c91c654ac` and
@@ -56,9 +68,9 @@ later migrations moved it under `workspace/compiler/ir/vcs`, and
 `335e3732a` removed that repository implementation. The earlier NdIrSym V1
 blob grammar had already been deleted in `451180e5c` and is not a candidate
 for restoration.
-Today's `vcs.rs` is a snapshot-diff API, not that repository. Reintroduce
-historical semantics only where the product needs them, using the canonical IR
-and current store rather than restoring the old parallel implementation. The
+Today's `vcs.rs` remains a snapshot-diff API; typed V2 durable history is a
+separate store layer, not a resurrection of that Pijul repository. Extend
+historical semantics using the canonical IR and current store. The
 archive cache's scan-resistant admission is a benchmarking candidate for
 multi-version access, not a replacement for segment residency.
 
