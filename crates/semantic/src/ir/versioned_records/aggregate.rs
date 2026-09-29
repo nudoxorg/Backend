@@ -872,13 +872,13 @@ where
         let mut observed_rows = 0_u64;
         let mut previous_segment_last = None;
         let mut row_index_builder = StableRowIndex::builder();
-        let mut segment_jumbo_documentation_references = Vec::new();
         let mut boundary_verifier = CanonicalSemanticPlaneBoundaryFamilyVerifier::begin_family(
             family.family(),
             family.boundary_policy(),
         );
 
         for (segment_index, segment) in family.segments().iter().enumerate() {
+            let mut segment_jumbo_documentation_references = Vec::new();
             let payload = source
                 .segment(global_segment_index, segment)
                 .map_err(|error| {
@@ -3310,7 +3310,27 @@ mod tests {
         rows: &[Vec<Row>; 7],
         tamper: Option<usize>,
         limits: SemanticTypedPlaneVerificationLimitsV2,
+        jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
+    ) -> (
+        Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>,
+        Vec<usize>,
+        usize,
+    ) {
+        verify_rows_from_borrowed_source_with_admission_and_docs_split(
+            rows,
+            tamper,
+            limits,
+            jumbo_admission,
+            None,
+        )
+    }
+
+    fn verify_rows_from_borrowed_source_with_admission_and_docs_split(
+        rows: &[Vec<Row>; 7],
+        tamper: Option<usize>,
+        limits: SemanticTypedPlaneVerificationLimitsV2,
         mut jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
+        split_documentation_at: Option<usize>,
     ) -> (
         Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>,
         Vec<usize>,
@@ -3321,13 +3341,24 @@ mod tests {
             .each_ref()
             .map(|family| u64::try_from(family.len()).expect("fixture row count fits u64"));
         let encoded: [Vec<EncodedSegment>; 7] = core::array::from_fn(|index| {
-            if rows[index].is_empty() {
+            let mut family_rows = rows[index].clone();
+            family_rows.sort_unstable_by_key(|(key, _, _)| *key);
+            if index == 4
+                && let Some(split_at) = split_documentation_at
+                && split_at > 0
+                && split_at < family_rows.len()
+            {
+                let right_rows = family_rows.split_off(split_at);
+                vec![
+                    encode_family_segment(kinds[index], family_rows),
+                    encode_family_segment(kinds[index], right_rows),
+                ]
+            } else if family_rows.is_empty() {
                 Vec::new()
             } else {
-                vec![encode_family_segment(kinds[index], rows[index].clone())]
+                vec![encode_family_segment(kinds[index], family_rows)]
             }
         });
-        let policy = terminal_boundary_policy();
         let families = core::array::from_fn(|index| {
             let segments = encoded[index]
                 .iter()
@@ -3345,7 +3376,11 @@ mod tests {
             SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
                 kinds[index],
                 row_counts[index],
-                policy,
+                if index == 4 && split_documentation_at.is_some() {
+                    split_boundary_policy()
+                } else {
+                    terminal_boundary_policy()
+                },
                 segments,
             )
             .expect("fixture family descriptor")
@@ -4465,6 +4500,64 @@ mod tests {
             ))
         ));
         assert_eq!(calls, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn lending_segment_verifier_scopes_jumbo_admission_to_each_docs_segment() {
+        let first = identity(0x13);
+        let second = identity(0x72);
+        let filler = patterned_text(1_200 * 1024);
+        let mut persisted = TestJumboObjects::default();
+        let mut rows = valid_rows(first, None, None, false, true);
+        for (owner, target) in [(first, second), (second, first)] {
+            let value = jumbo_docs_local_link(target, &filler);
+            let row =
+                jumbo_docs_row_with_value(owner, &value, jumbo_docs_context(owner), &mut persisted);
+            replace_documentation_row(&mut rows, owner, row);
+        }
+        let limits = SemanticTypedPlaneVerificationLimitsV2 {
+            max_references: 14,
+            ..SemanticTypedPlaneVerificationLimitsV2::standard()
+        };
+
+        let mut expected_objects = persisted.clone();
+        let expected = verify_rows_with_jumbo_source_and_policy(
+            rows.clone(),
+            &mut expected_objects,
+            crate::ir::JumboRopeLimits::default(),
+            limits,
+        )
+        .expect("both jumbo Docs rows and cross-family links are valid");
+
+        let mut streamed_objects = persisted;
+        let mut admission = JumboObjectClosureAdmissionV2::new(
+            &mut streamed_objects,
+            crate::ir::JumboRopeLimits::default(),
+            limits,
+        );
+        let (observed, calls, expected_calls) =
+            verify_rows_from_borrowed_source_with_admission_and_docs_split(
+                &rows,
+                None,
+                limits,
+                Some(&mut admission),
+                Some(1),
+            );
+        let observed = observed.expect("two-segment Docs inventory is valid");
+        assert_eq!(observed.families()[4].segments().len(), 2);
+        assert_eq!(expected.families()[4].segments().len(), 1);
+        assert_eq!(calls.len(), expected_calls);
+        assert_eq!(calls, (0..expected_calls).collect::<Vec<_>>());
+        assert_eq!(expected_calls, 8);
+        assert_eq!(&calls[4..6], &[4, 5]);
+        for (streamed, materialized) in observed.families().iter().zip(expected.families()) {
+            assert_eq!(streamed.family(), materialized.family());
+            assert_eq!(streamed.row_count(), materialized.row_count());
+            assert_eq!(
+                streamed.semantic_row_root(),
+                materialized.semantic_row_root()
+            );
+        }
     }
 
     #[test]
