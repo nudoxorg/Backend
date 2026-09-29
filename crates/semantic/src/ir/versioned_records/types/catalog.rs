@@ -132,6 +132,216 @@ pub struct CheckedTypesFamilyV2 {
     reference_count: u64,
 }
 
+/// Incremental owner for one Types family. Rows are decoded while their
+/// canonical segment bytes are borrowed, then only the bounded row catalog
+/// needed for reference closure is retained.
+pub(crate) struct CheckedTypesFamilyV2Builder {
+    limits: TypesFamilyVerificationLimitsV2,
+    row_keys: Vec<[u8; 32]>,
+    row_domains: Vec<TypesRowDomainV2>,
+    edge_offsets: Vec<usize>,
+    row_edges: Vec<TypesReferenceV2>,
+    root_identities: Vec<[u8; 32]>,
+    root_type_presence: Vec<([u8; 32], bool)>,
+    declaration_references: Vec<[u8; 32]>,
+    previous: Option<[u8; 32]>,
+    family_hasher: blake3::Hasher,
+    row_count: u64,
+    payload_bytes: u64,
+    reference_count: u64,
+}
+
+impl CheckedTypesFamilyV2Builder {
+    pub(crate) fn new(
+        limits: TypesFamilyVerificationLimitsV2,
+    ) -> Result<Self, SemanticPlaneRecordError> {
+        let mut edge_offsets = Vec::new();
+        edge_offsets
+            .try_reserve_exact(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        edge_offsets.push(0);
+        let mut family_hasher = blake3::Hasher::new();
+        family_hasher.update(TYPES_FAMILY_ROOT_DOMAIN);
+        Ok(Self {
+            limits,
+            row_keys: Vec::new(),
+            row_domains: Vec::new(),
+            edge_offsets,
+            row_edges: Vec::new(),
+            root_identities: Vec::new(),
+            root_type_presence: Vec::new(),
+            declaration_references: Vec::new(),
+            previous: None,
+            family_hasher,
+            row_count: 0,
+            payload_bytes: 0,
+            reference_count: 0,
+        })
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        key: [u8; 32],
+        tag: u8,
+        payload: &[u8],
+    ) -> Result<(), SemanticPlaneRecordError> {
+        if self.previous.is_some_and(|prior| prior >= key) {
+            return Err(SemanticPlaneRecordError::RecordOrder);
+        }
+        let remaining_references = self
+            .limits
+            .max_references
+            .checked_sub(self.reference_count)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        let row_owner_reference = if tag == ROOT_TAG { 1 } else { 0 };
+        let row_reference_limit = remaining_references
+            .checked_sub(row_owner_reference)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        let row_reference_limit = usize::try_from(row_reference_limit)
+            .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+        let parsed = parse_types_row_with_reference_limit(key, tag, payload, row_reference_limit)?;
+        let payload_length =
+            u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+        self.payload_bytes = self
+            .payload_bytes
+            .checked_add(payload_length)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        if self.payload_bytes > self.limits.max_payload_bytes {
+            return Err(SemanticPlaneRecordError::RowTooLarge);
+        }
+        self.family_hasher.update(&key);
+        self.family_hasher.update(&[tag]);
+        self.family_hasher.update(&payload_length.to_be_bytes());
+        self.family_hasher.update(payload);
+        self.row_count = self
+            .row_count
+            .checked_add(1)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        if self.row_count > self.limits.max_rows {
+            return Err(SemanticPlaneRecordError::RowTooLarge);
+        }
+        let row_references = parsed
+            .references
+            .len()
+            .checked_add(parsed.declaration_references.len())
+            .and_then(|count| count.checked_add(usize::from(parsed.root_identity.is_some())))
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        self.reference_count = self
+            .reference_count
+            .checked_add(
+                u64::try_from(row_references).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?,
+            )
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        if self.reference_count > self.limits.max_references {
+            return Err(SemanticPlaneRecordError::RowTooLarge);
+        }
+        match (parsed.root_identity, parsed.root_type_present) {
+            (Some(identity), Some(present)) => {
+                self.root_identities
+                    .try_reserve(1)
+                    .map_err(SemanticPlaneRecordError::Allocation)?;
+                self.root_type_presence
+                    .try_reserve(1)
+                    .map_err(SemanticPlaneRecordError::Allocation)?;
+                self.root_identities.push(identity);
+                self.root_type_presence.push((identity, present));
+            }
+            (None, None) => {}
+            _ => return Err(SemanticPlaneRecordError::RowGrammar),
+        }
+        self.row_edges
+            .try_reserve(parsed.references.len())
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        self.row_edges.extend(parsed.references.iter().copied());
+        self.declaration_references
+            .try_reserve(parsed.declaration_references.len())
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        self.declaration_references
+            .extend(parsed.declaration_references);
+        self.row_keys
+            .try_reserve(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        self.row_domains
+            .try_reserve(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        self.row_keys.push(key);
+        self.row_domains.push(parsed.domain);
+        self.edge_offsets
+            .try_reserve(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        self.edge_offsets.push(self.row_edges.len());
+        self.previous = Some(key);
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> Result<CheckedTypesFamilyV2, SemanticPlaneRecordError> {
+        self.root_identities.sort_unstable();
+        if self
+            .root_identities
+            .windows(2)
+            .any(|pair| pair[0] == pair[1])
+        {
+            return Err(SemanticPlaneRecordError::StableKeyCollision);
+        }
+        self.root_type_presence
+            .sort_unstable_by_key(|(identity, _)| *identity);
+        if self
+            .root_type_presence
+            .windows(2)
+            .any(|pair| pair[0].0 == pair[1].0)
+        {
+            return Err(SemanticPlaneRecordError::StableKeyCollision);
+        }
+        self.declaration_references.sort_unstable();
+        self.declaration_references.dedup();
+        for reference in &self.row_edges {
+            let observed = self
+                .row_keys
+                .binary_search(&reference.key)
+                .ok()
+                .and_then(|index| self.row_domains.get(index));
+            let resolved = match reference.domain {
+                TypesRowDomainV2::TypedNode => {
+                    observed.is_some_and(|domain| domain.is_typed_node())
+                }
+                domain => observed == Some(&domain),
+            };
+            if !resolved {
+                return Err(SemanticPlaneRecordError::ReaderReference);
+            }
+        }
+        let external_target_count = self
+            .row_domains
+            .iter()
+            .filter(|domain| **domain == TypesRowDomainV2::ExternalTarget)
+            .count();
+        let mut external_target_keys = Vec::new();
+        external_target_keys
+            .try_reserve_exact(external_target_count)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        for (key, domain) in self.row_keys.iter().zip(self.row_domains.iter()) {
+            if *domain == TypesRowDomainV2::ExternalTarget {
+                external_target_keys.push(*key);
+            }
+        }
+        self.family_hasher.update(&self.row_count.to_be_bytes());
+        let local_root = *self.family_hasher.finalize().as_bytes();
+        Ok(CheckedTypesFamilyV2 {
+            row_keys: self.row_keys.into_boxed_slice(),
+            row_domains: self.row_domains.into_boxed_slice(),
+            edge_offsets: self.edge_offsets.into_boxed_slice(),
+            row_edges: self.row_edges.into_boxed_slice(),
+            root_identities: self.root_identities.into_boxed_slice(),
+            root_type_presence: self.root_type_presence.into_boxed_slice(),
+            declaration_references: self.declaration_references.into_boxed_slice(),
+            external_target_keys: external_target_keys.into_boxed_slice(),
+            local_root,
+            row_count: self.row_count,
+            reference_count: self.reference_count,
+        })
+    }
+}
+
 impl CheckedTypesFamilyV2 {
     /// Strictly admits the complete merged record sequence for one Types plane.
     ///

@@ -15,6 +15,7 @@ mod tests;
 mod wire;
 
 pub(super) use crate::ir::declaration_plane_key;
+pub(super) use catalog::CheckedTypesFamilyV2Builder;
 pub use catalog::{
     CheckedTypesFamilyV2, TypesFamilyVerificationLimitsV2, TypesReferenceV2, TypesRowDomainV2,
     validate_types_family_v2, validate_types_family_v2_with_limits,

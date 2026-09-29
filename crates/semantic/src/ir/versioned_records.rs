@@ -33,7 +33,9 @@ mod relations;
 mod source_provenance;
 mod types;
 mod wire;
+
 pub use declarations::{CoreDeclarationRows, DocumentationRows, encode_declaration_planes};
+pub(crate) use extensions::CheckedLanguageExtensionFamilyV2Builder;
 pub use extensions::{
     CheckedLanguageExtensionFamilyV2, LanguageExtensionRows, LanguageExtensionVerificationLimitsV2,
     encode_language_extension_plane, validate_language_extension_family_v2,
@@ -43,6 +45,7 @@ pub use extensions::{
 pub use occurrences::{OccurrenceHandle, OccurrenceRows};
 pub use relations::RelationRows;
 pub use source_provenance::{SourceProvenanceHandle, SourceProvenanceRows};
+pub(crate) use types::CheckedTypesFamilyV2Builder;
 pub use types::{
     CheckedTypesFamilyV2, TypedRecordPlan, TypesClosureSemantics, TypesFamilyVerificationLimitsV2,
     TypesReferenceV2, TypesRowDomainV2, TypesRowHandle, TypesRows, validate_types_family_v2,

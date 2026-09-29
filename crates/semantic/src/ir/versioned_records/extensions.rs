@@ -13,6 +13,7 @@ mod plan;
 mod tests;
 mod wire;
 
+pub(super) use catalog::CheckedLanguageExtensionFamilyV2Builder;
 pub use catalog::{
     CheckedLanguageExtensionFamilyV2, LanguageExtensionVerificationLimitsV2,
     validate_language_extension_family_v2, validate_language_extension_family_v2_with_limits,

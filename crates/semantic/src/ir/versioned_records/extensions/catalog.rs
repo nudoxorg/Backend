@@ -93,6 +93,169 @@ pub struct CheckedLanguageExtensionFamilyV2 {
     row_count: u64,
 }
 
+/// Incremental owner for one language-extension family. It parses one row
+/// while the segment containing that row is lent, retaining only the checked
+/// cross-family catalog.
+pub(crate) struct CheckedLanguageExtensionFamilyV2Builder {
+    profile: LanguageProfile,
+    limits: LanguageExtensionVerificationLimitsV2,
+    previous: Option<[u8; 32]>,
+    row_keys: Vec<[u8; 32]>,
+    owners: Vec<[u8; 32]>,
+    declaration_references: Vec<[u8; 32]>,
+    types_references: Vec<TypesReferenceV2>,
+    root: blake3::Hasher,
+    row_count: u64,
+    payload_bytes: u64,
+    reference_count: u64,
+}
+
+impl CheckedLanguageExtensionFamilyV2Builder {
+    pub(crate) fn new(
+        profile: LanguageProfile,
+        limits: LanguageExtensionVerificationLimitsV2,
+    ) -> Self {
+        let mut root = blake3::Hasher::new();
+        root.update(EXTENSION_FAMILY_ROOT_DOMAIN);
+        root.update(&<[u8; 2]>::from(profile));
+        Self {
+            profile,
+            limits,
+            previous: None,
+            row_keys: Vec::new(),
+            owners: Vec::new(),
+            declaration_references: Vec::new(),
+            types_references: Vec::new(),
+            root,
+            row_count: 0,
+            payload_bytes: 0,
+            reference_count: 0,
+        }
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        key: [u8; 32],
+        tag: u8,
+        payload: &[u8],
+        types: &CheckedTypesFamilyV2,
+    ) -> Result<(), SemanticPlaneRecordError> {
+        self.payload_bytes = self
+            .payload_bytes
+            .checked_add(
+                u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?,
+            )
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        self.row_count = self
+            .row_count
+            .checked_add(1)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        if self.payload_bytes > self.limits.max_payload_bytes
+            || self.row_count > self.limits.max_rows
+        {
+            return Err(SemanticPlaneRecordError::RowTooLarge);
+        }
+        self.row_keys
+            .try_reserve(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        if self.previous.is_some_and(|prior| prior >= key) {
+            return Err(SemanticPlaneRecordError::RecordOrder);
+        }
+        let declaration_reference_count = self.declaration_references.len();
+        let parsed = parse_record_with_declarations(
+            SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(self.profile)),
+            key,
+            tag,
+            payload,
+            &mut self.declaration_references,
+            self.limits
+                .max_references
+                .saturating_sub(self.reference_count)
+                .saturating_sub(1),
+        )?;
+        let added_declaration_references = self
+            .declaration_references
+            .len()
+            .checked_sub(declaration_reference_count)
+            .ok_or(SemanticPlaneRecordError::RowGrammar)?;
+        let row_reference_count = parsed
+            .references
+            .iter()
+            .flatten()
+            .count()
+            .checked_add(added_declaration_references)
+            .and_then(|count| count.checked_add(1))
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        self.reference_count = self
+            .reference_count
+            .checked_add(
+                u64::try_from(row_reference_count)
+                    .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?,
+            )
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        if self.reference_count > self.limits.max_references {
+            return Err(SemanticPlaneRecordError::RowTooLarge);
+        }
+        self.owners
+            .try_reserve(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        self.types_references
+            .try_reserve(parsed.references.iter().flatten().count())
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        for reference in parsed.references.iter().flatten() {
+            types.require_reference(*reference)?;
+            self.types_references.push(*reference);
+        }
+        self.owners.push(identity_bytes(parsed.identity));
+        self.row_keys.push(key);
+        self.root.update(&key);
+        self.root.update(&[tag]);
+        let payload_len =
+            u64::try_from(payload.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+        self.root.update(&payload_len.to_be_bytes());
+        self.root.update(payload);
+        self.previous = Some(key);
+        Ok(())
+    }
+
+    pub(crate) fn finish(
+        mut self,
+        expected_captured_owners: &[[u8; 32]],
+    ) -> Result<CheckedLanguageExtensionFamilyV2, SemanticPlaneRecordError> {
+        if u64::try_from(expected_captured_owners.len())
+            .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
+            > self.limits.max_rows
+            || expected_captured_owners.windows(2).any(|pair| {
+                pair.first()
+                    .zip(pair.get(1))
+                    .is_none_or(|(left, right)| left >= right)
+            })
+        {
+            return Err(SemanticPlaneRecordError::RowGrammar);
+        }
+        self.owners.sort_unstable();
+        if self.owners.windows(2).any(|pair| {
+            pair.first()
+                .zip(pair.get(1))
+                .is_none_or(|(left, right)| left >= right)
+        }) || self.owners.as_slice() != expected_captured_owners
+        {
+            return Err(SemanticPlaneRecordError::RowGrammar);
+        }
+        self.root.update(&self.row_count.to_be_bytes());
+        Ok(CheckedLanguageExtensionFamilyV2 {
+            profile: self.profile,
+            row_keys: self.row_keys.into_boxed_slice(),
+            owner_identities: self.owners.into_boxed_slice(),
+            declaration_references: self.declaration_references.into_boxed_slice(),
+            types_references: self.types_references.into_boxed_slice(),
+            reference_count: self.reference_count,
+            local_root: *self.root.finalize().as_bytes(),
+            row_count: self.row_count,
+        })
+    }
+}
+
 impl CheckedLanguageExtensionFamilyV2 {
     /// Exact source profile bound to this checked family.
     #[must_use]

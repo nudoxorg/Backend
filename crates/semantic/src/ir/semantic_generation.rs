@@ -10,7 +10,7 @@
 //! Family completeness uses V2's normalized-reachable policy, so unreferenced
 //! legacy NXFI pool rows are not part of this semantic authority.
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use crate::ir::versioned_records::aggregate::{
     JumboObjectClosureAdmissionV2, JumboPlaneClosureAdmissionV2,
@@ -19,11 +19,12 @@ use crate::ir::versioned_records::aggregate::{
     VerifiedTypedPlaneInventoryV2, VerifiedTypedPlaneSegmentV2,
     verify_semantic_typed_plane_inventory_v2,
     verify_semantic_typed_plane_inventory_v2_with_admission,
+    verify_semantic_typed_plane_inventory_v2_with_segment_source,
 };
 use crate::ir::{
     ImageProvenance, JumboRopeLimits, JumboRopeObjectSource, SemanticBuildIdentity,
     SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
-    SemanticTypedPlaneManifestV2,
+    SemanticTypedPlaneManifestV2, SemanticTypedPlaneSegmentClaimV2,
 };
 use thiserror::Error;
 
@@ -59,6 +60,25 @@ fn typed_plane_verification_limits(
             SemanticTypedPlaneVerificationLimitsV2::large_package()
         }
     }
+}
+
+/// Borrows one exact c004 payload at a time in manifest order.
+///
+/// Implementations may reuse a single bounded buffer. The returned borrow is
+/// tied to `&mut self`, so a verifier cannot request the next segment until it
+/// has finished validating and summarizing the current one. The verifier
+/// independently checks the claimed byte length, segment identity, row
+/// grammar, and cross-family closure before minting proof.
+pub trait TypedPlaneSegmentSourceV2 {
+    /// Source-specific I/O error.
+    type Error: core::fmt::Display;
+
+    /// Returns the exact payload named by one manifest descriptor.
+    fn segment<'source>(
+        &'source mut self,
+        index: usize,
+        claim: &SemanticTypedPlaneSegmentClaimV2,
+    ) -> Result<&'source [u8], Self::Error>;
 }
 
 /// Content identity of one complete normalized-reachable typed IR closure.
@@ -395,6 +415,54 @@ where
     )
 }
 
+/// Independently verifies a cold c007 manifest while borrowing one c004
+/// payload at a time from `source`. Only verified segment descriptors,
+/// row-index digests, and bounded cross-family facts survive each borrow.
+/// This is the memory-bounded counterpart to
+/// [`verify_typed_plane_content_v2_with_jumbo_source`].
+pub fn verify_typed_plane_content_v2_with_jumbo_segment_source<S, P>(
+    manifest: &SemanticTypedPlaneManifestV2,
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+    source: &mut S,
+    jumbo_source: &mut P,
+) -> Result<VerifiedTypedPlaneContentV2, SemanticGenerationProofError>
+where
+    S: TypedPlaneSegmentSourceV2 + ?Sized,
+    P: JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+    P::Error: core::fmt::Display,
+{
+    let limits = typed_plane_verification_limits(tier);
+    let mut jumbo_admission =
+        JumboObjectClosureAdmissionV2::new(jumbo_source, jumbo_limits, limits);
+    let inventory = verify_semantic_typed_plane_inventory_v2_with_segment_source(
+        manifest.build(),
+        manifest.image_facts(),
+        manifest.input_claim().as_claimed_witness(),
+        manifest.families(),
+        source,
+        limits,
+        Some(&mut jumbo_admission),
+    )
+    .map_err(map_inventory_verification_error)?;
+    validate_inventory_matches_manifest(&inventory, manifest)?;
+    let content = VerifiedTypedPlaneContentV2::from_verified_inventory(inventory)?;
+    if !manifest
+        .content_root_claim()
+        .matches(content.content_root())
+    {
+        return Err(SemanticGenerationProofError::ContentRootClaimMismatch);
+    }
+    if !manifest
+        .generation_root_claim()
+        .matches(content.generation_root())
+    {
+        return Err(SemanticGenerationProofError::GenerationRootClaimMismatch);
+    }
+    Ok(content)
+}
+
 fn verify_typed_plane_content_v2_with_admission(
     manifest: &SemanticTypedPlaneManifestV2,
     exact_ordered_payloads: &[&[u8]],
@@ -454,6 +522,7 @@ fn verify_typed_plane_content_v2_with_admission(
         family_payloads.push(TypedPlaneFamilyPayloadsV2::new(
             family.family(),
             family.row_count(),
+            family.boundary_policy(),
             segments,
         ));
     }
@@ -500,6 +569,9 @@ fn map_inventory_verification_error(
         SemanticTypedPlaneInventoryV2Error::Record(
             crate::ir::SemanticPlaneRecordError::JumboObjectStoreRequired,
         ) => SemanticGenerationProofError::JumboObjectSourceRequired,
+        SemanticTypedPlaneInventoryV2Error::SegmentSource(error) => {
+            SemanticGenerationProofError::SegmentSource(error)
+        }
         _ => SemanticGenerationProofError::TypedPlaneInventoryRejected,
     }
 }
@@ -592,6 +664,9 @@ pub enum SemanticGenerationProofError {
     /// Allocating bounded family/payload adapter storage failed.
     #[error("V2 typed-plane verifier adapter allocation failed")]
     Allocation,
+    /// A borrowed c004 segment source failed while reopening one exact payload.
+    #[error("V2 typed-plane segment source failed: {0}")]
+    SegmentSource(String),
     /// Temporary borrowed payload adapter storage exceeds its fixed cap.
     #[error(
         "V2 typed-plane verifier adapters need an estimated {estimated} bytes; maximum is {maximum}"
@@ -911,8 +986,20 @@ mod tests {
             SemanticIrPlane::LanguageExtensions(build().profile()),
         ]
         .map(|family| {
-            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(family, 0, Vec::new())
-                .expect("empty family descriptor is canonical")
+            let boundary_policy =
+                crate::ir::CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+                    crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u32,
+                    crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u32,
+                    crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u32,
+                )
+                .expect("terminal-only family boundary policy is valid");
+            SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
+                family,
+                0,
+                boundary_policy,
+                Vec::new(),
+            )
+            .expect("empty family descriptor is canonical")
         });
         SemanticTypedPlaneManifestV2::from_untrusted_claims(
             build(),
@@ -939,6 +1026,7 @@ mod tests {
             TypedPlaneFamilyPayloadsV2::new(
                 claimed.family(),
                 claimed.row_count(),
+                claimed.boundary_policy(),
                 &empty_segments[index],
             )
         });
