@@ -949,11 +949,11 @@ fn jumbo_map_order_parts(kind: JumboRopeObjectKind, id: [u8; 32]) -> (u8, [u8; 3
 mod tests {
     use super::*;
     use backend_semantic::ir::{
-        CanonicalPlaneSegmentBoundaryPolicy, ImageProvenance, JumboRopeLimits, JumboRopeNode,
-        JumboRopeObjectId, JumboRopeObjectKind, JumboRopeObjectSink, JumboRopeWriteReceipt,
-        JumboValueContext, JumboValueEncoding, JumboValueFamily, LanguageProfile, RustEdition,
-        SemanticBuildIdentity, SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2,
-        SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment,
+        ImageProvenance, JumboRopeLimits, JumboRopeNode, JumboRopeObjectId, JumboRopeObjectKind,
+        JumboRopeObjectSink, JumboRopeWriteReceipt, JumboValueContext, JumboValueEncoding,
+        JumboValueFamily, LanguageProfile, RustEdition, SemanticBuildIdentity,
+        SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
+        SemanticPlaneKind, SemanticPlaneSegment, SemanticPlaneSegmentBoundaryPolicy,
         SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
         SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticContentRootV2,
         UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId, write_jumbo_value,
@@ -1128,13 +1128,12 @@ mod tests {
             [5; 32],
             [6; 32],
         );
-        let boundary_policy =
-            backend_semantic::ir::CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
-                MAX_SEMANTIC_SEGMENT_BYTES as u32,
-                MAX_SEMANTIC_SEGMENT_BYTES as u32,
-                MAX_SEMANTIC_SEGMENT_BYTES as u32,
-            )
-            .expect("terminal-only family boundary policy is valid");
+        let boundary_policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+            MAX_SEMANTIC_SEGMENT_BYTES as u32,
+            MAX_SEMANTIC_SEGMENT_BYTES as u32,
+            MAX_SEMANTIC_SEGMENT_BYTES as u32,
+        )
+        .expect("terminal-only family boundary policy is valid");
         let families = [
             SemanticIrPlane::Core,
             SemanticIrPlane::Types,
@@ -1535,7 +1534,7 @@ mod tests {
         let input = positive_v2_input_claim();
         let (content_root, generation_root) = positive_v2_expected_roots(build, input, &rows)
             .expect("independent stable-row-index root calculation");
-        let boundary_policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+        let boundary_policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
             MAX_SEMANTIC_SEGMENT_BYTES as u32,
             MAX_SEMANTIC_SEGMENT_BYTES as u32,
             MAX_SEMANTIC_SEGMENT_BYTES as u32,
@@ -1629,6 +1628,13 @@ mod tests {
             ArtifactClosureClaim::from_id(closure.closure()),
             UntrustedObjectId::from_bytes(*object.as_bytes()),
         )
+    }
+
+    fn expect_spool_error(result: Result<TypedV2HistorySpool, String>, message: &str) -> String {
+        match result {
+            Err(error) => error,
+            Ok(_) => panic!("{message}"),
+        }
     }
 
     #[test]
@@ -1787,15 +1793,17 @@ mod tests {
             jumbo: Vec::new(),
         };
         locator.validate().expect("canonical locator map");
-        let error = spool_typed_v2_history_closure(
-            &store,
-            ArtifactClosureClaim::from_id(closure.id()),
-            &closure,
-            &locator,
-            &manifest,
-            SemanticTypedPlaneVerificationTierV2::Standard,
-        )
-        .expect_err("a required segment cannot be omitted from its closure");
+        let error = expect_spool_error(
+            spool_typed_v2_history_closure(
+                &store,
+                ArtifactClosureClaim::from_id(closure.id()),
+                &closure,
+                &locator,
+                &manifest,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+            ),
+            "a required segment cannot be omitted from its closure",
+        );
         assert!(error.contains("exact bounded locator closure"));
     }
 
@@ -1828,7 +1836,13 @@ mod tests {
             ),
             representative_payload.as_slice(),
         );
-        let object_id = representative_object.id();
+        let file_store = FileStore::open(&directory.0, 1024 * 1024)
+            .expect("open FileStore for the tier-shape admitted member");
+        let object_id = file_store
+            .write_object(&representative_object)
+            .expect("admit the tier-shape member in FileStore");
+        assert_eq!(object_id, representative_object.id());
+        drop(file_store);
         drop(representative_object);
         drop(representative_payload);
         let object_claim = UntrustedObjectId::from_bytes(*object_id.as_bytes());
@@ -1874,7 +1888,7 @@ mod tests {
             claims.clone(),
             u64::try_from(SEGMENT_COUNT).expect("fixture segment count fits u64"),
         );
-        let locator = super::super::ir_generation_store::TypedV2HistoryLocator {
+        let locator = crate::ir_generation_store::TypedV2HistoryLocator {
             manifest: manifest
                 .canonical_bytes()
                 .expect("encode tier-shape manifest"),
@@ -1968,7 +1982,7 @@ mod tests {
             .expect("second logical segment claim"),
         ];
         let manifest = typed_manifest_with_core_segments(claims, 2);
-        let locator = super::super::ir_generation_store::TypedV2HistoryLocator {
+        let locator = crate::ir_generation_store::TypedV2HistoryLocator {
             manifest: manifest
                 .canonical_bytes()
                 .expect("encode duplicate-map manifest"),
@@ -2027,15 +2041,17 @@ mod tests {
         let extra = store
             .open_closure_claim(extra_claim)
             .expect("reopen extra-member closure");
-        let error = spool_typed_v2_history_closure(
-            &store,
-            extra_claim,
-            &extra,
-            &empty_locator,
-            &empty_manifest,
-            SemanticTypedPlaneVerificationTierV2::Standard,
-        )
-        .expect_err("an unclaimed closure member is not part of V2 history");
+        let error = expect_spool_error(
+            spool_typed_v2_history_closure(
+                &store,
+                extra_claim,
+                &extra,
+                &empty_locator,
+                &empty_manifest,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+            ),
+            "an unclaimed closure member is not part of V2 history",
+        );
         assert!(error.contains("exact bounded locator closure"));
 
         let ids = capture_rope_ids(&vec![0x41; 300 * 1024]);
@@ -2058,15 +2074,17 @@ mod tests {
         wrong_kind_locator
             .validate()
             .expect("interior map has a canonical fixed length");
-        let error = spool_typed_v2_history_closure(
-            &store,
-            wrong_schema_claim,
-            &wrong_schema,
-            &wrong_kind_locator,
-            &empty_manifest,
-            SemanticTypedPlaneVerificationTierV2::Standard,
-        )
-        .expect_err("interior objects require their exact distinct FileStore schema");
+        let error = expect_spool_error(
+            spool_typed_v2_history_closure(
+                &store,
+                wrong_schema_claim,
+                &wrong_schema,
+                &wrong_kind_locator,
+                &empty_manifest,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+            ),
+            "interior objects require their exact distinct FileStore schema",
+        );
         assert!(error.contains("envelope differs"));
     }
 
