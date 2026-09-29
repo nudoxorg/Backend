@@ -1177,7 +1177,7 @@ impl Shell {
                         .top_0()
                         .bottom_0()
                         .left_0()
-                        .w(px(0.0))
+                        .w(width)
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .capture_key_down({
                             let ask = self.ask.clone();
