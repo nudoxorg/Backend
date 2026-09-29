@@ -39,8 +39,9 @@ pub use self::compiler::{
     MAX_PACKAGE_EMBEDDING_BYTES, PackageSemanticError, PackageSource, PackageSourceCoverageGap,
     PackageSourceCoverageGapCause, PackageSourceSet, PackageSourceSetError,
     PublishedSemanticPackage, StagedEmbeddingStatus, StagedSemanticArtifact,
-    StagedSemanticOutputObject, StagedSemanticPackage, StagedVersionedPlaneArtifact,
-    StagedVersionedPlaneError, StagedVersionedPlaneSegment, StagedVersionedPlanes,
+    StagedSemanticOutputObject, StagedSemanticPackage, StagedSemanticReaderError,
+    StagedSemanticReaderMetrics, StagedVersionedPlaneArtifact, StagedVersionedPlaneError,
+    StagedVersionedPlaneSegment, StagedVersionedPlanes,
 };
 pub use self::config::{
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch, LocalCompilerScratchError,

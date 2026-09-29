@@ -29,8 +29,9 @@ use backend_library::interface::{
 };
 use backend_semantic::ir::{
     EmbeddingPlaneIdentity, MAX_SEMANTIC_SEGMENT_BYTES, SemanticBuildIdentity,
-    SemanticInputWitness, SemanticIrPlane, SemanticManifestError, SemanticPlane, SemanticPlaneKind,
-    SemanticPlaneManifest, SemanticPlaneSegment, SemanticSegmentId,
+    SemanticImageReopenError, SemanticImageView, SemanticInputWitness, SemanticIrPlane,
+    SemanticManifestError, SemanticPlane, SemanticPlaneKind, SemanticPlaneManifest,
+    SemanticPlaneSegment, SemanticSegmentId,
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
 use backend_semantic::vocabulary::AuthorityDiagnosticClass;
@@ -652,6 +653,52 @@ pub enum StagedVersionedPlaneError {
     Allocation(#[source] std::collections::TryReserveError),
 }
 
+/// Work performed before lending one staged canonical image to a reader callback.
+#[must_use]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedSemanticReaderMetrics {
+    image_validation_count: u64,
+    full_image_validation_input_bytes: u64,
+    canonical_image_copy_bytes: u64,
+}
+
+impl StagedSemanticReaderMetrics {
+    /// Number of complete image validations performed for this callback.
+    #[must_use]
+    pub const fn image_validation_count(self) -> u64 {
+        self.image_validation_count
+    }
+
+    /// Exact canonical image bytes presented to the full-image validator.
+    #[must_use]
+    pub const fn full_image_validation_input_bytes(self) -> u64 {
+        self.full_image_validation_input_bytes
+    }
+
+    /// Full canonical image bytes copied to construct the borrowed reader.
+    #[must_use]
+    pub const fn canonical_image_copy_bytes(self) -> u64 {
+        self.canonical_image_copy_bytes
+    }
+}
+
+/// Failure while borrowing one validated canonical reader from a staged package.
+#[derive(Debug, Error)]
+pub enum StagedSemanticReaderError<CallbackError: std::error::Error + 'static> {
+    /// The requested canonical artifact ordinal has no staged semantic image.
+    #[error("staged semantic reader artifact ordinal is unavailable")]
+    ArtifactOrdinal,
+    /// The selected canonical image region is inconsistent with the staged package plan.
+    #[error("staged semantic reader image region is unavailable")]
+    ImageRegion,
+    /// The canonical image could not be completely validated before borrowing.
+    #[error(transparent)]
+    Reopen(#[from] SemanticImageReopenError),
+    /// A family encoder or its bounded output sink rejected the callback.
+    #[error("staged semantic reader callback failed")]
+    Callback(#[source] CallbackError),
+}
+
 impl StagedSemanticPackage {
     /// Returns the exact verified generation root facts for this output closure.
     #[must_use]
@@ -923,6 +970,49 @@ impl StagedSemanticPackage {
         &self,
     ) -> Result<StagedVersionedPlanes<'_>, StagedVersionedPlaneError> {
         self.versioned_planes()
+    }
+
+    /// Lends one fully validated reader over the exact canonical image bytes.
+    ///
+    /// The callback can stream multiple bounded row families through a
+    /// [`backend_semantic::ir::CanonicalSemanticPlaneSegmentSink`] while this reader is alive.
+    /// The image is validated once per callback, borrowed directly from the
+    /// staged V1 bytes, and never copied by this seam. Callback return values
+    /// cannot retain the stack-owned reader; any segment retention remains an
+    /// explicit sink decision.
+    pub fn with_semantic_reader<Output, CallbackError>(
+        &self,
+        artifact_ordinal: usize,
+        use_reader: impl FnOnce(
+            &SemanticImageView<'_>,
+            StagedSemanticReaderMetrics,
+        ) -> Result<Output, CallbackError>,
+    ) -> Result<Output, StagedSemanticReaderError<CallbackError>>
+    where
+        CallbackError: std::error::Error + 'static,
+    {
+        let input_ordinal = *self
+            .prepared
+            .canonical_ordinals
+            .get(artifact_ordinal)
+            .ok_or(StagedSemanticReaderError::ArtifactOrdinal)?;
+        let region = *self
+            .staged
+            .image_plan
+            .get(input_ordinal)
+            .ok_or(StagedSemanticReaderError::ArtifactOrdinal)?;
+        let image = region
+            .bytes(&self.staged.semantic_images)
+            .ok_or(StagedSemanticReaderError::ImageRegion)?;
+        let image_validation_input_bytes =
+            u64::try_from(image.len()).map_err(|_| StagedSemanticReaderError::ImageRegion)?;
+        let reader = SemanticImageView::reopen(image)?;
+        let metrics = StagedSemanticReaderMetrics {
+            image_validation_count: 1,
+            full_image_validation_input_bytes: image_validation_input_bytes,
+            canonical_image_copy_bytes: 0,
+        };
+        use_reader(&reader, metrics).map_err(StagedSemanticReaderError::Callback)
     }
 
     /// Returns the number of immutable objects in the generation closure.

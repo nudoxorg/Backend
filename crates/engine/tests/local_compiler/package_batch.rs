@@ -19,11 +19,64 @@ use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompilePhase, PackageCompileRequest, PackageUrl,
 };
 use backend_semantic::ir::{
-    MAX_SEMANTIC_SEGMENT_BYTES, SemanticImageView, SemanticIrPlane, SemanticPlaneKind,
-    SemanticPlaneManifest,
+    CanonicalPlaneStreamError, CanonicalSemanticPlaneSegmentRef, CanonicalSemanticPlaneSegmentSink,
+    CoreDeclarationRows, MAX_SEMANTIC_SEGMENT_BYTES, SemanticImageView, SemanticIrPlane,
+    SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneRecordError, SemanticSegmentId,
+    reset_semantic_image_validations, semantic_image_validations, stream_canonical_plane_family,
 };
 use backend_semantic::vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
 use backend_store::journal::PublicationLimits;
+
+#[derive(Default)]
+struct SegmentInventory {
+    ids: Vec<SemanticSegmentId>,
+    output_bytes: u64,
+    maximum_payload_bytes: usize,
+}
+
+impl CanonicalSemanticPlaneSegmentSink for SegmentInventory {
+    type Error = SemanticPlaneRecordError;
+
+    fn write_segment(
+        &mut self,
+        segment: CanonicalSemanticPlaneSegmentRef<'_>,
+    ) -> Result<(), Self::Error> {
+        let descriptor = segment.metadata()?;
+        let id = descriptor
+            .admitted_id()
+            .ok_or(SemanticPlaneRecordError::MissingAdmittedId)?;
+        self.ids
+            .try_reserve(1)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        self.ids.push(id);
+        self.output_bytes = self
+            .output_bytes
+            .checked_add(
+                u64::try_from(segment.bytes().len())
+                    .map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?,
+            )
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        self.maximum_payload_bytes = self.maximum_payload_bytes.max(segment.bytes().len());
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("test sink stopped accepting semantic segments")]
+struct SinkStopped;
+
+struct StoppedSink;
+
+impl CanonicalSemanticPlaneSegmentSink for StoppedSink {
+    type Error = SinkStopped;
+
+    fn write_segment(
+        &mut self,
+        _segment: CanonicalSemanticPlaneSegmentRef<'_>,
+    ) -> Result<(), Self::Error> {
+        Err(SinkStopped)
+    }
+}
 
 #[test]
 fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dyn std::error::Error>>
@@ -353,6 +406,83 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
             request.target.stage,
         )
         .ok_or("opened Clang capability must expose its exact runtime identity")?;
+    let first_image = staged
+        .semantic_output_object(0)
+        .ok_or("first staged semantic image is present")?;
+    let image_pointer = first_image.bytes().as_ptr();
+    let image_length = first_image.bytes().len();
+    reset_semantic_image_validations();
+    let (stream_metrics, inventory, reader_metrics) =
+        staged.with_semantic_reader(0, |reader, metrics| {
+            assert_eq!(
+                reader.as_ref().as_ptr(),
+                image_pointer,
+                "reader borrows the exact staged NXFI allocation"
+            );
+            assert_eq!(reader.as_ref().len(), image_length);
+            let mut sink = SegmentInventory::default();
+            let streamed = stream_canonical_plane_family(
+                reader,
+                &CoreDeclarationRows,
+                staged.input_witness(),
+                MAX_SEMANTIC_SEGMENT_BYTES,
+                &mut sink,
+            )?;
+            Ok((streamed, sink, metrics))
+        })?;
+    assert_eq!(reader_metrics.image_validation_count(), 1);
+    assert_eq!(
+        reader_metrics.full_image_validation_input_bytes(),
+        u64::try_from(image_length)?
+    );
+    assert_eq!(reader_metrics.canonical_image_copy_bytes(), 0);
+    assert_eq!(semantic_image_validations(), 1);
+    assert_eq!(inventory.output_bytes, stream_metrics.output_bytes());
+    assert_eq!(
+        inventory.ids.len(),
+        usize::try_from(stream_metrics.segment_count())?
+    );
+    assert!(inventory.maximum_payload_bytes <= MAX_SEMANTIC_SEGMENT_BYTES);
+    assert!(
+        stream_metrics.peak_segment_scratch_capacity_bytes()
+            <= u64::try_from(MAX_SEMANTIC_SEGMENT_BYTES)?
+    );
+    assert!(
+        stream_metrics.peak_row_scratch_capacity_bytes()
+            <= u64::try_from(MAX_SEMANTIC_SEGMENT_BYTES)?
+    );
+    assert!(stream_metrics.row_index_capacity_bytes() > 0);
+    let peak_scratch_capacity = stream_metrics
+        .row_index_capacity_bytes()
+        .checked_add(stream_metrics.peak_row_scratch_capacity_bytes())
+        .and_then(|bytes| bytes.checked_add(stream_metrics.peak_segment_scratch_capacity_bytes()))
+        .ok_or("stream scratch counter fits u64")?;
+    assert!(peak_scratch_capacity > 0);
+    assert_eq!(
+        stream_metrics.row_count(),
+        stream_metrics.row_encode_calls()
+    );
+    // The streaming callback is the complete backpressure/transaction boundary:
+    // a sink error returns before any result-envelope or selected-root operation.
+    let failed_stream = staged.with_semantic_reader(0, |reader, _| {
+        let mut sink = StoppedSink;
+        stream_canonical_plane_family(
+            reader,
+            &CoreDeclarationRows,
+            staged.input_witness(),
+            MAX_SEMANTIC_SEGMENT_BYTES,
+            &mut sink,
+        )
+    })?;
+    assert!(matches!(
+        failed_stream,
+        Err(
+            backend_engine::application::StagedSemanticReaderError::Callback(
+                CanonicalPlaneStreamError::Sink(SinkStopped)
+            )
+        )
+    ));
+
     let planes = staged.versioned_planes()?;
     assert_eq!(planes.artifacts().len(), 2);
     for (ordinal, artifact_planes) in planes.artifacts().iter().enumerate() {
