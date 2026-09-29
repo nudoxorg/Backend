@@ -309,10 +309,13 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let down = trait_page.rose.down.known().expect("containment");
     assert!(down.iter().any(|relation| relation.decl.name.as_ref() == "probe"));
 
-    // ── The package dossier (a local project: manifest facts, no registry claims).
+    // ── The package dossier (a local project, no registry claims). The engine
+    // indexed this crate, and its canonical-graph record is kept ahead of a
+    // second Cargo metadata parse (4369a8773), so the head comes from the
+    // engine while its facts are still the manifest's.
     let dossier = plane.dossier(cx, &present);
-    let record = dossier.record.known().expect("manifest record");
-    assert_eq!(record.source, RecordSource::LocalManifest);
+    let record = dossier.record.known().expect("engine record");
+    assert_eq!(record.source, RecordSource::Registry);
     assert_eq!(record.name.as_ref(), "backend-present");
     assert_eq!(
         record.version.known().map(ToString::to_string),

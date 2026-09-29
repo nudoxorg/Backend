@@ -1698,7 +1698,16 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
             .or_else(|| records.first())
             .map_or_else(
                 || local_manifest_record(package, inputs.local, local),
-                |record| Known::Known(registry_record(record)),
+                |record| {
+                    let mut head = registry_record(record);
+                    // An engine record for a local project still has no
+                    // registry release behind it: its missing download count
+                    // is a local-project gap, not an unsupported feed.
+                    if local && head.downloads.gap().is_some() {
+                        head.downloads = Known::Unknown(local_gap("a download count"));
+                    }
+                    Known::Known(head)
+                },
             ),
         Err(gap) => inputs.local.map_or_else(
             || Known::Unknown(gap.clone()),
