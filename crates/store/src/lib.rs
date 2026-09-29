@@ -77,8 +77,9 @@ pub use durable::{
     RelationNodeChild, RelationNodeRead, RelationNodeWriteStats, SelectedHead,
     StorePublicationAuthority, StoredClosureReceipt, StreamingClosureBudget,
     StreamingClosureBuilder, TransactionId, TreeReadStats, TreeWriteStats, VerifiedClosureMember,
-    VerifiedObjectEnvelope, WorkspaceFileDurable, WorkspaceFilePrepared, WorkspaceFilePublished,
-    admit_object_envelope, write_object_envelope, write_streamed_object_envelope,
+    VerifiedObjectEnvelope, VerifiedObjectView, WorkspaceFileDurable, WorkspaceFilePrepared,
+    WorkspaceFilePublished, admit_object_envelope, write_object_envelope,
+    write_streamed_object_envelope,
 };
 pub use pack::{
     LayoutId, Pack, PackId, WirePack, admit_pack, decode_pack, decode_wire_pack, encode_pack,

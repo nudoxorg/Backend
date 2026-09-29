@@ -621,18 +621,25 @@ mod tests {
         TypedObject::from_value(&key, &bytes)
     }
 
+    fn replace_fixture(path: &Path, bytes: &[u8]) {
+        if path.exists() {
+            fs::remove_file(path).expect("remove immutable fixture");
+        }
+        fs::write(path, bytes).expect("write replacement fixture");
+    }
+
     fn corrupt_claim(store: &FileStore, id: ObjectId, mutate: impl FnOnce(&mut Vec<u8>)) {
         let path = store.object_path(id);
         let original = fs::read(&path).expect("read fixture envelope");
         let mut changed = original.clone();
         mutate(&mut changed);
-        fs::write(&path, changed).expect("write corrupted envelope");
+        replace_fixture(&path, &changed);
         assert_eq!(store.read_object(id), Err(StoreError::Corrupt));
         assert_eq!(
             store.with_verified_object(id, |_| Ok(())),
             Err(StoreError::Corrupt)
         );
-        fs::write(path, original).expect("restore fixture envelope");
+        replace_fixture(&path, &original);
     }
 
     #[test]
@@ -671,13 +678,13 @@ mod tests {
 
         let path = store.object_path(object.id());
         let original = fs::read(&path).expect("read complete envelope");
-        fs::write(&path, &original[..original.len() - 1]).expect("truncate object");
+        replace_fixture(&path, &original[..original.len() - 1]);
         assert_eq!(store.read_object(object.id()), Err(StoreError::Corrupt));
         assert_eq!(
             store.with_verified_object(object.id(), |_| Ok(())),
             Err(StoreError::Corrupt)
         );
-        fs::write(&path, original).expect("restore complete envelope");
+        replace_fixture(&path, &original);
         let _ = fs::remove_dir_all(root);
     }
 
