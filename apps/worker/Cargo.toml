@@ -8,9 +8,10 @@ publish = false
 [dependencies]
 backend-compile = { path = "../../crates/compile" }
 backend-engine = { path = "../../crates/engine" }
+backend-platform = { path = "../../crates/platform" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-store = { path = "../../crates/store" }
-backend-platform = { path = "../../crates/platform" }
+backend-version = { path = "../../crates/version" }
 blake3.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

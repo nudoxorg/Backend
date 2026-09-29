@@ -45,6 +45,7 @@ use backend_store::{
     GcLimits, GcRoot, GcRoots, ObjectId, StoredClosureReceipt, StreamingClosureBudget,
     StreamingClosureBuilder, TypedObject, UntrustedObjectId,
 };
+use backend_version::{ContentId, ToolchainDomain};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Read;
@@ -153,8 +154,8 @@ pub struct WorkerExecutionGrant {
     pub profile: [u8; 2],
     /// Closed stage discriminator.
     pub stage: u8,
-    /// Exact executable/toolchain identity.
-    pub toolchain: [u8; 32],
+    /// Exact canonical, domain-typed executable/toolchain identity.
+    pub toolchain: ContentId<ToolchainDomain>,
     /// Exact compiler environment identity.
     pub environment: [u8; 32],
     /// Exact target platform/sysroot identity.
@@ -204,7 +205,7 @@ impl ClusterWorkerPolicy {
                 if grant.namespace_id != self.namespace_id
                     || grant.namespace_id == [0; 16]
                     || grant.recipe == [0; 32]
-                    || grant.toolchain == [0; 32]
+                    || grant.toolchain == ContentId::<ToolchainDomain>::from_digest([0; 32])
                     || grant.environment == [0; 32]
                     || grant.target_platform == [0; 32]
                     || grant.local_authority_fingerprint == [0; 32]
@@ -1183,7 +1184,7 @@ impl ClusterWorker {
             || <[u8; 2]>::from(actual.profile()) != identity.profile
             || u8::from(actual.stage()) != identity.stage
             || *actual.recipe_identity().as_ref() != identity.recipe
-            || actual.toolchain_identity() != grant.toolchain
+            || actual.invocation_recipe().toolchain() != grant.toolchain
             || actual.environment_identity() != grant.environment
             || actual.target_platform_identity() != grant.target_platform
             || actual.local_authority_fingerprint() != grant.local_authority_fingerprint
@@ -3434,7 +3435,7 @@ fn validate_manifest_for_worker(
                 && grant.recipe == manifest.recipe()
                 && grant.profile == profile
                 && grant.stage == stage
-                && grant.toolchain == manifest.toolchain()
+                && grant.toolchain == manifest.invocation_recipe().toolchain()
                 && grant.environment == manifest.environment()
                 && grant.target_platform == manifest.target_platform()
         })
@@ -3458,7 +3459,7 @@ fn compiler_execution_identity_matches(
         profile: <[u8; 2]>::from(identity.profile()),
         stage: u8::from(identity.stage()),
         recipe: *identity.recipe_identity().as_ref(),
-        toolchain: identity.toolchain_identity(),
+        toolchain: identity.invocation_recipe().toolchain(),
         local_authority_fingerprint: identity.local_authority_fingerprint(),
         environment: identity.environment_identity(),
         target_platform: identity.target_platform_identity(),
@@ -3469,7 +3470,7 @@ fn compiler_execution_identity_matches(
         <[u8; 2]>::from(manifest.profile()),
         u8::from(manifest.stage()),
         manifest.recipe(),
-        manifest.toolchain(),
+        manifest.invocation_recipe().toolchain(),
         manifest.environment(),
         manifest.target_platform(),
         grant,
@@ -3482,7 +3483,7 @@ struct CompilerExecutionFacts {
     profile: [u8; 2],
     stage: u8,
     recipe: [u8; 32],
-    toolchain: [u8; 32],
+    toolchain: ContentId<ToolchainDomain>,
     local_authority_fingerprint: [u8; 32],
     environment: [u8; 32],
     target_platform: [u8; 32],
@@ -3494,7 +3495,7 @@ fn compiler_execution_facts_match(
     manifest_profile: [u8; 2],
     manifest_stage: u8,
     manifest_recipe: [u8; 32],
-    manifest_toolchain: [u8; 32],
+    manifest_toolchain: ContentId<ToolchainDomain>,
     manifest_environment: [u8; 32],
     manifest_target_platform: [u8; 32],
     grant: WorkerExecutionGrant,
@@ -5787,7 +5788,7 @@ mod tests {
             recipe: [2; 32],
             profile: [3, 4],
             stage: 1,
-            toolchain: [5; 32],
+            toolchain: ContentId::<ToolchainDomain>::from_digest([5; 32]),
             environment: [6; 32],
             target_platform: [7; 32],
             local_authority_fingerprint: [8; 32],
@@ -5822,7 +5823,7 @@ mod tests {
             ..facts
         }));
         assert!(!matches(CompilerExecutionFacts {
-            toolchain: [11; 32],
+            toolchain: ContentId::<ToolchainDomain>::from_digest([11; 32]),
             ..facts
         }));
         assert!(!matches(CompilerExecutionFacts {

@@ -22,6 +22,7 @@ use backend_engine::cluster_transport::{
     MAX_CONTROL_GRANT_PAGES, MAX_OFFER_CAPABILITIES, SecretKey,
 };
 use backend_store::FileStore;
+use backend_version::{ContentId, ToolchainDomain};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
@@ -58,7 +59,7 @@ pub use backend_engine::cluster_transport::ScopedClusterInvite;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LocalCompilerBinding {
     profile: [u8; 2],
-    toolchain: [u8; 32],
+    toolchain: ContentId<ToolchainDomain>,
     environment: [u8; 32],
     target_platform: [u8; 32],
     local_authority_fingerprint: [u8; 32],
@@ -67,31 +68,69 @@ struct LocalCompilerBinding {
 impl LocalCompilerBinding {
     fn from_capability(capability: LocalCompilerCapability) -> Result<Self, ClusterConfigError> {
         if capability.state() != LocalCompilerCapabilityState::Ready {
-            return Err(ClusterConfigError::ExecutionUnavailable);
+            return Err(ClusterConfigError::CapabilityUnavailable {
+                profile: <[u8; 2]>::from(capability.profile()),
+                state: Some(capability.state()),
+            });
+        }
+        let profile = <[u8; 2]>::from(capability.profile());
+        let raw_toolchain = capability.toolchain_identity().ok_or(
+            ClusterConfigError::CapabilityEvidenceUnavailable {
+                profile,
+                evidence: "toolchain identity",
+            },
+        )?;
+        if raw_toolchain == [0; 32] {
+            return Err(ClusterConfigError::CapabilityEvidenceUnavailable {
+                profile,
+                evidence: "nonzero toolchain identity",
+            });
         }
         Ok(Self {
-            profile: <[u8; 2]>::from(capability.profile()),
-            toolchain: capability
-                .toolchain_identity()
-                .ok_or(ClusterConfigError::ExecutionUnavailable)?,
-            environment: capability
-                .environment_identity()
-                .ok_or(ClusterConfigError::ExecutionUnavailable)?,
-            target_platform: capability
-                .target_platform_identity()
-                .ok_or(ClusterConfigError::ExecutionUnavailable)?,
-            local_authority_fingerprint: capability
-                .local_authority_fingerprint()
-                .ok_or(ClusterConfigError::ExecutionUnavailable)?,
+            profile,
+            toolchain: ContentId::<ToolchainDomain>::from_digest(raw_toolchain),
+            environment: capability.environment_identity().ok_or(
+                ClusterConfigError::CapabilityEvidenceUnavailable {
+                    profile,
+                    evidence: "execution environment identity",
+                },
+            )?,
+            target_platform: capability.target_platform_identity().ok_or(
+                ClusterConfigError::CapabilityEvidenceUnavailable {
+                    profile,
+                    evidence: "target platform identity",
+                },
+            )?,
+            local_authority_fingerprint: capability.local_authority_fingerprint().ok_or(
+                ClusterConfigError::CapabilityEvidenceUnavailable {
+                    profile,
+                    evidence: "local authority fingerprint",
+                },
+            )?,
         })
     }
 
-    fn matches_invite(self, invite: &ScopedClusterInvite) -> bool {
-        self.profile == invite.profile()
-            && self.toolchain == invite.toolchain()
-            && self.environment == invite.environment()
-            && self.target_platform == invite.target_platform()
-            && self.local_authority_fingerprint != [0; 32]
+    fn mismatched_invite_field(self, invite: &ScopedClusterInvite) -> Option<&'static str> {
+        if self.profile != invite.profile() {
+            return Some("profile");
+        }
+        let Ok(invite_toolchain) = ContentId::<ToolchainDomain>::try_from(invite.toolchain())
+        else {
+            return Some("canonical ToolchainDomain identity");
+        };
+        if self.toolchain != invite_toolchain {
+            return Some("canonical ToolchainDomain identity");
+        }
+        if self.environment != invite.environment() {
+            return Some("execution environment identity");
+        }
+        if self.target_platform != invite.target_platform() {
+            return Some("target platform identity");
+        }
+        if self.local_authority_fingerprint == [0; 32] {
+            return Some("nonzero local authority fingerprint");
+        }
+        None
     }
 }
 
@@ -122,9 +161,31 @@ pub enum ClusterConfigError {
         "Windows cluster state requires an absolute UTF-8 local-drive path such as C:\\worker\\data; UNC, device, and relative paths are rejected"
     )]
     WindowsLocalDriveRequired,
-    /// The current package compiler has no capability proving an invocation is pure in-process.
-    #[error("this worker cannot verify pure in-process execution for the invited compiler recipe")]
-    ExecutionUnavailable,
+    /// The invited profile is absent or has not reached exact local toolchain admission.
+    #[error("worker compiler capability for profile {profile:?} is unavailable (state: {state:?})")]
+    CapabilityUnavailable {
+        /// Exact requested language-profile code.
+        profile: [u8; 2],
+        /// None means the worker has no capability row for this profile.
+        state: Option<LocalCompilerCapabilityState>,
+    },
+    /// A ready capability omitted one of the local facts required for host execution.
+    #[error("worker compiler capability for profile {profile:?} omitted {evidence}")]
+    CapabilityEvidenceUnavailable {
+        /// Exact requested language-profile code.
+        profile: [u8; 2],
+        /// Required local runtime fact that was absent.
+        evidence: &'static str,
+    },
+    /// This worker does not implement the invited pure-parser execution class.
+    #[error("this worker does not support the invited pure in-process parser execution class")]
+    PureExecutionUnavailable,
+    /// One or more independently admitted compiler identities differ from the invite.
+    #[error("worker compiler capability does not match invited {field}")]
+    ExecutionIdentityMismatch {
+        /// First compiler-scope field that differs from the decoded invite.
+        field: &'static str,
+    },
     /// A filesystem operation failed.
     #[error("cluster config filesystem operation failed: {0}")]
     Io(#[from] std::io::Error),
@@ -208,10 +269,10 @@ impl PersistedClusterConfig {
     ) -> Result<(), ClusterConfigError> {
         let class = worker_execution_class(invite.execution_class());
         if class == WorkerExecutionClass::PureInProcessParser {
-            return Err(ClusterConfigError::ExecutionUnavailable);
+            return Err(ClusterConfigError::PureExecutionUnavailable);
         }
-        if !binding.matches_invite(&invite) {
-            return Err(ClusterConfigError::ExecutionUnavailable);
+        if let Some(field) = binding.mismatched_invite_field(&invite) {
+            return Err(ClusterConfigError::ExecutionIdentityMismatch { field });
         }
         if invite.namespace_id() != self.worker.policy.namespace_id
             || invite.expires_unix_ms() <= now_unix_ms
@@ -258,7 +319,7 @@ impl PersistedClusterConfig {
             recipe: invite.recipe(),
             profile: invite.profile(),
             stage: invite.stage(),
-            toolchain: invite.toolchain(),
+            toolchain: binding.toolchain,
             environment: invite.environment(),
             target_platform: invite.target_platform(),
             local_authority_fingerprint: binding.local_authority_fingerprint,
@@ -946,9 +1007,12 @@ fn local_compiler_capability_for_profile(
     compiler: &LocalCompilerClient,
     profile: [u8; 2],
 ) -> Result<LocalCompilerCapability, ClusterConfigError> {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(6))
-        .ok_or(ClusterConfigError::ExecutionUnavailable)?;
+    let deadline = Instant::now().checked_add(Duration::from_secs(6)).ok_or(
+        ClusterConfigError::CapabilityUnavailable {
+            profile,
+            state: None,
+        },
+    )?;
     loop {
         let capabilities = compiler.capabilities();
         let capability = capabilities
@@ -956,13 +1020,21 @@ fn local_compiler_capability_for_profile(
             .iter()
             .copied()
             .find(|capability| <[u8; 2]>::from(capability.profile()) == profile)
-            .ok_or(ClusterConfigError::ExecutionUnavailable)?;
+            .ok_or(ClusterConfigError::CapabilityUnavailable {
+                profile,
+                state: None,
+            })?;
         match capability.state() {
             LocalCompilerCapabilityState::Ready => return Ok(capability),
             LocalCompilerCapabilityState::Probing if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(25));
             }
-            _ => return Err(ClusterConfigError::ExecutionUnavailable),
+            state => {
+                return Err(ClusterConfigError::CapabilityUnavailable {
+                    profile,
+                    state: Some(state),
+                });
+            }
         }
     }
 }
@@ -1142,7 +1214,7 @@ fn encode_config(config: &PersistedClusterConfig) -> Result<Vec<u8>, ClusterConf
                 bytes.extend_from_slice(&grant.recipe);
                 bytes.extend_from_slice(&grant.profile);
                 bytes.push(grant.stage);
-                bytes.extend_from_slice(&grant.toolchain);
+                bytes.extend_from_slice(grant.toolchain.as_ref());
                 bytes.extend_from_slice(&grant.environment);
                 bytes.extend_from_slice(&grant.target_platform);
                 bytes.extend_from_slice(&grant.local_authority_fingerprint);
@@ -1214,7 +1286,8 @@ fn decode_config(bytes: &[u8]) -> Result<PersistedClusterConfig, ClusterConfigEr
                 let recipe = reader.array()?;
                 let profile = reader.array()?;
                 let stage = reader.u8()?;
-                let toolchain = reader.array()?;
+                let toolchain = ContentId::<ToolchainDomain>::try_from(reader.array()?)
+                    .map_err(|_| ClusterConfigError::Invalid)?;
                 let environment = reader.array()?;
                 let target_platform = reader.array()?;
                 let local_authority_fingerprint = reader.array()?;
@@ -1616,7 +1689,7 @@ mod tests {
             recipe,
             [1, 2],
             1,
-            [5; 32],
+            toolchain_claim([5; 32]),
             [6; 32],
             [8; 32],
             50_000,
@@ -1647,6 +1720,10 @@ mod tests {
             grants[0].class,
             WorkerExecutionClass::TrustedCoordinatorHostExecution
         );
+        assert_eq!(
+            grants[0].toolchain,
+            ContentId::<ToolchainDomain>::from_digest([5; 32])
+        );
         assert_eq!(grants[0].local_authority_fingerprint, [9; 32]);
         reopened
             .revoke_coordinator(coordinator_key.public())
@@ -1673,7 +1750,7 @@ mod tests {
             [4; 32],
             [1, 2],
             1,
-            [5; 32],
+            toolchain_claim([5; 32]),
             [6; 32],
             [8; 32],
             50_000,
@@ -1682,7 +1759,7 @@ mod tests {
         .expect("valid shared invite");
         assert!(matches!(
             config.import_invite_with_binding(invite.clone(), 10_000, local_binding_for(&invite),),
-            Err(ClusterConfigError::ExecutionUnavailable)
+            Err(ClusterConfigError::PureExecutionUnavailable)
         ));
         assert!(config.worker.coordinators.is_empty());
         assert_eq!(
@@ -1694,10 +1771,83 @@ mod tests {
     fn local_binding_for(invite: &ScopedClusterInvite) -> LocalCompilerBinding {
         LocalCompilerBinding {
             profile: invite.profile(),
-            toolchain: invite.toolchain(),
+            toolchain: ContentId::<ToolchainDomain>::try_from(invite.toolchain())
+                .expect("invite toolchain uses the registered typed domain"),
             environment: invite.environment(),
             target_platform: invite.target_platform(),
             local_authority_fingerprint: [9; 32],
         }
+    }
+
+    fn toolchain_claim(raw_digest: [u8; 32]) -> [u8; 32] {
+        *ContentId::<ToolchainDomain>::from_digest(raw_digest).as_ref()
+    }
+
+    #[test]
+    fn invite_toolchain_requires_the_canonical_toolchain_domain_id() {
+        use backend_version::CompileRecipeDomain;
+
+        let digest = [0x2a; 32];
+        let raw_digest = digest;
+        let canonical = ContentId::<ToolchainDomain>::from_digest(digest);
+        assert_ne!(canonical.as_ref(), &raw_digest);
+        let decoded = ContentId::<ToolchainDomain>::try_from(*canonical.as_ref())
+            .expect("decode canonical typed toolchain ID");
+        assert_eq!(decoded, canonical);
+
+        let wrong_domain = *ContentId::<CompileRecipeDomain>::from_digest(digest).as_ref();
+        assert!(ContentId::<ToolchainDomain>::try_from(wrong_domain).is_err());
+        let invite = ScopedClusterInvite::new(
+            SecretKey::generate().public(),
+            "127.0.0.1:4411".parse().expect("coordinator socket"),
+            [3; 16],
+            [4; 32],
+            [1, 2],
+            1,
+            wrong_domain,
+            [6; 32],
+            [8; 32],
+            50_000,
+            ClusterExecutionClass::TrustedCoordinatorHostExecution,
+        )
+        .expect("wire invite validates nonzero claim before typed admission");
+        let binding = LocalCompilerBinding {
+            profile: invite.profile(),
+            toolchain: canonical,
+            environment: invite.environment(),
+            target_platform: invite.target_platform(),
+            local_authority_fingerprint: [9; 32],
+        };
+        assert_eq!(
+            binding.mismatched_invite_field(&invite),
+            Some("canonical ToolchainDomain identity")
+        );
+        let wrong_toolchain_binding = LocalCompilerBinding {
+            toolchain: ContentId::<ToolchainDomain>::from_digest([0x2b; 32]),
+            ..binding
+        };
+        assert_eq!(
+            wrong_toolchain_binding.mismatched_invite_field(&invite),
+            Some("canonical ToolchainDomain identity")
+        );
+        let valid_invite = ScopedClusterInvite::new(
+            SecretKey::generate().public(),
+            "127.0.0.1:4411".parse().expect("coordinator socket"),
+            [3; 16],
+            [4; 32],
+            [1, 2],
+            1,
+            toolchain_claim(digest),
+            [6; 32],
+            [8; 32],
+            50_000,
+            ClusterExecutionClass::TrustedCoordinatorHostExecution,
+        )
+        .expect("valid typed toolchain claim");
+        assert_eq!(binding.mismatched_invite_field(&valid_invite), None);
+        assert_eq!(
+            wrong_toolchain_binding.mismatched_invite_field(&valid_invite),
+            Some("canonical ToolchainDomain identity")
+        );
     }
 }
