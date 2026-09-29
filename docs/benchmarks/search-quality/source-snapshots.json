@@ -41,8 +41,8 @@
     },
     {
       "path": "crates/local-service/src/builtin/discovery_search/benchmark.rs",
-      "sha256": "722abc6a2a09e0453e7e973cdde4cf0ab85af6acbfc834e6123ea83a6ca1b797",
-      "snapshot_id": "workspace-file:sha256:722abc6a2a09e0453e7e973cdde4cf0ab85af6acbfc834e6123ea83a6ca1b797"
+      "sha256": "30ec465a4b245063911f037c98e10b9b635935d9fd030e319210d803c4c8db79",
+      "snapshot_id": "workspace-file:sha256:30ec465a4b245063911f037c98e10b9b635935d9fd030e319210d803c4c8db79"
     },
     {
       "path": "crates/local-service/src/discovery.rs",
@@ -76,13 +76,13 @@
     },
     {
       "path": "docs/benchmarks/search-quality/adapter/tests/production_ranker.rs",
-      "sha256": "3ef641f2319d381e19a404bc9c7f6ce19bacfff4010715ee6c55ecc6b335ad79",
-      "snapshot_id": "workspace-file:sha256:3ef641f2319d381e19a404bc9c7f6ce19bacfff4010715ee6c55ecc6b335ad79"
+      "sha256": "25e2cfb0d578e891b116cd8178c7cf3b1b8f7edbf72a066bca9aabe2851a66ac",
+      "snapshot_id": "workspace-file:sha256:25e2cfb0d578e891b116cd8178c7cf3b1b8f7edbf72a066bca9aabe2851a66ac"
     },
     {
       "path": "docs/benchmarks/search-quality/freeze_corpus.py",
-      "sha256": "522625db4861e17c8c31b84b7e82652f09971f31ac0049840199ce0696ae93cf",
-      "snapshot_id": "workspace-file:sha256:522625db4861e17c8c31b84b7e82652f09971f31ac0049840199ce0696ae93cf"
+      "sha256": "3bb75694aab9eec2cfe6e396a301a49edda2bc8c57bb1a8161cb2317d97e1cc2",
+      "snapshot_id": "workspace-file:sha256:3bb75694aab9eec2cfe6e396a301a49edda2bc8c57bb1a8161cb2317d97e1cc2"
     },
     {
       "path": "docs/benchmarks/search-quality/lib_rs_adapter.py",
@@ -90,9 +90,59 @@
       "snapshot_id": "workspace-file:sha256:5db4a3f0b6c5cf72e41622d4890f927d31bc79d71a8633dd86571029558eeb52"
     },
     {
+      "path": "docs/benchmarks/search-quality/lib-rs-common/Cargo.toml",
+      "sha256": "0325d4af23fff91906b3c785f14bc68c18bbc0c4a768290d3a78844503c1df30",
+      "snapshot_id": "workspace-file:sha256:0325d4af23fff91906b3c785f14bc68c18bbc0c4a768290d3a78844503c1df30"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/lib-rs-common/Cargo.lock",
+      "sha256": "4f3a5bbf5f1bdfa6210baf5f13d8848f4443b2fc647f24c852a23a0b8e9fafec",
+      "snapshot_id": "workspace-file:sha256:4f3a5bbf5f1bdfa6210baf5f13d8848f4443b2fc647f24c852a23a0b8e9fafec"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/lib-rs-common/build.rs",
+      "sha256": "374c5dd499dece8244f07314b87a95acbef520885a5ee96b80e3e99777d0bf1b",
+      "snapshot_id": "workspace-file:sha256:374c5dd499dece8244f07314b87a95acbef520885a5ee96b80e3e99777d0bf1b"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/lib-rs-common/compat/rich_crate/Cargo.toml",
+      "sha256": "0fd07470da7a0912779ca8210e399e5cef2dab378bb8b6385f7c3319d1e9ea65",
+      "snapshot_id": "workspace-file:sha256:0fd07470da7a0912779ca8210e399e5cef2dab378bb8b6385f7c3319d1e9ea65"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/lib-rs-common/compat/rich_crate/src/lib.rs",
+      "sha256": "5ead69d886a88174ba7cd183d711c9d0480f1f1201f0918178906b8147ca1a22",
+      "snapshot_id": "workspace-file:sha256:5ead69d886a88174ba7cd183d711c9d0480f1f1201f0918178906b8147ca1a22"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/lib-rs-common/src/main.rs",
+      "sha256": "48e1d7f2f4acbdacd8db99ff6067c52f76369b368d41bfb12baa8ef977abdb3f",
+      "snapshot_id": "workspace-file:sha256:48e1d7f2f4acbdacd8db99ff6067c52f76369b368d41bfb12baa8ef977abdb3f"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/lib-rs-common-contract.json",
+      "sha256": "453e1b2539c1b3539aca1f0c47530ad09b1c286cd444c4117bc4a6bb9049aa49",
+      "snapshot_id": "workspace-file:sha256:453e1b2539c1b3539aca1f0c47530ad09b1c286cd444c4117bc4a6bb9049aa49"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/README.md",
+      "sha256": "d948c2e27e19d41f9d0ac2d29b8007bba10c60cc7fe5a4f02b8ce4c5ffdfa7e4",
+      "snapshot_id": "workspace-file:sha256:d948c2e27e19d41f9d0ac2d29b8007bba10c60cc7fe5a4f02b8ce4c5ffdfa7e4"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/report_common_partial.py",
+      "sha256": "aecd35deb6aa7c724ae1a0a0093c7be0d91da2a7fbc5b9991df91bbe3164a1e3",
+      "snapshot_id": "workspace-file:sha256:aecd35deb6aa7c724ae1a0a0093c7be0d91da2a7fbc5b9991df91bbe3164a1e3"
+    },
+    {
       "path": "docs/benchmarks/search-quality/run_common_lane.py",
-      "sha256": "6351a75e0e496e246cebcc079fdfb50d298e38773ca76c0d58523403953c7d85",
-      "snapshot_id": "workspace-file:sha256:6351a75e0e496e246cebcc079fdfb50d298e38773ca76c0d58523403953c7d85"
+      "sha256": "3553e698619ceda382116ee6db89e098220a5065edd513f84f215ae657a98f00",
+      "snapshot_id": "workspace-file:sha256:3553e698619ceda382116ee6db89e098220a5065edd513f84f215ae657a98f00"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/test_run_common_lane.py",
+      "sha256": "46c47901b6e412955ba3cc72235e352d8ad3e7475ed67843ad33097a41a3211e",
+      "snapshot_id": "workspace-file:sha256:46c47901b6e412955ba3cc72235e352d8ad3e7475ed67843ad33097a41a3211e"
     },
     {
       "path": "docs/benchmarks/search-quality/run_grouped_release_lane.py",

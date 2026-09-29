@@ -68,11 +68,34 @@ def require_pinned_upstream(path: Path) -> dict[str, Any]:
         if actual != expected:
             raise ValueError(f"pinned lib.rs file hash mismatch: {relative}: {actual}")
         observed[relative] = actual
-    return {"revision": revision, "files_sha256": observed}
+    status = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    if status:
+        raise ValueError("pinned lib.rs checkout must be clean, including untracked files")
+    return {"revision": revision, "files_sha256": observed, "worktree_clean": True}
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        with temporary.open("wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def request_for(query: dict[str, Any], limit: int) -> dict[str, Any]:
@@ -103,23 +126,80 @@ def run_nudox(
     samples: int,
     cold_samples: int,
     limit: int,
-    seed: int,
+    resume: bool,
 ) -> dict[str, Any]:
     cargo_corpus_path = output / "nudox-cargo-primary.jsonl"
     benchmark.write_corpus(cargo_corpus_path, cargo_rows)
     index_path = output / "nudox-index"
-    started = time.perf_counter_ns()
-    build_report = benchmark.command_run(
-        [str(adapter), "build", "--corpus", str(cargo_corpus_path), "--index", str(index_path)],
-        output,
-    )
-    build_ns = time.perf_counter_ns() - started
-    if not index_path.is_dir():
-        raise RuntimeError("Nudox adapter build did not create the index directory")
+    build_checkpoint_path = output / "nudox-index-build.json"
+    build_input = {
+        "corpus_sha256": sha256(cargo_corpus_path),
+        "adapter_sha256": sha256(adapter.resolve()),
+        "document_ids": sorted(row["document_id"] for row in cargo_rows),
+        "row_count": len(cargo_rows),
+    }
+    if index_path.exists():
+        if not resume or not build_checkpoint_path.is_file():
+            raise ValueError("existing Nudox index has no compatible resumable build checkpoint")
+        build_checkpoint = json.loads(build_checkpoint_path.read_text(encoding="utf-8"))
+        if build_checkpoint.get("input") != build_input:
+            raise ValueError("existing Nudox index was built from different inputs or adapter")
+        persisted_corpus = index_path / "corpus.jsonl"
+        manifest_path = index_path / "adapter-manifest.json"
+        if (
+            not persisted_corpus.is_file()
+            or sha256(persisted_corpus) != build_input["corpus_sha256"]
+            or not manifest_path.is_file()
+        ):
+            raise ValueError("existing Nudox index is missing or differs from its frozen corpus")
+        build_report = build_checkpoint["build_report"]
+        build_ns = build_checkpoint["build_elapsed_ns"]
+        index_reused = True
+    else:
+        started = time.perf_counter_ns()
+        build_report = benchmark.command_run(
+            [str(adapter), "build", "--corpus", str(cargo_corpus_path), "--index", str(index_path)],
+            output,
+        )
+        build_ns = time.perf_counter_ns() - started
+        if not index_path.is_dir():
+            raise RuntimeError("Nudox adapter build did not create the index directory")
+        write_json(
+            build_checkpoint_path,
+            {"input": build_input, "build_report": build_report, "build_elapsed_ns": build_ns},
+        )
+        index_reused = False
 
     requests: dict[str, dict[str, Any]] = {}
+    checkpoints: dict[str, dict[str, Any]] = {}
     for query in queries:
-        requests[query["query_id"]] = request_for(query, limit)
+        qid = query["query_id"]
+        requests[qid] = request_for(query, limit)
+        request_path = output / f"nudox-request-{qid}.json"
+        write_json(request_path, requests[qid])
+        checkpoint_path = output / f"nudox-query-{qid}.json"
+        request_hash = sha256(request_path)
+        if resume and checkpoint_path.is_file():
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if (
+                checkpoint.get("request_sha256") != request_hash
+                or checkpoint.get("adapter_sha256") != build_input["adapter_sha256"]
+                or checkpoint.get("limit") != limit
+            ):
+                raise ValueError(f"Nudox query checkpoint is incompatible: {qid}")
+            if len(checkpoint.get("warm_latency_ns", [])) > samples or len(checkpoint.get("cold_latency_ns", [])) > cold_samples:
+                raise ValueError(f"Nudox query checkpoint exceeds requested sample counts: {qid}")
+        else:
+            checkpoint = {
+                "query_id": qid,
+                "request_sha256": request_hash,
+                "adapter_sha256": build_input["adapter_sha256"],
+                "limit": limit,
+                "ranking": None,
+                "warm_latency_ns": [],
+                "cold_latency_ns": [],
+            }
+        checkpoints[qid] = checkpoint
     rankings: dict[str, list[str]] = {}
     warm_ns: dict[str, list[int]] = {query["query_id"]: [] for query in queries}
     service_err = (output / "nudox-serve.stderr").open("w", encoding="utf-8")
@@ -135,25 +215,40 @@ def run_nudox(
     try:
         if process.stdin is None or process.stdout is None:
             raise RuntimeError("Nudox serve pipes were not created")
-        for query in queries:
+        warm_order = list(queries)
+        for query in warm_order:
             qid = query["query_id"]
             process.stdin.write(json.dumps(requests[qid], separators=(",", ":")) + "\n")
             process.stdin.flush()
             rankings[qid] = service_response(process.stdout, qid)["document_ids"]
-        rng = random.Random(seed)
-        for sample in range(samples):
-            order = list(queries)
-            rng.shuffle(order)
-            for query in order:
-                qid = query["query_id"]
-                started = time.perf_counter_ns()
-                process.stdin.write(json.dumps(requests[qid], separators=(",", ":")) + "\n")
+        for query in warm_order:
+            qid = query["query_id"]
+            checkpoint = checkpoints[qid]
+            if checkpoint["ranking"] is not None and checkpoint["ranking"] != rankings[qid]:
+                raise RuntimeError(f"Nudox resumed ranking differs from checkpoint for {qid}")
+            full_ranking = rankings[qid]
+            if len(cargo_rows) > limit:
+                full_request = request_for(query, len(cargo_rows))
+                process.stdin.write(json.dumps(full_request, separators=(",", ":")) + "\n")
                 process.stdin.flush()
-                response = service_response(process.stdout, qid)
-                elapsed = time.perf_counter_ns() - started
-                if response["document_ids"] != rankings[qid]:
-                    raise RuntimeError(f"Nudox returned nondeterministic results for {qid}")
-                warm_ns[qid].append(elapsed)
+                full_ranking = service_response(process.stdout, qid)["document_ids"]
+            if checkpoint.get("full_candidate_ranking") is not None and checkpoint["full_candidate_ranking"] != full_ranking:
+                raise RuntimeError(f"Nudox full-candidate ranking differs from checkpoint for {qid}")
+            checkpoint["ranking"] = rankings[qid]
+            checkpoint["full_candidate_ranking"] = full_ranking
+            warm_ns[qid] = list(checkpoint["warm_latency_ns"])
+            if len(warm_ns[qid]) < samples:
+                for _ in range(len(warm_ns[qid]), samples):
+                    started = time.perf_counter_ns()
+                    process.stdin.write(json.dumps(requests[qid], separators=(",", ":")) + "\n")
+                    process.stdin.flush()
+                    response = service_response(process.stdout, qid)
+                    elapsed = time.perf_counter_ns() - started
+                    if response["document_ids"] != rankings[qid]:
+                        raise RuntimeError(f"Nudox returned nondeterministic results for {qid}")
+                    warm_ns[qid].append(elapsed)
+                checkpoint["warm_latency_ns"] = warm_ns[qid]
+                write_json(output / f"nudox-query-{qid}.json", checkpoint)
     finally:
         if process.stdin:
             process.stdin.close()
@@ -162,16 +257,13 @@ def run_nudox(
         if process.returncode != 0:
             raise RuntimeError(f"Nudox serve exited with {process.returncode}")
 
-    request_paths: dict[str, Path] = {}
-    for query in queries:
-        qid = query["query_id"]
-        request_path = output / f"nudox-request-{qid}.json"
-        write_json(request_path, requests[qid])
-        request_paths[qid] = request_path
     cold_ns: dict[str, list[int]] = {query["query_id"]: [] for query in queries}
     for query in queries:
         qid = query["query_id"]
-        for _ in range(cold_samples):
+        checkpoint = checkpoints[qid]
+        cold_ns[qid] = list(checkpoint["cold_latency_ns"])
+        request_path = output / f"nudox-request-{qid}.json"
+        for _ in range(len(cold_ns[qid]), cold_samples):
             started = time.perf_counter_ns()
             response = benchmark.command_run(
                 [
@@ -180,7 +272,7 @@ def run_nudox(
                     "--index",
                     str(index_path),
                     "--query-json",
-                    str(request_paths[qid]),
+                    str(request_path),
                     "--limit",
                     str(limit),
                 ],
@@ -191,6 +283,8 @@ def run_nudox(
             if ids != rankings[qid]:
                 raise RuntimeError(f"Nudox cold/warm result mismatch for {qid}")
             cold_ns[qid].append(elapsed)
+        checkpoint["cold_latency_ns"] = cold_ns[qid]
+        write_json(output / f"nudox-query-{qid}.json", checkpoint)
 
     return {
         "ranker": "repository production DiscoverySearchIndex via search-quality-tantivy-adapter",
@@ -198,6 +292,7 @@ def run_nudox(
         "adapter_sha256": sha256(adapter.resolve()),
         "build_report": build_report,
         "build_elapsed_ns": build_ns,
+        "index_reused_on_resume": index_reused,
         "index_input": {
             "path": str(cargo_corpus_path),
             "sha256": sha256(cargo_corpus_path),
@@ -205,12 +300,23 @@ def run_nudox(
             "rows": len(cargo_rows),
         },
         "rankings": rankings,
+        "full_candidate_rankings": {
+            query["query_id"]: checkpoints[query["query_id"]]["full_candidate_ranking"]
+            for query in queries
+        },
         "warm_latency_ns": {qid: values for qid, values in warm_ns.items()},
         "warm_latency_summary_ns": {qid: percentiles(values) for qid, values in warm_ns.items()},
         "cold_process_open_latency_ns": {qid: values for qid, values in cold_ns.items()},
         "cold_latency_summary_ns": {qid: percentiles(values) for qid, values in cold_ns.items()},
-        "warm_latency_boundary": "persistent production adapter JSONL request/response round trip",
+        "warm_latency_boundary": "persistent production adapter JSONL request/response round trip; queries measured query-major",
+        "warm_query_order": [query["query_id"] for query in warm_order],
+        "paired_candidate_ranking_boundary": "untimed full-candidate query used only when the requested limit is below the frozen Cargo row count; paired quality then filters exact upstream IDs and applies the requested cutoff",
         "cold_latency_boundary": "new production adapter process, index open/rebuild, and one request; OS page cache is not flushed",
+        "persistent_index_components": {
+            "corpus_jsonl_bytes": (index_path / "corpus.jsonl").stat().st_size,
+            "catalog_journal_bytes": (index_path / "catalog.journal").stat().st_size,
+            "adapter_manifest_bytes": (index_path / "adapter-manifest.json").stat().st_size,
+        },
     }
 
 
@@ -224,6 +330,7 @@ def run_lib_rs(
     limit: int,
     cargo_target_dir: Path,
     offline: bool,
+    resume: bool,
 ) -> dict[str, Any]:
     project_source = HERE / "lib-rs-common"
     project = output / "lib-rs-project"
@@ -265,17 +372,30 @@ def run_lib_rs(
         str(limit),
         str(samples),
     ]
+    if resume:
+        command.append("resume")
     started = time.perf_counter_ns()
     completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
-    index_elapsed = time.perf_counter_ns() - started
+    index_and_warm_process_elapsed = time.perf_counter_ns() - started
     if completed.returncode:
         raise RuntimeError(f"pinned lib.rs ranker failed ({completed.returncode}):\n{completed.stderr[-6000:]}")
     raw = json.loads(output_path.read_text(encoding="utf-8"))
-    raw["build_elapsed_ns"] = build_elapsed
-    raw["index_and_warm_query_elapsed_ns"] = index_elapsed
+    raw["cargo_compile_elapsed_ns"] = build_elapsed
+    raw["index_and_warm_process_elapsed_ns"] = index_and_warm_process_elapsed
     raw["warm_latency_boundary"] = "in-process pinned CrateSearchIndex.search call; excludes JSONL and process startup"
     raw["cold_process_open_latency_boundary"] = "new pinned ranker process, Tantivy index open, and one search; OS page cache is not flushed"
 
+    cold_checkpoint_path = output / "lib-rs-cold-checkpoint.json"
+    cold_checkpoint: dict[str, list[int]] = {}
+    if resume and cold_checkpoint_path.is_file():
+        previous_cold = json.loads(cold_checkpoint_path.read_text(encoding="utf-8"))
+        if (
+            previous_cold.get("limit") != limit
+            or previous_cold.get("cold_samples_per_query") != cold_samples
+            or previous_cold.get("upstream_revision") != UPSTREAM_REVISION
+        ):
+            raise ValueError("pinned lib.rs cold checkpoints do not match this run")
+        cold_checkpoint = previous_cold.get("cold_latency_ns", {})
     cold: dict[str, list[int]] = {}
     query_rows = [
         json.loads(line)
@@ -286,8 +406,10 @@ def run_lib_rs(
         if not query.get("lib_rs_common"):
             continue
         qid = query["query_id"]
-        cold[qid] = []
-        for _ in range(cold_samples):
+        cold[qid] = list(cold_checkpoint.get(qid, []))
+        if len(cold[qid]) > cold_samples:
+            raise ValueError(f"pinned lib.rs cold checkpoint exceeds sample count: {qid}")
+        for _ in range(len(cold[qid]), cold_samples):
             started = time.perf_counter_ns()
             result = subprocess.run(
                 [str(binary), "search-once", str(index_dir), query["query"], str(limit)],
@@ -305,10 +427,20 @@ def run_lib_rs(
             if actual != expected_ids:
                 raise RuntimeError(f"pinned lib.rs cold/warm result mismatch for {qid}")
             cold[qid].append(elapsed)
+        write_json(
+            cold_checkpoint_path,
+            {
+                "limit": limit,
+                "cold_samples_per_query": cold_samples,
+                "upstream_revision": UPSTREAM_REVISION,
+                "cold_latency_ns": cold,
+            },
+        )
     raw["cold_latency_ns"] = cold
     raw["cold_latency_summary_ns"] = {qid: percentiles(values) for qid, values in cold.items()}
     raw["binary_path"] = str(binary.resolve())
     raw["binary_sha256"] = sha256(binary)
+    write_json(output_path, raw)
     return raw
 
 
@@ -316,13 +448,8 @@ def common_quality(
     data: dict[str, Any],
     query_rows: list[dict[str, Any]],
     rankings: dict[str, list[str]],
+    candidate_ids: set[str] | None = None,
 ) -> dict[str, Any]:
-    per_query = {
-        query["query_id"]: benchmark.score_one(
-            query["query_id"], rankings.get(query["query_id"], []), data["qrels"].get(query["query_id"], {}), [1, 5, 10]
-        )
-        for query in query_rows
-    }
     metric_names = [
         "mrr",
         "recall@1",
@@ -341,8 +468,41 @@ def common_quality(
         "ndcg@5",
         "ndcg@10",
     ]
-    macro = {name: statistics.fmean(row[name] for row in per_query.values()) for name in metric_names}
-    return {"macro": macro, "per_query": per_query}
+    per_query = {}
+    qrel_rows = 0
+    positive_qrel_rows = 0
+    for query in query_rows:
+        query_id = query["query_id"]
+        qrels = data["qrels"].get(query_id, {})
+        ranking = rankings.get(query_id, [])
+        if candidate_ids is not None:
+            qrels = {document_id: grade for document_id, grade in qrels.items() if document_id in candidate_ids}
+            ranking = [document_id for document_id in ranking if document_id in candidate_ids]
+        qrel_rows += len(qrels)
+        positive_qrel_rows += sum(grade > 0 for grade in qrels.values())
+        per_query[query_id] = benchmark.score_one(query_id, ranking, qrels, [1, 5, 10])
+
+    macro: dict[str, float | None] = {}
+    macro_defined_query_count: dict[str, int] = {}
+    for name in metric_names:
+        values = [row[name] for row in per_query.values() if row[name] is not None]
+        macro[name] = statistics.fmean(values) if values else None
+        macro_defined_query_count[name] = len(values)
+    return {
+        "candidate_scope": "shared candidate set" if candidate_ids is not None else "full candidate set",
+        "candidate_document_ids": sorted(candidate_ids) if candidate_ids is not None else None,
+        "candidate_document_count": len(candidate_ids) if candidate_ids is not None else None,
+        "query_count": len(query_rows),
+        "qrel_row_count": qrel_rows,
+        "positive_qrel_row_count": positive_qrel_rows,
+        "precision_denominator": "number of returned documents in top-k; empty top-k is undefined",
+        "false_positive_rate_denominator": "number of returned documents in top-k; empty top-k is undefined",
+        "qrel_coverage_denominator": "number of returned documents in top-k; empty top-k is undefined",
+        "undefined_metric_policy": "null per query; omitted from that metric's macro mean; counts are reported separately",
+        "macro": macro,
+        "macro_defined_query_count": macro_defined_query_count,
+        "per_query": per_query,
+    }
 
 
 def throughput(samples_by_query: dict[str, list[int]]) -> float | None:
@@ -361,6 +521,7 @@ def main() -> int:
     parser.add_argument("--cold-samples", type=int, default=101)
     parser.add_argument("--limit", type=int, default=150)
     parser.add_argument("--seed", type=int, default=20260928)
+    parser.add_argument("--resume", action="store_true", help="resume only a run with a matching durable manifest")
     parser.add_argument("--online", action="store_true", help="allow Cargo to contact configured package registries")
     args = parser.parse_args()
     started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -375,8 +536,10 @@ def main() -> int:
         raise ValueError(f"production adapter binary not found: {args.adapter}")
     if not args.result_dir.exists() or not args.result_dir.is_dir():
         raise ValueError(f"result directory must already exist: {args.result_dir}")
-    if any(args.result_dir.iterdir()):
+    if any(args.result_dir.iterdir()) and not args.resume:
         raise ValueError(f"result directory must be empty: {args.result_dir}")
+    if args.resume and not (args.result_dir / "run-manifest.json").is_file():
+        raise ValueError("--resume requires a prior run-manifest.json")
     try:
         relative = args.result_dir.resolve().relative_to(ROOT)
     except ValueError:
@@ -416,37 +579,84 @@ def main() -> int:
             "exact-name, prefix, typo, description, and keyword queries"
         )
 
+    measurement_queries = list(query_rows)
+    random.Random(args.seed).shuffle(measurement_queries)
+    ordered_queries_path = input_dir / "queries-measurement-order.jsonl"
+    ordered_queries_path.write_text(
+        "".join(json.dumps(query, sort_keys=True, separators=(",", ":")) + "\n" for query in measurement_queries),
+        encoding="utf-8",
+    )
+
     upstream_root = args.lib_rs_mirror.resolve(strict=True)
     upstream = require_pinned_upstream(upstream_root)
     target_dir = args.target_dir.resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
     os.environ["LIB_RS_MIRROR"] = str(upstream_root)
+    run_identity = {
+        "snapshot_id": data["sources"]["benchmark_snapshot_id"],
+        "source_manifest_sha256": sha256(HERE / "source-snapshots.json"),
+        "benchmark_source_fingerprint": frozen_source_fingerprint,
+        "benchmark_input_sha256": frozen_input_hashes,
+        "seed": args.seed,
+        "samples_per_query": args.samples,
+        "cold_samples_per_query": args.cold_samples,
+        "limit": args.limit,
+        "inputs_manifest": json.loads((input_dir / "manifest.json").read_text(encoding="utf-8")),
+        "measurement_query_ids": [query["query_id"] for query in measurement_queries],
+        "measurement_queries_sha256": sha256(ordered_queries_path),
+        "upstream": upstream,
+        "adapter_sha256": sha256(args.adapter.resolve()),
+        "target_dir": str(target_dir),
+        "cargo_mode": "--offline --locked" if not args.online else "--locked with configured network allowed",
+    }
+    manifest_path = args.result_dir / "run-manifest.json"
+    if args.resume:
+        previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if previous_manifest.get("run_identity") != run_identity:
+            raise ValueError("existing run manifest does not match inputs, sources, adapter, or sample configuration")
+    else:
+        write_json(
+            manifest_path,
+            {
+                "status": "running",
+                "started_utc": started_utc,
+                "run_identity": run_identity,
+                "host": {"os": platform.platform(), "machine": platform.machine(), "python": sys.version},
+            },
+        )
     upstream_raw = run_lib_rs(
         upstream_root,
         args.result_dir,
         input_dir / "documents.jsonl",
-        input_dir / "queries.jsonl",
+        ordered_queries_path,
         args.samples,
         args.cold_samples,
         args.limit,
         target_dir,
         offline=not args.online,
+        resume=args.resume,
     )
     nudox_raw = run_nudox(
         args.adapter.resolve(),
         args.result_dir,
         cargo_rows,
-        query_rows,
+        measurement_queries,
         args.samples,
         args.cold_samples,
         args.limit,
-        args.seed,
+        resume=args.resume,
     )
 
     nudox_rankings = nudox_raw["rankings"]
+    nudox_full_rankings = nudox_raw["full_candidate_rankings"]
     lib_rs_rankings = {
         row["query_id"]: [hit["document_id"] for hit in row["ranked"] if hit.get("document_id")]
         for row in upstream_raw["results"]
+    }
+    upstream_candidate_ids = set(upstream_raw["indexed_document_ids"])
+    nudox_shared_rankings = {
+        query_id: [document_id for document_id in ranking if document_id in upstream_candidate_ids][: args.limit]
+        for query_id, ranking in nudox_full_rankings.items()
     }
     metrics = {
         "snapshot_id": data["sources"]["benchmark_snapshot_id"],
@@ -455,8 +665,21 @@ def main() -> int:
         "benchmark_input_sha256": frozen_input_hashes,
         "upstream_snapshot": upstream,
         "common_lane": {
+            "full_frozen_corpus_document_count": sum(len(rows) for rows in data["corpora"].values()),
+            "primary_document_count": len(data["corpora"]["primary"]),
+            "adversarial_document_count": len(data["corpora"]["adversarial"]),
             "primary_document_ids": sorted(row["document_id"] for row in cargo_rows),
             "query_ids": [row["query_id"] for row in query_rows],
+            "queries": [
+                {
+                    "query_id": query["query_id"],
+                    "query": query["query"],
+                    "category": query["category"],
+                    "scope": query["scope"],
+                    "exclude_yanked": query["exclude_yanked"],
+                }
+                for query in query_rows
+            ],
             "qrels": [
                 {
                     "query_id": row["query_id"],
@@ -469,13 +692,24 @@ def main() -> int:
             ],
             "primary_release_rows": len(cargo_rows),
             "upstream_indexed_documents": upstream_raw["indexed_documents"],
+            "upstream_indexed_document_ids": sorted(upstream_candidate_ids),
+            "upstream_unindexed_document_ids": sorted(
+                set(row["document_id"] for row in cargo_rows) - upstream_candidate_ids
+            ),
             "qrel_rows": len(qrel_rows),
             "field_coverage": upstream_raw["field_coverage"],
         },
         "production_nudox": {
-            "quality": common_quality(data, query_rows, nudox_rankings),
+            "quality_full_candidate_set": common_quality(data, query_rows, nudox_rankings),
+            "quality_shared_upstream_candidates": common_quality(
+                data, query_rows, nudox_shared_rankings, candidate_ids=upstream_candidate_ids
+            ),
             "index_bytes": nudox_raw["build_report"].get("index_bytes"),
             "persistent_directory_bytes": nudox_raw["build_report"].get("persistent_index_directory_bytes"),
+            "persistent_index_components": nudox_raw["persistent_index_components"],
+            "index_bytes_boundary": "logical in-memory Tantivy managed files",
+            "persistent_directory_bytes_boundary": "on-disk copied corpus, source journal, and adapter manifest",
+            "index_build_elapsed_ns": nudox_raw["build_elapsed_ns"],
             "warm_latency_ns": percentiles([value for values in nudox_raw["warm_latency_ns"].values() for value in values]),
             "cold_latency_ns": percentiles([value for values in nudox_raw["cold_process_open_latency_ns"].values() for value in values]),
             "warm_throughput_queries_per_second": throughput(nudox_raw["warm_latency_ns"]),
@@ -483,8 +717,15 @@ def main() -> int:
             "cold_boundary": nudox_raw["cold_latency_boundary"],
         },
         "upstream_lib_rs": {
-            "quality": common_quality(data, query_rows, lib_rs_rankings),
+            "quality_indexed_candidate_set": common_quality(
+                data, query_rows, lib_rs_rankings, candidate_ids=upstream_candidate_ids
+            ),
             "index_bytes": upstream_raw["index_bytes"],
+            "persistent_tantivy_directory_bytes": upstream_raw["persistent_tantivy_directory_bytes"],
+            "persistent_data_directory_bytes": upstream_raw["persistent_data_directory_bytes"],
+            "index_bytes_boundary": "on-disk Tantivy tantivy18 directory",
+            "index_build_elapsed_ns": upstream_raw["index_build_elapsed_ns"],
+            "cargo_compile_elapsed_ns": upstream_raw["cargo_compile_elapsed_ns"],
             "warm_latency_ns": percentiles([value for row in upstream_raw["results"] for value in row["warm_latency_ns"]]),
             "cold_latency_ns": percentiles([value for values in upstream_raw["cold_latency_ns"].values() for value in values]),
             "warm_throughput_queries_per_second": throughput(
@@ -494,11 +735,23 @@ def main() -> int:
             "cold_boundary": upstream_raw["cold_process_open_latency_boundary"],
             "version_selection": upstream_raw["version_selection"],
         },
+        "paired_ranking_comparison": {
+            "candidate_document_ids": sorted(upstream_candidate_ids),
+            "candidate_document_count": len(upstream_candidate_ids),
+            "nudox_quality": common_quality(
+                data, query_rows, nudox_shared_rankings, candidate_ids=upstream_candidate_ids
+            ),
+            "lib_rs_quality": common_quality(
+                data, query_rows, lib_rs_rankings, candidate_ids=upstream_candidate_ids
+            ),
+            "interpretation": "ranker comparison is restricted to exactly the IDs indexed by pinned lib.rs; the separate full-candidate Nudox score includes its version-history capability",
+        },
         "comparability": [
-            f"Both rankers use the same {len(cargo_rows)} Cargo primary release IDs, {len(query_rows)} independently authored common-field queries, {len(qrel_rows)} QREL rows, and a result limit of 150.",
-            "The pinned lib.rs indexer keeps one highest-SemVer document per Crates.io origin; Nudox keeps all seven frozen release rows. This changes the candidate set for historical serde QRELs and is reported as a version-history capability difference.",
-            "Warm latency boundaries differ: Nudox includes JSONL pipes and service request handling; lib.rs measures only the in-process search call. Cold for both includes a fresh process, opening the index, and one search, but neither flushes the OS page cache.",
-            "Tantivy bytes are reported from each implementation's own index directory/storage boundary; these values are not normalized storage comparisons.",
+            f"Both rankers receive the same {len(query_rows)} raw query strings, {len(qrel_rows)} independent QREL rows, and configured result limit {args.limit}; Nudox also applies the Cargo/primary scope against its Cargo-only index.",
+            f"The pinned lib.rs indexer keeps {len(upstream_candidate_ids)} highest-SemVer rows, while Nudox indexes {len(cargo_rows)} frozen Cargo releases. The report includes an exact same-candidate paired score plus Nudox's full-candidate capability score.",
+            "Warm boundaries differ: Nudox includes JSONL pipes and service handling; upstream measures in-process search. Cold includes fresh-process startup, index open, and one search for both; OS page cache is not flushed.",
+            "Index bytes keep implementation-specific boundaries separate: Nudox logical in-memory managed files and persistent corpus/journal/manifest bytes; upstream on-disk Tantivy bytes and full harness data-directory bytes.",
+            "Upstream Cargo compilation, measured Tantivy index construction, and the child process wall time covering index plus warm search are reported separately.",
         ],
         "limitations": [
             f"This common lane has {len(query_rows)} queries, {len(qrel_rows)} QREL rows, and three package origins. It cannot support general quality or speed superiority claims.",
@@ -515,24 +768,14 @@ def main() -> int:
     if require_pinned_upstream(upstream_root) != upstream:
         raise ValueError("pinned lib.rs source changed during the comparison")
     write_json(args.result_dir / "common-comparison.json", metrics)
-    run_manifest = {
-        "snapshot_id": data["sources"]["benchmark_snapshot_id"],
-        "source_manifest_sha256": metrics["source_manifest_sha256"],
-        "benchmark_source_fingerprint": frozen_source_fingerprint,
-        "benchmark_input_sha256": frozen_input_hashes,
+    final_manifest = {
+        "status": "complete",
         "started_utc": started_utc,
-        "seed": args.seed,
-        "samples_per_query": args.samples,
-        "cold_samples_per_query": args.cold_samples,
-        "limit": args.limit,
-        "inputs": json.loads((input_dir / "manifest.json").read_text(encoding="utf-8")),
-        "upstream": upstream,
-        "adapter_sha256": sha256(args.adapter.resolve()),
-        "target_dir": str(target_dir),
+        "completed_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "run_identity": run_identity,
         "host": {"os": platform.platform(), "machine": platform.machine(), "python": sys.version},
-        "cargo_mode": "--offline --locked" if not args.online else "--locked with configured network allowed",
     }
-    write_json(args.result_dir / "run-manifest.json", run_manifest)
+    write_json(manifest_path, final_manifest)
     print(args.result_dir / "common-comparison.json")
     return 0
 

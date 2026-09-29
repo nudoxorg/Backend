@@ -188,6 +188,75 @@ fn production_ranker_applies_alias_changes_through_incremental_sync() {
 }
 
 #[test]
+fn reopened_ranker_replays_yanked_overlay_and_update_cursor() {
+    let root = test_root("reopen-yanked-overlay");
+    let corpus_path = root.join("input.jsonl");
+    let index_path = root.join("index");
+    fs::create_dir_all(&root).expect("create test directory");
+    let target_id = "fixture:cargo/bench-target@1.0.0";
+    let target = document(
+        target_id,
+        "bench-target",
+        json!({"status": "known", "values": ["bench-alias"], "source_snapshot_id": "workspace-fixture:search-benchmark-test"}),
+    );
+    fs::write(
+        &corpus_path,
+        serde_json::to_string(&target).expect("encode target") + "\n",
+    )
+    .expect("write fixture corpus");
+    search_benchmark::build(&corpus_path, &index_path)
+        .expect("build actual production search index");
+
+    let mut index = search_benchmark::open(&index_path).expect("open production search index");
+    let mut query = alias_query();
+    query["exclude_yanked"] = json!(true);
+    assert_eq!(
+        document_ids(&index.search_request(&query).expect("search before yank")),
+        [target_id]
+    );
+    let set_yanked = json!({
+        "op": "update",
+        "updates": [{
+            "document_id": target_id,
+            "fields": {"yanked": {"status": "known", "values": [true]}}
+        }]
+    });
+    index
+        .update_request(&set_yanked)
+        .expect("persist yanked update");
+    assert!(document_ids(&index.search_request(&query).expect("filter yanked update")).is_empty());
+    drop(index);
+
+    let mut reopened = search_benchmark::open(&index_path).expect("reopen production search index");
+    assert!(document_ids(
+        &reopened
+            .search_request(&query)
+            .expect("filter replayed yanked update")
+    )
+    .is_empty());
+    let clear_yanked = json!({
+        "op": "update",
+        "updates": [{
+            "document_id": target_id,
+            "fields": {"yanked": {"status": "known", "values": [false]}}
+        }]
+    });
+    reopened
+        .update_request(&clear_yanked)
+        .expect("continue with the recovered update cursor");
+    assert_eq!(
+        document_ids(
+            &reopened
+                .search_request(&query)
+                .expect("search after unyank")
+        ),
+        [target_id]
+    );
+    drop(reopened);
+    fs::remove_dir_all(root).expect("remove test directory");
+}
+
+#[test]
 fn production_ranker_indexes_pinned_forge_identity_without_invented_metadata() {
     let root = test_root("forge-pin");
     let corpus_path = root.join("input.jsonl");

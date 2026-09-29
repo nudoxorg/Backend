@@ -131,6 +131,24 @@ fn directory_bytes(path: &Path) -> Result<u64, String> {
     Ok(total)
 }
 
+fn write_atomic_json(path: &Path, value: &Value) -> Result<(), String> {
+    let parent = path.parent().ok_or("output path has no parent directory")?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    let mut file = fs::File::create(&temporary)
+        .map_err(|error| format!("create {}: {error}", temporary.display()))?;
+    use std::io::Write as _;
+    file.write_all(&bytes)
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("persist {}: {error}", temporary.display()))?;
+    fs::rename(&temporary, path).map_err(|error| format!("replace {}: {error}", path.display()))?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("sync {}: {error}", parent.display()))
+}
+
 fn main() -> Result<(), String> {
     let mut args = env::args().skip(1);
     if args.next().as_deref() == Some("search-once") {
@@ -156,6 +174,7 @@ fn main() -> Result<(), String> {
         .unwrap_or("1001")
         .parse::<usize>()
         .map_err(|error| format!("invalid sample count: {error}"))?;
+    let resume = args.next().as_deref() == Some("resume");
     fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
     let synonyms_path = data_dir.join("tag-synonyms.csv");
     if !synonyms_path.exists() {
@@ -190,6 +209,7 @@ fn main() -> Result<(), String> {
     selected.sort_by(|left, right| left.name.cmp(&right.name));
 
     let index_path = data_dir.join("tantivy18");
+    let index_build_started = Instant::now();
     if index_path.exists() {
         fs::remove_dir_all(&index_path)
             .map_err(|error| format!("reset {}: {error}", index_path.display()))?;
@@ -223,6 +243,7 @@ fn main() -> Result<(), String> {
     index = writer
         .bye()
         .map_err(|error| format!("close upstream index writer: {error}"))?;
+    let index_build_elapsed_ns = index_build_started.elapsed().as_nanos() as u64;
     let index_bytes = directory_bytes(&data_dir.join("tantivy18"))?;
 
     let query_rows = jsonl(&queries_path)?;
@@ -249,36 +270,21 @@ fn main() -> Result<(), String> {
         serde_json::to_vec(&ids_by_coordinate).map_err(|error| error.to_string())?,
     )
     .map_err(|error| format!("write {}: {error}", ids_path.display()))?;
-    let mut results = Vec::new();
-    for query in queries {
-        let query_id = query
-            .get("query_id")
-            .and_then(Value::as_str)
-            .ok_or("query_id missing")?;
-        let text = query
-            .get("query")
-            .and_then(Value::as_str)
-            .ok_or("query missing")?;
-        let first = index
-            .search(text, search_limit, true)
-            .map_err(|error| format!("search {query_id}: {error}"))?;
-        let mut ranked = Vec::new();
-        for hit in first.crates {
-            let key = format!("{}@{}", hit.crate_name.to_ascii_lowercase(), hit.version);
-            ranked.push(json!({"document_id": ids_by_coordinate.get(&key), "crate_name": hit.crate_name, "version": hit.version, "relevance_score": hit.relevance_score, "score": hit.score}));
-        }
-        let mut latency_samples = Vec::with_capacity(sample_count);
-        let sample_start = Instant::now();
-        for _ in 0..sample_count {
-            let started = Instant::now();
-            let _ = index
-                .search(text, search_limit, true)
-                .map_err(|error| format!("timed search {query_id}: {error}"))?;
-            latency_samples.push(started.elapsed().as_nanos() as u64);
-        }
-        let elapsed = sample_start.elapsed().as_nanos() as u64;
-        results.push(json!({"query_id": query_id, "query": text, "ranked": ranked, "warm_latency_ns": latency_samples, "throughput_queries_per_second": sample_count as f64 * 1_000_000_000.0 / elapsed as f64}));
-    }
+    let existing_results = if resume && output_path.is_file() {
+        let bytes = fs::read(&output_path)
+            .map_err(|error| format!("read previous query checkpoints: {error}"))?;
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("decode previous query checkpoints: {error}"))?;
+        value
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|row| Some((row.get("query_id")?.as_str()?.to_owned(), row.clone())))
+            .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
     let field_counts = ["crate_name", "keywords", "description"]
         .into_iter()
         .map(|field| {
@@ -298,24 +304,83 @@ fn main() -> Result<(), String> {
             )
         })
         .collect::<serde_json::Map<_, _>>();
+    let indexed_document_ids = selected
+        .iter()
+        .map(|document| document.id.clone())
+        .collect::<Vec<_>>();
+    let mut results = Vec::new();
+    for query in queries {
+        let query_id = query
+            .get("query_id")
+            .and_then(Value::as_str)
+            .ok_or("query_id missing")?;
+        let text = query
+            .get("query")
+            .and_then(Value::as_str)
+            .ok_or("query missing")?;
+        if let Some(previous) = existing_results.get(query_id) {
+            let complete = previous.get("query").and_then(Value::as_str) == Some(text)
+                && previous
+                    .get("warm_latency_ns")
+                    .and_then(Value::as_array)
+                    .is_some_and(|samples| samples.len() == sample_count)
+                && previous.get("ranked").and_then(Value::as_array).is_some();
+            if complete {
+                results.push(previous.clone());
+                continue;
+            }
+        }
+        let first = index
+            .search(text, search_limit, true)
+            .map_err(|error| format!("search {query_id}: {error}"))?;
+        let mut ranked = Vec::new();
+        for hit in first.crates {
+            let key = format!("{}@{}", hit.crate_name.to_ascii_lowercase(), hit.version);
+            ranked.push(json!({"document_id": ids_by_coordinate.get(&key), "crate_name": hit.crate_name, "version": hit.version, "relevance_score": hit.relevance_score, "score": hit.score}));
+        }
+        let mut latency_samples = Vec::with_capacity(sample_count);
+        let sample_start = Instant::now();
+        for _ in 0..sample_count {
+            let started = Instant::now();
+            let _ = index
+                .search(text, search_limit, true)
+                .map_err(|error| format!("timed search {query_id}: {error}"))?;
+            latency_samples.push(started.elapsed().as_nanos() as u64);
+        }
+        let elapsed = sample_start.elapsed().as_nanos() as u64;
+        results.push(json!({"query_id": query_id, "query": text, "ranked": ranked, "warm_latency_ns": latency_samples, "throughput_queries_per_second": sample_count as f64 * 1_000_000_000.0 / elapsed as f64}));
+        let checkpoint = json!({
+            "upstream_revision": "4642a01664e14f4ae30a3804a55556b0770119d9",
+            "ranker": "pinned upstream search_index::CrateSearchIndex.search(sort_by_query_relevance=true)",
+            "search_limit": search_limit,
+            "sample_count": sample_count,
+            "input_documents": input_count,
+            "indexed_documents": selected.len(),
+            "indexed_document_ids": indexed_document_ids.clone(),
+            "results": results,
+        });
+        write_atomic_json(&output_path, &checkpoint)?;
+    }
+    let persistent_tantivy_directory_bytes = directory_bytes(&data_dir.join("tantivy18"))?;
+    let persistent_data_directory_bytes = directory_bytes(&data_dir)?;
     let result = json!({
         "upstream_revision": "4642a01664e14f4ae30a3804a55556b0770119d9",
         "upstream_search_index_sha256": "24705598c93b49933013125e69e7cfdb39e7b4f47d4cdaa68ae4c47367f6e301",
         "upstream_ranking_sha256": "45e2b9fd0de65db22e6c3067f57be6e1c788c482571124992a162bd732fafcda",
-        "ranker": "pinned upstream search_index::CrateSearchIndex.search(sort_by_query_relevance=true)",
+        "ranker": "pinned upstream CrateSearchIndex.search(sort_by_query_relevance=true); common-field mode",
         "input_documents": input_count,
         "indexed_documents": selected.len(),
         "version_selection": "highest SemVer version in this frozen common Cargo corpus per Origin::CratesIo(name); upstream Indexer replaces documents by origin",
         "field_coverage": field_counts,
+        "indexed_document_ids": indexed_document_ids,
+        "index_build_elapsed_ns": index_build_elapsed_ns,
         "synthetic_neutral_indexer_arguments": {"crate_score": 1.0, "monthly_downloads": 0, "monthly_downloads_status": "unknown; API requires u64 and this is ignored by query-relevance ordering", "readme": "omitted"},
         "index_bytes": index_bytes,
+        "persistent_tantivy_directory_bytes": persistent_tantivy_directory_bytes,
+        "persistent_data_directory_bytes": persistent_data_directory_bytes,
         "results": results
     });
-    fs::write(
-        &output_path,
-        serde_json::to_vec_pretty(&result).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("write {}: {error}", output_path.display()))?;
+    write_atomic_json(&output_path, &result)?;
     println!("{}", output_path.display());
     Ok(())
 }

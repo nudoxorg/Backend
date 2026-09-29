@@ -208,6 +208,37 @@ pub fn open(index_root: &Path) -> Result<BenchmarkIndex, String> {
     }
     let store = DiscoveryStore::open(index_root.join(JOURNAL_FILE))
         .map_err(|error| format!("open benchmark discovery journal: {error:?}"))?;
+    let mut update_sequence = 0_u64;
+    for document in documents.values_mut() {
+        let (Some(source), Some(coordinate)) = (document.registry_source, &document.coordinate)
+        else {
+            continue;
+        };
+        let cursor = store.cursor(source);
+        update_sequence = update_sequence.max(benchmark_update_sequence(&cursor));
+        if let Some(fact) = store.fact(source, coordinate.as_str()) {
+            let yanked = match &fact.metadata.yanked {
+                registry::DiscoveryFacet::Known(value) => {
+                    json!({"status": "known", "values": [*value]})
+                }
+                registry::DiscoveryFacet::Absent => {
+                    json!({"status": "absent", "values": []})
+                }
+                registry::DiscoveryFacet::Unknown => {
+                    json!({"status": "unknown", "values": []})
+                }
+            };
+            if let Some(fields) = document
+                .row
+                .get_mut("fields")
+                .and_then(Value::as_object_mut)
+            {
+                // Search postings replay from the journal. Keep the direct
+                // result filter in sync with that replayed facet as well.
+                fields.insert("yanked".to_owned(), yanked);
+            }
+        }
+    }
     let search = DiscoverySearchIndex::open_with_forge(&store, &forge_documents)
         .map_err(|error| format!("rebuild production Tantivy projection: {error}"))?;
     Ok(BenchmarkIndex {
@@ -216,7 +247,7 @@ pub fn open(index_root: &Path) -> Result<BenchmarkIndex, String> {
         search,
         documents,
         canonical_document_ids,
-        update_sequence: 0,
+        update_sequence,
     })
 }
 
@@ -1218,6 +1249,14 @@ fn snapshot_cursor(
         .map_err(|error| format!("create snapshot cursor: {error}"))
 }
 
+fn benchmark_update_sequence(cursor: &DiscoveryCursor) -> u64 {
+    std::str::from_utf8(cursor.as_bytes())
+        .ok()
+        .and_then(|value| value.strip_prefix("z-benchmark-update-"))
+        .and_then(|sequence| sequence.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 fn string_at<'a>(value: &'a Value, path: &[&str]) -> Result<&'a str, String> {
     let mut current = value;
     for segment in path {
@@ -1261,10 +1300,14 @@ fn text_index_bytes<K>(index: &super::TextSearchIndex<K>) -> Result<u64, String>
     let directory = index._index.directory();
     let mut total = 0_u64;
     for path in directory.list_managed_files() {
-        let slice = directory
-            .open_read(&path)
+        // `meta.json` is listed as managed but is intentionally written with
+        // `atomic_write`, without the footer used by `open_read` for segment
+        // files. Read the raw managed bytes so all files are counted and the
+        // metadata file does not fail footer validation.
+        let bytes = directory
+            .atomic_read(&path)
             .map_err(|error| format!("read Tantivy managed file {}: {error}", path.display()))?;
-        let bytes = u64::try_from(slice.len())
+        let bytes = u64::try_from(bytes.len())
             .map_err(|_| "Tantivy index byte count overflow".to_owned())?;
         total = total.saturating_add(bytes);
     }

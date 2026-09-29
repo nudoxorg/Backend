@@ -17,5 +17,11 @@
   "common_mode_quality_score_reason": "Neutral constant prevents README structure, code size, owners, release history, dependencies, traffic, and other unsupported inputs from changing the shared-field comparison.",
   "shared_metadata_mode": "name, keywords, and description only; README is omitted unless a separately frozen README snapshot is added for every Cargo document.",
   "query_subset": "Only primary Cargo queries whose intended evidence is name, keywords, or description; advisory, alias, dependency, yank, version, forge, and non-Cargo queries are excluded.",
-  "execution_status": "The projection is exported offline. run_common_lane.py executes the pinned upstream ranker and the Nudox production adapter after an authorized build slot; this contract itself contains no ranking or latency results."
+  "execution_status": "The projection is exported offline. run_common_lane.py executes pinned search_index::CrateSearchIndex.search in common-field mode and the Nudox production adapter after an authorized build slot; this contract contains no ranking or latency results.",
+  "executed_upstream_api": "search_index::CrateSearchIndex.search(sort_by_query_relevance=true)",
+  "ranking_source_status": "ranking/src/lib_ranking.rs is pinned and hash-checked for context but is not linked or executed by the standalone adapter",
+  "upstream_checkout_requirement": "exact pinned revision and a clean worktree, including untracked files; path dependency categories is built from that checked-out revision",
+  "query_limit": "run_common_lane.py --limit value, recorded in the run manifest",
+  "candidate_set_comparison": "full Nudox capability score plus paired ranker scores restricted to exact indexed_document_ids emitted by the upstream indexer",
+  "undefined_metrics": "null per query when the denominator or ideal gain is undefined; omitted from each macro mean with defined-query counts reported"
 }
