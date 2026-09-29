@@ -38,13 +38,14 @@ pub struct JumboRopeNode {
     pub(super) byte_length: u64,
     pub(super) left: RopeObjectRef,
     pub(super) right: RopeObjectRef,
+    id: JumboRopeObjectId,
 }
 
 impl JumboRopeNode {
     /// Opaque semantic identity of this node.
     #[must_use]
-    pub fn id(&self) -> JumboRopeObjectId {
-        JumboRopeObjectId(interior_identity(&self.encode_wire()))
+    pub const fn id(&self) -> JumboRopeObjectId {
+        self.id
     }
 
     /// First leaf ordinal in this node's ordered range.
@@ -111,13 +112,16 @@ impl JumboRopeNode {
             .byte_length
             .checked_add(right.byte_length)
             .ok_or(JumboRopeError::LengthOverflow)?;
-        Ok(Self {
+        let mut node = Self {
             first_leaf: left.first_leaf,
             leaf_count,
             byte_length,
             left,
             right,
-        })
+            id: JumboRopeObjectId([0; 32]),
+        };
+        node.id = JumboRopeObjectId(interior_identity(&node.encode_wire()));
+        Ok(node)
     }
 
     pub(super) fn as_ref(self) -> RopeObjectRef {

@@ -377,14 +377,17 @@ impl CanonicalPlaneEncodingMetrics {
     pub const fn peak_jumbo_rope_scratch_bytes(self) -> u64 {
         self.peak_jumbo_rope_scratch_bytes
     }
-    /// Conservative sum of the retained key-index capacity and the maximum
-    /// row, segment, and jumbo-writer scratch capacities observed together in
-    /// one row pass. Encoder plans and sink-owned storage are excluded.
+    /// Measured sum of the retained key-index capacity and the maximum row,
+    /// segment, and jumbo-writer scratch capacities observed together in one
+    /// row pass. The key index is O(rows) for the complete family, so this is
+    /// not a constant memory bound; encoder plans and sink-owned storage are
+    /// excluded.
     #[must_use]
     pub const fn peak_tracked_scratch_upper_bound_bytes(self) -> u64 {
         self.peak_tracked_scratch_upper_bound_bytes
     }
-    /// Allocated capacity of the compact key/handle/length inventory.
+    /// Allocated capacity of the full-family O(rows) key/handle/length index.
+    /// This capacity is not bounded by the maximum output-segment size.
     #[must_use]
     pub const fn row_index_capacity_bytes(self) -> u64 {
         self.row_index_capacity_bytes
@@ -651,10 +654,12 @@ pub(super) fn map_jumbo_operation_error(
 }
 
 /// Encodes a row family and lends each bounded output segment to `sink` before
-/// reusing its segment buffer. The encoder retains only the sorted compact
-/// key/handle index, one row scratch buffer, and one segment payload buffer.
-/// Rows are encoded once; the sink can durably write each segment before the
-/// next one is generated.
+/// reusing its segment buffer. The encoder retains a sorted compact key,
+/// handle, and length index for the whole family (O(rows)), one row scratch
+/// buffer, and one bounded segment payload buffer. The output-segment limit
+/// bounds only segment scratch; it does not cap the full-family index. Rows
+/// are encoded once; the sink can durably write each segment before the next
+/// one is generated.
 pub fn stream_canonical_plane_family<Reader, Encoder, Sink>(
     reader: &Reader,
     encoder: &Encoder,

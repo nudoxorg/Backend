@@ -110,9 +110,9 @@ pub use jumbo_rope::{
     JumboRopeObjectId, JumboRopeObjectKind, JumboRopeObjectSink, JumboRopeObjectSource,
     JumboRopeProof, JumboRopeProofSibling, JumboRopeProofSide, JumboRopeProofSpan,
     JumboRopeStreamWriter, JumboRopeWriteReceipt, JumboValueContext, JumboValueDescriptorId,
-    JumboValueEncoding, JumboValueFamily, MissingJumboLeafRanges, UntrustedJumboValueDescriptor,
-    VerifiedJumboRope, prove_jumbo_leaf, requires_jumbo_rope, write_jumbo_value,
-    write_jumbo_value_from_reader,
+    JumboValueEncoding, JumboValueFamily, MissingJumboLeafRanges, ROPE_NODE_WIRE_BYTES,
+    UntrustedJumboValueDescriptor, VerifiedJumboRope, prove_jumbo_leaf, requires_jumbo_rope,
+    write_jumbo_value, write_jumbo_value_from_reader,
 };
 #[cfg(feature = "mmap")]
 pub use mapping::{

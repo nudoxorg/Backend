@@ -23,7 +23,7 @@ pub use receiver::{
 };
 pub use wire::{
     JumboRopeNode, JumboRopeObjectId, JumboRopeObjectKind, JumboRopeProof, JumboRopeProofSibling,
-    JumboRopeProofSide, JumboRopeProofSpan,
+    JumboRopeProofSide, JumboRopeProofSpan, ROPE_NODE_WIRE_BYTES,
 };
 pub use writer::{
     JumboRopeBuildMetrics, JumboRopeStreamWriter, JumboRopeWriteReceipt, write_jumbo_value,
@@ -42,7 +42,8 @@ pub const JUMBO_ROPE_STREAM_BUFFER_BYTES: usize = 64 * 1024;
 pub const JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES: usize = 91;
 
 pub(super) const MAX_PROOF_DEPTH: usize = 64;
-pub(super) const ROPE_NODE_WIRE_BYTES: usize = 4 + 8 + 8 + 8 + (1 + 32 + 8 + 8 + 8) * 2;
+/// Fixed wire length of one canonical interior-node payload, in bytes.
+pub const ROPE_NODE_WIRE_BYTES: usize = 4 + 8 + 8 + 8 + (1 + 32 + 8 + 8 + 8) * 2;
 
 /// Whether a canonical value needs a separate jumbo descriptor.
 #[must_use]

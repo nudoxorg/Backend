@@ -48,8 +48,8 @@ pub use ir_hydration_wire::*;
 pub use ir_image_store::{SemanticImageCacheError, SemanticImageResume};
 pub use ir_producer_store::{
     DurableSemanticObjectAdmission, DurableSemanticObjectPin, FileSemanticJumboRopeSink,
-    FileSemanticPlaneSegmentSink, ProducedSemanticObjectIdentity, SemanticObjectAdmissionBuffer,
-    SemanticObjectAdmissionSink, SemanticProducerStoreMetrics,
+    FileSemanticPlaneSegmentSink, ProducedSemanticObjectIdentity, ProducedSemanticObjectKind,
+    SemanticObjectAdmissionBuffer, SemanticObjectAdmissionSink, SemanticProducerStoreMetrics,
 };
 pub use ir_residency::*;
 pub use local_peer::*;
