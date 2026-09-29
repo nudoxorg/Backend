@@ -1583,7 +1583,7 @@ impl<Reader: SemanticReader + ?Sized> TypedPlaneProductionPass<'_, '_, '_, Reade
             self.input_witness,
             policy,
             remaining_rows,
-            self.work_limits.max_total_rows(),
+            remaining_rows,
             self.work_limits.max_references(),
             self.jumbo_limits,
             self.jumbo_sink,
@@ -2891,6 +2891,66 @@ mod tests {
                 shape.label()
             )
         })
+    }
+
+    #[test]
+    fn v3_types_plan_uses_aggregate_rows_remaining_before_any_write() {
+        let directory = TestDirectory::new();
+        let cas_path = directory.0.join("v3-types-plan-budget-cas");
+        let store =
+            FileStore::open(&cas_path, 4 * 1024 * 1024).expect("open V3 plan-budget FileStore");
+        let reader = v3_fixture(V3FixtureShape::Base);
+        let work_limits =
+            typed_plane_work_limits_v2(SemanticTypedPlaneVerificationTierV2::Standard);
+        let mut segment_admissions = V3SegmentAdmissionBuilder::new(work_limits);
+        segment_admissions.total_rows = work_limits.max_total_rows() - 1;
+        assert_eq!(segment_admissions.remaining_rows(), 1);
+
+        let mut jumbo_admissions =
+            V3JumboAdmissionBuilder::new(work_limits, JumboRopeLimits::default())
+                .expect("standard verifier tier admits bounded jumbo work");
+        let mut jumbo_sink = FileSemanticJumboRopeSink::new(&store, &mut jumbo_admissions)
+            .expect("open bounded jumbo sink");
+        let mut segment_pins = Vec::new();
+        let mut family_descriptors = Vec::new();
+        let mut encoding_metrics = Vec::new();
+        let mut segment_store_metrics = Vec::new();
+        let mut pass = TypedPlaneProductionPass {
+            store: &store,
+            reader: &reader,
+            input_witness: v3_input_witness(11),
+            jumbo_sink: &mut jumbo_sink,
+            jumbo_limits: JumboRopeLimits::default(),
+            work_limits,
+            segment_admissions: &mut segment_admissions,
+            segment_pins: &mut segment_pins,
+            family_descriptors: &mut family_descriptors,
+            encoding_metrics: &mut encoding_metrics,
+            segment_store_metrics: &mut segment_store_metrics,
+        };
+
+        let error = pass
+            .produce_family(
+                &TypesRows,
+                SemanticIrPlane::Types,
+                v3_boundary_policies().types,
+            )
+            .expect_err("Types plan exceeds the one aggregate row left after prior families");
+        assert!(
+            error.contains("RowBudgetExceeded"),
+            "unexpected error: {error}"
+        );
+        drop(pass);
+        drop(jumbo_sink);
+        assert_eq!(segment_admissions.admissions().len(), 0);
+        assert_eq!(jumbo_admissions.admissions().len(), 0);
+        assert_eq!(
+            fs::read_dir(cas_path.join("objects"))
+                .expect("FileStore object directory exists")
+                .count(),
+            0,
+            "bounded Types plan rejects before segment or jumbo storage writes"
+        );
     }
 
     fn v3_segment_inventory(
