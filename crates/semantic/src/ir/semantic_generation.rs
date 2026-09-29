@@ -620,7 +620,9 @@ fn map_inventory_verification_error(
         SemanticTypedPlaneInventoryV2Error::SegmentSource(error) => {
             SemanticGenerationProofError::SegmentSource(error)
         }
-        _ => SemanticGenerationProofError::TypedPlaneInventoryRejected,
+        other => SemanticGenerationProofError::TypedPlaneInventoryRejected {
+            reason: other.to_string(),
+        },
     }
 }
 
@@ -696,9 +698,13 @@ fn validate_inventory_matches_manifest(
 /// Failure to verify a cold typed semantic content and generation claim.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum SemanticGenerationProofError {
-    /// Strict payload decoding or complete family census failed.
-    #[error("strict V2 typed-plane payload and family verification rejected the closure")]
-    TypedPlaneInventoryRejected,
+    /// Strict payload decoding or complete family census failed. The reason
+    /// contains only bounded verifier metadata, never untrusted row bytes.
+    #[error("strict V2 typed-plane payload and family verification rejected the closure: {reason}")]
+    TypedPlaneInventoryRejected {
+        /// The inventory verifier's specific rejection.
+        reason: String,
+    },
     /// A c004 row names external jumbo objects but the compatibility verifier
     /// was called without a borrowed object source.
     #[error("V2 typed-plane jumbo rows require a borrowed object source")]

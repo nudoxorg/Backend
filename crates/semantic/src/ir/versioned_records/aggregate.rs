@@ -3994,7 +3994,7 @@ mod tests {
                 crate::ir::JumboRopeLimits::default(),
                 &mut objects,
             ),
-            Err(crate::ir::SemanticGenerationProofError::TypedPlaneInventoryRejected)
+            Err(crate::ir::SemanticGenerationProofError::TypedPlaneInventoryRejected { .. })
         ));
     }
 
