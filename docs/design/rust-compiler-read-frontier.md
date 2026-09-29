@@ -79,26 +79,31 @@ proof.
 The compiler has an opt-in, borrow-scoped observation seam in
 `RustWorkspaceSessionLane::begin_with_read_frontier_observer`. It observes the
 selected editor overlay, synchronously walks `Vfs.iter()` and reads each
-representable loaded file through `SourceDatabase::file_text`, then reads the
+representable loaded file through `SourceDatabase::file_text`, reads the
 name-resolution diagnostics retained by each loaded crate's `DefMap` and emits
 unique crate-root/declaration/candidate identities from
-`UnresolvedModule.candidates`.
-The frontend reports independent
-visited-versus-acknowledged totals for the VFS and module-candidate scans; the
-engine seals those producer streams against the source-side visited counts, so
-a rejected callback, recorder failure, unsupported path, or truncated scan
-cannot appear sealed. Under the `compiler.read_frontier` debug target, the
-production Rust package compiler feeds these events to the bounded,
-attempt-fenced diagnostic recorder. With that target disabled (the default),
-the compiler takes the original `begin` path without the VFS walk, HIR
-diagnostics, or hashing.
+`UnresolvedModule.candidates`, and observes exact byte buffers successfully
+read by the Rustdoc `include_str!` preloader. The frontend reports independent
+visited-versus-acknowledged totals for the VFS, Rustdoc, and module-candidate
+events; the engine seals the selected-editor stream against the selected-file
+count and the VFS and module producers against their source-side visited
+counts. A rejected callback, recorder failure, unsupported path, or truncated
+scan cannot appear sealed. The Rustdoc filesystem producer remains unsealed
+because its callback starts only after a successful open/read; it does not
+capture the earlier canonicalize, metadata, or open attempts. Under
+the `compiler.read_frontier` debug target, the production Rust package
+compiler feeds these events to the bounded, attempt-fenced diagnostic
+recorder. With that target disabled (the default), the compiler takes the
+original `begin` path without the VFS walk, HIR diagnostics, Rustdoc observer,
+or hashing.
 
 The callbacks are synchronous and use no per-read `Arc<Mutex<_>>` or retained
 event row. File contents are hashed as RA holds them; module-candidate
 deduplication retains fixed-size digests. The observer caps VFS/candidate
-events and examined DefMap diagnostics at 250,000 each, and content/path
-evidence at 512 MiB; overflow leaves the affected producer unsealed. This is
-diagnostic evidence only: a VFS snapshot is not a loader
+events and examined DefMap diagnostics at 250,000 each, and VFS content/path
+evidence at 512 MiB. Rustdoc reads inherit the preloader's per-file and
+aggregate byte limits. Overflow leaves the affected producer unsealed. This
+is diagnostic evidence only: a VFS snapshot is not a loader
 event stream, unresolved-module diagnostics do not expose all successful or
 failed resolver attempts, and later semantic queries can still discover other
 reads. No work or validation scan is skipped.
@@ -124,7 +129,7 @@ trust registry remains empty.
 | Selected editor overlay | Captured bytes read back from RA `SourceDatabase` after overlay application | Does not cover disk-loaded source files or filesystem reads |
 | RA VFS loader | Diagnostic post-load snapshot of VFS paths and exact `SourceDatabase` text | No loader event receiver; failed reads, directory results, and later changes are invisible |
 | Rust module resolver | `DefMap` `UnresolvedModule` candidate pairs for declarations whose candidates all failed | No hook for successful resolution or every individual `resolve_path` attempt; candidate data is a post-load scan |
-| Authority filesystem | None | Frontend `canonicalize`, `metadata`, `symlink_metadata`, and open attempts bypass RA VFS |
+| Authority filesystem | Successful bounded Rustdoc include reads observed after `read_to_end` | Earlier `canonicalize`, `metadata`, `symlink_metadata`, and open attempts bypass the callback; other frontend filesystem reads remain unobserved |
 | Directory enumeration | None | No complete child-set/error callback for RA loader or project model |
 | Cargo project model | None | Manifest discovery and metadata/config reads use direct filesystem calls and Cargo |
 | Environment | None | RA, Cargo, rustup, and toolchain environment observations are not routed through one sealed policy observer |
@@ -250,11 +255,13 @@ experiment is evidence for designing an observer, not a production proof.
 
 ## Adversarial admission gates
 
-The frontend's workspace-session fixture now drives the real pinned RA
-workspace and introduces `mod absent;`; it receives the VFS root/sibling
-buffers and DefMap-reported `absent.rs`/`absent/mod.rs` candidate pair. Its
-observer deliberately rejects one candidate callback and asserts that the
-independent RA-side visited total exceeds acknowledged deliveries. The engine's
+The frontend's workspace-session fixture drives the real pinned RA workspace,
+reads an included Rustdoc file, and introduces `mod absent;`; it receives the
+VFS root/sibling buffers, the exact canonical Rustdoc path and bytes, and
+DefMap-reported `absent.rs`/`absent/mod.rs` candidate pair. Its observer
+deliberately rejects one Rustdoc callback and one candidate callback and
+asserts that the independent source-side visited totals exceed acknowledged
+deliveries. The engine's
 read-closure tests separately include an independent-oracle fault injection
 for omitted negative facts and a lost child terminal event. These tests check
 the real RA surface and broker failure behavior separately; neither proves
