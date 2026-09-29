@@ -322,7 +322,8 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2(
                 segment.last_key,
                 segment.row_count,
                 payload,
-            )?;
+            )
+            .map_err(SemanticPlaneRecordError::from)?;
             let Some(admitted_id) = descriptor.admitted_id() else {
                 return Err(SemanticPlaneRecordError::MissingAdmittedId.into());
             };
@@ -355,7 +356,7 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2(
                     budget: "row-count",
                 })?;
             for record in view.records() {
-                let key = StableRowKey::new(row_family, *record.key());
+                let key = StableRowKey::new(row_family, record.key());
                 let row_payload = RowPayload::from_tagged_bytes(record.tag(), record.payload())?;
                 row_index_builder.push(key, row_payload)?;
             }

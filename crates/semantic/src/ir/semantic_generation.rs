@@ -686,7 +686,9 @@ fn hash_family_kind(family: SemanticIrPlane, hasher: &mut blake3::Hasher) {
 
 fn hash_image_authority(authority: SemanticImageAuthority, hasher: &mut blake3::Hasher) {
     match authority {
-        SemanticImageAuthority::Shared => hasher.update(&[0]),
+        SemanticImageAuthority::Shared => {
+            hasher.update(&[0]);
+        }
         SemanticImageAuthority::Language(profile) => {
             hasher.update(&[1]);
             hasher.update(&<[u8; 2]>::from(profile));

@@ -23,6 +23,7 @@ const HEADER_BYTES: usize = 4 + 2 + 1 + 4;
 const RECORD_HEADER_BYTES: usize = 32 + 1 + 4;
 const INITIAL_PREFIX_BITS: u16 = 8;
 
+pub(crate) mod aggregate;
 mod declarations;
 mod extensions;
 mod occurrences;
