@@ -20,6 +20,8 @@ turso.workspace = true
 [features]
 loom-model = ["dep:loom"]
 mmap = ["dep:memmap2"]
+# Comparison-only baseline for the jumbo UTF-8 ASCII fast-path benchmark.
+jumbo-utf8-ascii-scalar = []
 
 [dev-dependencies]
 allocation-counter.workspace = true
@@ -51,6 +53,11 @@ harness = false
 [[bench]]
 name = "stable-row-index"
 path = "benches/stable_row_index.rs"
+harness = false
+
+[[bench]]
+name = "jumbo-utf8-ascii"
+path = "benches/jumbo_utf8_ascii.rs"
 harness = false
 
 [lints]

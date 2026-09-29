@@ -94,6 +94,170 @@ fn build(bytes: &[u8], encoding: JumboValueEncoding) -> (MemoryObjects, Verified
     (objects, written.verified().clone())
 }
 
+fn chunks_with_pattern<'bytes>(bytes: &'bytes [u8], pattern: &[usize]) -> Vec<&'bytes [u8]> {
+    let mut chunks = Vec::new();
+    let mut offset = 0;
+    let mut pattern_index = 0;
+    while offset < bytes.len() {
+        let length = pattern[pattern_index % pattern.len()].max(1);
+        let end = offset.saturating_add(length).min(bytes.len());
+        chunks.push(&bytes[offset..end]);
+        offset = end;
+        pattern_index += 1;
+    }
+    chunks
+}
+
+fn write_with_ascii_mode(
+    bytes: &[u8],
+    encoding: JumboValueEncoding,
+    pattern: &[usize],
+    allow_ascii_fast_path: bool,
+    objects: &mut MemoryObjects,
+) -> Result<JumboRopeWriteReceipt, JumboOperationError<Infallible>> {
+    let chunks = chunks_with_pattern(bytes, pattern);
+    write_slices_with_ascii_mode(&chunks, encoding, allow_ascii_fast_path, objects)
+}
+
+fn write_slices_with_ascii_mode(
+    chunks: &[&[u8]],
+    encoding: JumboValueEncoding,
+    allow_ascii_fast_path: bool,
+    objects: &mut MemoryObjects,
+) -> Result<JumboRopeWriteReceipt, JumboOperationError<Infallible>> {
+    super::writer::write_jumbo_value_with_ascii_mode(
+        context(encoding),
+        chunks,
+        JumboRopeLimits::default(),
+        allow_ascii_fast_path,
+        objects,
+    )
+}
+
+fn assert_same_written_rope(scalar: &MemoryObjects, fast: &MemoryObjects) {
+    assert_eq!(scalar.leaf_order, fast.leaf_order, "ordered leaf IDs");
+    assert_eq!(scalar.leaves, fast.leaves, "leaf ID-to-payload mapping");
+    assert_eq!(scalar.interiors, fast.interiors, "interior wire objects");
+}
+
+#[test]
+fn utf8_ascii_fast_path_matches_scalar_ids_for_unaligned_and_mixed_chunks() {
+    let ascii = vec![b'x'; MAX_SEMANTIC_SEGMENT_BYTES + 173_003];
+    let mixed_text = "# Notes\n\nA café in 東京 uses λ, ∑, and 🧪. UTF-8 code points may straddle any input boundary.\n\n";
+    let mixed = mixed_text
+        .repeat((MAX_SEMANTIC_SEGMENT_BYTES + 120_000) / mixed_text.len() + 2)
+        .into_bytes();
+
+    for (payload, offset, pattern) in [
+        (ascii.as_slice(), 1_usize, &[65_537, 1, 2, 3, 65_535][..]),
+        (mixed.as_slice(), 3_usize, &[65_537, 1, 2, 3, 65_535][..]),
+    ] {
+        let mut backing = vec![0xa5; offset];
+        backing.extend_from_slice(payload);
+        let unaligned = &backing[offset..];
+        let mut scalar_objects = MemoryObjects::default();
+        let scalar = write_with_ascii_mode(
+            unaligned,
+            JumboValueEncoding::Utf8,
+            pattern,
+            false,
+            &mut scalar_objects,
+        )
+        .expect("scalar writer accepts valid UTF-8");
+        let mut fast_objects = MemoryObjects::default();
+        let fast = write_with_ascii_mode(
+            unaligned,
+            JumboValueEncoding::Utf8,
+            pattern,
+            true,
+            &mut fast_objects,
+        )
+        .expect("fast writer accepts valid UTF-8");
+
+        assert_eq!(scalar.verified().descriptor(), fast.verified().descriptor());
+        assert_same_written_rope(&scalar_objects, &fast_objects);
+    }
+
+    let emoji = "🧪".as_bytes();
+    let emoji_offset = mixed
+        .windows(emoji.len())
+        .position(|window| window == emoji)
+        .expect("fixture contains its four-byte marker");
+    let mut backing = vec![0xa5; 3];
+    backing.extend_from_slice(&mixed);
+    let unaligned = &backing[3..];
+    let split_codepoint = [
+        &unaligned[..emoji_offset + 1],
+        &unaligned[emoji_offset + 1..emoji_offset + 3],
+        &unaligned[emoji_offset + 3..],
+    ];
+    let mut scalar_objects = MemoryObjects::default();
+    let scalar = write_slices_with_ascii_mode(
+        &split_codepoint,
+        JumboValueEncoding::Utf8,
+        false,
+        &mut scalar_objects,
+    )
+    .expect("scalar writer carries partial code points across pushes");
+    let mut fast_objects = MemoryObjects::default();
+    let fast = write_slices_with_ascii_mode(
+        &split_codepoint,
+        JumboValueEncoding::Utf8,
+        true,
+        &mut fast_objects,
+    )
+    .expect("fast writer carries partial code points across pushes");
+    assert_eq!(scalar.verified().descriptor(), fast.verified().descriptor());
+    assert_same_written_rope(&scalar_objects, &fast_objects);
+}
+
+#[test]
+fn utf8_ascii_fast_path_matches_scalar_failures_and_partial_writes() {
+    let prefix = vec![b'a'; 512 * 1024 + 17];
+    let malformed: [&[u8]; 7] = [
+        b"\x80",             // stray continuation
+        b"\xc0\xaf",         // overlong two-byte sequence
+        b"\xe2(\xa1",        // invalid continuation
+        b"\xe0\x80\x80",     // overlong three-byte sequence
+        b"\xed\xa0\x80",     // UTF-16 surrogate
+        b"\xf4\x90\x80\x80", // above U+10FFFF
+        b"\xf0\x9f\x92",     // truncated four-byte sequence
+    ];
+
+    for suffix in malformed {
+        let mut bytes = prefix.clone();
+        bytes.extend_from_slice(suffix);
+        let mut chunks = chunks_with_pattern(&bytes[..prefix.len()], &[65_537, 1, 2, 3, 65_535]);
+        for offset in prefix.len()..bytes.len() {
+            chunks.push(&bytes[offset..offset + 1]);
+        }
+        let mut scalar_objects = MemoryObjects::default();
+        let scalar = write_slices_with_ascii_mode(
+            &chunks,
+            JumboValueEncoding::Utf8,
+            false,
+            &mut scalar_objects,
+        );
+        let mut fast_objects = MemoryObjects::default();
+        let fast = write_slices_with_ascii_mode(
+            &chunks,
+            JumboValueEncoding::Utf8,
+            true,
+            &mut fast_objects,
+        );
+
+        assert!(matches!(
+            scalar,
+            Err(JumboOperationError::Rope(JumboRopeError::InvalidUtf8))
+        ));
+        assert!(matches!(
+            fast,
+            Err(JumboOperationError::Rope(JumboRopeError::InvalidUtf8))
+        ));
+        assert_same_written_rope(&scalar_objects, &fast_objects);
+    }
+}
+
 fn transfer_leaf(
     descriptor: CheckedJumboValueDescriptor,
     ordinal: u64,

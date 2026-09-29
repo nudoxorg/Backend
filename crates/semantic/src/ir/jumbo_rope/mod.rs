@@ -399,6 +399,10 @@ pub(super) struct Utf8Validator {
 }
 
 impl Utf8Validator {
+    pub(super) const fn is_at_codepoint_boundary(&self) -> bool {
+        self.remaining == 0
+    }
+
     pub(super) fn push(&mut self, byte: u8) -> Result<(), JumboRopeError> {
         if self.remaining > 0 {
             if byte < self.next_min || byte > self.next_max {

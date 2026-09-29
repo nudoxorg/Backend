@@ -13,6 +13,10 @@ const GEAR_WINDOW_BYTES: usize = 64;
 const GEAR_ROLLING_BASE: u64 = 257;
 const GEAR_ROLLING_POWER: u64 = 257_u64.wrapping_pow(GEAR_WINDOW_BYTES as u32);
 
+// The scalar feature exists only so the benchmark can compare this writer
+// against the same source with the byte-scan optimization disabled.
+const UTF8_ASCII_FAST_PATH: bool = !cfg!(feature = "jumbo-utf8-ascii-scalar");
+
 /// Bounded checker for the writer's exact content-defined leaf decisions.
 /// Rolling state deliberately survives leaf boundaries because that is part
 /// of the canonical streaming chunker.
@@ -283,6 +287,22 @@ impl<'sink, S: JumboRopeObjectSink + ?Sized> RopeWriter<'sink, S> {
     }
 
     fn push(&mut self, input: &[u8]) -> Result<(), JumboOperationError<S::Error>> {
+        self.push_with_ascii_fast_path(input, UTF8_ASCII_FAST_PATH)
+    }
+
+    fn push_with_ascii_fast_path(
+        &mut self,
+        input: &[u8],
+        allow_ascii_fast_path: bool,
+    ) -> Result<(), JumboOperationError<S::Error>> {
+        // A whole ASCII slice cannot alter a boundary-state UTF-8 validator.
+        // Keep the scalar byte validator for mixed slices and when a previous
+        // push ended in the middle of a code point, so arbitrary stream
+        // boundaries retain exactly the same validation behavior.
+        let skip_utf8_validation = allow_ascii_fast_path
+            && self.context.encoding == JumboValueEncoding::Utf8
+            && self.utf8.is_at_codepoint_boundary()
+            && input.is_ascii();
         for byte in input.iter().copied() {
             let next = self
                 .input_bytes
@@ -295,7 +315,7 @@ impl<'sink, S: JumboRopeObjectSink + ?Sized> RopeWriter<'sink, S> {
                 }
                 .into());
             }
-            if self.context.encoding == JumboValueEncoding::Utf8 {
+            if self.context.encoding == JumboValueEncoding::Utf8 && !skip_utf8_validation {
                 self.utf8.push(byte)?;
             }
             self.scratch.push(byte);
@@ -474,6 +494,25 @@ impl<'sink, S: JumboRopeObjectSink + ?Sized> RopeWriter<'sink, S> {
         };
         Ok(JumboRopeWriteReceipt { verified, metrics })
     }
+}
+
+/// Runs one writer over caller-defined input slices with the ASCII scan
+/// explicitly enabled or disabled. This keeps equivalence tests independent
+/// of the Cargo feature used by the benchmark baseline.
+#[cfg(test)]
+pub(super) fn write_jumbo_value_with_ascii_mode<S: JumboRopeObjectSink + ?Sized>(
+    context: JumboValueContext,
+    chunks: &[&[u8]],
+    limits: JumboRopeLimits,
+    allow_ascii_fast_path: bool,
+    sink: &mut S,
+) -> Result<JumboRopeWriteReceipt, JumboOperationError<S::Error>> {
+    let limits = limits.validate()?;
+    let mut writer = RopeWriter::new(context, limits, sink)?;
+    for chunk in chunks {
+        writer.push_with_ascii_fast_path(chunk, allow_ascii_fast_path)?;
+    }
+    writer.finish(0)
 }
 
 fn gear_table() -> [u64; 256] {
