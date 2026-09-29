@@ -18,8 +18,23 @@ ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
 CAPTURED_AT = "2026-09-28T06:58:07Z"
 CARGO_LOCK_CAPTURED_AT = "2026-09-28T08:51:28Z"
+CRATES_IO_API_CAPTURED_AT = "2026-09-29T16:43:42Z"
+BENCHMARK_CAPTURED_AT = "2026-09-29T16:43:42Z"
+BENCHMARK_SNAPSHOT_ID = "search-quality-v2-2026-09-29"
 CARGO_LOCK_SNAPSHOT = "docs/benchmarks/search-quality/snapshots/workspace-cargo-lock-2026-09-28.lock"
 LIB_RS_REVISION = "4642a01664e14f4ae30a3804a55556b0770119d9"
+CRATES_IO_API_METADATA = {
+    "bincode": {
+        "filename": "crates-io-api-bincode-2026-09-29.json",
+        "version": "3.0.0",
+        "url": "https://crates.io/api/v1/crates/bincode",
+    },
+    "serde": {
+        "filename": "crates-io-api-serde-2026-09-29.json",
+        "version": "1.0.229",
+        "url": "https://crates.io/api/v1/crates/serde",
+    },
+}
 
 PIN_COORDINATES = {
     "cargo:thiserror@2.0.20",
@@ -64,6 +79,11 @@ SOURCE_PATHS = [
     "docs/benchmarks/search-quality/adapter/Cargo.toml",
     "docs/benchmarks/search-quality/adapter/src/main.rs",
     "docs/benchmarks/search-quality/adapter/tests/production_ranker.rs",
+    "docs/benchmarks/search-quality/freeze_corpus.py",
+    "docs/benchmarks/search-quality/lib_rs_adapter.py",
+    "docs/benchmarks/search-quality/run_common_lane.py",
+    "docs/benchmarks/search-quality/run_grouped_release_lane.py",
+    "docs/benchmarks/search-quality/search_benchmark.py",
     "crates/semantic/src/vocabulary/package.rs",
     "tests/journeys/tests/index_tentpole.rs",
     "tests/journeys/tests/registry_discovery.rs",
@@ -151,6 +171,36 @@ def parse_index_snapshots() -> tuple[dict[tuple[str, str], dict[str, Any]], list
     return entries, snapshots
 
 
+def parse_crates_io_api_metadata() -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    metadata = {}
+    snapshots = []
+    for name, source in sorted(CRATES_IO_API_METADATA.items()):
+        path = HERE / "snapshots" / source["filename"]
+        body = path.read_bytes()
+        payload = json.loads(body)
+        crate = payload.get("crate", {})
+        if crate.get("id") != name:
+            raise ValueError(f"crates.io API snapshot does not match package {name}")
+        snapshot_id = f"crates-io-api:{name}:sha256:{sha256(body)}"
+        snapshots.append(
+            {
+                "snapshot_id": snapshot_id,
+                "source": source["url"],
+                "captured_at": CRATES_IO_API_CAPTURED_AT,
+                "local_file": path.relative_to(ROOT).as_posix(),
+                "bytes": len(body),
+                "sha256": sha256(body),
+            }
+        )
+        metadata[name] = {
+            "version": source["version"],
+            "description": crate.get("description"),
+            "keywords": crate.get("keywords") or [],
+            "snapshot_id": snapshot_id,
+        }
+    return metadata, snapshots
+
+
 def source_manifest(index_snapshots: list[dict[str, Any]]) -> dict[str, Any]:
     sources = []
     source_paths = [
@@ -224,8 +274,8 @@ def source_manifest(index_snapshots: list[dict[str, Any]]) -> dict[str, Any]:
     )
     return {
         "schema_version": 1,
-        "benchmark_snapshot_id": "search-quality-v1-2026-09-28",
-        "captured_at": CAPTURED_AT,
+        "benchmark_snapshot_id": BENCHMARK_SNAPSHOT_ID,
+        "captured_at": BENCHMARK_CAPTURED_AT,
         "source_snapshots": sources,
     }
 
@@ -319,6 +369,7 @@ def main() -> int:
     pins_digest = sha256(pins_bytes)
     pin_rows = read_json(pins_path)
     index_rows, index_snapshots = parse_index_snapshots()
+    api_metadata, api_snapshots = parse_crates_io_api_metadata()
     lock_packages, lock_snapshot_id = cargo_lock_packages()
     rustsec_path = ROOT / "crates/advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md"
     rustsec_snapshot_id = f"workspace-file:sha256:{file_sha256(rustsec_path)}"
@@ -360,6 +411,15 @@ def main() -> int:
                 "known",
                 locked.get("dependencies", []),
                 lock_snapshot_id,
+            )
+        api_record = api_metadata.get(name)
+        if ecosystem == "cargo" and api_record and version == api_record["version"]:
+            if api_record["description"]:
+                doc["fields"]["description"] = tri_state(
+                    "known", [api_record["description"]], api_record["snapshot_id"]
+                )
+            doc["fields"]["keywords"] = tri_state(
+                "known", api_record["keywords"], api_record["snapshot_id"]
             )
         if name == "bincode":
             doc["fields"]["advisories"] = tri_state(
@@ -416,7 +476,7 @@ def main() -> int:
         docs.append(doc)
 
     docs.sort(key=lambda item: item["document_id"])
-    source_doc = source_manifest(index_snapshots)
+    source_doc = source_manifest([*index_snapshots, *api_snapshots])
     corpus_text = "".join(json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n" for doc in docs)
     source_text = json.dumps(source_doc, indent=2, sort_keys=True) + "\n"
     corpus_path = HERE / "primary-corpus.jsonl"

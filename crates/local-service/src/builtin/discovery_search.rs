@@ -2225,13 +2225,9 @@ impl DiscoverySearchIndex {
             posting_candidates = posting_candidates.saturating_add(facet_page.posting_candidates);
             facet_releases_examined =
                 facet_releases_examined.saturating_add(facet_page.posting_candidates);
-            let mut matched_releases = facet_page
-                .hits
-                .into_iter()
-                .map(|release| release.key)
-                .collect::<Vec<_>>();
+            let mut matched_release_hits = facet_page.hits;
             let mut more_releases = facet_page.next_cursor.is_some();
-            let release_match_scope = if matched_releases.is_empty() {
+            let release_match_scope = if matched_release_hits.is_empty() {
                 // A lineage can match through the package-level union of facts
                 // contributed by different releases. Keep a bounded source
                 // facet page visible, with an explicit scope marker.
@@ -2244,12 +2240,13 @@ impl DiscoverySearchIndex {
                 posting_candidates = posting_candidates.saturating_add(fallback.posting_candidates);
                 facet_releases_examined =
                     facet_releases_examined.saturating_add(fallback.posting_candidates);
-                matched_releases.extend(fallback.hits.into_iter().map(|release| release.key));
+                matched_release_hits.extend(fallback.hits);
                 more_releases = fallback.next_cursor.is_some();
                 ReleaseMatchScope::LineageMetadataOnly
             } else {
                 ReleaseMatchScope::ReleaseMatches
             };
+            let matched_releases = order_grouped_release_hits(matched_release_hits);
             groups.push(DiscoveryPackageSearchGroup {
                 key: hit.key.clone(),
                 source: source.clone(),
@@ -4196,6 +4193,41 @@ fn lineage_search_name(ecosystem: RegistryEcosystem, lineage: &str) -> &str {
     }
 }
 
+/// Keeps release matches in evidence order, then favors the newest release
+/// when one lineage has several hits at the same evidence tier. This only
+/// changes the presentation order of the bounded release facet; group cursors
+/// and their stable lineage keys remain unchanged.
+fn order_grouped_release_hits(hits: Vec<SearchHit<DiscoverySearchKey>>) -> Vec<DiscoverySearchKey> {
+    let Some(ecosystem) = hits.first().map(|hit| hit.key.source.ecosystem()) else {
+        return Vec::new();
+    };
+    let versions = hits
+        .iter()
+        .map(|hit| {
+            super::product_state::normalized_version_key(ecosystem, hit.key.coordinate.version())
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(versions) = versions else {
+        // Preserve the index's existing deterministic order if the ecosystem
+        // version grammar cannot prove an ordering for every displayed hit.
+        return hits.into_iter().map(|hit| hit.key).collect();
+    };
+
+    let mut ranked = hits.into_iter().zip(versions).collect::<Vec<_>>();
+    ranked.sort_by(|(left, left_version), (right, right_version)| {
+        left.evidence
+            .rank()
+            .cmp(&right.evidence.rank())
+            .then_with(|| right_version.cmp(left_version))
+            .then_with(|| {
+                discovery_sort_key(&left.key.source, left.key.coordinate.as_str()).cmp(
+                    &discovery_sort_key(&right.key.source, right.key.coordinate.as_str()),
+                )
+            })
+    });
+    ranked.into_iter().map(|(hit, _)| hit.key).collect()
+}
+
 fn discovery_sort_key(source: &DiscoverySearchSource, coordinate: &str) -> String {
     let source_id = source.id();
     format!(
@@ -4558,13 +4590,41 @@ mod tests {
                 if matching.is_empty() {
                     matching.extend(releases.drain(..).map(|(release, _)| (u8::MAX, release)));
                 }
-                matching.sort_by(|left, right| {
-                    left.0.cmp(&right.0).then_with(|| {
-                        discovery_sort_key(&left.1.source, left.1.coordinate.as_str()).cmp(
-                            &discovery_sort_key(&right.1.source, right.1.coordinate.as_str()),
-                        )
-                    })
-                });
+                if let Some(versions) = matching
+                    .iter()
+                    .map(|(_, release)| typed_oracle_semver(release.coordinate.version()))
+                    .collect::<Option<Vec<_>>>()
+                {
+                    let mut ranked = matching.into_iter().zip(versions).collect::<Vec<_>>();
+                    ranked.sort_by(
+                        |((left_rank, left), left_version),
+                         ((right_rank, right), right_version)| {
+                            left_rank
+                                .cmp(right_rank)
+                                .then_with(|| right_version.cmp(left_version))
+                                .then_with(|| {
+                                    discovery_sort_key(&left.source, left.coordinate.as_str()).cmp(
+                                        &discovery_sort_key(
+                                            &right.source,
+                                            right.coordinate.as_str(),
+                                        ),
+                                    )
+                                })
+                        },
+                    );
+                    matching = ranked
+                        .into_iter()
+                        .map(|((rank, release), _)| (rank, release))
+                        .collect();
+                } else {
+                    matching.sort_by(|left, right| {
+                        left.0.cmp(&right.0).then_with(|| {
+                            discovery_sort_key(&left.1.source, left.1.coordinate.as_str()).cmp(
+                                &discovery_sort_key(&right.1.source, right.1.coordinate.as_str()),
+                            )
+                        })
+                    });
+                }
                 let more = matching.len() > MAX_RELEASES_PER_GROUP;
                 let keys = matching
                     .into_iter()
@@ -4580,6 +4640,20 @@ mod tests {
                 .then_with(|| lineage_sort_key(&left.0).cmp(&lineage_sort_key(&right.0)))
         });
         groups.into_iter().take(limit).collect()
+    }
+
+    /// Deliberately small, independent oracle for the numeric SemVer fixtures
+    /// below. Production release ordering uses the shared ecosystem parser.
+    fn typed_oracle_semver(version: &str) -> Option<Vec<u64>> {
+        let version = version.strip_prefix('v').unwrap_or(version);
+        if version.contains('-') || version.contains('+') {
+            return None;
+        }
+        version
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
     }
 
     fn typed_group_oracle_rank(
@@ -5729,14 +5803,9 @@ mod tests {
         })
         .collect::<Vec<_>>();
         let index = build_discovery_projection_with_metadata(&entries);
-        let (_, fixture) = store
-            .facts()
-            .find(|(_, fact)| fact.source.ecosystem() == RegistryEcosystem::Cargo)
-            .or_else(|| store.facts().next())
-            .expect("live journal must contain at least one indexed release");
         let request = DiscoverySearchRequest {
-            text: fixture.coordinate.as_str(),
-            ecosystem: Some(fixture.source.ecosystem()),
+            text: "serde",
+            ecosystem: Some(RegistryEcosystem::Cargo),
         };
         let first = index
             .search_groups_after(request, 1, None)
@@ -5907,6 +5976,54 @@ mod tests {
         assert_eq!(second_page.groups.len(), 1);
         assert_ne!(second_page.groups[0].lineage, first_lineage);
         assert!(second_page.next_cursor.is_none());
+
+        drop(cold);
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("journal.lock"));
+    }
+
+    #[test]
+    fn cold_reopen_orders_grouped_releases_by_semantic_version() {
+        let path = temp_journal_path();
+        let source = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        let older = "pkg:cargo/order-demo@1.0.1";
+        let newer = "pkg:cargo/order-demo@1.0.10";
+        let mut store = DiscoveryStore::open(path.clone()).expect("open journal");
+        store
+            .commit(discovery_batch(
+                source,
+                "",
+                "order-window-1",
+                100,
+                &[
+                    (older, DiscoveryStanding::Published, "2026-09-01", 1),
+                    (newer, DiscoveryStanding::Published, "2026-09-02", 2),
+                ],
+            ))
+            .expect("commit multiple releases");
+        let warm = DiscoverySearchIndex::open(&store).expect("warm projection");
+        let request = DiscoverySearchRequest {
+            text: "order-demo",
+            ecosystem: Some(RegistryEcosystem::Cargo),
+        };
+        let release_order = |index: &DiscoverySearchIndex| {
+            let page = index.search_groups(request, 1).expect("group search");
+            assert_eq!(page.groups.len(), 1);
+            page.groups[0]
+                .matched_releases
+                .iter()
+                .map(|key| key.coordinate.as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let expected = [newer.to_owned(), older.to_owned()];
+        assert_eq!(release_order(&warm), expected);
+
+        drop(warm);
+        drop(store);
+        let reopened = DiscoveryStore::open(path.clone()).expect("reopen journal");
+        let cold = DiscoverySearchIndex::open(&reopened).expect("cold projection");
+        assert_eq!(release_order(&cold), expected);
 
         drop(cold);
         drop(reopened);

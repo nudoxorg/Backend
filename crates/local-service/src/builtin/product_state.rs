@@ -3007,7 +3007,7 @@ fn reorder_by_source_index<T>(rows: &mut [T], source_order: &[usize]) {
     }
 }
 
-fn normalized_version_key(
+pub(super) fn normalized_version_key(
     ecosystem: RegistryEcosystem,
     version: &str,
 ) -> Option<backend_engine::advisory::NormalizedVersion> {

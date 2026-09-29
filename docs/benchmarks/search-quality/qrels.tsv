@@ -34,7 +34,28 @@ alias.net-client-protocol	fixture:npm/@example/net-client@2.1.0	0	Asymmetric nea
 alias.only-net-client	fixture:cargo/hyper-transport@0.4.0	3	The frozen registry fixture marks net-client as an alias of hyper-transport	workspace-fixture:discovery-search-typed-facets
 alias.only-net-client	fixture:npm/@example/net-client@2.1.0	0	Asymmetric exact-name distractor; it has no net-client alias and is a different source fixture package	workspace-fixture:discovery-search-typed-facets
 typo.wire-cllent	fixture:npm/@example/net-client@2.1.0	3	One-character substitution from the fixture alias wire-client	workspace-fixture:discovery-search-typed-facets
+exact.cargo.bincode	cargo:bincode@3.0.0	3	Exact package identity in frozen Cargo pin manifest	workspace-file:sha256:36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f
+exact.cargo.bincode	cargo:bincode@1.3.3	1	Same package, older release in captured registry index	crates-io-index:bincode:sha256:2aa3a1df035d3a11c305688dce78087e5f0db2b03f021dd9cf3f6f65f79895e9
+exact.cargo.bincode	cargo:bincode@1.3.0	1	Same package, older release in captured registry index	crates-io-index:bincode:sha256:2aa3a1df035d3a11c305688dce78087e5f0db2b03f021dd9cf3f6f65f79895e9
+prefix.cargo.ser	cargo:serde@1.0.229	3	Package name begins with the query prefix in the frozen Cargo pin manifest	workspace-file:sha256:36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f
+prefix.cargo.ser	cargo:serde@1.0.95	1	Same package name, older yanked release in captured registry index	crates-io-index:serde:sha256:9eb6e78eab279f168b5787e4eb801765e1d5a2b40c50789e12166a616d73bbc5
+prefix.cargo.ser	cargo:serde@1.0.31	1	Same package name, older yanked release in captured registry index	crates-io-index:serde:sha256:9eb6e78eab279f168b5787e4eb801765e1d5a2b40c50789e12166a616d73bbc5
+typo.cargo.sered	cargo:serde@1.0.229	3	One-character transposition from the frozen Cargo package name serde	workspace-file:sha256:36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f
+typo.cargo.sered	cargo:serde@1.0.95	1	Same package name, older yanked release in captured registry index	crates-io-index:serde:sha256:9eb6e78eab279f168b5787e4eb801765e1d5a2b40c50789e12166a616d73bbc5
+typo.cargo.sered	cargo:serde@1.0.31	1	Same package name, older yanked release in captured registry index	crates-io-index:serde:sha256:9eb6e78eab279f168b5787e4eb801765e1d5a2b40c50789e12166a616d73bbc5
+description.cargo.binary-serialization	cargo:bincode@3.0.0	3	The captured crates.io package description contains the full binary serialization phrase	crates-io-api:bincode:sha256:22d5a4b88e7fc3b6c2665ff7da8593560fa3054b333ada1f798da37bd8814ca4
+description.cargo.binary-serialization	cargo:serde@1.0.229	0	The captured serde description does not contain the binary qualifier	crates-io-api:serde:sha256:550efef53d2db822f54d122b5c1c15f7ff953f801cc23090599ea89c3faef753
+description.cargo.generic-serialization-framework	cargo:serde@1.0.229	3	The captured crates.io package description contains generic serialization framework terms	crates-io-api:serde:sha256:550efef53d2db822f54d122b5c1c15f7ff953f801cc23090599ea89c3faef753
+description.cargo.generic-serialization-framework	cargo:bincode@3.0.0	0	The captured bincode description does not contain generic framework terms	crates-io-api:bincode:sha256:22d5a4b88e7fc3b6c2665ff7da8593560fa3054b333ada1f798da37bd8814ca4
+keyword.cargo.binary	cargo:bincode@3.0.0	3	The captured crates.io keyword list contains binary	crates-io-api:bincode:sha256:22d5a4b88e7fc3b6c2665ff7da8593560fa3054b333ada1f798da37bd8814ca4
+keyword.cargo.binary	cargo:serde@1.0.229	0	The captured serde keyword list does not contain binary	crates-io-api:serde:sha256:550efef53d2db822f54d122b5c1c15f7ff953f801cc23090599ea89c3faef753
+keyword.cargo.serialization	cargo:serde@1.0.229	3	The captured crates.io keyword list and description contain serialization	crates-io-api:serde:sha256:550efef53d2db822f54d122b5c1c15f7ff953f801cc23090599ea89c3faef753
+keyword.cargo.serialization	cargo:bincode@3.0.0	2	The captured crates.io description contains serialization although its keyword list uses serialize	crates-io-api:bincode:sha256:22d5a4b88e7fc3b6c2665ff7da8593560fa3054b333ada1f798da37bd8814ca4
 description.protocol-adapter	fixture:cargo/hyper-transport@0.4.0	3	Exact phrase in the source-attributed fixture description	workspace-fixture:discovery-search-typed-facets
 dependency.dep-after	fixture:workspace/tentpole-app@1.0.0	3	Dependency is present in the literal local project manifest fixture	workspace-fixture:tentpole-manifest-dependencies
 security.fixture-cve	fixture:pypi/http-bridge@1.2.0	3	Advisory ID and alias are explicit in the source-attributed metadata fixture	workspace-fixture:discovery-search-typed-facets
 yank.fixture-serde	fixture:registry/serde@1.2.3	3	The local Cargo feed fixture marks the exact release yanked=true	workspace-fixture:registry-discovery-cargo-yank
+ecosystem.ambiguous-json	forge:clang/json-c@0.18	3	The real pinned forge package name contains the scoped JSON query	workspace-file:sha256:36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f
+ecosystem.ambiguous-json	forge:clang/yaml-cpp@0.9.0	0	The other real pinned forge package name has no JSON term	workspace-file:sha256:36d3c17ba5fdd1239ffec06eaa6ac0310e99f84aa894a83e2f2d52035b72824f
+ecosystem.ambiguous-json	cargo:bincode@3.0.0	0	The current crates.io description and keywords do not contain JSON	crates-io-api:bincode:sha256:22d5a4b88e7fc3b6c2665ff7da8593560fa3054b333ada1f798da37bd8814ca4
+ecosystem.ambiguous-json	cargo:serde@1.0.229	0	The current crates.io description and keywords do not contain JSON	crates-io-api:serde:sha256:550efef53d2db822f54d122b5c1c15f7ff953f801cc23090599ea89c3faef753

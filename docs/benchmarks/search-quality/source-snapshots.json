@@ -1,6 +1,6 @@
 {
-  "benchmark_snapshot_id": "search-quality-v1-2026-09-28",
-  "captured_at": "2026-09-28T06:58:07Z",
+  "benchmark_snapshot_id": "search-quality-v2-2026-09-29",
+  "captured_at": "2026-09-29T16:43:42Z",
   "schema_version": 1,
   "source_snapshots": [
     {
@@ -16,8 +16,8 @@
     },
     {
       "path": "Cargo.toml",
-      "sha256": "b22d6e01f7e1b40787086b24b31fc4d62cd6d0e20a305eea64c8882871e67d0b",
-      "snapshot_id": "workspace-file:sha256:b22d6e01f7e1b40787086b24b31fc4d62cd6d0e20a305eea64c8882871e67d0b"
+      "sha256": "c8f81d4431bfe43892369920b26def7397514e766b582b4f27e6de657e596131",
+      "snapshot_id": "workspace-file:sha256:c8f81d4431bfe43892369920b26def7397514e766b582b4f27e6de657e596131"
     },
     {
       "path": "crates/advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md",
@@ -36,13 +36,13 @@
     },
     {
       "path": "crates/local-service/src/builtin/discovery_search.rs",
-      "sha256": "046cf7d6cc57adaa48f0caabc0dd3802f3479330afb23a5c4cd5167236ca29c7",
-      "snapshot_id": "workspace-file:sha256:046cf7d6cc57adaa48f0caabc0dd3802f3479330afb23a5c4cd5167236ca29c7"
+      "sha256": "33161b351aac5d1d6d1bdf67e0ba00cc531b0997ec71ccb42ec60b6fc06f6321",
+      "snapshot_id": "workspace-file:sha256:33161b351aac5d1d6d1bdf67e0ba00cc531b0997ec71ccb42ec60b6fc06f6321"
     },
     {
       "path": "crates/local-service/src/builtin/discovery_search/benchmark.rs",
-      "sha256": "f021f0b342aa11557f1c0369a2de64fa9accb75e0b19dbc698cc663bead485e3",
-      "snapshot_id": "workspace-file:sha256:f021f0b342aa11557f1c0369a2de64fa9accb75e0b19dbc698cc663bead485e3"
+      "sha256": "722abc6a2a09e0453e7e973cdde4cf0ab85af6acbfc834e6123ea83a6ca1b797",
+      "snapshot_id": "workspace-file:sha256:722abc6a2a09e0453e7e973cdde4cf0ab85af6acbfc834e6123ea83a6ca1b797"
     },
     {
       "path": "crates/local-service/src/discovery.rs",
@@ -51,13 +51,13 @@
     },
     {
       "path": "crates/local-service/Cargo.toml",
-      "sha256": "c1911d2c12cdf4c0b79d100bbeda0ce2554322a246e76b3de40723bdfb88aafe",
-      "snapshot_id": "workspace-file:sha256:c1911d2c12cdf4c0b79d100bbeda0ce2554322a246e76b3de40723bdfb88aafe"
+      "sha256": "4f3bc4736883d24f36b919cdb2d7fb44d9d3b4284f414d4a997d17d2b3ae98bf",
+      "snapshot_id": "workspace-file:sha256:4f3bc4736883d24f36b919cdb2d7fb44d9d3b4284f414d4a997d17d2b3ae98bf"
     },
     {
       "path": "crates/local-service/src/builtin.rs",
-      "sha256": "00627029fb355abb1669ec391a51cbdad0df6acc8de6e7b2ec6e82b35c969a80",
-      "snapshot_id": "workspace-file:sha256:00627029fb355abb1669ec391a51cbdad0df6acc8de6e7b2ec6e82b35c969a80"
+      "sha256": "0827827917c824d9e3da07810bdf22f2ffb351f83e799a122e29d354f4f89f83",
+      "snapshot_id": "workspace-file:sha256:0827827917c824d9e3da07810bdf22f2ffb351f83e799a122e29d354f4f89f83"
     },
     {
       "path": "crates/local-service/src/lib.rs",
@@ -80,6 +80,31 @@
       "snapshot_id": "workspace-file:sha256:3ef641f2319d381e19a404bc9c7f6ce19bacfff4010715ee6c55ecc6b335ad79"
     },
     {
+      "path": "docs/benchmarks/search-quality/freeze_corpus.py",
+      "sha256": "522625db4861e17c8c31b84b7e82652f09971f31ac0049840199ce0696ae93cf",
+      "snapshot_id": "workspace-file:sha256:522625db4861e17c8c31b84b7e82652f09971f31ac0049840199ce0696ae93cf"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/lib_rs_adapter.py",
+      "sha256": "5db4a3f0b6c5cf72e41622d4890f927d31bc79d71a8633dd86571029558eeb52",
+      "snapshot_id": "workspace-file:sha256:5db4a3f0b6c5cf72e41622d4890f927d31bc79d71a8633dd86571029558eeb52"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/run_common_lane.py",
+      "sha256": "6351a75e0e496e246cebcc079fdfb50d298e38773ca76c0d58523403953c7d85",
+      "snapshot_id": "workspace-file:sha256:6351a75e0e496e246cebcc079fdfb50d298e38773ca76c0d58523403953c7d85"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/run_grouped_release_lane.py",
+      "sha256": "e901f347237aed7c17e023d2196c30990cc33f0917ad175f8a45fcab1fbb9c94",
+      "snapshot_id": "workspace-file:sha256:e901f347237aed7c17e023d2196c30990cc33f0917ad175f8a45fcab1fbb9c94"
+    },
+    {
+      "path": "docs/benchmarks/search-quality/search_benchmark.py",
+      "sha256": "cf707afda4811493a5934b22b7a72523de8b239a9114cb2bc098c8b685577580",
+      "snapshot_id": "workspace-file:sha256:cf707afda4811493a5934b22b7a72523de8b239a9114cb2bc098c8b685577580"
+    },
+    {
       "path": "crates/semantic/src/vocabulary/package.rs",
       "sha256": "e65378b64f13201ef8980357fe996ccf72017a90e89ffd5ebc6f69045508cf30",
       "snapshot_id": "workspace-file:sha256:e65378b64f13201ef8980357fe996ccf72017a90e89ffd5ebc6f69045508cf30"
@@ -96,14 +121,14 @@
     },
     {
       "path": "docs/benchmarks/search-quality/adapter/Cargo.lock",
-      "sha256": "edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f",
-      "snapshot_id": "search-adapter-cargo-lock:sha256:edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f"
+      "sha256": "3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2",
+      "snapshot_id": "search-adapter-cargo-lock:sha256:3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2"
     },
     {
-      "alias_of": "search-adapter-cargo-lock:sha256:edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f",
+      "alias_of": "search-adapter-cargo-lock:sha256:3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2",
       "path": "docs/benchmarks/search-quality/adapter/Cargo.lock",
-      "sha256": "edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f",
-      "snapshot_id": "workspace-file:sha256:edba4a3cf782b2ecec7823acce39af77232de84ee12275cd401a831d4907016f"
+      "sha256": "3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2",
+      "snapshot_id": "workspace-file:sha256:3120f1ff459dc698c7dc02e397b7061aaab839926aa9a188aa2e69fa3afe2ee2"
     },
     {
       "bytes": 54201,
@@ -130,9 +155,25 @@
       "source": "https://index.crates.io/th/is/thiserror"
     },
     {
+      "bytes": 95168,
+      "captured_at": "2026-09-29T16:43:42Z",
+      "local_file": "docs/benchmarks/search-quality/snapshots/crates-io-api-bincode-2026-09-29.json",
+      "sha256": "22d5a4b88e7fc3b6c2665ff7da8593560fa3054b333ada1f798da37bd8814ca4",
+      "snapshot_id": "crates-io-api:bincode:sha256:22d5a4b88e7fc3b6c2665ff7da8593560fa3054b333ada1f798da37bd8814ca4",
+      "source": "https://crates.io/api/v1/crates/bincode"
+    },
+    {
+      "bytes": 440991,
+      "captured_at": "2026-09-29T16:43:42Z",
+      "local_file": "docs/benchmarks/search-quality/snapshots/crates-io-api-serde-2026-09-29.json",
+      "sha256": "550efef53d2db822f54d122b5c1c15f7ff953f801cc23090599ea89c3faef753",
+      "snapshot_id": "crates-io-api:serde:sha256:550efef53d2db822f54d122b5c1c15f7ff953f801cc23090599ea89c3faef753",
+      "source": "https://crates.io/api/v1/crates/serde"
+    },
+    {
       "note": "Fixture source; fixture values are not claims about current live registry metadata.",
       "path": "crates/local-service/src/builtin/discovery_search.rs",
-      "sha256": "046cf7d6cc57adaa48f0caabc0dd3802f3479330afb23a5c4cd5167236ca29c7",
+      "sha256": "33161b351aac5d1d6d1bdf67e0ba00cc531b0997ec71ccb42ec60b6fc06f6321",
       "snapshot_id": "workspace-fixture:discovery-search-typed-facets"
     },
     {

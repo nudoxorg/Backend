@@ -282,11 +282,28 @@ def score_one(query_id: str, docs: list[str], qrels: dict[str, int], cutoffs: li
         top = docs[:cutoff]
         seen = sum(qrels.get(document_id, 0) > 0 for document_id in top)
         recall = seen / relevant_count if relevant_count else None
+        judged = sum(document_id in qrels for document_id in top)
+        explicit_false_positives = sum(
+            document_id in qrels and qrels[document_id] == 0 for document_id in top
+        )
+        unjudged = len(top) - judged
+        precision = seen / len(top) if top else None
+        # The benchmark's closed-corpus scorer treats unjudged results as
+        # grade 0. Keep explicit negative judgments and unjudged results
+        # separately visible so a partial QREL file is not mistaken for an
+        # exhaustive truth set.
+        false_positive_rate = (len(top) - seen) / len(top) if top else None
+        qrel_coverage = judged / len(top) if top else None
         dcg = sum((2**qrels.get(document_id, 0) - 1) / math.log2(rank + 1) for rank, document_id in enumerate(top, 1))
         ideal = sorted(qrels.values(), reverse=True)[:cutoff]
         ideal_dcg = sum((2**grade - 1) / math.log2(rank + 1) for rank, grade in enumerate(ideal, 1))
         ndcg = dcg / ideal_dcg if ideal_dcg else None
         scores[f"recall@{cutoff}"] = recall
+        scores[f"precision@{cutoff}"] = precision
+        scores[f"false_positive_rate@{cutoff}"] = false_positive_rate
+        scores[f"explicit_false_positives@{cutoff}"] = explicit_false_positives
+        scores[f"unjudged@{cutoff}"] = unjudged
+        scores[f"qrel_coverage@{cutoff}"] = qrel_coverage
         scores[f"ndcg@{cutoff}"] = ndcg
     return scores
 
@@ -331,7 +348,20 @@ def score_rankings(data: dict[str, Any], rankings: dict[str, list[str]], cutoffs
 
     valid = [item for item in per_query if not item["expected_empty"]]
     macro: dict[str, Any] = {}
-    for metric in ["mrr", *(name for cutoff in cutoffs for name in (f"recall@{cutoff}", f"ndcg@{cutoff}"))]:
+    for metric in [
+        "mrr",
+        *(
+            name
+            for cutoff in cutoffs
+            for name in (
+                f"recall@{cutoff}",
+                f"precision@{cutoff}",
+                f"false_positive_rate@{cutoff}",
+                f"qrel_coverage@{cutoff}",
+                f"ndcg@{cutoff}",
+            )
+        ),
+    ]:
         values = [item[metric] for item in valid if item.get(metric) is not None]
         macro[metric] = statistics.fmean(values) if values else None
 

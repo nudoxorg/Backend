@@ -1,5 +1,6 @@
 {"query_id":"exact.cargo.thiserror","query":"thiserror","category":"exact_name","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
 {"query_id":"exact.cargo.serde","query":"serde","category":"exact_name","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
+{"query_id":"exact.cargo.bincode","query":"bincode","category":"exact_name","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
 {"query_id":"exact.npm.query-core","query":"@tanstack/query-core","category":"exact_name","corpus":"primary","scope":{"ecosystems":["npm"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":false}
 {"query_id":"exact.pypi.requests","query":"requests","category":"exact_name","corpus":"primary","scope":{"ecosystems":["pypi"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":false}
 {"query_id":"exact.go.chi","query":"github.com/go-chi/chi/v5","category":"exact_name","corpus":"primary","scope":{"ecosystems":["go"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":false}
@@ -23,3 +24,10 @@
 {"query_id":"security.fixture-cve","query":"CVE-2026-12345","category":"security","corpus":"adversarial","scope":{"ecosystems":["pypi"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":false}
 {"query_id":"yank.fixture-serde","query":"serde 1.2.3 yanked","category":"yank_lookup","corpus":"adversarial","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":false}
 {"query_id":"unknown.fixture-fields","query":"opaque-alias-sentinel","category":"unknown_metadata","corpus":"adversarial","scope":{"ecosystems":["nuget"]},"exclude_yanked":false,"expected_empty":true,"lib_rs_common":false}
+{"query_id":"prefix.cargo.ser","query":"ser","category":"prefix","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
+{"query_id":"typo.cargo.sered","query":"sered","category":"typo","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
+{"query_id":"description.cargo.binary-serialization","query":"binary serialization","category":"description","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
+{"query_id":"description.cargo.generic-serialization-framework","query":"generic serialization framework","category":"description","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
+{"query_id":"keyword.cargo.binary","query":"binary","category":"keyword","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
+{"query_id":"keyword.cargo.serialization","query":"serialization","category":"keyword","corpus":"primary","scope":{"ecosystems":["cargo"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":true}
+{"query_id":"ecosystem.ambiguous-json","query":"json","category":"ecosystem_ambiguity","corpus":"primary","scope":{"ecosystems":["cargo","forge"]},"exclude_yanked":false,"expected_empty":false,"lib_rs_common":false}

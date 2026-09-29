@@ -323,7 +323,24 @@ def common_quality(
         )
         for query in query_rows
     }
-    metric_names = ["mrr", "recall@1", "recall@5", "recall@10", "ndcg@1", "ndcg@5", "ndcg@10"]
+    metric_names = [
+        "mrr",
+        "recall@1",
+        "recall@5",
+        "recall@10",
+        "precision@1",
+        "precision@5",
+        "precision@10",
+        "false_positive_rate@1",
+        "false_positive_rate@5",
+        "false_positive_rate@10",
+        "qrel_coverage@1",
+        "qrel_coverage@5",
+        "qrel_coverage@10",
+        "ndcg@1",
+        "ndcg@5",
+        "ndcg@10",
+    ]
     macro = {name: statistics.fmean(row[name] for row in per_query.values()) for name in metric_names}
     return {"macro": macro, "per_query": per_query}
 
@@ -352,8 +369,8 @@ def main() -> int:
         raise ValueError("refusing to build/run benchmark without BENCH_BUILD_SLOT_GRANTED=1 after root grants a slot")
     if args.samples < 101 or args.cold_samples < 101:
         raise ValueError("warm and cold sample counts must be >= 101 for p99")
-    if os.environ.get("CARGO_BUILD_JOBS") != "2":
-        raise ValueError("set CARGO_BUILD_JOBS=2 for the allocated benchmark slot")
+    if os.environ.get("CARGO_BUILD_JOBS") != "1":
+        raise ValueError("set CARGO_BUILD_JOBS=1 for the allocated benchmark slot")
     if not args.adapter.resolve().is_file():
         raise ValueError(f"production adapter binary not found: {args.adapter}")
     if not args.result_dir.exists() or not args.result_dir.is_dir():
@@ -386,8 +403,18 @@ def main() -> int:
         if row["query_id"] in {query["query_id"] for query in query_rows}
         and row["document_id"] in {doc["document_id"] for doc in cargo_rows}
     ]
-    if len(cargo_rows) != 7 or len(query_rows) != 2 or len(qrel_rows) != 4:
-        raise ValueError(f"frozen common lane changed: {len(cargo_rows)} docs, {len(query_rows)} queries, {len(qrel_rows)} QRELs")
+    query_categories = {query["category"] for query in query_rows}
+    required_categories = {"exact_name", "prefix", "typo", "description", "keyword"}
+    if (
+        not cargo_rows
+        or not query_rows
+        or not qrel_rows
+        or not required_categories.issubset(query_categories)
+    ):
+        raise ValueError(
+            "frozen common lane must contain Cargo documents, positive QRELs, and "
+            "exact-name, prefix, typo, description, and keyword queries"
+        )
 
     upstream_root = args.lib_rs_mirror.resolve(strict=True)
     upstream = require_pinned_upstream(upstream_root)
@@ -468,15 +495,15 @@ def main() -> int:
             "version_selection": upstream_raw["version_selection"],
         },
         "comparability": [
-            "Both rankers use the same seven Cargo primary document IDs, two exact-name query IDs, four independently hand-authored QREL rows, and a result limit of 150.",
+            f"Both rankers use the same {len(cargo_rows)} Cargo primary release IDs, {len(query_rows)} independently authored common-field queries, {len(qrel_rows)} QREL rows, and a result limit of 150.",
             "The pinned lib.rs indexer keeps one highest-SemVer document per Crates.io origin; Nudox keeps all seven frozen release rows. This changes the candidate set for historical serde QRELs and is reported as a version-history capability difference.",
             "Warm latency boundaries differ: Nudox includes JSONL pipes and service request handling; lib.rs measures only the in-process search call. Cold for both includes a fresh process, opening the index, and one search, but neither flushes the OS page cache.",
             "Tantivy bytes are reported from each implementation's own index directory/storage boundary; these values are not normalized storage comparisons.",
         ],
         "limitations": [
-            "This common lane has only two exact-name queries, four QREL judgments, and three package origins. It cannot support general quality or speed superiority claims.",
-            "All seven Cargo rows have unknown keywords, descriptions, and README content. The richer-field lane is unavailable, so the shared-field run uses package name only.",
-            "The larger 25-query/39-QREL production lane is measured separately through the standard benchmark command; the pinned lib.rs common projection does not support forge, other ecosystems, aliases, dependencies, advisories, yanks, or release-history search.",
+            f"This common lane has {len(query_rows)} queries, {len(qrel_rows)} QREL rows, and three package origins. It cannot support general quality or speed superiority claims.",
+            "Captured crates.io API descriptions and keywords are known for the frozen current serde and bincode rows; other release fields remain unknown, and README content is unavailable.",
+            "The 33-query/60-QREL production lane is measured separately through the standard benchmark command; the pinned lib.rs common projection does not support forge, other ecosystems, aliases, dependencies, advisories, yanks, or release-history search.",
             "The lib.rs add API requires numeric monthly downloads. The harness passes 0 because the query-relevance sort path ignores that field; its status is explicitly unknown and the value is not used as ranking evidence.",
         ],
     }
