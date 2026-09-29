@@ -13,13 +13,17 @@
 use alloc::vec::Vec;
 
 use crate::ir::versioned_records::aggregate::{
-    SemanticTypedPlaneVerificationLimitsV2, TypedPlaneFamilyPayloadsV2, TypedPlaneSegmentPayloadV2,
-    VerifiedTypedPlaneFamilyV2, VerifiedTypedPlaneInventoryV2, VerifiedTypedPlaneSegmentV2,
+    JumboObjectClosureAdmissionV2, JumboPlaneClosureAdmissionV2,
+    SemanticTypedPlaneInventoryV2Error, SemanticTypedPlaneVerificationLimitsV2,
+    TypedPlaneFamilyPayloadsV2, TypedPlaneSegmentPayloadV2, VerifiedTypedPlaneFamilyV2,
+    VerifiedTypedPlaneInventoryV2, VerifiedTypedPlaneSegmentV2,
     verify_semantic_typed_plane_inventory_v2,
+    verify_semantic_typed_plane_inventory_v2_with_admission,
 };
 use crate::ir::{
-    ImageProvenance, SemanticBuildIdentity, SemanticImageAuthority, SemanticImageFacts,
-    SemanticInputClaimV2, SemanticIrPlane, SemanticTypedPlaneManifestV2,
+    ImageProvenance, JumboRopeLimits, JumboRopeObjectSource, SemanticBuildIdentity,
+    SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
+    SemanticTypedPlaneManifestV2,
 };
 use thiserror::Error;
 
@@ -314,9 +318,12 @@ impl VerifiedTypedPlaneContentV2 {
 }
 
 /// Independently verifies one cold V2 manifest and the exact ordered c004
-/// payload closure it names. The result proves content and deterministic
-/// generation claims only. An engine owner must separately bind the input/read
-/// claim to a fresh read-closure admission before selecting the generation.
+/// payload closure it names. This compatibility entry point explicitly
+/// rejects Docs or SourceProvenance jumbo rows because it has no object source;
+/// use [`verify_typed_plane_content_v2_with_jumbo_source`] for those manifests.
+/// The result proves content and deterministic generation claims only. An
+/// engine owner must separately bind the input/read claim to a fresh
+/// read-closure admission before selecting the generation.
 pub fn verify_typed_plane_content_v2(
     manifest: &SemanticTypedPlaneManifestV2,
     exact_ordered_payloads: &[&[u8]],
@@ -329,12 +336,48 @@ pub fn verify_typed_plane_content_v2(
 }
 
 /// Independently verifies one cold V2 manifest using an explicit bounded
-/// workload tier. Tier selection changes resource ceilings, never the strict
-/// family grammar, census, row roots, or cross-family checks.
+/// workload tier. This compatibility entry point explicitly rejects Docs or
+/// SourceProvenance jumbo rows because it has no object source. Tier selection
+/// changes resource ceilings, never the strict family grammar, census, row
+/// roots, or cross-family checks.
 pub fn verify_typed_plane_content_v2_with_tier(
     manifest: &SemanticTypedPlaneManifestV2,
     exact_ordered_payloads: &[&[u8]],
     tier: SemanticTypedPlaneVerificationTierV2,
+) -> Result<VerifiedTypedPlaneContentV2, SemanticGenerationProofError> {
+    verify_typed_plane_content_v2_with_admission(manifest, exact_ordered_payloads, tier, None)
+}
+
+/// Independently verifies a cold c007 manifest and its exact c004 payloads,
+/// then admits every Docs/SourceProvenance jumbo descriptor from the borrowed
+/// object source before returning content proof. Descriptor metadata is
+/// checked against `jumbo_limits`; rope closure verification reads one leaf
+/// at a time and never materializes a complete jumbo value.
+pub fn verify_typed_plane_content_v2_with_jumbo_source<S>(
+    manifest: &SemanticTypedPlaneManifestV2,
+    exact_ordered_payloads: &[&[u8]],
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+    source: &mut S,
+) -> Result<VerifiedTypedPlaneContentV2, SemanticGenerationProofError>
+where
+    S: JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+{
+    let mut admission = JumboObjectClosureAdmissionV2::new(source, jumbo_limits);
+    verify_typed_plane_content_v2_with_admission(
+        manifest,
+        exact_ordered_payloads,
+        tier,
+        Some(&mut admission),
+    )
+}
+
+fn verify_typed_plane_content_v2_with_admission(
+    manifest: &SemanticTypedPlaneManifestV2,
+    exact_ordered_payloads: &[&[u8]],
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
 ) -> Result<VerifiedTypedPlaneContentV2, SemanticGenerationProofError> {
     let expected_payload_count = manifest
         .resource_usage()
@@ -408,15 +451,16 @@ pub fn verify_typed_plane_content_v2_with_tier(
             SemanticTypedPlaneVerificationLimitsV2::large_package()
         }
     };
-    let inventory = verify_semantic_typed_plane_inventory_v2(
+    let inventory = verify_semantic_typed_plane_inventory_v2_with_admission(
         manifest.build(),
         manifest.image_facts(),
         manifest.input_claim().as_claimed_witness(),
         &family_payloads,
         exact_ordered_payloads,
         limits,
+        jumbo_admission,
     )
-    .map_err(|_| SemanticGenerationProofError::TypedPlaneInventoryRejected)?;
+    .map_err(map_inventory_verification_error)?;
     validate_inventory_matches_manifest(&inventory, manifest)?;
     let content = VerifiedTypedPlaneContentV2::from_verified_inventory(inventory)?;
     if !manifest
@@ -432,6 +476,17 @@ pub fn verify_typed_plane_content_v2_with_tier(
         return Err(SemanticGenerationProofError::GenerationRootClaimMismatch);
     }
     Ok(content)
+}
+
+fn map_inventory_verification_error(
+    error: SemanticTypedPlaneInventoryV2Error,
+) -> SemanticGenerationProofError {
+    match error {
+        SemanticTypedPlaneInventoryV2Error::Record(
+            crate::ir::SemanticPlaneRecordError::JumboObjectStoreRequired,
+        ) => SemanticGenerationProofError::JumboObjectSourceRequired,
+        _ => SemanticGenerationProofError::TypedPlaneInventoryRejected,
+    }
 }
 
 fn enforce_verification_adapter_bound(
@@ -509,6 +564,10 @@ pub enum SemanticGenerationProofError {
     /// Strict payload decoding or complete family census failed.
     #[error("strict V2 typed-plane payload and family verification rejected the closure")]
     TypedPlaneInventoryRejected,
+    /// A c004 row names external jumbo objects but the compatibility verifier
+    /// was called without a borrowed object source.
+    #[error("V2 typed-plane jumbo rows require a borrowed object source")]
+    JumboObjectSourceRequired,
     /// The bounded manifest could not produce a canonical family/payload view.
     #[error("V2 typed-plane manifest resource counters or family view are invalid")]
     ManifestResourcePolicy,

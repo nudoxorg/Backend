@@ -8,7 +8,10 @@ use alloc::vec::Vec;
 
 use super::{
     relations::relation_key,
-    wire::{Cursor, encode_identity, put_bytes, read_checked_jumbo_descriptor, read_identity},
+    wire::{
+        Cursor, encode_identity, put_bytes, read_checked_jumbo_descriptor, read_identity,
+        validate_jumbo_row_size,
+    },
 };
 use crate::ir::{
     CanonicalPlaneRowEncoder, CanonicalSemanticPlaneKeySink, CheckedJumboValueDescriptor,
@@ -19,8 +22,8 @@ use crate::ir::{
 
 const DECLARATION_SOURCE_TAG: u8 = 1;
 const RELATION_SOURCE_TAG: u8 = 2;
-const DECLARATION_SOURCE_JUMBO_TAG: u8 = 3;
-const RELATION_SOURCE_JUMBO_TAG: u8 = 4;
+pub(super) const DECLARATION_SOURCE_JUMBO_TAG: u8 = 3;
+pub(super) const RELATION_SOURCE_JUMBO_TAG: u8 = 4;
 const RELATION_SOURCE_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.relation-source-key.v1\0";
 
 /// Reader-local handle for a declaration source or relation representative.
@@ -281,12 +284,16 @@ pub(super) fn validate_record(
         if cursor.u8()? != 1 {
             return Err(SemanticPlaneRecordError::RowGrammar);
         }
-        let _descriptor = read_checked_jumbo_descriptor(
+        let descriptor = read_checked_jumbo_descriptor(
             &mut cursor,
             expected_key,
             crate::ir::JumboValueFamily::SourceProvenance,
             0,
             crate::ir::JumboValueEncoding::Bytes,
+        )?;
+        validate_jumbo_row_size(
+            &descriptor,
+            super::HEADER_BYTES + super::RECORD_HEADER_BYTES + 32 + 1 + 4 + 8,
         )?;
         let start = cursor.u32()?;
         let end = cursor.u32()?;
@@ -336,6 +343,10 @@ pub(super) fn jumbo_descriptor_for_record(
         crate::ir::JumboValueFamily::SourceProvenance,
         0,
         crate::ir::JumboValueEncoding::Bytes,
+    )?;
+    validate_jumbo_row_size(
+        &descriptor,
+        super::HEADER_BYTES + super::RECORD_HEADER_BYTES + 32 + 1 + 4 + 8,
     )?;
     let start = cursor.u32()?;
     let end = cursor.u32()?;

@@ -188,7 +188,8 @@ pub use semantic_generation::{
     SemanticGenerationFamilyCommitmentV2, SemanticGenerationFamilyRootV2,
     SemanticGenerationProofError, SemanticGenerationRootV2, SemanticTypedPlaneVerificationTierV2,
     UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2, VerifiedTypedPlaneContentV2,
-    verify_typed_plane_content_v2, verify_typed_plane_content_v2_with_tier,
+    verify_typed_plane_content_v2, verify_typed_plane_content_v2_with_jumbo_source,
+    verify_typed_plane_content_v2_with_tier,
 };
 pub use semantic_image::{
     CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,

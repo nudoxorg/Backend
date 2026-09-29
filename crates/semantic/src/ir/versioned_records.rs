@@ -1361,6 +1361,9 @@ pub enum SemanticPlaneRecordError {
     /// A jumbo stream failed while serializing a canonical field.
     #[error("jumbo semantic value stream failed")]
     JumboStream,
+    /// A streaming jumbo documentation row exceeded its bounded link census.
+    #[error("jumbo documentation references exceed the aggregate verifier budget")]
+    JumboReferenceLimitExceeded,
     /// Stable row key does not commit the typed identity in its payload.
     #[error("canonical row key does not match its typed identity")]
     StableKeyMismatch,
@@ -2289,7 +2292,7 @@ mod tests {
             .expect("validator drains malformed content");
         assert!(matches!(
             validator.finish(),
-            Err(SemanticPlaneRecordError::RowGrammar)
+            Err(declarations::DocsWireValidationError::Grammar)
         ));
 
         let mut trailing = valid;
@@ -2300,7 +2303,7 @@ mod tests {
             .expect("validator drains trailing bytes");
         assert!(matches!(
             validator.finish(),
-            Err(SemanticPlaneRecordError::RowGrammar)
+            Err(declarations::DocsWireValidationError::Grammar)
         ));
     }
 

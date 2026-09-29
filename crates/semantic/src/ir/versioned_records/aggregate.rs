@@ -268,6 +268,76 @@ pub(crate) enum SemanticTypedPlaneInventoryV2Error {
     CrossFamily { fact: &'static str },
 }
 
+/// One borrowed source for the descriptor closures carried by Docs and
+/// SourceProvenance rows. This small object-safe seam lets the long-standing
+/// no-object verifier remain available while rejecting descriptor rows.
+pub(crate) trait JumboPlaneClosureAdmissionV2 {
+    fn admit(
+        &mut self,
+        family: SemanticIrPlane,
+        descriptor: crate::ir::CheckedJumboValueDescriptor,
+        documentation_reference_budget: u64,
+    ) -> Result<Option<super::declarations::DocsWireReferences>, SemanticTypedPlaneInventoryV2Error>;
+}
+
+pub(crate) struct JumboObjectClosureAdmissionV2<'source, S: ?Sized> {
+    source: &'source mut S,
+    limits: crate::ir::JumboRopeLimits,
+}
+
+impl<'source, S: ?Sized> JumboObjectClosureAdmissionV2<'source, S> {
+    pub(crate) const fn new(source: &'source mut S, limits: crate::ir::JumboRopeLimits) -> Self {
+        Self { source, limits }
+    }
+}
+
+impl<S> JumboPlaneClosureAdmissionV2 for JumboObjectClosureAdmissionV2<'_, S>
+where
+    S: crate::ir::JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+{
+    fn admit(
+        &mut self,
+        family: SemanticIrPlane,
+        descriptor: crate::ir::CheckedJumboValueDescriptor,
+        documentation_reference_budget: u64,
+    ) -> Result<Option<super::declarations::DocsWireReferences>, SemanticTypedPlaneInventoryV2Error>
+    {
+        // Row decoding applies the default hard policy. Re-check the exact
+        // wire claim here so callers may impose a stricter admission window.
+        let descriptor =
+            crate::ir::UntrustedJumboValueDescriptor::decode_wire(&descriptor.encode_wire())
+                .map_err(SemanticPlaneRecordError::from)?
+                .check(self.limits)
+                .map_err(SemanticPlaneRecordError::from)?;
+        match family {
+            SemanticIrPlane::Documentation => {
+                let mut validator = super::declarations::DocsWireValidator::with_reference_limit(
+                    documentation_reference_budget,
+                );
+                descriptor
+                    .admit_stored_closure_to(self.source, &mut validator)
+                    .map_err(map_jumbo_source_error)?;
+                let references = validator.finish().map_err(|error| match error {
+                    super::declarations::DocsWireValidationError::ReferenceLimitExceeded => {
+                        SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                            budget: "reference-count",
+                        }
+                    }
+                    error => SemanticPlaneRecordError::from(error).into(),
+                })?;
+                Ok(Some(references))
+            }
+            SemanticIrPlane::SourceProvenance => descriptor
+                .admit_stored_closure(self.source)
+                .map(|_| None)
+                .map_err(map_jumbo_source_error)
+                .map_err(Into::into),
+            _ => Err(SemanticPlaneRecordError::RowGrammar.into()),
+        }
+    }
+}
+
 /// Verifies the exact flattened c004 payload sequence named by c005, all seven
 /// family descriptors, and every cross-family semantic join. The supplied
 /// input witness is the manifest's decoded claim only; its coverage capability
@@ -279,6 +349,55 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2(
     families: &[TypedPlaneFamilyPayloadsV2<'_>; 7],
     ordered_payloads: &[&[u8]],
     limits: SemanticTypedPlaneVerificationLimitsV2,
+) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error> {
+    verify_semantic_typed_plane_inventory_v2_with_admission(
+        build,
+        image_facts,
+        input_witness,
+        families,
+        ordered_payloads,
+        limits,
+        None,
+    )
+}
+
+/// Source-aware inventory verifier used by cold c007 reopen. Every descriptor
+/// row is context-checked and its full rope closure is authenticated before
+/// the inventory token can be returned.
+pub(crate) fn verify_semantic_typed_plane_inventory_v2_with_jumbo_source<S>(
+    build: SemanticBuildIdentity,
+    image_facts: SemanticImageFacts,
+    input_witness: SemanticInputWitness,
+    families: &[TypedPlaneFamilyPayloadsV2<'_>; 7],
+    ordered_payloads: &[&[u8]],
+    limits: SemanticTypedPlaneVerificationLimitsV2,
+    jumbo_limits: crate::ir::JumboRopeLimits,
+    source: &mut S,
+) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>
+where
+    S: crate::ir::JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+{
+    let mut admission = JumboObjectClosureAdmissionV2::new(source, jumbo_limits);
+    verify_semantic_typed_plane_inventory_v2_with_admission(
+        build,
+        image_facts,
+        input_witness,
+        families,
+        ordered_payloads,
+        limits,
+        Some(&mut admission),
+    )
+}
+
+pub(crate) fn verify_semantic_typed_plane_inventory_v2_with_admission(
+    build: SemanticBuildIdentity,
+    image_facts: SemanticImageFacts,
+    input_witness: SemanticInputWitness,
+    families: &[TypedPlaneFamilyPayloadsV2<'_>; 7],
+    ordered_payloads: &[&[u8]],
+    limits: SemanticTypedPlaneVerificationLimitsV2,
+    mut jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
 ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error> {
     let input_witness = normalize_input_claim(input_witness)?;
     verify_manifest_claims(
@@ -298,6 +417,8 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2(
         .map_err(SemanticPlaneRecordError::Allocation)?;
     let mut verified_ids = Vec::new();
     let mut payload_index = 0_usize;
+    let mut jumbo_documentation_references = Vec::new();
+    let mut jumbo_documentation_reference_count = 0_u64;
 
     for (family_index, family) in families.iter().enumerate() {
         let kind = SemanticPlaneKind::Ir(family.family);
@@ -356,6 +477,53 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2(
                     budget: "row-count",
                 })?;
             for record in view.records() {
+                let jumbo = match family.family {
+                    SemanticIrPlane::Documentation => {
+                        super::declarations::jumbo_descriptor_for_record(record)?
+                    }
+                    SemanticIrPlane::SourceProvenance => {
+                        super::source_provenance::jumbo_descriptor_for_record(record)?
+                    }
+                    _ => None,
+                };
+                if let Some(descriptor) = jumbo {
+                    let admission = jumbo_admission
+                        .as_deref_mut()
+                        .ok_or(SemanticPlaneRecordError::JumboObjectStoreRequired)?;
+                    let remaining_reference_budget = limits
+                        .max_references
+                        .saturating_sub(jumbo_documentation_reference_count);
+                    if let Some(references) =
+                        admission.admit(family.family, descriptor, remaining_reference_budget)?
+                    {
+                        let local_count = u64::try_from(references.local.len()).map_err(|_| {
+                            SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                                budget: "reference-count",
+                            }
+                        })?;
+                        let external_count =
+                            u64::try_from(references.external.len()).map_err(|_| {
+                                SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                                    budget: "reference-count",
+                                }
+                            })?;
+                        let added = local_count.checked_add(external_count).ok_or(
+                            SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                                budget: "reference-count",
+                            },
+                        )?;
+                        jumbo_documentation_reference_count = jumbo_documentation_reference_count
+                            .checked_add(added)
+                            .filter(|count| *count <= limits.max_references)
+                            .ok_or(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                                budget: "reference-count",
+                            })?;
+                        jumbo_documentation_references
+                            .try_reserve(1)
+                            .map_err(SemanticPlaneRecordError::Allocation)?;
+                        jumbo_documentation_references.push((record.key(), references));
+                    }
+                }
                 let key = StableRowKey::new(row_family, record.key());
                 let row_payload = RowPayload::from_tagged_bytes(record.tag(), record.payload())?;
                 row_index_builder.push(key, row_payload)?;
@@ -409,7 +577,19 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2(
         return Err(SemanticPlaneRecordError::StableKeyCollision.into());
     }
 
-    validate_cross_family_closure(build.profile(), &decoded_families, limits)?;
+    jumbo_documentation_references.sort_unstable_by_key(|(owner, _)| *owner);
+    if jumbo_documentation_references
+        .windows(2)
+        .any(|pair| pair[0].0 == pair[1].0)
+    {
+        return Err(SemanticPlaneRecordError::StableKeyCollision.into());
+    }
+    validate_cross_family_closure(
+        build.profile(),
+        &decoded_families,
+        limits,
+        &jumbo_documentation_references,
+    )?;
     if matches!(image_facts.authority, SemanticImageAuthority::Shared) && families[6].row_count != 0
     {
         return Err(SemanticTypedPlaneInventoryV2Error::CrossFamily {
@@ -428,6 +608,20 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2(
         input_witness,
         families,
     })
+}
+
+fn map_jumbo_source_error<E: core::fmt::Display>(
+    error: crate::ir::JumboOperationError<E>,
+) -> SemanticPlaneRecordError {
+    match error {
+        crate::ir::JumboOperationError::Rope(error) => SemanticPlaneRecordError::JumboRope(error),
+        crate::ir::JumboOperationError::Store(error) => {
+            SemanticPlaneRecordError::JumboObjectStore(error.to_string())
+        }
+        crate::ir::JumboOperationError::Input(_) | crate::ir::JumboOperationError::Output(_) => {
+            SemanticPlaneRecordError::JumboStream
+        }
+    }
 }
 
 fn verify_manifest_claims(
@@ -687,6 +881,7 @@ fn validate_cross_family_closure(
     profile: LanguageProfile,
     families: &[Vec<CanonicalSemanticPlaneSegmentView<'_>>; 7],
     limits: SemanticTypedPlaneVerificationLimitsV2,
+    jumbo_documentation_references: &[([u8; 32], super::declarations::DocsWireReferences)],
 ) -> Result<u64, SemanticTypedPlaneInventoryV2Error> {
     let mut core = decode_core(&families[0])?;
     core.declarations.sort_unstable_by_key(|row| row.identity);
@@ -710,7 +905,7 @@ fn validate_cross_family_closure(
     let types = validate_types_family_v2_with_limits(families[1].iter().copied(), family_limits)?;
     let relations = decode_relations(&families[2])?;
     let occurrences = decode_occurrences(&families[3])?;
-    let docs = decode_documentation(&families[4])?;
+    let docs = decode_documentation(&families[4], jumbo_documentation_references)?;
     let source = decode_source_provenance(&families[5])?;
     let extension_limits = LanguageExtensionVerificationLimitsV2::bounded(
         limits.max_total_bytes,
@@ -942,48 +1137,84 @@ fn decode_core(
 
 fn decode_documentation(
     segments: &[CanonicalSemanticPlaneSegmentView<'_>],
+    jumbo_references: &[([u8; 32], super::declarations::DocsWireReferences)],
 ) -> Result<DocumentationFamilyFacts, SemanticTypedPlaneInventoryV2Error> {
     let mut facts = DocumentationFamilyFacts::default();
+    let mut observed_jumbo_rows = 0_usize;
     for segment in segments {
         for record in segment.records() {
-            if record.tag() != DOCUMENTATION_TAG {
-                return Err(SemanticPlaneRecordError::RowGrammar.into());
-            }
             let mut cursor = Cursor::new(record.payload());
             let identity = identity_key(read_identity(&mut cursor)?);
             let available = read_availability(&mut cursor)?;
-            let fragments = cursor.u32()?;
-            for _ in 0..fragments {
-                match cursor.u8()? {
-                    0 | 1 => {
-                        let _ = cursor.utf8()?;
-                    }
-                    2 => {
-                        let _ = cursor.utf8()?;
+            match record.tag() {
+                DOCUMENTATION_TAG => {
+                    let fragments = cursor.u32()?;
+                    for _ in 0..fragments {
                         match cursor.u8()? {
-                            0 => try_push(
-                                &mut facts.local_references,
-                                identity_key(read_identity(&mut cursor)?),
-                            )?,
-                            1 => try_push(
-                                &mut facts.external_references,
-                                cursor
-                                    .take(32)?
-                                    .try_into()
-                                    .map_err(|_| SemanticPlaneRecordError::Truncated)?,
-                            )?,
+                            0 | 1 => {
+                                let _ = cursor.utf8()?;
+                            }
+                            2 => {
+                                let _ = cursor.utf8()?;
+                                match cursor.u8()? {
+                                    0 => try_push(
+                                        &mut facts.local_references,
+                                        identity_key(read_identity(&mut cursor)?),
+                                    )?,
+                                    1 => try_push(
+                                        &mut facts.external_references,
+                                        cursor
+                                            .take(32)?
+                                            .try_into()
+                                            .map_err(|_| SemanticPlaneRecordError::Truncated)?,
+                                    )?,
+                                    _ => return Err(SemanticPlaneRecordError::RowGrammar.into()),
+                                }
+                            }
+                            3 | 4 => {}
                             _ => return Err(SemanticPlaneRecordError::RowGrammar.into()),
                         }
                     }
-                    3 | 4 => {}
-                    _ => return Err(SemanticPlaneRecordError::RowGrammar.into()),
                 }
+                super::declarations::DOCS_JUMBO_TAG => {
+                    let descriptor = super::declarations::jumbo_descriptor_for_record(record)?;
+                    if descriptor.is_none() {
+                        return Err(SemanticPlaneRecordError::RowGrammar.into());
+                    }
+                    let _ = cursor.take(crate::ir::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES)?;
+                    let Some((_, references)) = jumbo_references
+                        .binary_search_by_key(&identity, |(owner, _)| *owner)
+                        .ok()
+                        .and_then(|index| jumbo_references.get(index))
+                    else {
+                        return Err(SemanticTypedPlaneInventoryV2Error::CrossFamily {
+                            fact: "jumbo documentation closure census",
+                        });
+                    };
+                    for reference in &references.local {
+                        try_push(&mut facts.local_references, *reference)?;
+                    }
+                    for reference in &references.external {
+                        try_push(&mut facts.external_references, *reference)?;
+                    }
+                    observed_jumbo_rows = observed_jumbo_rows.checked_add(1).ok_or(
+                        SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                            budget: "row-count",
+                        },
+                    )?;
+                }
+                _ => return Err(SemanticPlaneRecordError::RowGrammar.into()),
             }
             if !cursor.is_empty() || identity != record.key() {
                 return Err(SemanticPlaneRecordError::StableKeyMismatch.into());
             }
             try_push(&mut facts.declarations, (identity, available))?;
         }
+    }
+    if observed_jumbo_rows != jumbo_references.len() {
+        return Err(SemanticTypedPlaneInventoryV2Error::CrossFamily {
+            fact: "jumbo documentation closure census",
+        });
     }
     facts.reference_count = reference_count_for_items(
         facts
@@ -1016,23 +1247,45 @@ fn decode_source_provenance(
         for record in segment.records() {
             let mut cursor = Cursor::new(record.payload());
             match record.tag() {
-                SOURCE_DECLARATION_TAG => {
+                SOURCE_DECLARATION_TAG | super::source_provenance::DECLARATION_SOURCE_JUMBO_TAG => {
                     let identity = identity_key(read_identity(&mut cursor)?);
                     let available = read_availability(&mut cursor)?;
+                    if record.tag() == super::source_provenance::DECLARATION_SOURCE_JUMBO_TAG {
+                        let descriptor =
+                            super::source_provenance::jumbo_descriptor_for_record(record)?;
+                        if descriptor.is_none() {
+                            return Err(SemanticPlaneRecordError::RowGrammar.into());
+                        }
+                        let _ = cursor.take(crate::ir::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES)?;
+                        let start = cursor.u32()?;
+                        let end = cursor.u32()?;
+                        if start > end {
+                            return Err(SemanticPlaneRecordError::RowGrammar.into());
+                        }
+                    }
                     if !cursor.is_empty() || identity != record.key() {
                         return Err(SemanticPlaneRecordError::StableKeyMismatch.into());
                     }
                     try_push(&mut facts.declaration_keys, identity)?;
                     try_push(&mut facts.declaration_source, (identity, available))?;
                 }
-                SOURCE_RELATION_TAG => {
+                SOURCE_RELATION_TAG | super::source_provenance::RELATION_SOURCE_JUMBO_TAG => {
                     let relation: [u8; 32] = cursor
                         .take(32)?
                         .try_into()
                         .map_err(|_| SemanticPlaneRecordError::Truncated)?;
                     let available = read_availability(&mut cursor)?;
                     if available {
-                        let _ = cursor.bytes32()?;
+                        if record.tag() == super::source_provenance::RELATION_SOURCE_JUMBO_TAG {
+                            let descriptor =
+                                super::source_provenance::jumbo_descriptor_for_record(record)?;
+                            if descriptor.is_none() {
+                                return Err(SemanticPlaneRecordError::RowGrammar.into());
+                            }
+                            let _ = cursor.take(crate::ir::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES)?;
+                        } else {
+                            let _ = cursor.bytes32()?;
+                        }
                         let start = cursor.u32()?;
                         let end = cursor.u32()?;
                         if start > end {
@@ -1275,7 +1528,7 @@ fn semantic_family_row_root(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use alloc::{vec, vec::Vec};
+    use alloc::{collections::BTreeMap, vec, vec::Vec};
 
     use backend_version::ScopeRoot;
 
@@ -1297,6 +1550,65 @@ mod tests {
         row_count: u32,
         id: SemanticSegmentId,
         bytes: Vec<u8>,
+    }
+
+    #[derive(Clone, Default)]
+    struct TestJumboObjects {
+        leaves: BTreeMap<crate::ir::JumboRopeObjectId, Vec<u8>>,
+        interiors: BTreeMap<
+            crate::ir::JumboRopeObjectId,
+            [u8; crate::ir::jumbo_rope::ROPE_NODE_WIRE_BYTES],
+        >,
+        leaf_order: Vec<crate::ir::JumboRopeObjectId>,
+    }
+
+    impl crate::ir::JumboRopeObjectSink for TestJumboObjects {
+        type Error = SemanticPlaneRecordError;
+
+        fn write_leaf(&mut self, leaf: crate::ir::JumboRopeLeafRef<'_>) -> Result<(), Self::Error> {
+            let bytes = leaf.bytes().to_vec();
+            if let Some(previous) = self.leaves.insert(leaf.id(), bytes.clone()) {
+                assert_eq!(previous, bytes, "content-addressed leaves are immutable");
+            }
+            self.leaf_order.push(leaf.id());
+            Ok(())
+        }
+
+        fn write_interior(&mut self, node: &crate::ir::JumboRopeNode) -> Result<(), Self::Error> {
+            let id = node.id();
+            let wire = node.encode_wire();
+            if let Some(previous) = self.interiors.insert(id, wire) {
+                assert_eq!(previous, wire, "content-addressed nodes are immutable");
+            }
+            Ok(())
+        }
+    }
+
+    impl crate::ir::JumboRopeObjectSource for TestJumboObjects {
+        type Error = SemanticPlaneRecordError;
+
+        fn read_leaf(
+            &mut self,
+            id: crate::ir::JumboRopeObjectId,
+            output: &mut [u8; crate::ir::JUMBO_ROPE_MAX_LEAF_BYTES],
+        ) -> Result<Option<usize>, Self::Error> {
+            let Some(bytes) = self.leaves.get(&id) else {
+                return Ok(None);
+            };
+            if bytes.len() > output.len() {
+                return Ok(Some(output.len() + 1));
+            }
+            output[..bytes.len()].copy_from_slice(bytes);
+            Ok(Some(bytes.len()))
+        }
+
+        fn read_interior(
+            &mut self,
+            id: crate::ir::JumboRopeObjectId,
+        ) -> Result<Option<[u8; crate::ir::jumbo_rope::ROPE_NODE_WIRE_BYTES]>, Self::Error>
+        {
+            Ok(self.interiors.get(&id).copied())
+        }
     }
 
     fn profile() -> LanguageProfile {
@@ -1656,6 +1968,713 @@ mod tests {
             &payloads,
             limits,
         )
+    }
+
+    fn docs_wire(text: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(text.len() + 9);
+        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        bytes.push(0); // text fragment
+        bytes.extend_from_slice(
+            &u32::try_from(text.len())
+                .expect("fixture text length fits u32")
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(text);
+        bytes
+    }
+
+    fn jumbo_docs_row_with_context(
+        identity: [u8; 32],
+        text: &[u8],
+        context: crate::ir::JumboValueContext,
+        objects: &mut TestJumboObjects,
+    ) -> Row {
+        jumbo_docs_row_with_value(identity, &docs_wire(text), context, objects)
+    }
+
+    fn jumbo_docs_row_with_value(
+        identity: [u8; 32],
+        value: &[u8],
+        context: crate::ir::JumboValueContext,
+        objects: &mut TestJumboObjects,
+    ) -> Row {
+        let receipt = crate::ir::write_jumbo_value(
+            context,
+            value,
+            crate::ir::JumboRopeLimits::default(),
+            objects,
+        )
+        .expect("write jumbo fixture objects");
+        let mut payload = identity.to_vec();
+        payload.push(1); // documentation captured
+        payload.extend_from_slice(&receipt.verified().descriptor().encode_wire());
+        (
+            identity,
+            super::super::declarations::DOCS_JUMBO_TAG,
+            payload,
+        )
+    }
+
+    fn jumbo_source_row_with_context(
+        identity: [u8; 32],
+        path: &[u8],
+        context: crate::ir::JumboValueContext,
+        objects: &mut TestJumboObjects,
+    ) -> Row {
+        let receipt = crate::ir::write_jumbo_value(
+            context,
+            path,
+            crate::ir::JumboRopeLimits::default(),
+            objects,
+        )
+        .expect("write jumbo source fixture objects");
+        let mut payload = identity.to_vec();
+        payload.push(1); // source captured
+        payload.extend_from_slice(&receipt.verified().descriptor().encode_wire());
+        payload.extend_from_slice(&3_u32.to_be_bytes());
+        payload.extend_from_slice(&17_u32.to_be_bytes());
+        (
+            identity,
+            super::super::source_provenance::DECLARATION_SOURCE_JUMBO_TAG,
+            payload,
+        )
+    }
+
+    fn replace_documentation_row(rows: &mut [Vec<Row>; 7], key: [u8; 32], row: Row) {
+        let slot = rows[4]
+            .iter_mut()
+            .find(|row| row.0 == key)
+            .expect("fixture documentation row exists");
+        *slot = row;
+    }
+
+    fn verify_rows_with_jumbo_source<S>(
+        rows: [Vec<Row>; 7],
+        source: &mut S,
+        jumbo_limits: crate::ir::JumboRopeLimits,
+    ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>
+    where
+        S: crate::ir::JumboRopeObjectSource + ?Sized,
+        S::Error: core::fmt::Display,
+    {
+        verify_rows_with_jumbo_source_and_policy(
+            rows,
+            source,
+            jumbo_limits,
+            SemanticTypedPlaneVerificationLimitsV2::standard(),
+        )
+    }
+
+    fn verify_rows_with_jumbo_source_and_policy<S>(
+        rows: [Vec<Row>; 7],
+        source: &mut S,
+        jumbo_limits: crate::ir::JumboRopeLimits,
+        limits: SemanticTypedPlaneVerificationLimitsV2,
+    ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>
+    where
+        S: crate::ir::JumboRopeObjectSource + ?Sized,
+        S::Error: core::fmt::Display,
+    {
+        let kinds = family_kinds();
+        let row_counts = rows
+            .each_ref()
+            .map(|family| u64::try_from(family.len()).expect("fixture row count fits u64"));
+        let encoded: [Vec<EncodedSegment>; 7] = core::array::from_fn(|index| {
+            let family_rows = rows[index].clone();
+            if family_rows.is_empty() {
+                Vec::new()
+            } else {
+                vec![encode_family_segment(kinds[index], family_rows)]
+            }
+        });
+        let segment_claims: [Vec<TypedPlaneSegmentPayloadV2<'_>>; 7] =
+            core::array::from_fn(|index| {
+                encoded[index]
+                    .iter()
+                    .map(|segment| TypedPlaneSegmentPayloadV2 {
+                        first_key: segment.first_key,
+                        last_key: segment.last_key,
+                        row_count: segment.row_count,
+                        byte_length: u64::try_from(segment.bytes.len())
+                            .expect("fixture payload length fits u64"),
+                        id_claim: UntrustedSemanticSegmentId::from_raw(*segment.id.as_bytes()),
+                        payload: &segment.bytes,
+                    })
+                    .collect()
+            });
+        let families = core::array::from_fn(|index| TypedPlaneFamilyPayloadsV2 {
+            family: kinds[index],
+            row_count: row_counts[index],
+            segments: &segment_claims[index],
+        });
+        let payloads = encoded
+            .iter()
+            .flat_map(|segments| segments.iter().map(|segment| segment.bytes.as_slice()))
+            .collect::<Vec<_>>();
+        verify_semantic_typed_plane_inventory_v2_with_jumbo_source(
+            build(),
+            image_facts(),
+            input_claim(),
+            &families,
+            &payloads,
+            limits,
+            jumbo_limits,
+            source,
+        )
+    }
+
+    fn encode_all_rows(rows: &[Vec<Row>; 7]) -> ([Vec<EncodedSegment>; 7], [u64; 7]) {
+        let kinds = family_kinds();
+        let row_counts = rows
+            .each_ref()
+            .map(|family| u64::try_from(family.len()).expect("fixture row count fits u64"));
+        let encoded = core::array::from_fn(|index| {
+            if rows[index].is_empty() {
+                Vec::new()
+            } else {
+                vec![encode_family_segment(kinds[index], rows[index].clone())]
+            }
+        });
+        (encoded, row_counts)
+    }
+
+    fn cold_manifest_for_encoded_rows(
+        encoded: &[Vec<EncodedSegment>; 7],
+        row_counts: [u64; 7],
+        content_root: [u8; 32],
+        generation_root: [u8; 32],
+    ) -> crate::ir::SemanticTypedPlaneManifestV2 {
+        let kinds = family_kinds();
+        let families = core::array::from_fn(|index| {
+            let segments = encoded[index]
+                .iter()
+                .map(|segment| {
+                    crate::ir::SemanticTypedPlaneSegmentClaimV2::from_untrusted_claims(
+                        segment.first_key,
+                        segment.last_key,
+                        segment.row_count,
+                        u64::try_from(segment.bytes.len()).expect("fixture byte count fits"),
+                        UntrustedSemanticSegmentId::from_raw(*segment.id.as_bytes()),
+                    )
+                    .expect("fixture segment claim is bounded")
+                })
+                .collect();
+            crate::ir::SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
+                kinds[index],
+                row_counts[index],
+                segments,
+            )
+            .expect("fixture family claim is canonical")
+        });
+        crate::ir::SemanticTypedPlaneManifestV2::from_untrusted_claims(
+            build(),
+            image_facts(),
+            crate::ir::SemanticInputClaimV2::from_witness(&input_claim()),
+            crate::ir::UntrustedSemanticContentRootV2::from_wire_claim(content_root),
+            crate::ir::UntrustedSemanticGenerationRootV2::from_wire_claim(generation_root),
+            families,
+        )
+        .expect("fixture c007 claims are canonical")
+    }
+
+    fn patterned_text(length: usize) -> Vec<u8> {
+        (0..length)
+            .map(|index| b'a' + u8::try_from((index * 37 + index / 97) % 26).expect("ASCII offset"))
+            .collect()
+    }
+
+    fn jumbo_docs_context(identity: [u8; 32]) -> crate::ir::JumboValueContext {
+        crate::ir::JumboValueContext::new(
+            identity,
+            crate::ir::JumboValueFamily::Documentation,
+            0,
+            crate::ir::JumboValueEncoding::Bytes,
+        )
+    }
+
+    fn jumbo_docs_local_link(target: [u8; 32], filler: &[u8]) -> Vec<u8> {
+        jumbo_docs_local_links(target, filler, 1)
+    }
+
+    fn jumbo_docs_local_links(target: [u8; 32], filler: &[u8], link_count: u32) -> Vec<u8> {
+        let mut value = Vec::new();
+        value.extend_from_slice(&(link_count + 1).to_be_bytes());
+        for _ in 0..link_count {
+            value.push(2); // link fragment
+            append_bytes(b"label", &mut value);
+            value.push(0); // local declaration target
+            value.extend_from_slice(&target);
+        }
+        value.push(0); // trailing text fragment
+        append_bytes(filler, &mut value);
+        value
+    }
+
+    fn rows_with_jumbo_docs(text: &[u8], objects: &mut TestJumboObjects) -> [Vec<Row>; 7] {
+        let mut rows = valid_rows(identity(0x13), None, None, false, true);
+        let owner = identity(0x13);
+        let row = jumbo_docs_row_with_context(owner, text, jumbo_docs_context(owner), objects);
+        replace_documentation_row(&mut rows, owner, row);
+        rows
+    }
+
+    fn rows_with_jumbo_source(path: &[u8], objects: &mut TestJumboObjects) -> [Vec<Row>; 7] {
+        let owner = identity(0x13);
+        let mut rows = valid_rows(owner, None, None, false, true);
+        let context = crate::ir::JumboValueContext::new(
+            owner,
+            crate::ir::JumboValueFamily::SourceProvenance,
+            0,
+            crate::ir::JumboValueEncoding::Bytes,
+        );
+        let jumbo = jumbo_source_row_with_context(owner, path, context, objects);
+        let slot = rows[5]
+            .iter_mut()
+            .find(|row| row.0 == owner)
+            .expect("fixture source row exists");
+        *slot = jumbo;
+        mark_core_source_available(&mut rows, owner);
+        rows
+    }
+
+    fn mark_core_source_available(rows: &mut [Vec<Row>; 7], identity: [u8; 32]) {
+        let (_, _, payload) = rows[0]
+            .iter_mut()
+            .find(|row| row.0 == identity)
+            .expect("fixture core row exists");
+        // Core layout: 32-byte identity, length-prefixed name, kind,
+        // visibility, parent, parent authority, then eight availability bits.
+        let name_length = usize::try_from(u32::from_be_bytes(
+            payload[32..36]
+                .try_into()
+                .expect("fixture name length is fixed width"),
+        ))
+        .expect("fixture name length fits usize");
+        let availability_start = 32 + 4 + name_length + 2 + 1 + 1 + 1;
+        payload[availability_start] = 1; // source captured
+        payload[availability_start + 1] = 1; // source-file identity captured
+    }
+
+    #[test]
+    fn aggregate_requires_a_complete_jumbo_object_closure_before_inventory() {
+        let text = patterned_text(1_200 * 1024);
+        let mut persisted = TestJumboObjects::default();
+        let rows = rows_with_jumbo_docs(&text, &mut persisted);
+
+        assert!(matches!(
+            verify_rows(rows.clone()),
+            Err(SemanticTypedPlaneInventoryV2Error::Record(
+                SemanticPlaneRecordError::JumboObjectStoreRequired
+            ))
+        ));
+        let mut absent = TestJumboObjects::default();
+        assert!(matches!(
+            verify_rows_with_jumbo_source(rows, &mut absent, crate::ir::JumboRopeLimits::default()),
+            Err(SemanticTypedPlaneInventoryV2Error::Record(
+                SemanticPlaneRecordError::JumboRope(crate::ir::JumboRopeError::MissingStoredLeaf)
+            ))
+        ));
+    }
+
+    #[test]
+    fn aggregate_applies_explicit_jumbo_limits_before_object_reads() {
+        let text = patterned_text(1_200 * 1024);
+        let mut objects = TestJumboObjects::default();
+        let rows = rows_with_jumbo_docs(&text, &mut objects);
+        assert!(matches!(
+            verify_rows_with_jumbo_source(
+                rows,
+                &mut objects,
+                crate::ir::JumboRopeLimits::new(1, 1, 1024)
+            ),
+            Err(SemanticTypedPlaneInventoryV2Error::Record(
+                SemanticPlaneRecordError::JumboRope(
+                    crate::ir::JumboRopeError::ValueTooLarge { .. }
+                )
+            ))
+        ));
+    }
+
+    #[test]
+    fn aggregate_rejects_wrong_jumbo_owner_and_field_ordinal() {
+        let owner = identity(0x13);
+        let text = patterned_text(1_200 * 1024);
+        for context in [
+            crate::ir::JumboValueContext::new(
+                [0xEE; 32],
+                crate::ir::JumboValueFamily::Documentation,
+                0,
+                crate::ir::JumboValueEncoding::Bytes,
+            ),
+            crate::ir::JumboValueContext::new(
+                owner,
+                crate::ir::JumboValueFamily::Documentation,
+                1,
+                crate::ir::JumboValueEncoding::Bytes,
+            ),
+            crate::ir::JumboValueContext::new(
+                owner,
+                crate::ir::JumboValueFamily::SourceProvenance,
+                0,
+                crate::ir::JumboValueEncoding::Bytes,
+            ),
+            crate::ir::JumboValueContext::new(
+                owner,
+                crate::ir::JumboValueFamily::Documentation,
+                0,
+                crate::ir::JumboValueEncoding::Utf8,
+            ),
+        ] {
+            let mut objects = TestJumboObjects::default();
+            let mut rows = valid_rows(owner, None, None, false, true);
+            let row = jumbo_docs_row_with_context(owner, &text, context, &mut objects);
+            replace_documentation_row(&mut rows, owner, row);
+            assert!(matches!(
+                verify_rows_with_jumbo_source(
+                    rows,
+                    &mut objects,
+                    crate::ir::JumboRopeLimits::default()
+                ),
+                Err(SemanticTypedPlaneInventoryV2Error::Record(
+                    SemanticPlaneRecordError::RowGrammar
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn aggregate_rejects_tampered_jumbo_length_and_root_claims() {
+        let owner = identity(0x13);
+        let text = patterned_text(1_200 * 1024);
+        for mutation in ["length", "root"] {
+            let mut objects = TestJumboObjects::default();
+            let mut rows = valid_rows(owner, None, None, false, true);
+            let mut row =
+                jumbo_docs_row_with_context(owner, &text, jumbo_docs_context(owner), &mut objects);
+            let descriptor = &mut row.2[33..33 + crate::ir::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES];
+            if mutation == "length" {
+                let observed = u64::from_be_bytes(
+                    descriptor[43..51]
+                        .try_into()
+                        .expect("fixed-width descriptor length"),
+                );
+                descriptor[43..51].copy_from_slice(
+                    &observed
+                        .checked_add(1)
+                        .expect("fixture descriptor length does not overflow")
+                        .to_be_bytes(),
+                );
+            } else {
+                descriptor[59] ^= 1;
+            }
+            replace_documentation_row(&mut rows, owner, row);
+            assert!(matches!(
+                verify_rows_with_jumbo_source(
+                    rows,
+                    &mut objects,
+                    crate::ir::JumboRopeLimits::default()
+                ),
+                Err(SemanticTypedPlaneInventoryV2Error::Record(
+                    SemanticPlaneRecordError::JumboRope(_)
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn aggregate_rejects_swapped_content_addressed_leaves() {
+        let text = patterned_text(1_200 * 1024);
+        let mut objects = TestJumboObjects::default();
+        let rows = rows_with_jumbo_docs(&text, &mut objects);
+        let first = *objects.leaf_order.first().expect("first stored leaf");
+        let last = *objects.leaf_order.last().expect("last stored leaf");
+        assert_ne!(first, last, "fixture leaves have distinct content IDs");
+        let first_bytes = objects
+            .leaves
+            .get(&first)
+            .expect("first leaf bytes")
+            .clone();
+        let last_bytes = objects.leaves.get(&last).expect("last leaf bytes").clone();
+        objects.leaves.insert(first, last_bytes);
+        objects.leaves.insert(last, first_bytes);
+
+        assert!(matches!(
+            verify_rows_with_jumbo_source(
+                rows,
+                &mut objects,
+                crate::ir::JumboRopeLimits::default()
+            ),
+            Err(SemanticTypedPlaneInventoryV2Error::Record(
+                SemanticPlaneRecordError::JumboRope(crate::ir::JumboRopeError::LeafObjectCorrupt)
+            ))
+        ));
+    }
+
+    #[test]
+    fn jumbo_documentation_links_join_the_exact_core_declaration_set() {
+        let owner = identity(0x13);
+        let target = identity(0x72);
+        let filler = patterned_text(1_200 * 1024);
+        let value = jumbo_docs_local_link(target, &filler);
+        let mut objects = TestJumboObjects::default();
+        let mut rows = valid_rows(owner, None, None, false, true);
+        let row = jumbo_docs_row_with_value(owner, &value, jumbo_docs_context(owner), &mut objects);
+        replace_documentation_row(&mut rows, owner, row);
+        verify_rows_with_jumbo_source(rows, &mut objects, crate::ir::JumboRopeLimits::default())
+            .expect("streamed jumbo link resolves to a declared core row");
+
+        let unknown = identity(0xD1);
+        let mut dangling_objects = TestJumboObjects::default();
+        let mut dangling_rows = valid_rows(owner, None, None, false, true);
+        let dangling_value = jumbo_docs_local_link(unknown, &filler);
+        let row = jumbo_docs_row_with_value(
+            owner,
+            &dangling_value,
+            jumbo_docs_context(owner),
+            &mut dangling_objects,
+        );
+        replace_documentation_row(&mut dangling_rows, owner, row);
+        assert!(matches!(
+            verify_rows_with_jumbo_source(
+                dangling_rows,
+                &mut dangling_objects,
+                crate::ir::JumboRopeLimits::default()
+            ),
+            Err(SemanticTypedPlaneInventoryV2Error::CrossFamily {
+                fact: "documentation local link"
+            })
+        ));
+    }
+
+    #[test]
+    fn jumbo_documentation_duplicate_links_are_joined_and_counted_exactly() {
+        let owner = identity(0x13);
+        let target = identity(0x72);
+        let filler = patterned_text(1_200 * 1024);
+        let exact_limits = SemanticTypedPlaneVerificationLimitsV2 {
+            max_segments: 8_192,
+            max_total_bytes: 64 * 1024 * 1024,
+            max_total_rows: 250_000,
+            max_references: 14,
+        };
+
+        let mut duplicate_objects = TestJumboObjects::default();
+        let mut duplicate_rows = valid_rows(owner, None, None, false, true);
+        let duplicate_value = jumbo_docs_local_links(target, &filler, 2);
+        let row = jumbo_docs_row_with_value(
+            owner,
+            &duplicate_value,
+            jumbo_docs_context(owner),
+            &mut duplicate_objects,
+        );
+        replace_documentation_row(&mut duplicate_rows, owner, row);
+        verify_rows_with_jumbo_source_and_policy(
+            duplicate_rows,
+            &mut duplicate_objects,
+            crate::ir::JumboRopeLimits::default(),
+            exact_limits,
+        )
+        .expect("duplicate links to an exact core declaration remain two references");
+
+        let mut one_link_objects = TestJumboObjects::default();
+        let mut one_link_rows = valid_rows(owner, None, None, false, true);
+        let one_link_value = jumbo_docs_local_links(target, &filler, 1);
+        let row = jumbo_docs_row_with_value(
+            owner,
+            &one_link_value,
+            jumbo_docs_context(owner),
+            &mut one_link_objects,
+        );
+        replace_documentation_row(&mut one_link_rows, owner, row);
+        let one_link_limits = SemanticTypedPlaneVerificationLimitsV2 {
+            max_references: 13,
+            ..exact_limits
+        };
+        verify_rows_with_jumbo_source_and_policy(
+            one_link_rows,
+            &mut one_link_objects,
+            crate::ir::JumboRopeLimits::default(),
+            one_link_limits,
+        )
+        .expect("one jumbo link fits the exact one-reference increment");
+
+        let mut under_budget_objects = TestJumboObjects::default();
+        let mut under_budget_rows = valid_rows(owner, None, None, false, true);
+        let duplicate_value = jumbo_docs_local_links(target, &filler, 2);
+        let row = jumbo_docs_row_with_value(
+            owner,
+            &duplicate_value,
+            jumbo_docs_context(owner),
+            &mut under_budget_objects,
+        );
+        replace_documentation_row(&mut under_budget_rows, owner, row);
+        let under_budget = SemanticTypedPlaneVerificationLimitsV2 {
+            max_references: 13,
+            ..exact_limits
+        };
+        assert!(matches!(
+            verify_rows_with_jumbo_source_and_policy(
+                under_budget_rows,
+                &mut under_budget_objects,
+                crate::ir::JumboRopeLimits::default(),
+                under_budget,
+            ),
+            Err(SemanticTypedPlaneInventoryV2Error::AggregateBudget {
+                budget: "reference-count"
+            })
+        ));
+    }
+
+    #[test]
+    fn aggregate_verifies_source_provenance_rope_before_inventory() {
+        let path = patterned_text(1_200 * 1024);
+        let mut objects = TestJumboObjects::default();
+        let rows = rows_with_jumbo_source(&path, &mut objects);
+        let inventory = verify_rows_with_jumbo_source(
+            rows,
+            &mut objects,
+            crate::ir::JumboRopeLimits::default(),
+        )
+        .expect("binary source path closure admits in the seven-family inventory");
+        assert_eq!(inventory.families()[5].row_count(), 3);
+    }
+
+    #[test]
+    fn cold_c007_reopen_admits_docs_and_source_jumbo_closures() {
+        let owner = identity(0x13);
+        let text = patterned_text(1_200 * 1024);
+        let path = patterned_text(1_200 * 1024);
+        let mut objects = TestJumboObjects::default();
+        let mut rows = valid_rows(owner, None, None, false, true);
+        let docs_row =
+            jumbo_docs_row_with_context(owner, &text, jumbo_docs_context(owner), &mut objects);
+        replace_documentation_row(&mut rows, owner, docs_row);
+        let source_context = crate::ir::JumboValueContext::new(
+            owner,
+            crate::ir::JumboValueFamily::SourceProvenance,
+            0,
+            crate::ir::JumboValueEncoding::Bytes,
+        );
+        let source_row = jumbo_source_row_with_context(owner, &path, source_context, &mut objects);
+        let source_slot = rows[5]
+            .iter_mut()
+            .find(|row| row.0 == owner)
+            .expect("fixture source row exists");
+        *source_slot = source_row;
+        mark_core_source_available(&mut rows, owner);
+
+        let (encoded, row_counts) = encode_all_rows(&rows);
+        let segment_claims: [Vec<TypedPlaneSegmentPayloadV2<'_>>; 7] =
+            core::array::from_fn(|index| {
+                encoded[index]
+                    .iter()
+                    .map(|segment| {
+                        TypedPlaneSegmentPayloadV2::new(
+                            segment.first_key,
+                            segment.last_key,
+                            segment.row_count,
+                            u64::try_from(segment.bytes.len()).expect("fixture size fits u64"),
+                            UntrustedSemanticSegmentId::from_raw(*segment.id.as_bytes()),
+                            &segment.bytes,
+                        )
+                    })
+                    .collect()
+            });
+        let families = core::array::from_fn(|index| {
+            TypedPlaneFamilyPayloadsV2::new(
+                family_kinds()[index],
+                row_counts[index],
+                &segment_claims[index],
+            )
+        });
+        let payloads = encoded
+            .iter()
+            .flat_map(|segments| segments.iter().map(|segment| segment.bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let inventory = verify_semantic_typed_plane_inventory_v2_with_jumbo_source(
+            build(),
+            image_facts(),
+            input_claim(),
+            &families,
+            &payloads,
+            SemanticTypedPlaneVerificationLimitsV2::standard(),
+            crate::ir::JumboRopeLimits::default(),
+            &mut objects,
+        )
+        .expect("aggregate joins both jumbo owner families");
+        let computed = crate::ir::VerifiedTypedPlaneContentV2::from_verified_inventory(inventory)
+            .expect("verified inventory computes roots");
+        let claims = cold_manifest_for_encoded_rows(
+            &encoded,
+            row_counts,
+            *computed.content_root().as_bytes(),
+            *computed.generation_root().as_bytes(),
+        );
+        let wire = claims.canonical_bytes().expect("encode c007 manifest");
+        let cold = crate::ir::SemanticTypedPlaneManifestV2::decode(&wire)
+            .expect("cold c007 manifest decodes");
+        let reopened = crate::ir::verify_typed_plane_content_v2_with_jumbo_source(
+            &cold,
+            &payloads,
+            crate::ir::SemanticTypedPlaneVerificationTierV2::Standard,
+            crate::ir::JumboRopeLimits::default(),
+            &mut objects,
+        )
+        .expect("cold verifier reopens exact ordered jumbo objects");
+        assert_eq!(reopened.content_root(), computed.content_root());
+        assert_eq!(reopened.generation_root(), computed.generation_root());
+
+        assert!(matches!(
+            crate::ir::verify_typed_plane_content_v2(&cold, &payloads),
+            Err(crate::ir::SemanticGenerationProofError::JumboObjectSourceRequired)
+        ));
+        let missing = *objects.leaf_order.first().expect("stored jumbo leaf");
+        objects.leaves.remove(&missing);
+        assert!(matches!(
+            crate::ir::verify_typed_plane_content_v2_with_jumbo_source(
+                &cold,
+                &payloads,
+                crate::ir::SemanticTypedPlaneVerificationTierV2::Standard,
+                crate::ir::JumboRopeLimits::default(),
+                &mut objects,
+            ),
+            Err(crate::ir::SemanticGenerationProofError::TypedPlaneInventoryRejected)
+        ));
+    }
+
+    #[test]
+    fn jumbo_documentation_edit_changes_only_its_family_root() {
+        let original_text = patterned_text(1_200 * 1024);
+        let mut edited_text = original_text.clone();
+        edited_text[320 * 1024] = b'z';
+        let mut original_objects = TestJumboObjects::default();
+        let original_rows = rows_with_jumbo_docs(&original_text, &mut original_objects);
+        let mut edited_objects = TestJumboObjects::default();
+        let edited_rows = rows_with_jumbo_docs(&edited_text, &mut edited_objects);
+        let original = verify_rows_with_jumbo_source(
+            original_rows,
+            &mut original_objects,
+            crate::ir::JumboRopeLimits::default(),
+        )
+        .expect("original closure admits");
+        let edited = verify_rows_with_jumbo_source(
+            edited_rows,
+            &mut edited_objects,
+            crate::ir::JumboRopeLimits::default(),
+        )
+        .expect("edited closure admits");
+        for (index, (before, after)) in original
+            .families()
+            .iter()
+            .zip(edited.families())
+            .enumerate()
+        {
+            if index == 4 {
+                assert_ne!(before.semantic_row_root(), after.semantic_row_root());
+            } else {
+                assert_eq!(before.semantic_row_root(), after.semantic_row_root());
+            }
+        }
     }
 
     #[test]

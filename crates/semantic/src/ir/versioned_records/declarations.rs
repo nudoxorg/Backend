@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use super::wire::{
     Cursor, encode_identity, put_bytes, put_text, put_u32, read_checked_jumbo_descriptor,
-    read_identity,
+    read_identity, validate_jumbo_row_size,
 };
 use crate::ir::{
     CanonicalPlaneRowEncoder, CanonicalSemanticPlaneKeySink, CheckedJumboValueDescriptor,
@@ -42,37 +42,101 @@ enum DocsWireState {
     },
     LinkTargetKind,
     LinkTargetIdentity {
-        remaining: u8,
+        kind: u8,
+        bytes: [u8; 32],
+        used: usize,
     },
     Done,
     Failed,
 }
 
-/// Incremental, constant-memory validator for a canonical documentation blob.
-/// Invalid streams are drained by the writer and reported by `finish`, so a
-/// full object closure is still checked before a caller can mint its proof.
+/// Incremental validator for a canonical documentation blob. Link identities
+/// are retained only up to the caller's reference budget. Invalid streams are
+/// drained by the writer and reported by `finish`, so the complete object
+/// closure is still checked before a caller can mint its proof.
 pub(super) struct DocsWireValidator {
     state: DocsWireState,
     fragments_remaining: u32,
+    reference_limit: u64,
+    reference_count: u64,
+    local_references: Vec<[u8; 32]>,
+    external_references: Vec<[u8; 32]>,
+    allocation_error: Option<alloc::collections::TryReserveError>,
+}
+
+pub(super) struct DocsWireReferences {
+    pub(super) local: Vec<[u8; 32]>,
+    pub(super) external: Vec<[u8; 32]>,
+}
+
+#[derive(Debug)]
+pub(super) enum DocsWireValidationError {
+    Grammar,
+    ReferenceLimitExceeded,
+    Allocation(alloc::collections::TryReserveError),
+}
+
+impl From<DocsWireValidationError> for SemanticPlaneRecordError {
+    fn from(error: DocsWireValidationError) -> Self {
+        match error {
+            DocsWireValidationError::Grammar => Self::RowGrammar,
+            DocsWireValidationError::ReferenceLimitExceeded => Self::JumboReferenceLimitExceeded,
+            DocsWireValidationError::Allocation(error) => Self::Allocation(error),
+        }
+    }
 }
 
 impl DocsWireValidator {
     pub(super) const fn new() -> Self {
+        Self::with_reference_limit(1_000_000)
+    }
+
+    pub(super) const fn with_reference_limit(reference_limit: u64) -> Self {
         Self {
             state: DocsWireState::FragmentCount {
                 bytes: [0; 4],
                 used: 0,
             },
             fragments_remaining: 0,
+            reference_limit,
+            reference_count: 0,
+            local_references: Vec::new(),
+            external_references: Vec::new(),
+            allocation_error: None,
         }
     }
 
-    pub(super) fn finish(self) -> Result<(), SemanticPlaneRecordError> {
-        if matches!(self.state, DocsWireState::Done) {
-            Ok(())
-        } else {
-            Err(SemanticPlaneRecordError::RowGrammar)
+    pub(super) fn finish(self) -> Result<DocsWireReferences, DocsWireValidationError> {
+        if !matches!(self.state, DocsWireState::Done) {
+            return Err(DocsWireValidationError::Grammar);
         }
+        if let Some(error) = self.allocation_error {
+            return Err(DocsWireValidationError::Allocation(error));
+        }
+        if self.reference_count > self.reference_limit {
+            return Err(DocsWireValidationError::ReferenceLimitExceeded);
+        }
+        Ok(DocsWireReferences {
+            local: self.local_references,
+            external: self.external_references,
+        })
+    }
+
+    fn record_reference(&mut self, kind: u8, bytes: [u8; 32]) {
+        self.reference_count = self.reference_count.saturating_add(1);
+        if self.reference_count > self.reference_limit || self.allocation_error.is_some() {
+            return;
+        }
+        let references = if kind == 0 {
+            &mut self.local_references
+        } else {
+            &mut self.external_references
+        };
+        if let Err(error) = references.try_reserve(1) {
+            self.allocation_error = Some(error);
+            return;
+        }
+        references.push(bytes);
     }
 
     fn after_fragment(&mut self) -> DocsWireState {
@@ -165,15 +229,28 @@ impl DocsWireValidator {
                     }
                 }
             }
-            DocsWireState::LinkTargetKind if byte <= 1 => {
-                DocsWireState::LinkTargetIdentity { remaining: 32 }
-            }
-            DocsWireState::LinkTargetIdentity { remaining } if remaining > 1 => {
-                DocsWireState::LinkTargetIdentity {
-                    remaining: remaining - 1,
+            DocsWireState::LinkTargetKind if byte <= 1 => DocsWireState::LinkTargetIdentity {
+                kind: byte,
+                bytes: [0; 32],
+                used: 0,
+            },
+            DocsWireState::LinkTargetIdentity {
+                kind,
+                mut bytes,
+                used,
+            } if used < bytes.len() => {
+                bytes[used] = byte;
+                if used + 1 == bytes.len() {
+                    self.record_reference(kind, bytes);
+                    self.after_fragment()
+                } else {
+                    DocsWireState::LinkTargetIdentity {
+                        kind,
+                        bytes,
+                        used: used + 1,
+                    }
                 }
             }
-            DocsWireState::LinkTargetIdentity { remaining: 1 } => self.after_fragment(),
             DocsWireState::Done | DocsWireState::Failed => DocsWireState::Failed,
             _ => DocsWireState::Failed,
         };
@@ -564,12 +641,16 @@ pub(super) fn validate_record(
                 return Err(SemanticPlaneRecordError::RowGrammar);
             }
             let owner = super::declaration_plane_key(kind, identity);
-            let _descriptor = read_checked_jumbo_descriptor(
+            let descriptor = read_checked_jumbo_descriptor(
                 &mut cursor,
                 owner,
                 JumboValueFamily::Documentation,
                 0,
                 JumboValueEncoding::Bytes,
+            )?;
+            validate_jumbo_row_size(
+                &descriptor,
+                super::HEADER_BYTES + super::RECORD_HEADER_BYTES + 32 + 1,
             )?;
             identity
         }
@@ -604,6 +685,10 @@ pub(super) fn jumbo_descriptor_for_record(
         JumboValueFamily::Documentation,
         0,
         JumboValueEncoding::Bytes,
+    )?;
+    validate_jumbo_row_size(
+        &descriptor,
+        super::HEADER_BYTES + super::RECORD_HEADER_BYTES + 32 + 1,
     )?;
     if !cursor.is_empty() {
         return Err(SemanticPlaneRecordError::RowTrailingBytes);
