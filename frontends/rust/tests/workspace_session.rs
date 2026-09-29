@@ -27,8 +27,12 @@ struct RecordingReadFrontier {
     root_content_paths: Vec<String>,
     expected_sibling_vfs_path: PathBuf,
     expected_sibling_contents: Vec<u8>,
+    expected_rustdoc_input_path: PathBuf,
+    expected_rustdoc_input_contents: Vec<u8>,
     saw_root_source: bool,
     saw_disk_sibling: bool,
+    saw_rustdoc_input: bool,
+    reject_rustdoc_input_once: bool,
     unresolved_candidates: Vec<(String, String, String)>,
     reject_candidate: Option<String>,
 }
@@ -56,8 +60,14 @@ impl RustWorkspaceReadFrontierObserver for RecordingReadFrontier {
         true
     }
 
-    fn observe_rustdoc_input(&mut self, _absolute_path: &str, _contents: &[u8]) -> bool {
+    fn observe_rustdoc_input(&mut self, absolute_path: &str, contents: &[u8]) -> bool {
         self.rustdoc_input_events = self.rustdoc_input_events.saturating_add(1);
+        if Path::new(absolute_path) == self.expected_rustdoc_input_path.as_path()
+            && contents == self.expected_rustdoc_input_contents.as_slice()
+        {
+            self.saw_rustdoc_input = true;
+            return !std::mem::take(&mut self.reject_rustdoc_input_once);
+        }
         true
     }
 
@@ -111,6 +121,7 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
     let root =
         std::env::temp_dir().join(format!("backend-rust-workspace-session-{nonce}-{sequence}"));
     fs::create_dir_all(root.join("src/foo"))?;
+    fs::create_dir_all(root.join("docs"))?;
     #[cfg(unix)]
     let source_path_alias = {
         use std::os::unix::fs::symlink;
@@ -125,6 +136,7 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
         "[package]\nname = \"session_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )?;
     let root_source = concat!(
+        "#![doc = include_str!(\"../docs/README.md\")]\n",
         "mod absent;\n",
         "#[path = \"generated.rs\"] mod generated;\n",
         "mod sibling;\n",
@@ -133,9 +145,11 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
     );
     let disk_sibling = "pub fn value() -> u8 { 1 }\n";
     let generated_source = "pub fn value() -> u8 { 4 }\n";
+    let rustdoc_input = b"session fixture documentation\n";
     fs::write(root.join("src/lib.rs"), root_source)?;
     fs::write(root.join("src/sibling.rs"), disk_sibling)?;
     fs::write(root.join("src/generated.rs"), generated_source)?;
+    fs::write(root.join("docs/README.md"), rustdoc_input)?;
 
     let outcome = (|| {
         let toolchain = RustToolchain::discover(rustc_path())?;
@@ -190,6 +204,9 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
                 expected_root_contents: root_source.as_bytes().to_vec(),
                 expected_sibling_vfs_path: fs::canonicalize(root.join("src/sibling.rs"))?,
                 expected_sibling_contents: disk_sibling.as_bytes().to_vec(),
+                expected_rustdoc_input_path: fs::canonicalize(root.join("docs/README.md"))?,
+                expected_rustdoc_input_contents: rustdoc_input.to_vec(),
+                reject_rustdoc_input_once: true,
                 reject_candidate: Some(String::from("absent.rs")),
                 ..RecordingReadFrontier::default()
             };
@@ -222,8 +239,15 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
                 observed_buffers.expected_root_vfs_path, observed_buffers.root_content_paths
             );
             assert!(observed_buffers.saw_disk_sibling);
+            assert!(observed_buffers.saw_rustdoc_input);
             assert!(read_summary.vfs_files_visited >= 3);
             assert!(read_summary.module_diagnostics_visited > 0);
+            assert!(read_summary.rustdoc_inputs_visited > 0);
+            assert_eq!(
+                read_summary.rustdoc_input_events_delivered + 1,
+                read_summary.rustdoc_inputs_visited,
+                "the independent successful-read count must expose the injected dropped event"
+            );
             assert_eq!(
                 read_summary.vfs_events_delivered, read_summary.vfs_files_visited,
                 "every representable loaded VFS file must be acknowledged"

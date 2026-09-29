@@ -10,8 +10,8 @@ use std::{
 };
 
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustAuthorityError, RustDefinition, RustProject, RustSourceScope,
-    RustToolchain, RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin,
+    RustAnalysisControl, RustAuthorityError, RustDefinition, RustFeatureControl, RustProject,
+    RustSourceScope, RustToolchain, RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin,
 };
 use backend_semantic::vocabulary::RustEdition;
 use ra_ap_syntax::AstNode;
@@ -122,9 +122,18 @@ fn borrowed_authority_preserves_hir_types_resolution_macros_and_exact_spans()
                     });
                 if service {
                     let mut docs = false;
-                    authority.visit_documentation(&declaration.syntax, |documentation| {
-                        docs |= documentation == "Describes a generic service.";
-                    });
+                    if authority
+                        .visit_declaration_documentation(
+                            &declaration.definition,
+                            |documentation, _span| {
+                                docs |= documentation == "Describes a generic service.";
+                                Ok(())
+                            },
+                        )
+                        .is_err()
+                    {
+                        return false;
+                    }
                     let RustDefinition::Trait(definition) = declaration.definition else {
                         return false;
                     };
@@ -384,6 +393,319 @@ fn source_budget_rejects_before_workspace_loading() -> Result<(), TestFailure> {
     })();
     fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
         operation: "remove fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves RA expands repeated and cfg-selected Rustdoc include attributes after bounded VFS admission.
+#[test]
+fn rustdoc_include_str_supports_repeated_and_cfg_attributes() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        write_fixture(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"authority_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[features]\ndoc-extra = []\ndoc-disabled = []\n",
+            "write Rustdoc include manifest",
+        )?;
+        write_fixture(
+            root.join("src/lib.rs"),
+            "#[doc = include_str!(\"docs.txt\")]\n#[cfg_attr(feature = \"doc-extra\", doc = include_str!(\"docs.txt\"))]\n#[cfg_attr(feature = \"doc-disabled\", doc = include_str!(\"missing-disabled.txt\"))]\n#[doc = \"Repeated literal doc.\"]\npub fn documented() {}\n",
+            "write Rustdoc include source",
+        )?;
+        write_fixture(
+            root.join("src/docs.txt"),
+            "Included UTF-8 documentation for café.\n",
+            "write Rustdoc include contents",
+        )?;
+
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let cancelled = AtomicBool::new(false);
+        let mut lines = Vec::new();
+        let mut expanded_lines = 0_usize;
+        project.analyze_with_features(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
+            },
+            RustFeatureControl {
+                all_features: false,
+                no_default_features: true,
+                features: &["doc-extra"],
+            },
+            |authority| {
+                let declaration = authority
+                    .declarations()
+                    .find(|declaration| {
+                        matches!(declaration.definition, RustDefinition::Function(_))
+                            && authority
+                                .declaration_name(declaration)
+                                .ok()
+                                .and_then(|span| authority.source_at(span).ok())
+                                == Some(b"documented")
+                    })
+                    .ok_or(RustAuthorityError::MissingSemanticFact {
+                        fact: SemanticKind::Function,
+                    })?;
+                authority.visit_declaration_documentation(
+                    &declaration.definition,
+                    |line, span| {
+                        if line.contains("Included UTF-8 documentation") {
+                            expanded_lines += 1;
+                            if span.is_some() {
+                                return Err(RustAuthorityError::MissingSemanticFact {
+                                    fact: SemanticKind::Function,
+                                });
+                            }
+                        }
+                        lines.push(line.to_owned());
+                        Ok(())
+                    },
+                )?;
+                Ok(())
+            },
+        )?;
+        if expanded_lines != 2
+            || lines
+                .iter()
+                .filter(|line| line.as_str() == "Repeated literal doc.")
+                .count()
+                != 1
+        {
+            return Err(TestFailure::DocumentationExpansion);
+        }
+        Ok(())
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove Rustdoc include fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves local Rustdoc can resolve a bounded include even when workspace discovery ignores it.
+#[test]
+fn rustdoc_ignored_include_remains_available_locally() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        write_fixture(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"authority_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            "write ignored Rustdoc include manifest",
+        )?;
+        write_fixture(
+            root.join(".gitignore"),
+            "/src/ignored-doc.txt\n",
+            "ignore local Rustdoc include",
+        )?;
+        write_fixture(
+            root.join("src/lib.rs"),
+            "#[doc = include_str!(\"ignored-doc.txt\")]\npub fn documented() {}\n",
+            "write ignored Rustdoc include source",
+        )?;
+        write_fixture(
+            root.join("src/ignored-doc.txt"),
+            "Ignored local documentation remains available.\n",
+            "write ignored Rustdoc include contents",
+        )?;
+
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let cancelled = AtomicBool::new(false);
+        let mut found_local_documentation = false;
+        project.analyze(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
+            },
+            |authority| {
+                let declaration = authority
+                    .declarations()
+                    .find(|declaration| {
+                        matches!(declaration.definition, RustDefinition::Function(_))
+                            && authority
+                                .declaration_name(declaration)
+                                .ok()
+                                .and_then(|span| authority.source_at(span).ok())
+                                == Some(b"documented")
+                    })
+                    .ok_or(RustAuthorityError::MissingSemanticFact {
+                        fact: SemanticKind::Function,
+                    })?;
+                authority.visit_declaration_documentation(
+                    &declaration.definition,
+                    |line, span| {
+                        if line.contains("Ignored local documentation remains available.") {
+                            found_local_documentation = span.is_none();
+                        }
+                        Ok(())
+                    },
+                )?;
+                Ok(())
+            },
+        )?;
+        if found_local_documentation {
+            Ok(())
+        } else {
+            Err(TestFailure::DocumentationExpansion)
+        }
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove ignored Rustdoc include fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves missing Rustdoc includes fail before the lowerer can silently accept empty docs.
+#[test]
+fn rustdoc_missing_include_fails_closed() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        write_fixture(
+            root.join("src/lib.rs"),
+            "#[doc = include_str!(\"missing.txt\")]\npub fn documented() {}\n",
+            "write missing Rustdoc include source",
+        )?;
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let cancelled = AtomicBool::new(false);
+        match project.analyze(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
+            },
+            |_| Ok(()),
+        ) {
+            Err(RustAuthorityError::DocumentationInputMissing { path })
+                if path.ends_with("src/missing.txt") =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(TestFailure::Authority(error)),
+            Ok(()) => Err(TestFailure::DocumentationExpansion),
+        }
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove missing Rustdoc include fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves non-UTF-8 Rustdoc include bytes are rejected under include_str! semantics.
+#[test]
+fn rustdoc_non_utf8_include_fails_closed() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        write_fixture(
+            root.join("src/lib.rs"),
+            "#[doc = include_str!(\"bytes.txt\")]\npub fn documented() {}\n",
+            "write non-UTF-8 Rustdoc include source",
+        )?;
+        fs::write(root.join("src/bytes.txt"), [0xff, 0xfe]).map_err(|source| TestFailure::Io {
+            operation: "write non-UTF-8 Rustdoc include",
+            source,
+        })?;
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let cancelled = AtomicBool::new(false);
+        match project.analyze(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
+            },
+            |_| Ok(()),
+        ) {
+            Err(RustAuthorityError::DocumentationInputUtf8 { path })
+                if path.ends_with("src/bytes.txt") =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(TestFailure::Authority(error)),
+            Ok(()) => Err(TestFailure::DocumentationExpansion),
+        }
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove non-UTF-8 Rustdoc include fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves an include larger than the selected source-byte budget is rejected before allocation.
+#[test]
+fn rustdoc_oversized_include_fails_closed() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        write_fixture(
+            root.join("src/lib.rs"),
+            "#[doc = include_str!(\"large.txt\")]\npub fn documented() {}\n",
+            "write oversized Rustdoc include source",
+        )?;
+        write_fixture(
+            root.join("src/large.txt"),
+            &"x".repeat(128),
+            "write oversized Rustdoc include",
+        )?;
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let cancelled = AtomicBool::new(false);
+        match project.analyze(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(96),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
+            },
+            |_| Ok(()),
+        ) {
+            Err(RustAuthorityError::DocumentationInputBudget {
+                actual, maximum, ..
+            }) if actual > u64::from(*maximum) => Ok(()),
+            Err(error) => Err(TestFailure::Authority(error)),
+            Ok(()) => Err(TestFailure::DocumentationExpansion),
+        }
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove oversized Rustdoc include fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves computed include paths fail closed before RA can silently omit the documentation.
+#[test]
+fn rustdoc_computed_include_path_fails_closed() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        write_fixture(
+            root.join("src/lib.rs"),
+            "#[doc = include_str!(concat!(\"docs\", \".txt\"))]\npub fn documented() {}\n",
+            "write computed Rustdoc include source",
+        )?;
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let cancelled = AtomicBool::new(false);
+        match project.analyze(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
+            },
+            |_| Ok(()),
+        ) {
+            Err(RustAuthorityError::UnsupportedDocumentationExpression { .. }) => Ok(()),
+            Err(error) => Err(TestFailure::Authority(error)),
+            Ok(()) => Err(TestFailure::DocumentationExpansion),
+        }
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove computed Rustdoc include fixture",
         source,
     })?;
     outcome
@@ -851,6 +1173,9 @@ enum TestFailure {
     /// Root source admission failed to reject its declared byte-budget violation.
     #[error("Rust source budget admitted an oversized root before workspace loading")]
     SourceBudgetAuthority,
+    /// Rustdoc include expansion or its failure boundary did not match rust-analyzer semantics.
+    #[error("Rustdoc include expansion did not preserve the expected bounded documentation")]
+    DocumentationExpansion,
     /// The exact registry build-script fixture could not be converted back into source text.
     #[error("serde_json build-script regression fixture was not valid UTF-8")]
     BuildScriptFixture,

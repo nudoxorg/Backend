@@ -96,8 +96,9 @@ use sha2::{Digest, Sha256};
 
 use crate::driver::{
     lower::{
-        EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact,
-        StagedSourceSpan, portable_admission, portable_count, push_fact,
+        EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, OwnedDocFragment,
+        OwnedDocLinkTarget, SemanticFact, StagedSourceSpan, portable_admission, portable_count,
+        push_fact,
     },
     types::{CompileControl, FactFault, LoweringUnsupported},
 };
@@ -306,6 +307,11 @@ struct Decl<'source> {
     name: &'source [u8],
     span: ByteSpan,
     expanded: bool,
+}
+
+enum RustDocLine<'source> {
+    Borrowed(&'source [u8]),
+    Owned(String),
 }
 
 /// The path an attribute's meta names (`deprecated` in `#[deprecated(…)]`).
@@ -3715,9 +3721,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .map_err(|_| admission())
     }
 
-    /// Streams every declaration's Rustdoc into borrowed fragments: prose
-    /// lines, fenced code, and intra-doc links whose target names a pushed
-    /// declaration link locally.
+    /// Streams every declaration's rust-analyzer Rustdoc into source-backed
+    /// fragments or owned macro-expanded text, preserving fenced code and links.
     fn emit_docs(&mut self, declarations: &[Decl<'source>]) -> Result<(), RustAuthorityError> {
         for index in 0..declarations.len() {
             let Some(Some(owner)) = self.ordinals.get(index).copied() else {
@@ -3729,21 +3734,25 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .mark_documentation_captured(owner)
                 .map_err(|_| admission())?;
             let declaration = &declarations[index];
-            let mut lines: Vec<&'source [u8]> = Vec::new();
+            let mut lines: Vec<RustDocLine<'source>> = Vec::new();
             {
                 let authority = self.authority;
                 let emitter = &*self;
-                authority.visit_documentation(&declaration.syntax, |line| {
-                    // An empty line has no bytes to borrow, but it is the
-                    // paragraph break, so it is kept as one.
-                    if line.is_empty() {
-                        lines.push(&[]);
-                    } else if let Some(span) = emitter.span_of_text(line)
-                        && let Ok(bytes) = emitter.bytes_of(span)
-                    {
-                        lines.push(bytes);
-                    }
-                });
+                authority.visit_declaration_documentation(
+                    &declaration.definition,
+                    |line, span| {
+                        if line.is_empty() {
+                            // An empty line has no bytes to borrow, but it is
+                            // the paragraph break, so it stays in the stream.
+                            lines.push(RustDocLine::Borrowed(&[]));
+                        } else if let Some(span) = span {
+                            lines.push(RustDocLine::Borrowed(emitter.bytes_of(span)?));
+                        } else {
+                            lines.push(RustDocLine::Owned(line.to_owned()));
+                        }
+                        Ok(())
+                    },
+                )?;
             }
             self.push_doc_lines(owner, &lines)?;
         }
@@ -3761,40 +3770,67 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     fn push_doc_lines(
         &mut self,
         owner: u32,
-        lines: &[&'source [u8]],
+        lines: &[RustDocLine<'source>],
     ) -> Result<(), RustAuthorityError> {
-        let mut fragments: Vec<DocFragmentInput<'source>> = Vec::new();
-        let mut inside_fence = false;
-        for (at, line) in lines.iter().enumerate() {
-            if at > 0 {
-                fragments.push(DocFragmentInput::SoftBreak);
-            }
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with(b"```") {
-                inside_fence = !inside_fence;
-                continue;
-            }
-            if inside_fence {
-                fragments.push(DocFragmentInput::Code(line));
-                continue;
-            }
-            split_links(line, &mut fragments);
-        }
         let locals: Vec<(&'source [u8], u32)> = self
             .rows
             .iter()
             .map(|row| (row.name, row.ordinal))
             .collect();
-        for fragment in fragments
-            .iter()
-            .copied()
-            .map(|fragment| resolve_link(fragment, &locals))
-        {
-            self.facts
-                .push_doc(owner, fragment)
-                .map_err(|_| admission())?;
+        let mut inside_fence = false;
+        for (at, line) in lines.iter().enumerate() {
+            if at > 0 {
+                self.facts
+                    .push_doc(owner, DocFragmentInput::SoftBreak)
+                    .map_err(|_| admission())?;
+            }
+            let bytes = match line {
+                RustDocLine::Borrowed(bytes) => *bytes,
+                RustDocLine::Owned(text) => text.as_bytes(),
+            };
+            if bytes.is_empty() {
+                continue;
+            }
+            if bytes.starts_with(b"```") {
+                inside_fence = !inside_fence;
+                continue;
+            }
+            if inside_fence {
+                match line {
+                    RustDocLine::Borrowed(bytes) => self
+                        .facts
+                        .push_doc(owner, DocFragmentInput::Code(bytes))
+                        .map_err(|_| admission())?,
+                    RustDocLine::Owned(text) => self
+                        .facts
+                        .push_doc_owned(owner, OwnedDocFragment::Code(text.as_bytes().into()))
+                        .map_err(|_| admission())?,
+                }
+                continue;
+            }
+            match line {
+                RustDocLine::Borrowed(bytes) => {
+                    let mut fragments = Vec::new();
+                    split_links(bytes, &mut fragments);
+                    for fragment in fragments
+                        .into_iter()
+                        .map(|fragment| resolve_link(fragment, &locals))
+                    {
+                        self.facts
+                            .push_doc(owner, fragment)
+                            .map_err(|_| admission())?;
+                    }
+                }
+                RustDocLine::Owned(text) => {
+                    let mut fragments = Vec::new();
+                    split_links_owned(text.as_bytes(), &locals, &mut fragments);
+                    for fragment in fragments {
+                        self.facts
+                            .push_doc_owned(owner, fragment)
+                            .map_err(|_| admission())?;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -3932,17 +3968,17 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             else {
                 continue;
             };
-            let mut lines: Vec<&'source [u8]> = Vec::new();
+            let mut lines: Vec<RustDocLine<'source>> = Vec::new();
             {
                 let authority = self.authority;
                 let emitter = &*self;
-                authority.visit_documentation(reexport.item.syntax(), |line| {
+                authority.visit_syntax_documentation(reexport.item.syntax(), |line| {
                     if line.is_empty() {
-                        lines.push(&[]);
+                        lines.push(RustDocLine::Borrowed(&[]));
                     } else if let Some(span) = emitter.span_of_text(line)
                         && let Ok(bytes) = emitter.bytes_of(span)
                     {
-                        lines.push(bytes);
+                        lines.push(RustDocLine::Borrowed(bytes));
                     }
                 });
             }
@@ -4436,6 +4472,43 @@ fn split_links<'source>(line: &'source [u8], fragments: &mut Vec<DocFragmentInpu
     }
 }
 
+/// Splits one owned RA-expanded line into owned prose and intra-doc link facts.
+fn split_links_owned(line: &[u8], rows: &[(&[u8], u32)], fragments: &mut Vec<OwnedDocFragment>) {
+    let mut cursor = 0usize;
+    while let Some(at) = find(line, b"[`", cursor) {
+        let Some(open) = at.checked_add(2) else {
+            break;
+        };
+        let Some(close) = find(line, b"`]", open).and_then(|close| close.checked_add(2)) else {
+            break;
+        };
+        if at > cursor
+            && let Some(prose) = line.get(cursor..at)
+        {
+            fragments.push(OwnedDocFragment::Text(prose.into()));
+        }
+        if let Some(name) = line.get(open..close - 2).filter(|name| !name.is_empty()) {
+            let target = match rows.iter().find(|(known, _)| *known == name) {
+                Some((_, ordinal)) => OwnedDocLinkTarget::Local(*ordinal),
+                None => OwnedDocLinkTarget::Foreign {
+                    ecosystem: CARGO_ECOSYSTEM.as_bytes().into(),
+                    path: name.into(),
+                },
+            };
+            fragments.push(OwnedDocFragment::Link {
+                label: name.into(),
+                target,
+            });
+        }
+        cursor = close;
+    }
+    if let Some(rest) = line.get(cursor..)
+        && !rest.is_empty()
+    {
+        fragments.push(OwnedDocFragment::Text(rest.into()));
+    }
+}
+
 /// Rewrites a doc link whose target names a pushed declaration to the exact
 /// local entity row; every other target keeps its written spelling.
 fn resolve_link<'source>(
@@ -4596,6 +4669,14 @@ mod tests {
     fn collected<'source>(
         source: &'source str,
     ) -> Result<(FactSet<'source>, SourceIdentity, CompileRecipeFact), TestError> {
+        collected_with_doc_include(source, None)
+    }
+
+    /// Stages one crate root and, when requested, a source-relative Rustdoc include.
+    fn collected_with_doc_include<'source>(
+        source: &'source str,
+        doc_include: Option<&str>,
+    ) -> Result<(FactSet<'source>, SourceIdentity, CompileRecipeFact), TestError> {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| TestError::Io {
@@ -4623,6 +4704,12 @@ mod tests {
             operation: "write crate root",
             source,
         })?;
+        if let Some(contents) = doc_include {
+            fs::write(root.join("src/docs.txt"), contents).map_err(|source| TestError::Io {
+                operation: "write Rustdoc include",
+                source,
+            })?;
+        }
         let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
         let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)
             .map_err(RustAuthorityError::from)?;
@@ -5197,6 +5284,47 @@ mod tests {
             return Err(TestError::Missing("local intra-doc link"));
         }
         Ok(())
+    }
+
+    /// An included README can produce far more fragments than the tiny source attribute predicts.
+    #[test]
+    fn rustdoc_large_include_grows_the_bounded_documentation_lane() -> Result<(), TestError> {
+        let source = "#[doc = include_str!(\"docs.txt\")]\npub fn short() {}\n";
+        let contents = (0..128)
+            .map(|index| format!("Included paragraph {index}.\n"))
+            .collect::<String>();
+        let (facts, identity, recipe) = collected_with_doc_include(source, Some(&contents))?;
+        let estimated_docs =
+            ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), source.len())
+                .docs;
+        if facts.doc_len <= estimated_docs {
+            return Err(TestError::Missing(
+                "large included docs exceed source-sized reservation",
+            ));
+        }
+
+        let mut output = vec![0xa5_u8; 65_536];
+        let length = admit(&facts, identity, recipe, recipe.profile, &mut output)
+            .map_err(TestError::Admission)?
+            .len();
+        let view = FragmentView::validate(&output[..length])?;
+        let mut docs = view.docs().ok_or(TestError::Missing("docs"))?;
+        let mut found_final_paragraph = false;
+        while let Some(fact) = docs.next() {
+            let fact = fact.map_err(TestError::Doc)?;
+            if let DocFragmentInput::Text(bytes) = fact.fragment
+                && bytes
+                    .windows(b"Included paragraph 127.".len())
+                    .any(|window| window == b"Included paragraph 127.")
+            {
+                found_final_paragraph = true;
+            }
+        }
+        if found_final_paragraph {
+            Ok(())
+        } else {
+            Err(TestError::Missing("last paragraph from included docs"))
+        }
     }
 
     /// A source beyond the bounded declaration lane keeps the exact closed

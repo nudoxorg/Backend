@@ -3,6 +3,7 @@
 //! Never renders, copies, or serializes semantic facts before the shared IR lowerer consumes them.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     fmt, fs,
     io::Read,
@@ -17,17 +18,20 @@ use ra_ap_base_db::{
     EditionedFileId, FileSet, SourceDatabase, SourceRoot, SourceRootId, all_crates,
 };
 use ra_ap_hir::{
-    Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
-    Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
+    Adt, AssocItem, CfgExpr, CfgOptions, Const, EnumVariant, Field, FieldSource, Function,
+    HasSource, Impl, Macro, Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias,
+    TypeInfo,
 };
 use ra_ap_hir_def::nameres::{crate_def_map, diagnostics::DefDiagnosticKind};
-use ra_ap_ide_db::{ChangeWithProcMacros, LibraryRoots, LocalRoots, RootDatabase};
+use ra_ap_ide_db::{
+    ChangeWithProcMacros, LibraryRoots, LocalRoots, RootDatabase, documentation::HasDocs,
+};
 use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
 use ra_ap_syntax::{
-    AstNode,
+    AstNode, AstToken, TextRange, TextSize,
     ast::{self, HasName, HasVisibility},
 };
-use ra_ap_vfs::{AbsPathBuf, FileExcluded, Vfs, VfsPath};
+use ra_ap_vfs::{AbsPathBuf, FileExcluded, FileId, Vfs, VfsPath};
 
 use crate::legacy::{LoadError, RustToolchain};
 
@@ -36,6 +40,254 @@ pub const MAX_RUST_WORKSPACE_SESSION_SOURCES: usize = 100_000;
 
 /// Maximum RA source-root path entries copied while adding virtual files.
 const MAX_RUST_WORKSPACE_ROOT_MEMBERSHIP_FILES: usize = 250_000;
+
+/// Maximum number of `include_str!` inputs admitted from Rustdoc attributes in one operation.
+const MAX_RUST_DOCUMENTATION_INPUTS: usize = 1024;
+
+/// Maximum combined bytes read for Rustdoc `include_str!` inputs in one operation.
+const MAX_RUST_DOCUMENTATION_INPUT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Finds literal source-relative include paths used by active Rustdoc attributes.
+///
+/// rust-analyzer remains responsible for evaluating the attributes and expanding
+/// `include_str!`; this syntax pass only makes bounded package files visible to
+/// its VFS first. Expressions such as `concat!`, `env!`, or generated paths fail
+/// closed because they cannot be safely admitted before RA expansion.
+fn documentation_include_paths(
+    source: &ra_ap_syntax::SyntaxNode,
+    cfg: &CfgOptions,
+    source_path: &Path,
+) -> Result<Vec<String>, RustAuthorityError> {
+    let mut includes = Vec::new();
+    for node in source.descendants() {
+        let attributes = node
+            .children()
+            .filter_map(ast::Attr::cast)
+            .collect::<Vec<_>>();
+        if !attributes
+            .iter()
+            .filter_map(ast::Attr::meta)
+            .any(|meta| meta_contains_documentation_expression(&meta))
+        {
+            continue;
+        }
+
+        let mut disabled = false;
+        for meta in attributes.iter().filter_map(ast::Attr::meta) {
+            if meta_disables_documented_item(&meta, cfg, source_path)? {
+                disabled = true;
+                break;
+            }
+        }
+        if disabled {
+            continue;
+        }
+
+        for meta in attributes.iter().filter_map(ast::Attr::meta) {
+            collect_active_documentation_includes(&meta, cfg, source_path, &mut includes)?;
+        }
+    }
+    Ok(includes)
+}
+
+fn meta_contains_documentation_expression(meta: &ast::Meta) -> bool {
+    match meta {
+        ast::Meta::KeyValueMeta(meta) => {
+            meta.path().is_some_and(|path| path.to_string() == "doc")
+                && meta.expr().is_some_and(|expression| {
+                    !matches!(expression, ast::Expr::Literal(literal)
+                        if literal.syntax().first_token().and_then(ast::String::cast).is_some())
+                })
+        }
+        ast::Meta::CfgAttrMeta(meta) => meta
+            .metas()
+            .any(|nested| meta_contains_documentation_expression(&nested)),
+        _ => false,
+    }
+}
+
+fn meta_disables_documented_item(
+    meta: &ast::Meta,
+    cfg: &CfgOptions,
+    source_path: &Path,
+) -> Result<bool, RustAuthorityError> {
+    match meta {
+        ast::Meta::CfgMeta(meta) => {
+            let Some(predicate) = meta.cfg_predicate() else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            match cfg.check(&CfgExpr::parse_from_ast(predicate)) {
+                Some(false) => Ok(true),
+                Some(true) => Ok(false),
+                None => Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                )),
+            }
+        }
+        ast::Meta::CfgAttrMeta(meta) => {
+            let Some(predicate) = meta.cfg_predicate() else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            match cfg.check(&CfgExpr::parse_from_ast(predicate)) {
+                Some(false) => Ok(false),
+                Some(true) => {
+                    for nested in meta.metas() {
+                        if meta_disables_documented_item(&nested, cfg, source_path)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }
+                None if meta
+                    .metas()
+                    .any(|nested| meta_contains_documentation_expression(&nested)) =>
+                {
+                    Err(unsupported_documentation_expression(
+                        source_path,
+                        meta.syntax(),
+                    ))
+                }
+                None => Ok(false),
+            }
+        }
+        _ => Ok(false),
+    }
+}
+
+fn collect_active_documentation_includes(
+    meta: &ast::Meta,
+    cfg: &CfgOptions,
+    source_path: &Path,
+    includes: &mut Vec<String>,
+) -> Result<(), RustAuthorityError> {
+    match meta {
+        ast::Meta::KeyValueMeta(meta)
+            if meta.path().is_some_and(|path| path.to_string() == "doc") =>
+        {
+            let Some(expression) = meta.expr() else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            if matches!(&expression, ast::Expr::Literal(literal)
+                if literal.syntax().first_token().and_then(ast::String::cast).is_some())
+            {
+                return Ok(());
+            }
+            let ast::Expr::MacroExpr(expression) = expression else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            let Some(call) = expression.macro_call() else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            let macro_name = call
+                .path()
+                .and_then(|path| path.segments().last())
+                .and_then(|segment| segment.name_ref())
+                .map(|name| name.text().to_string());
+            if macro_name.as_deref() != Some("include_str") {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            }
+            let Some(tree) = call.token_tree() else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            let left_delimiter = tree.left_delimiter_token().map(|token| token.text_range());
+            let right_delimiter = tree.right_delimiter_token().map(|token| token.text_range());
+            let arguments = tree
+                .token_trees_and_tokens()
+                .filter_map(|element| element.into_token())
+                .filter(|token| {
+                    !matches!(
+                        token.kind(),
+                        ra_ap_syntax::SyntaxKind::WHITESPACE | ra_ap_syntax::SyntaxKind::COMMENT
+                    ) && Some(token.text_range()) != left_delimiter
+                        && Some(token.text_range()) != right_delimiter
+                })
+                .collect::<Vec<_>>();
+            let [argument] = arguments.as_slice() else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            let Some(argument) = ast::String::cast(argument.clone()) else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            let include = argument
+                .value()
+                .map_err(|_| unsupported_documentation_expression(source_path, meta.syntax()))?;
+            if include.is_empty() || Path::new(include.as_ref()).is_absolute() {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            }
+            includes.push(include.into_owned());
+            Ok(())
+        }
+        ast::Meta::CfgAttrMeta(meta) => {
+            let Some(predicate) = meta.cfg_predicate() else {
+                return Err(unsupported_documentation_expression(
+                    source_path,
+                    meta.syntax(),
+                ));
+            };
+            match cfg.check(&CfgExpr::parse_from_ast(predicate)) {
+                Some(true) => {
+                    for nested in meta.metas() {
+                        collect_active_documentation_includes(&nested, cfg, source_path, includes)?;
+                    }
+                    Ok(())
+                }
+                Some(false) => Ok(()),
+                None if meta
+                    .metas()
+                    .any(|nested| meta_contains_documentation_expression(&nested)) =>
+                {
+                    Err(unsupported_documentation_expression(
+                        source_path,
+                        meta.syntax(),
+                    ))
+                }
+                None => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn unsupported_documentation_expression(
+    path: &Path,
+    syntax: &ra_ap_syntax::SyntaxNode,
+) -> RustAuthorityError {
+    RustAuthorityError::UnsupportedDocumentationExpression {
+        path: path.to_path_buf(),
+        expression: syntax.text().to_string(),
+    }
+}
 
 /// Caller-owned Cargo root selected for one semantic authority transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,18 +444,29 @@ impl RustWorkspaceSessionObserver<'_> {
     fn observe_rustdoc_input(
         &mut self,
         summary: &mut RustWorkspaceReadFrontierSummary,
-        absolute_path: &str,
+        path: &Path,
         contents: &[u8],
     ) {
         let Self::ReadFrontier(observer) = self else {
             return;
         };
         summary.rustdoc_inputs_visited = summary.rustdoc_inputs_visited.saturating_add(1);
+        let Some(absolute_path) = path.to_str() else {
+            summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
+            return;
+        };
         if observer.observe_rustdoc_input(absolute_path, contents) {
             summary.rustdoc_input_events_delivered =
                 summary.rustdoc_input_events_delivered.saturating_add(1);
         }
     }
+}
+
+/// Exact compiler-selected source buffer whose documentation attributes may read files.
+#[derive(Clone, Copy)]
+struct DocumentationSource<'source> {
+    path: &'source Path,
+    source: &'source [u8],
 }
 
 /// Stable identity for one rust-analyzer workspace operation.
@@ -821,12 +1084,22 @@ impl RustProject {
                 maximum: control.maximum_source_bytes,
             });
         }
-        let workspace = RustWorkspace::open_with_features(
+        let mut workspace = RustWorkspace::open_with_features(
             &self.root,
             &self.toolchain,
             self.edition,
             features,
             control,
+        )?;
+        let mut read_frontier_summary = RustWorkspaceReadFrontierSummary::default();
+        workspace.preload_documentation_inputs(
+            &[DocumentationSource {
+                path: &self.source_path,
+                source: &source,
+            }],
+            control,
+            None,
+            &mut read_frontier_summary,
         )?;
         workspace.analyze_source(&self.source_path, &source, control, lower)
     }
@@ -1124,6 +1397,299 @@ impl RustWorkspace {
         })
     }
 
+    /// Admits active Rustdoc `include_str!` inputs into the exact local source root that owns
+    /// each selected source. Rust-analyzer's built-in macro expansion reads only its VFS, so the
+    /// compiler must load non-Rust package files before asking `HasDocs` to expand attributes.
+    fn preload_documentation_inputs(
+        &mut self,
+        sources: &[DocumentationSource<'_>],
+        control: RustAnalysisControl<'_>,
+        mut observer: Option<&mut RustWorkspaceSessionObserver<'_>>,
+        read_frontier_summary: &mut RustWorkspaceReadFrontierSummary,
+    ) -> Result<(), RustAuthorityError> {
+        let local_roots = LocalRoots::get(&self.database)
+            .roots(&self.database)
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut inputs = HashMap::<PathBuf, (SourceRootId, String)>::new();
+        let maximum_file_bytes = u64::from(*control.maximum_source_bytes);
+        let mut total_bytes = 0_usize;
+
+        for selected in sources {
+            control.check()?;
+            if !selected.path.starts_with(&self.root) {
+                return Err(RustAuthorityError::SourceOutsidePackage {
+                    root: self.root.clone(),
+                    path: selected.path.to_path_buf(),
+                });
+            }
+            let Some(path_text) = selected.path.to_str() else {
+                return Err(RustAuthorityError::SessionSourcePath {
+                    path: selected.path.to_path_buf(),
+                });
+            };
+            let selected_vfs_path =
+                VfsPath::from(AbsPathBuf::assert_utf8(PathBuf::from(path_text)));
+            let Some((selected_file_id, FileExcluded::No)) = self.vfs.file_id(&selected_vfs_path)
+            else {
+                return Err(RustAuthorityError::SourceNotLoaded {
+                    path: selected.path.to_path_buf(),
+                });
+            };
+            let selected_root = self
+                .database
+                .file_source_root(selected_file_id)
+                .source_root_id(&self.database);
+            if !local_roots.contains(&selected_root) {
+                return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+            }
+            let observed = SourceDatabase::file_text(&self.database, selected_file_id);
+            let observed_text = observed.text(&self.database);
+            if observed_text.as_bytes() != selected.source {
+                return Err(RustAuthorityError::SourceBinding {
+                    expected: selected.source.len(),
+                    observed: observed_text.len(),
+                });
+            }
+
+            let semantics = Semantics::new(&self.database);
+            let owner = semantics
+                .file_to_module_defs(selected_file_id)
+                .map(|module| module.krate(&self.database))
+                .next()
+                .or_else(|| {
+                    all_crates(&self.database)
+                        .iter()
+                        .copied()
+                        .map(ra_ap_hir::Crate::from)
+                        .find(|krate| krate.root_file(&self.database) == selected_file_id)
+                })
+                .ok_or_else(|| RustAuthorityError::DetachedSource {
+                    path: selected.path.to_path_buf(),
+                })?;
+            let edition = owner.edition(&self.database);
+            let source_file = EditionedFileId::new(&self.database, selected_file_id, edition);
+            let parsed = semantics.parse(source_file);
+            let include_paths = documentation_include_paths(
+                parsed.syntax(),
+                owner.cfg(&self.database),
+                selected.path,
+            )?;
+
+            for include_path in include_paths {
+                control.check()?;
+                let requested = selected
+                    .path
+                    .parent()
+                    .unwrap_or(&self.root)
+                    .join(include_path);
+                let canonical = fs::canonicalize(&requested).map_err(|source| {
+                    if source.kind() == std::io::ErrorKind::NotFound {
+                        RustAuthorityError::DocumentationInputMissing {
+                            path: requested.clone(),
+                        }
+                    } else {
+                        RustAuthorityError::DocumentationInputRead {
+                            path: requested.clone(),
+                            source,
+                        }
+                    }
+                })?;
+                if !canonical.starts_with(&self.root) {
+                    return Err(RustAuthorityError::SourceOutsidePackage {
+                        root: self.root.clone(),
+                        path: canonical,
+                    });
+                }
+                let metadata = fs::metadata(&canonical).map_err(|source| {
+                    RustAuthorityError::DocumentationInputRead {
+                        path: canonical.clone(),
+                        source,
+                    }
+                })?;
+                if !metadata.is_file() {
+                    return Err(RustAuthorityError::DocumentationInputRead {
+                        path: canonical,
+                        source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
+                    });
+                }
+                if metadata.len() > maximum_file_bytes {
+                    return Err(RustAuthorityError::DocumentationInputBudget {
+                        path: canonical,
+                        actual: metadata.len(),
+                        maximum: control.maximum_source_bytes,
+                    });
+                }
+                let mut bytes =
+                    Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(usize::MAX));
+                fs::File::open(&canonical)
+                    .map_err(|source| RustAuthorityError::DocumentationInputRead {
+                        path: canonical.clone(),
+                        source,
+                    })?
+                    .take(maximum_file_bytes.saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .map_err(|source| RustAuthorityError::DocumentationInputRead {
+                        path: canonical.clone(),
+                        source,
+                    })?;
+                if let Some(observer) = observer.as_deref_mut() {
+                    observer.observe_rustdoc_input(read_frontier_summary, &canonical, &bytes);
+                }
+                if bytes.len() as u64 > maximum_file_bytes {
+                    return Err(RustAuthorityError::DocumentationInputBudget {
+                        path: canonical,
+                        actual: bytes.len() as u64,
+                        maximum: control.maximum_source_bytes,
+                    });
+                }
+                let text = String::from_utf8(bytes).map_err(|_| {
+                    RustAuthorityError::DocumentationInputUtf8 {
+                        path: canonical.clone(),
+                    }
+                })?;
+                total_bytes = total_bytes.checked_add(text.len()).ok_or(
+                    RustAuthorityError::DocumentationInputLimit {
+                        actual: usize::MAX,
+                        maximum: MAX_RUST_DOCUMENTATION_INPUT_BYTES,
+                    },
+                )?;
+                if total_bytes > MAX_RUST_DOCUMENTATION_INPUT_BYTES {
+                    return Err(RustAuthorityError::DocumentationInputLimit {
+                        actual: total_bytes,
+                        maximum: MAX_RUST_DOCUMENTATION_INPUT_BYTES,
+                    });
+                }
+                if inputs.len() >= MAX_RUST_DOCUMENTATION_INPUTS && !inputs.contains_key(&canonical)
+                {
+                    return Err(RustAuthorityError::DocumentationInputLimit {
+                        actual: inputs.len().saturating_add(1),
+                        maximum: MAX_RUST_DOCUMENTATION_INPUTS,
+                    });
+                }
+                match inputs.entry(canonical) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert((selected_root, text));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        if entry.get().0 != selected_root || entry.get().1 != text {
+                            return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+                        }
+                    }
+                }
+            }
+        }
+
+        if inputs.is_empty() {
+            return Ok(());
+        }
+
+        let local_root_ids = LocalRoots::get(&self.database)
+            .roots(&self.database)
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut membership = HashMap::<FileId, SourceRootId>::new();
+        for root_id in &local_root_ids {
+            let root = self
+                .database
+                .source_root(*root_id)
+                .source_root(&self.database);
+            for file_id in root.iter() {
+                if membership.insert(file_id, *root_id).is_some() {
+                    return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+                }
+            }
+        }
+
+        let mut change = ChangeWithProcMacros::default();
+        let mut added = Vec::<(SourceRootId, FileId, VfsPath)>::new();
+        for (path, (expected_root, text)) in inputs {
+            control.check()?;
+            let Some(path_text) = path.to_str() else {
+                return Err(RustAuthorityError::SessionSourcePath { path });
+            };
+            let vfs_path = VfsPath::from(AbsPathBuf::assert_utf8(PathBuf::from(path_text)));
+            let (file_id, excluded) = if let Some(existing) = self.vfs.file_id(&vfs_path) {
+                existing
+            } else {
+                self.vfs
+                    .set_file_contents(vfs_path.clone(), Some(text.as_bytes().to_vec()));
+                self.vfs.file_id(&vfs_path).ok_or_else(|| {
+                    RustAuthorityError::DocumentationInputRead {
+                        path: path.clone(),
+                        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                    }
+                })?
+            };
+            if let Some(observed_root) = membership.get(&file_id).copied() {
+                if observed_root != expected_root {
+                    return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+                }
+                if excluded == FileExcluded::Yes
+                    || SourceDatabase::file_text(&self.database, file_id)
+                        .text(&self.database)
+                        .as_ref()
+                        != text
+                {
+                    change.change_file(file_id, Some(text));
+                }
+            } else {
+                if !local_root_ids.contains(&expected_root) {
+                    return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+                }
+                change.change_file(file_id, Some(text));
+                added.push((expected_root, file_id, vfs_path));
+                membership.insert(file_id, expected_root);
+            }
+        }
+
+        if !added.is_empty() {
+            let library_roots = LibraryRoots::get(&self.database).roots(&self.database);
+            let all_roots = local_root_ids
+                .iter()
+                .chain(library_roots.iter())
+                .copied()
+                .collect::<HashSet<_>>();
+            let Some(max_root_id) = all_roots.iter().map(|id| id.0).max() else {
+                return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+            };
+            if all_roots.len() != max_root_id as usize + 1 {
+                return Err(RustAuthorityError::SessionSourceRootAmbiguous);
+            }
+            let mut roots = Vec::with_capacity(max_root_id as usize + 1);
+            for raw_id in 0..=max_root_id {
+                control.check()?;
+                let root_id = SourceRootId(raw_id);
+                let old_root = self
+                    .database
+                    .source_root(root_id)
+                    .source_root(&self.database);
+                let mut file_set = FileSet::default();
+                for file_id in old_root.iter() {
+                    let path = old_root
+                        .path_for_file(&file_id)
+                        .ok_or(RustAuthorityError::SessionSourceRootAmbiguous)?;
+                    file_set.insert(file_id, path.clone());
+                }
+                for (added_root, file_id, path) in &added {
+                    if *added_root == root_id {
+                        file_set.insert(*file_id, path.clone());
+                    }
+                }
+                roots.push(if old_root.is_library {
+                    SourceRoot::new_library(file_set)
+                } else {
+                    SourceRoot::new_local(file_set)
+                });
+            }
+            change.set_roots(roots);
+        }
+        self.database.apply_change(change);
+        Ok(())
+    }
+
     fn apply_selected_sources(
         &mut self,
         files: &[RustWorkspaceFile<'_>],
@@ -1327,6 +1893,20 @@ impl RustWorkspace {
         if updated != 0 || added != 0 {
             self.database.apply_change(change);
         }
+        control.check()?;
+        self.preload_documentation_inputs(
+            &files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| DocumentationSource {
+                    path: key.canonical_source_paths[index].as_path(),
+                    source: file.source.as_bytes(),
+                })
+                .collect::<Vec<_>>(),
+            control,
+            observer.as_mut().map(|observer| &mut **observer),
+            read_frontier_summary,
+        )?;
         control.check()?;
         self.selected_source_paths = files
             .iter()
@@ -1889,8 +2469,51 @@ impl<'analysis> RustAuthority<'analysis> {
         bytes_at(self.source, span)
     }
 
-    /// Visits raw Rustdoc fragments without allocating or normalizing author text.
-    pub fn visit_documentation(
+    /// Visits rust-analyzer's resolved Rustdoc text, mapping ordinary lines back to this exact
+    /// source buffer and marking macro-expanded lines as owned text.
+    pub fn visit_declaration_documentation(
+        &self,
+        definition: &RustDefinition,
+        mut receive: impl FnMut(&str, Option<ByteSpan>) -> Result<(), RustAuthorityError>,
+    ) -> Result<(), RustAuthorityError> {
+        let Some(docs) = definition.docs_with_rangemap(self.database) else {
+            return Ok(());
+        };
+        let text = docs.docs();
+        if text.len() > MAX_RUST_DOCUMENTATION_INPUT_BYTES {
+            return Err(RustAuthorityError::DocumentationInputLimit {
+                actual: text.len(),
+                maximum: MAX_RUST_DOCUMENTATION_INPUT_BYTES,
+            });
+        }
+        let mut offset = 0_usize;
+        for line in text.split_terminator('\n') {
+            let start = TextSize::of(&text[..offset]);
+            let end = start + TextSize::of(line);
+            let range = TextRange::new(start, end);
+            let mapped_span = docs.find_ast_range(range).and_then(|(mapped, _)| {
+                (mapped.file_id == self.source_file).then_some(mapped.value)
+            });
+            let span = if let Some(range) = mapped_span {
+                let span =
+                    ByteSpan::from_text_range(range).ok_or(RustAuthorityError::InvalidSpan {
+                        span: ByteSpan { start: 1, end: 0 },
+                        source_bytes: self.source.len(),
+                    })?;
+                bytes_at(self.source, span)?;
+                Some(span)
+            } else {
+                None
+            };
+            receive(line, span)?;
+            offset = offset.saturating_add(line.len()).saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// Visits raw source comments for syntax-only items such as `use` re-exports, which have no
+    /// source-owned HIR definition in this authority's declaration lane.
+    pub fn visit_syntax_documentation(
         &self,
         syntax: &ra_ap_syntax::SyntaxNode,
         mut receive: impl FnMut(&str),
@@ -2476,6 +3099,27 @@ pub enum RustDefinition {
 }
 
 impl RustDefinition {
+    fn docs_with_rangemap<'db>(
+        &self,
+        database: &'db RootDatabase,
+    ) -> Option<Cow<'db, ra_ap_hir::Docs>> {
+        match self {
+            Self::Field(definition) => definition.docs_with_rangemap(database),
+            Self::Variant(definition) => definition.docs_with_rangemap(database),
+            Self::Macro(definition) => definition.docs_with_rangemap(database),
+            Self::Module(definition) => definition.docs_with_rangemap(database),
+            Self::Trait(definition) => definition.docs_with_rangemap(database),
+            Self::Implementation(definition) => definition.docs_with_rangemap(database),
+            Self::Function(definition) => definition.docs_with_rangemap(database),
+            Self::Record(definition) | Self::Enum(definition) => {
+                definition.docs_with_rangemap(database)
+            }
+            Self::TypeAlias(definition) => definition.docs_with_rangemap(database),
+            Self::Constant(definition) => definition.docs_with_rangemap(database),
+            Self::Static(definition) => definition.docs_with_rangemap(database),
+        }
+    }
+
     /// Returns the closed semantic category selected by this HIR definition.
     #[must_use]
     pub const fn kind(&self) -> SemanticKind {
@@ -2705,6 +3349,55 @@ pub enum RustAuthorityError {
         actual: u64,
         /// Caller-selected maximum source bytes.
         maximum: SourceByteLimit,
+    },
+    /// A selected Rustdoc include could not be resolved to a package file.
+    #[error("Rustdoc include file is missing: {path}")]
+    DocumentationInputMissing {
+        /// Exact source-relative include path after anchoring to its Rust source.
+        path: PathBuf,
+    },
+    /// A Rustdoc include could not be inspected or read as a regular file.
+    #[error("cannot read Rustdoc include file {path}: {source}")]
+    DocumentationInputRead {
+        /// Exact canonical or requested include path.
+        path: PathBuf,
+        /// Original filesystem failure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// One Rustdoc include exceeds the selected source byte budget.
+    #[error(
+        "Rustdoc include {path} is {actual} bytes, exceeding the {maximum:?}-byte authority budget"
+    )]
+    DocumentationInputBudget {
+        /// Exact canonical include path.
+        path: PathBuf,
+        /// Observed include length before the bounded read.
+        actual: u64,
+        /// Caller-selected maximum source bytes.
+        maximum: SourceByteLimit,
+    },
+    /// A Rustdoc include is not valid UTF-8, as required by include_str!.
+    #[error("Rustdoc include file is not valid UTF-8: {path}")]
+    DocumentationInputUtf8 {
+        /// Exact canonical include path.
+        path: PathBuf,
+    },
+    /// The include count or combined byte budget was exceeded.
+    #[error("Rustdoc include inputs exceed bounded limit {maximum} (observed {actual})")]
+    DocumentationInputLimit {
+        /// Observed number of paths or combined bytes.
+        actual: usize,
+        /// Maximum number of paths or combined bytes admitted.
+        maximum: usize,
+    },
+    /// A documentation attribute expression cannot be admitted before RA expansion.
+    #[error("unsupported Rustdoc expression in {path}: {expression}")]
+    UnsupportedDocumentationExpression {
+        /// Source file containing the attribute.
+        path: PathBuf,
+        /// Exact attribute or configuration syntax rejected by the bounded preloader.
+        expression: String,
     },
     /// Cargo selected an edition that conflicts with the caller's sealed profile.
     #[error("Rust Cargo edition {observed:?} conflicts with requested profile {requested:?}")]

@@ -19,14 +19,57 @@ appropriate to the compiler inputs you accept.
 
 The Rust `ir-vcs` API computes borrowed snapshots and deltas over the
 canonical `Ir`/`SemanticReader`; it is not an Iroh query protocol.
-`backend_replication::FileSemanticRangeStore` durably stages selected full
-images in 16 KiB resumable pages fetched by `LocalSemanticRangeTransport`
-from the authenticated local owner, verifies their canonical image and
-generation identities, and retains the selected generation and predecessor
-for local diffs. Cold reads use a checked, read-only anonymous mapping, which
-copies from disk without allocating an image-sized heap buffer.
-S3, when enabled, stores immutable compiler packs; the owner still owns local
-admission and selected-head state. The worker never needs the owner's S3 keys.
+`LocalSemanticIndexClient` fetches the selected catalog and exact image
+manifest from the authenticated local owner, then requests bounded 16 KiB
+IR/embedding ranges. Every request is checked against a fresh selected-head
+stamp. The client's `FileSemanticRangeStore` fsyncs partial extents and an
+exact-generation checkpoint; only complete segment bytes that pass manifest
+admission and CAS read-back count as local coverage. `semantic-hydrate`
+reopens that checkpoint after interruption and commits a local generation
+only when the requested plane is complete. The full NXFI image and plane
+segments are retained under the configured client store. S3 remains one possible
+location for immutable compiler objects: local clients use the same owner
+endpoint whether the owner reads an object from its disk CAS or S3, and the
+worker never receives the owner's S3 credentials.
+
+Rust declaration documentation follows rust-analyzer's Rustdoc expansion for
+active `#[doc = include_str!("relative/path")]` attributes, including repeated
+attributes and feature-selected `cfg_attr` attributes. Include files must be
+regular UTF-8 files inside the admitted package, and are bounded by the
+compiler's per-file source budget plus a 64 MiB aggregate documentation budget.
+The lowered documentation plane also has a 16,384-fragment limit. Missing,
+oversized, non-UTF-8, package-escaping, or over-fragment inputs fail the compile
+closed. Expressions that cannot be resolved before rust-analyzer expansion,
+including `concat!`, `env!`, and generated paths, are currently rejected.
+The compiler workspace snapshot follows the configured ignore and generated
+file policy. Keep active Rustdoc includes inside that admitted inventory so a
+remote compiler receives the same bytes. The V2 compiler-input read frontier
+remains marked unproven for cross-invocation reuse.
+
+### Pull the currently selected plane to a local client
+
+Run this on the index owner host as the same account that runs locald. The
+client uses the owner's private Unix socket; this command does not create a
+remote query endpoint. Replace the package reference and coordinate with the
+canonical values for the indexed project. The image ordinal must exist in its
+currently selected catalog. Use a client-owned store path so its hydrated
+objects and checkpoint are separate from the owner's publication state.
+
+```sh
+backend --workspace /var/lib/nudox-index semantic-hydrate \
+  --package 'pkg:cargo/my-app@1.2.3' \
+  --coordinate 'pkg:cargo/my-app@1.2.3' \
+  --profile rust-2024 --image-ordinal 0 --plane core \
+  --store "$HOME/.local/share/nudox/my-app-semantic-cas" \
+  --checkpoint "$HOME/.local/share/nudox/my-app-core.checkpoint"
+```
+
+The command prints the selected root and generation, verified segment count,
+range bytes, and page count. If it is interrupted, rerun the same command with
+the same store and checkpoint paths. A checkpoint from an older selection is
+rejected; it cannot mark bytes complete for the new generation. The client
+must run on the owner host as the same effective user as locald. Remote
+desktop or remote application access remains outside this runbook.
 
 ## 1. Build and copy the binaries
 

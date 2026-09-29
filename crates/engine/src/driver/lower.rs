@@ -680,7 +680,7 @@ pub(super) struct FactSet<'source> {
     occurrence_owners: Box<[u32]>,
     occurrences: Box<[Occurrence<'source>]>,
     occurrence_len: usize,
-    doc_facts: Box<[DocFactInput<'source>]>,
+    doc_facts: Vec<StagedDocumentationFact<'source>>,
     doc_len: usize,
     extension_atoms: Box<[&'source [u8]]>,
     extension_atom_len: usize,
@@ -721,6 +721,66 @@ pub(super) struct FactSet<'source> {
     computed_child_pending: u8,
     foreign_text: Vec<Box<str>>,
     occurrence_package_slot: Box<[Option<u32>]>,
+}
+
+/// One documentation fragment that may borrow selected source or own RA-expanded text.
+struct StagedDocumentationFact<'source> {
+    owner: backend_semantic::ir::EntityId,
+    fragment: StagedDocumentationFragment<'source>,
+}
+
+enum StagedDocumentationFragment<'source> {
+    Borrowed(DocFragmentInput<'source>),
+    Owned(OwnedDocFragment),
+}
+
+/// Owned Rustdoc fragments produced by rust-analyzer macro expansion.
+pub(super) enum OwnedDocFragment {
+    Text(Box<[u8]>),
+    Code(Box<[u8]>),
+    Link {
+        label: Box<[u8]>,
+        target: OwnedDocLinkTarget,
+    },
+}
+
+pub(super) enum OwnedDocLinkTarget {
+    Local(u32),
+    Foreign {
+        ecosystem: Box<[u8]>,
+        path: Box<[u8]>,
+    },
+}
+
+impl StagedDocumentationFact<'_> {
+    fn as_input(&self) -> DocFactInput<'_> {
+        let fragment = match &self.fragment {
+            StagedDocumentationFragment::Borrowed(fragment) => *fragment,
+            StagedDocumentationFragment::Owned(OwnedDocFragment::Text(bytes)) => {
+                DocFragmentInput::Text(bytes)
+            }
+            StagedDocumentationFragment::Owned(OwnedDocFragment::Code(bytes)) => {
+                DocFragmentInput::Code(bytes)
+            }
+            StagedDocumentationFragment::Owned(OwnedDocFragment::Link { label, target }) => {
+                DocFragmentInput::Link {
+                    label,
+                    target: match target {
+                        OwnedDocLinkTarget::Local(raw) => {
+                            DocLinkTarget::Local(backend_semantic::ir::EntityId::new(*raw))
+                        }
+                        OwnedDocLinkTarget::Foreign { ecosystem, path } => {
+                            DocLinkTarget::Foreign { ecosystem, path }
+                        }
+                    },
+                }
+            }
+        };
+        DocFactInput {
+            owner: self.owner,
+            fragment,
+        }
+    }
 }
 
 /// Staging package name for owned cross-file keys before overlay.
@@ -1006,14 +1066,7 @@ impl<'source> FactSet<'source> {
             ]
             .into_boxed_slice(),
             occurrence_len: 0,
-            doc_facts: vec![
-                DocFactInput {
-                    owner: backend_semantic::ir::EntityId::new(0),
-                    fragment: DocFragmentInput::SoftBreak,
-                };
-                plan.docs
-            ]
-            .into_boxed_slice(),
+            doc_facts: Vec::with_capacity(plan.docs),
             doc_len: 0,
             extension_atoms: vec![empty_name; plan.extension_atoms].into_boxed_slice(),
             extension_atom_len: 0,
@@ -2323,6 +2376,30 @@ impl<'source> FactSet<'source> {
         })
     }
 
+    /// Grows the estimated documentation reservation when rust-analyzer
+    /// expands a bounded `include_str!` input larger than its source attribute.
+    /// The protocol ceiling remains fixed, and allocation failure is a typed
+    /// rejection rather than a panic or truncated documentation plane.
+    fn reserve_doc_slot(&mut self) -> Result<(), FactFault> {
+        if self.doc_len < self.plan.docs {
+            return Ok(());
+        }
+        if self.doc_len >= MAX_EMISSION_DOC_FRAGMENTS {
+            return Err(FactFault::DocCapacity);
+        }
+        let next_capacity = self
+            .plan
+            .docs
+            .saturating_mul(2)
+            .max(self.doc_len.saturating_add(1))
+            .min(MAX_EMISSION_DOC_FRAGMENTS);
+        self.doc_facts
+            .try_reserve_exact(next_capacity.saturating_sub(self.doc_len))
+            .map_err(|_| FactFault::DocCapacity)?;
+        self.plan.docs = next_capacity;
+        Ok(())
+    }
+
     /// Appends one documentation fragment owned by an already-pushed fact
     /// ordinal.
     pub(super) fn push_doc(
@@ -2336,14 +2413,34 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        if self.doc_len == self.plan.docs {
-            return Err(FactFault::DocCapacity);
-        }
+        self.reserve_doc_slot()?;
         self.documentation_captured[owner as usize] = true;
-        self.doc_facts[self.doc_len] = DocFactInput {
+        self.doc_facts.push(StagedDocumentationFact {
             owner: backend_semantic::ir::EntityId::new(owner),
-            fragment,
-        };
+            fragment: StagedDocumentationFragment::Borrowed(fragment),
+        });
+        self.doc_len += 1;
+        Ok(())
+    }
+
+    /// Appends a macro-expanded Rustdoc fragment whose bytes are owned by the fact arena.
+    pub(super) fn push_doc_owned(
+        &mut self,
+        owner: u32,
+        fragment: OwnedDocFragment,
+    ) -> Result<(), FactFault> {
+        if owner >= self.len as u32 {
+            return Err(FactFault::DocOwner {
+                owner,
+                fact_count: self.len,
+            });
+        }
+        self.reserve_doc_slot()?;
+        self.documentation_captured[owner as usize] = true;
+        self.doc_facts.push(StagedDocumentationFact {
+            owner: backend_semantic::ir::EntityId::new(owner),
+            fragment: StagedDocumentationFragment::Owned(fragment),
+        });
         self.doc_len += 1;
         Ok(())
     }
@@ -2445,7 +2542,7 @@ impl<'source> FactSet<'source> {
         for fact in self.doc_facts[..self.doc_len].iter() {
             let owner = fact.owner.raw as usize;
             let slot = doc_cursors[owner];
-            docs[slot] = doc_input(&mut tree, fact.fragment)?;
+            docs[slot] = doc_input(&mut tree, fact.as_input().fragment)?;
             doc_cursors[owner] += 1;
         }
         // Every sparse language plane is materialized from the same staged
@@ -5522,8 +5619,12 @@ pub(super) fn admit<'source, 'output>(
     };
 
     // Documentation lane: every admitted doc fragment in admission order.
+    let documentation_inputs = facts.doc_facts[..facts.doc_len]
+        .iter()
+        .map(StagedDocumentationFact::as_input)
+        .collect::<Vec<_>>();
     let documentation_lane = DocumentationLane {
-        inputs: &facts.doc_facts[..facts.doc_len],
+        inputs: &documentation_inputs,
     };
 
     // Extension pooled lanes: provisional atom coordinates become final atom
