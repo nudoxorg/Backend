@@ -29,6 +29,7 @@ mod semantic_data_view;
 mod semantic_discovery;
 mod semantic_extension_section;
 mod semantic_facts;
+mod semantic_generation;
 mod semantic_image;
 /// The maintained renderer surface: prepared semantic-document, canonical-type,
 /// neutral, and zero-allocation display lanes over one static reader.
@@ -166,6 +167,11 @@ pub use semantic_extension_section::{
 };
 pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
+};
+pub use semantic_generation::{
+    SemanticContentRootV2, SemanticGenerationFamilyCommitmentV2, SemanticGenerationFamilyRootV2,
+    SemanticGenerationProofError, SemanticGenerationRootV2, UntrustedSemanticContentRootV2,
+    UntrustedSemanticGenerationRootV2, VerifiedTypedPlaneClosureV2,
 };
 pub use semantic_image::{
     CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
