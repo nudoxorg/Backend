@@ -89,6 +89,7 @@ fn add_plain_entity(builder: &mut IrBuilder, seed: u8) -> crate::ir::EntityId {
             None,
             EntityAuthorityFacts {
                 parentage: ParentageAuthority::Root,
+                visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             },
         )

@@ -3056,10 +3056,12 @@ mod tests {
         let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
             .expect("small family policy is valid");
         let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Documentation);
+        let inline_text_limit =
+            policy.maximum_bytes() - (HEADER_BYTES + RECORD_HEADER_BYTES + 32 + 1 + 4 + 1 + 4);
 
         for (text_len, expected_tag) in [
-            (4007, declarations::DOCS_TAG),
-            (4008, declarations::DOCS_JUMBO_TAG),
+            (inline_text_limit, declarations::DOCS_TAG),
+            (inline_text_limit + 1, declarations::DOCS_JUMBO_TAG),
         ] {
             let text = "d".repeat(text_len);
             let ir = jumbo_docs_image(&text);
@@ -3131,10 +3133,15 @@ mod tests {
         let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
             .expect("small family policy is valid");
         let kind = SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance);
+        let inline_path_limit =
+            policy.maximum_bytes() - (HEADER_BYTES + RECORD_HEADER_BYTES + 32 + 1 + 4 + 8);
 
         for (path_len, expected_tag) in [
-            (4004, source_provenance::DECLARATION_SOURCE_TAG),
-            (4005, source_provenance::DECLARATION_SOURCE_JUMBO_TAG),
+            (inline_path_limit, source_provenance::DECLARATION_SOURCE_TAG),
+            (
+                inline_path_limit + 1,
+                source_provenance::DECLARATION_SOURCE_JUMBO_TAG,
+            ),
         ] {
             let path = vec![0xa5; path_len];
             let ir = jumbo_source_image(&path);
