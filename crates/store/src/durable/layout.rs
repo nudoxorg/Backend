@@ -200,10 +200,15 @@ impl Drop for GcPinLease {
 #[derive(Debug)]
 pub struct GcPinGuard {
     _lease: GcPinLease,
+    root: PathBuf,
     acquired_at: Instant,
 }
 
 impl GcPinGuard {
+    pub(super) fn covers_root(&self, root: &Path) -> bool {
+        self.root == root
+    }
+
     /// Elapsed time since this shared collection pin was acquired.
     #[must_use]
     pub fn held_for(&self) -> Duration {
@@ -491,6 +496,7 @@ impl FileStore {
         ACTIVE_GC_PINS.fetch_add(1, Ordering::Relaxed);
         Ok(GcPinGuard {
             _lease: lease,
+            root: self.root.clone(),
             acquired_at: Instant::now(),
         })
     }

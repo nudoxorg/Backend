@@ -58,7 +58,7 @@ pub use nodes::{
     OwnedRelationNodeLoader, RelationNodeChild, RelationNodeRead, RelationNodeWriteStats,
     TreeReadStats, TreeWriteStats,
 };
-pub use objects::ObjectWriteReceipt;
+pub use objects::{ObjectWriteReceipt, VerifiedObjectView};
 pub use publication::{
     CheckedWorkspacePublication, FileDurable, FilePrepared, FilePublished, WorkspaceFileDurable,
     WorkspaceFilePrepared, WorkspaceFilePublished,

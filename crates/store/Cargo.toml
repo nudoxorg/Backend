@@ -42,6 +42,11 @@ name = "capacity-planning"
 path = "benches/capacity_planning.rs"
 harness = false
 
+[[bench]]
+name = "verified-object-read"
+path = "benches/verified_object_read.rs"
+harness = false
+
 [[example]]
 name = "capacity-worksheet"
 path = "examples/capacity_worksheet.rs"
