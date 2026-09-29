@@ -6,6 +6,7 @@
 
 use core::{iter::FusedIterator, ops::Deref};
 use std::cell::Cell;
+use std::sync::{Mutex, OnceLock};
 
 use crate::ir::{
     AtomId, AtomListId, CSharpFacts, ClangFacts, CoreSemanticEntity, DeclarationIdentity,
@@ -44,13 +45,68 @@ pub fn reset_semantic_image_validations() {
     VALIDATIONS.with(|cell| cell.set(0));
 }
 
-/// Structural proof that one digest of image bytes has already been validated.
-///
-/// The proof stores directory spans, not pointers. It is only sound for the
-/// bytes [`SemanticImageView::reopen`] validated when the proof was taken.
+/// Structural proof kept private to an owner that also keeps the exact
+/// immutable byte allocation alive.
 #[derive(Clone, Copy, Debug)]
-pub struct AdmittedSemanticImage {
+pub(super) struct AdmittedSemanticImage {
     validated: ValidatedFullImage,
+    backing_address: usize,
+    backing_length: usize,
+}
+
+/// Immutable owned image bytes with a lazily cached structural admission.
+///
+/// Keeping the bytes and proof in one owner makes it impossible for callers to
+/// pair a proof from one image with another image. The common reopen path reads
+/// the `OnceLock` directly; the mutex is touched only by concurrent cold misses.
+#[derive(Debug)]
+pub struct SemanticImageProofOwner {
+    bytes: Box<[u8]>,
+    proof: OnceLock<AdmittedSemanticImage>,
+    admission: Mutex<()>,
+}
+
+impl SemanticImageProofOwner {
+    /// Owns immutable image bytes without validating them yet.
+    #[must_use]
+    pub fn new(bytes: Box<[u8]>) -> Self {
+        Self {
+            bytes,
+            proof: OnceLock::new(),
+            admission: Mutex::new(()),
+        }
+    }
+
+    /// Exact immutable encoded bytes held by this proof owner.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Reopens the owned bytes, validating only on the first successful call.
+    pub fn reopen(&self) -> Result<SemanticImageView<'_>, FullSemanticImageError> {
+        if let Some(proof) = self.proof.get().copied() {
+            return SemanticImageView::reopen_proven(self.as_bytes(), proof);
+        }
+
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(proof) = self.proof.get().copied() {
+            return SemanticImageView::reopen_proven(self.as_bytes(), proof);
+        }
+
+        let view = SemanticImageView::reopen(self.as_bytes())?;
+        let _ = self.proof.set(view.proof());
+        Ok(view)
+    }
+}
+
+impl AsRef<[u8]> for SemanticImageProofOwner {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
 }
 
 /// Fully validated borrowed `NXFI` semantic image.
@@ -77,27 +133,32 @@ impl<'bytes> SemanticImageView<'bytes> {
         })
     }
 
-    /// Copies the structural proof of this view.
-    ///
-    /// The caller must keep it paired with these exact bytes.
+    /// Copies a proof for use only by a byte-owning implementation in this
+    /// module tree.
     #[must_use]
-    pub fn proof(&self) -> AdmittedSemanticImage {
+    pub(super) fn proof(&self) -> AdmittedSemanticImage {
         AdmittedSemanticImage {
             validated: self.validated,
+            backing_address: self.bytes.as_ptr() as usize,
+            backing_length: self.bytes.len(),
         }
     }
 
-    /// Rebuilds a view from a proof previously taken for these exact bytes.
-    ///
-    /// This does not validate. [`crate`]'s snapshot owner is the safe caller:
-    /// it stores the proof beside the bytes `reopen` just proved.
-    #[must_use]
-    pub fn reopen_proven(bytes: &'bytes [u8], proof: AdmittedSemanticImage) -> Self {
-        Self {
+    /// Rebuilds a view only when the proof still names its original backing
+    /// allocation. This is private to owner implementations, which keep that
+    /// allocation immutable and alive for the proof's entire lifetime.
+    pub(super) fn reopen_proven(
+        bytes: &'bytes [u8],
+        proof: AdmittedSemanticImage,
+    ) -> Result<Self, FullSemanticImageError> {
+        if bytes.as_ptr() as usize != proof.backing_address || bytes.len() != proof.backing_length {
+            return Err(FullSemanticImageError::ProofBackingMismatch);
+        }
+        Ok(Self {
             bytes,
             facts: proof.validated.image,
             validated: proof.validated,
-        }
+        })
     }
 
     fn layout(&self) -> FullImageLayout {

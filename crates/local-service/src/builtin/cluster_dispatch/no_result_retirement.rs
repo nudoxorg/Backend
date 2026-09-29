@@ -175,9 +175,10 @@ impl NoResultRetirementJournal {
             Some(debt) if debt.scope.attempt == scope.attempt => {
                 if debt.scope != scope
                     || (namespace.is_some()
-                        && debt.namespace.as_ref().is_some_and(|known| {
-                            Some(known) != namespace.as_ref()
-                        }))
+                        && debt
+                            .namespace
+                            .as_ref()
+                            .is_some_and(|known| Some(known) != namespace.as_ref()))
                 {
                     return Err(JournalError::ScopeMismatch);
                 }
@@ -236,12 +237,20 @@ impl NoResultRetirementJournal {
         let Some(debt) = guard.debts.get(&key) else {
             return Ok(false);
         };
-        if debt.scope != terminal || debt.namespace.as_ref().is_some_and(|known| known != &namespace) {
+        if debt.scope != terminal
+            || debt
+                .namespace
+                .as_ref()
+                .is_some_and(|known| known != &namespace)
+        {
             return Ok(false);
         }
         let mut next = guard.clone();
         observe_scope(&mut next, anchor, false)?;
-        let debt = next.debts.get_mut(&key).ok_or(JournalError::ScopeMismatch)?;
+        let debt = next
+            .debts
+            .get_mut(&key)
+            .ok_or(JournalError::ScopeMismatch)?;
         debt.namespace = Some(namespace);
         debt.anchor = Some((anchor, through));
         validate_state(&next)?;
@@ -550,11 +559,14 @@ fn decode(bytes: &[u8], expected_owner: [u8; 32]) -> Result<JournalState, Journa
         previous_key = Some(key);
         let scope = read_scope(&mut cursor)?;
         let (namespace_value, encoded_anchor) = if version == 1 {
-            (None, match read_u8(&mut cursor)? {
-                0 => None,
-                1 => Some((read_scope(&mut cursor)?, read_u64(&mut cursor)?)),
-                _ => return Err(JournalError::Corrupt("invalid anchor marker")),
-            })
+            (
+                None,
+                match read_u8(&mut cursor)? {
+                    0 => None,
+                    1 => Some((read_scope(&mut cursor)?, read_u64(&mut cursor)?)),
+                    _ => return Err(JournalError::Corrupt("invalid anchor marker")),
+                },
+            )
         } else {
             let namespace = read_namespace(&mut cursor)?;
             let anchor = match read_u8(&mut cursor)? {
@@ -634,9 +646,7 @@ fn put_namespace(
     Ok(())
 }
 
-fn read_namespace(
-    cursor: &mut Cursor<&[u8]>,
-) -> Result<Option<AuthorityNamespace>, JournalError> {
+fn read_namespace(cursor: &mut Cursor<&[u8]>) -> Result<Option<AuthorityNamespace>, JournalError> {
     match read_u8(cursor)? {
         0 => Ok(None),
         1 => {
@@ -748,6 +758,12 @@ mod tests {
             .expect("valid namespaced attempt")
     }
 
+    fn unique_scope_in(namespace: [u8; 16], attempt: u64) -> AssignmentScope {
+        let attempt = u8::try_from(attempt).expect("test attempt fits");
+        AssignmentScope::new(namespace, [attempt; 16], u64::from(attempt), [attempt; 32])
+            .expect("valid unique namespaced attempt")
+    }
+
     #[test]
     fn durable_debt_keeps_the_canonical_typed_namespace_and_exact_barrier() {
         let path = temp_path();
@@ -762,20 +778,10 @@ mod tests {
             "rust/2024/lower-ir",
         )
         .expect("typed semantic namespace");
-        let terminal = AssignmentScope::new(
-            namespace.namespace_id(),
-            [0x71; 16],
-            5,
-            [0x72; 32],
-        )
-        .expect("exact terminal");
-        let anchor = AssignmentScope::new(
-            namespace.namespace_id(),
-            [0x73; 16],
-            6,
-            [0x74; 32],
-        )
-        .expect("Turso-issued barrier scope");
+        let terminal = AssignmentScope::new(namespace.namespace_id(), [0x71; 16], 5, [0x72; 32])
+            .expect("exact terminal");
+        let anchor = AssignmentScope::new(namespace.namespace_id(), [0x73; 16], 6, [0x74; 32])
+            .expect("Turso-issued barrier scope");
         let journal = NoResultRetirementJournal::open(&path, owner).expect("open journal");
         journal
             .record_no_result_in_namespace(terminal, peer, Some(namespace.clone()))
@@ -784,19 +790,23 @@ mod tests {
             journal.record_no_result_in_namespace(
                 terminal,
                 peer,
-                Some(AuthorityNamespace::package_metadata(
-                    "pkg:cargo/other",
-                    "registry:crates-io",
-                    "main",
-                    "stable",
-                )
-                .expect("different namespace")),
+                Some(
+                    AuthorityNamespace::package_metadata(
+                        "pkg:cargo/other",
+                        "registry:crates-io",
+                        "main",
+                        "stable",
+                    )
+                    .expect("different namespace")
+                ),
             ),
             Err(JournalError::ScopeMismatch)
         ));
-        assert!(journal
-            .anchor_turso_barrier(terminal, peer, namespace.clone(), anchor, 5)
-            .expect("persist exact barrier"));
+        assert!(
+            journal
+                .anchor_turso_barrier(terminal, peer, namespace.clone(), anchor, 5)
+                .expect("persist exact barrier")
+        );
         drop(journal);
 
         let reopened = NoResultRetirementJournal::open(&path, owner).expect("cold reopen");
@@ -805,8 +815,7 @@ mod tests {
         assert_eq!(target.no_result_scope, terminal);
         assert_eq!(target.anchor_scope, anchor);
         assert_eq!(target.retired_through_epoch, terminal.attempt);
-        fs::remove_dir_all(path.parent().expect("test directory"))
-            .expect("remove test directory");
+        fs::remove_dir_all(path.parent().expect("test directory")).expect("remove test directory");
     }
 
     fn peers(count: usize) -> Vec<EndpointId> {
@@ -876,7 +885,7 @@ mod tests {
             .expect("fresh attempt reanchors pending debt");
         assert!(
             !restarted
-                .acknowledge(pending[0])
+                .acknowledge(pending[0].clone())
                 .expect("late old ACK is harmless")
         );
         let exact = restarted.pending();
@@ -895,59 +904,59 @@ mod tests {
     }
 
     #[test]
-    fn newer_no_result_does_not_erase_in_flight_retirement_prefix() {
+    fn newer_no_result_replaces_in_flight_prefix_with_fresh_exact_barrier() {
         let path = temp_path();
         let owner = EndpointId::from_bytes(SecretKey::from_bytes(&[0x7c; 32]).public().as_bytes())
             .expect("valid owner ID");
         let peer = peers(1)[0];
+        let namespace = AuthorityNamespace::package_metadata(
+            "pkg:cargo/widget",
+            "registry:crates-io",
+            "main",
+            "stable",
+        )
+        .expect("typed authority namespace");
+        let terminal = unique_scope_in(namespace.namespace_id(), 5);
+        let first_barrier = unique_scope_in(namespace.namespace_id(), 6);
+        let newer_terminal = unique_scope_in(namespace.namespace_id(), 7);
         let journal = NoResultRetirementJournal::open(&path, owner).expect("open journal");
         journal
-            .record_no_result(scope(5), peer)
+            .record_no_result_in_namespace(terminal, peer, Some(namespace.clone()))
             .expect("record first terminal");
-        let first_anchor = scope(6);
         journal
-            .anchor_namespace(first_anchor)
-            .expect("anchor old terminal");
+            .anchor_turso_barrier(terminal, peer, namespace.clone(), first_barrier, 5)
+            .expect("persist exact barrier for old terminal");
         let stale_snapshot = journal.pending()[0].clone();
         journal
-            .record_no_result(first_anchor, peer)
+            .record_no_result_in_namespace(newer_terminal, peer, Some(namespace.clone()))
             .expect("newer terminal arrives before old-prefix ACK");
         drop(journal);
 
         let journal = Arc::new(NoResultRetirementJournal::open(&path, owner).expect("cold reopen"));
-        let in_flight = journal.pending();
-        assert_eq!(in_flight.len(), 1);
-        assert_eq!(in_flight[0].no_result_scope, first_anchor);
-        assert_eq!(in_flight[0].anchor_scope, first_anchor);
-        assert_eq!(in_flight[0].retired_through_epoch, 5);
+        assert!(journal.pending().is_empty());
+        let unanchored = journal.pending_barriers();
+        assert_eq!(unanchored.len(), 1);
+        assert_eq!(unanchored[0].no_result_scope, newer_terminal);
         assert!(
             !journal
                 .acknowledge(stale_snapshot)
                 .expect("pre-update receipt is stale")
         );
 
-        let report = futures_executor::block_on(super::super::sweep_no_result_retirement_targets(
-            Arc::clone(&journal),
-            &in_flight,
-            |_| async { true },
-        ));
-        assert_eq!(report.confirmed, 1);
-        assert!(journal.pending().is_empty());
-
-        // ACKing through epoch 5 retires only that prefix. The epoch-6 terminal remains and is
-        // re-anchored by the next fresh attempt, then can be safely acknowledged through 6.
-        let second_anchor = scope(7);
+        // The later exact terminal gets a newer Turso barrier. Its prefix covers the older
+        // terminal too, so the old in-flight ACK cannot clear the new durable debt.
+        let second_barrier = unique_scope_in(namespace.namespace_id(), 8);
         journal
-            .anchor_namespace(second_anchor)
-            .expect("anchor retained newer terminal");
-        let residual = journal.pending();
-        assert_eq!(residual.len(), 1);
-        assert_eq!(residual[0].no_result_scope, first_anchor);
-        assert_eq!(residual[0].anchor_scope, second_anchor);
-        assert_eq!(residual[0].retired_through_epoch, 6);
+            .anchor_turso_barrier(newer_terminal, peer, namespace, second_barrier, 7)
+            .expect("persist fresh exact barrier");
+        let reanchored = journal.pending();
+        assert_eq!(reanchored.len(), 1);
+        assert_eq!(reanchored[0].no_result_scope, newer_terminal);
+        assert_eq!(reanchored[0].anchor_scope, second_barrier);
+        assert_eq!(reanchored[0].retired_through_epoch, 7);
         let report = futures_executor::block_on(super::super::sweep_no_result_retirement_targets(
             Arc::clone(&journal),
-            &residual,
+            &reanchored,
             |_| async { true },
         ));
         assert_eq!(report.confirmed, 1);
@@ -978,32 +987,81 @@ mod tests {
     }
 
     #[test]
-    fn late_no_result_uses_persisted_newer_namespace_anchor() {
+    fn late_no_result_requires_its_own_exact_barrier_after_cold_reopen() {
         let path = temp_path();
         let owner = EndpointId::from_bytes(SecretKey::from_bytes(&[0x7a; 32]).public().as_bytes())
             .expect("valid owner ID");
         let peers = peers(2);
+        let namespace = AuthorityNamespace::package_metadata(
+            "pkg:cargo/widget",
+            "registry:crates-io",
+            "main",
+            "stable",
+        )
+        .expect("typed authority namespace");
+        let first_terminal = unique_scope_in(namespace.namespace_id(), 4);
+        let first_barrier = unique_scope_in(namespace.namespace_id(), 6);
+        let late_terminal = unique_scope_in(namespace.namespace_id(), 5);
         let journal = NoResultRetirementJournal::open(&path, owner).expect("open journal");
-        let anchor = scope(6);
         journal
-            .record_no_result(scope(4), peers[0])
-            .expect("existing debt retains namespace high-water");
+            .record_no_result_in_namespace(first_terminal, peers[0], Some(namespace.clone()))
+            .expect("persist first worker terminal");
         journal
-            .anchor_namespace(anchor)
-            .expect("store namespace high-water");
+            .anchor_turso_barrier(
+                first_terminal,
+                peers[0],
+                namespace.clone(),
+                first_barrier,
+                4,
+            )
+            .expect("persist first worker's exact barrier");
         journal
-            .record_no_result(scope(5), peers[1])
-            .expect("late terminal is accepted under fresh anchor");
+            .record_no_result_in_namespace(late_terminal, peers[1], Some(namespace.clone()))
+            .expect("persist late worker terminal");
 
+        let anchored = journal.pending();
+        assert_eq!(anchored.len(), 1);
+        assert_eq!(anchored[0].peer, *peers[0].as_bytes());
+        let barriers = journal.pending_barriers();
+        assert_eq!(barriers.len(), 1);
+        assert_eq!(barriers[0].peer, *peers[1].as_bytes());
+        assert_eq!(barriers[0].no_result_scope, late_terminal);
+        drop(journal);
+
+        let journal = NoResultRetirementJournal::open(&path, owner).expect("cold reopen");
+        assert_eq!(journal.pending().len(), 1);
+        let late_barriers = journal.pending_barriers();
+        assert_eq!(late_barriers.len(), 1);
+        assert_eq!(late_barriers[0].no_result_scope, late_terminal);
+
+        // A high-water scope created for another worker cannot stand in for this terminal's
+        // authority-issued barrier. Once its own barrier is persisted, both workers are pending.
+        let late_barrier = unique_scope_in(namespace.namespace_id(), 7);
+        assert!(
+            journal
+                .anchor_turso_barrier(late_terminal, peers[1], namespace, late_barrier, 5,)
+                .expect("persist late worker's exact barrier")
+        );
         let pending = journal.pending();
         assert_eq!(pending.len(), 2);
         let late = pending
             .iter()
             .find(|target| target.peer == *peers[1].as_bytes())
             .expect("late worker debt");
-        assert_eq!(late.no_result_scope, scope(5));
-        assert_eq!(late.anchor_scope, anchor);
+        assert_eq!(late.no_result_scope, late_terminal);
+        assert_eq!(late.anchor_scope, late_barrier);
         assert_eq!(late.retired_through_epoch, 5);
+        drop(journal);
+
+        let journal = NoResultRetirementJournal::open(&path, owner).expect("second cold reopen");
+        let pending = journal.pending();
+        assert_eq!(pending.len(), 2);
+        let report = futures_executor::block_on(super::super::sweep_no_result_retirement_targets(
+            Arc::new(journal),
+            &pending,
+            |_| async { true },
+        ));
+        assert_eq!(report.confirmed, 2);
         fs::remove_dir_all(path.parent().expect("test directory")).expect("clean test directory");
     }
 

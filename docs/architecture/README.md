@@ -12,3 +12,6 @@ The governing documents are:
 - [Agent execution and cutover](../operations/agent-cutover.md)
 
 Implementation evidence belongs in machine-readable receipts under the control-plane ledger. These documents define contracts and gates; passing code and independent law suites determine completion.
+
+The [compiler and IR lineage audit](compiler-ir-lineage.md) records which
+historical semantic foundations the current implementation preserves.

@@ -85,21 +85,15 @@ impl NativeFrontend for CSharpFrontend {
                 BUILD_DIRECTORY,
             ])
             .arg(format!("-p:LangVersion={}", language_version(profile)))
-            .current_dir(native_work.join(WORK_DIRECTORY))
-            .env_clear()
-            .env(
-                "DOTNET_CLI_HOME",
-                native_work.join(WORK_DIRECTORY).join(DOTNET_HOME_DIRECTORY),
-            )
-            .env(
-                "NUGET_PACKAGES",
-                native_work
-                    .join(WORK_DIRECTORY)
-                    .join(NUGET_PACKAGES_DIRECTORY),
-            )
-            .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-            .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1");
+            .current_dir(native_work.join(WORK_DIRECTORY));
         command
+    }
+
+    fn configure_environment(native_work: &Path, command: &mut Command) {
+        let work = native_work.join(WORK_DIRECTORY);
+        command
+            .env("DOTNET_CLI_HOME", work.join(DOTNET_HOME_DIRECTORY))
+            .env("NUGET_PACKAGES", work.join(NUGET_PACKAGES_DIRECTORY));
     }
 
     fn source_via_stdin() -> bool {

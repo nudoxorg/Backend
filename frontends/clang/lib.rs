@@ -18,7 +18,7 @@ mod system_includes;
 #[path = "src/legacy/mod.rs"]
 pub mod legacy;
 
-pub use authority::{ClangAuthorityError, ClangProject};
+pub use authority::{ClangAuthorityEnvironment, ClangAuthorityError, ClangProject, LoadedLibclang};
 
 const LANGUAGE: &str = "clang";
 

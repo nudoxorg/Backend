@@ -11,8 +11,8 @@ use super::super::IndexedProject;
 use super::semantic::{SemanticRowSink, compiled_source, project_image_rows};
 use backend_engine::Row;
 use backend_version::{ContentId, SourceFactDomain};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Arc;
+use hashlink::LruCache;
+use std::collections::{BTreeSet, HashSet, VecDeque};
 
 /// Images retained at once. One publication walks every image of the edited
 /// package; the bound is large enough for that pass, and the least recently
@@ -20,6 +20,15 @@ use std::sync::Arc;
 const MAX_RESIDENT_IMAGES: usize = 4096;
 /// Declaration rows retained across those images.
 const MAX_RESIDENT_ROWS: usize = 65_536;
+/// Estimated owned projection storage retained across those images.
+///
+/// This counts row/vector backing, owned text payloads, and per-projection
+/// object headers. Allocator slack and residence map/queue metadata are
+/// bounded separately by the image and row limits and are not included.
+const MAX_RESIDENT_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
+/// Successfully admitted publication keys remembered per image before the
+/// oldest admission is forgotten and must be checked again.
+const MAX_ADMISSIONS_PER_IMAGE: usize = 64;
 
 /// How a repeated declaration identity is admitted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,13 +69,21 @@ pub(super) struct ProjectedImage {
     pub(super) rows: Vec<ProjectedRow>,
 }
 
+/// One projection held in the residence cache.
+#[derive(Debug)]
+struct ResidentProjection {
+    image: ProjectedImage,
+    rows: usize,
+    bytes: usize,
+}
+
 /// Path and source identity proved for one image, and the publication keys
 /// that have admitted those bytes.
 #[derive(Debug)]
 struct ImageByteFacts {
     path: String,
     identity: ContentId<SourceFactDomain>,
-    admissions: BTreeSet<[u8; 32]>,
+    admissions: VecDeque<[u8; 32]>,
 }
 
 /// Projected semantic rows reused across publications of the same image.
@@ -74,10 +91,11 @@ struct ImageByteFacts {
 pub(in crate::builtin) struct ImageRowResidence {
     image_limit: usize,
     row_limit: usize,
-    entries: BTreeMap<[u8; 32], Arc<ProjectedImage>>,
-    order: VecDeque<[u8; 32]>,
-    facts: BTreeMap<[u8; 32], ImageByteFacts>,
-    fact_order: VecDeque<[u8; 32]>,
+    byte_limit: usize,
+    resident_rows: usize,
+    resident_bytes: usize,
+    entries: LruCache<[u8; 32], ResidentProjection>,
+    facts: LruCache<[u8; 32], ImageByteFacts>,
     hits: u64,
     misses: u64,
     reopens: u64,
@@ -95,13 +113,19 @@ impl ImageRowResidence {
     }
 
     fn with_limits(image_limit: usize, row_limit: usize) -> Self {
+        Self::with_budgets(image_limit, row_limit, MAX_RESIDENT_PROJECTION_BYTES)
+    }
+
+    fn with_budgets(image_limit: usize, row_limit: usize, byte_limit: usize) -> Self {
+        let image_limit = image_limit.max(1);
         Self {
-            image_limit: image_limit.max(1),
+            image_limit,
             row_limit: row_limit.max(1),
-            entries: BTreeMap::new(),
-            order: VecDeque::new(),
-            facts: BTreeMap::new(),
-            fact_order: VecDeque::new(),
+            byte_limit,
+            resident_rows: 0,
+            resident_bytes: 0,
+            entries: LruCache::new(image_limit),
+            facts: LruCache::new(image_limit),
             hits: 0,
             misses: 0,
             reopens: 0,
@@ -124,6 +148,14 @@ impl ImageRowResidence {
         self.reopens
     }
 
+    fn retained_rows(&self) -> usize {
+        self.resident_rows
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.resident_bytes
+    }
+
     /// Counts one validation of image bytes.
     pub(super) fn note_reopen(&mut self) {
         self.reopens = self.reopens.saturating_add(1);
@@ -134,58 +166,68 @@ impl ImageRowResidence {
         self.misses = 0;
     }
 
-    fn touch(&mut self, key: [u8; 32]) {
-        if let Some(position) = self.order.iter().position(|existing| *existing == key) {
-            self.order.remove(position);
-        }
-        self.order.push_back(key);
-    }
-
-    fn evict(&mut self) {
-        while self.entries.len() > self.image_limit || self.retained_rows() > self.row_limit {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            self.entries.remove(&oldest);
-        }
-    }
-
-    fn retained_rows(&self) -> usize {
-        self.entries.values().map(|image| image.rows.len()).sum()
-    }
-
-    fn cached(&mut self, key: [u8; 32]) -> Option<Arc<ProjectedImage>> {
-        let projected = self.entries.get(&key)?.clone();
-        self.hits = self.hits.saturating_add(1);
-        self.touch(key);
-        Some(projected)
-    }
-
-    fn store(&mut self, key: [u8; 32], projected: Arc<ProjectedImage>) {
-        self.entries.insert(key, projected);
-        self.touch(key);
-        self.evict();
-        self.misses = self.misses.saturating_add(1);
-    }
-
-    fn touch_facts(&mut self, digest: [u8; 32]) {
-        if let Some(position) = self
-            .fact_order
-            .iter()
-            .position(|existing| *existing == digest)
+    fn evict_to_fit(&mut self, rows: usize, bytes: usize) {
+        while self.entries.len() >= self.image_limit
+            || self.retained_rows().saturating_add(rows) > self.row_limit
+            || self.retained_bytes().saturating_add(bytes) > self.byte_limit
         {
-            self.fact_order.remove(position);
-        }
-        self.fact_order.push_back(digest);
-    }
-
-    fn evict_facts(&mut self) {
-        while self.facts.len() > self.image_limit {
-            let Some(oldest) = self.fact_order.pop_front() else {
+            let Some((_, oldest)) = self.entries.remove_lru() else {
                 break;
             };
-            self.facts.remove(&oldest);
+            self.resident_rows = self.resident_rows.saturating_sub(oldest.rows);
+            self.resident_bytes = self.resident_bytes.saturating_sub(oldest.bytes);
         }
+    }
+
+    /// Borrows a projection while its cache entry cannot be evicted.
+    ///
+    /// The exclusive residence borrow ensures callers finish replay before a
+    /// later insertion can mutate the LRU, so cache hits need no shared owner.
+    fn cached(&mut self, key: [u8; 32]) -> Option<&ProjectedImage> {
+        let projected = self.entries.get(&key)?;
+        self.hits = self.hits.saturating_add(1);
+        Some(&projected.image)
+    }
+
+    fn store(
+        &mut self,
+        key: [u8; 32],
+        projected: ProjectedImage,
+    ) -> Result<&ProjectedImage, ProjectedImage> {
+        self.misses = self.misses.saturating_add(1);
+        let rows = projected.rows.len();
+        let bytes = projected_image_retained_bytes(&projected);
+        if rows > self.row_limit || bytes > self.byte_limit {
+            return Err(projected);
+        }
+
+        if let Some(previous) = self.entries.remove(&key) {
+            self.resident_rows = self.resident_rows.saturating_sub(previous.rows);
+            self.resident_bytes = self.resident_bytes.saturating_sub(previous.bytes);
+        }
+        self.evict_to_fit(rows, bytes);
+        if self.entries.len() >= self.image_limit
+            || self.retained_rows().saturating_add(rows) > self.row_limit
+            || self.retained_bytes().saturating_add(bytes) > self.byte_limit
+        {
+            return Err(projected);
+        }
+
+        self.resident_rows = self.resident_rows.saturating_add(rows);
+        self.resident_bytes = self.resident_bytes.saturating_add(bytes);
+        self.entries.insert(
+            key,
+            ResidentProjection {
+                image: projected,
+                rows,
+                bytes,
+            },
+        );
+        let resident = self
+            .entries
+            .get(&key)
+            .expect("inserted projection remains resident");
+        Ok(&resident.image)
     }
 
     fn store_facts(
@@ -203,12 +245,87 @@ impl ImageRowResidence {
                 ImageByteFacts {
                     path,
                     identity,
-                    admissions: BTreeSet::new(),
+                    admissions: VecDeque::new(),
                 },
             );
         }
-        self.touch_facts(digest);
-        self.evict_facts();
+    }
+
+    fn confirm_admission(&mut self, digest: [u8; 32], admission: [u8; 32]) {
+        let Some(facts) = self.facts.get_mut(&digest) else {
+            return;
+        };
+        if facts.admissions.contains(&admission) {
+            return;
+        }
+        if facts.admissions.len() == MAX_ADMISSIONS_PER_IMAGE {
+            facts.admissions.pop_front();
+        }
+        facts.admissions.push_back(admission);
+    }
+}
+
+fn projected_image_retained_bytes(projected: &ProjectedImage) -> usize {
+    let mut shared_text = HashSet::new();
+    let mut bytes = std::mem::size_of::<ResidentProjection>().saturating_add(
+        projected
+            .rows
+            .capacity()
+            .saturating_mul(std::mem::size_of::<ProjectedRow>()),
+    );
+    for projected_row in &projected.rows {
+        bytes = bytes
+            .saturating_add(
+                projected_row
+                    .charges
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Charge>()),
+            )
+            .saturating_add(row_retained_bytes(&projected_row.row, &mut shared_text));
+    }
+    bytes
+}
+
+/// Estimates storage owned by one projected row without cloning it.
+fn row_retained_bytes(row: &Row, shared_text: &mut HashSet<usize>) -> usize {
+    use backend_library::Fragment;
+
+    let mut bytes = row.label.capacity();
+    if let Some(preimage) = row.identity_preimage() {
+        bytes = bytes.saturating_add(preimage.as_str().len());
+    }
+    bytes = bytes.saturating_add(
+        row.document
+            .len()
+            .saturating_mul(std::mem::size_of::<Fragment>()),
+    );
+    for fragment in row.document.iter() {
+        bytes = bytes.saturating_add(match fragment {
+            Fragment::Text(text) | Fragment::Code(text) => text.capacity(),
+            Fragment::Link { label, .. } => label.capacity(),
+            Fragment::Break => 0,
+        });
+    }
+    if let Some(signature) = row.signature.as_ref() {
+        bytes = bytes.saturating_add(signature.capacity());
+    }
+    bytes = bytes.saturating_add(row.facts.text_bytes());
+    if let Some(path) = row.source.file_path() {
+        bytes = bytes.saturating_add(shared_text_retained_bytes(path, shared_text));
+    }
+    if let backend_compile::SourceExcerpt::Captured { text, .. } = &row.excerpt {
+        bytes = bytes.saturating_add(shared_text_retained_bytes(text, shared_text));
+    }
+    bytes
+}
+
+/// Counts an `Arc<str>` allocation once when the same allocation is shared by
+/// multiple cached rows. Its two-word refcount header is included.
+fn shared_text_retained_bytes(text: &str, seen: &mut HashSet<usize>) -> usize {
+    if seen.insert(text.as_ptr().addr()) {
+        text.len().saturating_add(2 * std::mem::size_of::<usize>())
+    } else {
+        0
     }
 }
 
@@ -222,23 +339,23 @@ pub(super) fn append_resident_image_rows(
 ) -> Result<(), super::super::BuiltinModelError> {
     let image_identity = image_digest(image.as_ref());
     let key = projection_key(image_identity, project, profile, sink);
-    let projected = if let Some(cached) = residence.cached(key) {
-        cached
-    } else {
-        let projected = Arc::new(project_image_rows(
-            image,
-            image_identity,
-            project,
-            profile,
-            sink.initial.basis(),
-            sink.stale,
-            sink.path,
-            sink.site_declarations,
-        )?);
-        residence.store(key, Arc::clone(&projected));
-        projected
-    };
-    apply_projected_image(&projected, sink)
+    if let Some(cached) = residence.cached(key) {
+        return apply_projected_image(cached, sink);
+    }
+    let projected = project_image_rows(
+        image,
+        image_identity,
+        project,
+        profile,
+        sink.initial.basis(),
+        sink.stale,
+        sink.path,
+        sink.site_declarations,
+    )?;
+    match residence.store(key, projected) {
+        Ok(cached) => apply_projected_image(cached, sink),
+        Err(bypassed) => apply_projected_image(&bypassed, sink),
+    }
 }
 
 /// Stamps the current basis and replays symbol and byte admission.
@@ -324,12 +441,88 @@ fn projection_key(
         hasher.update(&site.line().to_le_bytes());
         hasher.update(site.signature().as_bytes());
         hasher.update(&[0]);
-        if let Some(text) = site.source_excerpt().text() {
-            hasher.update(text.as_bytes());
-        }
+        hash_source_excerpt(&mut hasher, site.source_excerpt());
+        hash_declaration_facts(&mut hasher, site.facts());
         hasher.update(&[0xff]);
     }
     *hasher.finalize().as_bytes()
+}
+
+fn hash_text(hasher: &mut blake3::Hasher, text: &str) {
+    // Every input in these source-site fields is bounded well below u32::MAX.
+    let byte_len = u32::try_from(text.len()).unwrap_or(u32::MAX);
+    hasher.update(&byte_len.to_le_bytes());
+    hasher.update(text.as_bytes());
+}
+
+fn hash_optional_text(hasher: &mut blake3::Hasher, text: Option<&str>) {
+    match text {
+        Some(text) => {
+            hasher.update(&[1]);
+            hash_text(hasher, text);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+}
+
+/// Hashes the complete explicit source-text state, including whether captured
+/// text is complete or truncated.
+fn hash_source_excerpt(hasher: &mut blake3::Hasher, excerpt: &backend_compile::SourceExcerpt) {
+    use backend_compile::{SourceExcerpt, SourceExcerptExtent};
+
+    match excerpt {
+        SourceExcerpt::Captured { text, extent } => {
+            hasher.update(&[
+                0,
+                match extent {
+                    SourceExcerptExtent::Complete => 0,
+                    SourceExcerptExtent::Truncated => 1,
+                },
+            ]);
+            hash_text(hasher, text);
+        }
+        SourceExcerpt::NotCaptured => {
+            hasher.update(&[1]);
+        }
+        SourceExcerpt::NotHydrated => {
+            hasher.update(&[2]);
+        }
+        SourceExcerpt::Unconfigured => {
+            hasher.update(&[3]);
+        }
+    }
+}
+
+/// Hashes every declaration fact with explicit tags and length-prefixed text.
+fn hash_declaration_facts(hasher: &mut blake3::Hasher, facts: &backend_compile::DeclarationFacts) {
+    use backend_compile::Fact;
+
+    match &facts.deprecation {
+        Fact::Unobserved => {
+            hasher.update(&[0]);
+        }
+        Fact::Absent => {
+            hasher.update(&[1]);
+        }
+        Fact::Present(notice) => {
+            hasher.update(&[2]);
+            hash_optional_text(hasher, notice.since());
+            hash_optional_text(hasher, notice.note());
+        }
+    }
+    match &facts.obligation {
+        Fact::Unobserved => {
+            hasher.update(&[0]);
+        }
+        Fact::Absent => {
+            hasher.update(&[1]);
+        }
+        Fact::Present(obligation) => {
+            hasher.update(&[2, obligation.wire_tag()]);
+        }
+    }
 }
 
 fn image_digest(bytes: &[u8]) -> [u8; 32] {
@@ -439,7 +632,6 @@ fn resident_compiled_image<'bytes>(
     }
     let path = facts.path.clone();
     let identity = facts.identity;
-    residence.touch_facts(digest);
     Some(CompiledImage::Resident {
         bytes,
         path,
@@ -527,10 +719,7 @@ pub(super) fn confirm_image_admission(
 }
 
 fn confirm_digest(digest: [u8; 32], admission: [u8; 32], residence: &mut ImageRowResidence) {
-    if let Some(facts) = residence.facts.get_mut(&digest) {
-        facts.admissions.insert(admission);
-        residence.touch_facts(digest);
-    }
+    residence.confirm_admission(digest, admission);
 }
 
 /// Admits each image for `key`, reopening only when that key has not admitted it.
@@ -583,7 +772,7 @@ pub(super) fn apply_resident_image(
     let Some(projected) = residence.cached(key) else {
         return Ok(false);
     };
-    apply_projected_image(&projected, sink)?;
+    apply_projected_image(projected, sink)?;
     Ok(true)
 }
 
@@ -800,36 +989,36 @@ pub(super) fn measure_semantic_admission() {
         backend_engine::builtin::ProductSemanticPublicationKey::new(package, coordinate, profile)
             .expect("publication key");
     let bytes: usize = images.iter().map(Vec::len).sum();
-    let images = images
-        .iter()
-        .map(|image| admitted_snapshot(image))
-        .collect::<Vec<_>>();
+    let snapshots = admitted_snapshots(&images);
     for _ in 0..WARMUPS {
-        clear_snapshot_proofs(&images);
+        let cold_snapshots = admitted_snapshots(&images);
         let mut residence = ImageRowResidence::default();
-        admit_activated_images(&images, &key, &mut residence).expect("cold warmup");
+        admit_activated_images(&cold_snapshots, &key, &mut residence).expect("cold warmup");
     }
     let mut cold = Vec::with_capacity(SAMPLES);
+    let mut cold_setup = Vec::with_capacity(SAMPLES);
     let mut cold_reopens = 0_u64;
     for _ in 0..SAMPLES {
-        clear_snapshot_proofs(&images);
+        let setup_started = std::time::Instant::now();
+        let cold_snapshots = admitted_snapshots(&images);
+        cold_setup.push(setup_started.elapsed().as_nanos());
         let mut residence = ImageRowResidence::default();
         let started = std::time::Instant::now();
-        admit_activated_images(&images, &key, &mut residence).expect("cold");
+        admit_activated_images(&cold_snapshots, &key, &mut residence).expect("cold");
         cold.push(started.elapsed().as_nanos());
         cold_reopens += residence.reopens();
         std::hint::black_box(residence.reopens());
     }
     let mut warm_residence = ImageRowResidence::default();
-    admit_activated_images(&images, &key, &mut warm_residence).expect("warm prime");
+    admit_activated_images(&snapshots, &key, &mut warm_residence).expect("warm prime");
     for _ in 0..WARMUPS {
-        admit_activated_images(&images, &key, &mut warm_residence).expect("warm warmup");
+        admit_activated_images(&snapshots, &key, &mut warm_residence).expect("warm warmup");
     }
     let reopens_before = warm_residence.reopens();
     let mut warm = Vec::with_capacity(SAMPLES);
     for _ in 0..SAMPLES {
         let started = std::time::Instant::now();
-        admit_activated_images(&images, &key, &mut warm_residence).expect("warm");
+        admit_activated_images(&snapshots, &key, &mut warm_residence).expect("warm");
         warm.push(started.elapsed().as_nanos());
         std::hint::black_box(warm_residence.reopens());
     }
@@ -838,51 +1027,47 @@ pub(super) fn measure_semantic_admission() {
         .then_some(())
         .expect("admission cache validated a warm image");
     let (cold_median, cold_p95) = percentiles(&cold);
+    let (cold_setup_median, _) = percentiles(&cold_setup);
     let (warm_median, warm_p95) = percentiles(&warm);
     println!(
-        "semantic_admission images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} cold_reopens={cold_reopens} warm_reopens={warm_reopens}"
+        "semantic_admission images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} cold_setup_median_ns={cold_setup_median} warm_median_ns={warm_median} warm_p95_ns={warm_p95} cold_reopens={cold_reopens} warm_reopens={warm_reopens}"
     );
 }
 
 /// Times validating a batch of snapshots against reusing their structural proofs.
 ///
-/// The snapshots are built before either timer. `cold` clears the proof and
-/// validates every image. `warm` rebuilds the view from the stored proof.
+/// Fresh snapshots are prepared outside each `cold` timer; construction cost is
+/// reported separately. `warm` rebuilds views from proofs stored on one batch.
 #[allow(clippy::expect_used, clippy::print_stdout)]
 pub(super) fn measure_semantic_image_proof() {
     const IMAGES: usize = 32;
     const SAMPLES: usize = 32;
     const WARMUPS: usize = 4;
-    let snapshots = (0..IMAGES)
+    let image_bytes = (0..IMAGES)
         .map(|index| {
             let path = format!("src/file{index}.rs");
             let salt = u8::try_from(index).expect("image index");
-            let bytes = super::image_reopen::fixture_semantic_image_salted(&path, salt)
-                .expect("fixture image");
-            admitted_snapshot(&bytes)
+            super::image_reopen::fixture_semantic_image_salted(&path, salt).expect("fixture image")
         })
         .collect::<Vec<_>>();
+    let snapshots = admitted_snapshots(&image_bytes);
     let bytes: usize = snapshots.iter().map(|image| image.as_ref().len()).sum();
     for _ in 0..WARMUPS {
-        for image in &snapshots {
-            image.clear_reopen_proof();
-        }
-        let _ = reopen_snapshots(&snapshots);
+        let cold_snapshots = admitted_snapshots(&image_bytes);
+        let _ = reopen_snapshots(&cold_snapshots);
     }
     let mut cold = Vec::with_capacity(SAMPLES);
+    let mut cold_setup = Vec::with_capacity(SAMPLES);
     let mut cold_validations = 0_u64;
     for _ in 0..SAMPLES {
-        for image in &snapshots {
-            image.clear_reopen_proof();
-        }
+        let setup_started = std::time::Instant::now();
+        let cold_snapshots = admitted_snapshots(&image_bytes);
+        cold_setup.push(setup_started.elapsed().as_nanos());
         backend_semantic::ir::reset_semantic_image_validations();
         let started = std::time::Instant::now();
-        reopen_snapshots(&snapshots);
+        reopen_snapshots(&cold_snapshots);
         cold.push(started.elapsed().as_nanos());
         cold_validations += backend_semantic::ir::semantic_image_validations();
-    }
-    for image in &snapshots {
-        image.clear_reopen_proof();
     }
     reopen_snapshots(&snapshots);
     for _ in 0..WARMUPS {
@@ -900,31 +1085,31 @@ pub(super) fn measure_semantic_image_proof() {
         .then_some(())
         .expect("warm proof skipped validation");
     let (cold_median, cold_p95) = percentiles(&cold);
+    let (cold_setup_median, _) = percentiles(&cold_setup);
     let (warm_median, warm_p95) = percentiles(&warm);
     println!(
-        "semantic_image_proof images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} cold_validations={cold_validations} warm_validations={warm_validations}"
+        "semantic_image_proof images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} cold_setup_median_ns={cold_setup_median} warm_median_ns={warm_median} warm_p95_ns={warm_p95} cold_validations={cold_validations} warm_validations={warm_validations}"
     );
 }
 
 /// Times admission and a row-cache miss against the snapshot's stored digest and proof.
 ///
-/// Snapshots and the publication key are built before any timer. `cold` clears
-/// each proof and validates. `warm` finds the admission. `miss` rebuilds the
-/// view through the overlay helper.
+/// The publication key is built before any timer. Fresh snapshots are prepared
+/// outside each `cold` timer, with their construction cost reported separately.
+/// `warm` finds the admission. `miss` rebuilds the view through the overlay helper.
 #[allow(clippy::expect_used, clippy::print_stdout)]
 pub(super) fn measure_semantic_snapshot_residence() {
     const IMAGES: usize = 32;
     const SAMPLES: usize = 32;
     const WARMUPS: usize = 4;
-    let snapshots = (0..IMAGES)
+    let image_bytes = (0..IMAGES)
         .map(|index| {
             let path = format!("src/file{index}.rs");
             let salt = u8::try_from(index).expect("image index");
-            let bytes = super::image_reopen::fixture_semantic_image_salted(&path, salt)
-                .expect("fixture image");
-            admitted_snapshot(&bytes)
+            super::image_reopen::fixture_semantic_image_salted(&path, salt).expect("fixture image")
         })
         .collect::<Vec<_>>();
+    let snapshots = admitted_snapshots(&image_bytes);
     for image in &snapshots {
         let hashed = *blake3::hash(image.as_ref()).as_bytes();
         (hashed == image.content_digest())
@@ -943,17 +1128,20 @@ pub(super) fn measure_semantic_snapshot_residence() {
             .expect("publication key");
     let bytes: usize = snapshots.iter().map(|image| image.as_ref().len()).sum();
     for _ in 0..WARMUPS {
-        clear_snapshot_proofs(&snapshots);
+        let cold_snapshots = admitted_snapshots(&image_bytes);
         let mut residence = ImageRowResidence::default();
-        admit_activated_images(&snapshots, &key, &mut residence).expect("cold warmup");
+        admit_activated_images(&cold_snapshots, &key, &mut residence).expect("cold warmup");
     }
     let mut cold = Vec::with_capacity(SAMPLES);
+    let mut cold_setup = Vec::with_capacity(SAMPLES);
     let mut cold_reopens = 0_u64;
     for _ in 0..SAMPLES {
-        clear_snapshot_proofs(&snapshots);
+        let setup_started = std::time::Instant::now();
+        let cold_snapshots = admitted_snapshots(&image_bytes);
+        cold_setup.push(setup_started.elapsed().as_nanos());
         let mut residence = ImageRowResidence::default();
         let started = std::time::Instant::now();
-        admit_activated_images(&snapshots, &key, &mut residence).expect("cold");
+        admit_activated_images(&cold_snapshots, &key, &mut residence).expect("cold");
         cold.push(started.elapsed().as_nanos());
         cold_reopens += residence.reopens();
         std::hint::black_box(residence.reopens());
@@ -992,17 +1180,12 @@ pub(super) fn measure_semantic_snapshot_residence() {
         .then_some(())
         .expect("overlay miss validated a proved snapshot");
     let (cold_median, cold_p95) = percentiles(&cold);
+    let (cold_setup_median, _) = percentiles(&cold_setup);
     let (warm_median, warm_p95) = percentiles(&warm);
     let (miss_median, miss_p95) = percentiles(&miss);
     println!(
-        "semantic_snapshot_residence images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} miss_median_ns={miss_median} miss_p95_ns={miss_p95} cold_reopens={cold_reopens} warm_reopens={warm_reopens} miss_validations={miss_validations}"
+        "semantic_snapshot_residence images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} cold_setup_median_ns={cold_setup_median} warm_median_ns={warm_median} warm_p95_ns={warm_p95} miss_median_ns={miss_median} miss_p95_ns={miss_p95} cold_reopens={cold_reopens} warm_reopens={warm_reopens} miss_validations={miss_validations}"
     );
-}
-
-fn clear_snapshot_proofs(images: &[backend_library::interface::SemanticImageSnapshot]) {
-    for image in images {
-        image.clear_reopen_proof();
-    }
 }
 
 #[allow(clippy::expect_used)]
@@ -1035,6 +1218,16 @@ fn admitted_snapshot(bytes: &[u8]) -> backend_library::interface::SemanticImageS
     };
     backend_library::interface::SemanticImageSnapshot::try_from_reopened(authority, bytes)
         .expect("snapshot")
+}
+
+#[allow(clippy::expect_used)]
+fn admitted_snapshots(
+    images: &[Vec<u8>],
+) -> Vec<backend_library::interface::SemanticImageSnapshot> {
+    images
+        .iter()
+        .map(|image| admitted_snapshot(image))
+        .collect()
 }
 
 #[allow(clippy::expect_used)]
@@ -1118,7 +1311,7 @@ fn fixture_project(label: &str) -> IndexedProject {
     IndexedProject {
         package: backend_engine::package_key(label),
         label: label.to_owned(),
-        files: Arc::<[[u8; 32]]>::from([]),
+        files: std::sync::Arc::<[[u8; 32]]>::from([]),
     }
 }
 
@@ -1214,8 +1407,9 @@ mod tests {
     use backend_engine::{Row, RowId};
     use backend_semantic::ir::SemanticImageView;
     use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
+    use backend_version::{ContentId, SourceFactDomain};
     use std::collections::BTreeSet;
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
 
     const PATH: &str = "src/worker.rs";
 
@@ -1230,6 +1424,76 @@ mod tests {
         let head = genesis().expect("genesis");
         let (initial, _) = initial_view_for_workspace(&head.snapshot()).expect("initial view");
         Fixture { bytes, initial }
+    }
+
+    fn source_aware_fixture_bytes() -> Vec<u8> {
+        use backend_semantic::ir::{
+            BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts,
+            EntityVersion, FactAvailability, IrBuilder, ItemKind, ParentageAuthority,
+            SourceIdentity, SourceSpan, TreeItemInput, VariantFingerprint, Visibility,
+            encode_full_semantic_image, full_semantic_image_len,
+        };
+        use backend_semantic::vocabulary::{
+            CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
+        };
+
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source-aware-row"),
+            byte_len: 13,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<backend_version::ToolchainDomain>::from_canonical_bytes(
+                b"source-aware-toolchain",
+            ),
+        );
+        let coordinate =
+            PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned()).expect("fixture coordinate");
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, PATH)
+            .expect("fixture provenance");
+        let source_file = builder
+            .intern_atom(PATH.as_bytes())
+            .expect("source file atom");
+        let versions = [EntityVersion {
+            family: DeclarationFamilyId::from_raw([1; 16]),
+            variant: VariantFingerprint::from_raw([2; 16]),
+            core_payload: CorePayloadHash::from_raw([3; 16]),
+        }];
+        let items = [TreeItemInput {
+            name: b"Worker",
+            kind: ItemKind::Record,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                source: FactAvailability::Captured,
+                source_file: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: SourceSpan::new(source_file, 0, 13),
+            extension: None,
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .expect("fixture tree");
+        let ir = builder.finish().expect("fixture image");
+        let mut bytes = vec![0; full_semantic_image_len(&ir).expect("image length")];
+        encode_full_semantic_image(&ir, &mut bytes).expect("encode image");
+        bytes
     }
 
     fn project(label: &str) -> super::super::super::IndexedProject {
@@ -1277,6 +1541,40 @@ mod tests {
             residence,
         )?;
         Ok(Admitted { rows, remaining })
+    }
+
+    fn direct_rows_with_sites(
+        image: &SemanticImageView<'_>,
+        project: &super::super::super::IndexedProject,
+        initial: &backend_engine::ViewRoot,
+        sites: &[&backend_compile::SourceDeclaration],
+    ) -> Vec<Row> {
+        let projected = super::project_image_rows(
+            image,
+            super::image_digest(image.as_ref()),
+            project,
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            initial.basis(),
+            false,
+            PATH,
+            sites,
+        )
+        .expect("direct projection");
+        let mut symbols = BTreeSet::new();
+        let mut rows = Vec::new();
+        let mut remaining = usize::MAX;
+        let mut sink = SemanticRowSink {
+            initial,
+            symbols: &mut symbols,
+            rows: &mut rows,
+            capacity: 64,
+            remaining_bytes: &mut remaining,
+            stale: false,
+            path: PATH,
+            site_declarations: sites,
+        };
+        super::apply_projected_image(&projected, &mut sink).expect("apply direct projection");
+        rows
     }
 
     fn admit_direct(
@@ -1523,6 +1821,156 @@ mod tests {
         assert_eq!(residence.misses(), 2);
         assert_eq!(residence.hits(), 1);
         assert_eq!(residence.len(), 2);
+    }
+
+    #[test]
+    fn structural_site_facts_change_the_cached_rows_and_match_direct_projection() {
+        use backend_compile::{DeclarationFacts, Fact, Obligation};
+
+        let fixture = fixture();
+        let bytes = source_aware_fixture_bytes();
+        let image = SemanticImageView::reopen(&bytes).expect("reopen source-aware image");
+        let project = project("fixture");
+        let excerpt = backend_compile::SourceExcerpt::captured(
+            "struct Worker",
+            backend_compile::SourceExcerptExtent::Complete,
+        )
+        .expect("excerpt");
+        let unobserved = backend_compile::SourceDeclaration::at_path(
+            PATH,
+            "Worker",
+            backend_engine::DeclarationKind::Struct,
+            2,
+            "struct Worker",
+            "",
+        )
+        .expect("unobserved site")
+        .with_facts(DeclarationFacts::UNOBSERVED)
+        .with_source_excerpt(excerpt.clone());
+        let observed = backend_compile::SourceDeclaration::at_path(
+            PATH,
+            "Worker",
+            backend_engine::DeclarationKind::Struct,
+            2,
+            "struct Worker",
+            "",
+        )
+        .expect("observed site")
+        .with_facts(DeclarationFacts {
+            deprecation: Fact::Unobserved,
+            obligation: Fact::Present(Obligation::Required),
+        })
+        .with_source_excerpt(excerpt);
+        let mut residence = ImageRowResidence::default();
+
+        let mut symbols = BTreeSet::new();
+        let first = admit(
+            &image,
+            &project,
+            &fixture.initial,
+            &mut residence,
+            false,
+            64,
+            usize::MAX,
+            &mut symbols,
+            &[&unobserved],
+        )
+        .expect("unobserved projection");
+        let first_worker = first
+            .rows
+            .iter()
+            .find(|row| row.kind == Some(backend_engine::DeclarationKind::Struct))
+            .expect("worker row");
+        assert_eq!(first_worker.facts, DeclarationFacts::UNOBSERVED);
+
+        let mut symbols = BTreeSet::new();
+        let second = admit(
+            &image,
+            &project,
+            &fixture.initial,
+            &mut residence,
+            false,
+            64,
+            usize::MAX,
+            &mut symbols,
+            &[&observed],
+        )
+        .expect("observed projection");
+        assert_eq!(
+            second.rows,
+            direct_rows_with_sites(&image, &project, &fixture.initial, &[&observed])
+        );
+        let second_worker = second
+            .rows
+            .iter()
+            .find(|row| row.kind == Some(backend_engine::DeclarationKind::Struct))
+            .expect("worker row");
+        assert_eq!(
+            second_worker.facts.obligation,
+            Fact::Present(Obligation::Required)
+        );
+        assert_eq!(residence.misses(), 2);
+        assert_eq!(residence.hits(), 0);
+    }
+
+    #[test]
+    fn structural_site_excerpt_state_and_extent_are_part_of_the_cache_key() {
+        use backend_compile::{DeclarationFacts, SourceExcerpt, SourceExcerptExtent};
+
+        let fixture = fixture();
+        let bytes = source_aware_fixture_bytes();
+        let image = SemanticImageView::reopen(&bytes).expect("reopen source-aware image");
+        let project = project("fixture");
+        let excerpts = [
+            SourceExcerpt::captured("struct Worker", SourceExcerptExtent::Complete)
+                .expect("complete excerpt"),
+            SourceExcerpt::captured("struct Worker", SourceExcerptExtent::Truncated)
+                .expect("truncated excerpt"),
+            SourceExcerpt::NotCaptured,
+            SourceExcerpt::NotHydrated,
+            SourceExcerpt::Unconfigured,
+        ];
+        let mut residence = ImageRowResidence::default();
+
+        for excerpt in &excerpts {
+            let site = backend_compile::SourceDeclaration::at_path(
+                PATH,
+                "Worker",
+                backend_engine::DeclarationKind::Struct,
+                2,
+                "struct Worker",
+                "",
+            )
+            .expect("site")
+            .with_facts(DeclarationFacts::UNOBSERVED)
+            .with_source_excerpt(excerpt.clone());
+            let mut symbols = BTreeSet::new();
+            let admitted = admit(
+                &image,
+                &project,
+                &fixture.initial,
+                &mut residence,
+                false,
+                64,
+                usize::MAX,
+                &mut symbols,
+                &[&site],
+            )
+            .expect("admit excerpt");
+            assert_eq!(
+                admitted.rows,
+                direct_rows_with_sites(&image, &project, &fixture.initial, &[&site])
+            );
+            let worker = admitted
+                .rows
+                .iter()
+                .find(|row| row.kind == Some(backend_engine::DeclarationKind::Struct))
+                .expect("worker row");
+            assert_eq!(&worker.excerpt, excerpt);
+        }
+
+        assert_eq!(residence.misses(), excerpts.len() as u64);
+        assert_eq!(residence.hits(), 0);
     }
 
     #[test]
@@ -1790,25 +2238,193 @@ mod tests {
                 charges: vec![Charge::Sub(1)],
             });
         }
-        residence.store([9_u8; 32], Arc::new(ProjectedImage { rows }));
+        assert!(
+            residence
+                .store([9_u8; 32], ProjectedImage { rows })
+                .is_err()
+        );
         assert_eq!(residence.len(), 0, "one image past the row budget leaves");
         assert_eq!(residence.misses(), 1);
         let label = "kept";
-        residence.store(
-            [8_u8; 32],
-            Arc::new(ProjectedImage {
-                rows: vec![ProjectedRow {
-                    row: Row::new(
-                        RowId::Symbol(backend_engine::symbol_key(label)),
-                        fixture.initial.basis(),
-                        label,
-                    ),
-                    duplicate: DuplicatePolicy::Error,
-                    charges: vec![Charge::Sub(1)],
-                }],
-            }),
-        );
+        let _ = residence
+            .store(
+                [8_u8; 32],
+                ProjectedImage {
+                    rows: vec![ProjectedRow {
+                        row: Row::new(
+                            RowId::Symbol(backend_engine::symbol_key(label)),
+                            fixture.initial.basis(),
+                            label,
+                        ),
+                        duplicate: DuplicatePolicy::Error,
+                        charges: vec![Charge::Sub(1)],
+                    }],
+                },
+            )
+            .expect("image inside the row budget");
         assert_eq!(residence.len(), 1, "an image inside the budget stays");
+    }
+
+    fn one_projected_row(label: &str, basis: backend_engine::Basis) -> ProjectedImage {
+        ProjectedImage {
+            rows: vec![ProjectedRow {
+                row: Row::new(
+                    RowId::Symbol(backend_engine::symbol_key(label)),
+                    basis,
+                    label,
+                )
+                .with_signature(format!("signature for {label}")),
+                duplicate: DuplicatePolicy::Error,
+                charges: vec![Charge::Sub(1)],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_projection_hit_promotes_it_before_lru_eviction() {
+        let fixture = fixture();
+        let oldest_key = [0_u8; 32];
+        let touched_key = [1_u8; 32];
+        let newest_key = [2_u8; 32];
+        let mut residence = ImageRowResidence::with_budgets(2, 16, 1_000_000);
+
+        let _ = residence
+            .store(
+                oldest_key,
+                one_projected_row("oldest", fixture.initial.basis()),
+            )
+            .expect("oldest projection fits");
+        let _ = residence
+            .store(
+                touched_key,
+                one_projected_row("touched", fixture.initial.basis()),
+            )
+            .expect("touched projection fits");
+        let _ = residence
+            .cached(oldest_key)
+            .expect("cache hit promotes the oldest entry");
+        let _ = residence
+            .store(
+                newest_key,
+                one_projected_row("newest", fixture.initial.basis()),
+            )
+            .expect("newest projection fits after LRU eviction");
+
+        assert!(residence.entries.contains_key(&oldest_key));
+        assert!(!residence.entries.contains_key(&touched_key));
+        assert!(residence.entries.contains_key(&newest_key));
+    }
+
+    #[test]
+    fn the_weighted_budget_evicts_old_projections_before_admitting_new_rows() {
+        let fixture = fixture();
+        let first_key = [1_u8; 32];
+        let second_key = [2_u8; 32];
+        let first = one_projected_row("first", fixture.initial.basis());
+        let second = one_projected_row("a longer second label", fixture.initial.basis());
+        let first_bytes = super::projected_image_retained_bytes(&first);
+        let second_bytes = super::projected_image_retained_bytes(&second);
+        let byte_limit = first_bytes.max(second_bytes);
+        let mut residence = ImageRowResidence::with_budgets(4, 16, byte_limit);
+
+        let _ = residence
+            .store(first_key, first)
+            .expect("first projection fits");
+        let _ = residence
+            .store(second_key, second)
+            .expect("second projection fits after eviction");
+
+        assert_eq!(residence.len(), 1);
+        assert!(!residence.entries.contains_key(&first_key));
+        assert!(residence.entries.contains_key(&second_key));
+        assert_eq!(residence.retained_rows(), 1);
+        assert_eq!(residence.retained_bytes(), second_bytes);
+    }
+
+    #[test]
+    fn an_oversized_projection_bypasses_the_cache_and_keeps_small_rows() {
+        let fixture = fixture();
+        let small_key = [3_u8; 32];
+        let oversized_key = [4_u8; 32];
+        let small = one_projected_row("small", fixture.initial.basis());
+        let byte_limit = super::projected_image_retained_bytes(&small);
+        let oversized = one_projected_row(&"large".repeat(1024), fixture.initial.basis());
+        assert!(super::projected_image_retained_bytes(&oversized) > byte_limit);
+        let mut residence = ImageRowResidence::with_budgets(4, 16, byte_limit);
+
+        let _ = residence
+            .store(small_key, small)
+            .expect("small projection fits");
+        let bypassed = residence
+            .store(oversized_key, oversized)
+            .expect_err("oversized projection must bypass retention");
+
+        assert_eq!(bypassed.rows.len(), 1);
+        assert_eq!(residence.len(), 1);
+        assert!(residence.entries.contains_key(&small_key));
+        assert!(!residence.entries.contains_key(&oversized_key));
+        assert_eq!(residence.retained_bytes(), byte_limit);
+        assert_eq!(residence.misses(), 2);
+    }
+
+    #[test]
+    fn borrowed_projection_replays_exactly_before_a_later_eviction() {
+        let fixture = fixture();
+        let first_key = [5_u8; 32];
+        let second_key = [6_u8; 32];
+        let mut first = one_projected_row("first", fixture.initial.basis());
+        first.rows.push(
+            one_projected_row("second", fixture.initial.basis())
+                .rows
+                .remove(0),
+        );
+        let expected = first.clone();
+        let second = one_projected_row("replacement", fixture.initial.basis());
+        let first_bytes = super::projected_image_retained_bytes(&first);
+        let second_bytes = super::projected_image_retained_bytes(&second);
+        let byte_limit = first_bytes.max(second_bytes);
+        let mut residence = ImageRowResidence::with_budgets(4, 16, byte_limit);
+        let _ = residence.store(first_key, first).expect("first projection");
+
+        let replayed = {
+            let cached = residence.cached(first_key).expect("borrowed cache hit");
+            replay_projected_image(cached, &fixture.initial)
+        };
+        let direct = replay_projected_image(&expected, &fixture.initial);
+        assert_eq!(
+            replayed.0, direct.0,
+            "cached replay preserves row order and content"
+        );
+        assert_eq!(replayed.1, direct.1, "cached replay preserves byte charges");
+
+        let _ = residence
+            .store(second_key, second)
+            .expect("the finished borrow permits a later LRU mutation");
+        assert!(residence.entries.contains_key(&second_key));
+        assert!(!residence.entries.contains_key(&first_key));
+        assert_eq!(residence.retained_rows(), 1);
+        assert_eq!(residence.retained_bytes(), second_bytes);
+    }
+
+    fn replay_projected_image(
+        projected: &ProjectedImage,
+        initial: &backend_engine::ViewRoot,
+    ) -> (Vec<Row>, usize) {
+        let mut symbols = BTreeSet::new();
+        let mut rows = Vec::new();
+        let mut remaining_bytes = 100;
+        let mut sink = SemanticRowSink {
+            initial,
+            symbols: &mut symbols,
+            rows: &mut rows,
+            capacity: 8,
+            remaining_bytes: &mut remaining_bytes,
+            stale: false,
+            path: PATH,
+            site_declarations: &[],
+        };
+        apply_projected_image(projected, &mut sink).expect("replay projected rows");
+        (rows, remaining_bytes)
     }
 
     fn admission(coordinate: &str) -> [u8; 32] {
@@ -1878,6 +2494,40 @@ mod tests {
         let again = open_compiled_image(&fixture.bytes, first_key, &mut residence).expect("first");
         assert!(matches!(again, CompiledImage::Resident { .. }));
         assert_eq!(residence.reopens(), 2);
+    }
+
+    #[test]
+    fn old_admissions_are_forgotten_after_the_per_image_limit() {
+        let fixture = fixture();
+        let digest = super::image_digest(&fixture.bytes);
+        let admissions = (0..=super::MAX_ADMISSIONS_PER_IMAGE)
+            .map(|version| admission(&format!("pkg:cargo/fixture@{version}.0.0")))
+            .collect::<Vec<_>>();
+        let oldest = *admissions.first().expect("oldest admission");
+        let newest = *admissions.last().expect("newest admission");
+        let mut residence = ImageRowResidence::with_image_limit(1);
+
+        let opened = open_compiled_image(&fixture.bytes, oldest, &mut residence).expect("open");
+        assert!(matches!(opened, CompiledImage::Opened { .. }));
+        confirm_image_admission(&fixture.bytes, oldest, &mut residence);
+        for admission in admissions.iter().skip(1) {
+            confirm_image_admission(&fixture.bytes, *admission, &mut residence);
+        }
+
+        let facts = residence.facts.get(&digest).expect("retained image facts");
+        assert_eq!(facts.admissions.len(), super::MAX_ADMISSIONS_PER_IMAGE);
+        assert!(!facts.admissions.contains(&oldest));
+        assert!(facts.admissions.contains(&newest));
+
+        let before = residence.reopens();
+        let forgotten =
+            open_compiled_image(&fixture.bytes, oldest, &mut residence).expect("recheck");
+        assert!(matches!(forgotten, CompiledImage::Opened { .. }));
+        assert_eq!(residence.reopens(), before + 1);
+        confirm_image_admission(&fixture.bytes, oldest, &mut residence);
+        let retained = open_compiled_image(&fixture.bytes, newest, &mut residence).expect("recent");
+        assert!(matches!(retained, CompiledImage::Resident { .. }));
+        assert_eq!(residence.reopens(), before + 1);
     }
 
     #[test]
@@ -2320,10 +2970,50 @@ mod tests {
         let second = image.reopen().expect("warm");
         assert_eq!(backend_semantic::ir::semantic_image_validations(), 1);
         assert_eq!(declaration_identities(&second), first_names);
-        image.clear_reopen_proof();
-        let cleared = image.reopen().expect("cleared");
-        assert_eq!(backend_semantic::ir::semantic_image_validations(), 2);
-        assert_eq!(declaration_identities(&cleared), first_names);
+    }
+
+    #[test]
+    fn concurrent_snapshot_misses_validate_once_and_return_the_same_image() {
+        const READERS: usize = 8;
+        let fixture = fixture();
+        let image = super::admitted_snapshot(&fixture.bytes);
+        let barrier = Arc::new(Barrier::new(READERS));
+        let observed = std::thread::scope(|scope| {
+            let image = &image;
+            let readers = (0..READERS)
+                .map(|_| {
+                    let barrier = Arc::clone(&barrier);
+                    scope.spawn(move || {
+                        backend_semantic::ir::reset_semantic_image_validations();
+                        barrier.wait();
+                        let view = image.reopen().expect("parallel reopen");
+                        (
+                            declaration_identities(&view),
+                            view.as_ref().to_vec(),
+                            backend_semantic::ir::semantic_image_validations(),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            readers
+                .into_iter()
+                .map(|reader| reader.join().expect("reader thread"))
+                .collect::<Vec<_>>()
+        });
+
+        let (expected_names, expected_bytes, _) = &observed[0];
+        assert!(
+            observed
+                .iter()
+                .all(|(names, bytes, _)| { names == expected_names && bytes == expected_bytes })
+        );
+        assert_eq!(
+            observed
+                .iter()
+                .map(|(_, _, validations)| *validations)
+                .sum::<u64>(),
+            1
+        );
     }
 
     #[test]
@@ -2331,9 +3021,16 @@ mod tests {
         let bytes = b"not-a-semantic-image".to_vec();
         let image = super::admitted_snapshot(&bytes);
         backend_semantic::ir::reset_semantic_image_validations();
-        assert!(image.reopen().is_err(), "corrupt bytes were admitted");
+        let first_error = match image.reopen() {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("corrupt bytes were admitted"),
+        };
         assert_eq!(backend_semantic::ir::semantic_image_validations(), 1);
-        assert!(image.reopen().is_err(), "a failed proof was remembered");
+        let second_error = match image.reopen() {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("a failed proof was remembered"),
+        };
+        assert_eq!(second_error, first_error, "grammar error changed on retry");
         assert_eq!(backend_semantic::ir::semantic_image_validations(), 2);
     }
 
@@ -2442,12 +3139,11 @@ mod tests {
         )
         .expect("stale project");
         assert_eq!(stale.rows.len(), fresh.rows.len());
-        snapshot.clear_reopen_proof();
         backend_semantic::ir::reset_semantic_image_validations();
         let _ = reopen_resident_image(snapshot.as_ref(), Some(&snapshot), &mut residence)
-            .expect("cleared");
-        assert_eq!(backend_semantic::ir::semantic_image_validations(), 1);
-        assert_eq!(residence.reopens(), reopens + 1);
+            .expect("retained proof");
+        assert_eq!(backend_semantic::ir::semantic_image_validations(), 0);
+        assert_eq!(residence.reopens(), reopens);
     }
 
     fn declaration_identities(

@@ -61,10 +61,7 @@ impl NativeFrontend for JavaFrontend {
                 "-Xprint",
                 "@compiler-probe.javac.args",
             ])
-            .current_dir(native_work.join(WORK_DIRECTORY))
-            // javac honors CLASSPATH/JAVA_TOOL_OPTIONS when inherited.  The caller-resolved
-            // executable and the explicit no-processor mode are the complete authority here.
-            .env_clear();
+            .current_dir(native_work.join(WORK_DIRECTORY));
         command
     }
 

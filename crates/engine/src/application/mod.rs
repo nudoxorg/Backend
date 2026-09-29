@@ -36,8 +36,9 @@ pub use self::cluster_coordinator::{
 };
 pub use self::compiler::{
     ActivatedSemanticPackage, EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompiler,
-    MAX_PACKAGE_EMBEDDING_BYTES, PackageSemanticError, PackageSource, PackageSourceSet,
-    PackageSourceSetError, PublishedSemanticPackage, StagedEmbeddingStatus, StagedSemanticArtifact,
+    MAX_PACKAGE_EMBEDDING_BYTES, PackageSemanticError, PackageSource, PackageSourceCoverageGap,
+    PackageSourceCoverageGapCause, PackageSourceSet, PackageSourceSetError,
+    PublishedSemanticPackage, StagedEmbeddingStatus, StagedSemanticArtifact,
     StagedSemanticOutputObject, StagedSemanticPackage, StagedVersionedPlaneArtifact,
     StagedVersionedPlaneError, StagedVersionedPlaneSegment, StagedVersionedPlanes,
 };
@@ -87,6 +88,9 @@ pub use self::runtime::{
     OwnedPackageSourceSet, PackageSemanticRuntimeError, PyreflyToolchainIdentity,
 };
 pub use self::terminal::{LocalCompilerOpenError, LocalCompilerPath};
+pub(crate) use self::toolchain_probe::{
+    NATIVE_COMPILER_ENVIRONMENT_POLICY_ID, NativeCompilerEnvironment,
+};
 pub use self::toolchain_probe::{
     ToolchainProbeCleanupAction, ToolchainProbeError, ToolchainProbeLimitError,
     ToolchainProbeLimits, ToolchainProbeLimitsView, ToolchainProbePrimary,
@@ -137,6 +141,7 @@ pub use backend_execution::{
     VerifiedCompilerNodeCapacity, VerifiedRemoteCompiler, VerifierAcceptedFullWorkspaceInput,
     compiler_full_workspace_transfer_work_id, compiler_transfer_work_id,
 };
+pub use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 pub use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
 };

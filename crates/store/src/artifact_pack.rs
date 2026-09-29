@@ -44,8 +44,10 @@ const LAYOUT_ID_DOMAIN: &[u8] = b"backend-store.artifact-pack.layout.v1\0";
 
 /// Suggested target size for immutable locality-affine object packs.
 pub const RECOMMENDED_ARTIFACT_PACK_BYTES: u64 = 8 * 1024 * 1024;
-/// Hard bound for a single storage-neutral artifact pack.
-pub const MAX_ARTIFACT_PACK_BYTES: u64 = 32 * 1024 * 1024;
+/// Hard bound for a single storage-neutral artifact pack. This accommodates
+/// one 128 MiB canonical NXFI image while leaving the 8 MiB recommended pack
+/// target suitable for ordinary locality-affine objects.
+pub const MAX_ARTIFACT_PACK_BYTES: u64 = 160 * 1024 * 1024;
 /// Maximum number of complete object envelopes in one pack.
 pub const MAX_ARTIFACT_PACK_OBJECTS: usize = 4096;
 /// Maximum bounded root-directory prefix size; extent rows live in small pages.

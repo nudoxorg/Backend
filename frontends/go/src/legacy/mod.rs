@@ -23,8 +23,11 @@ pub use self::image::{
     TypeParameterRow, TypeRow, TypeRowKind, parse_constraint_blob, split_nul,
 };
 pub use self::oracle::{
-    ConfiguredGoOracle, GoOracle, GoOracleConfiguration, GoOracleConfigurationError,
-    GoOracleExecutable, GoOracleExecutableView, GoOracleInvocationModeV1,
-    GoOracleInvocationOptionsV1, OracleError, Output,
+    ConfiguredGoOracle, GO_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1, GoCgoPolicy,
+    GoFilesystemTargetKind, GoLocalOnlyReason, GoOracle, GoOracleChildEnvironment,
+    GoOracleConfiguration, GoOracleConfigurationError, GoOracleExecutable, GoOracleExecutableView,
+    GoOracleInvocationModeV1, GoOracleInvocationOptionsV1, GoPackageAuthorityWitness,
+    GoPackageAuthorityWitnessError, GoWorkFileWitness, GoWorkWitness, GoWorkWitnessError,
+    OracleError, Output,
 };
 pub use self::staging::{StagedGoModule, StagingError, stage_module};

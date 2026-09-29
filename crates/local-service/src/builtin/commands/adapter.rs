@@ -256,7 +256,7 @@ impl CommandAdapter {
             })
     }
 
-    /// Dispatches the three canonical semantic paging DTOs to their typed
+    /// Dispatches the canonical semantic paging DTOs to their typed
     /// authority handlers while preserving one bounded owner admission seam.
     pub(in crate::builtin) fn serve_semantic_control(
         &mut self,
@@ -265,22 +265,24 @@ impl CommandAdapter {
     ) -> Result<Box<[u8]>, crate::protocol::ProtocolError> {
         match payload.get(5).copied() {
             Some(1) => self.serve_semantic_range(request_id, payload),
-            Some(4 | 6) => self.serve_semantic_metadata(request_id, payload),
+            Some(4 | 6 | 8) => self.serve_semantic_metadata(request_id, payload),
             _ => Err(crate::protocol::ProtocolError::InvalidControl(
                 "unknown semantic paging operation",
             )),
         }
     }
 
-    /// Serves one bounded semantic catalog or per-image manifest page against
-    /// fresh Turso selection. The DTO's stamp/root fields remain claims until
-    /// the local authority resolver reopens and rechecks the current head.
+    /// Serves one bounded semantic catalog, manifest, or full-image page
+    /// against fresh Turso selection. The DTO's stamp and identity fields stay
+    /// claims until the local authority reopens and rechecks the current head.
     pub(in crate::builtin) fn serve_semantic_metadata(
         &mut self,
         request_id: u64,
         payload: Box<[u8]>,
     ) -> Result<Box<[u8]>, crate::protocol::ProtocolError> {
-        use backend_replication::{SemanticCatalogGet, SemanticManifestGet};
+        use backend_replication::{
+            SelectedSemanticImageGet, SemanticCatalogGet, SemanticManifestGet,
+        };
 
         let tag = payload
             .get(5)
@@ -368,6 +370,46 @@ impl CommandAdapter {
                     )
                 })?;
                 return Ok(encoded.into_boxed_slice());
+            }
+            8 => {
+                let get = SelectedSemanticImageGet::decode(&payload).map_err(|_| {
+                    crate::protocol::ProtocolError::InvalidControl(
+                        "selected semantic image request is malformed",
+                    )
+                })?;
+                if get.request_id != request_id {
+                    return Err(crate::protocol::ProtocolError::InvalidControl(
+                        "selected semantic image correlation mismatch",
+                    ));
+                }
+                let (key, identity) = self.semantic_metadata_context(&get.target)?;
+                let chunk = super::super::selected_full_image::serve_selected_image_get(
+                    &mut self.semantic_authority,
+                    &key,
+                    &get,
+                    identity.environment_identity(),
+                    identity.target_platform_identity(),
+                )
+                .map_err(|error| {
+                    let message = match error {
+                        super::super::selected_full_image::SelectedFullImageError::StaleSelection => {
+                            "selected semantic image is stale"
+                        }
+                        super::super::selected_full_image::SelectedFullImageError::PlatformOrEnvironmentMismatch => {
+                            "selected semantic image targets another environment or platform"
+                        }
+                        _ => "selected semantic image request is unavailable",
+                    };
+                    crate::protocol::ProtocolError::InvalidControl(message)
+                })?;
+                return chunk
+                    .encode()
+                    .map(|bytes| bytes.into_boxed_slice())
+                    .map_err(|_| {
+                        crate::protocol::ProtocolError::InvalidControl(
+                            "selected semantic image page exceeds bounds",
+                        )
+                    });
             }
             _ => {
                 return Err(crate::protocol::ProtocolError::InvalidControl(
@@ -597,14 +639,13 @@ impl CommandAdapter {
             root,
             ..library.view().basis()
         };
-        let excerpt = if recover_excerpt
-            && row.excerpt == backend_library::SourceExcerpt::NotHydrated
-        {
-            self.recover_indexed_excerpt(daemon, row, label)
-                .unwrap_or_else(|| row.excerpt.clone())
-        } else {
-            row.excerpt.clone()
-        };
+        let excerpt =
+            if recover_excerpt && row.excerpt == backend_library::SourceExcerpt::NotHydrated {
+                self.recover_indexed_excerpt(daemon, row, label)
+                    .unwrap_or_else(|| row.excerpt.clone())
+            } else {
+                row.excerpt.clone()
+            };
         let mut document = backend_library::Document::new(symbol, root, row.document.clone())
             .with_source_basis(source_basis)
             .with_location(row.source.clone())
@@ -1052,7 +1093,8 @@ impl CommandAdapter {
                         .map_err(|error| {
                             BuiltinModelError(format!("check package dependency facts: {error}"))
                         })?;
-                    let index = backend_library::PackageGraphIndex::from_facts(graph_facts.facts());
+                    let index =
+                        backend_library::PackageGraphIndex::from_checked_facts(&graph_facts);
                     self.dependencies = Some(ResidentDependencies {
                         stamp,
                         local_witness,
@@ -1098,20 +1140,40 @@ impl CommandAdapter {
                 } else {
                     Vec::new()
                 };
-                let reply = self
-                    .product_state
-                    .execute_with_discovery_and_forge_snapshot(
-                        surface,
-                        daemon.engine().daemon().library().view(),
-                        &cached.catalog,
-                        &cached.catalog_index,
-                        cached.graph_facts.facts(),
-                        &cached.index,
-                        workspace.as_deref(),
-                        discovery_store,
-                        cached.selected_catalog_snapshot,
-                        &forge_records,
-                    );
+                let reply = match &surface {
+                    backend_engine::SurfaceCommand::PackageGraphPage { request } => request
+                        .clone()
+                        .bind_catalog_snapshot(cached.selected_catalog_snapshot)
+                        .map_err(|error| error.to_string())
+                        .and_then(|request| {
+                            let page = futures_executor::block_on(
+                                self.sql_projection.read_package_graph_page(&request),
+                            )
+                            .map_err(|error| error.to_string())?;
+                            page.admit_against_checked_facts(
+                                &request,
+                                root,
+                                &cached.graph_facts,
+                                &cached.index,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            Ok(backend_engine::SurfaceReply::PackageGraphPage(page))
+                        }),
+                    _ => self
+                        .product_state
+                        .execute_with_discovery_and_forge_snapshot(
+                            surface.clone(),
+                            daemon.engine().daemon().library().view(),
+                            &cached.catalog,
+                            &cached.catalog_index,
+                            cached.graph_facts.facts(),
+                            &cached.index,
+                            workspace.as_deref(),
+                            discovery_store,
+                            cached.selected_catalog_snapshot,
+                            &forge_records,
+                        ),
+                };
                 self.dependencies = Some(cached);
                 reply.map_or_else(
                     |error| {
@@ -1227,19 +1289,18 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match command {
-            Command::Document(query) | Command::Source(query) => {
-                self.canonical_claim_document(
+            Command::Document(query) | Command::Source(query) => self
+                .canonical_claim_document(
                     daemon,
                     query,
                     certificate.as_ref(),
                     matches!(command, Command::Source(_)),
                 )
-                    .map_or_else(
-                        || daemon.engine().daemon().library().execute(command.clone()),
-                        |document| Ok(CommandReply::Document(document)),
-                    )
-                    .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
-            }
+                .map_or_else(
+                    || daemon.engine().daemon().library().execute(command.clone()),
+                    |document| Ok(CommandReply::Document(document)),
+                )
+                .unwrap_or_else(|error| CommandReply::Error(error.to_string())),
             _ => daemon
                 .engine()
                 .daemon()
@@ -1435,8 +1496,8 @@ fn admitted_project_source_root(
     if backend_engine::PackageKey::from_value(project_label) != package {
         return None;
     }
-    let root = super::super::local_manifest::indexed_package_source_root(project_label, workspace)
-        .ok()?;
+    let root =
+        super::super::local_manifest::indexed_package_source_root(project_label, workspace).ok()?;
     let canonical = root.canonicalize().ok()?;
     if !project_label.starts_with("pkg:") && Path::new(project_label) != canonical {
         return None;
@@ -1574,11 +1635,13 @@ mod tests {
             admitted_project_source_root(package, &label, &tree.0),
             Some(project.canonicalize().expect("canonical project"))
         );
-        assert!(admitted_project_source_root(
-            backend_engine::PackageKey::from_value("/outside/project"),
-            &label,
-            &tree.0,
-        )
-        .is_none());
+        assert!(
+            admitted_project_source_root(
+                backend_engine::PackageKey::from_value("/outside/project"),
+                &label,
+                &tree.0,
+            )
+            .is_none()
+        );
     }
 }

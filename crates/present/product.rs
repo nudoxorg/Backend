@@ -20,9 +20,10 @@ use backend_library::{
     ProjectRecord, RegistryDiscoveryCandidate, RegistryEvidenceFacet, RegistryMetadata,
     RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
     RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
-    RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind, RegistrySearchHit,
-    RegistrySearchRelease, ReleaseRecord, SemanticVersionFreshness, SemanticVersionRecord,
-    SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
+    RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
+    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SemanticVersionFreshness,
+    SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
+    TreeSubject, encode_id,
 };
 
 use crate::identity::KeyTag;
@@ -339,6 +340,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Advisory(advisory) => advisory_view(advisory),
         SurfaceReply::Dependents(metadata) => metadata_view("dependents", metadata),
         SurfaceReply::Dependencies(facts) => dependency_view("dependencies", facts),
+        SurfaceReply::PackageGraphPage(page) => package_graph_page_view(page),
         SurfaceReply::Owner(metadata) => owner_view(metadata),
         SurfaceReply::SemanticVersions(records) => ProductView::rows(
             "semantic-versions",
@@ -859,6 +861,132 @@ fn dependency_view(
             )
         }
     }
+}
+
+fn package_graph_page_view(page: &backend_library::PackageGraphPage) -> ProductView {
+    use backend_library::{PackageGraphDirection, PackageGraphKnowledge, PackageGraphPageTerminal};
+    let direction = match page.direction {
+        PackageGraphDirection::Dependencies => "dependencies",
+        PackageGraphDirection::Dependents => "dependents",
+    };
+    let mut records = vec![ProductRecord::new(
+        format!("{} · {direction}", page.package.as_str()),
+        Some(page.package.as_str().to_owned()),
+        vec![
+            format!("view root: {}", lower_hex(&page.view_root)),
+            format!("facts witness: {}", lower_hex(&page.facts_witness)),
+            page.catalog_snapshot
+                .map(|snapshot| format!("catalog snapshot: {}", lower_hex(&snapshot)))
+                .unwrap_or_else(|| "catalog snapshot: unavailable".to_owned()),
+        ],
+    )];
+    match &page.knowledge {
+        PackageGraphKnowledge::Known if page.rows.is_empty() => records.push(ProductRecord::new(
+            "Known empty dependency graph",
+            None,
+            Vec::new(),
+        )),
+        PackageGraphKnowledge::Known => records.push(ProductRecord::new(
+            format!("{} graph edges · known", page.rows.len()),
+            None,
+            Vec::new(),
+        )),
+        PackageGraphKnowledge::Unknown { reason } => records.push(ProductRecord::new(
+            "Graph facts are unknown",
+            reason.as_ref().map(|value| value.as_str().to_owned()),
+            Vec::new(),
+        )),
+        PackageGraphKnowledge::Unavailable { reason } => records.push(ProductRecord::new(
+            "Graph facts are unavailable",
+            Some(reason.as_str().to_owned()),
+            Vec::new(),
+        )),
+        PackageGraphKnowledge::Partial {
+            reason,
+            unavailable,
+        } => records.push(ProductRecord::new(
+            if *unavailable {
+                "Some graph sources are unavailable · recorded matches shown"
+            } else {
+                "Some graph sources are unknown · recorded matches shown"
+            },
+            Some(reason.as_str().to_owned()),
+            Vec::new(),
+        )),
+        PackageGraphKnowledge::Ambiguous { sources } => {
+            records.push(ProductRecord::new(
+                "Several authorities publish this coordinate",
+                None,
+                vec!["choose an exact source authority".to_owned()],
+            ));
+            records.extend(sources.iter().map(|source| {
+                ProductRecord::new(
+                    format!("Use authority {}", source.authority.selector()),
+                    Some(source.authority.selector()),
+                    vec![source.coordinate.as_str().to_owned()],
+                )
+            }));
+        }
+    }
+    records.extend(page.rows.iter().map(|edge| {
+        let (title, target) = match page.direction {
+            PackageGraphDirection::Dependencies => {
+                let resolved = edge
+                    .target
+                    .resolved
+                    .as_ref()
+                    .map(|package| format!(" · {}", package.as_str()))
+                    .unwrap_or_default();
+                (
+                    format!(
+                        "{} / {}{resolved}",
+                        edge.target.ecosystem.as_str(),
+                        edge.target.name.as_str()
+                    ),
+                    Some(edge.target.name.as_str().to_owned()),
+                )
+            }
+            PackageGraphDirection::Dependents => (
+                edge.source.as_str().to_owned(),
+                Some(edge.source.as_str().to_owned()),
+            ),
+        };
+        let authority = edge.source_authority.selector();
+        let mut tags = vec![
+            format!("source authority: {authority}"),
+            format!("requirement: {}", edge.target.requirement.as_str()),
+            format!("scope: {}", format!("{:?}", edge.scope).to_lowercase()),
+            format!("evidence: {:?}", edge.evidence.authority),
+            format!("frontier: {}", lower_hex(&edge.evidence.frontier)),
+            format!("provenance: {}", lower_hex(&edge.evidence.provenance)),
+        ];
+        if edge.optional {
+            tags.push("optional".to_owned());
+        }
+        if let Some(resolved) = &edge.target.resolved {
+            tags.push(format!("resolved: {}", resolved.as_str()));
+        }
+        ProductRecord::new(title, target, tags)
+    }));
+    match &page.terminal {
+        PackageGraphPageTerminal::More(cursor) => {
+            let encoded = serde_json::to_string(cursor).unwrap_or_else(|_| "{}".to_owned());
+            records.push(ProductRecord::new(
+                "More graph rows · pass this cursor to continue",
+                Some(encoded),
+                vec!["cursor is bound to this exact root, facts witness and authority".to_owned()],
+            ));
+        }
+        PackageGraphPageTerminal::Cancelled => {
+            records.push(ProductRecord::new("Graph read cancelled", None, Vec::new()))
+        }
+        PackageGraphPageTerminal::Complete => {}
+    }
+    ProductView::rows("package-graph", records)
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn dependency_row(record: &PackageDependencyRecord) -> ProductRecord {
@@ -1408,11 +1536,12 @@ mod tests {
         let commit =
             backend_library::ForgeObjectId::parse("0123456789abcdef0123456789abcdef01234567")
                 .expect("commit");
-        let unavailable = || {
+        fn unavailable<T>() -> backend_library::ForgeFact<T> {
             backend_library::ForgeFact::Unavailable(
-                backend_library::ForgeUnavailableReason::AuthorityOmitted,
+                backend_library::ProductText::new("not reported by forge authority")
+                    .expect("static availability reason"),
             )
-        };
+        }
         let detail = backend_library::ForgePackageDetailRecord {
             source: source.clone(),
             source_id: source.identity(),

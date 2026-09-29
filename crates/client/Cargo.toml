@@ -13,6 +13,7 @@ path = "src/lib.rs"
 backend-library = { path = "../library" }
 backend-semantic = { path = "../semantic" }
 backend-replication = { path = "../replication" }
+hashlink = "=0.12.2"
 serde_json.workspace = true
 
 [lints]

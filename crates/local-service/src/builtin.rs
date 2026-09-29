@@ -63,6 +63,8 @@ const ECHO_AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 mod ingest;
 #[path = "builtin/profile.rs"]
 mod profile;
+#[path = "builtin/source_frontier.rs"]
+mod source_frontier;
 use profile::{
     BuiltinAuthorityVerifier, BuiltinProfile, BuiltinSemanticChange, BuiltinSemanticRelation,
     BuiltinSourceChange, BuiltinValidator, BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds,
@@ -79,6 +81,8 @@ mod worker;
 use worker::connect_worker;
 #[path = "builtin/cluster_dispatch.rs"]
 mod cluster_dispatch;
+#[path = "builtin/compiler_scope.rs"]
+mod compiler_scope;
 #[path = "builtin/generation_residence.rs"]
 mod generation_residence;
 #[path = "builtin/pending_stored.rs"]
@@ -87,8 +91,11 @@ mod pending_stored;
 mod s3_publication;
 #[path = "builtin/semantic_authority.rs"]
 mod semantic_authority;
+pub use compiler_scope::{ProductCompilerScope, ProductCompilerTargetKind, product_compiler_scope};
 #[path = "builtin/versioned_planes.rs"]
 mod versioned_planes;
+#[path = "builtin/selected_full_image.rs"]
+mod selected_full_image;
 #[path = "builtin/view_build/mod.rs"]
 mod view_build;
 use generation_residence::SemanticGenerationResidence;
@@ -1362,6 +1369,9 @@ pub(crate) fn compose_owner(
     )
     .map_err(|error| ProcessError::Profile(error.to_string()))?;
     let compiler_root = config.workspace.join("compiler");
+    backend_platform::durable::ensure_private_directory(&compiler_root).map_err(|error| {
+        ProcessError::Profile(format!("open private compiler state: {error}"))
+    })?;
     let embedding = backend_engine::application::EmbeddingRuntimeProvision::open(
         compiler_root.join("embedding.config"),
     )
@@ -1548,10 +1558,19 @@ pub(crate) fn compose_owner(
     )
     .map_err(|error| ProcessError::Profile(format!("open registry owner: {error}")))?;
     if let Some(registry) = registry.as_mut() {
-        let dependency_facts = registry.dependency_facts();
+        // Opening the gateway composes its source owners lazily. Load their
+        // durable catalog before reading dependency facts so cold projection
+        // repair sees the same graph inputs as an ordinary command.
+        let catalog = registry
+            .catalog_projection()
+            .map_err(|error| {
+                ProcessError::Profile(format!(
+                    "open registry catalog for graph projection: {error}"
+                ))
+            })?;
         futures_executor::block_on(sql_projection.synchronize_package_graph(
             daemon.engine().daemon().library().view().root(),
-            &dependency_facts,
+            &catalog.dependency_facts,
         ))
         .map_err(|error| {
             ProcessError::Profile(format!("align package graph projection: {error}"))

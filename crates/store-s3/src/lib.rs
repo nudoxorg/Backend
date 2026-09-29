@@ -37,6 +37,7 @@ use std::{
     io::{self, Read, Write},
     net::IpAddr,
     path::PathBuf,
+    sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -52,6 +53,7 @@ use thiserror::Error;
 const DEFAULT_MAX_ACK_BYTES: u64 = 8 * 1024;
 const DEFAULT_MAX_ATTEMPTS: u8 = 3;
 const SINGLE_OBJECT_CEILING_BYTES: u64 = 64 * 1024 * 1024;
+const PACK_ROUTE_CEILING_BYTES: u64 = backend_store::artifact_pack::MAX_ARTIFACT_PACK_BYTES;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(2);
 const REQUIRED_IF_NONE_MATCH: &str = "*";
 const REQUIRED_CONTENT_ENCODING: &str = "identity";
@@ -178,10 +180,11 @@ impl S3RouteConfig {
     ///
     /// `max_attempts` includes the initial request and is clamped to 1–3.
     /// This is the largest physical S3 object staged on disk for checksums.
-    /// Single-object PUTs are capped at 64 MiB; the pack route imposes its own
-    /// stricter 32 MiB limit and recommends flushing around 8 MiB. Packs use
-    /// one ordinary PutObject and do not map application envelopes onto S3
-    /// multipart parts.
+    /// The simple object route is capped at 64 MiB. Use
+    /// [`Self::new_for_pack_route`] for packs, whose 160 MiB ceiling can carry
+    /// one 128 MiB canonical NXFI image; ordinary pack construction still
+    /// recommends flushing around 8 MiB. Packs use one ordinary PutObject and
+    /// do not map application envelopes onto S3 multipart parts.
     ///
     /// # Errors
     /// Returns [`RemoteStoreError::Capability`] if there are no allowed
@@ -192,11 +195,44 @@ impl S3RouteConfig {
         max_attempts: u8,
         retry_delay: Duration,
     ) -> Result<Self, RemoteStoreError> {
+        Self::new_bounded(
+            endpoints,
+            max_object_bytes,
+            max_attempts,
+            retry_delay,
+            SINGLE_OBJECT_CEILING_BYTES,
+        )
+    }
+
+    /// Creates a route configuration for the immutable pack protocol.
+    ///
+    /// Pack sizes are storage-neutral and bounded at 160 MiB so one pack can
+    /// carry a full 128 MiB NXFI image. The private-file route still streams
+    /// the pack body and stores fetched member extents on disk.
+    pub fn new_for_pack_route(
+        endpoints: impl IntoIterator<Item = S3Endpoint>,
+        max_pack_bytes: u64,
+        max_attempts: u8,
+        retry_delay: Duration,
+    ) -> Result<Self, RemoteStoreError> {
+        Self::new_bounded(
+            endpoints,
+            max_pack_bytes,
+            max_attempts,
+            retry_delay,
+            PACK_ROUTE_CEILING_BYTES,
+        )
+    }
+
+    fn new_bounded(
+        endpoints: impl IntoIterator<Item = S3Endpoint>,
+        max_object_bytes: u64,
+        max_attempts: u8,
+        retry_delay: Duration,
+        ceiling_bytes: u64,
+    ) -> Result<Self, RemoteStoreError> {
         let endpoints: BTreeSet<_> = endpoints.into_iter().collect();
-        if endpoints.is_empty()
-            || max_object_bytes == 0
-            || max_object_bytes > SINGLE_OBJECT_CEILING_BYTES
-        {
+        if endpoints.is_empty() || max_object_bytes == 0 || max_object_bytes > ceiling_bytes {
             return Err(RemoteStoreError::Capability);
         }
         Ok(Self {
@@ -631,6 +667,42 @@ impl S3ObjectRoute {
         }
     }
 
+    /// Retries only idempotent GETs after a transient transport or service
+    /// failure. The complete response still passes the caller's identity and
+    /// range checks; a malformed successful response is never retried.
+    fn get_response(
+        &self,
+        url: &str,
+        range: Option<&str>,
+    ) -> Result<ureq::http::Response<ureq::Body>, RemoteStoreError> {
+        let mut attempt = 0;
+        loop {
+            let mut request = self
+                .agent
+                .get(url)
+                .header("accept-encoding", REQUIRED_CONTENT_ENCODING);
+            if let Some(range) = range {
+                request = request.header("range", range);
+            }
+            match request.call() {
+                Ok(response) if is_retryable_status(response.status().as_u16()) => {
+                    if self.retry_or_stop(&mut attempt) {
+                        continue;
+                    }
+                    return Err(RemoteStoreError::Unavailable);
+                }
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let error = map_ureq_error(error);
+                    if error == RemoteStoreError::Unavailable && self.retry_or_stop(&mut attempt) {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+
     /// Streams one verified immutable object to S3 with one conditional PUT.
     ///
     /// The bounded envelope is regenerated for each retry. A `412` is only
@@ -747,12 +819,7 @@ impl S3ObjectRoute {
         if grant.exact_range.is_some() {
             return Err(RemoteStoreError::Capability);
         }
-        let mut response = self
-            .agent
-            .get(&grant.url)
-            .header("accept-encoding", REQUIRED_CONTENT_ENCODING)
-            .call()
-            .map_err(map_ureq_error)?;
+        let mut response = self.get_response(&grant.url, None)?;
         if response.status().as_u16() != 200 {
             return Err(RemoteStoreError::Protocol);
         }
@@ -778,6 +845,7 @@ impl S3ObjectRoute {
         if id.as_bytes() != &grant.object_id {
             return Err(RemoteStoreError::Identity);
         }
+        file.verify_snapshot()?;
         let sha256 = file.sha256;
         Ok(CheckedRemoteObject {
             id,
@@ -815,13 +883,7 @@ impl S3ObjectRoute {
             return Err(RemoteStoreError::Bounds);
         }
         let range_header = format!("bytes={}-{}", requested.start, requested.end_inclusive);
-        let mut response = self
-            .agent
-            .get(&grant.url)
-            .header("accept-encoding", REQUIRED_CONTENT_ENCODING)
-            .header("range", &range_header)
-            .call()
-            .map_err(map_ureq_error)?;
+        let mut response = self.get_response(&grant.url, Some(&range_header))?;
         if response.status().as_u16() != 206 {
             return Err(RemoteStoreError::Protocol);
         }
@@ -1110,8 +1172,86 @@ fn parse_content_range(raw: &str) -> Result<(AllowedRange, u64), RemoteStoreErro
 /// buffers and lets ureq send a known-length File body for S3 PutObject.
 struct TempEnvelope {
     path: PathBuf,
+    file: Arc<File>,
+    identity: TempFileSnapshot,
     len: u64,
     sha256: [u8; 32],
+    snapshot: Option<TempFileSnapshot>,
+}
+
+/// Cheap metadata captured after the spool is complete. Retained descriptors
+/// prevent path replacement from redirecting reads; this snapshot detects
+/// in-place writes or truncation without rehashing the complete envelope on
+/// every page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TempFileSnapshot {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime: i64,
+    #[cfg(unix)]
+    ctime_nsec: i64,
+    #[cfg(unix)]
+    nlink: u64,
+    #[cfg(windows)]
+    volume_serial: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+    #[cfg(windows)]
+    last_write_time: u64,
+}
+
+impl TempFileSnapshot {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(windows)]
+        use std::os::windows::fs::MetadataExt;
+
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            dev: metadata.dev(),
+            #[cfg(unix)]
+            ino: metadata.ino(),
+            #[cfg(unix)]
+            ctime: metadata.ctime(),
+            #[cfg(unix)]
+            ctime_nsec: metadata.ctime_nsec(),
+            #[cfg(unix)]
+            nlink: metadata.nlink(),
+            #[cfg(windows)]
+            volume_serial: metadata.volume_serial_number(),
+            #[cfg(windows)]
+            file_index: metadata.file_index(),
+            #[cfg(windows)]
+            last_write_time: metadata.last_write_time(),
+        }
+    }
+
+    fn same_file(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            self.dev == other.dev && self.ino == other.ino
+        }
+        #[cfg(windows)]
+        {
+            self.volume_serial.is_some()
+                && self.file_index.is_some()
+                && self.volume_serial == other.volume_serial
+                && self.file_index == other.file_index
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = other;
+            false
+        }
+    }
 }
 
 impl TempEnvelope {
@@ -1131,6 +1271,7 @@ impl TempEnvelope {
         drop(file);
         temp.len = len;
         temp.sha256 = sha256;
+        temp.capture_snapshot()?;
         Ok(temp)
     }
 
@@ -1154,6 +1295,7 @@ impl TempEnvelope {
         drop(file);
         temp.len = len;
         temp.sha256 = sha256;
+        temp.capture_snapshot()?;
         Ok(temp)
     }
 
@@ -1174,11 +1316,22 @@ impl TempEnvelope {
             }
             match options.open(&path) {
                 Ok(file) => {
+                    let retained = file
+                        .try_clone()
+                        .map_err(|_| RemoteStoreError::Unavailable)?;
+                    let identity = TempFileSnapshot::from_metadata(
+                        &retained
+                            .metadata()
+                            .map_err(|_| RemoteStoreError::Unavailable)?,
+                    );
                     return Ok((
                         Self {
                             path,
+                            file: Arc::new(retained),
+                            identity,
                             len: 0,
                             sha256: [0; 32],
+                            snapshot: None,
                         },
                         file,
                     ));
@@ -1191,7 +1344,72 @@ impl TempEnvelope {
     }
 
     fn open(&self) -> Result<File, RemoteStoreError> {
-        File::open(&self.path).map_err(|_| RemoteStoreError::Unavailable)
+        self.verify_snapshot()?;
+        let file = File::open(&self.path).map_err(|_| RemoteStoreError::Unavailable)?;
+        let opened = TempFileSnapshot::from_metadata(
+            &file.metadata().map_err(|_| RemoteStoreError::Unavailable)?,
+        );
+        if !self.identity.same_file(&opened)
+            || self
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| *snapshot != opened)
+        {
+            return Err(RemoteStoreError::Identity);
+        }
+        Ok(file)
+    }
+
+    fn capture_snapshot(&mut self) -> Result<(), RemoteStoreError> {
+        let metadata = self
+            .file
+            .metadata()
+            .map_err(|_| RemoteStoreError::Unavailable)?;
+        if metadata.len() != self.len {
+            return Err(RemoteStoreError::Identity);
+        }
+        self.snapshot = Some(TempFileSnapshot::from_metadata(&metadata));
+        Ok(())
+    }
+
+    fn verify_snapshot(&self) -> Result<(), RemoteStoreError> {
+        let Some(expected) = self.snapshot.as_ref() else {
+            return Ok(());
+        };
+        let metadata = self
+            .file
+            .metadata()
+            .map_err(|_| RemoteStoreError::Unavailable)?;
+        if TempFileSnapshot::from_metadata(&metadata) != *expected {
+            return Err(RemoteStoreError::Identity);
+        }
+        let path_metadata =
+            fs::symlink_metadata(&self.path).map_err(|_| RemoteStoreError::Identity)?;
+        let path_snapshot = TempFileSnapshot::from_metadata(&path_metadata);
+        if !path_metadata.file_type().is_file() || !self.identity.same_file(&path_snapshot) {
+            return Err(RemoteStoreError::Identity);
+        }
+        Ok(())
+    }
+
+    fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<(), RemoteStoreError> {
+        self.verify_snapshot()?;
+        let mut consumed = 0_usize;
+        while consumed < output.len() {
+            let read = read_file_at(
+                &self.file,
+                &mut output[consumed..],
+                offset
+                    .checked_add(u64::try_from(consumed).map_err(|_| RemoteStoreError::Bounds)?)
+                    .ok_or(RemoteStoreError::Bounds)?,
+            )
+            .map_err(|_| RemoteStoreError::Unavailable)?;
+            if read == 0 {
+                return Err(RemoteStoreError::Identity);
+            }
+            consumed = consumed.checked_add(read).ok_or(RemoteStoreError::Bounds)?;
+        }
+        self.verify_snapshot()
     }
 
     fn same_bytes(&self, other: &Self) -> Result<bool, RemoteStoreError> {
@@ -1221,8 +1439,42 @@ impl TempEnvelope {
 
 impl Drop for TempEnvelope {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if self.path_is_same_file() {
+            let _ = fs::remove_file(&self.path);
+        }
     }
+}
+
+impl TempEnvelope {
+    fn path_is_same_file(&self) -> bool {
+        let Ok(metadata) = fs::symlink_metadata(&self.path) else {
+            return false;
+        };
+        metadata.file_type().is_file()
+            && self
+                .identity
+                .same_file(&TempFileSnapshot::from_metadata(&metadata))
+    }
+}
+
+#[cfg(unix)]
+fn read_file_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    use std::os::unix::fs::FileExt;
+    file.read_at(buffer, offset)
+}
+
+#[cfg(windows)]
+fn read_file_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    use std::os::windows::fs::FileExt;
+    file.seek_read(buffer, offset)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_file_at(_file: &File, _buffer: &mut [u8], _offset: u64) -> io::Result<usize> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "positional temp-file reads are unavailable on this platform",
+    ))
 }
 
 /// Writes one envelope while computing the REST checksum without allocating a

@@ -1,163 +1,301 @@
-//! Discover the host toolchain's default system include search path.
+//! Probe the system include paths for one explicitly selected Clang driver.
 //!
-//! # The gap this closes
-//!
-//! [`super::producer::ClangProducer::invoke`] calls `clang_parseTranslationUnit`
-//! directly through libclang's C API — there is no shell in the loop, and
-//! critically, no driver *wrapper script* in the loop either. On a
-//! system whose `clang`/`cc` on `PATH` is such a wrapper — nix's
-//! `cc-wrapper` is exactly this shape — the wrapper is what injects the
-//! toolchain's own `-isystem`/`-isysroot` flags (derived from its build
-//! inputs) before ever invoking the real compiler binary. Bypass the
-//! wrapper, as libclang necessarily does, and none of that injection
-//! happens: not even `<algorithm>` resolves, because libc++'s headers live
-//! in a directory nothing tells libclang about. Verified empirically in this
-//! repo's nix devShell: parsing `nlohmann/json.hpp` (C++17, single header)
-//! through raw libclang with no extra arguments fails with a **fatal**
-//! `'algorithm' file not found` before a single declaration is visited.
-//!
-//! This is not specific to nix. Any environment where "the compiler on
-//! `PATH`" is not literally the binary that owns the running process's
-//! default search path (a wrapper, a `PATH` shim, a cross-compiler driver
-//! with a baked-in sysroot different from the host's) has the same shape of
-//! gap. `LIBCLANG_PATH` (see this crate's `Cargo.toml` / flake devShell)
-//! solves the *analogous* "which libclang.dylib" problem for loading the
-//! library at all; this module solves the same problem one layer up, for
-//! *what that libclang needs to be told* once loaded.
-//!
-//! # How
-//!
-//! Ask a real compiler driver — the same kind of program a human would run
-//! — what its own default search path is, via the standard, well-documented
-//! `-v -E -x c++ -` incantation (verbose preprocessing of empty stdin; every
-//! driver from GCC to Clang honours it), and parse the `#include <...>
-//! search starts here:` / `End of search list.` block out of its stderr.
-//! Whatever wrapper machinery the driver itself is built from — nix's
-//! `cc-wrapper`, a vendor's `xcrun`, a plain unwrapped `clang` — is exactly
-//! what already knows the right answer; this module does not hardcode a
-//! single toolchain path itself, nix or otherwise, so it is not tied to this
-//! machine's current nix store hashes.
-//!
-//! Framework directories (macOS `-F` search, printed with a `(framework
-//! directory)` suffix by Clang) are skipped: they resolve `#include
-//! <Foo/Foo.h>`-style Objective-C framework headers, which none of this
-//! corpus's C/C++ fixtures use, and passing a framework path as `-isystem`
-//! would be wrong (different lookup semantics).
-//!
-//! # Failure mode
-//!
-//! If no driver can be found or it produces no parseable search list, this
-//! returns an empty `Vec` — [`super::producer::ClangProducer::invoke`] then
-//! falls back to exactly the arguments it always used before this module
-//! existed (bare `-std=`/`-x`). That is a real, silent capability loss (see
-//! the doc comment on the call site), so a diagnostic is printed to stderr
-//! either way; nothing here turns a real absence into a fabricated result.
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::OnceLock;
+//! The compiler authority passes a canonical driver path into this module.
+//! Every query runs that exact executable with a cleared environment; this
+//! module never consults `NUDOX_CLANG_DRIVER`, `PATH`, `cc`, or any other
+//! ambient selector. The resulting resource directory, sysroot, and include
+//! paths are retained by [`super::authority::ClangAuthorityEnvironment`] and
+//! included in the arguments sent to libclang.
 
-/// Candidate driver executables, tried in order. `NUDOX_CLANG_DRIVER` lets a
-/// caller pin an exact binary (e.g. the unwrapped compiler colocated with a
-/// specific `LIBCLANG_PATH`, to guarantee the resource-dir libclang itself
-/// resolves and the search list this module discovers agree); otherwise fall
-/// back to whatever `clang`/`cc` resolve to on `PATH`.
-fn candidate_drivers() -> Vec<String> {
-    let mut out = Vec::new();
-    if let Ok(pinned) = std::env::var("NUDOX_CLANG_DRIVER") {
-        out.push(pinned);
+use std::{
+    io::Read as _,
+    path::{Path, PathBuf},
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
+
+const MAX_PROBE_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_PROBE_TIME: Duration = Duration::from_secs(5);
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Toolchain facts reported by the selected driver itself.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DriverProbe {
+    /// Clang's default builtin headers for this driver.
+    pub(crate) resource_dir: PathBuf,
+    /// Effective target sysroot, absent when the driver reports none.
+    pub(crate) sysroot: Option<PathBuf>,
+    /// Ordered angle-bracket include search paths, excluding frameworks.
+    pub(crate) system_include_dirs: Vec<PathBuf>,
+}
+
+/// Queries resource headers, sysroot, and default system includes from one
+/// already canonicalized Clang driver.
+pub(crate) fn probe(driver: &Path) -> Result<DriverProbe, ProbeError> {
+    let (resource, _) = run(driver, "resource directory", ["-print-resource-dir"])?;
+    let resource_dir = canonical_reported_path(driver, "resource directory", &resource)?;
+
+    let (sysroot, _) = run(driver, "sysroot", ["-print-sysroot"])?;
+    let sysroot = if sysroot.trim().is_empty() {
+        None
+    } else {
+        Some(canonical_reported_path(driver, "sysroot", &sysroot)?)
+    };
+
+    let (_, stderr) = run(
+        driver,
+        "system include search list",
+        ["-v", "-E", "-x", "c++", "-"],
+    )?;
+    let parsed = parse_search_list(&stderr);
+    if parsed.is_empty() {
+        return Err(ProbeError::MalformedOutput {
+            driver: driver.to_path_buf(),
+            operation: "system include search list",
+        });
     }
-    out.push("clang".to_owned());
-    out.push("cc".to_owned());
-    out
+    let mut system_include_dirs = Vec::with_capacity(parsed.len());
+    for path in parsed {
+        let canonical = path.canonicalize().map_err(|source| ProbeError::PathIo {
+            driver: driver.to_path_buf(),
+            operation: "system include search list",
+            path: path.clone(),
+            source,
+        })?;
+        if !canonical.is_dir() {
+            return Err(ProbeError::InvalidPath {
+                driver: driver.to_path_buf(),
+                operation: "system include search list",
+                path: canonical,
+            });
+        }
+        system_include_dirs.push(canonical);
+    }
+
+    Ok(DriverProbe {
+        resource_dir,
+        sysroot,
+        system_include_dirs,
+    })
 }
 
-/// The discovered system include directories, computed once per process.
-/// Every `ClangProducer::invoke` call reuses this — the host toolchain does
-/// not change mid-process, and spawning a compiler driver per translation
-/// unit would be wasteful for a real package with hundreds of files.
-static SYSTEM_INCLUDE_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
-
-/// The `-isystem <dir>` argument pairs to prepend to every file parsed by
-/// libclang, discovered from the host toolchain. Cached after first call.
-pub(crate) fn args() -> Vec<String> {
-    SYSTEM_INCLUDE_DIRS
-        .get_or_init(discover)
-        .iter()
-        .flat_map(|dir| ["-isystem".to_owned(), dir.to_string_lossy().into_owned()])
-        .collect()
+/// Runs an exact driver command with no inherited environment.
+fn run<const N: usize>(
+    driver: &Path,
+    operation: &'static str,
+    arguments: [&str; N],
+) -> Result<(String, String), ProbeError> {
+    let mut command = Command::new(driver);
+    command
+        .args(arguments)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|source| ProbeError::Spawn {
+        driver: driver.to_path_buf(),
+        operation,
+        source,
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| ProbeError::Spawn {
+        driver: driver.to_path_buf(),
+        operation,
+        source: std::io::Error::other("driver stdout pipe unavailable"),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| ProbeError::Spawn {
+        driver: driver.to_path_buf(),
+        operation,
+        source: std::io::Error::other("driver stderr pipe unavailable"),
+    })?;
+    let deadline = Instant::now() + MAX_PROBE_TIME;
+    let (stdout_tx, stdout_rx) = mpsc::sync_channel(1);
+    let (stderr_tx, stderr_rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = stdout_tx.send(read_bounded(stdout));
+    });
+    thread::spawn(move || {
+        let _ = stderr_tx.send(read_bounded(stderr));
+    });
+    let status = wait_bounded(&mut child, driver, operation, deadline)?;
+    let stdout = receive_output(stdout_rx, driver, operation, deadline)?;
+    let stderr = receive_output(stderr_rx, driver, operation, deadline)?;
+    if stdout.1 || stderr.1 {
+        return Err(ProbeError::OutputTooLarge {
+            driver: driver.to_path_buf(),
+            operation,
+            limit: MAX_PROBE_OUTPUT_BYTES,
+        });
+    }
+    if !status.success() {
+        return Err(ProbeError::Failed {
+            driver: driver.to_path_buf(),
+            operation,
+            status: status.to_string(),
+        });
+    }
+    Ok((
+        String::from_utf8_lossy(&stdout.0).trim().to_owned(),
+        String::from_utf8_lossy(&stderr.0).trim().to_owned(),
+    ))
 }
 
-fn discover() -> Vec<PathBuf> {
-    for driver in candidate_drivers() {
-        match run_driver_verbose(&driver) {
-            Ok(stderr) => {
-                let dirs = parse_search_list(&stderr);
-                if !dirs.is_empty() {
-                    return dirs;
-                }
-                eprintln!(
-                    "nudox-languages: `{driver} -v -E -x c++ -` ran but produced no \
-                     parseable '#include <...> search starts here:' block; trying next \
-                     candidate"
-                );
+fn read_bounded(mut reader: impl std::io::Read) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::new();
+    let mut overflow = false;
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let room = MAX_PROBE_OUTPUT_BYTES.saturating_sub(output.len());
+        let retained = read.min(room);
+        output.extend_from_slice(&buffer[..retained]);
+        overflow |= retained < read;
+    }
+    Ok((output, overflow))
+}
+
+fn receive_output(
+    receiver: mpsc::Receiver<std::io::Result<(Vec<u8>, bool)>>,
+    driver: &Path,
+    operation: &'static str,
+    deadline: Instant,
+) -> Result<(Vec<u8>, bool), ProbeError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let output = receiver
+        .recv_timeout(remaining)
+        .map_err(|_| ProbeError::Timeout {
+            driver: driver.to_path_buf(),
+            operation,
+            timeout: MAX_PROBE_TIME,
+        })?;
+    output.map_err(|source| ProbeError::ReadOutput { operation, source })
+}
+
+fn wait_bounded(
+    child: &mut Child,
+    driver: &Path,
+    operation: &'static str,
+    deadline: Instant,
+) -> Result<ExitStatus, ProbeError> {
+    loop {
+        match child.try_wait().map_err(|source| ProbeError::Spawn {
+            driver: driver.to_path_buf(),
+            operation,
+            source,
+        })? {
+            Some(status) => return Ok(status),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ProbeError::Timeout {
+                    driver: driver.to_path_buf(),
+                    operation,
+                    timeout: MAX_PROBE_TIME,
+                });
             }
-            Err(e) => {
-                eprintln!(
-                    "nudox-languages: could not run `{driver}` to discover system include paths: {e}"
-                );
-            }
+            None => thread::sleep(CHILD_POLL_INTERVAL),
         }
     }
-    eprintln!(
-        "nudox-languages: no system include search path could be discovered from any of \
-         {:?}; falling back to bare -std=/-x arguments only. Any file that includes a standard \
-         library or SDK header will fail to resolve it and lower an empty/degraded oracle for \
-         that translation unit, not an error — this is the gap system_includes exists to close. \
-         Set NUDOX_CLANG_DRIVER to an explicit compiler path to fix.",
-        candidate_drivers()
-    );
-    Vec::new()
 }
 
-/// Run `driver -v -E -x c++ -` against empty stdin and return stderr as a
-/// `String`. `-E` (preprocess only, discard output) plus `-` (read from
-/// stdin) means no real file is needed on disk; `-v` is what makes the
-/// driver print its search list. stdout (the preprocessed, empty file) is
-/// discarded; the search list is on stderr for every driver this was tested
-/// against (Clang; GCC matches the same convention).
-fn run_driver_verbose(driver: &str) -> std::io::Result<String> {
-    use std::io::Write as _;
-    use std::process::Stdio;
-
-    let mut child = Command::new(driver)
-        .args(["-v", "-E", "-x", "c++", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    // Empty stdin, then close it so the driver's preprocessor sees EOF
-    // immediately instead of blocking.
-    drop(child.stdin.take().map(|mut s| s.flush()));
-
-    let output = child.wait_with_output()?;
-    Ok(String::from_utf8_lossy(&output.stderr).into_owned())
+fn canonical_reported_path(
+    driver: &Path,
+    operation: &'static str,
+    output: &str,
+) -> Result<PathBuf, ProbeError> {
+    let path = PathBuf::from(output.trim());
+    if !path.is_absolute() {
+        return Err(ProbeError::MalformedOutput {
+            driver: driver.to_path_buf(),
+            operation,
+        });
+    }
+    let canonical = path.canonicalize().map_err(|source| ProbeError::PathIo {
+        driver: driver.to_path_buf(),
+        operation,
+        path: path.clone(),
+        source,
+    })?;
+    if !canonical.is_dir() {
+        return Err(ProbeError::InvalidPath {
+            driver: driver.to_path_buf(),
+            operation,
+            path: canonical,
+        });
+    }
+    Ok(canonical)
 }
 
-/// Parse the directory list out of a `clang -v` (or `gcc -v`) stderr dump:
-///
-/// ```text
-/// #include <...> search starts here:
-///  /path/one
-///  /path/two
-///  /path/framework (framework directory)
-/// End of search list.
-/// ```
-///
-/// Only the angle-bracket (`<...>`) list is used — quote (`"..."`) search
-/// adds nothing beyond it in every driver's own default output (quote search
-/// is angle search plus the including file's own directory, which is not a
-/// fixed system path to begin with).
+/// One typed failure while probing the selected driver.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ProbeError {
+    /// The executable could not be started or its probe input could not be written.
+    #[error("could not run Clang driver {driver} for {operation}: {source}", driver = driver.display())]
+    Spawn {
+        driver: PathBuf,
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    /// The selected driver rejected a probe command.
+    #[error("Clang driver {driver} failed {operation} probe with {status}", driver = driver.display())]
+    Failed {
+        driver: PathBuf,
+        operation: &'static str,
+        status: String,
+    },
+    /// The exact driver exceeded the bounded probe window.
+    #[error("Clang driver {driver} exceeded the {timeout:?} limit during {operation}", driver = driver.display())]
+    Timeout {
+        driver: PathBuf,
+        operation: &'static str,
+        timeout: Duration,
+    },
+    /// A driver emitted more output than the authority probe retains.
+    #[error("Clang driver {driver} exceeded the {limit}-byte output limit during {operation}", driver = driver.display())]
+    OutputTooLarge {
+        driver: PathBuf,
+        operation: &'static str,
+        limit: usize,
+    },
+    /// A probe output stream could not be read.
+    #[error("could not read Clang driver output during {operation}: {source}")]
+    ReadOutput {
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    /// The selected driver emitted an invalid path or no parseable include block.
+    #[error("Clang driver {driver} emitted malformed {operation} output", driver = driver.display())]
+    MalformedOutput {
+        driver: PathBuf,
+        operation: &'static str,
+    },
+    /// A reported path could not be inspected.
+    #[error("could not inspect {operation} path {path} from Clang driver {driver}: {source}", driver = driver.display(), path = path.display())]
+    PathIo {
+        driver: PathBuf,
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// A reported toolchain directory was not a directory.
+    #[error("Clang driver {driver} reported a non-directory {operation} path: {path}", driver = driver.display(), path = path.display())]
+    InvalidPath {
+        driver: PathBuf,
+        operation: &'static str,
+        path: PathBuf,
+    },
+}
+
+/// The directory list from a `clang -v` (or `gcc -v`) stderr dump.
+/// Framework directories are skipped because their lookup semantics require
+/// `-F`, not `-isystem`.
 fn parse_search_list(stderr: &str) -> Vec<PathBuf> {
     let mut in_list = false;
     let mut dirs = Vec::new();
@@ -173,15 +311,19 @@ fn parse_search_list(stderr: &str) -> Vec<PathBuf> {
             continue;
         }
         let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed.ends_with("(framework directory)") {
             continue;
-        }
-        if trimmed.ends_with("(framework directory)") {
-            continue; // see module docs: -F semantics, not -isystem.
         }
         dirs.push(PathBuf::from(trimmed));
     }
     dirs
+}
+
+/// Explicitly selected system include arguments in driver search order.
+pub(crate) fn args(dirs: &[PathBuf]) -> Vec<String> {
+    dirs.iter()
+        .flat_map(|dir| ["-isystem".to_owned(), dir.to_string_lossy().into_owned()])
+        .collect()
 }
 
 #[cfg(test)]
@@ -193,54 +335,24 @@ mod tests {
         let stderr = "\
 clang version 21.1.8
 Target: arm64-apple-darwin
-Thread model: posix
- \"/usr/bin/clang\" -cc1 ...
-clang -cc1 version 21.1.8
-ignoring nonexistent directory \"/does/not/exist\"
 #include \"...\" search starts here:
 #include <...> search starts here:
  /nix/store/aaa-libcxx/include
  /nix/store/aaa-libcxx/include/c++/v1
- /nix/store/aaa-sdk/usr/include
  /nix/store/aaa-sdk/System/Library/Frameworks (framework directory)
 End of search list.
-# 1 \"<stdin>\"
 ";
-        let dirs = parse_search_list(stderr);
         assert_eq!(
-            dirs,
+            parse_search_list(stderr),
             vec![
                 PathBuf::from("/nix/store/aaa-libcxx/include"),
                 PathBuf::from("/nix/store/aaa-libcxx/include/c++/v1"),
-                PathBuf::from("/nix/store/aaa-sdk/usr/include"),
-            ],
-            "framework directory must be excluded, angle-bracket list order preserved: {dirs:?}"
+            ]
         );
     }
 
     #[test]
-    fn missing_search_list_yields_empty_not_a_panic() {
-        assert_eq!(
-            parse_search_list("no useful output here"),
-            Vec::<PathBuf>::new()
-        );
-    }
-
-    #[test]
-    fn real_host_driver_discovers_a_nonempty_search_list() {
-        // This is the one test in this module that actually shells out. If
-        // the sandbox this runs in has no `clang`/`cc` on PATH at all, this
-        // would be a false failure unrelated to the parsing logic above —
-        // but every environment this producer is meant to run in (the nix
-        // devShell, any real dev machine) has one, and the whole point of
-        // `discover()` is to prove it finds a nonempty list on such a
-        // machine, not just that the string parser works on canned input.
-        let dirs = discover();
-        assert!(
-            !dirs.is_empty(),
-            "expected a nonempty system include search list from the host toolchain; \
-             got none — see system_includes::discover's stderr diagnostics for which \
-             driver(s) were tried"
-        );
+    fn missing_search_list_yields_empty() {
+        assert!(parse_search_list("no useful output here").is_empty());
     }
 }

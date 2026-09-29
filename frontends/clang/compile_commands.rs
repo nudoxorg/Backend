@@ -360,16 +360,19 @@ mod tests {
             "-std=c11".to_owned(),
         ];
         let rewritten = rewrite_relative_include_paths(&args, directory);
-        assert_eq!(rewritten, vec![
-            "cc".to_owned(),
-            "-I/project/root/include".to_owned(),
-            "-I".to_owned(),
-            "/project/root/vendor/include".to_owned(),
-            "-isystem".to_owned(),
-            "/project/root/third_party".to_owned(),
-            "-I/already/absolute".to_owned(),
-            "-std=c11".to_owned(),
-        ]);
+        assert_eq!(
+            rewritten,
+            vec![
+                "cc".to_owned(),
+                "-I/project/root/include".to_owned(),
+                "-I".to_owned(),
+                "/project/root/vendor/include".to_owned(),
+                "-isystem".to_owned(),
+                "/project/root/third_party".to_owned(),
+                "-I/already/absolute".to_owned(),
+                "-std=c11".to_owned(),
+            ]
+        );
     }
 
     #[test]

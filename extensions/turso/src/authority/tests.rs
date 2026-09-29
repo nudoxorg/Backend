@@ -1186,6 +1186,8 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
             .unwrap_or_else(|error| panic!("begin terminal: {error}"));
         (terminal, observed)
     });
+    let terminal_epoch = terminal.epoch();
+    let terminal_fence = terminal.fence_bytes();
     let gate = Arc::new(Barrier::new(3));
     let barrier_gate = Arc::clone(&gate);
     let barrier_path = path.clone();
@@ -1200,8 +1202,8 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
                 .mint_no_result_retirement_barrier(
                     &barrier_namespace,
                     [0x71; 16],
-                    terminal.epoch(),
-                    terminal.fence_bytes(),
+                    terminal_epoch,
+                    terminal_fence,
                 )
                 .await
                 .unwrap_or_else(|error| panic!("race barrier: {error}"))
@@ -1229,19 +1231,19 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
     let later_attempt = attempt_thread
         .join()
         .unwrap_or_else(|_| panic!("attempt thread panicked"));
-    assert!(barrier.barrier_epoch() > terminal.epoch());
+    assert!(barrier.barrier_epoch() > terminal_epoch);
     assert_ne!(barrier.barrier_epoch(), later_attempt.epoch());
 
     futures_executor::block_on(async {
-        let reopened = TursoAuthority::open(&path)
+        let mut reopened = TursoAuthority::open(&path)
             .await
             .unwrap_or_else(|error| panic!("reopen: {error}"));
         let retry = reopened
             .mint_no_result_retirement_barrier(
                 &namespace,
                 [0x71; 16],
-                terminal.epoch(),
-                terminal.fence_bytes(),
+                terminal_epoch,
+                terminal_fence,
             )
             .await
             .unwrap_or_else(|error| panic!("retry barrier: {error}"));
@@ -1250,8 +1252,8 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
             .mint_no_result_retirement_barrier(
                 &namespace,
                 [0x71; 16],
-                terminal.epoch(),
-                terminal.fence_bytes(),
+                terminal_epoch,
+                terminal_fence,
             )
             .await
             .unwrap_or_else(|error| panic!("repeat refreshed barrier: {error}"));

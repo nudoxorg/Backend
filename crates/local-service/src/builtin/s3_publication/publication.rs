@@ -156,7 +156,7 @@ impl S3ClosurePublisher {
         let stored = self
             .route
             .put_pack(&pack, &upload, fence, Some(&readback))
-            .map_err(|_| PublicationError::Remote)?;
+            .map_err(PublicationError::RemoteStore)?;
         validate_stored_pack(&pack, &stored, expected_ids.len(), fence)?;
         receipts.push(PackReceiptSummary::from_pack_and_stored(
             &pack,
@@ -276,6 +276,27 @@ impl SelectedClosurePublisher for S3ClosurePublisher {
             object_id,
             expected_schema,
             expected_payload_len,
+        )
+    }
+
+    fn hydrate_object_range(
+        &self,
+        store: &FileStore,
+        selected: RemoteClosureSelection,
+        object_id: UntrustedObjectId,
+        expected_schema: backend_version::SchemaIdentity,
+        expected_payload_len: u64,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, PublicationError> {
+        self.hydrate_object_range_from_s3(
+            store,
+            selected,
+            object_id,
+            expected_schema,
+            expected_payload_len,
+            offset,
+            length,
         )
     }
 

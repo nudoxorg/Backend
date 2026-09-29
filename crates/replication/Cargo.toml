@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 [dependencies]
 backend-platform = { path = "../platform" }
-backend-semantic = { path = "../semantic" }
+backend-semantic = { path = "../semantic", features = ["mmap"] }
 backend-version = { path = "../version" }
 backend-store = { path = "../store" }
 blake3.workspace = true

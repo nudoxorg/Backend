@@ -19,6 +19,7 @@ use backend_compile::{
     EmbeddingExecutable, EmbeddingExecutionIdentity, EmbeddingInvocation, EmbeddingNormalization,
     EmbeddingPurpose,
 };
+use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
@@ -32,6 +33,7 @@ use backend_semantic::ir::{
     SemanticPlaneManifest, SemanticPlaneSegment, SemanticSegmentId,
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
+use backend_semantic::vocabulary::AuthorityDiagnosticClass;
 use backend_store::journal::{
     DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
 };
@@ -43,10 +45,12 @@ use backend_version::{
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
 };
 use thiserror::Error;
 
 use crate::application::executor::StagedOutputLease;
+use crate::application::package_authority::enter_package_authority_with_go_authority_witness;
 use crate::application::{
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerExecutionIdentity,
     LocalCompilerOpenError, LocalCompilerPath, LocalCompilerPlaneExecutionIdentity,
@@ -120,6 +124,41 @@ pub struct PackageSource<'source> {
     source: &'source str,
 }
 
+/// Why one exact package source contributed provenance but no semantic artifact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageSourceCoverageGapCause {
+    /// Rust-analyzer found the source in the package VFS but outside every active Cargo target.
+    RustSourceOutsideActiveCargoTarget,
+}
+
+/// Exact source retained in the input frontier but omitted from semantic lowering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageSourceCoverageGap {
+    source: SourceAuthority,
+    relative_path: Box<str>,
+    cause: PackageSourceCoverageGapCause,
+}
+
+impl PackageSourceCoverageGap {
+    /// Returns the exact source identity and byte length committed by the package input frontier.
+    #[must_use]
+    pub const fn source(&self) -> SourceAuthority {
+        self.source
+    }
+
+    /// Returns the exact normalized package-relative path.
+    #[must_use]
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    /// Returns the typed reason semantic lowering did not run for this source.
+    #[must_use]
+    pub const fn cause(&self) -> PackageSourceCoverageGapCause {
+        self.cause
+    }
+}
+
 impl<'source> PackageSource<'source> {
     /// Admits one normalized package-relative source path with its exact bytes.
     ///
@@ -168,6 +207,7 @@ pub struct PackageSourceSet<'source> {
     sources: &'source [PackageSource<'source>],
     input_claim: Option<SemanticInputWitness>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+    go_authority_witness: Option<&'source GoPackageAuthorityWitness>,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -236,6 +276,7 @@ impl<'source> PackageSourceSet<'source> {
             sources,
             input_claim: None,
             embedding_provisioning_failure: None,
+            go_authority_witness: None,
         })
     }
 
@@ -247,6 +288,14 @@ impl<'source> PackageSourceSet<'source> {
     #[must_use]
     pub fn with_input_claim(mut self, input: SemanticInputWitness) -> Self {
         self.input_claim = Some(input);
+        self
+    }
+
+    pub(crate) fn with_go_authority_witness(
+        mut self,
+        witness: &'source GoPackageAuthorityWitness,
+    ) -> Self {
+        self.go_authority_witness = Some(witness);
         self
     }
 
@@ -394,6 +443,19 @@ pub struct PublishedSemanticPackage {
     pub publication: PublishedCompilation,
     /// Complete semantic images copied only after the publication owner reopened the closure.
     pub images: Box<[SemanticImageSnapshot]>,
+    /// Exact package source-frontier members that had no active semantic scope.
+    ///
+    /// Their bytes remain committed by the package input witness even though
+    /// they have no corresponding artifact in `publication` or `images`.
+    pub coverage_gaps: Box<[PackageSourceCoverageGap]>,
+}
+
+impl PublishedSemanticPackage {
+    /// Returns exact source-frontier members retained in provenance without semantic artifacts.
+    #[must_use]
+    pub fn coverage_gaps(&self) -> &[PackageSourceCoverageGap] {
+        &self.coverage_gaps
+    }
 }
 
 /// Canonical member facts in one complete, not-yet-selected semantic compiler output.
@@ -625,6 +687,15 @@ impl StagedSemanticPackage {
     #[must_use]
     pub fn artifacts(&self) -> &[StagedSemanticArtifact] {
         &self.artifacts
+    }
+
+    /// Returns exact source-frontier members that had no active semantic scope.
+    ///
+    /// Their bytes remain committed by [`Self::input_witness`], while no
+    /// semantic artifact is claimed for them.
+    #[must_use]
+    pub fn coverage_gaps(&self) -> &[PackageSourceCoverageGap] {
+        &self.staged.coverage_gaps
     }
 
     /// Returns the exact opened runtime identity retained by this staged result, when present.
@@ -922,6 +993,9 @@ pub enum PackageSemanticError {
     /// Canonical package lineage could not be constructed.
     #[error("package lineage is malformed")]
     Lineage,
+    /// A Go package's authority filesystem inputs could not be admitted.
+    #[error(transparent)]
+    GoAuthorityWitness(#[from] backend_frontend_go::legacy::oracle::GoPackageAuthorityWitnessError),
     /// One package-relative declaration scope was rejected.
     #[error("package declaration scope is malformed for {path}")]
     Scope {
@@ -1037,6 +1111,7 @@ pub(crate) struct StagedCompilerArtifact {
 /// Fully owned complete package result waiting for the durable publication owner.
 pub(crate) struct StagedPackageCompilation {
     artifacts: Vec<StagedPackageArtifact>,
+    coverage_gaps: Box<[PackageSourceCoverageGap]>,
     image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
     semantic_images: Box<[u8]>,
     package_identity: [u8; 32],
@@ -1092,12 +1167,20 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 timeout: *timeout,
             }
         })?;
+        let authority = match (request.profile, self.package_authority.clang) {
+            (
+                backend_semantic::vocabulary::LanguageProfile::C(_)
+                | backend_semantic::vocabulary::LanguageProfile::Cxx(_),
+                Some(environment),
+            ) => crate::driver::SemanticAuthorityInput::ClangBuffer { environment },
+            _ => crate::driver::SemanticAuthorityInput::None,
+        };
         self.stage_prepared(
             request,
             source,
             DeclarationScope::standalone(request.profile),
             toolchain,
-            crate::driver::SemanticAuthorityInput::None,
+            authority,
             control,
             scratch,
             progress,
@@ -1194,7 +1277,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             source_authority,
             scope,
             toolchain,
-            authority.input(),
+            authority.input(&resolved.source_path),
             control,
             scratch,
             progress,
@@ -1214,7 +1297,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
     ) -> Result<StagedPackageCompilation, PackageSemanticError> {
         let request = package.request.as_ref();
         let target = package.request.target;
-        let input = package
+        let mut input = package
             .input_claim
             .unwrap_or_else(|| package_source_input_witness(&package));
         let first_source =
@@ -1224,16 +1307,17 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 .ok_or(PackageSemanticError::Capacity {
                     lane: "compilation unit source",
                 })?;
-        let first_authority = request_source(ApplicationCompilerRequest {
+        let first_application_request = ApplicationCompilerRequest {
             profile: target.profile,
             stage: target.stage,
             source: first_source.source,
-        })
-        .map_err(source_terminal)
-        .map_err(|terminal| PackageSemanticError::Compile {
-            path: first_source.relative_path.into(),
-            terminal: Box::new(terminal),
-        })?;
+        };
+        let first_authority = request_source(first_application_request)
+            .map_err(source_terminal)
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
         let control =
             self.compile_control(cancelled)
                 .map_err(|timeout| PackageSemanticError::Compile {
@@ -1246,6 +1330,73 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }),
                 })?;
         let source_count = package.compilation_sources().count();
+        if target.profile.language() == backend_semantic::vocabulary::Language::Rust
+            && let Some(configuration) = self.package_authority.rust
+        {
+            for source in package.compilation_sources() {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(CompilerTerminal::PackageCancelled {
+                            target: package.package_target.target(),
+                            phase: PackageCompilePhase::Authority,
+                        }),
+                    });
+                }
+                let application_request = ApplicationCompilerRequest {
+                    profile: target.profile,
+                    stage: target.stage,
+                    source: source.source,
+                };
+                let source_authority = request_source(application_request)
+                    .map_err(source_terminal)
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?;
+                let toolchain = self
+                    .toolchain(application_request)
+                    .map_err(|cause| {
+                        toolchain_terminal(source_authority, application_request, cause)
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?;
+                if Instant::now() >= control.deadline {
+                    return Err(PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(package_authority_terminal(
+                            package.package_target.target(),
+                            application_request,
+                            source_authority,
+                            toolchain,
+                            PackageAuthorityError::Deadline {
+                                profile: target.profile,
+                                stage: crate::application::package_authority::PackageAuthorityStage::RustProject,
+                            },
+                        )),
+                    });
+                }
+                if source.source.len() > *configuration.maximum_source_bytes as usize {
+                    return Err(PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(package_authority_terminal(
+                            package.package_target.target(),
+                            application_request,
+                            source_authority,
+                            toolchain,
+                            PackageAuthorityError::RustProject(
+                                backend_frontend_rust::legacy::RustAuthorityError::SourceBudget {
+                                    actual: u64::try_from(source.source.len()).unwrap_or(u64::MAX),
+                                    maximum: configuration.maximum_source_bytes,
+                                },
+                            ),
+                        )),
+                    });
+                }
+            }
+        }
         if (embedding_runtime.is_none() || package.embedding_provisioning_failure.is_some())
             && embedding_requirement == EmbeddingRequirement::Required
         {
@@ -1293,6 +1444,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         artifacts
             .try_reserve_exact(source_count)
             .map_err(PackageSemanticError::Allocation)?;
+        let mut coverage_gaps = Vec::new();
         let mut image_plan = Vec::new();
         image_plan
             .try_reserve_exact(source_count)
@@ -1300,6 +1452,53 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut semantic_images = Vec::new();
         let mut fragment_bytes = 0_usize;
         let mut semantic_bytes = 0_usize;
+
+        // Rust uses one ephemeral analyzer owner for the whole selected package
+        // frontier. Its workspace VFS and database remain borrowed through each
+        // source callback and are dropped only after the package staging loop.
+        let rust_workspace_authority =
+            if target.profile.language() == backend_semantic::vocabulary::Language::Rust {
+                let source_path = package.package_root.join(first_source.relative_path);
+                let toolchain = self
+                    .toolchain(first_application_request)
+                    .map_err(|cause| {
+                        toolchain_terminal(first_authority, first_application_request, cause)
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?;
+                Some(
+                    enter_package_authority_with_go_authority_witness(
+                        PackageAuthorityRequest {
+                            package_root: package.package_root,
+                            source_path: &source_path,
+                            source: first_source.source.as_bytes(),
+                            unit_key: package.package_target.unit_key(),
+                            profile: target.profile,
+                            toolchain,
+                            control,
+                            configuration: self.package_authority,
+                        },
+                        package.go_authority_witness,
+                    )
+                    .map_err(|cause| {
+                        package_authority_terminal(
+                            package.package_target.target(),
+                            first_application_request,
+                            first_authority,
+                            toolchain,
+                            cause,
+                        )
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?,
+                )
+            } else {
+                None
+            };
 
         for source in package.compilation_sources() {
             if cancelled.load(Ordering::Acquire) {
@@ -1310,29 +1509,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         phase: PackageCompilePhase::Lower,
                     }),
                 });
-            }
-            if embedding_unavailable.is_none()
-                && let (Some(runtime), Some(identity)) =
-                    (embedding_runtime, embedding_execution_identity)
-            {
-                match stage_embedding_artifact(
-                    runtime,
-                    identity,
-                    source.relative_path,
-                    source.source,
-                ) {
-                    Ok(artifact) => embedding_artifacts.push(artifact),
-                    Err(cause) if embedding_requirement == EmbeddingRequirement::Required => {
-                        return Err(PackageSemanticError::Embedding {
-                            path: source.relative_path.into(),
-                            cause,
-                        });
-                    }
-                    Err(cause) => {
-                        embedding_artifacts.clear();
-                        embedding_unavailable = Some(cause);
-                    }
-                }
             }
             progress(PackageCompilePhase::Authority);
             let application_request = ApplicationCompilerRequest {
@@ -1360,44 +1536,83 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
-            let authority = enter_package_authority(PackageAuthorityRequest {
-                package_root: package.package_root,
-                source_path: &source_path,
-                source: source.source.as_bytes(),
-                unit_key: package.package_target.unit_key(),
-                profile: target.profile,
-                toolchain,
-                control,
-                configuration: self.package_authority,
-            })
-            .map_err(|cause| {
-                package_authority_terminal(
-                    package.package_target.target(),
-                    application_request,
-                    source_authority,
-                    toolchain,
-                    cause,
+            let transient_authority = if rust_workspace_authority.is_none() {
+                Some(
+                    enter_package_authority_with_go_authority_witness(
+                        PackageAuthorityRequest {
+                            package_root: package.package_root,
+                            source_path: &source_path,
+                            source: source.source.as_bytes(),
+                            unit_key: package.package_target.unit_key(),
+                            profile: target.profile,
+                            toolchain,
+                            control,
+                            configuration: self.package_authority,
+                        },
+                        package.go_authority_witness,
+                    )
+                    .map_err(|cause| {
+                        package_authority_terminal(
+                            package.package_target.target(),
+                            application_request,
+                            source_authority,
+                            toolchain,
+                            cause,
+                        )
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?,
                 )
-            })
-            .map_err(|terminal| PackageSemanticError::Compile {
-                path: source.relative_path.into(),
-                terminal: Box::new(terminal),
-            })?;
-            let compiled = self
-                .stage_prepared(
-                    application_request,
-                    source_authority,
-                    scope,
-                    toolchain,
-                    authority.input(),
-                    control,
-                    scratch,
-                    progress,
-                )
-                .map_err(|terminal| PackageSemanticError::Compile {
-                    path: source.relative_path.into(),
-                    terminal: Box::new(terminal),
+            } else {
+                None
+            };
+            let authority_owner = rust_workspace_authority
+                .as_ref()
+                .or(transient_authority.as_ref())
+                .ok_or(PackageSemanticError::Capacity {
+                    lane: "package authority owner",
                 })?;
+            let authority = authority_owner.input(&source_path);
+            let compiled = match self.stage_prepared(
+                application_request,
+                source_authority,
+                scope,
+                toolchain,
+                authority,
+                control,
+                scratch,
+                progress,
+            ) {
+                Ok(compiled) => compiled,
+                Err(terminal)
+                    if matches!(
+                        &terminal,
+                        CompilerTerminal::Compile {
+                            attempted,
+                            cause: CompilerCause::Authority {
+                                class: AuthorityDiagnosticClass::SourceScope,
+                                ..
+                            },
+                        } if target.profile.language() == backend_semantic::vocabulary::Language::Rust
+                            && attempted.source == source_authority
+                    ) =>
+                {
+                    coverage_gaps.push(PackageSourceCoverageGap {
+                        source: source_authority,
+                        relative_path: source.relative_path.into(),
+                        cause: PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
+                    });
+                    continue;
+                }
+                Err(terminal) => {
+                    return Err(PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    });
+                }
+            };
             let fragment_length = compiled.fragment.len();
             fragment_bytes = checked_package_bytes(
                 fragment_bytes,
@@ -1432,9 +1647,43 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 recipe: compiled.recipe,
                 fragment: compiled.fragment,
             });
+            if embedding_unavailable.is_none()
+                && let (Some(runtime), Some(identity)) =
+                    (embedding_runtime, embedding_execution_identity)
+            {
+                match stage_embedding_artifact(
+                    runtime,
+                    identity,
+                    source.relative_path,
+                    source.source,
+                ) {
+                    Ok(artifact) => embedding_artifacts.push(artifact),
+                    Err(cause) if embedding_requirement == EmbeddingRequirement::Required => {
+                        return Err(PackageSemanticError::Embedding {
+                            path: source.relative_path.into(),
+                            cause,
+                        });
+                    }
+                    Err(cause) => {
+                        embedding_artifacts.clear();
+                        embedding_unavailable = Some(cause);
+                    }
+                }
+            }
+        }
+        if !coverage_gaps.is_empty() {
+            // A source-frontier claim can bind bytes without claiming that all
+            // selected source files had active semantic authority. Keep both
+            // opaque roots while removing any completeness capability.
+            input = SemanticInputWitness::claimed_state(
+                *input.input_root(),
+                input.read_manifest_root(),
+                Coverage::Partial,
+            );
         }
         Ok(StagedPackageCompilation {
             artifacts,
+            coverage_gaps: coverage_gaps.into_boxed_slice(),
             image_plan: image_plan.into_boxed_slice(),
             semantic_images: semantic_images.into_boxed_slice(),
             package_identity: *package.request.as_ref().identity.as_ref(),
@@ -1781,6 +2030,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         Ok(PublishedSemanticPackage {
             publication,
             images: images.into_boxed_slice(),
+            coverage_gaps: staged.coverage_gaps,
         })
     }
 
@@ -2514,6 +2764,8 @@ const fn package_authority_projection(
         | PackageAuthorityError::CompilationUnitMismatch { .. }
         | PackageAuthorityError::CompilationUnitSourceMismatch { .. }
         | PackageAuthorityError::RustToolchainExecutableMismatch { .. }
+        | PackageAuthorityError::ClangToolchainExecutableMismatch { .. }
+        | PackageAuthorityError::GoAuthorityInputsChanged { .. }
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
@@ -2523,6 +2775,7 @@ const fn package_authority_projection(
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::JavaHarness(_)
+        | PackageAuthorityError::GoAuthorityWitness(_)
         | PackageAuthorityError::ImageTooLarge { .. }
         | PackageAuthorityError::ToolchainUnavailable { .. }
         | PackageAuthorityError::Cancelled { .. }

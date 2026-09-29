@@ -17,7 +17,7 @@ use backend_replication::{
 use backend_semantic::ir::{SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest};
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
 use core::fmt;
-use std::collections::{BTreeMap, VecDeque};
+use hashlink::LruCache;
 use std::sync::{Arc, Mutex};
 
 const MAX_RANGE_BYTES: u64 = 16 * 1024;
@@ -25,7 +25,7 @@ const MAX_SEGMENT_BYTES: u64 = backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const VERIFIED_SEGMENT_CACHE_BYTES: usize = 32 * 1024 * 1024;
 // Byte bounds alone do not bound a cache of tiny semantic segments: every
-// entry also retains a tree node, LRU node, Arc, and physical-object key.
+// entry also retains a hash-table entry, LRU links, Arc, and object key.
 const VERIFIED_SEGMENT_CACHE_ENTRIES: usize = 4_096;
 const OBJECT_READ_CHUNK_BYTES: usize = 16 * 1024;
 
@@ -39,11 +39,19 @@ pub(super) struct VerifiedSegmentCache {
     state: Mutex<VerifiedSegmentCacheState>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct VerifiedSegmentCacheState {
-    entries: BTreeMap<[u8; 32], VerifiedSegment>,
-    oldest_first: VecDeque<[u8; 32]>,
+    entries: LruCache<[u8; 32], VerifiedSegment>,
     resident_bytes: usize,
+}
+
+impl Default for VerifiedSegmentCacheState {
+    fn default() -> Self {
+        Self {
+            entries: LruCache::new(VERIFIED_SEGMENT_CACHE_ENTRIES),
+            resident_bytes: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -59,12 +67,9 @@ impl VerifiedSegmentCache {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = state.entries.get(&object_id)?.clone();
-        if let Some(position) = state.oldest_first.iter().position(|id| *id == object_id) {
-            state.oldest_first.remove(position);
-        }
-        state.oldest_first.push_back(object_id);
-        Some(entry)
+        // LruCache promotes by hash lookup and linked-node splice. This clone
+        // shares the resident payload Arc and occurs only on a cache hit.
+        state.entries.get(&object_id).cloned()
     }
 
     fn admit(&self, object_id: [u8; 32], segment: VerifiedSegment) {
@@ -81,18 +86,19 @@ impl VerifiedSegmentCache {
         if state.entries.contains_key(&object_id) {
             return;
         }
-        while state.resident_bytes.saturating_add(len) > VERIFIED_SEGMENT_CACHE_BYTES
-            || state.entries.len() >= VERIFIED_SEGMENT_CACHE_ENTRIES
-        {
-            let Some(oldest) = state.oldest_first.pop_front() else {
+        while state.resident_bytes.saturating_add(len) > VERIFIED_SEGMENT_CACHE_BYTES {
+            let Some((_, evicted)) = state.entries.remove_lru() else {
                 return;
             };
-            if let Some(evicted) = state.entries.remove(&oldest) {
-                state.resident_bytes -= evicted.bytes.len();
-            }
+            state.resident_bytes -= evicted.bytes.len();
+        }
+        while state.entries.len() >= VERIFIED_SEGMENT_CACHE_ENTRIES {
+            let Some((_, evicted)) = state.entries.remove_lru() else {
+                return;
+            };
+            state.resident_bytes -= evicted.bytes.len();
         }
         state.resident_bytes += len;
-        state.oldest_first.push_back(object_id);
         state.entries.insert(object_id, segment);
     }
 }
@@ -559,8 +565,40 @@ impl<'hydrator> VersionedPlaneService<'hydrator> {
         // A cache miss reads at most one complete 1 MiB segment; a hit shares
         // its verified bytes without another disk read or semantic hash.
         let object_id = *member.object_id();
-        let verified = match self.verified_segments.get(object_id) {
-            Some(verified) => verified,
+        let start = usize::try_from(byte_range.start)
+            .map_err(|_| VersionedPlaneServiceError::RangeBounds)?;
+        let end = usize::try_from(
+            byte_range
+                .end()
+                .map_err(|_| VersionedPlaneServiceError::RangeBounds)?,
+        )
+        .map_err(|_| VersionedPlaneServiceError::RangeBounds)?;
+        let bytes = match self.verified_segments.get(object_id) {
+            Some(verified) => {
+                if u64::try_from(verified.bytes.len()).ok() != Some(member.byte_length()) {
+                    return Err(VersionedPlaneServiceError::MemberMismatch);
+                }
+                // A physical payload object is keyed by the shared typed
+                // segment schema and canonical bytes. The logical segment ID
+                // also binds plane metadata, so identical bytes can be
+                // referenced from another plane or generation. Re-admit that
+                // uncommon association before exposing its page.
+                if verified.plane != range_request.plane
+                    || verified.segment_id != *range_request.segment_id.as_bytes()
+                {
+                    let admitted = segment
+                        .admit(range_request.plane, &verified.bytes)
+                        .map_err(|error| VersionedPlaneServiceError::Segment(error.to_string()))?;
+                    if admitted.as_bytes() != range_request.segment_id.as_bytes() {
+                        return Err(VersionedPlaneServiceError::MemberMismatch);
+                    }
+                }
+                verified
+                    .bytes
+                    .get(start..end)
+                    .ok_or(VersionedPlaneServiceError::RangeBounds)?
+                    .to_vec()
+            }
             None => {
                 let object_claim = UntrustedObjectId::from_bytes(*member.object_id());
                 let payload = match read_local_segment_payload(
@@ -597,45 +635,27 @@ impl<'hydrator> VersionedPlaneService<'hydrator> {
                 let admitted = segment
                     .admit(range_request.plane, &payload)
                     .map_err(|error| VersionedPlaneServiceError::Segment(error.to_string()))?;
-                let verified = VerifiedSegment {
-                    bytes: Arc::from(payload),
-                    segment_id: *admitted.as_bytes(),
-                    plane: range_request.plane,
-                };
-                self.verified_segments.admit(object_id, verified.clone());
-                verified
+                if admitted.as_bytes() != range_request.segment_id.as_bytes() {
+                    return Err(VersionedPlaneServiceError::MemberMismatch);
+                }
+                let bytes = payload
+                    .get(start..end)
+                    .ok_or(VersionedPlaneServiceError::RangeBounds)?
+                    .to_vec();
+                // Transfer the just-verified allocation into the cache after
+                // making the requested page. This avoids cloning its Arc on a
+                // miss; cache hits are the only path that clones an Arc.
+                self.verified_segments.admit(
+                    object_id,
+                    VerifiedSegment {
+                        bytes: Arc::from(payload),
+                        segment_id: *admitted.as_bytes(),
+                        plane: range_request.plane,
+                    },
+                );
+                bytes
             }
         };
-        if u64::try_from(verified.bytes.len()).ok() != Some(member.byte_length()) {
-            return Err(VersionedPlaneServiceError::MemberMismatch);
-        }
-        // Physical content can legitimately be reused by another logical
-        // plane. Re-admit only that uncommon new association from the shared
-        // bytes; the common exact plane/segment hit skips the full hash.
-        if verified.plane != range_request.plane
-            || verified.segment_id != *range_request.segment_id.as_bytes()
-        {
-            let admitted = segment
-                .admit(range_request.plane, &verified.bytes)
-                .map_err(|error| VersionedPlaneServiceError::Segment(error.to_string()))?;
-            if admitted.as_bytes() != range_request.segment_id.as_bytes() {
-                return Err(VersionedPlaneServiceError::MemberMismatch);
-            }
-        }
-
-        let start = usize::try_from(byte_range.start)
-            .map_err(|_| VersionedPlaneServiceError::RangeBounds)?;
-        let end = usize::try_from(
-            byte_range
-                .end()
-                .map_err(|_| VersionedPlaneServiceError::RangeBounds)?,
-        )
-        .map_err(|_| VersionedPlaneServiceError::RangeBounds)?;
-        let bytes = verified
-            .bytes
-            .get(start..end)
-            .ok_or(VersionedPlaneServiceError::RangeBounds)?
-            .to_vec();
 
         let still_current = resolver
             .current_selected_plane()
@@ -715,7 +735,7 @@ fn validate_requested_range(
     Ok(())
 }
 
-fn coordinate_identity(coordinate: &str) -> [u8; 32] {
+pub(super) fn coordinate_identity(coordinate: &str) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.locald.versioned-plane.source-coordinate.v1\0");
     hasher.update(coordinate.as_bytes());
@@ -845,12 +865,13 @@ mod tests {
         SemanticPlaneSegment,
     };
     use backend_semantic::vocabulary::Stage;
-    use backend_store::FileStore;
-    use backend_version::{Coverage, ScopeRoot};
-    use std::collections::VecDeque;
+    use backend_store::{FileStore, TypedObject};
+    use backend_version::{Coverage, ObjectKey, ScopeRoot};
+    use std::collections::{BTreeMap, VecDeque};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -1556,12 +1577,12 @@ mod tests {
         last[0] = 32;
         assert_eq!(state.resident_bytes, VERIFIED_SEGMENT_CACHE_BYTES);
         assert_eq!(state.entries.len(), 32);
-        assert!(!state.entries.contains_key(&[0; 32]));
-        assert!(state.entries.contains_key(&last));
+        assert!(state.entries.peek(&[0; 32]).is_none());
+        assert!(state.entries.peek(&last).is_some());
     }
 
     #[test]
-    fn verified_segment_cache_bounds_metadata_for_tiny_segments() {
+    fn verified_segment_cache_promotes_hits_and_bounds_tiny_segment_metadata() {
         let cache = VerifiedSegmentCache::default();
         let plane = SemanticPlaneKind::Embeddings(
             EmbeddingPlaneIdentity::new(
@@ -1575,7 +1596,7 @@ mod tests {
             )
             .expect("valid embedding plane"),
         );
-        for index in 0..=VERIFIED_SEGMENT_CACHE_ENTRIES {
+        for index in 0..VERIFIED_SEGMENT_CACHE_ENTRIES {
             let mut object_id = [0; 32];
             object_id[..8].copy_from_slice(&(index as u64).to_be_bytes());
             cache.admit(
@@ -1587,10 +1608,256 @@ mod tests {
                 },
             );
         }
+        let mut recently_used = [0; 32];
+        recently_used[..8].copy_from_slice(&0_u64.to_be_bytes());
+        assert!(cache.get(recently_used).is_some());
+
+        let mut newest = [0; 32];
+        newest[..8].copy_from_slice(&(VERIFIED_SEGMENT_CACHE_ENTRIES as u64).to_be_bytes());
+        cache.admit(
+            newest,
+            VerifiedSegment {
+                bytes: Arc::from(vec![0xFF]),
+                segment_id: newest,
+                plane,
+            },
+        );
         let state = cache.state.lock().expect("cache state");
         assert_eq!(state.entries.len(), VERIFIED_SEGMENT_CACHE_ENTRIES);
-        assert!(!state.entries.contains_key(&[0; 32]));
+        let mut least_recently_used = [0; 32];
+        least_recently_used[..8].copy_from_slice(&1_u64.to_be_bytes());
+        assert!(state.entries.peek(&recently_used).is_some());
+        assert!(state.entries.peek(&least_recently_used).is_none());
+        assert!(state.entries.peek(&newest).is_some());
         assert_eq!(state.resident_bytes, VERIFIED_SEGMENT_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn verified_segment_cache_keeps_the_first_value_for_a_duplicate_object_id() {
+        let cache = VerifiedSegmentCache::default();
+        let object_id = [0xA5; 32];
+        let plane = SemanticPlaneKind::Embeddings(
+            EmbeddingPlaneIdentity::new(
+                [1; 32],
+                [2; 32],
+                [3; 32],
+                4,
+                EmbeddingNormalization::L2,
+                [4; 32],
+                [5; 32],
+            )
+            .expect("valid embedding plane"),
+        );
+        let other_plane = SemanticPlaneKind::Embeddings(
+            EmbeddingPlaneIdentity::new(
+                [11; 32],
+                [12; 32],
+                [13; 32],
+                4,
+                EmbeddingNormalization::L2,
+                [14; 32],
+                [15; 32],
+            )
+            .expect("valid other embedding plane"),
+        );
+        cache.admit(
+            object_id,
+            VerifiedSegment {
+                bytes: Arc::from(vec![1, 2, 3]),
+                segment_id: [0x11; 32],
+                plane,
+            },
+        );
+        cache.admit(
+            object_id,
+            VerifiedSegment {
+                bytes: Arc::from(vec![1, 2, 3]),
+                segment_id: [0x22; 32],
+                plane: other_plane,
+            },
+        );
+
+        let state = cache.state.lock().expect("cache state");
+        let resident = state.entries.peek(&object_id).expect("resident segment");
+        assert_eq!(resident.bytes.as_ref(), &[1, 2, 3]);
+        assert_eq!(resident.segment_id, [0x11; 32]);
+        assert_eq!(state.entries.len(), 1);
+        assert_eq!(state.resident_bytes, 3);
+    }
+
+    #[test]
+    fn verified_segment_cache_re_admits_shared_object_for_another_plane_generation() {
+        let cache = VerifiedSegmentCache::default();
+        let payload = b"same physical bytes in two selected generations";
+        let first_plane = SemanticPlaneKind::Embeddings(
+            EmbeddingPlaneIdentity::new(
+                [1; 32],
+                [2; 32],
+                [3; 32],
+                4,
+                EmbeddingNormalization::L2,
+                [4; 32],
+                [5; 32],
+            )
+            .expect("valid first embedding plane"),
+        );
+        let second_plane = SemanticPlaneKind::Embeddings(
+            EmbeddingPlaneIdentity::new(
+                [11; 32],
+                [12; 32],
+                [13; 32],
+                4,
+                EmbeddingNormalization::L2,
+                [14; 32],
+                [15; 32],
+            )
+            .expect("valid second embedding plane"),
+        );
+        let first_segment =
+            SemanticPlaneSegment::from_payload(first_plane, [0x31; 32], [0x32; 32], 1, payload)
+                .expect("first generation segment");
+        let second_segment =
+            SemanticPlaneSegment::from_payload(second_plane, [0x31; 32], [0x32; 32], 1, payload)
+                .expect("second generation segment");
+        assert_ne!(
+            first_segment.id_claim().as_bytes(),
+            second_segment.id_claim().as_bytes(),
+            "logical identity binds plane metadata"
+        );
+
+        // The physical object ID binds the shared segment schema and payload,
+        // so the same object can be referenced by either plane generation.
+        let key =
+            ObjectKey::<backend_semantic::ir::VersionedPlaneSegmentSchema>::from_value(payload);
+        let object_id = *TypedObject::from_value(&key, payload).id().as_bytes();
+        cache.admit(
+            object_id,
+            VerifiedSegment {
+                bytes: Arc::<[u8]>::from(&payload[..]),
+                segment_id: *first_segment.id_claim().as_bytes(),
+                plane: first_plane,
+            },
+        );
+
+        let shared = cache.get(object_id).expect("shared physical object hit");
+        let admitted = second_segment
+            .admit(second_plane, &shared.bytes)
+            .expect("admit bytes under second generation's plane identity");
+        assert_eq!(admitted.as_bytes(), second_segment.id_claim().as_bytes());
+        assert_ne!(*admitted.as_bytes(), shared.segment_id);
+        assert_ne!(shared.plane, second_plane);
+        assert_eq!(shared.bytes.as_ref(), payload);
+    }
+
+    #[test]
+    #[ignore = "manual microbenchmark; compares cache hit-order cost"]
+    fn verified_segment_cache_hit_order_microbenchmark() {
+        const ENTRY_COUNT: usize = VERIFIED_SEGMENT_CACHE_ENTRIES;
+        const BATCH_COUNT: usize = 25;
+
+        #[derive(Default)]
+        struct LegacyCacheState {
+            entries: BTreeMap<[u8; 32], VerifiedSegment>,
+            oldest_first: VecDeque<[u8; 32]>,
+        }
+
+        let object_id_for = |index: usize| {
+            let mut object_id = [0; 32];
+            object_id[..8].copy_from_slice(
+                &u64::try_from(index)
+                    .expect("benchmark index fits u64")
+                    .to_be_bytes(),
+            );
+            object_id
+        };
+        let trace: Vec<_> = (0..ENTRY_COUNT).rev().map(object_id_for).collect();
+        let plane = SemanticPlaneKind::Embeddings(
+            EmbeddingPlaneIdentity::new(
+                [1; 32],
+                [2; 32],
+                [3; 32],
+                4,
+                EmbeddingNormalization::L2,
+                [4; 32],
+                [5; 32],
+            )
+            .expect("valid benchmark plane"),
+        );
+        let shared_bytes: Arc<[u8]> = Arc::from(vec![0x5A]);
+        let mut legacy_samples = Vec::with_capacity(BATCH_COUNT);
+        let mut hashlink_samples = Vec::with_capacity(BATCH_COUNT);
+
+        for batch in 0..BATCH_COUNT {
+            let mut legacy_state = LegacyCacheState::default();
+            let cache = VerifiedSegmentCache::default();
+            for index in 0..ENTRY_COUNT {
+                let object_id = object_id_for(index);
+                let segment = VerifiedSegment {
+                    bytes: Arc::clone(&shared_bytes),
+                    segment_id: object_id,
+                    plane,
+                };
+                legacy_state.entries.insert(object_id, segment.clone());
+                legacy_state.oldest_first.push_back(object_id);
+                cache.admit(object_id, segment);
+            }
+            let legacy_state = Mutex::new(legacy_state);
+
+            // Reverse insertion order drives the legacy queue scan across
+            // almost every node. Both implementations process the same 4,096
+            // hits and clone the same small VerifiedSegment on each hit.
+            let run_legacy = || {
+                let started = Instant::now();
+                for object_id in &trace {
+                    let hit = {
+                        let mut state = legacy_state.lock().expect("legacy cache state");
+                        let hit = state
+                            .entries
+                            .get(object_id)
+                            .cloned()
+                            .expect("benchmark legacy hit");
+                        let position = state
+                            .oldest_first
+                            .iter()
+                            .position(|candidate| candidate == object_id)
+                            .expect("benchmark LRU node");
+                        state.oldest_first.remove(position);
+                        state.oldest_first.push_back(*object_id);
+                        hit
+                    };
+                    std::hint::black_box(hit);
+                }
+                started.elapsed().as_nanos()
+            };
+            let run_hashlink = || {
+                let started = Instant::now();
+                for object_id in &trace {
+                    std::hint::black_box(cache.get(*object_id));
+                }
+                started.elapsed().as_nanos()
+            };
+
+            if batch % 2 == 0 {
+                legacy_samples.push(run_legacy());
+                hashlink_samples.push(run_hashlink());
+            } else {
+                hashlink_samples.push(run_hashlink());
+                legacy_samples.push(run_legacy());
+            }
+        }
+
+        let percentile = |samples: &mut [u128], percent: usize| {
+            samples.sort_unstable();
+            let rank = samples.len().saturating_mul(percent).div_ceil(100);
+            samples[rank.saturating_sub(1)]
+        };
+        let legacy_median = percentile(&mut legacy_samples, 50);
+        let legacy_p95 = percentile(&mut legacy_samples, 95);
+        let hashlink_median = percentile(&mut hashlink_samples, 50);
+        let hashlink_p95 = percentile(&mut hashlink_samples, 95);
+        eprintln!(
+            "verified segment cache hit-order benchmark, ns per batch ({BATCH_COUNT} batches x {ENTRY_COUNT} hits): legacy median={legacy_median} p95={legacy_p95}; hashlink median={hashlink_median} p95={hashlink_p95}"
+        );
     }
 
     #[test]

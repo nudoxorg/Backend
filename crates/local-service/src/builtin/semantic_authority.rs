@@ -4,7 +4,10 @@
 //! below is only a projection: startup rebuilds it from Turso before loading a
 //! cached view, and image misses reopen the exact selected FileStore closure.
 
-use super::s3_publication::{PublicationFence, S3ClosurePublisher, SelectedClosurePublisher};
+use super::s3_publication::{
+    PublicationFence, RemoteClosureSelection, S3ClosurePublisher, SelectedClosurePublisher,
+};
+use super::versioned_planes::coordinate_identity;
 use super::{
     BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
     BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
@@ -12,18 +15,18 @@ use super::{
 };
 use crate::compiler_trust::{TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerPolicy};
 use backend_engine::builtin::{
-    ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
-    SemanticPublicationCoverage,
+    PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    SemanticPublicationClaim, SemanticPublicationCoverage,
 };
 use backend_engine::cluster_transport::EndpointId;
 use backend_extension_turso::{
     AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
     CompilerImageMember, CompilerPublicationEnvelope, CompilerPublicationMetadata,
-    ExistingGenerationSelection, ProjectionKind, SelectedGeneration, SourceObservation,
-    SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof, TursoAuthority,
-    VersionedPlaneArtifactMetadata, VersionedPlaneMember, VersionedPlaneMetadata,
-    reopen_selected_compiler_metadata,
+    ExistingGenerationSelection, ProjectionKind, ReopenedCompilerMetadata, SelectedFrontier,
+    SelectedGeneration, SourceObservation, SourceObservationReceipt, SourceObservationValue,
+    SupersededAttemptProof, TursoAuthority, VersionedPlaneArtifactMetadata, VersionedPlaneMember,
+    VersionedPlaneMetadata, reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
 use backend_semantic::vocabulary::LanguageProfile;
@@ -39,6 +42,7 @@ use backend_version::{
     SchemaIdentity,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -733,6 +737,8 @@ pub(crate) struct SemanticAuthority {
     compiler_trust_policy: std::path::PathBuf,
     image_loader: Arc<SelectedClosureImageLoader>,
     verified_segments: Arc<super::versioned_planes::VerifiedSegmentCache>,
+    selected_image_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
+    selected_image_plans: Arc<super::selected_full_image::SelectedFullImagePlanCache>,
     history: BTreeMap<HistoryKey, HistoryFact>,
     retained_generations: BTreeMap<HistoryKey, u64>,
     latest_observations: BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>,
@@ -762,6 +768,12 @@ impl SemanticAuthority {
             compiler_trust_policy: workspace.join(TRUSTED_COMPILER_POLICY_FILE_NAME),
             image_loader,
             verified_segments: Arc::new(super::versioned_planes::VerifiedSegmentCache::default()),
+            selected_image_readers: Arc::new(
+                super::selected_full_image::VerifiedLocalImageReaderCache::default(),
+            ),
+            selected_image_plans: Arc::new(
+                super::selected_full_image::SelectedFullImagePlanCache::default(),
+            ),
             history: BTreeMap::new(),
             retained_generations: BTreeMap::new(),
             latest_observations: BTreeMap::new(),
@@ -795,6 +807,41 @@ impl SemanticAuthority {
         &self,
         key: &ProductSemanticPublicationKey,
     ) -> Result<super::versioned_planes::SelectedVersionedPlanePublication, BuiltinModelError> {
+        let (selected, reopened) = self.reopen_current_selected_metadata(key)?;
+        super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
+            key, &selected, &reopened,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
+        })
+    }
+
+    /// Reopens the exact current Turso selection and its compiler metadata.
+    fn reopen_current_selected_metadata(
+        &self,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<(SelectedGeneration, ReopenedCompilerMetadata), BuiltinModelError> {
+        let frontier = self.current_selected_frontier(key)?;
+        let selected = self.selected_generation_for_frontier(key, &frontier)?;
+        let reopened =
+            reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
+                BuiltinModelError(format!("reopen selected semantic metadata: {error}"))
+            })?;
+        if !reopened.envelope().matches_selected(&selected) {
+            return Err(BuiltinModelError(
+                "selected semantic compiler envelope differs from Turso head".to_owned(),
+            ));
+        }
+        Ok((selected, reopened))
+    }
+
+    /// Reads only the current Turso head. This cheap check is repeated before
+    /// and after every full-image page; immutable compiler metadata is reopened
+    /// only when the bounded selected-image plan cache misses.
+    fn current_selected_frontier(
+        &self,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<SelectedFrontier, BuiltinModelError> {
         let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
         let frontier = futures_executor::block_on(self.authority.selected_frontier(&namespace))
             .map_err(|error| {
@@ -803,6 +850,22 @@ impl SemanticAuthority {
             .ok_or_else(|| {
                 BuiltinModelError("semantic authority has no selected generation".to_owned())
             })?;
+        if frontier.namespace().package() != key.package().as_str()
+            || frontier.namespace().source() != key.coordinate().as_str()
+        {
+            return Err(BuiltinModelError(
+                "selected semantic frontier targets another product".to_owned(),
+            ));
+        }
+        Ok(frontier)
+    }
+
+    fn selected_generation_for_frontier(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        frontier: &SelectedFrontier,
+    ) -> Result<SelectedGeneration, BuiltinModelError> {
+        let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
         let selected = futures_executor::block_on(
             self.authority
                 .selected_generation(&namespace, frontier.generation()),
@@ -811,15 +874,252 @@ impl SemanticAuthority {
         .ok_or_else(|| {
             BuiltinModelError("selected semantic generation is absent from history".to_owned())
         })?;
+        if Self::selected_generation_stamp(key, &selected)?
+            != Self::selected_frontier_stamp(key, frontier)?
+        {
+            return Err(BuiltinModelError(
+                "selected semantic history differs from the current Turso frontier".to_owned(),
+            ));
+        }
+        Ok(selected)
+    }
+
+    fn selected_frontier_stamp(
+        key: &ProductSemanticPublicationKey,
+        frontier: &SelectedFrontier,
+    ) -> Result<backend_replication::SelectedGenerationStamp, BuiltinModelError> {
+        let catalog_root = frontier.semantic_manifest_root().copied().ok_or_else(|| {
+            BuiltinModelError("selected compiler generation has no image catalog".to_owned())
+        })?;
+        Self::selected_stamp_from_fields(
+            key,
+            frontier.namespace(),
+            frontier.generation(),
+            *frontier.target_root(),
+            *frontier.closure_id(),
+            catalog_root,
+        )
+    }
+
+    fn selected_generation_stamp(
+        key: &ProductSemanticPublicationKey,
+        selected: &SelectedGeneration,
+    ) -> Result<backend_replication::SelectedGenerationStamp, BuiltinModelError> {
+        let catalog_root = selected.semantic_catalog_root().copied().ok_or_else(|| {
+            BuiltinModelError("selected compiler generation has no image catalog".to_owned())
+        })?;
+        Self::selected_stamp_from_fields(
+            key,
+            selected.namespace(),
+            selected.generation(),
+            *selected.target_root(),
+            *selected.closure_id(),
+            catalog_root,
+        )
+    }
+
+    fn selected_stamp_from_fields(
+        key: &ProductSemanticPublicationKey,
+        namespace: &AuthorityNamespace,
+        generation: u64,
+        target_root: [u8; 32],
+        closure_id: [u8; 32],
+        catalog_root: [u8; 32],
+    ) -> Result<backend_replication::SelectedGenerationStamp, BuiltinModelError> {
+        if namespace.package() != key.package().as_str()
+            || namespace.source() != key.coordinate().as_str()
+        {
+            return Err(BuiltinModelError(
+                "selected semantic frontier targets another product".to_owned(),
+            ));
+        }
+        backend_replication::SelectedGenerationStamp::checked(
+            namespace.namespace_id(),
+            key.profile(),
+            coordinate_identity(key.coordinate().as_str()),
+            generation,
+            target_root,
+            closure_id,
+            backend_semantic::ir::SemanticPlaneCatalogRoot::from_wire_claim(catalog_root),
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("invalid selected semantic frontier stamp: {error}"))
+        })
+    }
+
+    /// Admits exact metadata for one selected compiler image without copying
+    /// the full NXFI payload. The catalog key and Turso image member are both
+    /// checked before a range reader may use the physical CAS object.
+    pub(crate) fn selected_full_image_plan(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+        expected_stamp: backend_replication::SelectedGenerationStamp,
+    ) -> Result<
+        super::selected_full_image::SelectedFullImagePlan,
+        super::selected_full_image::SelectedFullImageError,
+    > {
+        let frontier = self.current_selected_frontier(key).map_err(|error| {
+            super::selected_full_image::SelectedFullImageError::Authority(error.0)
+        })?;
+        let stamp = Self::selected_frontier_stamp(key, &frontier).map_err(|error| {
+            super::selected_full_image::SelectedFullImageError::Authority(error.0)
+        })?;
+        if stamp != expected_stamp {
+            return Err(super::selected_full_image::SelectedFullImageError::StaleSelection);
+        }
+        self.selected_image_plans
+            .get_or_resolve(stamp, image, || {
+                self.resolve_selected_full_image_plan(key, image, &frontier, stamp)
+            })
+            .map_err(|error| super::selected_full_image::SelectedFullImageError::Authority(error.0))
+    }
+
+    fn resolve_selected_full_image_plan(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+        frontier: &SelectedFrontier,
+        stamp: backend_replication::SelectedGenerationStamp,
+    ) -> Result<super::selected_full_image::SelectedFullImagePlan, BuiltinModelError> {
+        let selected = self.selected_generation_for_frontier(key, frontier)?;
         let reopened =
             reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
                 BuiltinModelError(format!("reopen selected semantic metadata: {error}"))
             })?;
-        super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
-            key, &selected, &reopened,
+        let publication =
+            super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
+                key, &selected, &reopened,
+            )
+            .map_err(|error| {
+                BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
+            })?;
+        if publication.stamp() != stamp {
+            return Err(BuiltinModelError(
+                "selected semantic metadata differs from the current frontier".to_owned(),
+            ));
+        }
+        let planes = reopened.metadata().versioned_planes().ok_or_else(|| {
+            BuiltinModelError("selected compiler generation has no image catalog".to_owned())
+        })?;
+        let artifact = planes.artifact_for_image(image).ok_or_else(|| {
+            BuiltinModelError("requested full image is absent from the selected catalog".to_owned())
+        })?;
+        let image_member = reopened
+            .metadata()
+            .images()
+            .iter()
+            .find(|member| member.artifact_ordinal() == image.artifact_ordinal())
+            .ok_or_else(|| {
+                BuiltinModelError("selected catalog image has no compiler image member".to_owned())
+            })?;
+        let identity = backend_semantic::ir::SemanticImageIdentity::try_from(
+            *image_member.semantic_image_identity(),
         )
         .map_err(|error| {
-            BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
+            BuiltinModelError(format!(
+                "selected compiler image identity is invalid: {error}"
+            ))
+        })?;
+        let total_length = u64::from(image_member.byte_length());
+        if total_length == 0 || total_length > backend_replication::MAX_SEMANTIC_IMAGE_BYTES {
+            return Err(BuiltinModelError(
+                "selected full semantic image exceeds the 128 MiB range-service bound".to_owned(),
+            ));
+        }
+        let manifest =
+            backend_semantic::ir::SemanticPlaneManifest::decode(artifact.manifest_bytes())
+                .map_err(|error| {
+                    BuiltinModelError(format!("decode selected semantic plane manifest: {error}"))
+                })?;
+        if manifest.build().profile() != key.profile()
+            || manifest.semantic_generation() != image.semantic_generation()
+            || manifest.root() != image.manifest_root()
+        {
+            return Err(BuiltinModelError(
+                "selected full image differs from its semantic plane manifest".to_owned(),
+            ));
+        }
+        Ok(super::selected_full_image::SelectedFullImagePlan {
+            stamp,
+            image,
+            identity,
+            total_length,
+            object_id: *image_member.object_id(),
+            closure_id: *selected.closure_id(),
+            remote_selection: RemoteClosureSelection::from_selected(&selected),
+            environment: *manifest.build().environment(),
+            target_platform: *manifest.build().target_platform(),
+        })
+    }
+
+    /// Reads a 16 KiB page from the exact closure member named by an admitted
+    /// selected-image plan. Local object identity is verified before seeking;
+    /// cold S3 objects use the selected publisher's verified temp-envelope LRU.
+    pub(crate) fn read_selected_full_image_range(
+        &self,
+        plan: &super::selected_full_image::SelectedFullImagePlan,
+        byte_range: backend_replication::ByteRange,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
+        if byte_range.len == 0
+            || byte_range.len > super::selected_full_image::MAX_SELECTED_IMAGE_RANGE_BYTES
+            || byte_range
+                .end()
+                .ok()
+                .is_none_or(|end| end > plan.total_length)
+        {
+            return Err(BuiltinModelError(
+                "selected full semantic image range exceeds bounds".to_owned(),
+            ));
+        }
+        let object_claim = UntrustedObjectId::from_bytes(plan.object_id);
+        let closure = self
+            .store
+            .open_closure_claim(ArtifactClosureClaim::from_bytes(plan.closure_id))
+            .map_err(|error| {
+                BuiltinModelError(format!("open selected semantic image closure: {error:?}"))
+            })?;
+        let object_id = closure
+            .admit_claim(object_claim)
+            .map_err(|error| {
+                BuiltinModelError(format!("admit selected semantic image member: {error:?}"))
+            })?
+            .ok_or_else(|| {
+                BuiltinModelError("selected semantic image is absent from its closure".to_owned())
+            })?;
+        if object_id.as_bytes() != &plan.object_id {
+            return Err(BuiltinModelError(
+                "selected semantic image closure member identity differs".to_owned(),
+            ));
+        }
+
+        let local = self
+            .selected_image_readers
+            .read_range(&self.store, plan, byte_range);
+        super::selected_full_image::read_local_or_remote(local, || {
+            let publisher = self.s3_publisher.as_deref().ok_or_else(|| {
+                "selected semantic image is absent or corrupt in local CAS and S3 is unavailable"
+                    .to_owned()
+            })?;
+            publisher
+                .hydrate_object_range(
+                    &self.store,
+                    plan.remote_selection,
+                    object_claim,
+                    COMPILER_SEMANTIC_IMAGE_SCHEMA,
+                    plan.total_length,
+                    byte_range.start,
+                    byte_range.len,
+                )
+                .map_err(|error| format!("hydrate selected semantic image page: {error:?}"))
+        })
+        .map_err(|error| match error {
+            super::selected_full_image::SelectedImagePageError::Local(error) => BuiltinModelError(
+                format!("read selected semantic image from local CAS: {error:?}"),
+            ),
+            super::selected_full_image::SelectedImagePageError::Remote(error) => {
+                BuiltinModelError(error)
+            }
         })
     }
 
@@ -2313,6 +2613,25 @@ impl SemanticAuthority {
             .snapshot()
             .relation::<BuiltinSemanticRelation>()
             .map_err(|error| BuiltinModelError(format!("open semantic projection: {error}")))?;
+        // Check the independently persisted typed coverage against the exact
+        // selected source-count and manifest evidence used to rebuild it. A
+        // disagreement means neither projection can safely be admitted.
+        for (key, desired_record) in &desired {
+            let Some(ProductSemanticPublicationRecord::Published {
+                coverage: existing_coverage,
+                claim: existing_claim,
+            }) = relation.lookup(key).map_err(|error| {
+                BuiltinModelError(format!("read semantic publication coverage: {error}"))
+            })?
+            else {
+                continue;
+            };
+            if let ProductSemanticPublicationRecord::Published { coverage, claim } = desired_record
+                && existing_claim == *claim
+            {
+                ensure_recovered_coverage_matches(existing_coverage, *coverage)?;
+            }
+        }
         let mut changes = BTreeMap::<
             ProductSemanticPublicationKey,
             Option<ProductSemanticPublicationRecord>,
@@ -2440,19 +2759,77 @@ fn reopen_record(
         &mut fragment_slots,
     )
     .map_err(|error| BuiltinModelError(format!("validate reopened semantic manifest: {error}")))?;
+    if metadata.manifest_fragment_count() != manifest.fragment_count {
+        return Err(BuiltinModelError(
+            "reopened semantic manifest count differs from its durable metadata".to_owned(),
+        ));
+    }
     let binding = backend_engine::publication::binding::CompilationBindingView::validate(
         metadata.binding_bytes(),
     )
     .map_err(|error| BuiltinModelError(format!("validate reopened semantic binding: {error}")))?;
     let claim = SemanticPublicationClaim::admit(*manifest, *binding)
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
+    let coverage = recovered_publication_coverage(
+        selected.observation().observation().value(),
+        manifest.fragment_count,
+    )?;
     Ok((
         claim,
-        ProductSemanticPublicationRecord::Published {
-            coverage: SemanticPublicationCoverage::Complete,
-            claim,
-        },
+        ProductSemanticPublicationRecord::Published { coverage, claim },
     ))
+}
+
+/// Reconstructs project-scope coverage when an authority-selected generation
+/// has no matching workspace relation row. Turso binds the selected generation
+/// to a durable source-count observation, and its immutable compiler manifest
+/// retains the number of published source artifacts. Local selection admits
+/// gaps only after proving `artifacts + gaps == observed source count`; remote
+/// selection requires exact equality. Unknown or inconsistent counts therefore
+/// cannot safely be promoted to Complete.
+fn recovered_publication_coverage(
+    source_observation: &SourceObservationValue,
+    completed: u32,
+) -> Result<SemanticPublicationCoverage, BuiltinModelError> {
+    let SourceObservationValue::KnownCount(total) = source_observation else {
+        return Err(BuiltinModelError(
+            "selected semantic generation has no durable source-scope count; refusing to recover publication coverage"
+                .to_owned(),
+        ));
+    };
+    let total = u32::try_from(*total).map_err(|_| {
+        BuiltinModelError("selected semantic source-scope count exceeds u32".to_owned())
+    })?;
+    let completed = NonZeroU32::new(completed).ok_or_else(|| {
+        BuiltinModelError("selected semantic generation has no published artifacts".to_owned())
+    })?;
+    let total = NonZeroU32::new(total).ok_or_else(|| {
+        BuiltinModelError("selected semantic generation has an empty source scope".to_owned())
+    })?;
+    match completed.get().cmp(&total.get()) {
+        std::cmp::Ordering::Equal => Ok(SemanticPublicationCoverage::Complete),
+        std::cmp::Ordering::Less => Ok(SemanticPublicationCoverage::Partial(
+            PartialSemanticCoverage::new(completed, total)
+                .map_err(|error| BuiltinModelError(error.to_owned()))?,
+        )),
+        std::cmp::Ordering::Greater => Err(BuiltinModelError(
+            "selected semantic manifest exceeds its durable source-scope count".to_owned(),
+        )),
+    }
+}
+
+fn ensure_recovered_coverage_matches(
+    persisted: SemanticPublicationCoverage,
+    recovered: SemanticPublicationCoverage,
+) -> Result<(), BuiltinModelError> {
+    if persisted == recovered {
+        Ok(())
+    } else {
+        Err(BuiltinModelError(
+            "persisted semantic coverage differs from the selected source count and manifest"
+                .to_owned(),
+        ))
+    }
 }
 
 fn artifact_object_claim(object: &TypedObject) -> Result<ArtifactObjectClaim, BuiltinModelError> {
@@ -2531,6 +2908,51 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn recovered_coverage_uses_the_selected_source_scope_and_fails_closed() {
+        let partial = PartialSemanticCoverage::new(
+            NonZeroU32::new(3).expect("nonzero completed count"),
+            NonZeroU32::new(5).expect("nonzero source count"),
+        )
+        .expect("strictly partial coverage");
+        assert_eq!(
+            recovered_publication_coverage(&SourceObservationValue::KnownCount(5), 3)
+                .expect("derive exact partial source coverage"),
+            SemanticPublicationCoverage::Partial(partial),
+        );
+        assert_eq!(
+            recovered_publication_coverage(&SourceObservationValue::KnownCount(5), 5)
+                .expect("derive exact complete source coverage"),
+            SemanticPublicationCoverage::Complete,
+        );
+        assert!(recovered_publication_coverage(&SourceObservationValue::Unknown, 3).is_err());
+        assert!(
+            recovered_publication_coverage(
+                &SourceObservationValue::Unavailable("source count unavailable".into()),
+                3,
+            )
+            .is_err()
+        );
+        assert!(recovered_publication_coverage(&SourceObservationValue::KnownCount(3), 4).is_err());
+        assert!(recovered_publication_coverage(&SourceObservationValue::KnownCount(5), 0).is_err());
+    }
+
+    #[test]
+    fn persisted_coverage_cannot_override_selected_count_evidence() {
+        let partial = SemanticPublicationCoverage::Partial(
+            PartialSemanticCoverage::new(
+                NonZeroU32::new(3).expect("nonzero completed count"),
+                NonZeroU32::new(5).expect("nonzero source count"),
+            )
+            .expect("strictly partial coverage"),
+        );
+        assert!(
+            ensure_recovered_coverage_matches(SemanticPublicationCoverage::Complete, partial,)
+                .is_err()
+        );
+        assert!(ensure_recovered_coverage_matches(partial, partial).is_ok());
+    }
 
     struct ScratchWorkspace(std::path::PathBuf);
 

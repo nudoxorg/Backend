@@ -653,6 +653,22 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
             .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))
     }
 
+    /// Looks up strictly increasing keys through this handle's exact selected
+    /// root while reusing each authenticated branch and leaf within the batch.
+    /// Missing keys produce `None` in their corresponding result slots.
+    ///
+    /// # Errors
+    /// Returns an error when keys are not strictly increasing or a requested
+    /// node cannot be loaded and admitted.
+    pub fn lookup_many_sorted(
+        &self,
+        keys: &[R::Key],
+    ) -> Result<Vec<Option<R::Value>>, WorkspaceRelationError> {
+        self.tree()
+            .lookup_many_sorted(keys)
+            .map_err(|error| map_tree_error::<R>(error, None))
+    }
+
     /// Reads one bounded page in canonical key order.
     /// # Errors
     ///

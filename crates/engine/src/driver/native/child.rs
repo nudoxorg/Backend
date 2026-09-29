@@ -8,6 +8,7 @@ use std::{
     thread,
 };
 
+use crate::application::NativeCompilerEnvironment;
 use crate::driver::types::{
     CompileControl, CompileFailure, CompileRecipeFact, NativeDiagnostic, NativeRecipe,
     NativeWorker, NativeWorkerPanic, SourceIdentity,
@@ -59,6 +60,8 @@ pub(super) fn drive_child<
         });
     }
     let mut command = ConcreteFrontend::command(profile, recipe.toolchain, native_work);
+    NativeCompilerEnvironment::apply(&mut command, recipe.toolchain.tool);
+    ConcreteFrontend::configure_environment(native_work, &mut command);
     command
         .stdin(Stdio::piped())
         // Some native CLIs report compiler diagnostics on stdout while others use stderr. Both

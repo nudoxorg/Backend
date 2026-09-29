@@ -127,12 +127,38 @@ pub enum LocalCompilerHostError {
         /// Exact rejected output path.
         sysroot: Box<Path>,
     },
+    /// Go's selected compiler returned non-UTF-8 GOROOT bytes.
+    #[error("Go compiler returned a non-UTF-8 GOROOT")]
+    GoRootEncoding {
+        /// Complete bounded output bytes.
+        output: Box<[u8]>,
+        /// Exact decoding fault.
+        #[source]
+        source: str::Utf8Error,
+    },
+    /// Go's selected compiler returned no GOROOT path.
+    #[error("Go compiler at {compiler:?} returned an empty GOROOT")]
+    GoRootEmpty {
+        /// Exact selected compiler.
+        compiler: Box<Path>,
+    },
+    /// Go's selected compiler returned a relative GOROOT path.
+    #[error("Go compiler at {compiler:?} returned relative GOROOT {goroot:?}")]
+    GoRootRelative {
+        /// Exact selected compiler.
+        compiler: Box<Path>,
+        /// Exact rejected output path.
+        goroot: Box<Path>,
+    },
     /// Bounded native probe policy was invalid.
     #[error(transparent)]
     ProbeLimits(#[from] ToolchainProbeLimitError),
     /// A raw Rust sysroot query failed under bounded process control.
     #[error(transparent)]
     RustSysrootProbe(#[from] ToolchainProbeError),
+    /// A bounded Go GOROOT query failed under process control.
+    #[error(transparent)]
+    GoRootProbe(ToolchainProbeError),
     /// Rust authority rejected the paired compiler/sysroot.
     #[error(transparent)]
     RustAuthority(#[from] RustLoadError),
@@ -145,6 +171,9 @@ pub enum LocalCompilerHostError {
     /// Go authority rejected its explicit producer.
     #[error(transparent)]
     GoAuthority(#[from] GoOracleConfigurationError),
+    /// Clang authority could not bind the selected driver and libclang paths.
+    #[error(transparent)]
+    ClangAuthority(#[from] backend_frontend_clang::ClangAuthorityError),
     /// Java authority rejected its explicit JDK.
     #[error(transparent)]
     JavaAuthority(#[from] HarnessError),

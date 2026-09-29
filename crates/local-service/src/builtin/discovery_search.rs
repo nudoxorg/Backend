@@ -45,6 +45,8 @@ const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
 pub(crate) struct DiscoverySearchKey {
     pub(crate) source: DiscoverySearchSource,
     pub(crate) coordinate: ProductPackageCoordinate,
+    /// Exact canonical package lineage derived from the coordinate. Search
+    /// fields fold case independently; grouping preserves source identity.
     pub(crate) lineage: String,
     pub(crate) manifest_path: Option<String>,
 }
@@ -70,21 +72,23 @@ impl LineageSearchSource {
     }
 }
 
-/// One source-specific package lineage, independent of its number of releases.
+/// One exact, source-specific package lineage, independent of its releases.
+/// Tantivy text fields fold case when documents are inserted; this identity
+/// retains case when the source's package names are case-sensitive.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LineageKey {
     pub(crate) source: LineageSearchSource,
     pub(crate) ecosystem: RegistryEcosystem,
     #[serde(deserialize_with = "deserialize_lineage")]
-    pub(crate) normalized_lineage: String,
+    pub(crate) lineage: String,
 }
 
 impl LineageKey {
     pub(crate) fn admit(&self) -> Result<(), String> {
-        if self.normalized_lineage.is_empty()
-            || self.normalized_lineage.len() > MAX_CURSOR_SORT_KEY_BYTES
-            || normalize(&self.normalized_lineage) != self.normalized_lineage
+        if self.lineage.is_empty()
+            || self.lineage.len() > MAX_CURSOR_SORT_KEY_BYTES
+            || self.lineage.chars().any(char::is_control)
             || self.source.ecosystem() != self.ecosystem
         {
             return Err("lineage key exceeds its bounds or has inconsistent authority".to_owned());
@@ -601,7 +605,7 @@ where
         fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(
                 formatter,
-                "a normalized lineage no longer than {MAX_CURSOR_SORT_KEY_BYTES} bytes"
+                "a canonical lineage no longer than {MAX_CURSOR_SORT_KEY_BYTES} bytes"
             )
         }
 
@@ -1277,7 +1281,7 @@ impl LineageSearchIndex {
             return Some(SearchMatchEvidence::AllDocuments);
         }
         let aggregate = self.aggregates.get(key)?;
-        let name = lineage_search_name(key.ecosystem, &key.normalized_lineage);
+        let name = normalize(lineage_search_name(key.ecosystem, &key.lineage));
 
         if aggregate.coordinates.contains_key(&query) {
             return Some(SearchMatchEvidence::ExactCoordinate);
@@ -1395,7 +1399,7 @@ impl LineageSearchIndex {
             lineage_group: None,
             standing: SearchStandingEvidence::Unknown,
         };
-        let name = lineage_search_name(key.ecosystem, &key.normalized_lineage);
+        let name = lineage_search_name(key.ecosystem, &key.lineage);
         if self.inner.identities.contains_key(&group_sort_key) {
             self.inner.replace_document_with_search_text(
                 group_sort_key.clone(),
@@ -1554,7 +1558,7 @@ impl DiscoverySearchIndex {
             let key = DiscoverySearchKey {
                 source: discovery_source.clone(),
                 coordinate: fact.coordinate.clone(),
-                lineage: normalize(&lineage),
+                lineage: lineage.clone(),
                 manifest_path: None,
             };
             let identity = discovery_sort_key(&discovery_source, fact.coordinate.as_str());
@@ -1691,7 +1695,7 @@ impl DiscoverySearchIndex {
                 let key = DiscoverySearchKey {
                     source: source.clone(),
                     coordinate: change.coordinate.clone(),
-                    lineage: normalize(&change.lineage),
+                    lineage: change.lineage.clone(),
                     manifest_path: None,
                 };
                 let identity = discovery_sort_key(&source, &coordinate_text);
@@ -2246,7 +2250,7 @@ impl DiscoverySearchIndex {
                 key: hit.key.clone(),
                 source: source.clone(),
                 ecosystem: hit.key.ecosystem,
-                lineage: hit.key.normalized_lineage.clone(),
+                lineage: hit.key.lineage.clone(),
                 evidence: hit.evidence,
                 matched_releases,
                 release_match_scope,
@@ -2543,7 +2547,7 @@ fn add_discovery_document(
     let key = DiscoverySearchKey {
         source: source.clone(),
         coordinate: coordinate.clone(),
-        lineage: normalize(lineage),
+        lineage: lineage.to_owned(),
         manifest_path: None,
     };
     let sort_key = discovery_sort_key(&source, &coordinate_text);
@@ -2567,13 +2571,13 @@ fn replace_discovery_document(
 ) -> Result<(), String> {
     let source = DiscoverySearchSource::Registry(document.source);
     let coordinate_text = document.coordinate.as_str().to_owned();
+    let lineage = document.lineage;
     let key = DiscoverySearchKey {
         source: source.clone(),
         coordinate: document.coordinate.clone(),
-        lineage: normalize(&document.lineage),
+        lineage: lineage.clone(),
         manifest_path: None,
     };
-    let lineage = document.lineage;
     let identity = discovery_sort_key(&source, &coordinate_text);
     let lineage_key = discovery_lineage_key(&source, source.ecosystem(), &lineage);
     let group_key = lineage_sort_key(&lineage_key);
@@ -2624,7 +2628,7 @@ fn rebuild_lineage_search_index(
         let key = DiscoverySearchKey {
             source: source.clone(),
             coordinate: fact.coordinate.clone(),
-            lineage: normalize(&lineage),
+            lineage: lineage.clone(),
             manifest_path: None,
         };
         let identity = discovery_sort_key(&source, fact.coordinate.as_str());
@@ -2652,7 +2656,7 @@ fn forge_lineage_release(
     let key = DiscoverySearchKey {
         source: source.clone(),
         coordinate: document.coordinate.clone(),
-        lineage: normalize(&document.lineage),
+        lineage: document.lineage.clone(),
         manifest_path: document.manifest_path.clone(),
     };
     let lineage_key = discovery_lineage_key(&source, source.ecosystem(), &document.lineage);
@@ -2809,7 +2813,7 @@ fn add_or_replace_forge_document(
     let key = DiscoverySearchKey {
         source: source.clone(),
         coordinate: document.coordinate.clone(),
-        lineage: normalize(&document.lineage),
+        lineage: document.lineage.clone(),
         manifest_path: document.manifest_path.clone(),
     };
     let mut search_text = discovery_search_text(&document.metadata);
@@ -3145,7 +3149,7 @@ fn discovery_lineage_key(
     LineageKey {
         source: LineageSearchSource::Discovery(source.clone()),
         ecosystem,
-        normalized_lineage: normalize(lineage),
+        lineage: lineage.to_owned(),
     }
 }
 
@@ -3165,10 +3169,11 @@ pub(crate) fn lineage_sort_key(key: &LineageKey) -> String {
         ),
     };
     format!(
-        "{source_kind}\u{1f}{}\u{1f}{}\u{1f}{authority_marker}\u{1f}{}",
+        "{source_kind}\u{1f}{}\u{1f}{}\u{1f}{authority_marker}\u{1f}{}:{}",
         key.ecosystem.as_str(),
         hex(&source_id),
-        key.normalized_lineage,
+        key.lineage.len(),
+        key.lineage,
     )
 }
 
@@ -4045,7 +4050,7 @@ fn lineage_search_name(ecosystem: RegistryEcosystem, lineage: &str) -> &str {
 fn discovery_sort_key(source: &DiscoverySearchSource, coordinate: &str) -> String {
     let source_id = source.id();
     format!(
-        "{}\u{1f}{}:{}:{}",
+        "{}\u{1f}{}:{}:{}\u{1f}{}:{}",
         normalize(coordinate),
         source.ecosystem().package_type().as_str(),
         match source {
@@ -4053,6 +4058,8 @@ fn discovery_sort_key(source: &DiscoverySearchSource, coordinate: &str) -> Strin
             DiscoverySearchSource::Forge(_) => "forge",
         },
         hex(&source_id),
+        coordinate.len(),
+        coordinate,
     )
 }
 
@@ -4439,7 +4446,7 @@ mod tests {
             .iter()
             .map(|(release, _)| normalize(release.coordinate.as_str()))
             .collect::<Vec<_>>();
-        let name = normalize(lineage_search_name(key.ecosystem, &key.normalized_lineage));
+        let name = normalize(lineage_search_name(key.ecosystem, &key.lineage));
         let mut aliases = Vec::new();
         let mut keywords = Vec::new();
         let mut descriptions = Vec::new();
@@ -5575,6 +5582,91 @@ mod tests {
     }
 
     #[test]
+    fn cold_reopen_preserves_case_sensitive_go_coordinates_and_lineages() {
+        let path = temp_journal_path();
+        let source = source(RegistryEcosystem::Golang, "https://proxy.golang.org");
+        let upper_coordinate = "pkg:golang/github.com/Sirupsen/logrus@v1.4.1";
+        let lower_coordinate = "pkg:golang/github.com/sirupsen/logrus@v1.4.1";
+        let mut store = DiscoveryStore::open(path.clone()).expect("open journal");
+        store
+            .commit(discovery_batch(
+                source,
+                "",
+                "go-window-1",
+                100,
+                &[(upper_coordinate, DiscoveryStanding::Published, "2026-09-01", 1)],
+            ))
+            .expect("commit first case-sensitive Go module");
+        let mut warm = DiscoverySearchIndex::open(&store).expect("initial warm projection");
+        store
+            .commit(discovery_batch(
+                source,
+                "go-window-1",
+                "go-window-2",
+                200,
+                &[(lower_coordinate, DiscoveryStanding::Published, "2026-09-02", 2)],
+            ))
+            .expect("commit second case-sensitive Go module");
+        warm.sync(&store).expect("incremental warm update");
+
+        let request = DiscoverySearchRequest {
+            text: "logrus",
+            ecosystem: Some(RegistryEcosystem::Golang),
+        };
+        let expected_coordinates = [upper_coordinate.to_owned(), lower_coordinate.to_owned()];
+        let release_coordinates = |index: &DiscoverySearchIndex| {
+            let mut coordinates = index
+                .search(request, 8)
+                .expect("release search")
+                .hits
+                .into_iter()
+                .map(|hit| hit.key.coordinate.as_str().to_owned())
+                .collect::<Vec<_>>();
+            coordinates.sort();
+            coordinates
+        };
+        assert_eq!(release_coordinates(&warm), expected_coordinates);
+        let warm_groups = warm.search_groups(request, 8).expect("warm grouped search");
+        assert_eq!(warm_groups.groups.len(), 2);
+
+        drop(warm);
+        drop(store);
+        let reopened = DiscoveryStore::open(path.clone()).expect("reopen journal");
+        let cold = DiscoverySearchIndex::open(&reopened).expect("cold projection rebuild");
+        assert_eq!(release_coordinates(&cold), expected_coordinates);
+
+        let cold_groups = cold.search_groups(request, 8).expect("cold grouped search");
+        let mut lineages = cold_groups
+            .groups
+            .iter()
+            .map(|group| group.lineage.as_str())
+            .collect::<Vec<_>>();
+        lineages.sort_unstable();
+        assert_eq!(
+            lineages,
+            ["github.com/Sirupsen/logrus", "github.com/sirupsen/logrus"]
+        );
+
+        let first_page = cold.search_groups(request, 1).expect("first grouped page");
+        let first_lineage = first_page.groups[0].lineage.clone();
+        let cursor = first_page.next_cursor.expect("second lineage continuation");
+        let encoded = serde_json::to_vec(&cursor).expect("encode continuation");
+        let decoded: DiscoverySearchCursor =
+            serde_json::from_slice(&encoded).expect("decode continuation");
+        let second_page = cold
+            .search_groups_after(request, 1, Some(&decoded))
+            .expect("second grouped page");
+        assert_eq!(second_page.groups.len(), 1);
+        assert_ne!(second_page.groups[0].lineage, first_lineage);
+        assert!(second_page.next_cursor.is_none());
+
+        drop(cold);
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("journal.lock"));
+    }
+
+    #[test]
     fn lineage_snapshot_root_binds_content_and_ignores_insertion_order() {
         let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
         let entries = vec![
@@ -5963,7 +6055,9 @@ mod tests {
             fixed_in: DiscoveryFacet::Unknown,
         }]);
 
-        let nuget_key = key(nuget, "pkg:nuget/Unknown.Metadata@1.0.0");
+        // Keep the package name unrelated to the query so this checks unknown
+        // facets rather than a one-edit fuzzy match on the coordinate name.
+        let nuget_key = key(nuget, "pkg:nuget/unlisted-package@1.0.0");
         let mut nuget_metadata = DiscoveryMetadata::default();
         nuget_metadata.aliases = DiscoveryFacet::Unknown;
         nuget_metadata.keywords = DiscoveryFacet::Absent;
@@ -6017,7 +6111,7 @@ mod tests {
         }
         assert_eq!(
             hit_keys(index.page("net-client", 8).expect("alias query").hits),
-            [npm_key, cargo_key]
+            [npm_key.clone(), cargo_key]
         );
         assert_eq!(
             hit_keys(index.page("wire-cli", 8).expect("alias prefix typo").hits),
@@ -6273,8 +6367,7 @@ mod tests {
 
         let mut index = DiscoverySearchIndex::open(&store).expect("cold build");
         let index_identity = index.index_identity();
-        let mut first_key = key(source, first_coordinate);
-        first_key.lineage = normalize(&first_key.lineage);
+        let first_key = key(source, first_coordinate);
         assert_eq!(
             hit_keys(index.page("widget", 8).expect("initial page").hits),
             [first_key.clone()]

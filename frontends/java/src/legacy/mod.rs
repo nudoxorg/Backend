@@ -18,6 +18,7 @@ pub mod repo;
 pub mod sourcepath;
 
 pub use self::bound::{BoundHeaderError, BoundImageError, JavaAuthorityImage};
+pub use self::harness::JAVA_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1;
 pub use self::image::{
     Atom, AtomError, AtomIter, Declaration, DeclarationExtension, DeclarationExtent,
     DeclarationIter, DeclarationKind, DocFlavor, HeaderError, ImageError, ImagePlane, JavaImage,

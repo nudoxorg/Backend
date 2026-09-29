@@ -16,10 +16,10 @@
 use std::fmt;
 
 use backend_semantic::ir::{
-    LanguageProfile, MAX_SEMANTIC_SEGMENT_BYTES, SemanticCoverageState, SemanticDeltaAction,
-    SemanticDeltaCursor, SemanticHydrationCoverage, SemanticHydrationCursor,
-    SemanticHydrationCursorToken, SemanticInputWitness, SemanticManifestError,
-    SemanticManifestRoot, SemanticPlaneCatalog, SemanticPlaneCatalogEntry,
+    GenerationId, LanguageProfile, MAX_SEMANTIC_SEGMENT_BYTES, SemanticCoverageState,
+    SemanticDeltaAction, SemanticDeltaCursor, SemanticHydrationCoverage, SemanticHydrationCursor,
+    SemanticHydrationCursorToken, SemanticImageIdentity, SemanticImageView, SemanticInputWitness,
+    SemanticManifestError, SemanticManifestRoot, SemanticPlaneCatalog, SemanticPlaneCatalogEntry,
     SemanticPlaneCatalogRoot, SemanticPlaneImageKey, SemanticPlaneKind, SemanticPlaneManifest,
     SemanticPlaneRoot, SemanticPlaneSegment, SemanticRangeRequest, SemanticSegmentId,
     UntrustedSemanticSegmentId,
@@ -34,7 +34,7 @@ use crate::{ByteRange, ReplicationError, SparseCoverage, TransportLimits};
 /// re-presents it on every range request and before payload exposure. This is
 /// a checked identity claim, not an authority capability: it cannot publish,
 /// mint coverage, or replace the index adapter's own frontier admission.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SelectedGenerationStamp {
     namespace: [u8; 16],
     profile: LanguageProfile,
@@ -547,6 +547,65 @@ impl DurableSemanticSegmentReceipt {
 pub struct VerifiedSemanticSegment {
     receipt: DurableSemanticSegmentReceipt,
     payload: Box<[u8]>,
+}
+
+/// Complete canonical NXFI bytes admitted against a selected catalog image.
+///
+/// This owner is intentionally separate from `VerifiedSemanticSegment`: only
+/// a full reader image can back the canonical entity/link `SemanticDiff`.
+#[derive(Clone, Debug)]
+pub struct VerifiedSemanticImage {
+    image: SemanticPlaneImageKey,
+    identity: SemanticImageIdentity,
+    bytes: Box<[u8]>,
+}
+
+impl VerifiedSemanticImage {
+    /// Fully validates the image grammar and both its artifact and VCS identities.
+    pub fn admit(
+        image: SemanticPlaneImageKey,
+        identity: SemanticImageIdentity,
+        bytes: Box<[u8]>,
+    ) -> Result<Self, ReplicationError> {
+        if bytes.is_empty() || bytes.len() as u64 > crate::MAX_SEMANTIC_IMAGE_BYTES {
+            return Err(ReplicationError::MessageTooLarge);
+        }
+        if SemanticImageIdentity::from_encoded_bytes(&bytes) != identity
+            || GenerationId::from_canonical_bytes(&bytes) != image.semantic_generation()
+        {
+            return Err(ReplicationError::IdentityMismatch);
+        }
+        SemanticImageView::reopen(&bytes).map_err(|_| ReplicationError::InvalidWire)?;
+        Ok(Self {
+            image,
+            identity,
+            bytes,
+        })
+    }
+
+    /// Exact versioned semantic catalog entry this full image satisfies.
+    #[must_use]
+    pub const fn image(&self) -> SemanticPlaneImageKey {
+        self.image
+    }
+
+    /// Typed identity of the exact canonical NXFI bytes.
+    #[must_use]
+    pub const fn identity(&self) -> SemanticImageIdentity {
+        self.identity
+    }
+
+    /// Exact canonical IR-VCS generation identity of the complete image.
+    #[must_use]
+    pub const fn generation(&self) -> GenerationId {
+        self.image.semantic_generation()
+    }
+
+    /// Borrowed canonical bytes after complete-image admission.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 impl VerifiedSemanticSegment {

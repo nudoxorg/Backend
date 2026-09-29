@@ -481,11 +481,121 @@ impl Drop for GenerationFixture {
     }
 }
 
+fn probe_generation_fixture_clang(
+    driver: &std::path::Path,
+    libclang: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<
+    (
+        std::path::PathBuf,
+        backend_frontend_clang::ClangAuthorityEnvironment,
+    ),
+    String,
+> {
+    match backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang) {
+        Ok(authority) => Ok((authority.driver().to_path_buf(), authority)),
+        Err(error) if clang_sysroot_query_is_unsupported(driver) => {
+            // Apple Clang and the pinned Nix wrapper reject the GCC-style
+            // `-print-sysroot` query. Recover the effective `-isysroot` from
+            // the real driver's verbose preprocessing probe, then answer only
+            // the unsupported metadata query; all other calls reach Clang.
+            let adapter = root.join("clang-sysroot-query-adapter");
+            let sysroot = clang_sysroot_from_verbose_probe(driver);
+            write_generation_fixture_clang_adapter(&adapter, driver, sysroot.as_deref())?;
+            let authority = backend_frontend_clang::ClangAuthorityEnvironment::probe(
+                &adapter, libclang,
+            )
+            .map_err(|adapter_error| {
+                format!(
+                    "admit compiler fixture through sysroot-query adapter after {error}: {adapter_error}"
+                )
+            })?;
+            Ok((authority.driver().to_path_buf(), authority))
+        }
+        Err(error) => Err(format!("admit generation fixture Clang authority: {error}")),
+    }
+}
+
+fn clang_sysroot_query_is_unsupported(driver: &std::path::Path) -> bool {
+    use std::process::Stdio;
+
+    std::process::Command::new(driver)
+        .arg("-print-sysroot")
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            !output.status.success()
+                && String::from_utf8_lossy(&output.stderr)
+                    .contains("unknown argument: '-print-sysroot'")
+        })
+}
+
+fn clang_sysroot_from_verbose_probe(driver: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::process::Stdio;
+
+    let output = std::process::Command::new(driver)
+        .args(["-v", "-E", "-x", "c++", "-"])
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let marker = "-isysroot ";
+    let value = stderr.get(stderr.find(marker)? + marker.len()..)?;
+    let path = value.split_whitespace().next()?.trim_matches(['\'', '"']);
+    std::path::Path::new(path)
+        .is_absolute()
+        .then(|| std::path::PathBuf::from(path))
+}
+
+#[cfg(unix)]
+fn write_generation_fixture_clang_adapter(
+    adapter: &std::path::Path,
+    driver: &std::path::Path,
+    sysroot: Option<&std::path::Path>,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let driver = driver
+        .to_str()
+        .ok_or("fixture Clang driver path is not UTF-8")?;
+    let quoted_driver = format!("'{}'", driver.replace('\'', "'\\''"));
+    let sysroot_response = match sysroot {
+        Some(sysroot) => {
+            let sysroot = sysroot
+                .to_str()
+                .ok_or("fixture Clang sysroot path is not UTF-8")?;
+            let quoted_sysroot = format!("'{}'", sysroot.replace('\'', "'\\''"));
+            format!("  printf '%s\\n' {quoted_sysroot}\n  exit 0\n")
+        }
+        None => "  exit 0\n".to_owned(),
+    };
+    let script = format!(
+        "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"$1\" = \"-print-sysroot\" ]; then\n{sysroot_response}fi\nexec {quoted_driver} \"$@\"\n"
+    );
+    std::fs::write(adapter, script).map_err(|error| error.to_string())?;
+    std::fs::set_permissions(adapter, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn write_generation_fixture_clang_adapter(
+    _adapter: &std::path::Path,
+    _driver: &std::path::Path,
+    _sysroot: Option<&std::path::Path>,
+) -> Result<(), String> {
+    Err("sysroot-query adapter is available only on Unix".to_owned())
+}
+
 fn open_generation_fixture() -> Result<GenerationFixture, String> {
     use backend_engine::application::{
         LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
         LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
-        LocalRuntimeToolchain, OwnedPackageSource, OwnedPackageSourceSet,
+        LocalRuntimeToolchain, OwnedPackageSource, OwnedPackageSourceSet, ToolchainProbeLimits,
     };
     use backend_engine::builtin::{ProductSemanticPublicationKey, SemanticPublicationClaim};
     use backend_library::interface::{
@@ -496,18 +606,40 @@ fn open_generation_fixture() -> Result<GenerationFixture, String> {
     };
     use backend_store::journal::PublicationLimits;
     use std::num::NonZeroUsize;
-    use std::process::Command;
     use std::time::Duration;
 
-    let clang = find_clang().ok_or("clang is required for semantic generation residence")?;
-    let version = Command::new(&clang)
-        .arg("--version")
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !version.status.success() {
-        return Err("clang version probe failed".to_owned());
-    }
+    let selected_clang = std::env::var_os("NUDOX_CLANG")
+        .map(std::path::PathBuf::from)
+        .ok_or("explicit NUDOX_CLANG is required for semantic generation residence")?;
+    let libclang = std::env::var_os("LIBCLANG_PATH")
+        .map(std::path::PathBuf::from)
+        .ok_or("explicit LIBCLANG_PATH is required for semantic generation residence")?;
     let root = unique_directory().map_err(|error| error.to_string())?;
+    let (clang, clang_authority, clang_toolchain) = match (|| -> Result<_, String> {
+        let (clang, clang_authority) =
+            probe_generation_fixture_clang(&selected_clang, &libclang, &root)?;
+        let probe_limits = ToolchainProbeLimits::new(
+            Duration::from_secs(10),
+            NonZeroUsize::new(16 * 1024).ok_or("toolchain probe output limit is zero")?,
+        )
+        .map_err(|error| error.to_string())?;
+        let clang_toolchain =
+            LocalRuntimeToolchain::probe(NativeTool::Clang, clang.clone(), probe_limits)
+                .map_err(|error| format!("admit generation fixture Clang toolchain: {error}"))?;
+        let clang_path = clang
+            .canonicalize()
+            .map_err(|error| format!("canonicalize generation fixture Clang driver: {error}"))?;
+        if clang_authority.driver() != clang_path {
+            return Err("generation fixture Clang authority and toolchain differ".to_owned());
+        }
+        Ok((clang, clang_authority, clang_toolchain))
+    })() {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(error);
+        }
+    };
     let package_root = root.join("package");
     let artifacts = root.join("artifacts");
     let native_work = root.join("native-work");
@@ -534,13 +666,12 @@ fn open_generation_fixture() -> Result<GenerationFixture, String> {
                 native_work.clone(),
             )
             .map_err(|error| error.to_string())?,
-            vec![
-                LocalRuntimeToolchain::resolved(NativeTool::Clang, clang, &version.stdout)
-                    .map_err(|error| error.to_string())?,
-            ]
-            .into_boxed_slice(),
+            vec![clang_toolchain].into_boxed_slice(),
             Box::new([]),
-            LocalRuntimePackageAuthority::default(),
+            LocalRuntimePackageAuthority {
+                clang: Some(clang_authority),
+                ..LocalRuntimePackageAuthority::default()
+            },
             LocalCompilerTimeout::new(Duration::from_secs(30))
                 .map_err(|error| error.to_string())?,
             PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
@@ -722,15 +853,6 @@ fn open_generation_fixture() -> Result<GenerationFixture, String> {
     })
 }
 
-fn find_clang() -> Option<std::path::PathBuf> {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|directory| directory.join("clang"))
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.canonicalize().ok())
-}
-
 fn unique_directory() -> Result<std::path::PathBuf, std::io::Error> {
     for ordinal in 0_u16..64 {
         let path = std::env::temp_dir().join(format!(
@@ -769,6 +891,290 @@ mod tests {
     use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
     use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
     use std::sync::{Arc, Mutex};
+
+    const CLANG_FIXTURE_CHILD: &str = "BACKEND_GENERATION_RESIDENCE_CLANG_FIXTURE";
+
+    /// Runs compiler-backed residence tests in a fresh process with an
+    /// explicit Clang pair. The libclang selector is process-wide, so setting
+    /// it in the parallel test harness would race unrelated tests.
+    fn run_with_explicit_clang_fixture() -> bool {
+        if std::env::var_os(CLANG_FIXTURE_CHILD).is_some() {
+            return true;
+        }
+
+        let driver = std::env::var_os("NUDOX_CLANG").map(std::path::PathBuf::from);
+        let library = std::env::var_os("LIBCLANG_PATH").map(std::path::PathBuf::from);
+        let candidates = match (driver, library) {
+            (Some(driver), Some(library)) => vec![(driver, library)],
+            (None, None) => system_clang_fixture().unwrap_or_else(|error| {
+                panic!("find a real Clang fixture for semantic residence tests: {error}")
+            }),
+            _ => panic!("set both NUDOX_CLANG and LIBCLANG_PATH for the Clang fixture"),
+        };
+
+        let thread = std::thread::current();
+        let test_name = thread
+            .name()
+            .expect("named compiler-backed residence test")
+            .to_owned();
+        let test_executable = std::env::current_exe().expect("test executable");
+        let mut failures = Vec::new();
+        for (driver, library) in candidates {
+            assert!(
+                driver.is_absolute(),
+                "fixture Clang driver must be absolute"
+            );
+            assert!(
+                library.is_absolute(),
+                "fixture libclang selector must be absolute"
+            );
+            let output = std::process::Command::new(&test_executable)
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CLANG_FIXTURE_CHILD, "1")
+                .env("NUDOX_CLANG", &driver)
+                .env("LIBCLANG_PATH", &library)
+                .output()
+                .expect("spawn isolated real-Clang fixture test");
+            if output.status.success() {
+                return false;
+            }
+            failures.push(format!(
+                "{} + {}:\n{}{}",
+                driver.display(),
+                library.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        panic!(
+            "all isolated compiler-backed fixture pairs failed:\n{}",
+            failures.join("\n")
+        )
+    }
+
+    fn system_clang_fixture() -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>, String> {
+        #[cfg(target_os = "macos")]
+        const CANDIDATES: &[(&str, &str)] = &[
+            ("/usr/bin/clang", "/usr/lib/libclang.dylib"),
+            (
+                "/Library/Developer/CommandLineTools/usr/bin/clang",
+                "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib",
+            ),
+            (
+                "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+                "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib",
+            ),
+        ];
+        #[cfg(target_os = "linux")]
+        const CANDIDATES: &[(&str, &str)] = &[
+            ("/usr/bin/clang-22", "/usr/lib/llvm-22/lib/libclang.so"),
+            ("/usr/bin/clang-21", "/usr/lib/llvm-21/lib/libclang.so"),
+            ("/usr/bin/clang-20", "/usr/lib/llvm-20/lib/libclang.so"),
+            ("/usr/bin/clang-19", "/usr/lib/llvm-19/lib/libclang.so"),
+            ("/usr/bin/clang-18", "/usr/lib/llvm-18/lib/libclang.so"),
+            ("/usr/bin/clang-17", "/usr/lib/llvm-17/lib/libclang.so"),
+            ("/usr/bin/clang-16", "/usr/lib/llvm-16/lib/libclang.so"),
+            ("/usr/bin/clang-15", "/usr/lib/llvm-15/lib/libclang.so"),
+            ("/usr/bin/clang-14", "/usr/lib/llvm-14/lib/libclang.so"),
+            ("/usr/bin/clang", "/usr/lib/libclang.so"),
+            ("/usr/local/bin/clang", "/usr/local/lib/libclang.so"),
+        ];
+        #[cfg(target_os = "windows")]
+        const CANDIDATES: &[(&str, &str)] = &[(
+            r"C:\Program Files\LLVM\bin\clang.exe",
+            r"C:\Program Files\LLVM\bin",
+        )];
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        const CANDIDATES: &[(&str, &str)] = &[];
+
+        let mut candidates = nix_clang_fixture_candidates();
+        candidates.extend(CANDIDATES.iter().map(|(driver, library)| {
+            (
+                std::path::PathBuf::from(driver),
+                std::path::PathBuf::from(library),
+            )
+        }));
+
+        let mut available = Vec::new();
+        for (driver, library) in candidates {
+            if !driver.is_file() || !library.exists() {
+                continue;
+            }
+            let (Ok(driver), Ok(library)) = (driver.canonicalize(), library.canonicalize()) else {
+                continue;
+            };
+            let pair = (driver, library);
+            if !available.contains(&pair) {
+                available.push(pair);
+            }
+        }
+        if available.is_empty() {
+            Err("no real compiler pair exists at the Nix store or fixed platform paths".to_owned())
+        } else {
+            Ok(available)
+        }
+    }
+
+    /// Finds the active Nix Clang first, then its referenced libclang output.
+    /// The child applies the narrow sysroot-query adapter and runs the real
+    /// compiler before accepting a pair.
+    #[cfg(unix)]
+    fn nix_clang_fixture_candidates() -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+        use std::collections::BTreeSet;
+        use std::path::Path;
+
+        let store = Path::new("/nix/store");
+        let Ok(entries) = std::fs::read_dir(store) else {
+            return Vec::new();
+        };
+        let mut packages = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                let version = nix_clang_package_version(&name)?.to_owned();
+                Some((entry.path(), name, version))
+            })
+            .collect::<Vec<_>>();
+        packages.sort_by(|left, right| left.1.cmp(&right.1));
+
+        let path_drivers = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .map(|directory| directory.join("clang"))
+            .filter(|driver| driver.is_file())
+            .filter_map(|driver| driver.canonicalize().ok())
+            .filter(|driver| driver.starts_with(store))
+            .collect::<BTreeSet<_>>();
+
+        let mut drivers = Vec::new();
+        let mut libraries = Vec::new();
+        for (package, name, version) in packages {
+            let lib_directory = package.join("lib");
+            if lib_directory.is_dir()
+                && let Ok(entries) = std::fs::read_dir(&lib_directory)
+            {
+                libraries.extend(entries.filter_map(Result::ok).filter_map(|entry| {
+                    let path = entry.path();
+                    (is_nix_libclang(&path) && path.is_file()).then_some((
+                        version.clone(),
+                        package.clone(),
+                        path,
+                    ))
+                }));
+            }
+
+            let driver = package.join("bin/clang");
+            if driver.is_file()
+                && let Ok(driver) = driver.canonicalize()
+            {
+                drivers.push((
+                    version,
+                    driver.clone(),
+                    path_drivers.contains(&driver),
+                    name.contains("-clang-wrapper-"),
+                    nix_store_references(&package),
+                ));
+            }
+        }
+        drivers.sort_by(|left, right| {
+            right
+                .2
+                .cmp(&left.2)
+                .then_with(|| right.3.cmp(&left.3))
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        libraries.sort_by(|left, right| left.2.cmp(&right.2));
+
+        let mut referenced_candidates = Vec::new();
+        let mut same_version_candidates = Vec::new();
+        for (version, driver, _, _, references) in drivers {
+            for (library_version, library_package, library) in &libraries {
+                if version == *library_version {
+                    let pair = (driver.clone(), library.clone());
+                    if references.contains(library_package) {
+                        referenced_candidates.push(pair);
+                    } else {
+                        same_version_candidates.push(pair);
+                    }
+                }
+            }
+        }
+        let preferred_candidates = if referenced_candidates.is_empty() {
+            same_version_candidates
+        } else {
+            referenced_candidates
+        };
+        let mut candidates = Vec::new();
+        for pair in preferred_candidates {
+            if !candidates.contains(&pair) {
+                candidates.push(pair);
+            }
+        }
+        candidates
+    }
+
+    #[cfg(not(unix))]
+    fn nix_clang_fixture_candidates() -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+        Vec::new()
+    }
+
+    #[cfg(unix)]
+    fn nix_clang_package_version(name: &str) -> Option<&str> {
+        let suffix = name
+            .rsplit_once("-clang-wrapper-")
+            .map(|(_, suffix)| suffix)
+            .or_else(|| name.rsplit_once("-clang-").map(|(_, suffix)| suffix))?;
+        let version = suffix.split('-').next()?;
+        (version
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_digit())
+            && version.contains('.'))
+        .then_some(version)
+    }
+
+    #[cfg(unix)]
+    fn nix_store_references(
+        path: &std::path::Path,
+    ) -> std::collections::BTreeSet<std::path::PathBuf> {
+        let Ok(output) = std::process::Command::new("nix-store")
+            .args(["--query", "--references"])
+            .arg(path)
+            .output()
+        else {
+            return std::collections::BTreeSet::new();
+        };
+        if !output.status.success() {
+            return std::collections::BTreeSet::new();
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn is_nix_libclang(path: &std::path::Path) -> bool {
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            filename == "libclang.dylib"
+        }
+        #[cfg(target_os = "linux")]
+        {
+            filename == "libclang.so"
+                || filename.starts_with("libclang.so.")
+                || (filename.starts_with("libclang-")
+                    && filename.contains(".so")
+                    && !filename.contains("-cpp."))
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            filename == "libclang.dll" || filename == "clang.dll"
+        }
+    }
 
     struct SnapshotLoader {
         // Backing data stands in for already durable selected CAS members;
@@ -985,6 +1391,9 @@ mod tests {
 
     #[test]
     fn a_deleted_artifact_directory_still_serves_the_admitted_generation() {
+        if !run_with_explicit_clang_fixture() {
+            return;
+        }
         let fixture = super::open_generation_fixture().expect("fixture");
         let mut generations = SemanticGenerationResidence::default();
         let cold = super::load_fixture(&fixture, &fixture.claim, &mut generations).expect("cold");
@@ -1044,6 +1453,9 @@ mod tests {
 
     #[test]
     fn byte_budget_evicts_asymmetric_valid_generations_and_reopens_them() {
+        if !run_with_explicit_clang_fixture() {
+            return;
+        }
         let fixture = super::open_generation_fixture().expect("fixture");
         let mut expected_residence = SemanticGenerationResidence::default();
         let initial = super::load_fixture(&fixture, &fixture.claim, &mut expected_residence)
@@ -1134,6 +1546,9 @@ mod tests {
 
     #[test]
     fn over_limit_generation_is_not_retained() {
+        if !run_with_explicit_clang_fixture() {
+            return;
+        }
         let fixture = super::open_generation_fixture().expect("fixture");
         let mut expected_residence = SemanticGenerationResidence::default();
         let expected = super::load_fixture(&fixture, &fixture.claim, &mut expected_residence)
@@ -1175,6 +1590,9 @@ mod tests {
 
     #[test]
     fn selected_loader_checks_entry_cap_before_copying_payloads() {
+        if !run_with_explicit_clang_fixture() {
+            return;
+        }
         let fixture = super::open_generation_fixture().expect("fixture");
         let mut source_residence = SemanticGenerationResidence::default();
         let source =

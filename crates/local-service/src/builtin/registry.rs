@@ -1525,6 +1525,9 @@ impl StagedProject {
     /// Java package path must stay intact.
     fn at(directory: PathBuf, version: &str) -> Result<Self, RegistryAddError> {
         let io = |error| RegistryAddError::Acquisition(AcquisitionError::Io(error));
+        if let Some(member) = generated_cargo_workspace_member(&directory)? {
+            return Ok(Self { path: member });
+        }
         let mut entries = fs::read_dir(&directory).map_err(io)?;
         let (Some(only), None) = (entries.next(), entries.next()) else {
             return Ok(Self { path: directory });
@@ -1532,7 +1535,9 @@ impl StagedProject {
         let only = only.map_err(io)?;
         let name = only.file_name();
         let wrapper = name.to_str().is_some_and(|name| {
-            name == "package" || (!version.is_empty() && name.ends_with(version))
+            name == "package"
+                || name.starts_with("__nudox_registry_package_")
+                || (!version.is_empty() && name.ends_with(version))
         });
         if wrapper && only.file_type().map_err(io)?.is_dir() {
             return Ok(Self { path: only.path() });
@@ -1543,6 +1548,174 @@ impl StagedProject {
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
+}
+
+const GENERATED_CARGO_WORKSPACE_HEADER: &str = "# nudox-registry-workspace-v1\n";
+
+/// Places Cargo archives behind a workspace boundary without editing package files.
+///
+/// Registry source trees are staged beneath the application checkout, which may
+/// itself be a Cargo workspace. Cargo otherwise walks upward from a downloaded
+/// package and rejects it as an unlisted child of that unrelated workspace.
+/// A tiny generated workspace at the archive digest root gives Cargo the right
+/// boundary while leaving the verified package manifest and sources untouched.
+fn ensure_cargo_workspace_boundary(root: &Path) -> Result<(), RegistryAddError> {
+    let io = |error| RegistryAddError::Acquisition(AcquisitionError::Io(error));
+    if generated_cargo_workspace_member(root)?.is_some() {
+        return Ok(());
+    }
+
+    let root_manifest = root.join("Cargo.toml");
+    let package_root = if root_manifest.is_file() {
+        // Some valid source archives have no `<name>-<version>/` wrapper. Move
+        // their extracted entries under a generated member instead of replacing
+        // the authentic root Cargo.toml with the workspace marker.
+        let mut suffix = 0_u32;
+        let member_name = loop {
+            let candidate = format!("__nudox_registry_package_{suffix}");
+            if !root.join(&candidate).exists() {
+                break candidate;
+            }
+            suffix = suffix
+                .checked_add(1)
+                .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+        };
+        let member = root.join(&member_name);
+        fs::create_dir(&member).map_err(io)?;
+        let entries = fs::read_dir(root).map_err(io)?;
+        for entry in entries {
+            let entry = entry.map_err(io)?;
+            if entry.file_name().to_string_lossy() == member_name {
+                continue;
+            }
+            fs::rename(entry.path(), member.join(entry.file_name())).map_err(io)?;
+        }
+        (member_name, member)
+    } else {
+        let mut package_roots = Vec::new();
+        for entry in fs::read_dir(root).map_err(io)? {
+            let entry = entry.map_err(io)?;
+            if entry.file_type().map_err(io)?.is_dir() && entry.path().join("Cargo.toml").is_file()
+            {
+                package_roots.push(entry.path());
+            }
+        }
+        let [package_root] = package_roots.as_slice() else {
+            return Err(RegistryAddError::UnsupportedArchive);
+        };
+        let member_name = package_root
+            .strip_prefix(root)
+            .map_err(|_| RegistryAddError::UnsupportedArchive)?
+            .to_string_lossy()
+            .into_owned();
+        (member_name, package_root.clone())
+    };
+
+    let package_manifest_path = package_root.1.join("Cargo.toml");
+    let package_manifest = fs::read_to_string(&package_manifest_path).map_err(io)?;
+    let package_value: toml::Value = package_manifest
+        .parse()
+        .map_err(|_| RegistryAddError::UnsupportedArchive)?;
+    let package_table = package_value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or(RegistryAddError::UnsupportedArchive)?;
+
+    // A package that owns a workspace already provides Cargo's nearest
+    // boundary, including its explicit resolver setting.
+    if package_value.get("workspace").is_some() {
+        return Ok(());
+    }
+    let edition = package_table
+        .get("edition")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("2015");
+    let resolver = match package_table.get("resolver").and_then(toml::Value::as_str) {
+        Some("1") => "1",
+        Some("2") => "2",
+        Some("3") => "3",
+        Some(_) => return Err(RegistryAddError::UnsupportedArchive),
+        None => match edition {
+            "2015" | "2018" => "1",
+            "2021" => "2",
+            "2024" => "3",
+            _ => return Err(RegistryAddError::UnsupportedArchive),
+        },
+    };
+    let mut workspace_table = toml::map::Map::new();
+    workspace_table.insert(
+        "members".to_owned(),
+        toml::Value::Array(vec![toml::Value::String(package_root.0.clone())]),
+    );
+    workspace_table.insert(
+        "resolver".to_owned(),
+        toml::Value::String(resolver.to_owned()),
+    );
+    let mut root_table = toml::map::Map::new();
+    root_table.insert("workspace".to_owned(), toml::Value::Table(workspace_table));
+    let workspace = format!(
+        "{GENERATED_CARGO_WORKSPACE_HEADER}{}",
+        toml::to_string(&toml::Value::Table(root_table))
+            .map_err(|_| RegistryAddError::UnsupportedArchive)?
+    );
+    let workspace_path = root.join("Cargo.toml");
+    match OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&workspace_path)
+    {
+        Ok(mut file) => {
+            file.write_all(workspace.as_bytes()).map_err(io)?;
+            file.sync_all().map_err(io)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if generated_cargo_workspace_member(root)?.is_none() {
+                return Err(RegistryAddError::Acquisition(AcquisitionError::Io(error)));
+            }
+        }
+        Err(error) => return Err(io(error)),
+    }
+    backend_platform::durability::open_directory(&package_root.1)
+        .and_then(|directory| directory.sync_all())
+        .map_err(io)?;
+    backend_platform::durability::open_directory(root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(io)?;
+    Ok(())
+}
+
+/// Returns the sole package member declared by a generated staging workspace.
+fn generated_cargo_workspace_member(root: &Path) -> Result<Option<PathBuf>, RegistryAddError> {
+    let io = |error| RegistryAddError::Acquisition(AcquisitionError::Io(error));
+    let path = root.join("Cargo.toml");
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io(error)),
+    };
+    let Some(generated) = contents.strip_prefix(GENERATED_CARGO_WORKSPACE_HEADER) else {
+        return Ok(None);
+    };
+    let value: toml::Value = generated
+        .parse()
+        .map_err(|_| RegistryAddError::UnsupportedArchive)?;
+    let members = value
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or(RegistryAddError::UnsupportedArchive)?;
+    let [member] = members.as_slice() else {
+        return Err(RegistryAddError::UnsupportedArchive);
+    };
+    let member = member
+        .as_str()
+        .ok_or(RegistryAddError::UnsupportedArchive)?;
+    let member = confined_path(member)?;
+    let member = root.join(member);
+    if !member.join("Cargo.toml").is_file() {
+        return Err(RegistryAddError::UnsupportedArchive);
+    }
+    Ok(Some(member))
 }
 
 const MAX_EXTRACTED_FILES: usize = 100_000;
@@ -1566,9 +1739,9 @@ pub(super) fn stage_archive(
     archive: &[u8],
     workspace_root: impl AsRef<Path>,
 ) -> Result<StagedProject, RegistryAddError> {
-    let version = admit_registry_coordinate(coordinate)
-        .map(|admitted| admitted.version().as_str().to_owned())
-        .unwrap_or_default();
+    let admitted = admit_registry_coordinate(coordinate).map_err(RegistryAddError::Acquisition)?;
+    let version = admitted.version().as_str().to_owned();
+    let needs_cargo_boundary = admitted.ecosystem() == backend_library::RegistryEcosystem::Cargo;
     if archive.is_empty() {
         return Err(RegistryAddError::UnsupportedArchive);
     }
@@ -1578,6 +1751,9 @@ pub(super) fn stage_archive(
     let digest = blake3::hash(archive);
     let directory = staging_root.join(hex(digest.as_bytes()));
     if directory.exists() {
+        if needs_cargo_boundary {
+            ensure_cargo_workspace_boundary(&directory)?;
+        }
         return StagedProject::at(directory, &version);
     }
     let temporary = staging_root.join(format!(
@@ -1597,6 +1773,12 @@ pub(super) fn stage_archive(
     if writer.source_files == 0 {
         let _ = fs::remove_dir_all(&temporary);
         return Err(RegistryAddError::UnsupportedArchive);
+    }
+    if needs_cargo_boundary {
+        if let Err(error) = ensure_cargo_workspace_boundary(&temporary) {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(error);
+        }
     }
     backend_platform::durability::open_directory(&temporary)
         .and_then(|directory| directory.sync_all())
@@ -2169,27 +2351,42 @@ mod tests {
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
     fn scratch() -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "backend-registry-stage-{}-{id}",
-            std::process::id()
-        ))
+        for _ in 0..64 {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "backend-registry-stage-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create isolated registry fixture directory: {error}"),
+            }
+        }
+        panic!("registry fixture directory capacity exhausted")
     }
 
     fn tar_file(name: &str, bytes: &[u8]) -> Vec<u8> {
-        let mut header = [0_u8; TAR_BLOCK_BYTES];
-        header[..name.len()].copy_from_slice(name.as_bytes());
-        let size = format!("{:011o}\0", bytes.len());
-        header[124..136].copy_from_slice(size.as_bytes());
-        header[156] = b'0';
-        header[257..263].copy_from_slice(b"ustar\0");
-        header[148..156].fill(b' ');
-        let checksum: usize = header.iter().map(|byte| usize::from(*byte)).sum();
-        let checksum = format!("{checksum:06o}\0 ");
-        header[148..156].copy_from_slice(checksum.as_bytes());
-        let mut archive = header.to_vec();
-        archive.extend_from_slice(bytes);
-        archive.resize(archive.len().div_ceil(TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES, 0);
+        tar_files(&[(name, bytes)])
+    }
+
+    fn tar_files(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = Vec::new();
+        for (name, bytes) in files {
+            let mut header = [0_u8; TAR_BLOCK_BYTES];
+            header[..name.len()].copy_from_slice(name.as_bytes());
+            let size = format!("{:011o}\0", bytes.len());
+            header[124..136].copy_from_slice(size.as_bytes());
+            header[156] = b'0';
+            header[257..263].copy_from_slice(b"ustar\0");
+            header[148..156].fill(b' ');
+            let checksum: usize = header.iter().map(|byte| usize::from(*byte)).sum();
+            let checksum = format!("{checksum:06o}\0 ");
+            header[148..156].copy_from_slice(checksum.as_bytes());
+            archive.extend_from_slice(&header);
+            archive.extend_from_slice(bytes);
+            archive.resize(archive.len().div_ceil(TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES, 0);
+        }
         archive.resize(archive.len() + TAR_BLOCK_BYTES * 2, 0);
         archive
     }
@@ -3130,7 +3327,13 @@ mod tests {
     fn tar_archive_materializes_once_and_reuses_the_immutable_tree() {
         let root = scratch();
         let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
-        let archive = tar_file("package/src/lib.rs", b"pub fn from_registry() {}");
+        let archive = tar_files(&[
+            (
+                "package/Cargo.toml",
+                b"[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+            ),
+            ("package/src/lib.rs", b"pub fn from_registry() {}"),
+        ]);
         let staged = stage_archive(&coordinate, &archive, &root).expect("stage archive");
         let source = fs::read(staged.path().join("src/lib.rs")).expect("read source");
         assert!(
@@ -3151,7 +3354,13 @@ mod tests {
         let root = scratch();
         let crate_coordinate =
             PackageCoordinate::parse("pkg:cargo/demo@1.4.0").expect("coordinate");
-        let crate_archive = tar_file("demo-1.4.0/src/lib.rs", b"pub fn wrapped() {}");
+        let crate_archive = tar_files(&[
+            (
+                "demo-1.4.0/Cargo.toml",
+                b"[package]\nname = \"demo\"\nversion = \"1.4.0\"\nedition = \"2021\"\n",
+            ),
+            ("demo-1.4.0/src/lib.rs", b"pub fn wrapped() {}"),
+        ]);
         let staged = stage_archive(&crate_coordinate, &crate_archive, &root).expect("stage crate");
         assert_eq!(
             fs::read(staged.path().join("src/lib.rs")).expect("crate source at package root"),
@@ -3172,15 +3381,122 @@ mod tests {
     }
 
     #[test]
+    fn cargo_archive_gets_a_resolver_preserving_workspace_boundary() {
+        const SERDE_BUILD_SCRIPT: &[u8] = include_bytes!(
+            "../../../../frontends/rust/tests/fixtures/serde-1.0.228-build-script.txt"
+        );
+        let root = scratch();
+        let coordinate = PackageCoordinate::parse("pkg:cargo/serde@1.0.228").expect("coordinate");
+        let manifest = b"[package]\nname = \"serde\"\nversion = \"1.0.228\"\nedition = \"2021\"\nbuild = \"build.rs\"\n";
+        let archive = tar_files(&[
+            ("serde-1.0.228/Cargo.toml", manifest),
+            ("serde-1.0.228/build.rs", SERDE_BUILD_SCRIPT),
+            ("serde-1.0.228/src/lib.rs", b"pub fn fixture() {}\n"),
+        ]);
+        let staged = stage_archive(&coordinate, &archive, &root).expect("stage serde archive");
+
+        assert_eq!(
+            staged.path().file_name().unwrap().to_string_lossy(),
+            "serde-1.0.228"
+        );
+        assert_eq!(
+            fs::read(staged.path().join("Cargo.toml")).expect("package manifest"),
+            manifest
+        );
+        assert_eq!(
+            fs::read(staged.path().join("build.rs")).expect("serde build script"),
+            SERDE_BUILD_SCRIPT
+        );
+        let workspace_manifest =
+            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
+                .expect("generated workspace manifest");
+        assert!(workspace_manifest.starts_with(GENERATED_CARGO_WORKSPACE_HEADER));
+        let workspace: toml::Value = workspace_manifest
+            .strip_prefix(GENERATED_CARGO_WORKSPACE_HEADER)
+            .expect("generated marker")
+            .parse()
+            .expect("workspace TOML");
+        assert_eq!(
+            workspace["workspace"]["members"].as_array().unwrap()[0].as_str(),
+            Some("serde-1.0.228")
+        );
+        assert_eq!(workspace["workspace"]["resolver"].as_str(), Some("2"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn flat_cargo_archive_is_wrapped_without_overwriting_its_manifest() {
+        let root = scratch();
+        let coordinate = PackageCoordinate::parse("pkg:cargo/flat-demo@1.0.0").expect("coordinate");
+        let manifest =
+            b"[package]\nname = \"flat-demo\"\nversion = \"1.0.0\"\nedition = \"2018\"\n";
+        let archive = tar_files(&[
+            ("Cargo.toml", manifest),
+            ("build.rs", b"fn main() {}\n"),
+            ("src/lib.rs", b"pub fn fixture() {}\n"),
+        ]);
+        let staged = stage_archive(&coordinate, &archive, &root).expect("stage flat crate");
+        assert_eq!(
+            fs::read(staged.path().join("Cargo.toml")).expect("package manifest"),
+            manifest
+        );
+        let member = staged.path().file_name().unwrap().to_string_lossy();
+        assert!(member.starts_with("__nudox_registry_package_"));
+        let workspace_manifest =
+            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
+                .expect("generated workspace manifest");
+        assert!(workspace_manifest.contains("resolver = \"1\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cargo_archive_without_a_manifest_is_rejected_as_unsupported() {
+        let root = scratch();
+        let coordinate =
+            PackageCoordinate::parse("pkg:cargo/no-manifest@1.0.0").expect("coordinate");
+        let archive = tar_file("no-manifest-1.0.0/src/lib.rs", b"pub fn fixture() {}\n");
+        assert!(matches!(
+            stage_archive(&coordinate, &archive, &root),
+            Err(RegistryAddError::UnsupportedArchive)
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_package_resolver_overrides_edition_default() {
+        let root = scratch();
+        let coordinate =
+            PackageCoordinate::parse("pkg:cargo/resolver-demo@1.0.0").expect("coordinate");
+        let archive = tar_files(&[
+            (
+                "Cargo.toml",
+                b"[package]\nname = \"resolver-demo\"\nversion = \"1.0.0\"\nedition = \"2018\"\nresolver = \"2\"\n",
+            ),
+            ("src/lib.rs", b"pub fn fixture() {}\n"),
+        ]);
+        let staged = stage_archive(&coordinate, &archive, &root).expect("stage explicit resolver");
+        let workspace_manifest =
+            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
+                .expect("generated workspace manifest");
+        assert!(workspace_manifest.contains("resolver = \"2\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn archive_path_traversal_is_rejected_before_writing_outside_the_jail() {
         let root = scratch();
+        let escaped_staging_path = root.join("registry-staging/outside.rs");
+        let escaped_workspace_path = root.join("outside.rs");
+        assert!(!escaped_staging_path.exists());
+        assert!(!escaped_workspace_path.exists());
         let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
         let archive = tar_file("../outside.rs", b"must not escape");
         assert!(matches!(
             stage_archive(&coordinate, &archive, &root),
             Err(RegistryAddError::UnsupportedArchive)
         ));
-        assert!(!root.parent().unwrap_or(&root).join("outside.rs").exists());
+        assert!(!escaped_staging_path.exists());
+        assert!(!escaped_workspace_path.exists());
         let _ = fs::remove_dir_all(root);
     }
 

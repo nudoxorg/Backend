@@ -324,6 +324,68 @@ impl TreeNodeLoader<RelationFixture> for CountingLoader {
 }
 
 #[test]
+fn lazy_sorted_lookup_batches_share_paths_and_match_single_key_lookup()
+-> Result<(), Box<dyn std::error::Error>> {
+    const FIRST_KEY: u64 = 10_000;
+    const END_KEY: u64 = 26_000;
+    let items = (FIRST_KEY..END_KEY)
+        .step_by(2)
+        .map(|key| (key, key * 3))
+        .collect::<Vec<_>>();
+    let tree = PersistentTree::<RelationFixture>::from_sorted_items(&items)?;
+    assert!(tree.root().level() >= 1, "fixture must have branch nodes");
+    let nodes = tree
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect();
+    let loader = CountingLoader {
+        nodes,
+        calls: Cell::new(0),
+    };
+    let claim = UntrustedId::from_wire(
+        tree.root().commitment().as_bytes(),
+        IdContext::relation::<RelationFixture>(),
+    )?;
+    let lazy = LazyTree::open(&loader, claim)?;
+
+    // Include a dense run that shares tree paths, plus missing keys below,
+    // between, and above the stored range.
+    let mut keys = vec![0, FIRST_KEY - 1];
+    keys.extend(FIRST_KEY..FIRST_KEY + 32);
+    keys.extend([12_345, 12_346, END_KEY - 3, END_KEY - 2, END_KEY - 1, END_KEY, u64::MAX]);
+    let expected_values = items.iter().copied().collect::<BTreeMap<_, _>>();
+    let expected = keys
+        .iter()
+        .map(|key| expected_values.get(key).copied())
+        .collect::<Vec<_>>();
+
+    let before_batch = loader.calls.get();
+    let batch = lazy.lookup_many_sorted(&keys)?;
+    let batch_loads = loader.calls.get().saturating_sub(before_batch);
+    let before_single = loader.calls.get();
+    let singles = keys
+        .iter()
+        .map(|key| lazy.lookup(key))
+        .collect::<Result<Vec<_>, _>>()?;
+    let single_loads = loader.calls.get().saturating_sub(before_single);
+
+    assert_eq!(batch, expected);
+    assert_eq!(batch, singles);
+    assert!(batch_loads < single_loads,
+        "batched lookup loaded {batch_loads} nodes; singleton lookups loaded {single_loads}");
+    assert!(lazy.lookup_many_sorted(&[])?.is_empty());
+    assert!(matches!(
+        lazy.lookup_many_sorted(&[FIRST_KEY + 2, FIRST_KEY]),
+        Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate))
+    ));
+    assert!(matches!(
+        lazy.lookup_many_sorted(&[FIRST_KEY, FIRST_KEY]),
+        Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate))
+    ));
+    Ok(())
+}
+
+#[test]
 fn lazy_path_copy_loads_only_the_authenticated_update_path()
 -> Result<(), Box<dyn std::error::Error>> {
     let items: Vec<_> = (0..3_000u64).map(|key| (key, key * 2)).collect();

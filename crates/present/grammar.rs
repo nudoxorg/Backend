@@ -49,6 +49,8 @@ pub enum ArgumentKind {
     ExecutionIntent,
     /// An immutable compiler generation identity, as 64 hexadecimal digits.
     Generation,
+    /// Direction around a package in the dependency graph.
+    GraphDirection,
     /// A bounded page size between 1 and 200.
     Limit,
     /// Opaque continuation token returned by a previous page.
@@ -76,6 +78,7 @@ impl ArgumentKind {
             Self::LanguageProfile => "PROFILE",
             Self::ExecutionIntent => "INTENT",
             Self::Generation => "GENERATION",
+            Self::GraphDirection => "DIRECTION",
             Self::Limit => "COUNT",
             Self::Cursor => "CURSOR",
             Self::Flag => "",
@@ -109,6 +112,7 @@ impl ArgumentKind {
                 "cpp",
             ],
             Self::ExecutionIntent => &["interactive", "background"],
+            Self::GraphDirection => &["dependencies", "dependents"],
             _ => &[],
         }
     }
@@ -342,7 +346,8 @@ impl CommandGrammar {
             | CommandId::Health
             | CommandId::Revision
             | CommandId::ProjectTree
-            | CommandId::AdvisoryRefresh => false,
+            | CommandId::AdvisoryRefresh
+            | CommandId::PackageGraphPage => false,
         }
     }
 
@@ -452,7 +457,7 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 42] = [
+pub const GRAMMARS: [CommandGrammar; 43] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -1014,5 +1019,40 @@ pub const GRAMMARS: [CommandGrammar; 42] = [
         )],
         options: &[],
         when: "Use offline or during restart to read an exact source snapshot from the local cache.",
+    },
+    CommandGrammar {
+        name: "package-graph",
+        tool: "backend.package_graph",
+        aliases: &[],
+        positional: &[
+            ArgumentSpec::required(
+                "package",
+                ArgumentKind::PackageReference,
+                "Pinned package URL at the center of the graph page.",
+            ),
+            ArgumentSpec::required(
+                "direction",
+                ArgumentKind::GraphDirection,
+                "Read outgoing dependencies or incoming dependents.",
+            ),
+        ],
+        options: &[
+            ArgumentSpec::optional(
+                "authority",
+                ArgumentKind::Text,
+                "Exact source selector copied from an ambiguous dependency answer.",
+            ),
+            ArgumentSpec::optional(
+                "limit",
+                ArgumentKind::Limit,
+                "Rows to return, from 1 to 128.",
+            ),
+            ArgumentSpec::optional(
+                "cursor",
+                ArgumentKind::Cursor,
+                "JSON continuation from the preceding package-graph page.",
+            ),
+        ],
+        when: "Use for a package's exact dependency or dependent edges, with each source authority, ecosystem, resolver scope, version requirement, and selected graph snapshot preserved.",
     },
 ];

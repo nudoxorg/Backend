@@ -35,6 +35,8 @@ pub enum LocalHostDirectory {
 pub enum LocalHostPathRole {
     /// One registry-selected native compiler executable.
     Native(NativeTool),
+    /// Explicit libclang shared-library file or containing directory.
+    Libclang,
     /// Node runtime for the vendored TypeScript authority driver.
     TypeScriptNode,
     /// Node module root containing the TypeScript compiler API.
@@ -47,6 +49,12 @@ pub enum LocalHostPathRole {
     GoOracle,
     /// Rust sysroot paired with the selected compiler.
     RustSysroot,
+    /// Explicit Cargo executable paired with the selected Rust compiler.
+    Cargo,
+    /// Explicit Cargo home containing registry and cache state.
+    CargoHome,
+    /// Go root reported by the selected Go compiler.
+    GoRoot,
     /// Java development kit root.
     JdkRoot,
     /// Published Roslyn helper assembly.
@@ -62,6 +70,8 @@ pub enum LocalHostPathKind {
     File,
     /// Directory.
     Directory,
+    /// Regular file or directory.
+    FileOrDirectory,
 }
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
@@ -93,6 +103,32 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             return Ok(None);
         }
         first_existing_directory(role, candidates)
+    }
+
+    pub(super) fn file_or_directory(
+        &self,
+        variable: LocalHostVariable,
+        role: LocalHostPathRole,
+    ) -> Result<Option<PathBuf>, LocalCompilerHostError> {
+        let Some(path) = self.optional_absolute_path(variable)? else {
+            return Ok(None);
+        };
+        let metadata =
+            fs::metadata(&path).map_err(|source| LocalCompilerHostError::ConfiguredPath {
+                role,
+                variable,
+                path: path.clone().into_boxed_path(),
+                source,
+            })?;
+        if !metadata.is_file() && !metadata.is_dir() {
+            return Err(LocalCompilerHostError::ConfiguredPathKind {
+                role,
+                variable,
+                path: path.into_boxed_path(),
+                expected: LocalHostPathKind::FileOrDirectory,
+            });
+        }
+        canonicalize_existing(role, &path).map(Some)
     }
 
     pub(super) fn optional_absolute_path(

@@ -112,27 +112,38 @@ fn cargo_package_fields(
 }
 
 fn resolve_staged_package_root(directory: &Path, version: &str) -> Result<PathBuf, String> {
-    let mut entries = fs::read_dir(directory)
+    let mut wrapper = None;
+    for entry in fs::read_dir(directory)
         .map_err(|error| format!("read staged archive {}: {error}", directory.display()))?
-        .map(|entry| entry.map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, String>>()?;
-    if entries.len() != 1 {
-        return Ok(directory.to_path_buf());
-    }
-    let only = entries.pop().expect("single staged archive entry");
-    let name = only.file_name();
-    let wrapper = name
-        .to_str()
-        .is_some_and(|name| name == "package" || (!version.is_empty() && name.ends_with(version)));
-    if wrapper
-        && only
+    {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(|name| {
+            name == "package" || (!version.is_empty() && name.ends_with(version))
+        }) || !entry
             .file_type()
             .map_err(|error| error.to_string())?
             .is_dir()
-    {
-        return Ok(only.path());
+        {
+            continue;
+        }
+        if wrapper.replace(entry.path()).is_some() {
+            return Ok(directory.to_path_buf());
+        }
     }
-    Ok(directory.to_path_buf())
+    Ok(wrapper.unwrap_or_else(|| directory.to_path_buf()))
+}
+
+fn is_virtual_cargo_workspace(project_root: &Path) -> Result<bool, String> {
+    if !project_root.join("Cargo.toml").is_file() {
+        return Ok(false);
+    }
+    let (_, root) = read_cargo_package_table(project_root)?;
+    Ok(root
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .is_some()
+        && root.get("package").is_none())
 }
 
 /// Returns the on-disk source root for one indexed project label.
@@ -400,7 +411,7 @@ pub(crate) fn staged_manifest_root(
     version: &str,
     label: &str,
 ) -> Result<Option<PathBuf>, String> {
-    let mut candidates = vec![directory.to_path_buf()];
+    let mut candidates = Vec::with_capacity(3);
     let descended = resolve_staged_package_root(directory, version)?;
     if descended != directory {
         candidates.push(descended);
@@ -409,11 +420,15 @@ pub(crate) fn staged_manifest_root(
     if package_dir.is_dir() && !candidates.iter().any(|candidate| candidate == &package_dir) {
         candidates.push(package_dir);
     }
+    candidates.push(directory.to_path_buf());
     for root in candidates {
-        if let Some(manifest) = read_local_manifest(&root)?
-            && manifest.record.coordinate.as_str() == label
-        {
-            return Ok(Some(root));
+        match read_local_manifest(&root) {
+            Ok(Some(manifest)) if manifest.record.coordinate.as_str() == label => {
+                return Ok(Some(root));
+            }
+            Err(_) if root == directory && is_virtual_cargo_workspace(&root)? => {}
+            Err(error) => return Err(error),
+            Ok(_) => {}
         }
     }
     Ok(None)
@@ -1352,6 +1367,29 @@ mod tests {
         assert!(
             indexed_package_source_root("pkg:golang/github.com/pkg/errors@v0.9.2", &workspace)
                 .is_err()
+        );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn staged_cargo_member_survives_a_virtual_workspace_wrapper() {
+        let workspace = fixture("staged-cargo-workspace");
+        let wrapper = workspace.join("registry/registry-staging/hash-serde");
+        let member = wrapper.join("serde-1.0.228");
+        write(
+            &wrapper.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"serde-1.0.228\"]\nresolver = \"2\"\n",
+        );
+        write(
+            &member.join("Cargo.toml"),
+            "[package]\nname = \"serde\"\nversion = \"1.0.228\"\nedition = \"2018\"\n",
+        );
+
+        assert!(read_local_manifest(&wrapper).is_err());
+        assert_eq!(
+            indexed_package_source_root("pkg:cargo/serde@1.0.228", &workspace)
+                .expect("staged member root"),
+            member.canonicalize().expect("canonical member root")
         );
         let _ = fs::remove_dir_all(workspace);
     }

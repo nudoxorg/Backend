@@ -62,10 +62,19 @@ const REVEALED_TYPE_PREFIX: &str = "revealed type: ";
 const REVEAL_HEADER: &[u8] = b"from typing import reveal_type\n";
 /// The `reveal_type(` call spelling prefix.
 const REVEAL_CALL: &[u8] = b"reveal_type(";
+/// Versioned identity of package-scoped Pyrefly env and working-directory policy.
+pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
+    "pyrefly-package-child-environment.v1";
 
 /// Typed failure of one pyrefly authority transaction, preserving operands.
 #[derive(Debug, Error)]
 pub enum CheckerError {
+    /// A package-scoped authority root must be an existing absolute directory.
+    #[error("pyrefly package root is not an existing absolute directory: {path:?}")]
+    PackageRoot {
+        /// Rejected caller-selected package root.
+        path: PathBuf,
+    },
     /// The configured pyrefly executable could not be started.
     #[error("pyrefly could not be started ({program:?}): {source}")]
     Spawn {
@@ -363,6 +372,9 @@ impl Pyrefly {
     pub fn local_configuration_fingerprint(&self) -> [u8; 32] {
         let mut digest = blake3::Hasher::new();
         digest.update(b"compiler.python.package-authority.v1\0");
+        digest.update(PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.as_bytes());
+        digest.update(&[0]);
+        digest.update(b"cwd=selected-package-root;env=isolated;systemroot=windows-only\0");
         let program = self.program.as_os_str().as_encoded_bytes();
         digest.update(&program.len().to_be_bytes());
         digest.update(program);
@@ -462,15 +474,44 @@ impl Pyrefly {
         profile: PythonVersion,
         facts: &ModuleFacts,
     ) -> Result<CheckerReport, CheckerError> {
+        self.analyze_with_package_context(source, profile, facts, None)
+    }
+
+    /// Runs Pyrefly with the caller-selected package root as its working
+    /// directory and a clean child environment. Project configuration and
+    /// package imports remain rooted in this directory.
+    pub fn analyze_in_package(
+        &self,
+        source: &[u8],
+        profile: PythonVersion,
+        facts: &ModuleFacts,
+        package_root: &Path,
+    ) -> Result<CheckerReport, CheckerError> {
+        if !package_root.is_absolute() || !package_root.is_dir() {
+            return Err(CheckerError::PackageRoot {
+                path: package_root.to_path_buf(),
+            });
+        }
+        self.analyze_with_package_context(source, profile, facts, Some(package_root))
+    }
+
+    fn analyze_with_package_context(
+        &self,
+        source: &[u8],
+        profile: PythonVersion,
+        facts: &ModuleFacts,
+        package_root: Option<&Path>,
+    ) -> Result<CheckerReport, CheckerError> {
         let workspace = Workspace::create()?;
         let module_path = workspace.write("module.py", source)?;
         let line_index = LineIndex::new(source);
-        let pristine = self.run_check(&module_path, profile)?;
+        let pristine = self.run_check(&module_path, profile, package_root)?;
         let rows = decode_diagnostics(&pristine)?;
 
         let imports = resolve_imports(facts, source, &line_index, &rows)?;
         let symbols = resolve_symbols(facts, &line_index, &rows, &imports)?;
-        let inferences = self.infer_bindings(source, profile, facts, &workspace)?;
+        let inferences =
+            self.infer_bindings(source, profile, facts, &workspace, package_root)?;
 
         Ok(CheckerReport {
             inferences,
@@ -487,6 +528,7 @@ impl Pyrefly {
         profile: PythonVersion,
         facts: &ModuleFacts,
         workspace: &Workspace,
+        package_root: Option<&Path>,
     ) -> Result<Box<[Inference]>, CheckerError> {
         let plan = build_probe_plan(source, facts)?;
         if plan.reveals.is_empty() {
@@ -494,7 +536,7 @@ impl Pyrefly {
         }
         let probe_path = workspace.write("probe_module.py", &plan.text)?;
         let probe_index = LineIndex::new(&plan.text);
-        let transcript = self.run_check(&probe_path, profile)?;
+        let transcript = self.run_check(&probe_path, profile, package_root)?;
         let rows = decode_diagnostics(&transcript)?;
         let mut inferences = Vec::new();
         for row in &rows {
@@ -528,6 +570,7 @@ impl Pyrefly {
         &self,
         file: &std::path::Path,
         profile: PythonVersion,
+        package_root: Option<&Path>,
     ) -> Result<Vec<u8>, CheckerError> {
         let mut command = std::process::Command::new(&self.program);
         for argument in &self.arguments {
@@ -545,6 +588,10 @@ impl Pyrefly {
             .arg(file)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        if let Some(package_root) = package_root {
+            command.current_dir(package_root);
+            isolate_authority_environment(&mut command);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -818,6 +865,16 @@ fn read_bounded(
                 };
             }
         }
+    }
+}
+
+/// Starts package-scoped Pyrefly without owner credentials or runtime
+/// overrides. Its working directory supplies the selected package context.
+fn isolate_authority_environment(command: &mut std::process::Command) {
+    command.env_clear();
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", system_root);
     }
 }
 

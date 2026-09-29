@@ -7,17 +7,19 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_semantic::ir::{FragmentView, ImageProvenance};
-use backend_frontend_go::legacy::{ConfiguredGoOracle, GoImage, GoOracle, GoOracleConfiguration};
+use backend_engine::index_build::{IndexBuildScratch, build};
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published,
 };
+use backend_frontend_go::legacy::{
+    ConfiguredGoOracle, GoImage, GoOracle, GoOracleChildEnvironment, GoOracleConfiguration,
+};
+use backend_semantic::ir::{FragmentView, ImageProvenance};
 use backend_semantic::vocabulary::{
     GoVersion, LanguageProfile, LoweringUnsupported, NativeTool, ProjectionAdmissionFault, Stage,
 };
-use backend_version::{ContentId, SourceFactDomain};
-use backend_engine::index_build::{IndexBuildScratch, build};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_version::{ContentId, SourceFactDomain};
 use std::{
     fs,
     mem::MaybeUninit,
@@ -523,7 +525,11 @@ fn production_go_authority_scopes_a_multi_package_module_to_its_owning_package()
     let module = "golang.org/x/sync@v0.10.0";
     let parsed = go_support::Purl::parse(purl)?;
     let (url, expected) = go_support::locate(&parsed)?;
-    let archive = go_support::download(&url, 32 * 1024 * 1024, Instant::now() + Duration::from_secs(300))?;
+    let archive = go_support::download(
+        &url,
+        32 * 1024 * 1024,
+        Instant::now() + Duration::from_secs(300),
+    )?;
     if expected.is_some_and(|digest| go_support::sha256(&archive) != digest) {
         return Err(Error::Failure("zip digest mismatch".into()));
     }
@@ -539,13 +545,37 @@ fn production_go_authority_scopes_a_multi_package_module_to_its_owning_package()
     let compiler = std::path::PathBuf::from(compiler)
         .canonicalize()
         .map_err(|e| Error::Failure(e.to_string()))?;
-    let configuration = GoOracleConfiguration::go_toolchain(compiler)
+    let go_executable = compiler.clone();
+    let configuration =
+        GoOracleConfiguration::go_toolchain(compiler).map_err(|e| Error::Failure(e.to_string()))?;
+    let goroot_output = std::process::Command::new(&go_executable)
+        .arg("env")
+        .arg("GOROOT")
+        .env_clear()
+        .env("GOENV", "off")
+        .env("GOTOOLCHAIN", "local")
+        .output()
         .map_err(|e| Error::Failure(e.to_string()))?;
+    if !goroot_output.status.success() {
+        return Err(Error::Failure("go env GOROOT failed".into()));
+    }
+    let goroot = std::str::from_utf8(&goroot_output.stdout)
+        .map_err(|e| Error::Failure(e.to_string()))?
+        .trim();
+    let module_cache = root.join("go-module-cache");
+    let build_cache = root.join("go-build-cache");
+    fs::create_dir_all(&module_cache).map_err(|e| Error::Failure(e.to_string()))?;
+    fs::create_dir_all(&build_cache).map_err(|e| Error::Failure(e.to_string()))?;
+    let child_environment =
+        GoOracleChildEnvironment::new(go_executable, goroot.into(), module_cache, build_cache)
+            .map_err(|e| Error::Failure(e.to_string()))?;
     let oracle = GoOracle {
         output_limit: 32 * 1024 * 1024,
         timeout: Duration::from_secs(300),
     }
-    .with_configuration(configuration);
+    .with_configuration(configuration)
+    .with_child_environment(child_environment)
+    .map_err(|e| Error::Failure(e.to_string()))?;
 
     let cancelled = AtomicBool::new(false);
     let owner = backend_engine::application::enter_package_authority(
@@ -553,6 +583,7 @@ fn production_go_authority_scopes_a_multi_package_module_to_its_owning_package()
             package_root: &module_root,
             source_path: &path,
             source: &source,
+            unit_key: &backend_engine::application::CompilationUnitKeyV2::PackageRoot,
             profile: PROFILE,
             toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
             control: CompileControl {

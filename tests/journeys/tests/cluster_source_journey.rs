@@ -184,6 +184,9 @@ fn compile_ack_pause_interposer(directory: &Path) -> PathBuf {
 #[derive(Clone)]
 struct CompilerProcessEnvironment {
     rustc: PathBuf,
+    cargo: PathBuf,
+    cargo_home: PathBuf,
+    cargo_root: PathBuf,
     s3_endpoint: String,
     profile: String,
     pause_state1_marker: PathBuf,
@@ -196,19 +199,14 @@ struct CompilerProcessEnvironment {
 }
 
 impl CompilerProcessEnvironment {
-    /// Applies one identical runtime environment to the probe, locald, worker import, and worker.
-    /// Compiler capability identities include every process environment variable, so the test
-    /// keeps these processes on the same exact environment while the barrier stays inert.
+    /// Applies the same compiler authority inputs and inert journey barriers to every process.
     fn apply(&self, command: &mut Command) {
         clean_product_environment(command);
         command
             .env("NUDOX_RUSTC", &self.rustc)
-            .env("BACKEND_S3_ENDPOINT", &self.s3_endpoint)
-            .env("BACKEND_S3_BUCKET", "cluster-journey-bucket")
-            .env("BACKEND_S3_REGION", "us-east-1")
-            .env("BACKEND_S3_ACCESS_KEY_ID", "cluster-journey-access")
-            .env("BACKEND_S3_SECRET_ACCESS_KEY", "cluster-journey-secret")
-            .env("BACKEND_S3_PREFIX", "cluster-journey/")
+            .env("NUDOX_CARGO", &self.cargo)
+            .env("NUDOX_CARGO_HOME", &self.cargo_home)
+            .env("NUDOX_CARGO_ROOT", &self.cargo_root)
             .env(
                 "BACKEND_JOURNEY_ACK_PAUSE_STATE0_MARKER",
                 &self.pause_state0_marker,
@@ -239,6 +237,19 @@ impl CompilerProcessEnvironment {
         } else {
             command.env("LD_PRELOAD", &self.pause_library);
         }
+    }
+
+    /// Adds test storage credentials only to the owner process; compiler workers never receive
+    /// index-side S3 secrets.
+    fn apply_owner_storage(&self, command: &mut Command) {
+        self.apply(command);
+        command
+            .env("BACKEND_S3_ENDPOINT", &self.s3_endpoint)
+            .env("BACKEND_S3_BUCKET", "cluster-journey-bucket")
+            .env("BACKEND_S3_REGION", "us-east-1")
+            .env("BACKEND_S3_ACCESS_KEY_ID", "cluster-journey-access")
+            .env("BACKEND_S3_SECRET_ACCESS_KEY", "cluster-journey-secret")
+            .env("BACKEND_S3_PREFIX", "cluster-journey/");
     }
 }
 
@@ -287,7 +298,7 @@ impl Locald {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        environment.apply(&mut command);
+        environment.apply_owner_storage(&mut command);
         if collect_remote_segments {
             command.env("BACKEND_JOURNEY_REMOTE_SEGMENT_GC", "1");
         }
@@ -338,7 +349,7 @@ impl Locald {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        environment.apply(&mut command);
+        environment.apply_owner_storage(&mut command);
         command.env("BACKEND_JOURNEY_REMOTE_SEGMENT_GC", "1");
         let mut child = command.spawn().expect("spawn GC rejection locald");
         let deadline = Instant::now() + DEADLINE;
@@ -804,6 +815,15 @@ fn mcp_content<'reply>(reply: &'reply Value, label: &str) -> &'reply Value {
 }
 
 fn direct_owner_cli(workspace: &Path, project: &Path, args: &[&str]) -> Output {
+    direct_owner_cli_with_environment(workspace, project, args, None)
+}
+
+fn direct_owner_cli_with_environment(
+    workspace: &Path,
+    project: &Path,
+    args: &[&str],
+    environment: Option<&CompilerProcessEnvironment>,
+) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_backend-journey-cli"));
     command
         .arg("--workspace")
@@ -811,7 +831,10 @@ fn direct_owner_cli(workspace: &Path, project: &Path, args: &[&str]) -> Output {
         .arg("--project")
         .arg(project)
         .args(args);
-    clean_product_environment(&mut command);
+    match environment {
+        Some(environment) => environment.apply(&mut command),
+        None => clean_product_environment(&mut command),
+    }
     run_bounded(command, "owner cluster CLI", DEADLINE)
 }
 
@@ -1462,19 +1485,35 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
     let s3 = LoopbackS3::start().expect("start real S3-compatible loopback HTTP server");
 
     let rustc = available_rustc();
+    let cargo = rustc
+        .parent()
+        .expect("canonical rustc has a parent directory")
+        .join("cargo");
+    assert!(
+        cargo.is_file(),
+        "the production compiler host resolves Cargo beside NUDOX_RUSTC; missing {}",
+        cargo.display()
+    );
+    let cargo_home = root.path().join("compiler-cargo-home");
+    let cargo_root = cargo_home.join("registry").join("src");
+    create_private_directory(&cargo_home);
+    create_private_directory(&cargo_root);
     let pause_state0_marker = root.path().join("locald-paused-before-selection");
     let pause_state1_marker = root.path().join("locald-paused-after-selection");
     let pause_state3_marker = root.path().join("locald-paused-before-retirement-confirm");
     let pause_offer_pending_marker = root.path().join("worker-paused-before-result-receipt");
     let recovered_pending_marker = root.path().join("locald-paused-after-recovered-pending");
     let live_receipt_marker = root.path().join("locald-paused-after-live-result-receipt");
-    // Keep this hook inert for the earlier process cuts while its env value remains part of the
-    // compiler capability digest. The live-receipt phase removes this one-shot marker.
+    // Keep this hook inert for the earlier process cuts. The live-receipt phase removes this
+    // one-shot marker; journey-only controls do not participate in compiler capability identity.
     std::fs::write(&live_receipt_marker, "disabled until live-receipt phase\n")
         .expect("disable live-receipt pause during earlier journey phases");
     let pause_library = compile_ack_pause_interposer(root.path());
     let environment = CompilerProcessEnvironment {
         rustc,
+        cargo,
+        cargo_home,
+        cargo_root,
         s3_endpoint: s3.origin().to_owned(),
         profile: profile_hex,
         pause_state0_marker: pause_state0_marker.clone(),
@@ -1497,6 +1536,39 @@ fn public_add_selects_a_remote_compiler_head_and_replays_a_pending_stored_ack() 
     let capability: Value =
         serde_json::from_slice(&probe_output.stdout).expect("parse compiler execution identity");
     assert_eq!(capability["profile"], environment.profile);
+
+    // Exercise the same shipped scope-inspection command operators use for enrollment, with the
+    // same typed toolchain inputs as locald and the worker. Use its report as the enrollment source
+    // only after every field agrees with the production compiler-host probe.
+    let scope_output = direct_owner_cli_with_environment(
+        &workspace,
+        &project,
+        &[
+            "--format",
+            "json",
+            "cluster",
+            "scope",
+            "show",
+            "--package",
+            &project_label,
+            "--profile",
+            "rust-2024",
+        ],
+        Some(&environment),
+    );
+    assert_success(&scope_output, "operator compiler scope inspection");
+    let scope: Value = serde_json::from_slice(&scope_output.stdout)
+        .expect("parse operator compiler scope report");
+    assert_eq!(scope["target_kind"], "local");
+    assert_eq!(scope["coordinate"], coordinate);
+    assert_eq!(scope["namespace"], hex(&namespace.namespace_id()));
+    assert_eq!(scope["profile"], environment.profile);
+    assert_eq!(scope["profile_name"], "rust-2024");
+    assert_eq!(scope["stage"], "lower-ir");
+    for field in ["recipe", "toolchain", "environment", "target_platform"] {
+        assert_eq!(scope[field], capability[field], "scope {field} differs from the production compiler probe");
+    }
+    let capability = scope;
 
     let owner_udp = allocate_udp_loopback();
     let worker_udp = allocate_udp_loopback();

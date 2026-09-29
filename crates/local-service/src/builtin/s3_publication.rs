@@ -26,9 +26,10 @@ use backend_store::{
     ObjectId, UntrustedObjectId,
 };
 use backend_store_s3::{
-    ImmutableS3Pack, MAX_PACK_BYTES, MAX_PACK_MANIFEST_BYTES, MAX_PACK_OBJECTS, PackReadCapability,
-    PackUploadCapability, S3Endpoint, S3LayoutId, S3ObjectRoute, S3PackBuilder, S3PackId,
-    S3PackRoute, S3RouteConfig, StoredPackReceipt, WorkFence,
+    CheckedPackedObject, ImmutableS3Pack, MAX_PACK_BYTES, MAX_PACK_MANIFEST_BYTES,
+    MAX_PACK_OBJECTS, PackReadCapability, PackUploadCapability, S3Endpoint, S3LayoutId,
+    S3ObjectRoute, S3PackBuilder, S3PackId, S3PackRoute, S3RouteConfig, StoredPackReceipt,
+    WorkFence,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hmac::{Hmac, Mac};
@@ -46,6 +47,8 @@ const RECEIPT_VERSION: u16 = 2;
 const MAX_RECEIPT_PACKS: usize = 65_535;
 const MAX_RECEIPT_OBJECTS: usize = 100_002;
 const MAX_RECEIPT_BYTES: usize = 24 * 1024 * 1024;
+const VERIFIED_REMOTE_OBJECT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const VERIFIED_REMOTE_OBJECT_CACHE_ENTRIES: usize = 8;
 const MAX_PRESIGN_SECONDS: u64 = 15 * 60;
 const PACK_DATA_BUDGET: u64 =
     MAX_PACK_BYTES - MAX_PACK_MANIFEST_BYTES as u64 - (MAX_PACK_OBJECTS as u64 * 128);
@@ -73,6 +76,7 @@ use signing::{aws_encode, aws_timestamp, canonical_query, hex};
 pub(super) enum PublicationError {
     Configuration,
     Remote,
+    RemoteStore(backend_store_s3::RemoteStoreError),
     RemoteHydration {
         operation: RemoteHydrationOperation,
         source: Option<backend_store_s3::RemoteStoreError>,
@@ -95,7 +99,9 @@ impl fmt::Display for PublicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Configuration => "S3 publication configuration is incomplete or invalid",
-            Self::Remote | Self::RemoteHydration { .. } => "S3 publication failed",
+            Self::Remote | Self::RemoteStore(_) | Self::RemoteHydration { .. } => {
+                "S3 publication failed"
+            }
             Self::Store => "selected closure could not be read or streamed",
             Self::Receipt => {
                 "selected closure did not match the complete set of stored S3 pack receipts"
@@ -108,6 +114,7 @@ impl fmt::Display for PublicationError {
 impl std::error::Error for PublicationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::RemoteStore(source) => Some(source),
             Self::RemoteHydration {
                 source: Some(source),
                 ..
@@ -129,6 +136,93 @@ pub(super) struct S3ClosurePublisher {
     prefix: String,
     receipt_root: PathBuf,
     receipt_cache: Mutex<Option<(ReceiptCacheKey, Arc<ExactS3ClosureReceipt>)>>,
+    verified_remote_objects: Mutex<VerifiedRemoteObjectCache>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct VerifiedRemoteObjectKey {
+    closure: [u8; 32],
+    object_id: [u8; 32],
+    schema_domain: u8,
+    schema_type: u16,
+    schema_version: u8,
+    payload_len: u64,
+}
+
+#[derive(Debug)]
+struct CachedRemoteObject {
+    object: Arc<CheckedPackedObject>,
+    envelope_bytes: u64,
+}
+
+#[derive(Debug)]
+struct VerifiedRemoteObjectCache {
+    entries: hashlink::LruCache<VerifiedRemoteObjectKey, CachedRemoteObject>,
+    resident_bytes: u64,
+}
+
+impl Default for VerifiedRemoteObjectCache {
+    fn default() -> Self {
+        Self {
+            entries: hashlink::LruCache::new(VERIFIED_REMOTE_OBJECT_CACHE_ENTRIES),
+            resident_bytes: 0,
+        }
+    }
+}
+
+impl VerifiedRemoteObjectCache {
+    fn get(&mut self, key: VerifiedRemoteObjectKey) -> Option<Arc<CheckedPackedObject>> {
+        match self.entries.get(&key).map(|cached| {
+            cached
+                .object
+                .integrity_current()
+                .then(|| Arc::clone(&cached.object))
+        }) {
+            Some(Some(object)) => Some(object),
+            Some(None) => {
+                if let Some(evicted) = self.entries.remove(&key) {
+                    self.resident_bytes =
+                        self.resident_bytes.saturating_sub(evicted.envelope_bytes);
+                }
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn invalidate(&mut self, key: VerifiedRemoteObjectKey) {
+        if let Some(evicted) = self.entries.remove(&key) {
+            self.resident_bytes = self.resident_bytes.saturating_sub(evicted.envelope_bytes);
+        }
+    }
+
+    fn admit(
+        &mut self,
+        key: VerifiedRemoteObjectKey,
+        object: Arc<CheckedPackedObject>,
+        envelope_bytes: u64,
+    ) {
+        if envelope_bytes > VERIFIED_REMOTE_OBJECT_CACHE_BYTES || self.entries.contains_key(&key) {
+            return;
+        }
+        while self.resident_bytes.saturating_add(envelope_bytes)
+            > VERIFIED_REMOTE_OBJECT_CACHE_BYTES
+            || self.entries.len() >= VERIFIED_REMOTE_OBJECT_CACHE_ENTRIES
+        {
+            let Some((_, evicted)) = self.entries.remove_lru() else {
+                return;
+            };
+            self.resident_bytes = self.resident_bytes.saturating_sub(evicted.envelope_bytes);
+        }
+        self.resident_bytes += envelope_bytes;
+        self.entries.insert(
+            key,
+            CachedRemoteObject {
+                object,
+                envelope_bytes,
+            },
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,6 +349,43 @@ pub(super) trait SelectedClosurePublisher: Send + Sync {
         expected_schema: backend_version::SchemaIdentity,
         expected_payload_len: u64,
     ) -> Result<Vec<u8>, PublicationError>;
+
+    /// Returns a bounded range from a fully verified selected closure member.
+    /// Implementations may retain a checked disk-backed envelope so page
+    /// requests do not fetch or allocate the complete payload repeatedly.
+    fn hydrate_object_range(
+        &self,
+        store: &FileStore,
+        selected: RemoteClosureSelection,
+        object_id: UntrustedObjectId,
+        expected_schema: backend_version::SchemaIdentity,
+        expected_payload_len: u64,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, PublicationError> {
+        if expected_payload_len > 1024 * 1024 || length == 0 || length > 16 * 1024 {
+            return Err(PublicationError::Receipt);
+        }
+        let end = offset
+            .checked_add(length)
+            .ok_or(PublicationError::Receipt)?;
+        if end > expected_payload_len {
+            return Err(PublicationError::Receipt);
+        }
+        let payload = self.hydrate_object(
+            store,
+            selected,
+            object_id,
+            expected_schema,
+            expected_payload_len,
+        )?;
+        let start = usize::try_from(offset).map_err(|_| PublicationError::Receipt)?;
+        let end = usize::try_from(end).map_err(|_| PublicationError::Receipt)?;
+        payload
+            .get(start..end)
+            .map(<[u8]>::to_vec)
+            .ok_or(PublicationError::Receipt)
+    }
 
     /// Whether this exact live Turso generation has a fresh, durable owner
     /// receipt proving its complete closure was stored remotely. GC may use a
@@ -415,6 +546,72 @@ mod tests {
     }
 
     #[test]
+    fn range_hydration_rejects_a_receipt_for_another_selected_root() {
+        let scratch = std::env::temp_dir().join(format!(
+            "backend-s3-stale-range-receipt-{}-{}",
+            std::process::id(),
+            NEXT_RECEIPT_TEMP.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir_all(&scratch).expect("create stale receipt fixture");
+        let store = FileStore::open(scratch.join("cas"), 1024 * 1024).expect("open test CAS");
+        let receipt = receipt();
+        let selected = RemoteClosureSelection {
+            closure: receipt.closure,
+            target_root: [0x55; 32],
+            candidate_id: [10; 32],
+            namespace_id: receipt.publication_fence.namespace_id,
+            generation: 1,
+            attempt_id: receipt.publication_fence.attempt_id,
+            epoch: receipt.publication_fence.epoch,
+            attempt_fence: receipt.publication_fence.attempt_fence,
+            input_digest: receipt.publication_fence.input_digest,
+        };
+        let cache_key = ReceiptCacheKey {
+            closure: selected.closure,
+            attempt_id: selected.attempt_id,
+            epoch: selected.epoch,
+            attempt_fence: selected.attempt_fence,
+        };
+        let endpoint = "https://s3.example.com";
+        let route_config = S3RouteConfig::new_for_pack_route(
+            [S3Endpoint::https(endpoint).expect("valid test endpoint")],
+            MAX_PACK_BYTES,
+            3,
+            Duration::ZERO,
+        )
+        .expect("valid S3 route");
+        let publisher = S3ClosurePublisher {
+            route: S3PackRoute::new(S3ObjectRoute::new(route_config)),
+            endpoint: endpoint.to_owned(),
+            bucket: "backend-bucket".to_owned(),
+            region: "us-east-1".to_owned(),
+            access_key: "AKIDEXAMPLE".to_owned(),
+            secret_key: "test-secret".to_owned(),
+            session_token: None,
+            prefix: "packs/".to_owned(),
+            receipt_root: scratch.join("receipts"),
+            receipt_cache: Mutex::new(Some((cache_key, Arc::new(receipt)))),
+            verified_remote_objects: Mutex::new(VerifiedRemoteObjectCache::default()),
+        };
+
+        assert!(matches!(
+            publisher.hydrate_object_range_from_s3(
+                &store,
+                selected,
+                UntrustedObjectId::from_bytes([10; 32]),
+                backend_extension_turso::COMPILER_SEMANTIC_IMAGE_SCHEMA,
+                32,
+                0,
+                8,
+            ),
+            Err(PublicationError::Receipt)
+        ));
+        drop(publisher);
+        drop(store);
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
     fn durable_gc_receipt_lookup_ignores_hot_cache_and_rejects_stale_authority() {
         let scratch = std::env::temp_dir().join(format!(
             "backend-s3-durable-gc-receipt-{}-{}",
@@ -427,7 +624,7 @@ mod tests {
         let cas_root = scratch.join("cas");
         let store = FileStore::open(&cas_root, 1024 * 1024).expect("open test CAS");
         let endpoint = "https://s3.example.com";
-        let route_config = S3RouteConfig::new(
+        let route_config = S3RouteConfig::new_for_pack_route(
             [S3Endpoint::https(endpoint).expect("valid test endpoint")],
             MAX_PACK_BYTES,
             3,
@@ -463,6 +660,7 @@ mod tests {
             prefix: "packs/".to_owned(),
             receipt_root: receipt_root.clone(),
             receipt_cache: Mutex::new(Some((cache_key, Arc::new(receipt.clone())))),
+            verified_remote_objects: Mutex::new(VerifiedRemoteObjectCache::default()),
         };
 
         assert!(
@@ -513,15 +711,42 @@ mod tests {
         fs::create_dir_all(&scratch).expect("create owner S3 test root");
         let store =
             FileStore::open(scratch.join("cas"), 4 * 1024 * 1024).expect("open owner test CAS");
-        let payload = b"semantic-plane-segment-over-real-s3-range";
-        let key = ObjectKey::<VersionedPlaneSegmentSchema>::from_value(payload.as_slice());
-        let object = TypedObject::from_value(&key, payload.as_slice());
-        let object_id = store.write_object(&object).expect("write checked segment");
+        // Segment payloads are individually bounded at 1 MiB. Keep the
+        // complete S3 object above 4 MiB by publishing several real-sized
+        // segments together instead of one oversized segment.
+        let payloads = (0..5)
+            .map(|segment| {
+                (0..backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES)
+                    .map(|index| {
+                        u8::try_from((index * 31 + index / 5 + segment * 17) % 251)
+                            .expect("byte fits")
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let payload = &payloads[0];
+        let mut changes = Vec::with_capacity(payloads.len() + 1);
+        let mut object_ids = Vec::with_capacity(payloads.len());
+        for payload in &payloads {
+            let key = ObjectKey::<VersionedPlaneSegmentSchema>::from_value(payload.as_slice());
+            let object = TypedObject::from_value(&key, payload.as_slice());
+            let object_id = store.write_object(&object).expect("write checked segment");
+            changes.push(ClosureMembershipChange::add(object_id));
+            object_ids.push(object_id);
+        }
+        let object_id = object_ids[0];
+        let small_payload = b"small segment remains on the ordinary full-object path";
+        let small_key = ObjectKey::<VersionedPlaneSegmentSchema>::from_value(small_payload);
+        let small_object = TypedObject::from_value(&small_key, small_payload.as_slice());
+        let small_object_id = store
+            .write_object(&small_object)
+            .expect("write checked small segment");
+        changes.push(ClosureMembershipChange::add(small_object_id));
         let pinned = store
             .compose_closure_index(
                 None,
-                &[ClosureMembershipChange::add(object_id)],
-                ClosureCompositionBudget::new(4, 1, 1024 * 1024, 1024 * 1024),
+                &changes,
+                ClosureCompositionBudget::new(8, 6, 8 * 1024 * 1024, 1024 * 1024),
             )
             .expect("compose exact selected test closure");
         let closure = pinned.receipt().closure();
@@ -552,6 +777,7 @@ mod tests {
             prefix: "packs/".to_owned(),
             receipt_root: scratch.join("receipts"),
             receipt_cache: Mutex::new(None),
+            verified_remote_objects: Mutex::new(VerifiedRemoteObjectCache::default()),
         };
         let selected_publisher: &dyn SelectedClosurePublisher = &publisher;
         selected_publisher
@@ -559,15 +785,20 @@ mod tests {
                 &store,
                 closure,
                 [0x72; 32],
-                1,
-                backend_store::ArtifactBudget::new(4, 4, 1024 * 1024, 4096, 4),
+                u64::try_from(changes.len()).expect("closure member count fits u64"),
+                backend_store::ArtifactBudget::new(8, 8, 8 * 1024 * 1024, 4096, 8),
                 publication_fence,
             )
-            .expect("publish and durably receipt the exact closure");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "publish and durably receipt the exact closure: {error:?}; loopback stats: {:?}",
+                    server.stats()
+                )
+            });
         let selected = RemoteClosureSelection {
             closure: *closure.as_bytes(),
             target_root: [0x72; 32],
-            // The test closure uses the segment as its selected member. Real
+            // The test closure uses one segment as its selected member. Real
             // compiler selections bind this field to the checked envelope ID.
             candidate_id: *object_id.as_bytes(),
             namespace_id: publication_fence.namespace_id,
@@ -582,16 +813,120 @@ mod tests {
                 .has_durable_selected_closure(&store, selected)
                 .expect("reopen exact durable receipt")
         );
-        let hydrated = selected_publisher
-            .hydrate_object(
+        let ranges = [
+            (0_u64, 16 * 1024_u64),
+            (16 * 1024, 123),
+            (16 * 1024 + 123, 16 * 1024),
+            (
+                u64::try_from(payload.len()).expect("payload length fits") - 11,
+                11,
+            ),
+        ];
+        let mut cold_range_gets = None;
+        for (offset, length) in ranges {
+            let page = selected_publisher
+                .hydrate_object_range(
+                    &store,
+                    selected,
+                    UntrustedObjectId::from_bytes(*object_id.as_bytes()),
+                    backend_semantic::ir::VERSIONED_PLANE_SEGMENT_SCHEMA,
+                    u64::try_from(payload.len()).expect("test image length fits u64"),
+                    offset,
+                    length,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "fetch verified selected-object range through production S3 pack route: {error:?}; stats: {:?}",
+                        server.stats()
+                    )
+                });
+            let start = usize::try_from(offset).expect("offset fits");
+            let end = usize::try_from(offset + length).expect("end fits");
+            assert_eq!(page, payload[start..end]);
+            let gets = server.stats().range_gets;
+            if let Some(first) = cold_range_gets {
+                assert_eq!(
+                    gets, first,
+                    "verified temp-envelope cache avoids repeat GETs"
+                );
+            } else {
+                cold_range_gets = Some(gets);
+            }
+        }
+
+        let cache_key = VerifiedRemoteObjectKey {
+            closure: selected.closure,
+            object_id: *object_id.as_bytes(),
+            schema_domain: backend_semantic::ir::VERSIONED_PLANE_SEGMENT_SCHEMA.domain(),
+            schema_type: backend_semantic::ir::VERSIONED_PLANE_SEGMENT_SCHEMA.ty(),
+            schema_version: backend_semantic::ir::VERSIONED_PLANE_SEGMENT_SCHEMA.version(),
+            payload_len: u64::try_from(payload.len()).expect("test image length fits u64"),
+        };
+        let cached_temp_path = || {
+            publisher
+                .verified_remote_objects
+                .lock()
+                .expect("verified object cache lock")
+                .get(cache_key)
+                .expect("selected object is cached")
+                .temp_path_for_test()
+                .to_owned()
+        };
+        let read_first_page = || {
+            selected_publisher.hydrate_object_range(
                 &store,
                 selected,
                 UntrustedObjectId::from_bytes(*object_id.as_bytes()),
                 backend_semantic::ir::VERSIONED_PLANE_SEGMENT_SCHEMA,
-                u64::try_from(payload.len()).expect("test segment length fits u64"),
+                u64::try_from(payload.len()).expect("test image length fits u64"),
+                0,
+                4096,
             )
-            .expect("fetch full verified envelope through production S3 pack route");
-        assert_eq!(hydrated, payload);
+        };
+
+        // In-place same-size mutation and truncation both invalidate the cached
+        // descriptor and force a fresh authenticated S3 materialization.
+        let before_mutation = server.stats().range_gets;
+        let mutation_path = cached_temp_path();
+        let mut altered = fs::read(&mutation_path).expect("read cached envelope for mutation");
+        altered[0] ^= 0xff;
+        fs::write(&mutation_path, altered).expect("mutate cached envelope in place");
+        assert_eq!(
+            read_first_page().expect("refetch after same-size mutation"),
+            payload[..4096]
+        );
+        assert!(server.stats().range_gets > before_mutation);
+
+        let before_truncation = server.stats().range_gets;
+        let truncation_path = cached_temp_path();
+        fs::write(&truncation_path, b"").expect("truncate cached envelope");
+        assert_eq!(
+            read_first_page().expect("refetch after truncation"),
+            payload[..4096]
+        );
+        assert!(server.stats().range_gets > before_truncation);
+
+        // A replacement at the old pathname cannot redirect the retained
+        // descriptor. The owner detects the inode change, re-fetches, and the
+        // stale object's destructor leaves the replacement file alone.
+        let before_replacement = server.stats().range_gets;
+        let replacement_path = cached_temp_path();
+        let held_original = replacement_path.with_extension("held");
+        fs::rename(&replacement_path, &held_original).expect("move cached envelope aside");
+        fs::write(&replacement_path, b"replacement at cached path")
+            .expect("replace cached envelope path");
+        assert_eq!(
+            read_first_page().expect("refetch after path replacement"),
+            payload[..4096]
+        );
+        assert!(server.stats().range_gets > before_replacement);
+        assert!(
+            replacement_path.exists(),
+            "cache cleanup preserves replacement"
+        );
+        fs::remove_file(&replacement_path).expect("remove replacement test file");
+        fs::remove_file(held_original).expect("remove moved test envelope");
+
         let stats = server.stats();
         assert_eq!(
             stats.puts, 1,
@@ -599,9 +934,30 @@ mod tests {
         );
         assert!(
             stats.range_gets >= 3,
-            "cold owner hydration must fetch the root, proof page, and envelope via real range GETs: {stats:?}"
+            "cold owner range must fetch the root, proof page, and full verified envelope: {stats:?}"
         );
-        assert!(server.stored_object().is_some());
+        let uploaded_pack = server.stored_object().expect("loopback stored the pack");
+        assert!(
+            uploaded_pack.len() > 4 * 1024 * 1024,
+            "one real conditional PUT must carry the complete multi-segment pack"
+        );
+
+        // The ordinary full-image path remains available for small loader callers.
+        let hydrated = selected_publisher
+            .hydrate_object(
+                &store,
+                selected,
+                UntrustedObjectId::from_bytes(*small_object_id.as_bytes()),
+                backend_semantic::ir::VERSIONED_PLANE_SEGMENT_SCHEMA,
+                u64::try_from(small_payload.len()).expect("test segment length fits u64"),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "fetch full verified envelope through production S3 pack route: {error:?}; stats: {:?}",
+                    server.stats()
+                )
+            });
+        assert_eq!(hydrated, small_payload);
 
         drop(publisher);
         drop(store);
@@ -646,7 +1002,7 @@ mod tests {
     #[test]
     fn presign_matches_sigv4_golden_vector_and_rejects_noncanonical_prefixes() {
         let endpoint = "https://s3.example.com";
-        let route_config = S3RouteConfig::new(
+        let route_config = S3RouteConfig::new_for_pack_route(
             [S3Endpoint::https(endpoint).expect("valid test endpoint")],
             MAX_PACK_BYTES,
             3,
@@ -664,6 +1020,7 @@ mod tests {
             prefix: "compiler-v2/".to_owned(),
             receipt_root: PathBuf::from("/tmp/backend-s3-test-receipts"),
             receipt_cache: Mutex::new(None),
+            verified_remote_objects: Mutex::new(VerifiedRemoteObjectCache::default()),
         };
         let path = format!("/{}/{}item-01", publisher.bucket, publisher.prefix);
         assert_eq!(path, "/backend-bucket/compiler-v2/item-01");

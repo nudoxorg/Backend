@@ -15,9 +15,12 @@ mod codec;
 mod coverage;
 mod execution;
 mod identities;
+mod ir_generation_store;
 mod ir_hydration;
 mod ir_hydration_store;
 mod ir_hydration_wire;
+mod ir_image_store;
+mod ir_residency;
 mod local_peer;
 mod negotiation;
 mod reconcile;
@@ -30,9 +33,14 @@ pub use codec::{decode_message, encode_message};
 pub use coverage::*;
 pub use execution::*;
 pub use identities::*;
+pub use ir_generation_store::{
+    HistoricalSemanticPlaneBinding, LocalSemanticGeneration, LocalSemanticGenerationId,
+};
 pub use ir_hydration::*;
 pub use ir_hydration_store::*;
 pub use ir_hydration_wire::*;
+pub use ir_image_store::{SemanticImageCacheError, SemanticImageResume};
+pub use ir_residency::*;
 pub use local_peer::*;
 pub use negotiation::*;
 pub use reconcile::*;

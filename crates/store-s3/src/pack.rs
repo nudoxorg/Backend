@@ -18,7 +18,9 @@ use std::{
     thread,
 };
 
-use backend_store::{ObjectId, RelationAdmissionRegistry, TypedObject, UntrustedObjectId};
+use backend_store::{
+    ObjectId, RelationAdmissionRegistry, TypedObject, UntrustedObjectId, VerifiedObjectEnvelope,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,8 +28,8 @@ use sha2::{Digest, Sha256};
 use super::{
     AllowedRange, REQUIRED_CONTENT_ENCODING, REQUIRED_IF_NONE_MATCH, RemoteStoreError,
     S3ObjectRoute, TempEnvelope, WorkFence, check_identity_response, drain_ack, ensure_unexpired,
-    is_redirect_error, is_retryable_status, map_remote_admission_error, map_ureq_error,
-    parse_content_length, parse_content_range, read_bounded, url_signs_headers,
+    is_redirect_error, is_retryable_status, map_remote_admission_error, parse_content_length,
+    parse_content_range, read_bounded, url_signs_headers,
 };
 
 pub use backend_store::artifact_pack::{
@@ -160,7 +162,7 @@ struct StagedObject {
 }
 
 impl S3PackBuilder {
-    /// Creates a builder with a hard byte ceiling no greater than 32 MiB.
+    /// Creates a builder with a hard byte ceiling no greater than 160 MiB.
     pub fn new(max_pack_bytes: u64) -> Result<Self, RemoteStoreError> {
         Self::new_with_registry(max_pack_bytes, RelationAdmissionRegistry::default())
     }
@@ -301,6 +303,7 @@ impl S3PackBuilder {
             .flush()
             .map_err(|_| RemoteStoreError::Unavailable)?;
         drop(pack_file);
+        pack_temp.capture_snapshot()?;
         let retained_metadata_bytes = manifest
             .retained_metadata_bytes()
             .saturating_add(manifest_bytes.capacity());
@@ -622,6 +625,7 @@ impl StoredPackReceipt {
 /// One complete typed object fetched from a pack and admitted by backend-store.
 pub struct CheckedPackedObject {
     id: ObjectId,
+    verified_envelope: VerifiedObjectEnvelope,
     file: TempEnvelope,
     pack_id: S3PackId,
     layout_id: S3LayoutId,
@@ -633,6 +637,12 @@ impl CheckedPackedObject {
     #[must_use]
     pub const fn id(&self) -> ObjectId {
         self.id
+    }
+
+    /// Typed envelope metadata admitted while verifying this packed object.
+    #[must_use]
+    pub const fn verified_envelope(&self) -> VerifiedObjectEnvelope {
+        self.verified_envelope
     }
 
     /// Physical pack that supplied the verified object.
@@ -657,6 +667,31 @@ impl CheckedPackedObject {
     #[must_use]
     pub fn open_envelope(&self) -> Result<File, RemoteStoreError> {
         self.file.open()
+    }
+
+    /// Reads exact bytes from the retained, identity-checked envelope without
+    /// changing a shared file cursor. The metadata checks are cheap; a changed
+    /// spool fails closed so the owner can discard and re-fetch its cache entry.
+    pub fn read_envelope_range(
+        &self,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<(), RemoteStoreError> {
+        self.file.read_exact_at(offset, output)
+    }
+
+    /// Whether this checked spool still has the file identity admitted from
+    /// S3. Cache owners use this to discard changed entries before serving pages.
+    #[must_use]
+    pub fn integrity_current(&self) -> bool {
+        self.file.verify_snapshot().is_ok()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// Returns the backing spool path for mutation tests only.
+    #[must_use]
+    pub fn temp_path_for_test(&self) -> &std::path::Path {
+        &self.file.path
     }
 
     /// Complete envelope byte count.
@@ -1125,8 +1160,10 @@ impl S3PackRoute {
         if admitted.id().as_bytes() != object_id.as_bytes() {
             return Err(RemoteStoreError::Identity);
         }
+        file.verify_snapshot()?;
         Ok(CheckedPackedObject {
             id: admitted.id(),
+            verified_envelope: admitted.envelope(),
             file,
             pack_id: pack.manifest.pack_id(),
             layout_id: pack.manifest.layout_id(),
@@ -1188,14 +1225,7 @@ impl S3PackRoute {
             return Err(RemoteStoreError::Bounds);
         }
         let header = format!("bytes={}-{}", range.start, range.end_inclusive);
-        let response = self
-            .object_route
-            .agent
-            .get(&grant.url)
-            .header("accept-encoding", REQUIRED_CONTENT_ENCODING)
-            .header("range", &header)
-            .call()
-            .map_err(map_ureq_error)?;
+        let response = self.object_route.get_response(&grant.url, Some(&header))?;
         if response.status().as_u16() != 206 {
             return Err(RemoteStoreError::Protocol);
         }
@@ -1223,13 +1253,7 @@ impl S3PackRoute {
         if !grant.full_read_allowed {
             return Err(RemoteStoreError::ExistingUnverified);
         }
-        let mut response = self
-            .object_route
-            .agent
-            .get(&grant.url)
-            .header("accept-encoding", REQUIRED_CONTENT_ENCODING)
-            .call()
-            .map_err(map_ureq_error)?;
+        let mut response = self.object_route.get_response(&grant.url, None)?;
         if response.status().as_u16() != 200 {
             return Err(RemoteStoreError::Protocol);
         }

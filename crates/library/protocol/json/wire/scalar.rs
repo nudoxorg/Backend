@@ -45,6 +45,7 @@ pub(super) enum AuthorityPhaseWire {
 pub(super) enum AuthorityDiagnosticClassWire {
     Syntax,
     Binding,
+    SourceScope,
     Type,
     Authority,
     Projection,

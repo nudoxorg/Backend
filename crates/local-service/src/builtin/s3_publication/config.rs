@@ -51,7 +51,7 @@ impl S3ClosurePublisher {
         {
             return Err(PublicationError::Configuration);
         }
-        let route_config = S3RouteConfig::new(
+        let route_config = S3RouteConfig::new_for_pack_route(
             [endpoint_claim],
             MAX_PACK_BYTES,
             3,
@@ -70,7 +70,49 @@ impl S3ClosurePublisher {
             prefix,
             receipt_root: workspace.join("remote-s3-receipts"),
             receipt_cache: Mutex::new(None),
+            verified_remote_objects: Mutex::new(VerifiedRemoteObjectCache::default()),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{path::Path, process::Command};
+
+    const CHILD_MODE_ENV: &str = "BACKEND_S3_CONFIG_TEST_CHILD";
+
+    #[test]
+    fn fully_configured_env_owner_starts_with_large_pack_route() {
+        if std::env::var_os(CHILD_MODE_ENV).is_some() {
+            let publisher = S3ClosurePublisher::from_env(Path::new("/tmp/backend-s3-owner"))
+                .expect("fully configured environment is valid");
+            assert!(publisher.is_some());
+            return;
+        }
+
+        // Keep environment mutation out of this parallel test process. The
+        // child exercises the real owner configuration path with all S3
+        // settings present; using the 160 MiB pack ceiling also ensures this
+        // fails if startup regresses to the 64 MiB ordinary-object route.
+        let executable = std::env::current_exe().expect("resolve unit-test executable");
+        let status = Command::new(executable)
+            .arg("--exact")
+            .arg(concat!(
+                module_path!(),
+                "::fully_configured_env_owner_starts_with_large_pack_route"
+            ))
+            .env(CHILD_MODE_ENV, "1")
+            .env(ENDPOINT_ENV, "https://s3.example.com")
+            .env(BUCKET_ENV, "backend-bucket")
+            .env(REGION_ENV, "us-east-1")
+            .env(ACCESS_KEY_ENV, "AKIDEXAMPLE")
+            .env(SECRET_KEY_ENV, "test-secret")
+            .env_remove(SESSION_TOKEN_ENV)
+            .env(PREFIX_ENV, "packs/")
+            .status()
+            .expect("run isolated owner configuration test");
+        assert!(status.success(), "owner configuration subprocess failed");
     }
 }
 

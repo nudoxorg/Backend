@@ -10,9 +10,10 @@ use std::fmt;
 
 use backend_semantic::ir::{
     EmbeddingNormalization, EmbeddingPlaneIdentity, GenerationId, LanguageProfile,
-    SemanticHydrationCursorToken, SemanticIrPlane, SemanticManifestRoot, SemanticPlaneCatalog,
-    SemanticPlaneCatalogRoot, SemanticPlaneImageKey, SemanticPlaneKind, SemanticPlaneManifest,
-    SemanticRangeRequest, UntrustedSemanticSegmentId,
+    SemanticHydrationCursorToken, SemanticImageIdentity, SemanticIrPlane, SemanticManifestRoot,
+    SemanticPlaneCatalog, SemanticPlaneCatalogRoot, SemanticPlaneImageKey, SemanticPlaneKind,
+    SemanticPlaneManifest, SemanticPlaneSegment, SemanticRangeRequest, SemanticSegmentId,
+    UntrustedSemanticSegmentId,
 };
 
 use crate::{
@@ -31,7 +32,11 @@ const CATALOG_GET_TAG: u8 = 4;
 const CATALOG_CHUNK_TAG: u8 = 5;
 const MANIFEST_GET_TAG: u8 = 6;
 const MANIFEST_CHUNK_TAG: u8 = 7;
+const SEMANTIC_IMAGE_GET_TAG: u8 = 8;
+const SEMANTIC_IMAGE_CHUNK_TAG: u8 = 9;
 pub(crate) const MAX_RANGE_BYTES: usize = 16 * 1024;
+/// A selected full NXFI image is bounded independently of the smaller metadata pages.
+pub const MAX_SEMANTIC_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_TARGET_FIELD_BYTES: usize = 4 * 1024;
 const MAX_RANGE_MESSAGE_BYTES: usize = 32 * 1024;
 pub(crate) const MAX_CAS_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
@@ -383,6 +388,226 @@ pub struct SemanticManifestChunk {
     pub byte_range: ByteRange,
     /// At most 16 KiB of canonical manifest bytes.
     pub payload: Vec<u8>,
+}
+
+/// Requests one bounded page of a selected complete canonical `NXFI` image.
+///
+/// The first page omits `image_identity` and `total_length`; its reply supplies
+/// both. Every continuation carries that tuple so pages cannot be mixed even
+/// when a transport reconnects between requests.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedSemanticImageGet {
+    /// Caller-generated nonzero correlation identity.
+    pub request_id: u64,
+    /// Product identity used by the index authority to resolve the selected head.
+    pub target: SemanticTargetKey,
+    /// Exact current authority frontier admitted with the selected catalog.
+    pub selected_stamp: SelectedGenerationStamp,
+    /// Exact catalog image whose canonical full-image bytes are requested.
+    pub image: SemanticPlaneImageKey,
+    /// Typed content identity returned by the first page and echoed thereafter.
+    pub image_identity: Option<SemanticImageIdentity>,
+    /// Exact complete NXFI length returned by the first page and echoed thereafter.
+    pub total_length: Option<u64>,
+    /// Requested half-open byte interval within the complete NXFI image.
+    pub byte_range: ByteRange,
+}
+
+impl SelectedSemanticImageGet {
+    /// Returns the canonical bounded wire encoding.
+    pub fn encode(&self) -> Result<Vec<u8>, ReplicationError> {
+        self.validate_shape()?;
+        let mut writer = WireWriter::new(MAX_RANGE_MESSAGE_BYTES);
+        writer.header(SEMANTIC_IMAGE_GET_TAG)?;
+        writer.u64(self.request_id)?;
+        writer.target(&self.target)?;
+        writer.stamp(self.selected_stamp)?;
+        writer.image(self.image)?;
+        match (self.image_identity, self.total_length) {
+            (None, None) => writer.u8(0)?,
+            (Some(identity), Some(total_length)) => {
+                writer.u8(1)?;
+                writer.fixed(identity.as_ref())?;
+                writer.u64(total_length)?;
+            }
+            _ => return Err(ReplicationError::InvalidWire),
+        }
+        writer.byte_range(self.byte_range)?;
+        Ok(writer.finish())
+    }
+
+    /// Decodes one canonical bounded page request.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ReplicationError> {
+        if bytes.len() > MAX_RANGE_MESSAGE_BYTES {
+            return Err(ReplicationError::MessageTooLarge);
+        }
+        let mut reader = WireReader::new(bytes);
+        reader.header(SEMANTIC_IMAGE_GET_TAG)?;
+        let request_id = reader.u64()?;
+        let target = reader.target()?;
+        let selected_stamp = reader.stamp()?;
+        let image = reader.image()?;
+        let (image_identity, total_length) = match reader.u8()? {
+            0 => (None, None),
+            1 => {
+                let identity = SemanticImageIdentity::try_from(reader.fixed()?)
+                    .map_err(|_| ReplicationError::InvalidWire)?;
+                (Some(identity), Some(reader.u64()?))
+            }
+            _ => return Err(ReplicationError::InvalidWire),
+        };
+        let result = Self {
+            request_id,
+            target,
+            selected_stamp,
+            image,
+            image_identity,
+            total_length,
+            byte_range: reader.byte_range()?,
+        };
+        reader.finish()?;
+        result.validate_shape()?;
+        Ok(result)
+    }
+
+    fn validate_shape(&self) -> Result<(), ReplicationError> {
+        if self.request_id == 0
+            || self.target.profile != self.selected_stamp.profile()
+            || self.image.manifest_root().as_bytes() == &[0; 32]
+            || self.image.semantic_generation().as_bytes() == &[0; 32]
+        {
+            return Err(ReplicationError::InvalidWire);
+        }
+        validate_target_field(&self.target.package)?;
+        validate_target_field(&self.target.coordinate)?;
+        match (self.image_identity, self.total_length) {
+            (None, None) => {
+                if self.byte_range.start != 0 || self.byte_range.len != 1 {
+                    return Err(ReplicationError::Range);
+                }
+            }
+            (Some(_), Some(total_length)) => {
+                if total_length == 0 || total_length > MAX_SEMANTIC_IMAGE_BYTES {
+                    return Err(ReplicationError::MessageTooLarge);
+                }
+                let end = self.byte_range.end()?;
+                if self.byte_range.len == 0
+                    || self.byte_range.len > MAX_RANGE_BYTES as u64
+                    || end > total_length
+                {
+                    return Err(ReplicationError::Range);
+                }
+            }
+            _ => return Err(ReplicationError::InvalidWire),
+        }
+        Ok(())
+    }
+}
+
+/// One bounded canonical-image page bound to an authority stamp and catalog key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedSemanticImageChunk {
+    /// Correlation identity copied from the request.
+    pub request_id: u64,
+    /// Product identity copied from the request.
+    pub target: SemanticTargetKey,
+    /// Exact authority frontier current while the owner served these bytes.
+    pub selected_stamp: SelectedGenerationStamp,
+    /// Exact catalog image key returned by selection.
+    pub image: SemanticPlaneImageKey,
+    /// Typed artifact identity of the complete canonical NXFI bytes.
+    pub image_identity: SemanticImageIdentity,
+    /// Full canonical NXFI byte length.
+    pub total_length: u64,
+    /// Exact returned half-open byte interval.
+    pub byte_range: ByteRange,
+    /// At most 16 KiB of canonical NXFI bytes.
+    pub payload: Vec<u8>,
+}
+
+impl SelectedSemanticImageChunk {
+    /// Checks response correlation, freshness, full-image identity, and byte range.
+    pub fn validate_against(&self, get: &SelectedSemanticImageGet) -> Result<(), ReplicationError> {
+        self.validate_shape()?;
+        get.validate_shape()?;
+        if self.request_id != get.request_id
+            || self.target != get.target
+            || self.selected_stamp != get.selected_stamp
+            || self.image != get.image
+            || get
+                .image_identity
+                .is_some_and(|identity| identity != self.image_identity)
+            || get
+                .total_length
+                .is_some_and(|length| length != self.total_length)
+            || self.byte_range != get.byte_range
+        {
+            return Err(ReplicationError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
+    /// Returns the canonical bounded wire encoding.
+    pub fn encode(&self) -> Result<Vec<u8>, ReplicationError> {
+        self.validate_shape()?;
+        let mut writer = WireWriter::new(MAX_RANGE_MESSAGE_BYTES);
+        writer.header(SEMANTIC_IMAGE_CHUNK_TAG)?;
+        writer.u64(self.request_id)?;
+        writer.target(&self.target)?;
+        writer.stamp(self.selected_stamp)?;
+        writer.image(self.image)?;
+        writer.fixed(self.image_identity.as_ref())?;
+        writer.u64(self.total_length)?;
+        writer.byte_range(self.byte_range)?;
+        writer.sized_payload(&self.payload)?;
+        Ok(writer.finish())
+    }
+
+    /// Decodes one canonical bounded page reply.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ReplicationError> {
+        if bytes.len() > MAX_RANGE_MESSAGE_BYTES {
+            return Err(ReplicationError::MessageTooLarge);
+        }
+        let mut reader = WireReader::new(bytes);
+        reader.header(SEMANTIC_IMAGE_CHUNK_TAG)?;
+        let result = Self {
+            request_id: reader.u64()?,
+            target: reader.target()?,
+            selected_stamp: reader.stamp()?,
+            image: reader.image()?,
+            image_identity: SemanticImageIdentity::try_from(reader.fixed()?)
+                .map_err(|_| ReplicationError::InvalidWire)?,
+            total_length: reader.u64()?,
+            byte_range: reader.byte_range()?,
+            payload: reader.sized_payload(MAX_RANGE_BYTES)?,
+        };
+        reader.finish()?;
+        result.validate_shape()?;
+        Ok(result)
+    }
+
+    fn validate_shape(&self) -> Result<(), ReplicationError> {
+        if self.request_id == 0
+            || self.target.profile != self.selected_stamp.profile()
+            || self.image.manifest_root().as_bytes() == &[0; 32]
+            || self.image.semantic_generation().as_bytes() == &[0; 32]
+            || self.total_length == 0
+            || self.total_length > MAX_SEMANTIC_IMAGE_BYTES
+        {
+            return Err(ReplicationError::InvalidWire);
+        }
+        validate_target_field(&self.target.package)?;
+        validate_target_field(&self.target.coordinate)?;
+        let end = self.byte_range.end()?;
+        if self.byte_range.len == 0
+            || self.byte_range.len > MAX_RANGE_BYTES as u64
+            || end > self.total_length
+            || self.payload.len() as u64 != self.byte_range.len
+        {
+            return Err(ReplicationError::Range);
+        }
+        Ok(())
+    }
 }
 
 impl SemanticManifestChunk {
@@ -774,6 +999,32 @@ pub trait DurableSemanticRangeStore: DurableSemanticSegmentStore {
         selection: crate::SelectedSemanticPlane,
         request: SemanticRangeRequest,
     ) -> Result<(), Self::RangeError>;
+}
+
+/// File-backed CAS operations used by local hydration to verify existing
+/// payloads without materializing them. Implementations must validate the
+/// requested descriptor and stream the bytes through the segment commitment.
+pub trait VerifiedLocalSemanticCas: DurableSemanticRangeStore {
+    /// Verifies an object already visible under the freshly selected target.
+    fn verify_selected_segment(
+        &mut self,
+        selection: crate::SelectedSemanticPlane,
+        request: SemanticRangeRequest,
+        segment: &SemanticPlaneSegment,
+    ) -> Result<Option<SemanticSegmentId>, Self::RangeError>;
+
+    /// Verifies an object under a historical local owner and publishes its
+    /// existing object mapping under the freshly selected target, without
+    /// copying payload bytes.
+    fn verify_historical_segment(
+        &mut self,
+        binding: crate::HistoricalSemanticPlaneBinding,
+        base_manifest: &SemanticPlaneManifest,
+        base_segment: &SemanticPlaneSegment,
+        target_selection: crate::SelectedSemanticPlane,
+        target_manifest: &SemanticPlaneManifest,
+        target_segment: &SemanticPlaneSegment,
+    ) -> Result<Option<SemanticSegmentId>, Self::RangeError>;
 }
 
 /// Result after a durable sparse range write or full segment admission.
@@ -1659,6 +1910,18 @@ mod tests {
         .expect("catalog")
     }
 
+    fn selected_image_get() -> SelectedSemanticImageGet {
+        SelectedSemanticImageGet {
+            request_id: 41,
+            target: target(),
+            selected_stamp: stamp(),
+            image: image(),
+            image_identity: None,
+            total_length: None,
+            byte_range: ByteRange::new(0, 1).expect("image identity probe"),
+        }
+    }
+
     #[test]
     fn get_and_chunk_roundtrip_and_bind_every_response_field() {
         let get = get();
@@ -1806,5 +2069,82 @@ mod tests {
             partial_identity.encode(),
             Err(ReplicationError::InvalidWire)
         );
+    }
+
+    #[test]
+    fn selected_full_image_pages_bind_typed_identity_length_and_authority() {
+        let first_get = selected_image_get();
+        let first_roundtrip =
+            SelectedSemanticImageGet::decode(&first_get.encode().expect("first image page encode"))
+                .expect("first image page decode");
+        assert_eq!(first_roundtrip, first_get);
+
+        let identity = SemanticImageIdentity::from_encoded_bytes(b"canonical NXFI bytes");
+        let first_chunk = SelectedSemanticImageChunk {
+            request_id: first_get.request_id,
+            target: first_get.target.clone(),
+            selected_stamp: first_get.selected_stamp,
+            image: first_get.image,
+            image_identity: identity,
+            total_length: 128,
+            byte_range: first_get.byte_range,
+            payload: vec![0],
+        };
+        let first_chunk = SelectedSemanticImageChunk::decode(
+            &first_chunk.encode().expect("first image reply encode"),
+        )
+        .expect("first image reply decode");
+        first_chunk
+            .validate_against(&first_get)
+            .expect("first image reply matches selected image");
+
+        let continuation = SelectedSemanticImageGet {
+            request_id: 42,
+            target: first_get.target.clone(),
+            selected_stamp: first_get.selected_stamp,
+            image: first_get.image,
+            image_identity: Some(identity),
+            total_length: Some(128),
+            byte_range: ByteRange::new(1, 16).expect("continuation page"),
+        };
+        let continuation_roundtrip = SelectedSemanticImageGet::decode(
+            &continuation
+                .encode()
+                .expect("continuation image page encode"),
+        )
+        .expect("continuation image page decode");
+        assert_eq!(continuation_roundtrip, continuation);
+        let continuation_chunk = SelectedSemanticImageChunk {
+            request_id: continuation.request_id,
+            target: continuation.target.clone(),
+            selected_stamp: continuation.selected_stamp,
+            image: continuation.image,
+            image_identity: identity,
+            total_length: 128,
+            byte_range: continuation.byte_range,
+            payload: vec![7; 16],
+        };
+        let continuation_chunk = SelectedSemanticImageChunk::decode(
+            &continuation_chunk
+                .encode()
+                .expect("continuation image reply encode"),
+        )
+        .expect("continuation image reply decode");
+        continuation_chunk
+            .validate_against(&continuation)
+            .expect("continuation image identity remains exact");
+
+        let mut crossed = continuation_chunk;
+        crossed.image_identity = SemanticImageIdentity::from_encoded_bytes(b"another image");
+        assert_eq!(
+            crossed.validate_against(&continuation),
+            Err(ReplicationError::IdentityMismatch)
+        );
+        let mut partial_tuple = continuation;
+        partial_tuple.total_length = None;
+        assert_eq!(partial_tuple.encode(), Err(ReplicationError::InvalidWire));
+        let mut oversized = first_chunk;
+        oversized.total_length = MAX_SEMANTIC_IMAGE_BYTES + 1;
+        assert_eq!(oversized.encode(), Err(ReplicationError::InvalidWire));
     }
 }

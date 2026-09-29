@@ -38,6 +38,9 @@ pub const DEFAULT_OUTPUT_LIMIT: usize = 32 * 1024 * 1024;
 pub const DEFAULT_IMAGE_LIMIT: usize = 32 * 1024 * 1024;
 /// The default maximum bytes accepted for the selected C# source file.
 pub const DEFAULT_SOURCE_LIMIT: usize = 16 * 1024 * 1024;
+/// Versioned identity of the isolated Roslyn host-process environment.
+pub const CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
+    "csharp-package-child-environment.v1";
 /// Maximum stderr transcript retained in an exit diagnostic.
 const STDERR_TAIL_LIMIT: usize = 4096;
 /// Poll interval for the bounded child wait loop.
@@ -313,6 +316,7 @@ impl CSharpOracle {
 
         checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
         let mut command = Command::new(request.toolchain);
+        isolate_authority_environment(&mut command);
         command
             .arg("exec")
             .arg(&self.oracle)
@@ -768,6 +772,17 @@ fn terminate_child(child: &mut Child) {
         let _ = child.kill();
     }
     let _ = child.wait();
+}
+
+/// Runs the explicitly selected dotnet host without inheriting owner
+/// credentials, runtime overrides, or unrelated SDK selection variables.
+/// Package and reference roots are already carried in the command arguments.
+fn isolate_authority_environment(command: &mut Command) {
+    command.env_clear();
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", system_root);
+    }
 }
 
 fn stderr_tail(bytes: &[u8]) -> String {

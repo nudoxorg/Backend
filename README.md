@@ -40,6 +40,8 @@ admitted local revision, and source links stay inside the application.
 Start with [the architecture](docs/architecture/README.md), then use the
 [migration sequence](docs/operations/migration.md) and
 [agent cutover protocol](docs/operations/agent-cutover.md) for rollout work.
+For dedicated index and compiler machines, use the
+[Iroh enrollment and deployment guide](docs/operations/index-compiler-deployment.md).
 
 ```console
 cargo metadata --format-version 1 --no-deps --offline \
