@@ -527,6 +527,18 @@ fn fresh_owner_binding_can_reuse_the_same_hot_content_identity() {
     assert_eq!(path, IrResidencyPath::HotMemory);
     assert_eq!(bytes, b"shared segment");
     assert_eq!(store.reads, 2);
+    let metrics = cache.metrics();
+    let expected_payload_bytes =
+        u64::try_from(b"shared segment".len()).expect("literal length fits") * 2;
+    assert_eq!(metrics.payload_bytes_read, expected_payload_bytes);
+    assert_eq!(metrics.payload_buffers_allocated, 2);
+    assert_eq!(
+        metrics.payload_buffer_bytes_allocated,
+        expected_payload_bytes
+    );
+    // Three requested reads would materialize three complete payloads under
+    // an always-materialize policy; the warmed borrowed hit needed two.
+    assert_eq!(metrics.borrowed_reads, 3);
 }
 
 #[test]

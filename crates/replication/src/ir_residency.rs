@@ -21,8 +21,8 @@ use backend_semantic::ir::{
 };
 
 use crate::{
-    DurableSemanticRangeStore, HistoricalSemanticPlaneBinding, SelectedGenerationSource,
-    SelectedSemanticPlane, VerifiedLocalSemanticCas,
+    DurableSemanticRangeStore, HistoricalSemanticPlaneBinding, HistoryReplay,
+    SelectedGenerationSource, SelectedSemanticPlane, VerifiedLocalSemanticCas,
 };
 
 /// A cold route periodically samples a valid delta even after pristine CAS
@@ -249,6 +249,18 @@ pub struct IrResidencyMetrics {
     pub hot_hits: u64,
     /// Complete segment reads attempted from the range store.
     pub cold_reads: u64,
+    /// Canonical payload bytes returned by complete segment reads. This is
+    /// application-level payload I/O; it excludes FileStore envelopes and
+    /// does not claim to count operating-system page-cache traffic.
+    pub payload_bytes_read: u64,
+    /// Payload-sized buffers returned by complete segment reads. Verification
+    /// paths that stream through bounded scratch do not increment this count.
+    pub payload_buffers_allocated: u64,
+    /// Bytes held by the complete payload buffers counted above.
+    pub payload_buffer_bytes_allocated: u64,
+    /// Canonical payload bytes covered by successful segment commitment
+    /// verification, whether checked in memory or through bounded scratch.
+    pub payload_bytes_verified: u64,
     /// Exact unchanged segment reads served from a base CAS entry.
     pub delta_reads: u64,
     /// Cumulative measured cursor-planning time for admitted delta routes.
@@ -303,6 +315,19 @@ pub enum IrResidencyError {
     CorruptHotOwner,
     /// A storage adapter failed before returning bytes.
     Storage(String),
+}
+
+/// Why an admitted history replay cannot provide a bounded residency route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrResidencyHistoryRouteError {
+    /// The replay has no predecessor from which to start a delta route.
+    MissingPredecessor,
+    /// The selected target does not match the replay tip's exact manifest.
+    TargetMismatch,
+    /// A replay entry does not match its admitted commit or its first parent.
+    MalformedLineage,
+    /// A replay predecessor has no checked binding for the requested plane.
+    MissingPlaneBinding,
 }
 
 impl fmt::Display for IrResidencyError {
@@ -716,6 +741,84 @@ impl AdaptiveIrResidency {
         }
     }
 
+    /// Prepares a delta route from one checked, contiguous first-parent replay.
+    ///
+    /// The replay is cold-reopenable history metadata, not a payload lease.
+    /// This method validates each commit/generation binding and adjacent
+    /// first-parent edge, then retains only the newest `delta_hops` transitions
+    /// in caller-owned `hops` scratch. The selected target must be the exact
+    /// replay tip. Payloads remain subject to fresh selection checks and exact
+    /// segment commitment verification when read.
+    pub fn prepare_history_delta_route<'manifest>(
+        &mut self,
+        selection: SelectedSemanticPlane,
+        target: &'manifest SemanticPlaneManifest,
+        replay: &'manifest HistoryReplay,
+        hops: &mut Vec<IrResidencyDeltaHop<'manifest>>,
+    ) -> Result<PreparedIrResidencyDeltaRoute<'manifest>, IrResidencyHistoryRouteError> {
+        hops.clear();
+        let result = (|| {
+            let entries = replay.entries();
+            if entries.len() < 2 {
+                return Err(IrResidencyHistoryRouteError::MissingPredecessor);
+            }
+            if !selection_matches_manifest(selection, target)
+                || entries
+                    .last()
+                    .is_none_or(|entry| entry.generation().manifest().root() != target.root())
+            {
+                return Err(IrResidencyHistoryRouteError::TargetMismatch);
+            }
+
+            for entry in entries {
+                let generation = entry.generation();
+                let commit = entry.commit();
+                if commit.generation() != generation.identity()
+                    || commit.manifest_root() != generation.manifest().root()
+                    || commit.generation_root()
+                        != crate::HistoryGenerationRoot::NxfiV1(generation.semantic_generation())
+                {
+                    return Err(IrResidencyHistoryRouteError::MalformedLineage);
+                }
+            }
+            for pair in entries.windows(2) {
+                if pair[1].commit().parents().first() != Some(&pair[0].commit().identity()) {
+                    return Err(IrResidencyHistoryRouteError::MalformedLineage);
+                }
+            }
+
+            let available_hops = entries.len() - 1;
+            let selected_hops = available_hops.min(self.limits.delta_hops);
+            if selected_hops == 0 {
+                return Err(IrResidencyHistoryRouteError::MissingPredecessor);
+            }
+            let first_entry = entries.len() - selected_hops - 1;
+            for index in first_entry..entries.len() - 1 {
+                let base = entries[index].generation();
+                let next = entries[index + 1].generation();
+                let binding = base
+                    .historical_plane_binding(selection.kind())
+                    .ok_or(IrResidencyHistoryRouteError::MissingPlaneBinding)?;
+                let next_manifest = if index + 2 == entries.len() {
+                    target
+                } else {
+                    next.manifest()
+                };
+                hops.push(IrResidencyDeltaHop::from_historical(
+                    base.manifest(),
+                    next_manifest,
+                    binding,
+                ));
+            }
+
+            Ok(self.prepare_delta_route(selection, target, hops))
+        })();
+        if result.is_err() {
+            hops.clear();
+        }
+        result
+    }
+
     /// Plans the next segment source for a freshly selected owner binding.
     ///
     /// Invalid or over-budget delta claims select the pristine target CAS path.
@@ -992,6 +1095,10 @@ impl AdaptiveIrResidency {
                             Ok(Some(id)) => {
                                 Self::increment(&mut self.metrics.cold_reads);
                                 Self::increment(&mut self.metrics.delta_reads);
+                                Self::add(
+                                    &mut self.metrics.payload_bytes_verified,
+                                    segment.byte_length(),
+                                );
                                 (IrResidencyPath::DeltaCas(summary), Some(id))
                             }
                             Ok(None) => {
@@ -1108,6 +1215,12 @@ impl AdaptiveIrResidency {
             )
             .map_err(|error| IrResidencyError::Storage(error.to_string()))?;
         Self::increment(&mut self.metrics.cold_reads);
+        if id.is_some() {
+            Self::add(
+                &mut self.metrics.payload_bytes_verified,
+                segment.byte_length(),
+            );
+        }
         Ok(id)
     }
 
@@ -1426,6 +1539,7 @@ impl AdaptiveIrResidency {
         let Some(payload) = payload else {
             return Ok(None);
         };
+        self.record_materialized_payload(payload.len());
         let id = match target_segment.admit(target_selection.kind(), &payload) {
             Ok(id) => id,
             Err(_) => {
@@ -1433,6 +1547,10 @@ impl AdaptiveIrResidency {
                 return Ok(None);
             }
         };
+        Self::add(
+            &mut self.metrics.payload_bytes_verified,
+            target_segment.byte_length(),
+        );
         Ok(Some((payload, id)))
     }
 
@@ -1454,11 +1572,26 @@ impl AdaptiveIrResidency {
             .read_complete_segment(selection, request)
             .map_err(|error| IrResidencyError::Storage(error.to_string()))?;
         let payload = payload.ok_or(IrResidencyError::MissingSegment)?;
+        self.record_materialized_payload(payload.len());
         let id = segment.admit(selection.kind(), &payload).map_err(|_| {
             Self::increment(&mut self.metrics.corrupt_cas_objects);
             IrResidencyError::CorruptCas
         })?;
+        Self::add(
+            &mut self.metrics.payload_bytes_verified,
+            segment.byte_length(),
+        );
         Ok((payload, id))
+    }
+
+    fn record_materialized_payload(&mut self, byte_length: usize) {
+        let byte_length = u64::try_from(byte_length).unwrap_or(u64::MAX);
+        Self::increment(&mut self.metrics.payload_buffers_allocated);
+        Self::add(
+            &mut self.metrics.payload_buffer_bytes_allocated,
+            byte_length,
+        );
+        Self::add(&mut self.metrics.payload_bytes_read, byte_length);
     }
 
     fn consider_hot(

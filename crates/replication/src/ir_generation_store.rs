@@ -2696,22 +2696,34 @@ mod tests {
     #[test]
     fn cold_reopen_replays_admitted_snapshots_and_borrowed_segment_deltas() {
         let directory = TestDirectory::create();
-        let base = fixture(b"history replay base", 1, 51);
-        let second = fixture(b"history replay second", 2, 52);
-        let third = fixture(b"history replay third", 3, 53);
+        let shared = b"stable canonical block shared across three generations";
+        let base = fixture_with_segments(51, &[shared, b"base edit"], 1, 51);
+        let second = fixture_with_segments(52, &[shared, b"second edit"], 2, 52);
+        let third = fixture_with_segments(53, &[shared, b"third edit"], 3, 53);
         let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
         let _ = commit(&files, &base, [base.stamp, base.stamp]).expect("commit base");
         let _ = commit(&files, &second, [second.stamp, second.stamp]).expect("commit second");
-        let _ = commit(&files, &third, [third.stamp, third.stamp]).expect("commit third");
-        let tip = files
+        let second_tip = files
             .history_ref(
-                &third.target,
+                &second.target,
                 HistoryRefKind::Branch,
                 &HistoryRefName::new("local-cache").expect("local cache ref"),
             )
-            .expect("read selected ref")
-            .expect("selected ref exists")
+            .expect("read second-generation ref")
+            .expect("second-generation ref exists")
             .commit();
+        let _ = commit(&files, &third, [third.stamp, third.stamp]).expect("commit third");
+        let feature = admit_history(&files, &third, &[second_tip], [0x54; 32]);
+        set_history_ref(
+            &files,
+            &third.target,
+            HistoryRefKind::Branch,
+            "feature",
+            None,
+            Some(feature.identity()),
+        )
+        .expect("publish edited feature branch");
+        let tip = feature.identity();
         drop(files);
 
         let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("reopen store");
@@ -2739,6 +2751,31 @@ mod tests {
         assert_eq!(replay.segment_deltas().count(), 2);
         assert!(replay.segment_deltas().all(|delta| delta.is_ok()));
         assert_eq!(replay.next_cursor(), None);
+
+        let (mut source, selection) = select_fixture(&third);
+        let mut residency = AdaptiveIrResidency::default();
+        let mut hop_scratch = Vec::with_capacity(2);
+        let route = residency
+            .prepare_history_delta_route(selection, &third.manifest, &replay, &mut hop_scratch)
+            .expect("build bounded route from checked first-parent replay");
+        assert_eq!(hop_scratch.len(), 2);
+        let shared_segment = &third
+            .manifest
+            .plane(selection.kind())
+            .expect("core plane")
+            .segments()[0];
+        assert!(matches!(
+            residency
+                .plan_with_prepared_route(
+                    &mut source,
+                    selection,
+                    &third.manifest,
+                    shared_segment,
+                    &route,
+                )
+                .expect("plan against freshly selected replay tip"),
+            IrResidencyPath::DeltaCas(_)
+        ));
     }
 
     #[test]
