@@ -472,8 +472,7 @@ fn concurrent_forge_journal_process_worker() {
                         "[package]\nname=\"process-{}\"\nversion=\"1.0.0\"\n",
                         self.worker
                     )
-                    .as_bytes()
-                    .to_vec(),
+                    .as_bytes(),
                 ),
                 None::<String>,
             ))

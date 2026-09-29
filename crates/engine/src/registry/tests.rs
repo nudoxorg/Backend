@@ -15,7 +15,9 @@ use std::{
 
 use super::ecosystem::{NativeArtifactKind, resolve_archive_url};
 use super::identity::RegistryCredentialPolicy;
+use super::wire::{RegistryLog, RegistryRecord};
 use super::*;
+use crate::HashChainJournal;
 
 fn test_native_metadata() -> backend_library::RegistryNativeMetadata {
     backend_library::RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "test fixture")
@@ -2484,7 +2486,7 @@ fn metadata_404_becomes_a_durable_not_found_fact() {
         0,
     )
     .expect("request");
-    let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+    let mut transport = HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
     assert!(matches!(
         service.acquire(&request, &mut transport),
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
