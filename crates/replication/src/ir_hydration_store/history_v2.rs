@@ -777,13 +777,13 @@ mod tests {
         JumboValueFamily, LanguageProfile, RustEdition, SemanticBuildIdentity,
         SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
         SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
-        SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticContentRootV2,
+        SemanticTypedPlaneSegmentClaimV2, Stage, UntrustedSemanticContentRootV2,
         UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId, write_jumbo_value,
     };
     use backend_store::{
         ArtifactClosureClaim, ArtifactObjectClaim, StreamingClosureBudget, TypedObject,
     };
-    use backend_version::{Coverage, ObjectKey, Schema, ScopeRoot, Stage};
+    use backend_version::{Coverage, ObjectKey, Schema, ScopeRoot};
     use std::convert::Infallible;
     use std::fs;
     use std::path::PathBuf;
@@ -991,7 +991,7 @@ mod tests {
         let store = FileStore::open(&directory.0, 1024 * 1024).expect("open test FileStore");
         let closure = empty_closure(&store);
         let manifest = one_segment_manifest();
-        let locator = super::super::ir_generation_store::TypedV2HistoryLocator {
+        let locator = crate::ir_generation_store::TypedV2HistoryLocator {
             manifest: manifest.canonical_bytes().expect("encode manifest"),
             segments: vec![HistoryTypedV2SegmentObject::new(
                 UntrustedSemanticSegmentId::from_raw([2; 32]),
@@ -1020,7 +1020,7 @@ mod tests {
         let empty = empty_closure(&store);
         let (extra_claim, _) = one_object_closure(&store, test_payload_schema(), b"extra");
         let empty_manifest = empty_manifest();
-        let empty_locator = super::super::ir_generation_store::TypedV2HistoryLocator {
+        let empty_locator = crate::ir_generation_store::TypedV2HistoryLocator {
             manifest: empty_manifest.canonical_bytes().expect("encode manifest"),
             segments: Vec::new(),
             jumbo: Vec::new(),
@@ -1046,7 +1046,7 @@ mod tests {
         let wrong_schema = store
             .open_closure_claim(wrong_schema_claim)
             .expect("reopen wrong-schema closure");
-        let wrong_kind_locator = super::super::ir_generation_store::TypedV2HistoryLocator {
+        let wrong_kind_locator = crate::ir_generation_store::TypedV2HistoryLocator {
             manifest: empty_manifest.canonical_bytes().expect("encode manifest"),
             segments: Vec::new(),
             jumbo: vec![HistoryTypedV2JumboObject::new(

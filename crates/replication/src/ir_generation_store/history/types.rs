@@ -658,7 +658,7 @@ pub(crate) struct TypedV2HistoryPublicationAdmission<'pin> {
     _gc_pin: &'pin backend_store::GcPinGuard,
 }
 
-impl TypedV2HistoryPublicationAdmission<'_> {
+impl<'pin> TypedV2HistoryPublicationAdmission<'pin> {
     pub(crate) const fn identity(&self) -> HistoryCommitId {
         self.identity
     }
@@ -680,7 +680,7 @@ impl TypedV2HistoryPublicationAdmission<'_> {
         content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
         closure: ArtifactClosureClaim,
         locator: HistoryTypedV2LocatorId,
-        gc_pin: &backend_store::GcPinGuard,
+        gc_pin: &'pin backend_store::GcPinGuard,
     ) -> Self {
         Self {
             identity,

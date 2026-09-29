@@ -8,7 +8,10 @@
 //! receives a proof-bearing replay token.
 
 use super::catalog::validate_history_commit_node;
-use super::codec::{identify_history_record, prepare_history_layout, write_history_payload_root};
+use super::codec::{
+    append_commit_index, identify_history_record, prepare_history_layout,
+    write_history_payload_root,
+};
 use super::*;
 
 const TYPED_V2_LOCATOR_DOMAIN: &[u8] = b"backend.semantic.history-typed-v2-locator.v1\0";
@@ -615,10 +618,10 @@ mod tests {
     use backend_semantic::ir::{
         ImageProvenance, LanguageProfile, RustEdition, SemanticBuildIdentity,
         SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
-        SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
+        SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2, Stage,
         UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2,
     };
-    use backend_version::{Coverage, ScopeRoot, Stage};
+    use backend_version::{Coverage, ScopeRoot};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestDirectory(PathBuf);
