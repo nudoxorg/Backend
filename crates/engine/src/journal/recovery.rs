@@ -397,10 +397,13 @@ impl<D: JournalCodec> HashChainJournal<D> {
     /// interprocess publication gate for the duration of this operation and
     /// its corresponding domain-state fold.
     ///
-    /// A torn final frame is repaired at the last validated boundary. The
-    /// current in-memory checkpoint is used as the trusted predecessor, so a
-    /// normal cross-process update scans only new frames rather than replaying
-    /// the entire journal.
+    /// A newly visible suffix is synced before its frames are visited, so a
+    /// complete write left by an interrupted publisher cannot advance the
+    /// caller's trusted domain cursor without a durability barrier. A torn
+    /// final frame is repaired at the last validated boundary. The current
+    /// in-memory checkpoint is used as the trusted predecessor, so a normal
+    /// cross-process update scans only new frames rather than replaying the
+    /// entire journal.
     /// # Errors
     ///
     /// Returns an error when the suffix diverges, exceeds the recovery bounds,
@@ -413,6 +416,19 @@ impl<D: JournalCodec> HashChainJournal<D> {
     where
         F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
     {
+        self.refresh_external_with_sync(limits, visitor, File::sync_data)
+    }
+
+    fn refresh_external_with_sync<F, S>(
+        &self,
+        limits: JournalLimits,
+        visitor: F,
+        sync_external: S,
+    ) -> Result<JournalScan<D>, JournalError>
+    where
+        F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
+        S: FnOnce(&File) -> std::io::Result<()>,
+    {
         validate_limits(limits)?;
         let mut state = self
             .state
@@ -420,6 +436,24 @@ impl<D: JournalCodec> HashChainJournal<D> {
             .map_err(|_| JournalError::Corrupt("poisoned journal"))?;
         if state.unusable {
             return Err(JournalError::Corrupt("journal append state"));
+        }
+        // Writers sync each frame before releasing the domain's
+        // interprocess publication fence. A writer that exits between its
+        // write and sync may nevertheless leave a complete frame visible in
+        // the page cache. The next fenced reader must make that suffix
+        // durable before its visitor advances any trusted domain cursor.
+        let file_length = match state.file.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                state.unusable = true;
+                return Err(JournalError::Io(error));
+            }
+        };
+        if file_length > state.next_offset
+            && let Err(error) = sync_external(&state.file)
+        {
+            state.unusable = true;
+            return Err(JournalError::Io(error));
         }
         let initial_sequence = state.next_sequence.checked_sub(1);
         let result = scan_path_from(
