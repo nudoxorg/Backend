@@ -6,6 +6,8 @@
 //! sequenced, and the adapter must provide an end marker before the workspace
 //! witnesses are checked. No wire or JSON completeness flag is accepted here.
 
+use crate::application::StagedSemanticPackage;
+use crate::compiler_attempt_v2::CompilationAttemptId;
 use crate::compiler_input_manifest_v2::{
     CompilerInputManifestV2, CompilerInvocationRecipeV2, CompilerPackageTargetV2,
     CompilerWorkspaceSnapshotIdV2,
@@ -161,6 +163,7 @@ pub struct CompilerUnitReadClosureStatsV2 {
 /// workspace-relative witnesses have been checked.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedUnitReadClosure {
+    compilation_attempt_id: CompilationAttemptId,
     package_target: CompilerPackageTargetV2,
     invocation_recipe: CompilerInvocationRecipeV2,
     capture_identity: CompilerWorkspaceCaptureIdentityV2,
@@ -171,6 +174,19 @@ pub struct VerifiedUnitReadClosure {
 }
 
 impl VerifiedUnitReadClosure {
+    /// In-memory owner token for the compilation whose observer produced this trace.
+    /// This correlates values only and is not a completeness capability.
+    #[must_use]
+    pub(crate) const fn compilation_attempt_id(&self) -> CompilationAttemptId {
+        self.compilation_attempt_id
+    }
+
+    /// Returns whether this trace was closed under the supplied staged-attempt identity.
+    #[must_use]
+    pub(crate) const fn matches_attempt(&self, attempt: CompilationAttemptId) -> bool {
+        self.compilation_attempt_id == attempt
+    }
+
     /// Exact package and language-native unit this closure proves.
     #[must_use]
     pub const fn package_target(&self) -> &CompilerPackageTargetV2 {
@@ -324,6 +340,7 @@ fn derive_adapter_protocol_identity(
 /// it accepts no `complete: bool` field and has no serde implementation.
 #[allow(dead_code)]
 pub(crate) struct CompilerReadTraceBuilderV2 {
+    compilation_attempt_id: CompilationAttemptId,
     protocol: TrustedCompilerReadAdapterProtocolV2,
     package_target: CompilerPackageTargetV2,
     invocation_recipe: CompilerInvocationRecipeV2,
@@ -339,13 +356,17 @@ pub(crate) struct CompilerReadTraceBuilderV2 {
 
 #[allow(dead_code)]
 impl CompilerReadTraceBuilderV2 {
-    /// Opens a trace for the exact target, recipe, and captured workspace in a manifest.
-    pub(crate) fn for_manifest(
+    /// Associates a future trace with an engine-staged attempt. The token comes from that staged
+    /// package rather than caller-supplied claim metadata; callers must still collect events from
+    /// the actual compiler observer, since this association proves neither timing nor completeness.
+    pub(crate) fn for_staged_package(
         protocol: TrustedCompilerReadAdapterProtocolV2,
         manifest: &CompilerInputManifestV2,
+        staged: &StagedSemanticPackage,
     ) -> Self {
         Self {
             protocol,
+            compilation_attempt_id: staged.compilation_attempt_id(),
             package_target: manifest.package_target().clone(),
             invocation_recipe: manifest.invocation_recipe(),
             capture_identity: CompilerWorkspaceCaptureIdentityV2::from_manifest(manifest),
@@ -357,6 +378,42 @@ impl CompilerReadTraceBuilderV2 {
             charged_fact_bytes: 0,
             facts: Vec::new(),
         }
+    }
+
+    /// Test-only builder for exercising cross-attempt joins without constructing a compiler lane.
+    #[cfg(test)]
+    fn for_attempt(
+        protocol: TrustedCompilerReadAdapterProtocolV2,
+        manifest: &CompilerInputManifestV2,
+        compilation_attempt_id: CompilationAttemptId,
+    ) -> Self {
+        Self {
+            protocol,
+            compilation_attempt_id,
+            package_target: manifest.package_target().clone(),
+            invocation_recipe: manifest.invocation_recipe(),
+            capture_identity: CompilerWorkspaceCaptureIdentityV2::from_manifest(manifest),
+            started: false,
+            ended: false,
+            failure: None,
+            next_sequence: 0,
+            events: 0,
+            charged_fact_bytes: 0,
+            facts: Vec::new(),
+        }
+    }
+
+    /// Test-only helper; production callers must bind the trace to the stage-minted attempt.
+    #[cfg(test)]
+    pub(crate) fn for_manifest(
+        protocol: TrustedCompilerReadAdapterProtocolV2,
+        manifest: &CompilerInputManifestV2,
+    ) -> Self {
+        Self::for_attempt(
+            protocol,
+            manifest,
+            CompilationAttemptId::mint().expect("fixture attempt identity"),
+        )
     }
 
     /// Records the adapter's trace-start marker.
@@ -499,6 +556,7 @@ impl CompilerReadTraceBuilderV2 {
             workspace_pages_scanned,
         };
         Ok(VerifiedUnitReadClosure {
+            compilation_attempt_id: self.compilation_attempt_id,
             package_target: self.package_target,
             invocation_recipe: self.invocation_recipe,
             capture_identity: self.capture_identity,
@@ -679,7 +737,21 @@ mod tests {
         manifest: &CompilerInputManifestV2,
         workspace: &CompilerInputMerkleTreeV2,
     ) -> Result<VerifiedUnitReadClosure, CompilerUnitReadClosureErrorV2> {
-        let mut builder = CompilerReadTraceBuilderV2::for_manifest(protocol, manifest);
+        trace_with_attempt(
+            protocol,
+            manifest,
+            workspace,
+            CompilationAttemptId::mint().expect("fixture attempt identity"),
+        )
+    }
+
+    fn trace_with_attempt(
+        protocol: TrustedCompilerReadAdapterProtocolV2,
+        manifest: &CompilerInputManifestV2,
+        workspace: &CompilerInputMerkleTreeV2,
+        attempt: CompilationAttemptId,
+    ) -> Result<VerifiedUnitReadClosure, CompilerUnitReadClosureErrorV2> {
+        let mut builder = CompilerReadTraceBuilderV2::for_attempt(protocol, manifest, attempt);
         builder.begin()?;
         let listing_digest = workspace.directory_listing_digest("src")?;
         let facts = [
@@ -834,6 +906,35 @@ mod tests {
             first.pure_unit_key().as_bytes(),
             oracle.finalize().as_bytes()
         );
+    }
+
+    #[test]
+    fn equal_closure_metadata_from_distinct_attempts_cannot_be_joined() {
+        let workspace = workspace(false);
+        let manifest = manifest_for_workspace(workspace.root(), [0xa1; 32]);
+        let first_attempt = CompilationAttemptId::mint().expect("first attempt");
+        let second_attempt = CompilationAttemptId::mint().expect("second attempt");
+        let first = trace_with_attempt(reviewed_protocol(), &manifest, &workspace, first_attempt)
+            .expect("first closure");
+        let second = trace_with_attempt(reviewed_protocol(), &manifest, &workspace, second_attempt)
+            .expect("second closure");
+
+        assert_eq!(first.package_target(), second.package_target());
+        assert_eq!(first.invocation_recipe(), second.invocation_recipe());
+        assert_eq!(first.capture_identity(), second.capture_identity());
+        assert_eq!(first.closure_root(), second.closure_root());
+        assert_eq!(first.pure_unit_key(), second.pure_unit_key());
+        assert_ne!(
+            first.compilation_attempt_id(),
+            second.compilation_attempt_id()
+        );
+        assert_ne!(
+            first.compilation_attempt_id(),
+            second_attempt,
+            "metadata/root equality must not permit a cross-attempt handoff"
+        );
+        assert!(first.matches_attempt(first_attempt));
+        assert!(!second.matches_attempt(first_attempt));
     }
 
     #[test]

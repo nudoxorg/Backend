@@ -3,6 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! One single-request local compiler specialization over explicit local ownership.
 
+use crate::compiler_attempt_v2::CompilationAttemptId;
 use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
 use crate::compiler_read_observation_v2::{
     CompilerReadObservationChannelV2, CompilerReadObservationEventClassV2,
@@ -213,13 +214,12 @@ fn begin_rust_workspace_with_observation<'lane>(
     key: RustWorkspaceSessionKey,
     files: &[RustWorkspaceFile<'_>],
     control: RustAnalysisControl<'_>,
+    attempt_id: CompilationAttemptId,
 ) -> Result<RustWorkspaceSessionLease<'lane>, RustAuthorityError> {
     if !tracing::enabled!(target: "compiler.read_frontier", tracing::Level::DEBUG) {
         return lane.begin(key, files, control);
     }
-    let Ok(mut recorder) = CompilerReadObservationRecorderV2::new() else {
-        return lane.begin(key, files, control);
-    };
+    let mut recorder = CompilerReadObservationRecorderV2::new(attempt_id);
     let Ok(producer) = recorder.register(CompilerReadObservationChannelV2::EditorOverlay) else {
         return lane.begin(key, files, control);
     };
@@ -265,7 +265,7 @@ fn begin_rust_workspace_with_observation<'lane>(
     let report = recorder.report();
     tracing::debug!(
         target: "compiler.read_frontier",
-        attempt_id = report.attempt_id(),
+        attempt_counter = report.attempt_counter(),
         observed_events = report.events(),
         observed_bytes = report.bytes(),
         source_vfs_files_visited = source_summary.vfs_files_visited,
@@ -920,6 +920,25 @@ pub enum StagedSemanticReaderError<CallbackError: std::error::Error + 'static> {
 }
 
 impl StagedSemanticPackage {
+    /// Opaque owner identity retained for the exact compilation transaction that created this
+    /// staged package. It correlates in-memory traces only; it does not prove read completeness.
+    pub(crate) const fn compilation_attempt_id(&self) -> CompilationAttemptId {
+        self.staged.compilation_attempt_id
+    }
+
+    /// Checks the narrow same-attempt and target/profile/stage handoff into a read trace.
+    /// This correlation check does not prove that the trace observed every compiler read.
+    pub(crate) fn matches_read_trace_scope(
+        &self,
+        manifest: &crate::compiler_input_manifest_v2::CompilerInputManifestV2,
+        closure: &crate::compiler_unit_read_closure_v2::VerifiedUnitReadClosure,
+    ) -> bool {
+        closure.matches_attempt(self.compilation_attempt_id())
+            && self.target_identity == manifest.package_target().target()
+            && self.profile == manifest.invocation_recipe().profile()
+            && self.stage == manifest.invocation_recipe().stage()
+    }
+
     /// Returns the exact verified generation root facts for this output closure.
     #[must_use]
     pub const fn generation_facts(&self) -> backend_store::hydration::VerifiedGenerationFacts {
@@ -1420,6 +1439,7 @@ pub(crate) struct StagedCompilerArtifact {
 
 /// Fully owned complete package result waiting for the durable publication owner.
 pub(crate) struct StagedPackageCompilation {
+    compilation_attempt_id: CompilationAttemptId,
     artifacts: Vec<StagedPackageArtifact>,
     coverage_gaps: Box<[PackageSourceCoverageGap]>,
     image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
@@ -1607,6 +1627,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(PackageCompilePhase),
     ) -> Result<StagedPackageCompilation, PackageSemanticError> {
+        let compilation_attempt_id =
+            CompilationAttemptId::mint().ok_or(PackageSemanticError::Capacity {
+                lane: "compilation attempt identity",
+            })?;
         let request = package.request.as_ref();
         let target = package.request.target;
         let mut input = package
@@ -1887,6 +1911,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             maximum_source_bytes: authority_configuration.maximum_source_bytes,
                             deadline: control.deadline,
                         },
+                        compilation_attempt_id,
                     )
                     .map_err(|cause| {
                         package_authority_terminal(
@@ -2206,6 +2231,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             );
         }
         let staged = StagedPackageCompilation {
+            compilation_attempt_id,
             artifacts,
             coverage_gaps: coverage_gaps.into_boxed_slice(),
             image_plan: image_plan.into_boxed_slice(),

@@ -1,5 +1,6 @@
 //! Typed input authority and local-first placement boundary for cluster dispatch.
 
+use crate::application::StagedSemanticPackage;
 use crate::compiler_input_capture_v2::CapturedFullWorkspaceV2;
 use crate::compiler_input_manifest_v2::CompilerInputManifestV2;
 use crate::compiler_unit_read_closure_v2::VerifiedUnitReadClosure;
@@ -331,11 +332,15 @@ impl VerifiedCompilerInputAdmission {
     /// semantic input coverage.
     pub fn admit_semantic_input_witness_v2(
         &self,
+        staged: &StagedSemanticPackage,
         read_closure: VerifiedUnitReadClosure,
         verifier: &impl CompilerInputAdmissionVerifier,
     ) -> Result<AdmittedSemanticInputWitnessV2, CompilerInputAdmissionError> {
         let manifest = self.evidence.manifest();
         let capture_identity = read_closure.capture_identity();
+        if !staged.matches_read_trace_scope(manifest, &read_closure) {
+            return Err(CompilerInputAdmissionError::CompilationAttemptMismatch);
+        }
         if read_closure.package_target() != manifest.package_target()
             || read_closure.invocation_recipe() != manifest.invocation_recipe()
             || capture_identity.workspace_snapshot_id() != manifest.workspace_snapshot_id()
@@ -429,6 +434,8 @@ pub enum CompilerInputAdmissionError {
     RemoteAssignmentRequired,
     /// The read trace does not match the exact input target, recipe, or captured workspace.
     ReadFrontierScopeMismatch,
+    /// The trace was not created from this owner-staged compilation attempt.
+    CompilationAttemptMismatch,
     /// A positive, negative, or directory-listing read fact disagrees with the captured tree.
     ReadFrontierMismatch,
     /// No owner verifier has admitted a complete read frontier for this invocation.

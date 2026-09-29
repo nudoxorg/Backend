@@ -22,6 +22,7 @@ pub mod application;
 pub use backend_advisory as advisory;
 pub mod builtin;
 pub mod capability;
+mod compiler_attempt_v2;
 /// Exact assignment-to-Iroh/Bao capability bridge for private compiler clusters.
 pub mod compiler_cluster_transport;
 mod compiler_input_capture_v2;

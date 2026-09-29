@@ -4,12 +4,11 @@
 //! confirms producer-local sequence/count consistency; it does not certify
 //! complete compiler read coverage or authorize work reuse.
 
+use crate::compiler_attempt_v2::CompilationAttemptId;
 use crate::compiler_input_tree_v2::MAX_TREE_RECORDS;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_READ_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const READ_OBSERVATION_DOMAIN: &[u8] = b"backend.compiler.read-observation.v2\0";
-static NEXT_READ_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Independent observation channels required before a future Rust adapter
 /// could attempt to establish a complete compiler read frontier.
@@ -113,8 +112,6 @@ pub(crate) enum CompilerReadObservationEventClassV2 {
 /// Why a diagnostic observation attempt could not seal its producer set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CompilerReadObservationFailureV2 {
-    /// Attempt identifiers are exhausted.
-    AttemptIdExhausted,
     /// A producer was registered more than once.
     DuplicateProducer,
     /// A token was forged, stale, or belongs to another attempt.
@@ -134,7 +131,7 @@ pub(crate) enum CompilerReadObservationFailureV2 {
 /// Attempt-local token issued only by [`CompilerReadObservationRecorderV2`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CompilerReadObservationProducerV2 {
-    attempt_id: u64,
+    attempt_id: CompilationAttemptId,
     channel: CompilerReadObservationChannelV2,
 }
 
@@ -146,10 +143,10 @@ struct CompilerReadObservationChannelStateV2 {
 }
 
 impl CompilerReadObservationChannelStateV2 {
-    fn new(attempt_id: u64, channel: CompilerReadObservationChannelV2) -> Self {
+    fn new(attempt_id: CompilationAttemptId, channel: CompilerReadObservationChannelV2) -> Self {
         let mut transcript = blake3::Hasher::new();
         transcript.update(READ_OBSERVATION_DOMAIN);
-        transcript.update(&attempt_id.to_be_bytes());
+        attempt_id.update_hasher(&mut transcript);
         transcript.update(&[channel as u8]);
         Self {
             registered: false,
@@ -169,7 +166,7 @@ impl CompilerReadObservationChannelStateV2 {
 /// final count. This recorder never mints `VerifiedUnitReadClosure` and is not
 /// a trust-registry entry.
 pub(crate) struct CompilerReadObservationRecorderV2 {
-    attempt_id: u64,
+    attempt_id: CompilationAttemptId,
     channels: [CompilerReadObservationChannelStateV2; 11],
     failure: Option<CompilerReadObservationFailureV2>,
     event_count: u64,
@@ -183,7 +180,7 @@ pub(crate) struct CompilerReadObservationRecorderV2 {
 /// completely observed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CompilerReadObservationReportV2 {
-    attempt_id: u64,
+    attempt_counter: u64,
     registered_channels: usize,
     sealed_channels: usize,
     required_channels: usize,
@@ -196,8 +193,8 @@ pub(crate) struct CompilerReadObservationReportV2 {
 }
 
 impl CompilerReadObservationReportV2 {
-    pub(crate) const fn attempt_id(&self) -> u64 {
-        self.attempt_id
+    pub(crate) const fn attempt_counter(&self) -> u64 {
+        self.attempt_counter
     }
 
     pub(crate) const fn registered_channels(&self) -> usize {
@@ -247,13 +244,9 @@ impl CompilerReadObservationReportV2 {
 }
 
 impl CompilerReadObservationRecorderV2 {
-    pub(crate) fn new() -> Result<Self, CompilerReadObservationFailureV2> {
-        let attempt_id = NEXT_READ_ATTEMPT_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
-            .map_err(|_| CompilerReadObservationFailureV2::AttemptIdExhausted)?;
-        Ok(Self {
+    pub(crate) fn new(attempt: CompilationAttemptId) -> Self {
+        let attempt_id = attempt;
+        Self {
             attempt_id,
             channels: std::array::from_fn(|index| {
                 CompilerReadObservationChannelStateV2::new(
@@ -264,7 +257,7 @@ impl CompilerReadObservationRecorderV2 {
             failure: None,
             event_count: 0,
             byte_count: 0,
-        })
+        }
     }
 
     pub(crate) fn register(
@@ -535,7 +528,7 @@ impl CompilerReadObservationRecorderV2 {
         let mut sealed_channels = 0;
         let mut transcript = blake3::Hasher::new();
         transcript.update(READ_OBSERVATION_DOMAIN);
-        transcript.update(&self.attempt_id.to_be_bytes());
+        self.attempt_id.update_hasher(&mut transcript);
         for channel in CompilerReadObservationChannelV2::ALL {
             let state = &self.channels[channel.index()];
             transcript.update(&[channel as u8]);
@@ -554,7 +547,7 @@ impl CompilerReadObservationRecorderV2 {
             }
         }
         CompilerReadObservationReportV2 {
-            attempt_id: self.attempt_id,
+            attempt_counter: self.attempt_id.get(),
             registered_channels,
             sealed_channels,
             required_channels: CompilerReadObservationChannelV2::ALL.len(),
@@ -631,9 +624,23 @@ fn class_matches_channel(
 mod tests {
     use super::*;
 
+    fn recorder() -> CompilerReadObservationRecorderV2 {
+        CompilerReadObservationRecorderV2::new(
+            crate::compiler_attempt_v2::CompilationAttemptId::mint().expect("attempt identity"),
+        )
+    }
+
+    #[test]
+    fn recorder_uses_the_owner_minted_attempt_counter() {
+        let attempt =
+            crate::compiler_attempt_v2::CompilationAttemptId::mint().expect("attempt identity");
+        let recorder = CompilerReadObservationRecorderV2::new(attempt);
+        assert_eq!(recorder.report().attempt_counter(), attempt.get());
+    }
+
     #[test]
     fn observation_recorder_seals_only_registered_channel_events_and_stays_partial() {
-        let mut recorder = CompilerReadObservationRecorderV2::new().expect("attempt id");
+        let mut recorder = recorder();
         let producer = recorder
             .register(CompilerReadObservationChannelV2::EditorOverlay)
             .expect("editor buffer producer");
@@ -661,11 +668,11 @@ mod tests {
 
     #[test]
     fn stale_read_observation_producer_is_rejected_by_attempt_fence() {
-        let mut first = CompilerReadObservationRecorderV2::new().expect("first attempt");
+        let mut first = recorder();
         let producer = first
             .register(CompilerReadObservationChannelV2::EditorOverlay)
             .expect("producer");
-        let second = CompilerReadObservationRecorderV2::new().expect("second attempt");
+        let second = recorder();
         let mut second = second;
         assert_eq!(
             second.observe_editor_buffer(&producer, 0, "src/lib.rs", b"fn main() {}"),
@@ -679,7 +686,7 @@ mod tests {
 
     #[test]
     fn unsupported_path_poisoning_prevents_a_channel_seal() {
-        let mut recorder = CompilerReadObservationRecorderV2::new().expect("attempt id");
+        let mut recorder = recorder();
         let producer = recorder
             .register(CompilerReadObservationChannelV2::RustModuleResolver)
             .expect("module resolver producer");
@@ -702,7 +709,7 @@ mod tests {
 
     #[test]
     fn observation_failure_keeps_the_first_cause() {
-        let mut recorder = CompilerReadObservationRecorderV2::new().expect("attempt id");
+        let mut recorder = recorder();
         let producer = recorder
             .register(CompilerReadObservationChannelV2::EditorOverlay)
             .expect("editor producer");
@@ -722,7 +729,7 @@ mod tests {
 
     #[test]
     fn independent_oracle_detects_an_omitted_negative_module_lookup() {
-        let mut recorder = CompilerReadObservationRecorderV2::new().expect("attempt id");
+        let mut recorder = recorder();
         let producer = recorder
             .register(CompilerReadObservationChannelV2::RustModuleResolver)
             .expect("module resolver producer");
@@ -808,7 +815,7 @@ mod tests {
 
     #[test]
     fn child_event_loss_disagrees_with_independent_child_terminal_count() {
-        let mut recorder = CompilerReadObservationRecorderV2::new().expect("attempt id");
+        let mut recorder = recorder();
         let producer = recorder
             .register(CompilerReadObservationChannelV2::ProcessTree)
             .expect("process-tree producer");
