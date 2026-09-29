@@ -12,12 +12,11 @@ use crate::ir::row_index::{
     RowFamily, RowPayload, StableRowIndex, StableRowIndexError, StableRowKey,
 };
 use crate::ir::{
-    CanonicalPlaneSegmentBoundaryPolicy, CanonicalSemanticPlaneBoundaryFamilyVerifier,
-    CanonicalSemanticPlaneSegmentView, ImageProvenance, SemanticBuildIdentity,
-    SemanticImageAuthority, SemanticImageFacts, SemanticInputWitness, SemanticIrPlane,
-    SemanticPlaneKind, SemanticPlaneRecordError, SemanticPlaneSegment, SemanticSegmentId,
-    SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneSegmentClaimV2,
-    UntrustedSemanticSegmentId, decode_semantic_plane_segment,
+    CanonicalSemanticPlaneBoundaryFamilyVerifier, CanonicalSemanticPlaneSegmentView,
+    ImageProvenance, SemanticBuildIdentity, SemanticImageAuthority, SemanticImageFacts,
+    SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind, SemanticPlaneRecordError,
+    SemanticPlaneSegment, SemanticSegmentId, SemanticTypedPlaneFamilyDescriptorV2,
+    SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticSegmentId, decode_semantic_plane_segment,
 };
 use crate::vocabulary::{CompileRecipeFact, LanguageProfile};
 use thiserror::Error;
@@ -27,16 +26,17 @@ use super::extensions::{
     LanguageExtensionFamilyValidationError,
     validate_language_extension_family_v2_with_limits_detailed,
 };
-use super::semantic_generation::TypedPlaneSegmentSourceV2;
 use super::types::{
     CheckedTypesFamilyV2, CheckedTypesFamilyV2Builder, TypesFamilyValidationError,
     validate_types_family_v2_with_limits_detailed,
 };
 use super::wire::{Cursor, read_identity};
 use super::{
-    LanguageExtensionVerificationLimitsV2, TypesFamilyVerificationLimitsV2,
-    validate_language_extension_family_v2_with_limits, validate_types_family_v2_with_limits,
+    CanonicalPlaneSegmentBoundaryPolicy, LanguageExtensionVerificationLimitsV2,
+    TypesFamilyVerificationLimitsV2, validate_language_extension_family_v2_with_limits,
+    validate_types_family_v2_with_limits,
 };
+use crate::ir::semantic_generation::TypedPlaneSegmentSourceV2;
 
 /// Resource ceiling for one aggregate verification window.
 ///

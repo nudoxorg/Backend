@@ -11,12 +11,14 @@ use backend_semantic::ir::{
     verify_typed_plane_content_v2_with_jumbo_segment_source,
 };
 use backend_store::{
-    ArtifactClosureClaim, ArtifactObjectReader, DurableManifest, FileStore, ObjectId,
-    UntrustedObjectId,
+    ArtifactBudget, ArtifactClosureClaim, ArtifactObjectReader, DurableManifest, FileStore,
+    ObjectId, UntrustedObjectId,
 };
 use backend_version::SchemaIdentity;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -239,7 +241,7 @@ impl FileSemanticRangeStore {
             .store
             .open_closure_claim(claim.closure())
             .map_err(|error| format!("open cold typed V2 publication closure: {error:?}"))?;
-        reopen_typed_v2_history_closure(
+        let spool = spool_typed_v2_history_closure(
             &self.store,
             claim.closure(),
             &closure,
@@ -247,14 +249,8 @@ impl FileSemanticRangeStore {
             &manifest,
             tier,
         )?;
-        let verified = verify_typed_v2_history_content(
-            &self.store,
-            &closure,
-            &locator,
-            &manifest,
-            tier,
-            jumbo_limits,
-        )?;
+        let verified =
+            verify_typed_v2_history_content(&spool, &locator, &manifest, tier, jumbo_limits)?;
         if !claim.content_root_claim().matches(verified.content_root())
             || !claim
                 .generation_root_claim()
@@ -514,12 +510,11 @@ impl TypedV2HistorySpool {
                 "backend-typed-v2-history-{}-{nonce}.spool",
                 std::process::id()
             ));
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            match options.open(&path) {
                 Ok(file) => {
                     return Ok(Self {
                         path,
@@ -579,8 +574,10 @@ impl TypedV2HistorySpool {
             .and_then(|index| self.members.get(index).copied())
     }
 
-    fn open_reader(&self) -> Result<File, String> {
-        File::open(&self.path).map_err(|error| format!("open typed V2 history spool: {error}"))
+    fn clone_reader(&self) -> Result<File, String> {
+        self.file
+            .try_clone()
+            .map_err(|error| format!("clone typed V2 history spool handle: {error}"))
     }
 }
 
@@ -663,7 +660,7 @@ impl TypedV2SpoolSegmentSource {
             .map_err(|_| "typed V2 single-segment buffer allocation failed".to_owned())?;
         buffer.resize(MAX_SEMANTIC_SEGMENT_BYTES, 0);
         Ok(Self {
-            file: spool.open_reader()?,
+            file: spool.clone_reader()?,
             segments,
             buffer,
         })
@@ -792,7 +789,7 @@ impl<'a> HistoryJumboSource<'a> {
             }
         }
         Ok(Self {
-            spool_file: spool.open_reader()?,
+            spool_file: spool.clone_reader()?,
             spool_members: &spool.members,
             mappings,
             used,
