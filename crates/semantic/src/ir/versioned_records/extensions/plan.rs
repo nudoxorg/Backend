@@ -9,9 +9,11 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
+use super::super::wire::encode_identity;
 use super::super::{
     CanonicalPlaneRowEncoder, CanonicalSemanticPlaneKeySink, CanonicalSemanticPlaneSegmentPayload,
     SemanticPlaneRecordError, TypedRecordPlan, encode_canonical_plane_family,
+    verify_semantic_plane_family_against_reader,
 };
 use super::wire::{
     encode_clang, encode_csharp, encode_go, encode_java, encode_python, encode_rust,
@@ -201,7 +203,7 @@ pub fn verify_language_extension_plane_against_reader<Reader: SemanticReader + ?
     payloads: &[&[u8]],
     maximum_bytes: usize,
 ) -> Result<(), SemanticPlaneRecordError> {
-    super::verify_semantic_plane_family_against_reader(
+    verify_semantic_plane_family_against_reader(
         reader,
         &LanguageExtensionRows::new(profile),
         input,

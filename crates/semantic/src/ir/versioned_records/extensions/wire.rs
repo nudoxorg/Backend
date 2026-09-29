@@ -18,6 +18,14 @@ use crate::ir::{
 };
 
 const MAX_EXTENSION_DECLARATION_REFERENCES: usize = 1_000_000;
+const EXTENSION_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.language-extension-row.v1\0";
+pub(super) const TYPESCRIPT_TAG: u8 = 1;
+pub(super) const CSHARP_TAG: u8 = 2;
+pub(super) const GO_TAG: u8 = 3;
+pub(super) const RUST_TAG: u8 = 4;
+pub(super) const PYTHON_TAG: u8 = 5;
+pub(super) const JAVA_TAG: u8 = 6;
+pub(super) const CLANG_TAG: u8 = 7;
 
 pub(super) fn extension_row_key(
     profile: LanguageProfile,

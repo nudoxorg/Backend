@@ -81,7 +81,7 @@ impl CheckedLanguageExtensionFamilyV2 {
 pub fn validate_language_extension_family_v2<'bytes>(
     profile: LanguageProfile,
     segments: impl IntoIterator<Item = CanonicalSemanticPlaneSegmentView<'bytes>>,
-    types: &super::CheckedTypesFamilyV2,
+    types: &CheckedTypesFamilyV2,
     expected_captured_owners: &[[u8; 32]],
 ) -> Result<CheckedLanguageExtensionFamilyV2, SemanticPlaneRecordError> {
     let expected_kind = SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(profile));

@@ -18,4 +18,11 @@ pub use plan::{
     LanguageExtensionRows, encode_language_extension_plane,
     verify_language_extension_plane_against_reader,
 };
-pub(super) use wire::validate_record;
+pub(super) fn validate_record(
+    kind: crate::ir::SemanticPlaneKind,
+    key: [u8; 32],
+    tag: u8,
+    payload: &[u8],
+) -> Result<(), crate::ir::SemanticPlaneRecordError> {
+    wire::validate_record(kind, key, tag, payload)
+}
