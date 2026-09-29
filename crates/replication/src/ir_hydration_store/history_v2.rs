@@ -1704,6 +1704,8 @@ mod tests {
                 .expect("encode positive c007 manifest"),
             segments: segment_mappings,
             jumbo: jumbo_mappings,
+            lineage_edge_set: None,
+            wire_revision: 14, // Canonical pre-lineage locator fixture.
         };
         locator
             .validate()

@@ -11,6 +11,7 @@ backend-semantic = { path = "../semantic", features = ["mmap"] }
 backend-version = { path = "../version" }
 backend-store = { path = "../store" }
 blake3.workspace = true
+thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["std", "net", "process"] }

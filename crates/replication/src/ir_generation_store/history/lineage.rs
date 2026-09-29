@@ -369,7 +369,11 @@ impl<'wire> BorrowedTypedLineageEdgeSetV1<'wire> {
         }
         for index in 0..count {
             let offset = HEADER_BYTES
-                .checked_add(index.checked_mul(EDGE_BYTES).ok_or(LineageEdgeSetErrorV1::LengthOverflow)?)
+                .checked_add(
+                    index
+                        .checked_mul(EDGE_BYTES)
+                        .ok_or(LineageEdgeSetErrorV1::LengthOverflow)?,
+                )
                 .ok_or(LineageEdgeSetErrorV1::LengthOverflow)?;
             decode_edge(bytes, offset)?;
         }
@@ -869,7 +873,7 @@ impl<'wire> UnprovenTypedLineageEdgeSetV1<'wire> {
 
     /// Returns the exact committed parent-to-child edge stream.
     #[must_use]
-    pub const fn edges(self) -> LineageEdgeIterV1<'wire> {
+    pub fn edges(self) -> LineageEdgeIterV1<'wire> {
         self.view.edges()
     }
 
@@ -955,11 +959,7 @@ pub enum LineageEdgeSetErrorV1 {
     UnattestedConfirmation,
 }
 
-fn encode_edge(
-    edge: &LineageEdgeV1,
-    child_generation: VerifiedLineageRootV2,
-    out: &mut Vec<u8>,
-) {
+fn encode_edge(edge: &LineageEdgeV1, child_generation: VerifiedLineageRootV2, out: &mut Vec<u8>) {
     out.push(edge.kind as u8);
     match edge.status {
         LineageStatusV1::Confirmed { attestation } => {
@@ -1012,7 +1012,12 @@ fn canonical_edge_cmp(left: &LineageEdgeV1, right: &LineageEdgeV1) -> Ordering {
         .commit
         .as_bytes()
         .cmp(right.source.commit.as_bytes())
-        .then_with(|| left.source.generation.as_bytes().cmp(right.source.generation.as_bytes()))
+        .then_with(|| {
+            left.source
+                .generation
+                .as_bytes()
+                .cmp(right.source.generation.as_bytes())
+        })
         .then_with(|| left.source.declaration.cmp(&right.source.declaration))
         .then_with(|| left.target.cmp(&right.target))
         .then_with(|| (left.kind as u8).cmp(&(right.kind as u8)))
@@ -1058,14 +1063,19 @@ fn validate_owned_edges(edges: &[LineageEdgeV1]) -> Result<(), LineageEdgeSetErr
     ambiguous
         .try_reserve(edges.len())
         .map_err(|_| LineageEdgeSetErrorV1::Allocation)?;
-    ambiguous.extend(edges.iter().enumerate().filter_map(|(index, edge)| match edge.status {
-        LineageStatusV1::Ambiguous {
-            group,
-            index: candidate,
-            count,
-        } => Some((group, candidate, count, edge.kind, index)),
-        _ => None,
-    }));
+    ambiguous.extend(
+        edges
+            .iter()
+            .enumerate()
+            .filter_map(|(index, edge)| match edge.status {
+                LineageStatusV1::Ambiguous {
+                    group,
+                    index: candidate,
+                    count,
+                } => Some((group, candidate, count, edge.kind, index)),
+                _ => None,
+            }),
+    );
     validate_owned_groups(&mut ambiguous)
 }
 
@@ -1095,7 +1105,9 @@ fn validate_owned_groups(
             return Err(LineageEdgeSetErrorV1::InvalidCandidateGroup);
         }
         for (expected, candidate) in ambiguous[start..end].iter().enumerate() {
-            if candidate.1 != u16::try_from(expected).map_err(|_| LineageEdgeSetErrorV1::InvalidCandidateGroup)?
+            if candidate.1
+                != u16::try_from(expected)
+                    .map_err(|_| LineageEdgeSetErrorV1::InvalidCandidateGroup)?
                 || candidate.2 != declared
                 || candidate.3 != kind
             {
@@ -1127,7 +1139,9 @@ fn validate_ambiguous_groups(
                         index: right_index,
                         ..
                     },
-                ) => left_group.cmp(right_group).then_with(|| left_index.cmp(&right_index)),
+                ) => left_group
+                    .cmp(right_group)
+                    .then_with(|| left_index.cmp(&right_index)),
                 _ => Ordering::Equal,
             },
             _ => Ordering::Equal,
@@ -1136,12 +1150,7 @@ fn validate_ambiguous_groups(
     let mut start = 0;
     while start < offsets.len() {
         let first = decode_edge(view.bytes, offsets[start])?;
-        let LineageStatusViewV1::Ambiguous {
-            group,
-            count,
-            ..
-        } = first.status
-        else {
+        let LineageStatusViewV1::Ambiguous { group, count, .. } = first.status else {
             return Err(LineageEdgeSetErrorV1::InvalidCandidateGroup);
         };
         let mut end = start + 1;
@@ -1166,7 +1175,9 @@ fn validate_ambiguous_groups(
                     index,
                     count: next_count,
                     ..
-                } if index == u16::try_from(expected).map_err(|_| LineageEdgeSetErrorV1::InvalidCandidateGroup)?
+                } if index
+                    == u16::try_from(expected)
+                        .map_err(|_| LineageEdgeSetErrorV1::InvalidCandidateGroup)?
                     && next_count == count
                     && edge.kind == first.kind => {}
                 _ => return Err(LineageEdgeSetErrorV1::InvalidCandidateGroup),
@@ -1184,8 +1195,10 @@ fn verify_edge_context<C: LineageHistoryEvidenceV1, A: LineageAttestationVerifie
 ) -> Result<(), LineageEdgeSetErrorV1> {
     let resolved = !matches!(edge.status, LineageStatusViewV1::Unresolved { .. });
     let parent_commit = context.parent_commit();
-    let parent_root = context.parent_generation().as_bytes();
-    let child_root = context.child_generation().as_bytes();
+    let parent_generation = context.parent_generation();
+    let child_generation = context.child_generation();
+    let parent_root = parent_generation.as_bytes();
+    let child_root = child_generation.as_bytes();
     if edge.target_generation != child_root {
         return Err(LineageEdgeSetErrorV1::GenerationRootMismatch);
     }
@@ -1212,12 +1225,14 @@ fn verify_edge_context<C: LineageHistoryEvidenceV1, A: LineageAttestationVerifie
                 false,
                 resolved,
             )?;
-            require_presence(context.child_declaration_present(edge.target), true, resolved)?;
+            require_presence(
+                context.child_declaration_present(edge.target),
+                true,
+                resolved,
+            )?;
         }
         LineageKindV1::Resurrection => {
-            if edge.source_commit == parent_commit
-                || edge.source_generation == parent_root
-            {
+            if edge.source_commit == parent_commit || edge.source_generation == parent_root {
                 return Err(LineageEdgeSetErrorV1::NotStrictAncestor);
             }
             if edge.source != edge.target {
@@ -1248,16 +1263,15 @@ fn verify_edge_context<C: LineageHistoryEvidenceV1, A: LineageAttestationVerifie
                 false,
                 resolved,
             )?;
-            require_presence(context.child_declaration_present(edge.target), true, resolved)?;
+            require_presence(
+                context.child_declaration_present(edge.target),
+                true,
+                resolved,
+            )?;
         }
     }
     if let LineageStatusViewV1::Confirmed { attestation } = edge.status {
-        let statement = confirmation_statement_digest(
-            parent_commit,
-            parent_root,
-            child_root,
-            edge,
-        );
+        let statement = confirmation_statement_digest(parent_commit, parent_root, child_root, edge);
         if !attestations.verifies(
             parent_commit,
             parent_root,
@@ -1329,9 +1343,17 @@ fn canonical_view_cmp(left: LineageEdgeViewV1<'_>, right: LineageEdgeViewV1<'_>)
         .then_with(|| left.canonical_record[2..6].cmp(&right.canonical_record[2..6]))
 }
 
-fn decode_edge(bytes: &[u8], offset: usize) -> Result<LineageEdgeViewV1<'_>, LineageEdgeSetErrorV1> {
+fn decode_edge(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<LineageEdgeViewV1<'_>, LineageEdgeSetErrorV1> {
     let record = bytes
-        .get(offset..offset.checked_add(EDGE_BYTES).ok_or(LineageEdgeSetErrorV1::LengthOverflow)?)
+        .get(
+            offset
+                ..offset
+                    .checked_add(EDGE_BYTES)
+                    .ok_or(LineageEdgeSetErrorV1::LengthOverflow)?,
+        )
         .ok_or(LineageEdgeSetErrorV1::InvalidLength)?;
     let kind = LineageKindV1::from_code(record[0]).ok_or(LineageEdgeSetErrorV1::InvalidEdge)?;
     let status_tag = record[1];
@@ -1343,15 +1365,17 @@ fn decode_edge(bytes: &[u8], offset: usize) -> Result<LineageEdgeViewV1<'_>, Lin
     let target = decode_identity(record, 134)?;
     let evidence_bytes = read_array_ref::<32>(record, 166)?;
     let status = match status_tag {
-        1 if metadata == [0; 4] && evidence_bytes != &[0; 32] => {
-            LineageStatusViewV1::Confirmed {
-                attestation: evidence_bytes,
-            }
-        }
+        1 if metadata == [0; 4] && evidence_bytes != &[0; 32] => LineageStatusViewV1::Confirmed {
+            attestation: evidence_bytes,
+        },
         2 => {
             let index = u16::from_be_bytes([metadata[0], metadata[1]]);
             let count = u16::from_be_bytes([metadata[2], metadata[3]]);
-            if evidence_bytes == &[0; 32] || count < 2 || count > MAX_LINEAGE_CANDIDATES_PER_GROUP_V1 || index >= count {
+            if evidence_bytes == &[0; 32]
+                || count < 2
+                || count > MAX_LINEAGE_CANDIDATES_PER_GROUP_V1
+                || index >= count
+            {
                 return Err(LineageEdgeSetErrorV1::InvalidEdge);
             }
             LineageStatusViewV1::Ambiguous {
@@ -1400,9 +1424,17 @@ fn decode_identity(
     })
 }
 
-fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], LineageEdgeSetErrorV1> {
+fn read_array<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; N], LineageEdgeSetErrorV1> {
     let source = bytes
-        .get(offset..offset.checked_add(N).ok_or(LineageEdgeSetErrorV1::LengthOverflow)?)
+        .get(
+            offset
+                ..offset
+                    .checked_add(N)
+                    .ok_or(LineageEdgeSetErrorV1::LengthOverflow)?,
+        )
         .ok_or(LineageEdgeSetErrorV1::InvalidLength)?;
     let mut result = [0; N];
     result.copy_from_slice(source);
@@ -1414,7 +1446,12 @@ fn read_array_ref<const N: usize>(
     offset: usize,
 ) -> Result<&[u8; N], LineageEdgeSetErrorV1> {
     bytes
-        .get(offset..offset.checked_add(N).ok_or(LineageEdgeSetErrorV1::LengthOverflow)?)
+        .get(
+            offset
+                ..offset
+                    .checked_add(N)
+                    .ok_or(LineageEdgeSetErrorV1::LengthOverflow)?,
+        )
         .ok_or(LineageEdgeSetErrorV1::InvalidLength)?
         .try_into()
         .map_err(|_| LineageEdgeSetErrorV1::InvalidLength)
@@ -1434,30 +1471,60 @@ mod tests {
         child_generation: VerifiedLineageRootV2,
         parent_rows: BTreeSet<DeclarationIdentity>,
         child_rows: BTreeSet<DeclarationIdentity>,
-        snapshots: BTreeMap<
-            super::super::HistoryCommitId,
-            ([u8; 32], BTreeSet<DeclarationIdentity>),
-        >,
+        snapshots:
+            BTreeMap<super::super::HistoryCommitId, ([u8; 32], BTreeSet<DeclarationIdentity>)>,
         ancestors: BTreeSet<(super::super::HistoryCommitId, [u8; 32])>,
     }
 
     impl LineageHistoryEvidenceV1 for ModelHistory {
-        fn child_commit(&self) -> super::super::HistoryCommitId { self.child_commit }
-        fn parent_commit(&self) -> super::super::HistoryCommitId { self.parent_commit }
-        fn parent_generation(&self) -> VerifiedLineageRootV2 { self.parent_generation }
-        fn child_generation(&self) -> VerifiedLineageRootV2 { self.child_generation }
-        fn is_direct_parent(&self, child: super::super::HistoryCommitId, parent: super::super::HistoryCommitId) -> Option<bool> {
+        fn child_commit(&self) -> super::super::HistoryCommitId {
+            self.child_commit
+        }
+        fn parent_commit(&self) -> super::super::HistoryCommitId {
+            self.parent_commit
+        }
+        fn parent_generation(&self) -> VerifiedLineageRootV2 {
+            self.parent_generation
+        }
+        fn child_generation(&self) -> VerifiedLineageRootV2 {
+            self.child_generation
+        }
+        fn is_direct_parent(
+            &self,
+            child: super::super::HistoryCommitId,
+            parent: super::super::HistoryCommitId,
+        ) -> Option<bool> {
             Some(child == self.child_commit && parent == self.parent_commit && self.direct_parent)
         }
-        fn declaration_present(&self, commit: super::super::HistoryCommitId, root: &[u8; 32], identity: DeclarationIdentity) -> Option<bool> {
+        fn declaration_present(
+            &self,
+            commit: super::super::HistoryCommitId,
+            root: &[u8; 32],
+            identity: DeclarationIdentity,
+        ) -> Option<bool> {
             if commit == self.parent_commit && root == self.parent_generation.as_bytes() {
                 return Some(self.parent_rows.contains(&identity));
             }
-            self.snapshots.get(&commit).filter(|(snapshot_root, _)| snapshot_root == root).map(|(_, rows)| rows.contains(&identity))
+            self.snapshots
+                .get(&commit)
+                .filter(|(snapshot_root, _)| snapshot_root == root)
+                .map(|(_, rows)| rows.contains(&identity))
         }
-        fn child_declaration_present(&self, identity: DeclarationIdentity) -> Option<bool> { Some(self.child_rows.contains(&identity)) }
-        fn is_strict_ancestor(&self, commit: super::super::HistoryCommitId, root: &[u8; 32]) -> Option<bool> {
-            Some(self.ancestors.contains(&(commit, *root)) && self.snapshots.get(&commit).is_some_and(|(snapshot_root, _)| snapshot_root == root))
+        fn child_declaration_present(&self, identity: DeclarationIdentity) -> Option<bool> {
+            Some(self.child_rows.contains(&identity))
+        }
+        fn is_strict_ancestor(
+            &self,
+            commit: super::super::HistoryCommitId,
+            root: &[u8; 32],
+        ) -> Option<bool> {
+            Some(
+                self.ancestors.contains(&(commit, *root))
+                    && self
+                        .snapshots
+                        .get(&commit)
+                        .is_some_and(|(snapshot_root, _)| snapshot_root == root),
+            )
         }
     }
 
@@ -1482,17 +1549,32 @@ mod tests {
         }
     }
 
-    fn root(byte: u8) -> VerifiedLineageRootV2 { VerifiedLineageRootV2([byte; 32]) }
-    fn commit(byte: u8) -> super::super::HistoryCommitId { super::super::HistoryCommitId::from_bytes([byte; 32]) }
-    fn id(family: u8, variant: u8) -> DeclarationIdentity {
-        DeclarationIdentity { family: DeclarationFamilyId::from_raw([family; 16]), variant: VariantFingerprint::from_raw([variant; 16]) }
+    fn root(byte: u8) -> VerifiedLineageRootV2 {
+        VerifiedLineageRootV2([byte; 32])
     }
-    fn context(parent_rows: &[DeclarationIdentity], child_rows: &[DeclarationIdentity]) -> ModelHistory {
+    fn commit(byte: u8) -> super::super::HistoryCommitId {
+        super::super::HistoryCommitId::from_bytes([byte; 32])
+    }
+    fn id(family: u8, variant: u8) -> DeclarationIdentity {
+        DeclarationIdentity {
+            family: DeclarationFamilyId::from_raw([family; 16]),
+            variant: VariantFingerprint::from_raw([variant; 16]),
+        }
+    }
+    fn context(
+        parent_rows: &[DeclarationIdentity],
+        child_rows: &[DeclarationIdentity],
+    ) -> ModelHistory {
         ModelHistory {
-            child_commit: commit(3), parent_commit: commit(1), direct_parent: true,
-            parent_generation: root(2), child_generation: root(3),
-            parent_rows: parent_rows.iter().copied().collect(), child_rows: child_rows.iter().copied().collect(),
-            snapshots: BTreeMap::new(), ancestors: BTreeSet::new(),
+            child_commit: commit(3),
+            parent_commit: commit(1),
+            direct_parent: true,
+            parent_generation: root(2),
+            child_generation: root(3),
+            parent_rows: parent_rows.iter().copied().collect(),
+            child_rows: child_rows.iter().copied().collect(),
+            snapshots: BTreeMap::new(),
+            ancestors: BTreeSet::new(),
         }
     }
 
@@ -1521,7 +1603,8 @@ mod tests {
         );
     }
     fn make_wire(edges: &[LineageEdgeV1]) -> OwnedTypedLineageEdgeSetV1 {
-        OwnedTypedLineageEdgeSetV1::encode(commit(1), root(2), root(3), edges).expect("encode canonical edge set")
+        OwnedTypedLineageEdgeSetV1::encode(commit(1), root(2), root(3), edges)
+            .expect("encode canonical edge set")
     }
 
     #[test]
@@ -1529,16 +1612,30 @@ mod tests {
         let old = id(4, 1);
         let new = id(4, 2);
         let history = context(&[old], &[new]);
-        let edge = LineageEdgeV1::new(LineageKindV1::Rename,
-            LineageSourceV1::new(commit(1), root(2), old), new,
-            LineageStatusV1::Unresolved { reason: UnresolvedLineageReasonV1::InsufficientEvidence, evidence: None });
+        let edge = LineageEdgeV1::new(
+            LineageKindV1::Rename,
+            LineageSourceV1::new(commit(1), root(2), old),
+            new,
+            LineageStatusV1::Unresolved {
+                reason: UnresolvedLineageReasonV1::InsufficientEvidence,
+                evidence: None,
+            },
+        );
         let wire = make_wire(&[edge]);
         let parsed = wire.borrow().expect("parse");
-        assert_eq!(parsed.verify(&history, &RejectLineageConfirmationsV1).expect("exact roots").edges().count(), 1);
+        assert_eq!(
+            parsed
+                .verify(&history, &RejectLineageConfirmationsV1)
+                .expect("exact roots")
+                .edges()
+                .count(),
+            1
+        );
 
         let mut forged = wire.as_bytes().to_vec();
         forged[40] ^= 0x80;
-        let parsed = BorrowedTypedLineageEdgeSetV1::parse(&forged).expect("well framed stale claim");
+        let parsed =
+            BorrowedTypedLineageEdgeSetV1::parse(&forged).expect("well framed stale claim");
         assert_eq!(
             parsed
                 .verify(&history, &RejectLineageConfirmationsV1)
@@ -1548,7 +1645,8 @@ mod tests {
 
         let mut forged_child = wire.as_bytes().to_vec();
         forged_child[72] ^= 0x40;
-        let parsed = BorrowedTypedLineageEdgeSetV1::parse(&forged_child).expect("framed child claim");
+        let parsed =
+            BorrowedTypedLineageEdgeSetV1::parse(&forged_child).expect("framed child claim");
         assert_eq!(
             parsed
                 .verify(&history, &RejectLineageConfirmationsV1)
@@ -1563,14 +1661,42 @@ mod tests {
         let first = id(8, 2);
         let second = id(8, 3);
         let group = LineageCandidateGroupIdV1::from_bytes([0x55; 32]);
-        let make = |target, index| LineageEdgeV1::new(LineageKindV1::Rename,
-            LineageSourceV1::new(commit(1), root(2), old), target,
-            LineageStatusV1::Ambiguous { group, index, count: 2 });
+        let make = |target, index| {
+            LineageEdgeV1::new(
+                LineageKindV1::Rename,
+                LineageSourceV1::new(commit(1), root(2), old),
+                target,
+                LineageStatusV1::Ambiguous {
+                    group,
+                    index,
+                    count: 2,
+                },
+            )
+        };
         let history = context(&[old], &[first, second]);
         let all = make_wire(&[make(first, 0), make(second, 1)]);
-        assert_eq!(all.borrow().expect("parse").verify(&history, &RejectLineageConfirmationsV1).expect("complete alternatives").edges().count(), 2);
-        assert_eq!(OwnedTypedLineageEdgeSetV1::encode(commit(1), root(2), root(3), &[make(first, 0)]), Err(LineageEdgeSetErrorV1::InvalidCandidateGroup));
-        assert_eq!(OwnedTypedLineageEdgeSetV1::encode(commit(1), root(2), root(3), &[make(first, 0), make(first, 1)]), Err(LineageEdgeSetErrorV1::DuplicateEdge));
+        assert_eq!(
+            all.borrow()
+                .expect("parse")
+                .verify(&history, &RejectLineageConfirmationsV1)
+                .expect("complete alternatives")
+                .edges()
+                .count(),
+            2
+        );
+        assert_eq!(
+            OwnedTypedLineageEdgeSetV1::encode(commit(1), root(2), root(3), &[make(first, 0)]),
+            Err(LineageEdgeSetErrorV1::InvalidCandidateGroup)
+        );
+        assert_eq!(
+            OwnedTypedLineageEdgeSetV1::encode(
+                commit(1),
+                root(2),
+                root(3),
+                &[make(first, 0), make(first, 1)]
+            ),
+            Err(LineageEdgeSetErrorV1::DuplicateEdge)
+        );
         let conflicting_status = LineageEdgeV1::new(
             LineageKindV1::Rename,
             LineageSourceV1::new(commit(1), root(2), old),
@@ -1599,13 +1725,21 @@ mod tests {
                 LineageKindV1::Rename,
                 LineageSourceV1::new(commit(1), root(2), id(9, 1)),
                 id(9, 2),
-                LineageStatusV1::Ambiguous { group, index: 0, count: 2 },
+                LineageStatusV1::Ambiguous {
+                    group,
+                    index: 0,
+                    count: 2,
+                },
             ),
             LineageEdgeV1::new(
                 LineageKindV1::Rename,
                 LineageSourceV1::new(commit(1), root(2), id(9, 1)),
                 id(9, 3),
-                LineageStatusV1::Ambiguous { group, index: 1, count: 2 },
+                LineageStatusV1::Ambiguous {
+                    group,
+                    index: 1,
+                    count: 2,
+                },
             ),
         ];
         assert_eq!(
@@ -1620,13 +1754,29 @@ mod tests {
         let origin_commit = commit(7);
         let origin_root = root(6);
         let mut history = context(&[], &[returning]);
-        history.snapshots.insert(origin_commit, (*origin_root.as_bytes(), [returning].into_iter().collect()));
-        history.ancestors.insert((origin_commit, *origin_root.as_bytes()));
-        let edge = LineageEdgeV1::new(LineageKindV1::Resurrection,
-            LineageSourceV1::new(origin_commit, origin_root, returning), returning,
-            LineageStatusV1::Unresolved { reason: UnresolvedLineageReasonV1::InsufficientEvidence, evidence: None });
+        history.snapshots.insert(
+            origin_commit,
+            (*origin_root.as_bytes(), [returning].into_iter().collect()),
+        );
+        history
+            .ancestors
+            .insert((origin_commit, *origin_root.as_bytes()));
+        let edge = LineageEdgeV1::new(
+            LineageKindV1::Resurrection,
+            LineageSourceV1::new(origin_commit, origin_root, returning),
+            returning,
+            LineageStatusV1::Unresolved {
+                reason: UnresolvedLineageReasonV1::InsufficientEvidence,
+                evidence: None,
+            },
+        );
         let wire = make_wire(&[edge]);
-        assert!(wire.borrow().expect("parse").verify(&history, &RejectLineageConfirmationsV1).is_ok());
+        assert!(
+            wire.borrow()
+                .expect("parse")
+                .verify(&history, &RejectLineageConfirmationsV1)
+                .is_ok()
+        );
 
         history.ancestors.clear();
         assert_eq!(
@@ -1665,9 +1815,14 @@ mod tests {
         let old = id(10, 1);
         let new = id(10, 2);
         let history = context(&[old], &[new]);
-        let edge = LineageEdgeV1::new(LineageKindV1::Rename,
-            LineageSourceV1::new(commit(1), root(2), old), new,
-            LineageStatusV1::Confirmed { attestation: LineageAttestationId::from_bytes([0x33; 32]) });
+        let edge = LineageEdgeV1::new(
+            LineageKindV1::Rename,
+            LineageSourceV1::new(commit(1), root(2), old),
+            new,
+            LineageStatusV1::Confirmed {
+                attestation: LineageAttestationId::from_bytes([0x33; 32]),
+            },
+        );
         let wire = make_wire(&[edge]);
         let borrowed = wire.borrow().expect("parse");
         let first_row = borrowed.edges().next().expect("edge");
@@ -1735,13 +1890,8 @@ mod tests {
         // root, even when that transition happens to contain the same rows.
         let mut other_transition = history.clone();
         other_transition.child_generation = root(4);
-        let transplanted = OwnedTypedLineageEdgeSetV1::encode(
-            commit(1),
-            root(2),
-            root(4),
-            &[edge],
-        )
-        .expect("encode same candidate under another transition");
+        let transplanted = OwnedTypedLineageEdgeSetV1::encode(commit(1), root(2), root(4), &[edge])
+            .expect("encode same candidate under another transition");
         assert_eq!(
             transplanted
                 .borrow()
@@ -1797,9 +1947,8 @@ mod tests {
         )]);
         let unresolved_view = unresolved.borrow().expect("parse unresolved row");
         assert_eq!(
-            unresolved_view.confirmation_statement(
-                unresolved_view.edges().next().expect("unresolved edge")
-            ),
+            unresolved_view
+                .confirmation_statement(unresolved_view.edges().next().expect("unresolved edge")),
             Err(LineageEdgeSetErrorV1::NotConfirmed)
         );
     }
