@@ -796,6 +796,11 @@ where
 /// Encodes one complete row family while persisting jumbo field values through
 /// the caller's existing object CAS. The typed descriptor remains one SPIR
 /// semantic row; rope leaves and interior nodes are separate CAS objects.
+///
+/// This legacy prefix/size API uses the global `MAX_SEMANTIC_SEGMENT_BYTES`
+/// threshold to decide when a row is externalized. `maximum_bytes` remains
+/// only the hard segment ceiling. Callers whose manifest commits a smaller
+/// family boundary policy should use a policy-aware stable-key entry point.
 pub fn stream_canonical_plane_family_with_jumbo<Reader, Encoder, Sink>(
     reader: &Reader,
     encoder: &Encoder,
@@ -857,7 +862,9 @@ where
 }
 
 /// Encodes a complete family with the stable-key hash-ramp policy while persisting
-/// jumbo field values through the caller's existing object CAS.
+/// jumbo field values through the caller's existing object CAS. The policy's
+/// maximum bytes define both the hard segment ceiling and the canonical inline
+/// row threshold for Docs and SourceProvenance values.
 pub fn stream_canonical_plane_family_with_jumbo_and_stable_key_anchors<Reader, Encoder, Sink>(
     reader: &Reader,
     encoder: &Encoder,
@@ -888,7 +895,9 @@ where
 
 /// Bounded V3 producer entry point. The row/reference ceilings are aggregate
 /// remaining-work budgets supplied by the caller; jumbo limits apply to every
-/// emitted value and are checked before any leaf callback.
+/// emitted value and are checked before any leaf callback. The committed
+/// family policy's maximum bytes also define the canonical inline row
+/// threshold for Docs and SourceProvenance values.
 pub fn stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits<
     Reader,
     Encoder,
@@ -1273,7 +1282,9 @@ fn account_segment(
 }
 
 /// Opens and validates a canonical row-plane payload against its segment
-/// descriptor and exact content-derived ID.
+/// descriptor and exact content-derived ID. This compatibility entry point
+/// applies the global jumbo spill threshold; use the row-limit variant when
+/// decoding a family governed by a smaller manifest policy.
 pub fn decode_semantic_plane_segment<'bytes>(
     kind: SemanticPlaneKind,
     descriptor: &SemanticPlaneSegment,
@@ -1311,7 +1322,9 @@ pub fn decode_semantic_plane_segment_with_row_limit<'bytes>(
 /// segment starts. The policy must come from trusted, durably committed
 /// metadata; callers must not infer it from the segment bytes. Streaming V2
 /// admission should use [`CanonicalSemanticPlaneBoundaryFamilyVerifier`]
-/// directly so it need not retain the family payload inventory.
+/// directly so it need not retain the family payload inventory. Each payload
+/// is decoded using the supplied policy's maximum as its canonical jumbo
+/// spill threshold.
 pub fn verify_canonical_semantic_plane_segment_boundaries(
     kind: SemanticPlaneKind,
     descriptors: &[SemanticPlaneSegment],
@@ -1333,7 +1346,12 @@ pub fn verify_canonical_semantic_plane_segment_boundaries(
             family, policy,
         );
     for (descriptor, payload) in descriptors.iter().zip(payloads) {
-        let view = decode_semantic_plane_segment(kind, descriptor, payload)?;
+        let view = decode_semantic_plane_segment_with_row_limit(
+            kind,
+            descriptor,
+            payload,
+            policy.maximum_bytes(),
+        )?;
         verifier.push_segment(view)?;
     }
     verifier.finish(
@@ -1467,11 +1485,58 @@ impl VerifiedJumboPlaneClosure {
 /// Reopens the complete family payloads, validates their typed rows, and
 /// verifies every referenced jumbo object closure before minting a proof
 /// token. The scan retains no whole jumbo field and reads stored content into
-/// one fixed maximum-leaf buffer at a time.
+/// one fixed maximum-leaf buffer at a time. This legacy helper uses the global
+/// `MAX_SEMANTIC_SEGMENT_BYTES` threshold when deciding whether a jumbo row is
+/// canonical; policy-bound manifests should use
+/// [`verify_jumbo_plane_family_closures_with_policy`].
 pub fn verify_jumbo_plane_family_closures<S>(
     kind: SemanticPlaneKind,
     descriptors: &[SemanticPlaneSegment],
     payloads: &[&[u8]],
+    source: &mut S,
+) -> Result<VerifiedJumboPlaneClosure, SemanticPlaneRecordError>
+where
+    S: JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+{
+    verify_jumbo_plane_family_closures_with_row_limit(
+        kind,
+        descriptors,
+        payloads,
+        crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+        source,
+    )
+}
+
+/// Reopens the complete family payloads and verifies jumbo closures under the
+/// exact family policy committed by a trusted manifest. The policy's maximum
+/// bytes define the canonical spill threshold for Docs and SourceProvenance
+/// rows, matching the policy-aware producer.
+pub fn verify_jumbo_plane_family_closures_with_policy<S>(
+    kind: SemanticPlaneKind,
+    descriptors: &[SemanticPlaneSegment],
+    payloads: &[&[u8]],
+    policy: CanonicalPlaneSegmentBoundaryPolicy,
+    source: &mut S,
+) -> Result<VerifiedJumboPlaneClosure, SemanticPlaneRecordError>
+where
+    S: JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+{
+    verify_jumbo_plane_family_closures_with_row_limit(
+        kind,
+        descriptors,
+        payloads,
+        policy.maximum_bytes(),
+        source,
+    )
+}
+
+fn verify_jumbo_plane_family_closures_with_row_limit<S>(
+    kind: SemanticPlaneKind,
+    descriptors: &[SemanticPlaneSegment],
+    payloads: &[&[u8]],
+    maximum_inline_row_bytes: usize,
     source: &mut S,
 ) -> Result<VerifiedJumboPlaneClosure, SemanticPlaneRecordError>
 where
@@ -1502,15 +1567,26 @@ where
             return Err(SemanticPlaneRecordError::RecordOrder);
         }
         let segment_id = descriptor.admit(kind, payload)?;
-        let view = decode_semantic_plane_segment(kind, descriptor, payload)?;
+        let view = decode_semantic_plane_segment_with_row_limit(
+            kind,
+            descriptor,
+            payload,
+            maximum_inline_row_bytes,
+        )?;
         hasher.update(segment_id.as_bytes());
         for record in view.records() {
             let jumbo = match family {
                 SemanticIrPlane::Documentation => {
-                    declarations::jumbo_descriptor_for_record(record)?
+                    declarations::jumbo_descriptor_for_record_with_row_limit(
+                        record,
+                        maximum_inline_row_bytes,
+                    )?
                 }
                 SemanticIrPlane::SourceProvenance => {
-                    source_provenance::jumbo_descriptor_for_record(record)?
+                    source_provenance::jumbo_descriptor_for_record_with_row_limit(
+                        record,
+                        maximum_inline_row_bytes,
+                    )?
                 }
                 _ => None,
             };
@@ -2291,6 +2367,32 @@ mod tests {
         .expect("typed family and all jumbo closures verify")
     }
 
+    fn verify_captured_jumbo_family_with_policy(
+        family: SemanticIrPlane,
+        captured: &CapturedFamily,
+        policy: CanonicalPlaneSegmentBoundaryPolicy,
+        objects: &mut InMemoryJumboObjects,
+    ) -> VerifiedJumboPlaneClosure {
+        let descriptors: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(descriptor, _)| *descriptor)
+            .collect();
+        let payloads: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(_, payload)| payload.as_slice())
+            .collect();
+        verify_jumbo_plane_family_closures_with_policy(
+            SemanticPlaneKind::Ir(family),
+            &descriptors,
+            &payloads,
+            policy,
+            objects,
+        )
+        .expect("typed family and policy-bound jumbo closures verify")
+    }
+
     fn ids(values: &[CanonicalSemanticPlaneSegmentPayload]) -> Vec<SemanticSegmentId> {
         values
             .iter()
@@ -2947,6 +3049,156 @@ mod tests {
             validator.finish(),
             Err(declarations::DocsWireValidationError::Grammar)
         ));
+    }
+
+    #[test]
+    fn low_policy_documentation_spills_only_above_its_exact_row_threshold() {
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("small family policy is valid");
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Documentation);
+
+        for (text_len, expected_tag) in [
+            (4007, declarations::DOCS_TAG),
+            (4008, declarations::DOCS_JUMBO_TAG),
+        ] {
+            let text = "d".repeat(text_len);
+            let ir = jumbo_docs_image(&text);
+            let mut objects = InMemoryJumboObjects::default();
+            let mut captured = CapturedFamily::default();
+            let metrics = stream_canonical_plane_family_with_jumbo_and_stable_key_anchors(
+                &ir,
+                &DocumentationRows,
+                witness(),
+                policy,
+                &mut objects,
+                &mut captured,
+            )
+            .expect("policy-aware docs row fits or spills under its family maximum");
+            assert_eq!(metrics.row_count(), 1);
+            let (descriptor, payload) = &captured.rows[0];
+            let view = decode_semantic_plane_segment_with_row_limit(
+                kind,
+                descriptor,
+                payload,
+                policy.maximum_bytes(),
+            )
+            .expect("policy-aware docs decoding uses the committed spill threshold");
+            assert_eq!(
+                view.records().next().expect("one docs row").tag(),
+                expected_tag
+            );
+
+            let descriptors = [*descriptor];
+            let payloads = [payload.as_slice()];
+            verify_canonical_semantic_plane_segment_boundaries(
+                kind,
+                &descriptors,
+                &payloads,
+                policy,
+                1,
+            )
+            .expect("family boundary proof decodes under the committed row threshold");
+
+            if expected_tag == declarations::DOCS_JUMBO_TAG {
+                assert!(matches!(
+                    decode_semantic_plane_segment(kind, descriptor, payload),
+                    Err(SemanticPlaneRecordError::RowGrammar)
+                ));
+                assert!(matches!(
+                    verify_jumbo_plane_family_closures(kind, &descriptors, &payloads, &mut objects,),
+                    Err(SemanticPlaneRecordError::RowGrammar)
+                ));
+            }
+            let closure = verify_captured_jumbo_family_with_policy(
+                SemanticIrPlane::Documentation,
+                &captured,
+                policy,
+                &mut objects,
+            );
+            assert_eq!(
+                closure.jumbo_value_count(),
+                if expected_tag == declarations::DOCS_JUMBO_TAG {
+                    1
+                } else {
+                    0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn low_policy_source_path_spills_only_above_its_exact_row_threshold() {
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("small family policy is valid");
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance);
+
+        for (path_len, expected_tag) in [
+            (4004, source_provenance::DECLARATION_SOURCE_TAG),
+            (4005, source_provenance::DECLARATION_SOURCE_JUMBO_TAG),
+        ] {
+            let path = vec![0xa5; path_len];
+            let ir = jumbo_source_image(&path);
+            let mut objects = InMemoryJumboObjects::default();
+            let mut captured = CapturedFamily::default();
+            let metrics = stream_canonical_plane_family_with_jumbo_and_stable_key_anchors(
+                &ir,
+                &SourceProvenanceRows,
+                witness(),
+                policy,
+                &mut objects,
+                &mut captured,
+            )
+            .expect("policy-aware source row fits or spills under its family maximum");
+            assert_eq!(metrics.row_count(), 1);
+            let (descriptor, payload) = &captured.rows[0];
+            let view = decode_semantic_plane_segment_with_row_limit(
+                kind,
+                descriptor,
+                payload,
+                policy.maximum_bytes(),
+            )
+            .expect("policy-aware source decoding uses the committed spill threshold");
+            assert_eq!(
+                view.records().next().expect("one source row").tag(),
+                expected_tag
+            );
+
+            let descriptors = [*descriptor];
+            let payloads = [payload.as_slice()];
+            verify_canonical_semantic_plane_segment_boundaries(
+                kind,
+                &descriptors,
+                &payloads,
+                policy,
+                1,
+            )
+            .expect("family boundary proof decodes under the committed row threshold");
+
+            if expected_tag == source_provenance::DECLARATION_SOURCE_JUMBO_TAG {
+                assert!(matches!(
+                    decode_semantic_plane_segment(kind, descriptor, payload),
+                    Err(SemanticPlaneRecordError::RowGrammar)
+                ));
+                assert!(matches!(
+                    verify_jumbo_plane_family_closures(kind, &descriptors, &payloads, &mut objects,),
+                    Err(SemanticPlaneRecordError::RowGrammar)
+                ));
+            }
+            let closure = verify_captured_jumbo_family_with_policy(
+                SemanticIrPlane::SourceProvenance,
+                &captured,
+                policy,
+                &mut objects,
+            );
+            assert_eq!(
+                closure.jumbo_value_count(),
+                if expected_tag == source_provenance::DECLARATION_SOURCE_JUMBO_TAG {
+                    1
+                } else {
+                    0
+                }
+            );
+        }
     }
 
     #[test]

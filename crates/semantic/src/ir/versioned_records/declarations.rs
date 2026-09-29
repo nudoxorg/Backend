@@ -608,6 +608,8 @@ pub(super) fn validate_record(
     tag: u8,
     payload: &[u8],
 ) -> Result<(), SemanticPlaneRecordError> {
+    // Legacy grammar validation uses the global threshold. Policy-bearing
+    // callers use `validate_record_with_row_limit` below.
     validate_record_with_row_limit(
         kind,
         key,
@@ -728,6 +730,8 @@ pub(super) fn validate_record_with_row_limit(
     Ok(())
 }
 
+/// Extracts a Docs jumbo descriptor under the legacy global spill threshold.
+/// Policy-bound callers must use `jumbo_descriptor_for_record_with_row_limit`.
 pub(super) fn jumbo_descriptor_for_record(
     record: super::CanonicalSemanticPlaneRecordView<'_>,
 ) -> Result<Option<CheckedJumboValueDescriptor>, SemanticPlaneRecordError> {
