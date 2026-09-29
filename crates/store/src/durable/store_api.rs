@@ -269,9 +269,7 @@ impl FileStore {
             return Err(StoreError::Bounds);
         }
         let bytes = fs::read(path).map_err(|error| map_read_error(&error))?;
-        let object = decode_object(&bytes, limit, &self.relation_registry)?;
-        let _ = claim.admit(&object)?;
-        Ok(object)
+        decode_object(&bytes, limit, &self.relation_registry, claim)
     }
 
     /// Durably writes an immutable, complete closure manifest.

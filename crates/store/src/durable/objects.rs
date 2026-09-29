@@ -319,8 +319,9 @@ pub(super) fn decode_object(
     bytes: &[u8],
     max_bytes: usize,
     registry: &RelationAdmissionRegistry,
+    expected: UntrustedObjectId,
 ) -> Result<TypedObject, StoreError> {
-    let view = verify_object_view(bytes, max_bytes, registry, None)?;
+    let view = verify_object_view(bytes, max_bytes, registry, Some(expected))?;
     let object = TypedObject::from_wire_parts(
         view.schema,
         view.key,
