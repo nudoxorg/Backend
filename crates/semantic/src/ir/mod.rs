@@ -35,6 +35,7 @@ mod semantic_image;
 /// neutral, and zero-allocation display lanes over one static reader.
 pub mod semantic_render;
 mod type_facts;
+mod typed_plane_manifest_v2;
 mod vcs;
 mod versioned;
 pub mod versioned_records;
@@ -169,9 +170,11 @@ pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
 pub use semantic_generation::{
-    SemanticContentRootV2, SemanticGenerationFamilyCommitmentV2, SemanticGenerationFamilyRootV2,
-    SemanticGenerationProofError, SemanticGenerationRootV2, UntrustedSemanticContentRootV2,
-    UntrustedSemanticGenerationRootV2, VerifiedTypedPlaneClosureV2,
+    MAX_TYPED_PLANE_VERIFICATION_ADAPTER_BYTES, SemanticContentRootV2,
+    SemanticGenerationFamilyCommitmentV2, SemanticGenerationFamilyRootV2,
+    SemanticGenerationProofError, SemanticGenerationRootV2, SemanticTypedPlaneVerificationTierV2,
+    UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2, VerifiedTypedPlaneContentV2,
+    verify_typed_plane_content_v2, verify_typed_plane_content_v2_with_tier,
 };
 pub use semantic_image::{
     CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
@@ -203,6 +206,13 @@ pub use semantic_render::{
 pub use type_facts::{
     DecodedTypeFact, DecodedTypeFactChild, TypeFactChildCursor, TypeFactCounts, TypeFactCursor,
     TypeFactFault, TypeFactInput, TypeFactLane, TypeFactSegment,
+};
+pub use typed_plane_manifest_v2::{
+    MAX_TYPED_PLANE_MANIFEST_V2_BYTES, MAX_TYPED_PLANE_MANIFEST_V2_RESIDENT_BYTES,
+    MAX_TYPED_PLANE_SEGMENTS_V2, SEMANTIC_TYPED_PLANE_MANIFEST_V2_SCHEMA, SemanticInputClaimV2,
+    SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
+    SemanticTypedPlaneManifestV2Error, SemanticTypedPlaneManifestV2ResourceUsage,
+    SemanticTypedPlaneManifestV2Schema, SemanticTypedPlaneSegmentClaimV2,
 };
 pub use vcs::{
     Delta, Diff, EntityChange, EntityChanges, EntityFacetChanges, FacetChange, FacetComparison,
