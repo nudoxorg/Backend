@@ -261,6 +261,50 @@ pub fn open_directory_nofollow(directory: &Path) -> io::Result<File> {
     ensure_directory(file)
 }
 
+/// Opens a directory for path validation without following a symbolic link or reparse point.
+/// Unlike [`open_directory_nofollow`], this handle is read-only and is not suitable for flushing.
+#[cfg(unix)]
+pub fn open_directory_readonly_nofollow(directory: &Path) -> io::Result<File> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            (rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
+        .open(directory)?;
+    ensure_directory(file)
+}
+
+/// Opens a directory for path validation without following a symbolic link or reparse point.
+/// Unlike [`open_directory_nofollow`], this handle is read-only and is not suitable for flushing.
+#[cfg(windows)]
+pub fn open_directory_readonly_nofollow(directory: &Path) -> io::Result<File> {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(directory)?;
+    ensure_directory(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn open_directory_readonly_nofollow(_directory: &Path) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no no-follow directory opener is available on this platform",
+    ))
+}
+
 #[cfg(not(any(unix, windows)))]
 pub fn open_directory_nofollow(_directory: &Path) -> io::Result<File> {
     Err(io::Error::new(
@@ -341,7 +385,10 @@ pub fn open_directory(directory: &Path) -> io::Result<File> {
 
 #[cfg(test)]
 mod tests {
-    use super::{open_directory, open_directory_nofollow, open_regular_file_nofollow};
+    use super::{
+        open_directory, open_directory_nofollow, open_directory_readonly_nofollow,
+        open_regular_file_nofollow,
+    };
     use std::fs::{self, File};
     use std::io::Write as _;
     use std::path::PathBuf;
@@ -405,5 +452,33 @@ mod tests {
 
         drop(opened);
         fs::remove_dir_all(&directory).expect("remove scratch directory");
+    }
+
+    #[test]
+    fn readonly_no_follow_directory_opener_accepts_a_real_directory() {
+        let directory = scratch("readonly-nofollow-directory");
+        fs::create_dir_all(&directory).expect("create scratch directory");
+
+        let opened = open_directory_readonly_nofollow(&directory)
+            .expect("open directory read-only without links");
+        assert!(opened.metadata().expect("opened metadata").is_dir());
+
+        drop(opened);
+        fs::remove_dir_all(&directory).expect("remove scratch directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readonly_no_follow_directory_opener_rejects_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = scratch("readonly-nofollow-symlink");
+        let directory = root.join("directory");
+        let link = root.join("link");
+        fs::create_dir_all(&directory).expect("create scratch directory");
+        symlink(&directory, &link).expect("create directory link");
+
+        assert!(open_directory_readonly_nofollow(&link).is_err());
+        fs::remove_dir_all(&root).expect("remove scratch directory");
     }
 }
