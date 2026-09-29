@@ -1052,7 +1052,7 @@ impl RustWorkspace {
             }
             let observed = SourceDatabase::file_text(&self.database, file_id);
             let observed_text = observed.text(&self.database);
-            if observed_text == file.source {
+            if observed_text.as_ref() == file.source {
                 unchanged = unchanged.saturating_add(1);
             } else {
                 change.change_file(file_id, Some(file.source.to_owned()));
