@@ -2873,6 +2873,7 @@ mod tests {
     fn produce_v3(
         store: &FileStore,
         reader: &impl SemanticReader,
+        shape: V3FixtureShape,
         input_identity: u8,
     ) -> ProducedSemanticTypedPlaneV3 {
         produce_semantic_typed_plane_v3(
@@ -2884,7 +2885,12 @@ mod tests {
             SemanticTypedPlaneVerificationTierV2::Standard,
             JumboRopeLimits::default(),
         )
-        .expect("real-reader V3 producer emits a complete verified c007 manifest")
+        .unwrap_or_else(|error| {
+            panic!(
+                "real-reader V3 {} producer emits a complete verified c007 manifest: {error}",
+                shape.label()
+            )
+        })
     }
 
     fn v3_segment_inventory(
@@ -3448,7 +3454,7 @@ mod tests {
         let store =
             FileStore::open(&cas_path, 4 * 1024 * 1024).expect("open V3 producer FileStore");
         let base_ir = v3_fixture(V3FixtureShape::Base);
-        let base = produce_v3(&store, &base_ir, 11);
+        let base = produce_v3(&store, &base_ir, V3FixtureShape::Base, 11);
 
         assert_eq!(base.manifest().families().len(), TYPED_V2_FAMILY_COUNT);
         assert!(base.input_witness().coverage().is_authorized_complete());
@@ -3544,7 +3550,7 @@ mod tests {
         let image = v1_image(&base_ir);
         let reopened_reader = SemanticImageView::reopen(&image)
             .expect("independent full semantic reader reopens the fixture");
-        let no_op = produce_v3(&store, &reopened_reader, 11);
+        let no_op = produce_v3(&store, &reopened_reader, V3FixtureShape::Base, 11);
         assert_eq!(no_op.manifest(), base.manifest());
         assert_eq!(no_op.verified_content(), base.verified_content());
         assert_eq!(no_op.encoding_metrics(), base.encoding_metrics());
@@ -3605,7 +3611,7 @@ mod tests {
             (V3FixtureShape::MiddleDelete, 19),
         ] {
             let target_ir = v3_fixture(shape);
-            let target = produce_v3(&store, &target_ir, input_identity);
+            let target = produce_v3(&store, &target_ir, shape, input_identity);
             let (verified, cold_io) = cold_reverify_v3(&cold_store, &target);
             assert_ne!(
                 verified.content_root(),

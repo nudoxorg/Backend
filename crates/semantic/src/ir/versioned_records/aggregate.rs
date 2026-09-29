@@ -318,6 +318,14 @@ pub(crate) enum SemanticTypedPlaneInventoryV2Error {
         family: SemanticIrPlane,
         index: usize,
     },
+    #[error(
+        "typed semantic family {family:?} segment {index} contains a row key {key:?} that does not match its typed identity"
+    )]
+    RowIdentityMismatch {
+        family: SemanticIrPlane,
+        index: usize,
+        key: [u8; 32],
+    },
     #[error("typed semantic manifest input/read claim is not Complete")]
     IncompleteInputClaim,
     #[error("typed semantic build and image facts disagree at {field}")]
@@ -1299,7 +1307,13 @@ fn admitted_stream_segment<'payload>(
         &descriptor,
         payload,
         maximum_inline_row_bytes,
-    )?;
+    )
+    .map_err(|error| match error {
+        SemanticPlaneRecordError::StableKeyMismatchAt { key } => {
+            SemanticTypedPlaneInventoryV2Error::RowIdentityMismatch { family, index, key }
+        }
+        error => error.into(),
+    })?;
     Ok((view, admitted_id))
 }
 

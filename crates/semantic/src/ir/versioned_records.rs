@@ -1385,13 +1385,19 @@ fn decode_semantic_plane_segment_structure<'bytes>(
         if previous.is_some_and(|key| key >= row.key) {
             return Err(SemanticPlaneRecordError::RecordOrder);
         }
-        validate_record_with_row_limit(
+        match validate_record_with_row_limit(
             kind,
             row.key,
             row.tag,
             row.payload,
             maximum_inline_row_bytes,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(SemanticPlaneRecordError::StableKeyMismatch) => {
+                return Err(SemanticPlaneRecordError::StableKeyMismatchAt { key: row.key });
+            }
+            Err(error) => return Err(error),
+        }
         first.get_or_insert(row.key);
         previous = Some(row.key);
     }
@@ -1722,6 +1728,11 @@ pub enum SemanticPlaneRecordError {
     /// Stable row key does not commit the typed identity in its payload.
     #[error("canonical row key does not match its typed identity")]
     StableKeyMismatch,
+    /// Stable row key mismatch found while parsing a segment. The key is
+    /// retained so family-scoped verifier diagnostics can identify the row
+    /// without exposing its potentially sensitive payload.
+    #[error("canonical row key {key:?} does not match its typed identity")]
+    StableKeyMismatchAt { key: [u8; 32] },
     /// This build has no strict decoder for the selected family yet.
     #[error("canonical decoder for this semantic plane family is unavailable")]
     UnsupportedFamily,
