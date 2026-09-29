@@ -81,11 +81,15 @@ pub(super) fn ensure_history_gc_epoch(
 ) -> Result<PathBuf, String> {
     let epoch_root = history_gc_epoch_root(target_root, digest);
     create_private_directory(&epoch_root)?;
+    set_private_directory(&epoch_root)?;
     for root in ["queue", "marks"] {
         let class_root = epoch_root.join(root);
         create_private_directory(&class_root)?;
+        set_private_directory(&class_root)?;
         for class in ["live", "candidate"] {
-            create_private_directory(&class_root.join(class))?;
+            let path = class_root.join(class);
+            create_private_directory(&path)?;
+            set_private_directory(&path)?;
         }
     }
     Ok(epoch_root)

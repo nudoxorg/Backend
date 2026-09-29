@@ -72,9 +72,9 @@ mod history;
 pub use history::{
     AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
     HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError,
-    HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor,
-    HistoryReplayEntry, HistorySegmentDeltas, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
-    UnpublishedHistoryProposal,
+    HistoryRefAncestryProof, HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt,
+    HistoryReplay, HistoryReplayCursor, HistoryReplayEntry, HistorySegmentDeltas,
+    MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef, UnpublishedHistoryProposal,
 };
 pub(super) use history::{AdmittedHistoryPayloadRoot, HistoryPayloadRoot};
 
@@ -2651,6 +2651,14 @@ mod tests {
             .expect("read selected history ref")
             .expect("selected history ref exists")
             .commit();
+        let proof = range_store
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &ref_name,
+                history_commit,
+            )
+            .expect("prove selected history commit is reachable");
         let root_path = history::history_payload_root_path(
             &generations.target_root(&generation.target),
             history_commit,
@@ -2679,6 +2687,7 @@ mod tests {
                     HistoryRefKind::Branch,
                     &ref_name,
                     history_commit,
+                    &proof,
                 )
                 .is_err(),
             "a forged closure claim must fail before a materialization receipt is returned"
@@ -2727,6 +2736,14 @@ mod tests {
             FileStore::open(&cas_root, 16 * 1024 * 1024).expect("cold-open FileStore");
         let reopened = FileSemanticRangeStore::open(reopened_store.clone(), limits)
             .expect("cold-open semantic history adapter");
+        let reopened_proof = reopened
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &ref_name,
+                history_commit,
+            )
+            .expect("cold-prove selected history commit is reachable");
         assert!(
             reopened
                 .read_history_segment(
@@ -2734,6 +2751,7 @@ mod tests {
                     HistoryRefKind::Branch,
                     &ref_name,
                     history_commit,
+                    &reopened_proof,
                     plane,
                     segment.id_claim(),
                 )
@@ -2752,6 +2770,7 @@ mod tests {
                 HistoryRefKind::Branch,
                 &ref_name,
                 history_commit,
+                &reopened_proof,
                 plane,
                 segment.id_claim(),
             )
@@ -2764,6 +2783,171 @@ mod tests {
             payload.len()
         );
         assert_eq!(actual, payload);
+    }
+
+    #[test]
+    fn named_ref_ancestry_proof_rejects_unrelated_and_stale_tips_after_cold_reopen() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let store = FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open FileStore");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let range_store =
+            FileSemanticRangeStore::open(store.clone(), limits).expect("open range store");
+        let state_root = cas_root.join("semantic-hydration");
+        let files = LocalSemanticGenerationFiles::open(&state_root).expect("open histories");
+        let first = fixture(b"ancestry first", 1, 131);
+        let second = fixture(b"ancestry second", 2, 132);
+        let third = fixture(b"ancestry third", 3, 133);
+        let _ = commit(&files, &first, [first.stamp, first.stamp]).expect("commit first");
+        let first_commit = files
+            .history_ref(
+                &first.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local-cache ref"),
+            )
+            .expect("read first ref")
+            .expect("first ref exists")
+            .commit();
+        let _ = commit(&files, &second, [second.stamp, second.stamp]).expect("commit second");
+        let second_commit = files
+            .history_ref(
+                &second.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local-cache ref"),
+            )
+            .expect("read second ref")
+            .expect("second ref exists")
+            .commit();
+        let _ = commit(&files, &third, [third.stamp, third.stamp]).expect("commit third");
+        let tip = files
+            .history_ref(
+                &third.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("local-cache ref"),
+            )
+            .expect("read third ref")
+            .expect("third ref exists")
+            .commit();
+        let unrelated = admit_history(&files, &third, &[], [0x91; 32]);
+        assert_ne!(unrelated.identity(), first_commit);
+        set_history_ref(
+            &files,
+            &third.target,
+            HistoryRefKind::Branch,
+            "unrelated",
+            None,
+            Some(unrelated.identity()),
+        )
+        .expect("publish unrelated root on same target");
+        drop(files);
+        drop(range_store);
+        drop(store);
+
+        let reopened = FileSemanticRangeStore::open(
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("cold-open FileStore"),
+            limits,
+        )
+        .expect("cold-open range store");
+        let local_cache = HistoryRefName::new("local-cache").expect("local-cache ref");
+        let proof = reopened
+            .history_ref_ancestry_proof(
+                &third.target,
+                HistoryRefKind::Branch,
+                &local_cache,
+                first_commit,
+            )
+            .expect("cold-prove third-old first-parent reachability");
+        assert_eq!(proof.ref_tip(), tip);
+        assert_eq!(proof.ancestor(), first_commit);
+        assert!(
+            reopened
+                .history_ref_ancestry_proof(
+                    &third.target,
+                    HistoryRefKind::Branch,
+                    &local_cache,
+                    unrelated.identity(),
+                )
+                .expect_err("same-target unrelated commit is not reachable")
+                .contains("not reachable")
+        );
+        assert!(
+            reopened
+                .history_materialization(
+                    &third.target,
+                    HistoryRefKind::Branch,
+                    &local_cache,
+                    unrelated.identity(),
+                    &proof,
+                )
+                .expect_err("proof cannot be reused for another requested commit")
+                .contains("does not match")
+        );
+
+        reopened
+            .compare_and_swap_history_ref(
+                &third.target,
+                HistoryRefKind::Branch,
+                local_cache.clone(),
+                Some(tip),
+                Some(second_commit),
+            )
+            .expect("retarget local-cache to a still-descendant tip");
+        assert!(
+            reopened
+                .history_materialization(
+                    &third.target,
+                    HistoryRefKind::Branch,
+                    &local_cache,
+                    first_commit,
+                    &proof,
+                )
+                .expect_err("old proof is stale even though its commit stays reachable")
+                .contains("moved")
+        );
+        let fresh_proof = reopened
+            .history_ref_ancestry_proof(
+                &third.target,
+                HistoryRefKind::Branch,
+                &local_cache,
+                first_commit,
+            )
+            .expect("fresh proof follows the retargeted ref's first-parent line");
+        assert_eq!(fresh_proof.ref_tip(), second_commit);
+        assert!(matches!(
+            reopened
+                .history_materialization(
+                    &third.target,
+                    HistoryRefKind::Branch,
+                    &local_cache,
+                    first_commit,
+                    &fresh_proof,
+                )
+                .expect("fresh proof reaches old commit"),
+            HistoryMaterialization::NeedsHydration { .. }
+        ));
+        let first_segment = first
+            .manifest
+            .plane(SemanticPlaneKind::Ir(SemanticIrPlane::Core))
+            .expect("first core plane")
+            .segments()
+            .first()
+            .expect("first core segment")
+            .id_claim();
+        assert!(matches!(
+            reopened.read_history_segment(
+                &third.target,
+                HistoryRefKind::Branch,
+                &local_cache,
+                first_commit,
+                &proof,
+                SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                first_segment,
+            ),
+            Err(message) if message.contains("moved")
+        ));
     }
 
     #[test]
@@ -2895,6 +3079,14 @@ mod tests {
             .expect("cold-open semantic history adapter");
         let generation = fixture(b"historical segment one", 1, 81);
         let local_cache = HistoryRefName::new("local-cache").expect("local cache ref");
+        let proof = reopened
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &local_cache,
+                historical_claim.expect("first history claim").0,
+            )
+            .expect("prove third-old commit remains on selected first-parent line after reopen");
         assert!(matches!(
             reopened
                 .history_materialization(
@@ -2902,6 +3094,7 @@ mod tests {
                     HistoryRefKind::Branch,
                     &local_cache,
                     historical_claim.expect("first history claim").0,
+                    &proof,
                 )
                 .expect("verify old manifest segment closure"),
             HistoryMaterialization::ResidentSegments {
@@ -2919,12 +3112,21 @@ mod tests {
             .expect("reopen semantic history adapter after collection");
         let (old_commit, old_segment, expected_bytes) =
             historical_claim.expect("first history claim remains available");
+        let reopened_proof = reopened
+            .history_ref_ancestry_proof(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &local_cache,
+                old_commit,
+            )
+            .expect("reprove third-old ancestry after cold reopen and GC");
         let mut reader = reopened
             .read_history_segment(
                 &generation.target,
                 HistoryRefKind::Branch,
                 &local_cache,
                 old_commit,
+                &reopened_proof,
                 SemanticPlaneKind::Ir(SemanticIrPlane::Core),
                 old_segment,
             )

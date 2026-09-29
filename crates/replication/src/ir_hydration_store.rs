@@ -844,6 +844,145 @@ impl FileSemanticRangeStore {
         self.generations.history_ref(target, kind, name)
     }
 
+    /// Proves that `ancestor` is on the current named ref's first-parent line.
+    /// The proof can be reused for multiple reads; a moved ref or a different
+    /// target/ref/commit invalidates it. Ancestry is checked in bounded batches
+    /// so the shared state lock is never held while scanning an unbounded line.
+    ///
+    /// History merge commits are currently unsupported. If one is encountered,
+    /// this API rejects it rather than treating second-parent reachability as
+    /// sufficient for the first-parent cumulative payload closure.
+    pub fn history_ref_ancestry_proof(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        ancestor: crate::HistoryCommitId,
+    ) -> Result<crate::HistoryRefAncestryProof, String> {
+        let _gc_pin = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| format!("pin semantic history ancestry: {error:?}"))?;
+        let (tip, tip_depth, ancestor_depth) = {
+            let _state_lock = self.acquire_state_lock()?;
+            let reference = self
+                .generations
+                .history_ref(target, kind, name)?
+                .ok_or_else(|| "historical semantic reference is missing".to_owned())?;
+            let tip = reference.commit();
+            let tip_record = self.generations.history_commit(target, tip)?;
+            let ancestor_record = self.generations.history_commit(target, ancestor)?;
+            if tip_record.parents().len() > 1 || ancestor_record.parents().len() > 1 {
+                return Err(
+                    "history ref ancestry only supports first-parent commits; merge history is unsupported"
+                        .to_owned(),
+                );
+            }
+            let tip_depth = tip_record.first_parent_depth();
+            let ancestor_depth = ancestor_record.first_parent_depth();
+            if ancestor_depth > tip_depth {
+                return Err(
+                    "requested history commit is not reachable from the named ref's first-parent chain"
+                        .to_owned(),
+                );
+            }
+            (tip, tip_depth, ancestor_depth)
+        };
+
+        let mut cursor = tip;
+        let mut remaining = tip_depth - ancestor_depth;
+        while remaining != 0 {
+            let _state_lock = self.acquire_state_lock()?;
+            self.require_ancestry_ref_tip(target, kind, name, tip)?;
+            let batch = remaining.min(crate::MAX_HISTORY_REPLAY_COMMITS as u32);
+            for _ in 0..batch {
+                let current = self.generations.history_commit(target, cursor)?;
+                let expected_depth = ancestor_depth
+                    .checked_add(remaining)
+                    .ok_or_else(|| "semantic history ancestry depth overflows".to_owned())?;
+                if current.first_parent_depth() != expected_depth {
+                    return Err(
+                        "semantic history first-parent depth is inconsistent during ancestry proof"
+                            .to_owned(),
+                    );
+                }
+                if current.parents().len() > 1 {
+                    return Err(
+                        "history ref ancestry only supports first-parent commits; merge history is unsupported"
+                            .to_owned(),
+                    );
+                }
+                let Some(parent) = current.parents().first().copied() else {
+                    return Err(
+                        "requested history commit is not reachable from the named ref's first-parent chain"
+                            .to_owned(),
+                    );
+                };
+                cursor = parent;
+                remaining -= 1;
+            }
+        }
+
+        {
+            let _state_lock = self.acquire_state_lock()?;
+            self.require_ancestry_ref_tip(target, kind, name, tip)?;
+            let requested = self.generations.history_commit(target, ancestor)?;
+            if cursor != ancestor || requested.first_parent_depth() != ancestor_depth {
+                return Err(
+                    "requested history commit is not reachable from the named ref's first-parent chain"
+                        .to_owned(),
+                );
+            }
+        }
+
+        Ok(
+            crate::HistoryRefAncestryProof::from_validated_first_parent_chain(
+                target.clone(),
+                kind,
+                name.clone(),
+                tip,
+                ancestor,
+            ),
+        )
+    }
+
+    fn require_ancestry_ref_tip(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        expected_tip: crate::HistoryCommitId,
+    ) -> Result<(), String> {
+        let Some(reference) = self.generations.history_ref(target, kind, name)? else {
+            return Err("history reference moved during ancestry proof".to_owned());
+        };
+        if reference.commit() != expected_tip {
+            return Err("history reference moved during ancestry proof".to_owned());
+        }
+        Ok(())
+    }
+
+    fn validate_history_ref_proof(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        ancestor: crate::HistoryCommitId,
+        proof: &crate::HistoryRefAncestryProof,
+    ) -> Result<crate::SelectedHistoryRef, String> {
+        if !proof.matches(target, kind, name, ancestor) {
+            return Err("history ref ancestry proof does not match the request".to_owned());
+        }
+        let reference = self
+            .generations
+            .history_ref(target, kind, name)?
+            .ok_or_else(|| "historical semantic reference is missing".to_owned())?;
+        if reference.commit() != proof.ref_tip() {
+            return Err("history reference moved since its ancestry proof was created".to_owned());
+        }
+        Ok(reference)
+    }
+
     /// Atomically compares and replaces or deletes one branch/tag ref.
     /// `expected == None` means the ref must be absent. This only changes the
     /// history navigation catalog, never the selected index generation.
@@ -904,22 +1043,23 @@ impl FileSemanticRangeStore {
     /// read offline from the payload closure retained by a named branch or
     /// tag. Full images may be pruned independently; callers receive
     /// `NeedsHydration` unless every exact manifest segment is still covered.
+    /// The supplied ancestry proof must be bound to this target, ref, and
+    /// commit; generate it once and reuse it for further reads on the same tip.
     pub fn history_materialization(
         &self,
         target: &crate::SemanticTargetKey,
         kind: crate::HistoryRefKind,
         name: &crate::HistoryRefName,
         commit: crate::HistoryCommitId,
+        proof: &crate::HistoryRefAncestryProof,
     ) -> Result<crate::HistoryMaterialization, String> {
         let _gc_pin = self
             .store
             .pin_garbage_collection()
             .map_err(|error| format!("pin historical semantic payloads: {error:?}"))?;
         let _state_lock = self.acquire_state_lock()?;
+        let reference = self.validate_history_ref_proof(target, kind, name, commit, proof)?;
         let generation = self.generations.history_generation(target, commit)?;
-        let Some(reference) = self.generations.history_ref(target, kind, name)? else {
-            return Ok(needs_hydration(&generation));
-        };
         let payload = self
             .generations
             .history_payload_root(target, reference.commit())?;
@@ -981,13 +1121,16 @@ impl FileSemanticRangeStore {
     /// Opens one exact historical segment through a named branch or tag's
     /// cumulative payload closure. The returned reader keeps a shared FileStore
     /// GC pin until dropped, and rechecks the canonical segment claim before
-    /// exposing bounded range reads.
+    /// exposing bounded range reads. The supplied ancestry proof must be bound
+    /// to this target, ref, and commit; generate it once and reuse it for
+    /// further reads on the same tip.
     pub fn read_history_segment(
         &self,
         target: &crate::SemanticTargetKey,
         kind: crate::HistoryRefKind,
         name: &crate::HistoryRefName,
         commit: crate::HistoryCommitId,
+        proof: &crate::HistoryRefAncestryProof,
         plane: SemanticPlaneKind,
         segment: UntrustedSemanticSegmentId,
     ) -> Result<HistorySegmentReader, String> {
@@ -996,10 +1139,8 @@ impl FileSemanticRangeStore {
             .pin_garbage_collection()
             .map_err(|error| format!("pin historical semantic segment: {error:?}"))?;
         let _state_lock = self.acquire_state_lock()?;
+        let reference = self.validate_history_ref_proof(target, kind, name, commit, proof)?;
         let generation = self.generations.history_generation(target, commit)?;
-        let Some(reference) = self.generations.history_ref(target, kind, name)? else {
-            return Err("historical semantic reference is missing".to_owned());
-        };
         let Some(payload) = self
             .generations
             .history_payload_root(target, reference.commit())?

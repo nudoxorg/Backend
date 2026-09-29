@@ -284,6 +284,71 @@ impl AdmittedHistoryCommit {
     pub const fn is_checkpoint(&self) -> bool {
         self.record.checkpoint
     }
+
+    /// Returns this commit's validated first-parent depth.
+    #[must_use]
+    pub(crate) const fn first_parent_depth(&self) -> u32 {
+        self.record.first_parent_depth
+    }
+}
+
+/// Opaque proof that one commit is reachable from the exact tip of a named
+/// history ref by following first-parent links.
+///
+/// Create this once and reuse it for materialization or segment reads. The
+/// proof is bound to its target, ref name and kind, tip, and requested commit;
+/// a ref movement invalidates it. It is process-local and must be regenerated
+/// after reopening the store.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryRefAncestryProof {
+    target: SemanticTargetKey,
+    kind: HistoryRefKind,
+    name: HistoryRefName,
+    tip: HistoryCommitId,
+    ancestor: HistoryCommitId,
+}
+
+impl HistoryRefAncestryProof {
+    pub(crate) fn from_validated_first_parent_chain(
+        target: SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: HistoryRefName,
+        tip: HistoryCommitId,
+        ancestor: HistoryCommitId,
+    ) -> Self {
+        Self {
+            target,
+            kind,
+            name,
+            tip,
+            ancestor,
+        }
+    }
+
+    pub(crate) fn matches(
+        &self,
+        target: &SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: &HistoryRefName,
+        ancestor: HistoryCommitId,
+    ) -> bool {
+        self.target == *target
+            && self.kind == kind
+            && self.name == *name
+            && self.ancestor == ancestor
+    }
+
+    /// Returns the exact ref tip this proof was issued for.
+    #[must_use]
+    pub const fn ref_tip(&self) -> HistoryCommitId {
+        self.tip
+    }
+
+    /// Returns the requested reachable commit this proof covers.
+    #[must_use]
+    pub const fn ancestor(&self) -> HistoryCommitId {
+        self.ancestor
+    }
 }
 
 /// Receipt for immutable commit admission. A retry with the same proposal is
