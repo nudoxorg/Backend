@@ -222,9 +222,9 @@ fn equal_identity_preserves_full_diff_across_independent_residences() -> Result<
     )?;
     let resident_bytes = locality_bytes(&reopened, &[])?;
     let promised = ValidatedLocality::try_from(promised_bytes.as_slice())?;
-    let resident = ValidatedLocality::try_from(resident_bytes.as_slice())?;
+    let resident_locality = ValidatedLocality::try_from(resident_bytes.as_slice())?;
     let promised_view = GenerationView::new(&older, &promised)?;
-    let resident_view = GenerationView::new(&reopened, &resident)?;
+    let resident_view = GenerationView::new(&reopened, &resident_locality)?;
     assert_eq!(
         promised_view.get(key(2)).map(|entry| entry.locality),
         Some(Locality::Promised(
