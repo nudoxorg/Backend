@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicU64, Ordering},
@@ -28,6 +29,15 @@ use crate::{
 /// wins, so changing storage locality cannot permanently freeze the choice.
 const DELTA_REPROBE_INTERVAL: u32 = 32;
 
+/// Fixed TinyLFU counter table. Admission estimates affect retention only;
+/// they never authorize bytes or replace an exact manifest/selection check.
+const FREQUENCY_SKETCH_ROWS: usize = 4;
+const FREQUENCY_SKETCH_WIDTH: usize = 1024;
+const FREQUENCY_SKETCH_COUNTERS: usize = FREQUENCY_SKETCH_ROWS * FREQUENCY_SKETCH_WIDTH;
+/// Deterministic aging interval: four observations per counter cell on average.
+const FREQUENCY_SKETCH_AGE_AFTER: u64 = (FREQUENCY_SKETCH_COUNTERS * 4) as u64;
+const PROBATION_SHARE_PERCENT: u64 = 25;
+
 /// Bounds for retained semantic segments and delta planning.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IrResidencyLimits {
@@ -35,7 +45,7 @@ pub struct IrResidencyLimits {
     pub hot_bytes: u64,
     /// Maximum distinct hot-owner bytes that may have outstanding leases.
     pub pinned_bytes: u64,
-    /// Maximum hot entries and reuse observations retained by this policy.
+    /// Maximum hot owners and separately bounded cold route-history records.
     pub entries: usize,
     /// Number of uses observed before a segment can become hot.
     pub warm_uses: u32,
@@ -219,6 +229,18 @@ pub enum IrResidencyPath {
 pub struct IrResidencyMetrics {
     /// Payload bytes retained directly by the hot cache.
     pub hot_bytes: u64,
+    /// Bytes in the probationary portion of the segment cache.
+    pub probation_bytes: u64,
+    /// Bytes in the protected portion of the segment cache.
+    pub protected_bytes: u64,
+    /// Fixed frequency-sketch storage, including its counters and age state.
+    pub frequency_sketch_bytes: u64,
+    /// Number of deterministic frequency-sketch aging passes.
+    pub frequency_sketch_ages: u64,
+    /// Number of bounded route-cost records for segments without hot owners.
+    pub route_observation_entries: u64,
+    /// Logical bytes for unresident route keys and samples; excludes map overhead.
+    pub route_observation_bytes: u64,
     /// Live payload allocations, including externally pinned leases.
     pub live_owner_bytes: u64,
     /// Distinct owner bytes with one or more outstanding leases.
@@ -244,6 +266,10 @@ pub struct IrResidencyMetrics {
     pub corrupt_hot_owners: u64,
     /// Owners moved from transient reads into bounded hot memory.
     pub hot_admissions: u64,
+    /// Owners retained in the probationary tier.
+    pub probation_admissions: u64,
+    /// Probationary owners promoted after a real cached hit.
+    pub protected_promotions: u64,
     /// Hot admissions refused by size, budget, or pin pressure.
     pub admission_rejections: u64,
     /// Hot entries removed to satisfy byte or entry limits.
@@ -426,6 +452,16 @@ struct HotEntry {
     owner: HotOwner,
     pin: Option<Weak<PinnedOwnerGuard>>,
     last_used: u64,
+    tier: ResidencyTier,
+    /// Exact use and route-cost evidence stays with this owner. Cold scans
+    /// cannot age it out by inserting unrelated keys into a side map.
+    observation: Observation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResidencyTier {
+    Probation,
+    Protected,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -470,6 +506,15 @@ struct Observation {
     scanned: ColdCost,
     prepared: ColdCost,
     mean_hot_ns: u64,
+}
+
+/// Cold route samples remain useful before a payload is admitted to hot
+/// memory. This table is bounded independently and uses the frequency sketch
+/// for admission; exact access and cost evidence moves into `HotEntry` when
+/// the segment becomes resident.
+#[derive(Clone, Copy, Default)]
+struct RouteObservation {
+    observation: Observation,
     last_used: u64,
 }
 
@@ -489,6 +534,69 @@ impl Observation {
     }
 }
 
+/// Fixed-size, deterministically aged TinyLFU sketch. Four independent
+/// counter rows make an accidental overestimate an admission hint only; the
+/// protected tier uses exact per-owner evidence when it considers eviction.
+struct FrequencySketch {
+    counters: [u8; FREQUENCY_SKETCH_COUNTERS],
+    accesses_since_age: u64,
+    ages: u64,
+}
+
+impl Default for FrequencySketch {
+    fn default() -> Self {
+        Self {
+            counters: [0; FREQUENCY_SKETCH_COUNTERS],
+            accesses_since_age: 0,
+            ages: 0,
+        }
+    }
+}
+
+impl FrequencySketch {
+    fn estimate(&self, key: SegmentLookupKey) -> u8 {
+        frequency_indices(key)
+            .into_iter()
+            .map(|index| self.counters[index])
+            .min()
+            .unwrap_or(0)
+    }
+
+    fn observe(&mut self, key: SegmentLookupKey) -> u8 {
+        if self.accesses_since_age >= FREQUENCY_SKETCH_AGE_AFTER {
+            for counter in &mut self.counters {
+                *counter >>= 1;
+            }
+            self.accesses_since_age = 0;
+            self.ages = self.ages.saturating_add(1);
+        }
+        self.accesses_since_age += 1;
+        for index in frequency_indices(key) {
+            self.counters[index] = self.counters[index].saturating_add(1);
+        }
+        self.estimate(key)
+    }
+
+    const fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+fn frequency_indices(key: SegmentLookupKey) -> [usize; FREQUENCY_SKETCH_ROWS] {
+    // DefaultHasher::new uses fixed keys. The follow-up SplitMix rounds give
+    // each row an independent index without random state or heap allocation.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    let seed = hasher.finish();
+    std::array::from_fn(|row| {
+        let mut value = seed.wrapping_add((row as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^= value >> 31;
+        ((value as usize) & (FREQUENCY_SKETCH_WIDTH - 1)) + row * FREQUENCY_SKETCH_WIDTH
+    })
+}
+
 /// Single-owner, bounded policy for hot segment bytes, exact CAS fallback,
 /// and short semantic-delta reuse routes.
 ///
@@ -498,8 +606,11 @@ impl Observation {
 pub struct AdaptiveIrResidency {
     limits: IrResidencyLimits,
     hot: HashMap<SegmentLookupKey, HotEntry>,
-    observations: HashMap<SegmentLookupKey, Observation>,
+    route_observations: HashMap<SegmentLookupKey, RouteObservation>,
     hot_bytes: u64,
+    probation_bytes: u64,
+    protected_bytes: u64,
+    frequency: FrequencySketch,
     ledger: Option<Arc<ResidencyLedger>>,
     tick: u64,
     metrics: IrResidencyMetrics,
@@ -511,7 +622,10 @@ impl fmt::Debug for AdaptiveIrResidency {
             .debug_struct("AdaptiveIrResidency")
             .field("limits", &self.limits)
             .field("hot_entries", &self.hot.len())
-            .field("observations", &self.observations.len())
+            .field("route_observation_entries", &self.route_observations.len())
+            .field("probation_entries", &self.probation_entries())
+            .field("protected_entries", &self.protected_entries())
+            .field("frequency_sketch_bytes", &self.frequency.retained_bytes())
             .field("metrics", &self.metrics())
             .finish()
     }
@@ -530,8 +644,11 @@ impl AdaptiveIrResidency {
         Self {
             limits,
             hot: HashMap::new(),
-            observations: HashMap::new(),
+            route_observations: HashMap::new(),
             hot_bytes: 0,
+            probation_bytes: 0,
+            protected_bytes: 0,
+            frequency: FrequencySketch::default(),
             ledger: None,
             tick: 0,
             metrics: IrResidencyMetrics::default(),
@@ -543,6 +660,13 @@ impl AdaptiveIrResidency {
     pub fn metrics(&self) -> IrResidencyMetrics {
         let mut metrics = self.metrics;
         metrics.hot_bytes = self.hot_bytes;
+        metrics.probation_bytes = self.probation_bytes;
+        metrics.protected_bytes = self.protected_bytes;
+        metrics.frequency_sketch_bytes = self.frequency.retained_bytes() as u64;
+        metrics.frequency_sketch_ages = self.frequency.ages;
+        metrics.route_observation_entries = self.route_observations.len() as u64;
+        metrics.route_observation_bytes = (self.route_observations.len() as u64)
+            .saturating_mul(std::mem::size_of::<(SegmentLookupKey, RouteObservation)>() as u64);
         metrics.live_owner_bytes = self.ledger.as_ref().map_or(self.hot_bytes, |ledger| {
             ledger.live_owner_bytes.load(Ordering::Relaxed)
         });
@@ -1012,6 +1136,7 @@ impl AdaptiveIrResidency {
                 self.touch_hot(key);
                 ensure_current(source, selection)?;
                 self.observe_hot(key, nanos(started.elapsed()));
+                self.promote_probation(key);
                 Self::increment(&mut self.metrics.hot_hits);
                 Self::increment(&mut self.metrics.borrowed_reads);
                 let payload = self
@@ -1147,7 +1272,14 @@ impl AdaptiveIrResidency {
             matches!(path, IrResidencyPath::DeltaCas(_)),
             route.mode(),
         );
-        let transient = self.consider_hot(key, id, payload);
+        let transient = self.consider_hot(
+            key,
+            id,
+            payload,
+            elapsed,
+            matches!(path, IrResidencyPath::DeltaCas(_)),
+            route.mode(),
+        );
         Self::increment(&mut self.metrics.borrowed_reads);
 
         if let Some(entry) = self.hot.get(&key) {
@@ -1237,6 +1369,8 @@ impl AdaptiveIrResidency {
             .ok_or(IrResidencyError::CorruptHotOwner)?;
         self.touch_hot(key);
         ensure_current(source, selection)?;
+        self.observe_hot(key, 0);
+        self.promote_probation(key);
         Self::increment(&mut self.metrics.leases_issued);
         Ok(Some(IrResidencyLease {
             owner,
@@ -1332,53 +1466,85 @@ impl AdaptiveIrResidency {
         key: SegmentLookupKey,
         id: SemanticSegmentId,
         payload: Box<[u8]>,
+        elapsed: u64,
+        was_delta: bool,
+        mode: RouteMode,
     ) -> Option<Box<[u8]>> {
         let size = payload.len() as u64;
-        if !self.should_warm(key) {
+        if !self.should_warm(key, elapsed) {
             return Some(payload);
         }
         if size > self.limits.hot_bytes || self.limits.entries == 0 {
             Self::increment(&mut self.metrics.admission_rejections);
             return Some(payload);
         }
-        if !self.make_room(size) {
+        let frequency = self.frequency.estimate(key);
+        let candidate_observation = self.route_observations.get(&key).map_or_else(
+            || {
+                let mut observation = Observation {
+                    uses: 1,
+                    ..Observation::default()
+                };
+                record_cold_cost(&mut observation, elapsed, was_delta, mode);
+                observation
+            },
+            |route| route.observation,
+        );
+        if !self.make_probation_room(size, frequency, candidate_observation) {
             Self::increment(&mut self.metrics.admission_rejections);
             return Some(payload);
         }
-        while self.hot.len() >= self.limits.entries {
-            if !self.evict_one(false) {
-                Self::increment(&mut self.metrics.admission_rejections);
-                return Some(payload);
-            }
-        }
         let owner = SegmentOwner::new(id, payload, self.ledger.as_ref());
         self.hot_bytes = self.hot_bytes.saturating_add(size);
+        self.probation_bytes = self.probation_bytes.saturating_add(size);
         let last_used = self.next_tick();
+        // Exact route evidence accumulated before admission travels with the
+        // owner. If a full route table rejected the key, retain this read's
+        // sample so the new owner still has a sound local baseline.
+        let observation = self
+            .route_observations
+            .remove(&key)
+            .map_or(candidate_observation, |route| route.observation);
         self.hot.insert(
             key,
             HotEntry {
                 owner: HotOwner::Owned(owner),
                 pin: None,
                 last_used,
+                tier: ResidencyTier::Probation,
+                observation,
             },
         );
         Self::increment(&mut self.metrics.hot_admissions);
+        Self::increment(&mut self.metrics.probation_admissions);
         None
     }
 
-    fn should_warm(&self, key: SegmentLookupKey) -> bool {
-        let observation = self.observations.get(&key).copied().unwrap_or_default();
-        if observation.uses < self.limits.warm_uses {
+    fn should_warm(&self, key: SegmentLookupKey, elapsed_ns: u64) -> bool {
+        let sketch_threshold = self.limits.warm_uses.min(u8::MAX as u32) as u8;
+        if self.frequency.estimate(key) < sketch_threshold {
             return false;
         }
-        let cold_samples = observation.scanned.sample_count() + observation.prepared.sample_count();
-        if cold_samples == 0 {
+        let observation = self
+            .route_observations
+            .get(&key)
+            .map(|route| route.observation);
+        if observation.is_some_and(|observation| observation.uses < self.limits.warm_uses)
+            || (observation.is_none() && self.limits.warm_uses > u8::MAX as u32)
+        {
             return false;
         }
-        let weighted_cold_ns = (observation.scanned.weighted_ns()
-            + observation.prepared.weighted_ns())
-            / u128::from(cold_samples);
-        weighted_cold_ns >= u128::from(duration_ns(self.limits.warm_cold_cost))
+        let elapsed_ns = observation.map_or(elapsed_ns, |observation| {
+            let samples = observation.scanned.sample_count() + observation.prepared.sample_count();
+            if samples == 0 {
+                elapsed_ns
+            } else {
+                ((observation.scanned.weighted_ns() + observation.prepared.weighted_ns())
+                    / u128::from(samples))
+                .min(u128::from(u64::MAX)) as u64
+            }
+        });
+        elapsed_ns >= duration_ns(self.limits.warm_cold_cost)
     }
 
     fn delta_choice(
@@ -1389,7 +1555,14 @@ impl AdaptiveIrResidency {
         segment_bytes: u64,
         mode: RouteMode,
     ) -> DeltaChoice {
-        let observation = self.observations.get(&key).copied().unwrap_or_default();
+        let observation = self.hot.get(&key).map_or_else(
+            || {
+                self.route_observations
+                    .get(&key)
+                    .map_or(Observation::default(), |entry| entry.observation)
+            },
+            |entry| entry.observation,
+        );
         let cost = observation.cost(mode);
         let modest_route = summary.hops <= 2
             && summary.actions <= self.limits.delta_actions.min(512)
@@ -1449,20 +1622,221 @@ impl AdaptiveIrResidency {
         })
     }
 
-    fn make_room(&mut self, requested: u64) -> bool {
-        loop {
-            let live = self.ledger.as_ref().map_or(self.hot_bytes, |ledger| {
-                ledger.live_owner_bytes.load(Ordering::Relaxed)
-            });
-            if live
+    fn probation_byte_limit(&self) -> u64 {
+        ceil_percent(self.limits.hot_bytes, PROBATION_SHARE_PERCENT)
+    }
+
+    fn protected_byte_limit(&self) -> u64 {
+        self.limits
+            .hot_bytes
+            .saturating_sub(self.probation_byte_limit())
+    }
+
+    fn probation_entry_limit(&self) -> usize {
+        ceil_percent_usize(self.limits.entries, PROBATION_SHARE_PERCENT)
+    }
+
+    fn protected_entry_limit(&self) -> usize {
+        self.limits
+            .entries
+            .saturating_sub(self.probation_entry_limit())
+    }
+
+    fn probation_entries(&self) -> usize {
+        self.hot
+            .values()
+            .filter(|entry| entry.tier == ResidencyTier::Probation)
+            .count()
+    }
+
+    fn protected_entries(&self) -> usize {
+        self.hot
+            .values()
+            .filter(|entry| entry.tier == ResidencyTier::Protected)
+            .count()
+    }
+
+    /// Warm owners may borrow idle protected capacity; subsequent promotions
+    /// reclaim it. Sketch estimates can evict probation only, never protected.
+    fn make_probation_room(
+        &mut self,
+        requested: u64,
+        candidate_frequency: u8,
+        candidate_observation: Observation,
+    ) -> bool {
+        let available_bytes = self.probation_byte_limit().saturating_add(
+            self.protected_byte_limit()
+                .saturating_sub(self.protected_bytes),
+        );
+        let available_entries = self.probation_entry_limit().saturating_add(
+            self.protected_entry_limit()
+                .saturating_sub(self.protected_entries()),
+        );
+        let mut live = self.ledger.as_ref().map_or(self.hot_bytes, |ledger| {
+            ledger.live_owner_bytes.load(Ordering::Relaxed)
+        });
+        let mut probation_bytes = self.probation_bytes;
+        let mut hot_entries = self.hot.len();
+        let mut probation_entries = self.probation_entries();
+        let mut victims = Vec::new();
+        let hot_limit = self.limits.hot_bytes;
+        let entry_limit = self.limits.entries;
+        let candidate_utility = Self::utility(candidate_observation, requested as usize);
+
+        let needs_room =
+            |live: u64, hot_entries: usize, probation_bytes: u64, probation_entries: usize| {
+                live.checked_add(requested)
+                    .is_none_or(|total| total > hot_limit)
+                    || probation_bytes
+                        .checked_add(requested)
+                        .is_none_or(|total| total > available_bytes)
+                    || hot_entries >= entry_limit
+                    || probation_entries >= available_entries
+            };
+
+        if !needs_room(live, hot_entries, probation_bytes, probation_entries) {
+            return true;
+        }
+
+        // Plan every required eviction before mutating the cache. This avoids
+        // losing a lower-frequency probation owner if a larger candidate
+        // would later have to evict a more-frequent owner and gets rejected.
+        let mut candidates = self
+            .hot
+            .iter()
+            .filter(|(_, entry)| entry.tier == ResidencyTier::Probation)
+            .map(|(key, entry)| {
+                (
+                    *key,
+                    self.frequency.estimate(*key),
+                    Self::utility(
+                        entry.observation,
+                        entry.owner.bytes().map_or(0, <[u8]>::len),
+                    ),
+                    entry.last_used,
+                    entry.owner.bytes().map_or(0, <[u8]>::len) as u64,
+                    entry.owner.is_unpinned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(_, frequency, utility, last_used, _, _)| {
+            (*frequency, *utility, *last_used)
+        });
+
+        for (victim, victim_frequency, victim_utility, _, size, unpinned) in candidates {
+            let live_pressure = live
                 .checked_add(requested)
-                .is_some_and(|total| total <= self.limits.hot_bytes)
-            {
+                .is_none_or(|total| total > hot_limit);
+            if live_pressure && !unpinned {
+                continue;
+            }
+            // A sketch collision can propose a false-positive candidate. It
+            // cannot displace even a probation owner whose exact measured
+            // use/cost value is at least as high.
+            if candidate_frequency < victim_frequency || candidate_utility <= victim_utility {
+                continue;
+            }
+            victims.push(victim);
+            probation_bytes = probation_bytes.saturating_sub(size);
+            hot_entries = hot_entries.saturating_sub(1);
+            probation_entries = probation_entries.saturating_sub(1);
+            if self.ledger.is_none() || unpinned {
+                live = live.saturating_sub(size);
+            }
+            if !needs_room(live, hot_entries, probation_bytes, probation_entries) {
+                for victim in victims {
+                    self.remove_hot(victim);
+                }
                 return true;
             }
-            if !self.evict_one(true) {
-                return false;
+        }
+
+        false
+    }
+
+    fn promote_probation(&mut self, key: SegmentLookupKey) {
+        let Some(entry) = self.hot.get(&key) else {
+            return;
+        };
+        if entry.tier != ResidencyTier::Probation {
+            return;
+        }
+        let size = entry.owner.bytes().map_or(0, <[u8]>::len) as u64;
+        let score = Self::utility(entry.observation, size as usize);
+
+        let remaining_probation_bytes = self.probation_bytes.saturating_sub(size);
+        let available_protected_bytes = self.protected_byte_limit().saturating_add(
+            self.probation_byte_limit()
+                .saturating_sub(remaining_probation_bytes),
+        );
+        let remaining_probation_entries = self.probation_entries().saturating_sub(1);
+        let available_protected_entries = self.protected_entry_limit().saturating_add(
+            self.probation_entry_limit()
+                .saturating_sub(remaining_probation_entries),
+        );
+        let mut protected_bytes = self.protected_bytes;
+        let mut protected_entries = self.protected_entries();
+        let mut victims = Vec::new();
+        let needs_room = |bytes: u64, entries: usize| {
+            bytes
+                .checked_add(size)
+                .is_none_or(|total| total > available_protected_bytes)
+                || entries >= available_protected_entries
+        };
+        if needs_room(protected_bytes, protected_entries) {
+            let mut candidates = self
+                .hot
+                .iter()
+                .filter(|(candidate_key, entry)| {
+                    **candidate_key != key
+                        && entry.tier == ResidencyTier::Protected
+                        && entry.owner.is_unpinned()
+                })
+                .map(|(candidate_key, entry)| {
+                    let bytes = entry.owner.bytes().map_or(0, <[u8]>::len) as u64;
+                    (
+                        *candidate_key,
+                        Self::utility(entry.observation, bytes as usize),
+                        entry.last_used,
+                        bytes,
+                    )
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|(_, utility, last_used, _)| (*utility, *last_used));
+
+            for (victim, victim_score, _, victim_bytes) in candidates {
+                // Protected replacement uses exact co-located evidence, never
+                // a sketch estimate; collisions cannot dislodge a hot edit.
+                if score <= victim_score {
+                    continue;
+                }
+                victims.push(victim);
+                protected_bytes = protected_bytes.saturating_sub(victim_bytes);
+                protected_entries = protected_entries.saturating_sub(1);
+                if !needs_room(protected_bytes, protected_entries) {
+                    break;
+                }
             }
+            if needs_room(protected_bytes, protected_entries) {
+                return;
+            }
+            for victim in victims {
+                self.remove_hot(victim);
+            }
+        }
+
+        let promoted = self.hot.get_mut(&key).is_some_and(|entry| {
+            if entry.tier == ResidencyTier::Probation {
+                entry.tier = ResidencyTier::Protected;
+                true
+            } else {
+                false
+            }
+        });
+        if promoted {
+            self.probation_bytes = self.probation_bytes.saturating_sub(size);
+            self.protected_bytes = self.protected_bytes.saturating_add(size);
+            Self::increment(&mut self.metrics.protected_promotions);
         }
     }
 
@@ -1486,16 +1860,19 @@ impl AdaptiveIrResidency {
             .hot
             .iter()
             .filter(|(_, entry)| !only_unpinned || entry.owner.is_unpinned())
-            .min_by_key(|(key, entry)| {
+            .min_by_key(|(_, entry)| {
                 let bytes = entry.owner.bytes().map_or(0, <[u8]>::len);
-                (self.utility(**key, bytes), entry.last_used)
+                (
+                    entry.tier == ResidencyTier::Protected,
+                    Self::utility(entry.observation, bytes),
+                    entry.last_used,
+                )
             })
             .map(|(key, _)| *key);
         victim.is_some_and(|key| self.remove_hot(key))
     }
 
-    fn utility(&self, key: SegmentLookupKey, bytes: usize) -> u64 {
-        let observation = self.observations.get(&key).copied().unwrap_or_default();
+    fn utility(observation: Observation, bytes: usize) -> u64 {
         let fallback_ns = observation
             .scanned
             .cheapest_ns()
@@ -1514,6 +1891,14 @@ impl AdaptiveIrResidency {
         };
         let size = entry.owner.bytes().map_or(0, <[u8]>::len) as u64;
         self.hot_bytes = self.hot_bytes.saturating_sub(size);
+        match entry.tier {
+            ResidencyTier::Probation => {
+                self.probation_bytes = self.probation_bytes.saturating_sub(size)
+            }
+            ResidencyTier::Protected => {
+                self.protected_bytes = self.protected_bytes.saturating_sub(size)
+            }
+        }
         drop(entry);
         Self::increment(&mut self.metrics.evictions);
         true
@@ -1530,10 +1915,13 @@ impl AdaptiveIrResidency {
         if self.limits.entries == 0 {
             return;
         }
+        self.frequency.observe(key);
         let tick = self.next_tick();
-        let observation = self.observation(key, tick);
-        observation.uses = observation.uses.saturating_add(1);
-        observation.mean_hot_ns = mean(observation.mean_hot_ns, elapsed);
+        if let Some(entry) = self.hot.get_mut(&key) {
+            entry.last_used = tick;
+            entry.observation.uses = entry.observation.uses.saturating_add(1);
+            entry.observation.mean_hot_ns = mean(entry.observation.mean_hot_ns, elapsed);
+        }
     }
 
     fn observe_cold(
@@ -1546,33 +1934,76 @@ impl AdaptiveIrResidency {
         if self.limits.entries == 0 {
             return;
         }
-        let tick = self.next_tick();
-        let observation = self.observation(key, tick);
-        observation.uses = observation.uses.saturating_add(1);
-        let cost = observation.cost_mut(mode);
-        if was_delta {
-            cost.delta_samples = cost.delta_samples.saturating_add(1);
-            cost.mean_delta_ns = mean(cost.mean_delta_ns, elapsed);
+        let frequency = self.frequency.observe(key);
+        if let Some(entry) = self.hot.get_mut(&key) {
+            entry.observation.uses = entry.observation.uses.saturating_add(1);
+            record_cold_cost(&mut entry.observation, elapsed, was_delta, mode);
         } else {
-            cost.pristine_samples = cost.pristine_samples.saturating_add(1);
-            cost.mean_pristine_ns = mean(cost.mean_pristine_ns, elapsed);
+            self.observe_route_cost(key, frequency, elapsed, was_delta, mode);
         }
     }
 
-    fn observation(&mut self, key: SegmentLookupKey, tick: u64) -> &mut Observation {
-        if !self.observations.contains_key(&key) && self.observations.len() >= self.limits.entries {
-            if let Some(oldest) = self
-                .observations
-                .iter()
-                .min_by_key(|(_, item)| item.last_used)
-                .map(|(key, _)| *key)
-            {
-                self.observations.remove(&oldest);
-            }
+    fn observe_route_cost(
+        &mut self,
+        key: SegmentLookupKey,
+        frequency: u8,
+        elapsed: u64,
+        was_delta: bool,
+        mode: RouteMode,
+    ) {
+        let tick = self.next_tick();
+        if let Some(route) = self.route_observations.get_mut(&key) {
+            route.observation.uses = route.observation.uses.saturating_add(1);
+            record_cold_cost(&mut route.observation, elapsed, was_delta, mode);
+            route.last_used = tick;
+            return;
         }
-        let observation = self.observations.entry(key).or_default();
-        observation.last_used = tick;
-        observation
+
+        let mut observation = Observation {
+            uses: 1,
+            ..Observation::default()
+        };
+        record_cold_cost(&mut observation, elapsed, was_delta, mode);
+        if self.route_observations.len() < self.limits.entries {
+            self.route_observations.insert(
+                key,
+                RouteObservation {
+                    observation,
+                    last_used: tick,
+                },
+            );
+            return;
+        }
+
+        let victim = self
+            .route_observations
+            .iter()
+            .min_by_key(|(candidate, route)| {
+                (self.frequency.estimate(**candidate), route.last_used)
+            })
+            .map(|(candidate, route)| {
+                (
+                    *candidate,
+                    self.frequency.estimate(*candidate),
+                    route.last_used,
+                )
+            });
+        let Some((victim, victim_frequency, _)) = victim else {
+            return;
+        };
+        // A one-pass scan ties the retained one-pass records and is rejected;
+        // repeated keys can replace them as their estimate rises.
+        if frequency <= victim_frequency {
+            return;
+        }
+        self.route_observations.remove(&victim);
+        self.route_observations.insert(
+            key,
+            RouteObservation {
+                observation,
+                last_used: tick,
+            },
+        );
     }
 
     fn next_tick(&mut self) -> u64 {
@@ -2139,6 +2570,26 @@ fn mean(previous: u64, sample: u64) -> u64 {
     }
 }
 
+fn record_cold_cost(observation: &mut Observation, elapsed: u64, was_delta: bool, mode: RouteMode) {
+    let cost = observation.cost_mut(mode);
+    if was_delta {
+        cost.delta_samples = cost.delta_samples.saturating_add(1);
+        cost.mean_delta_ns = mean(cost.mean_delta_ns, elapsed);
+    } else {
+        cost.pristine_samples = cost.pristine_samples.saturating_add(1);
+        cost.mean_pristine_ns = mean(cost.mean_pristine_ns, elapsed);
+    }
+}
+
+fn ceil_percent(total: u64, percent: u64) -> u64 {
+    total / 100 * percent + ((total % 100) * percent).div_ceil(100)
+}
+
+fn ceil_percent_usize(total: usize, percent: u64) -> usize {
+    let percent = usize::try_from(percent).unwrap_or(usize::MAX);
+    total / 100 * percent + ((total % 100) * percent).div_ceil(100)
+}
+
 fn nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
@@ -2166,8 +2617,8 @@ mod batch_verification_tests {
         admit_producer_observation,
     };
 
-    use crate::{ByteRange, DurableSemanticSegmentStore, ReplicationError, SparseCoverage};
     use crate::ir_hydration::SelectedGenerationStamp;
+    use crate::{ByteRange, DurableSemanticSegmentStore, ReplicationError, SparseCoverage};
 
     struct TestAuthority;
 

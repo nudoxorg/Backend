@@ -241,6 +241,7 @@ struct MemoryRangeStore {
     unreadable_roots: HashSet<[u8; 32]>,
     delay_roots: HashMap<[u8; 32], Duration>,
     reads: usize,
+    bytes_read: u64,
     flip_on_read: Option<(
         Arc<OnceLock<SelectedGenerationStamp>>,
         SelectedGenerationStamp,
@@ -311,6 +312,7 @@ impl DurableSemanticRangeStore for MemoryRangeStore {
         let Some(bytes) = self.objects.get(&(root, *request.segment_id.as_bytes())) else {
             return Ok(None);
         };
+        self.bytes_read = self.bytes_read.saturating_add(bytes.len() as u64);
         let mut bytes = bytes.to_vec().into_boxed_slice();
         if self.corrupt_roots.contains(&root) && !bytes.is_empty() {
             bytes[0] ^= 1;
@@ -355,6 +357,20 @@ fn limits() -> IrResidencyLimits {
         delta_changed_bytes: 1024,
         delta_actions: 100,
     }
+}
+
+fn read_fixture_segment(
+    cache: &mut AdaptiveIrResidency,
+    source: &mut SelectionSource,
+    selection: SelectedSemanticPlane,
+    manifest: &SemanticPlaneManifest,
+    segment: &SemanticPlaneSegment,
+    store: &mut MemoryRangeStore,
+) -> IrResidencyPath {
+    cache
+        .with_segment(source, selection, manifest, segment, &[], store, |_| ())
+        .expect("fixture segment is readable")
+        .0
 }
 
 struct ResidencyTempDirectory(PathBuf);
@@ -514,6 +530,83 @@ fn fresh_owner_binding_can_reuse_the_same_hot_content_identity() {
 }
 
 #[test]
+fn same_range_with_changed_content_never_reuses_the_old_owner() {
+    let old = manifest(1, b"before");
+    let changed = manifest(2, b"after edit");
+    let (mut old_source, old_selection) = selection_for(&old, 1);
+    let (mut changed_source, changed_selection) = selection_for(&changed, 2);
+    let old_segment = &old
+        .plane(old_selection.kind())
+        .expect("old plane")
+        .segments()[0];
+    let changed_segment = &changed
+        .plane(changed_selection.kind())
+        .expect("changed plane")
+        .segments()[0];
+    assert_eq!(old_segment.first_key(), changed_segment.first_key());
+    assert_eq!(old_segment.last_key(), changed_segment.last_key());
+    assert_ne!(old_segment.id_claim(), changed_segment.id_claim());
+
+    let mut policy = limits();
+    policy.warm_uses = 1;
+    let mut cache = AdaptiveIrResidency::new(policy);
+    let mut store = MemoryRangeStore::default();
+    store.insert(
+        old_selection,
+        old_segment.admitted_id().expect("old ID is admitted"),
+        b"before",
+    );
+    store.insert(
+        changed_selection,
+        changed_segment
+            .admitted_id()
+            .expect("changed ID is admitted"),
+        b"after edit",
+    );
+    read_fixture_segment(
+        &mut cache,
+        &mut old_source,
+        old_selection,
+        &old,
+        old_segment,
+        &mut store,
+    );
+
+    let (path, bytes) = cache
+        .with_segment(
+            &mut changed_source,
+            changed_selection,
+            &changed,
+            changed_segment,
+            &[],
+            &mut store,
+            |bytes| bytes.to_vec(),
+        )
+        .expect("changed segment reads its exact target CAS");
+    assert!(matches!(path, IrResidencyPath::PristineCas(_)));
+    assert_eq!(bytes, b"after edit");
+    assert_eq!(store.reads, 2);
+    assert!(
+        cache
+            .hot
+            .contains_key(&super::SegmentLookupKey::from_descriptor(
+                old_selection.kind(),
+                old_segment,
+            ))
+    );
+    let changed_key =
+        super::SegmentLookupKey::from_descriptor(changed_selection.kind(), changed_segment);
+    assert!(cache.hot.contains_key(&changed_key));
+    assert_eq!(
+        cache
+            .hot
+            .get(&changed_key)
+            .and_then(|entry| entry.owner.id()),
+        changed_segment.admitted_id(),
+    );
+}
+
+#[test]
 fn invalid_hot_owner_metadata_is_evicted_before_bytes_are_borrowed() {
     let wrong_manifest = manifest(2, b"wrong");
     let manifest = manifest(1, b"expected");
@@ -573,7 +666,7 @@ fn invalid_hot_owner_metadata_is_evicted_before_bytes_are_borrowed() {
 }
 
 #[test]
-fn hot_admission_uses_the_weighted_observed_cold_route_mean() {
+fn hot_admission_uses_the_fixed_aging_frequency_sketch_and_bounded_cold_cost_history() {
     let manifest = manifest(1, b"segment");
     let (_, selection) = selection_for(&manifest, 1);
     let segment = &manifest.plane(selection.kind()).expect("plane").segments()[0];
@@ -582,21 +675,60 @@ fn hot_admission_uses_the_weighted_observed_cold_route_mean() {
     policy.warm_uses = 4;
     policy.warm_cold_cost = Duration::from_nanos(75);
     let mut cache = AdaptiveIrResidency::new(policy);
-    cache.observations.insert(
+    for _ in 0..3 {
+        cache.frequency.observe(key);
+    }
+    assert!(!cache.should_warm(key, 100));
+    cache.frequency.observe(key);
+    cache.route_observations.insert(
         key,
-        super::Observation {
-            uses: 4,
-            scanned: super::ColdCost {
-                pristine_samples: 3,
-                delta_samples: 1,
-                mean_pristine_ns: 100,
-                mean_delta_ns: 10,
+        super::RouteObservation {
+            observation: super::Observation {
+                uses: 4,
+                scanned: super::ColdCost {
+                    pristine_samples: 4,
+                    mean_pristine_ns: 74,
+                    ..super::ColdCost::default()
+                },
+                ..super::Observation::default()
             },
-            ..super::Observation::default()
+            last_used: 1,
         },
     );
+    assert!(!cache.should_warm(key, 100));
+    cache
+        .route_observations
+        .get_mut(&key)
+        .expect("route cost history exists")
+        .observation
+        .scanned
+        .mean_pristine_ns = 75;
+    assert!(cache.should_warm(key, 0));
+}
 
-    assert!(cache.should_warm(key));
+#[test]
+fn frequency_sketch_ages_deterministically_and_accounts_its_fixed_storage() {
+    let manifest = manifest(1, b"segment");
+    let (_, selection) = selection_for(&manifest, 1);
+    let segment = &manifest.plane(selection.kind()).expect("plane").segments()[0];
+    let key = super::SegmentLookupKey::from_descriptor(selection.kind(), segment);
+    let mut first = super::FrequencySketch::default();
+    let mut second = super::FrequencySketch::default();
+
+    for _ in 0..=super::FREQUENCY_SKETCH_AGE_AFTER {
+        first.observe(key);
+        second.observe(key);
+    }
+
+    assert_eq!(first.ages, 1);
+    assert_eq!(first.estimate(key), 128);
+    assert_eq!(first.ages, second.ages);
+    assert_eq!(first.estimate(key), second.estimate(key));
+    assert_eq!(
+        first.retained_bytes(),
+        std::mem::size_of::<[u8; super::FREQUENCY_SKETCH_COUNTERS]>()
+            + 2 * std::mem::size_of::<u64>(),
+    );
 }
 
 #[test]
@@ -606,16 +738,22 @@ fn prepared_delta_route_learns_independently_of_per_read_action_scans() {
     let segment = &manifest.plane(selection.kind()).expect("plane").segments()[0];
     let key = super::SegmentLookupKey::from_descriptor(selection.kind(), segment);
     let mut cache = AdaptiveIrResidency::new(limits());
-    cache.observations.insert(
+    cache.hot.insert(
         key,
-        super::Observation {
-            scanned: super::ColdCost {
-                pristine_samples: 4,
-                delta_samples: 4,
-                mean_pristine_ns: 100,
-                mean_delta_ns: 400,
+        super::HotEntry {
+            owner: super::HotOwner::Vacant,
+            pin: None,
+            last_used: 0,
+            tier: super::ResidencyTier::Protected,
+            observation: super::Observation {
+                scanned: super::ColdCost {
+                    pristine_samples: 4,
+                    delta_samples: 4,
+                    mean_pristine_ns: 100,
+                    mean_delta_ns: 400,
+                },
+                ..super::Observation::default()
             },
-            ..super::Observation::default()
         },
     );
     let summary = super::IrResidencyDeltaSummary {
@@ -644,6 +782,327 @@ fn prepared_delta_route_learns_independently_of_per_read_action_scans() {
             super::RouteMode::Prepared
         ),
         super::DeltaChoice::Use,
+    );
+}
+
+#[test]
+fn scan_resistant_admission_keeps_exact_hot_evidence_after_one_pass_scan() {
+    const SCAN_SEGMENTS: usize = 90;
+    const SEGMENT_BYTES: usize = 12;
+    let payloads = (0..SCAN_SEGMENTS + 2)
+        .map(|index| format!("{index:012}"))
+        .collect::<Vec<_>>();
+    let payload_refs = payloads
+        .iter()
+        .map(|payload| payload.as_bytes())
+        .collect::<Vec<_>>();
+    let manifest = manifest_with_segments(1, &payload_refs);
+    let (mut source, selection) = selection_for(&manifest, 1);
+    let segments = manifest.plane(selection.kind()).expect("plane").segments();
+    let mut policy = limits();
+    policy.hot_bytes = (8 * SEGMENT_BYTES) as u64;
+    policy.entries = 8;
+    let mut cache = AdaptiveIrResidency::new(policy);
+    let mut store = MemoryRangeStore::default();
+    for (index, segment) in segments.iter().enumerate() {
+        store.insert(
+            selection,
+            segment.admitted_id().expect("fixture ID is admitted"),
+            payloads[index].as_bytes(),
+        );
+    }
+
+    // Warm two exact identities, then give key 0 substantially more measured
+    // reuse. Key 1 is touched last so the old LRU fallback chooses key 0 after
+    // its side-table evidence has been flushed by the scan.
+    for key_index in [0, 1] {
+        for _ in 0..2 {
+            read_fixture_segment(
+                &mut cache,
+                &mut source,
+                selection,
+                &manifest,
+                &segments[key_index],
+                &mut store,
+            );
+        }
+    }
+    for _ in 0..20 {
+        read_fixture_segment(
+            &mut cache,
+            &mut source,
+            selection,
+            &manifest,
+            &segments[0],
+            &mut store,
+        );
+    }
+    read_fixture_segment(
+        &mut cache,
+        &mut source,
+        selection,
+        &manifest,
+        &segments[1],
+        &mut store,
+    );
+
+    let key_zero = super::SegmentLookupKey::from_descriptor(selection.kind(), &segments[0]);
+    let key_one = super::SegmentLookupKey::from_descriptor(selection.kind(), &segments[1]);
+    for (key, uses) in [(key_zero, 100), (key_one, 2)] {
+        let entry = cache.hot.get_mut(&key).expect("interactive owner is hot");
+        entry.observation = super::Observation {
+            uses,
+            scanned: super::ColdCost {
+                pristine_samples: 1,
+                mean_pristine_ns: 100,
+                ..super::ColdCost::default()
+            },
+            mean_hot_ns: 1,
+            ..super::Observation::default()
+        };
+        assert_eq!(entry.tier, super::ResidencyTier::Protected);
+    }
+
+    // A small model of the removed observations LRU shows the old failure:
+    // the 90 one-use identities displace both interactive records; after that
+    // their equal fallback scores make cache-level LRU choose key 0.
+    let mut legacy_observations = HashMap::new();
+    let key_zero_recency = cache.hot.get(&key_zero).expect("key 0 is hot").last_used;
+    let key_one_recency = cache.hot.get(&key_one).expect("key 1 is hot").last_used;
+    assert!(key_zero_recency < key_one_recency);
+    legacy_observations.insert(key_zero, key_zero_recency);
+    legacy_observations.insert(key_one, key_one_recency);
+    let mut tick = key_one_recency + 1;
+    for segment in &segments[2..] {
+        let key = super::SegmentLookupKey::from_descriptor(selection.kind(), segment);
+        legacy_observations.insert(key, tick);
+        tick += 1;
+        if legacy_observations.len() > policy.entries {
+            let victim = legacy_observations
+                .iter()
+                .min_by_key(|(_, last_used)| **last_used)
+                .map(|(key, _)| *key)
+                .expect("nonempty observation table");
+            legacy_observations.remove(&victim);
+        }
+    }
+    assert!(!legacy_observations.contains_key(&key_zero));
+    assert!(!legacy_observations.contains_key(&key_one));
+    // Old `utility` gets no evidence after the scan and gives both owners the
+    // same minimum, byte-normalized fallback score.
+    let legacy_victim = [(key_zero, key_zero_recency), (key_one, key_one_recency)]
+        .into_iter()
+        .min_by_key(|(_, last_used)| *last_used)
+        .map(|(key, _)| key)
+        .expect("two hot owners");
+    assert_eq!(legacy_victim, key_zero);
+
+    for segment in &segments[2..] {
+        assert!(matches!(
+            read_fixture_segment(
+                &mut cache,
+                &mut source,
+                selection,
+                &manifest,
+                segment,
+                &mut store,
+            ),
+            IrResidencyPath::PristineCas(_)
+        ));
+    }
+
+    let before_eviction = cache.metrics();
+    assert_eq!(before_eviction.hot_hits, 21);
+    assert_eq!(
+        before_eviction.hot_admissions,
+        before_eviction.probation_admissions
+    );
+    assert_eq!(before_eviction.protected_promotions, 2);
+    assert_eq!(before_eviction.frequency_sketch_ages, 0);
+    assert!(before_eviction.frequency_sketch_bytes >= super::FREQUENCY_SKETCH_COUNTERS as u64);
+    assert!(before_eviction.route_observation_entries <= policy.entries as u64);
+    assert_eq!(
+        before_eviction.route_observation_bytes,
+        before_eviction.route_observation_entries
+            * std::mem::size_of::<(super::SegmentLookupKey, super::RouteObservation)>() as u64,
+    );
+    assert_eq!(store.reads, SCAN_SEGMENTS + 4);
+    assert_eq!(
+        store.bytes_read,
+        ((SCAN_SEGMENTS + 4) * SEGMENT_BYTES) as u64
+    );
+
+    while cache.probation_entries() > 0 {
+        assert!(cache.evict_one(false));
+    }
+    assert!(cache.hot.contains_key(&key_zero));
+    assert!(cache.hot.contains_key(&key_one));
+    let protected_only = cache.metrics();
+    assert_eq!(protected_only.hot_bytes, (SEGMENT_BYTES * 2) as u64);
+    assert_eq!(protected_only.protected_bytes, (SEGMENT_BYTES * 2) as u64);
+
+    assert!(cache.evict_one(false));
+    assert!(cache.hot.contains_key(&key_zero));
+    assert!(!cache.hot.contains_key(&key_one));
+    let after_eviction = cache.metrics();
+    assert_eq!(after_eviction.evictions, protected_only.evictions + 1);
+    assert_eq!(after_eviction.hot_bytes, SEGMENT_BYTES as u64);
+    assert_eq!(after_eviction.protected_bytes, SEGMENT_BYTES as u64);
+    let bytes_before_replay = store.bytes_read;
+    assert_eq!(
+        read_fixture_segment(
+            &mut cache,
+            &mut source,
+            selection,
+            &manifest,
+            &segments[0],
+            &mut store,
+        ),
+        IrResidencyPath::HotMemory,
+    );
+    assert_eq!(store.bytes_read, bytes_before_replay);
+    assert_eq!(
+        bytes_before_replay + SEGMENT_BYTES as u64,
+        ((SCAN_SEGMENTS + 5) * SEGMENT_BYTES) as u64,
+        "the legacy LRU victim would add one exact segment read",
+    );
+}
+
+#[test]
+fn repeated_full_scans_stay_within_probation_budget_and_preserve_protected_hot_set() {
+    const SCAN_SEGMENTS: usize = 90;
+    const SEGMENT_BYTES: usize = 12;
+    let payloads = (0..SCAN_SEGMENTS + 2)
+        .map(|index| format!("{index:012}"))
+        .collect::<Vec<_>>();
+    let payload_refs = payloads
+        .iter()
+        .map(|payload| payload.as_bytes())
+        .collect::<Vec<_>>();
+    let manifest = manifest_with_segments(3, &payload_refs);
+    let (mut source, selection) = selection_for(&manifest, 3);
+    let segments = manifest.plane(selection.kind()).expect("plane").segments();
+    let mut policy = limits();
+    policy.hot_bytes = (8 * SEGMENT_BYTES) as u64;
+    policy.entries = 8;
+    policy.warm_uses = 3;
+    let mut cache = AdaptiveIrResidency::new(policy);
+    let mut store = MemoryRangeStore::default();
+    for (index, segment) in segments.iter().enumerate() {
+        store.insert(
+            selection,
+            segment.admitted_id().expect("fixture ID is admitted"),
+            payloads[index].as_bytes(),
+        );
+    }
+    for hot_index in [0, 1] {
+        for _ in 0..3 {
+            read_fixture_segment(
+                &mut cache,
+                &mut source,
+                selection,
+                &manifest,
+                &segments[hot_index],
+                &mut store,
+            );
+        }
+        read_fixture_segment(
+            &mut cache,
+            &mut source,
+            selection,
+            &manifest,
+            &segments[hot_index],
+            &mut store,
+        );
+    }
+    let protected = [
+        super::SegmentLookupKey::from_descriptor(selection.kind(), &segments[0]),
+        super::SegmentLookupKey::from_descriptor(selection.kind(), &segments[1]),
+    ];
+
+    // Replay the same three full scans through the removed exact observations
+    // LRU. Its eight-record table forgets a scan key before the next pass,
+    // while TinyLFU's aged estimate still admits recurring keys into probation.
+    let mut legacy_observations = HashMap::new();
+    legacy_observations.insert(protected[0], (4_u32, 1_u64));
+    legacy_observations.insert(protected[1], (4_u32, 2_u64));
+    let mut legacy_tick = 2_u64;
+    let mut legacy_scan_admissions = 0;
+    for _ in 0..3 {
+        for segment in &segments[2..] {
+            legacy_tick += 1;
+            let key = super::SegmentLookupKey::from_descriptor(selection.kind(), segment);
+            let uses = legacy_observations
+                .get(&key)
+                .map_or(1, |(uses, _)| uses.saturating_add(1));
+            legacy_observations.insert(key, (uses, legacy_tick));
+            if uses >= policy.warm_uses {
+                legacy_scan_admissions += 1;
+            }
+            if legacy_observations.len() > policy.entries {
+                let victim = legacy_observations
+                    .iter()
+                    .min_by_key(|(_, (_, last_used))| *last_used)
+                    .map(|(key, _)| *key)
+                    .expect("nonempty legacy observation table");
+                legacy_observations.remove(&victim);
+            }
+        }
+    }
+    assert_eq!(legacy_scan_admissions, 0);
+
+    for _ in 0..3 {
+        for segment in &segments[2..] {
+            read_fixture_segment(
+                &mut cache,
+                &mut source,
+                selection,
+                &manifest,
+                segment,
+                &mut store,
+            );
+        }
+    }
+
+    let measured = cache.metrics();
+    assert_eq!(measured.protected_promotions, 2);
+    assert_eq!(cache.protected_entries(), 2);
+    assert!(protected.iter().all(|key| cache.hot.contains_key(key)));
+    assert!(measured.hot_bytes <= policy.hot_bytes);
+    assert!(cache.hot.len() <= policy.entries);
+    let borrowed_probation_budget = cache.probation_byte_limit().saturating_add(
+        cache
+            .protected_byte_limit()
+            .saturating_sub(measured.protected_bytes),
+    );
+    assert!(measured.probation_bytes <= borrowed_probation_budget);
+    assert_eq!(
+        measured.hot_bytes,
+        measured.probation_bytes + measured.protected_bytes
+    );
+    assert_eq!(measured.frequency_sketch_ages, 0);
+    assert!(measured.route_observation_entries <= policy.entries as u64);
+    assert_eq!(
+        measured.route_observation_bytes,
+        measured.route_observation_entries
+            * std::mem::size_of::<(super::SegmentLookupKey, super::RouteObservation)>() as u64,
+    );
+    let total_requests = SCAN_SEGMENTS * 3 + 8;
+    assert_eq!(
+        store.reads as u64 + measured.hot_hits,
+        total_requests as u64
+    );
+    assert_eq!(store.bytes_read, store.reads as u64 * SEGMENT_BYTES as u64);
+    assert!(measured.probation_admissions > 2);
+    assert!(measured.probation_admissions > legacy_scan_admissions);
+    let repeated_scan_key =
+        super::SegmentLookupKey::from_descriptor(selection.kind(), &segments[2]);
+    assert!(cache.frequency.estimate(repeated_scan_key) >= 3);
+    assert_eq!(
+        measured.evictions as usize
+            + cache.probation_entries()
+            + measured.protected_promotions as usize,
+        measured.probation_admissions as usize,
     );
 }
 
@@ -695,6 +1154,13 @@ fn byte_budget_counts_leases_after_their_hot_entry_is_evicted() {
         .expect("hot lease");
     assert_eq!(cache.metrics().live_owner_bytes, 4);
     assert_eq!(cache.metrics().pinned_owner_bytes, 4);
+
+    // Model pressure eviction explicitly. The lease retains its owner and GC
+    // pin even after the cache releases its entry slot.
+    let first_key = super::SegmentLookupKey::from_descriptor(first_selection.kind(), first_segment);
+    assert!(cache.remove_hot(first_key));
+    assert_eq!(cache.metrics().hot_bytes, 0);
+    assert_eq!(cache.metrics().live_owner_bytes, 4);
 
     cache
         .with_segment(
