@@ -216,6 +216,16 @@ fn closure_claim_opens_metadata_index_and_separates_membership_from_bytes() {
         .expect("write closure index");
 
     let cold_store = FileStore::open(&test_store.path, 1024 * 1024).expect("cold reopen store");
+    assert_eq!(
+        cold_store
+            .admit_closure_claim(ArtifactClosureClaim::from_bytes(*closure_id.as_bytes()))
+            .expect("cold-admit stored closure claim"),
+        closure_id
+    );
+    assert!(matches!(
+        cold_store.admit_closure_claim(ArtifactClosureClaim::from_bytes([0x99; 32])),
+        Err(StoreError::Corrupt)
+    ));
     let index = cold_store
         .open_closure_claim(ArtifactClosureClaim::from_id(closure_id))
         .expect("open checked closure claim");

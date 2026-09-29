@@ -265,7 +265,7 @@ pub(crate) fn history_payload_root_path(target_root: &Path, identity: HistoryCom
 pub(super) fn write_history_payload_root(
     target_root: &Path,
     identity: HistoryCommitId,
-    payload: HistoryPayloadRoot,
+    payload: AdmittedHistoryPayloadRoot,
 ) -> Result<(), String> {
     let directory = target_root.join("history").join("payload-roots");
     create_private_directory(&directory)?;
@@ -295,12 +295,30 @@ pub(super) fn read_history_payload_root(
 
 pub(super) fn encode_history_payload_root(
     identity: HistoryCommitId,
+    payload: AdmittedHistoryPayloadRoot,
+) -> Result<Vec<u8>, String> {
+    encode_history_payload_root_claim_inner(
+        identity,
+        ArtifactClosureClaim::from_id(payload.closure),
+    )
+}
+
+#[cfg(test)]
+pub(in crate::ir_generation_store) fn encode_history_payload_root_claim(
+    identity: HistoryCommitId,
     payload: HistoryPayloadRoot,
+) -> Result<Vec<u8>, String> {
+    encode_history_payload_root_claim_inner(identity, payload.closure)
+}
+
+fn encode_history_payload_root_claim_inner(
+    identity: HistoryCommitId,
+    closure: ArtifactClosureClaim,
 ) -> Result<Vec<u8>, String> {
     let mut writer = Writer::new(MAX_HISTORY_PAYLOAD_RECORD_BYTES - CHECKSUM_BYTES);
     writer.header(HISTORY_PAYLOAD_ROOT_TAG)?;
     writer.fixed(identity.as_bytes())?;
-    writer.fixed(payload.closure.as_bytes())?;
+    writer.fixed(closure.as_bytes())?;
     let mut bytes = writer.finish();
     let checksum = blake3::hash(&bytes);
     bytes.extend_from_slice(checksum.as_bytes());
@@ -318,7 +336,7 @@ pub(super) fn decode_history_payload_root(
     if identity != expected_identity {
         return Err("semantic history payload root names another commit".to_owned());
     }
-    let closure = ClosureId::from_bytes(reader.fixed()?);
+    let closure = ArtifactClosureClaim::from_bytes(reader.fixed()?);
     reader.finish()?;
     Ok(HistoryPayloadRoot { closure })
 }
@@ -426,7 +444,7 @@ pub(super) fn bump_history_commit_epoch(history_root: &Path) -> Result<(), Strin
     backend_platform::durable::write_private_atomic(&path, &bytes).map_err(display_io)
 }
 
-pub(super) fn encode_history_segment_mapping(
+pub(in crate::ir_generation_store) fn encode_history_segment_mapping(
     segment: backend_semantic::ir::UntrustedSemanticSegmentId,
     object: ObjectId,
     byte_length: u64,
@@ -448,7 +466,7 @@ pub(super) fn encode_history_segment_mapping(
 pub(crate) fn decode_history_segment_mapping(
     bytes: &[u8],
     expected_segment: backend_semantic::ir::UntrustedSemanticSegmentId,
-) -> Result<(ObjectId, u64), String> {
+) -> Result<(UntrustedObjectId, u64), String> {
     let body = checked_body(bytes, MAX_HISTORY_SEGMENT_MAP_BYTES)?;
     let mut reader = Reader::new(body);
     reader.header(HISTORY_SEGMENT_MAP_TAG)?;
@@ -456,7 +474,7 @@ pub(crate) fn decode_history_segment_mapping(
     if segment != *expected_segment.as_bytes() {
         return Err("semantic history segment-map filename differs from its claim".to_owned());
     }
-    let object = ObjectId::from_bytes(reader.fixed()?);
+    let object = UntrustedObjectId::from_bytes(reader.fixed()?);
     let byte_length = reader.u64()?;
     if byte_length == 0 {
         return Err("semantic history segment mapping has an empty payload".to_owned());
@@ -504,7 +522,7 @@ pub(super) fn append_commit_index(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct HistoryIndexIntent {
+pub(super) struct HistoryIndexIntent {
     identity: HistoryCommitId,
     offset: u64,
 }
@@ -523,7 +541,7 @@ fn encode_history_index_intent(intent: HistoryIndexIntent) -> Result<Vec<u8>, St
     Ok(bytes)
 }
 
-pub(crate) fn decode_history_index_intent(bytes: &[u8]) -> Result<HistoryIndexIntent, String> {
+pub(super) fn decode_history_index_intent(bytes: &[u8]) -> Result<HistoryIndexIntent, String> {
     let body = checked_body(bytes, MAX_HISTORY_INDEX_INTENT_BYTES)?;
     let mut reader = Reader::new(body);
     reader.header(HISTORY_INDEX_INTENT_TAG)?;

@@ -10,7 +10,7 @@ use std::{
 };
 
 use backend_semantic::ir::{SemanticDeltaCursor, SemanticManifestError};
-use backend_store::{ClosureId, ObjectId};
+use backend_store::{ArtifactClosureClaim, ClosureId, ObjectId, UntrustedObjectId};
 
 use super::{
     CHECKSUM_BYTES, GenerationRecord, LocalSemanticGeneration, LocalSemanticGenerationFiles,
@@ -20,6 +20,9 @@ use super::{
     read_optional_bounded, remove_file, require_current, set_private_directory,
     validate_record_selection,
 };
+
+#[cfg(test)]
+use super::{HistoryTestFault, trip_history_test_fault};
 
 // Protocol records and public value types stay in this facade; commit/ref
 // mutation, replay, codecs, and collection run in focused child modules.
@@ -36,11 +39,16 @@ mod retention;
 pub(super) use catalog::{
     may_prune_generation_records, read_history_catalog_snapshot, validate_commit_generation,
 };
+use codec::decode_history_index_intent;
 pub(super) use codec::{
-    append_history_index_entry, decode_history_index_intent, decode_history_segment_map_count,
-    decode_history_segment_mapping, history_commit_path, history_index_intent_path,
-    history_payload_root_path, load_history_commit, recover_history_index_intent,
-    write_history_segment_map_count,
+    append_history_index_entry, decode_history_segment_map_count, decode_history_segment_mapping,
+    history_commit_path, history_index_intent_path, history_payload_root_path, load_history_commit,
+    recover_history_index_intent, write_history_segment_map_count,
+};
+#[cfg(test)]
+pub(super) use codec::{
+    encode_history_payload_root_claim as encode_test_history_payload_root,
+    encode_history_segment_mapping,
 };
 pub(super) use gc::{
     HistoryReachabilityClass, history_gc_epoch_root, history_gc_marked, history_index_id_at,

@@ -63,6 +63,15 @@ impl From<String> for HistoryProposalError {
 /// FileStore reachability root over existing immutable payload objects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HistoryPayloadRoot {
+    /// Untrusted bytes loaded from a payload-root side record. FileStore must
+    /// admit this claim before it becomes a GC root or is used to read payloads.
+    pub(crate) closure: ArtifactClosureClaim,
+}
+
+/// Payload root produced by a checked FileStore closure receipt and safe to
+/// publish in the immutable history side record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AdmittedHistoryPayloadRoot {
     pub(crate) closure: ClosureId,
 }
 

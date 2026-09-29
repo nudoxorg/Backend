@@ -942,8 +942,9 @@ impl FileSemanticRangeStore {
         };
         let closure = self
             .store
-            .open_closure(payload.closure)
+            .open_closure_claim(payload.closure)
             .map_err(|error| format!("open historical semantic payload closure: {error:?}"))?;
+        let admitted_closure = closure.id();
         let mut segment_count = 0_usize;
         let mut byte_length = 0_u64;
         for plane in generation.manifest().planes() {
@@ -971,7 +972,7 @@ impl FileSemanticRangeStore {
             }
         }
         Ok(crate::HistoryMaterialization::ResidentSegments {
-            closure: Some(payload.closure),
+            closure: Some(admitted_closure),
             segment_count,
             byte_length,
         })
@@ -1007,7 +1008,7 @@ impl FileSemanticRangeStore {
         };
         let closure = self
             .store
-            .open_closure(payload.closure)
+            .open_closure_claim(payload.closure)
             .map_err(|error| format!("open historical semantic payload closure: {error:?}"))?;
         let Some((reader, admitted)) =
             self.open_history_segment_from_closure(target, &generation, &closure, plane, segment)?
@@ -1060,7 +1061,7 @@ impl FileSemanticRangeStore {
             };
             let closure = self
                 .store
-                .open_closure(payload_root.closure)
+                .open_closure_claim(payload_root.closure)
                 .map_err(|error| format!("open historical semantic payload closure: {error:?}"))?;
             (commit, generation, closure)
         };
@@ -1262,7 +1263,11 @@ impl FileSemanticRangeStore {
                         .generations
                         .history_payload_roots(target)
                         .map_err(backend_store::StoreError::Io)?;
-                    for closure in roots {
+                    let admitted_roots = roots
+                        .into_iter()
+                        .map(|claim| self.store.admit_closure_claim(claim))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    for closure in admitted_roots {
                         resolver.add(GcRoot::Closure(closure));
                     }
                     Ok(())
@@ -1840,7 +1845,7 @@ impl FileSemanticRangeStore {
         &self,
         target: &crate::SemanticTargetKey,
         segments: &[(UntrustedSemanticSegmentId, ObjectId, u64)],
-    ) -> Result<Option<super::ir_generation_store::HistoryPayloadRoot>, String> {
+    ) -> Result<Option<super::ir_generation_store::AdmittedHistoryPayloadRoot>, String> {
         let ref_name = crate::HistoryRefName::new("local-cache")?;
         let existing_ref =
             self.generations
@@ -1852,14 +1857,14 @@ impl FileSemanticRangeStore {
                     .to_owned(),
             );
         }
-        let base_id = prior.map(|root| root.closure);
-        let base = base_id
-            .map(|identity| {
+        let base = prior
+            .map(|root| {
                 self.store
-                    .open_closure(identity)
+                    .open_closure_claim(root.closure)
                     .map_err(|error| format!("open semantic history payload closure: {error:?}"))
             })
             .transpose()?;
+        let base_id = base.as_ref().map(DurableManifest::id);
 
         let mut object_lengths = std::collections::BTreeMap::<ObjectId, u64>::new();
         for (_, object, byte_length) in segments {
@@ -1889,9 +1894,9 @@ impl FileSemanticRangeStore {
             }
         }
         if changes.is_empty() {
-            return Ok(
-                base_id.map(|closure| super::ir_generation_store::HistoryPayloadRoot { closure })
-            );
+            return Ok(base_id.map(|closure| {
+                super::ir_generation_store::AdmittedHistoryPayloadRoot { closure }
+            }));
         }
         let base_members = base
             .as_ref()
@@ -1912,9 +1917,11 @@ impl FileSemanticRangeStore {
             .store
             .compose_closure_index(base_id.map(ArtifactClosureClaim::from_id), &changes, budget)
             .map_err(|error| format!("compose semantic history payload closure: {error:?}"))?;
-        Ok(Some(super::ir_generation_store::HistoryPayloadRoot {
-            closure: receipt.receipt().closure(),
-        }))
+        Ok(Some(
+            super::ir_generation_store::AdmittedHistoryPayloadRoot {
+                closure: receipt.receipt().closure(),
+            },
+        ))
     }
 
     fn open_history_segment_from_closure(
@@ -1934,7 +1941,7 @@ impl FileSemanticRangeStore {
             .iter()
             .find(|segment| segment.id_claim().as_bytes() == claim.as_bytes())
             .ok_or_else(|| "historical semantic segment is absent from its manifest".to_owned())?;
-        let Some((object_id, byte_length)) =
+        let Some((object_claim, byte_length)) =
             self.generations.history_segment_mapping(target, claim)?
         else {
             return Ok(None);
@@ -1942,12 +1949,12 @@ impl FileSemanticRangeStore {
         if byte_length != segment.byte_length() {
             return Err("historical semantic segment mapping has the wrong length".to_owned());
         }
-        if !closure
-            .contains_object_id(object_id)
+        let Some(admitted_object_id) = closure
+            .admit_claim(object_claim)
             .map_err(|error| format!("check historical semantic closure membership: {error:?}"))?
-        {
+        else {
             return Ok(None);
-        }
+        };
         let sink = self.store.artifact_sink(ArtifactBudget::new(
             1,
             1,
@@ -1956,15 +1963,13 @@ impl FileSemanticRangeStore {
             1,
         ));
         let Some(reader) = sink
-            .open_object_limited(
-                UntrustedObjectId::from_bytes(*object_id.as_bytes()),
-                MAX_SEMANTIC_OBJECT_BYTES,
-            )
+            .open_object_limited(object_claim, MAX_SEMANTIC_OBJECT_BYTES)
             .map_err(|error| format!("open historical semantic FileStore object: {error:?}"))?
         else {
             return Ok(None);
         };
-        if reader.id() != object_id
+        if reader.id() != admitted_object_id
+            || reader.id().as_bytes() != object_claim.as_bytes()
             || reader.schema()
                 != SchemaIdentity::new(
                     SemanticSegmentPayload::DOMAIN,
@@ -1976,7 +1981,7 @@ impl FileSemanticRangeStore {
             return Err("historical semantic FileStore object differs from its bridge".to_owned());
         }
         let mut mapped = VerifiedMappedSemanticSegment {
-            object_id,
+            object_id: admitted_object_id,
             byte_length,
             reader,
         };

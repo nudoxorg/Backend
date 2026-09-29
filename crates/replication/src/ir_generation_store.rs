@@ -69,7 +69,6 @@ pub(super) fn trip_history_test_fault(point: HistoryTestFault) -> Result<(), Str
 }
 
 mod history;
-pub(super) use history::HistoryPayloadRoot;
 pub use history::{
     AdmittedHistoryCommit, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
     HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError,
@@ -77,6 +76,7 @@ pub use history::{
     HistoryReplayEntry, HistorySegmentDeltas, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
     UnpublishedHistoryProposal,
 };
+pub(super) use history::{AdmittedHistoryPayloadRoot, HistoryPayloadRoot};
 
 /// Content identity of one admitted target/catalog/image-manifest tuple.
 ///
@@ -419,7 +419,7 @@ impl LocalSemanticGenerationFiles {
         image: SemanticPlaneImageKey,
         image_identity: SemanticImageIdentity,
         manifest: &SemanticPlaneManifest,
-        payload_root: Option<HistoryPayloadRoot>,
+        payload_root: Option<AdmittedHistoryPayloadRoot>,
         source: &mut S,
     ) -> Result<LocalSemanticGeneration, String> {
         let record_bytes =
@@ -1162,9 +1162,10 @@ mod tests {
     use backend_semantic::ir::DocInput;
     use backend_semantic::ir::{
         BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
-        FactAvailability, GenerationId, IrBuilder, ItemKind, LanguageProfile, ParentageAuthority,
-        RustEdition, SemanticBuildIdentity, SemanticInputWitness, SemanticIrPlane, SemanticPlane,
-        SemanticPlaneCatalogEntry, SemanticPlaneKind, SemanticPlaneSegment, SemanticRangeRequest,
+        FactAvailability, GenerationId, IrBuilder, ItemKind, LanguageProfile,
+        MAX_SEMANTIC_SEGMENT_BYTES, ParentageAuthority, RustEdition, SemanticBuildIdentity,
+        SemanticInputWitness, SemanticIrPlane, SemanticPlane, SemanticPlaneCatalogEntry,
+        SemanticPlaneKind, SemanticPlaneSegment, SemanticRangeRequest, SemanticReader,
         TreeItemInput, VariantFingerprint, Visibility, encode_full_semantic_image,
         full_semantic_image_len,
     };
@@ -1204,6 +1205,19 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn persisted_segment_object_id(
+        directory: &TestDirectory,
+        payload: &[u8],
+    ) -> backend_store::ObjectId {
+        let store = FileStore::open(directory.0.join("object-cas"), 1024 * 1024)
+            .expect("open fixture FileStore");
+        let key = ObjectKey::<super::super::ir_hydration_store::SemanticSegmentPayload>::from_value(
+            payload,
+        );
+        let object = TypedObject::from_value(&key, payload);
+        store.write_object(&object).expect("persist fixture object")
     }
 
     struct Fixture {
@@ -2560,6 +2574,199 @@ mod tests {
     }
 
     #[test]
+    fn history_payload_claims_are_admitted_before_gc_or_segment_return_after_cold_reopen() {
+        let directory = TestDirectory::create();
+        let cas_root = directory.0.join("cas");
+        let state_root = cas_root.join("semantic-hydration");
+        let file_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open semantic FileStore");
+        let limits = TransportLimits {
+            max_chunk: 16 * 1024,
+            ..TransportLimits::default()
+        };
+        let range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
+            .expect("open semantic history adapter");
+        let generations =
+            LocalSemanticGenerationFiles::open(&state_root).expect("open history metadata store");
+        let payload = b"claimed historical segment";
+        let generation = fixture(payload, 1, 121);
+        let plane = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let segment = generation
+            .manifest
+            .plane(plane)
+            .expect("core semantic plane")
+            .segments()
+            .first()
+            .expect("one semantic segment");
+        let key = ObjectKey::<super::super::ir_hydration_store::SemanticSegmentPayload>::from_value(
+            payload.as_slice(),
+        );
+        let object = TypedObject::from_value(&key, payload.as_slice());
+        let object_id = file_store
+            .write_object(&object)
+            .expect("persist semantic segment");
+        generations
+            .persist_history_segment_mapping(
+                &generation.target,
+                segment.id_claim(),
+                object_id,
+                segment.byte_length(),
+            )
+            .expect("persist verified bridge mapping");
+        let payload_root = range_store
+            .compose_history_payload_root(
+                &generation.target,
+                &[(segment.id_claim(), object_id, segment.byte_length())],
+            )
+            .expect("compose payload closure");
+        let admitted_root = payload_root.expect("one segment produces a payload closure");
+        assert_eq!(
+            file_store
+                .admit_closure_claim(backend_store::ArtifactClosureClaim::from_id(
+                    admitted_root.closure,
+                ))
+                .expect("admit composed closure claim"),
+            admitted_root.closure
+        );
+        assert!(
+            file_store
+                .admit_closure_claim(backend_store::ArtifactClosureClaim::from_bytes([0xa5; 32]))
+                .is_err()
+        );
+        let _committed = generations
+            .commit_with_payload_root(
+                &generation.target,
+                generation.stamp,
+                &generation.catalog,
+                generation.image,
+                generation.image_identity,
+                &generation.manifest,
+                Some(admitted_root),
+                &mut TestAuthority::new([generation.stamp, generation.stamp], [generation.image]),
+            )
+            .expect("admit generation and payload root");
+        let ref_name = HistoryRefName::new("local-cache").expect("local-cache ref");
+        let history_commit = generations
+            .history_ref(&generation.target, HistoryRefKind::Branch, &ref_name)
+            .expect("read selected history ref")
+            .expect("selected history ref exists")
+            .commit();
+        let root_path = history::history_payload_root_path(
+            &generations.target_root(&generation.target),
+            history_commit,
+        );
+        let valid_root = fs::read(&root_path).expect("read persisted payload root");
+        let bridge_path = generations
+            .target_root(&generation.target)
+            .join("history")
+            .join("segment-map")
+            .join(format!("{}.map", hex(segment.id_claim().as_bytes())));
+        let valid_bridge = fs::read(&bridge_path).expect("read persisted bridge mapping");
+
+        let forged_root = history::encode_test_history_payload_root(
+            history_commit,
+            HistoryPayloadRoot {
+                closure: backend_store::ArtifactClosureClaim::from_bytes([0xa5; 32]),
+            },
+        )
+        .expect("encode forged closure claim");
+        fs::remove_file(&root_path).expect("remove valid root before fixture replacement");
+        fs::write(&root_path, forged_root).expect("write forged closure claim");
+        assert!(
+            range_store
+                .history_materialization(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    &ref_name,
+                    history_commit,
+                )
+                .is_err(),
+            "a forged closure claim must fail before a materialization receipt is returned"
+        );
+        assert!(
+            range_store
+                .collect_garbage_with_history(
+                    &generation.target,
+                    backend_store::GcLimits::default(),
+                )
+                .is_err(),
+            "a forged closure claim must fail before it can become a GC root"
+        );
+        assert_eq!(
+            file_store
+                .read_object(object_id)
+                .expect("failed GC leaves the historical object available")
+                .id(),
+            object_id
+        );
+        fs::remove_file(&root_path).expect("remove forged root");
+        fs::write(&root_path, valid_root).expect("restore valid root");
+
+        let impostor_payload = b"unrelated existing object";
+        let impostor_key =
+            ObjectKey::<super::super::ir_hydration_store::SemanticSegmentPayload>::from_value(
+                impostor_payload.as_slice(),
+            );
+        let impostor = TypedObject::from_value(&impostor_key, impostor_payload.as_slice());
+        let impostor_id = file_store
+            .write_object(&impostor)
+            .expect("persist unrelated object");
+        let forged_bridge = history::encode_history_segment_mapping(
+            segment.id_claim(),
+            impostor_id,
+            segment.byte_length(),
+        )
+        .expect("encode forged object claim");
+        fs::remove_file(&bridge_path).expect("remove valid bridge before fixture replacement");
+        fs::write(&bridge_path, forged_bridge).expect("write forged object claim");
+        drop(generations);
+        drop(range_store);
+        drop(file_store);
+
+        let reopened_store =
+            FileStore::open(&cas_root, 16 * 1024 * 1024).expect("cold-open FileStore");
+        let reopened = FileSemanticRangeStore::open(reopened_store.clone(), limits)
+            .expect("cold-open semantic history adapter");
+        assert!(
+            reopened
+                .read_history_segment(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    &ref_name,
+                    history_commit,
+                    plane,
+                    segment.id_claim(),
+                )
+                .is_err(),
+            "an existing object outside the retained closure must not be returned"
+        );
+
+        fs::remove_file(&bridge_path).expect("remove forged bridge");
+        fs::write(&bridge_path, valid_bridge).expect("restore valid bridge");
+        reopened
+            .collect_garbage_with_history(&generation.target, backend_store::GcLimits::default())
+            .expect("cold-reopened valid closure is admitted as a GC root");
+        let mut reader = reopened
+            .read_history_segment(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &ref_name,
+                history_commit,
+                plane,
+                segment.id_claim(),
+            )
+            .expect("cold-reopened valid segment is returned");
+        let mut actual = vec![0; payload.len()];
+        assert_eq!(
+            reader
+                .read_range(0, &mut actual)
+                .expect("read cold-reopened segment"),
+            payload.len()
+        );
+        assert_eq!(actual, payload);
+    }
+
+    #[test]
     fn third_old_segment_replays_after_forced_file_store_gc_and_cold_reopen() {
         let directory = TestDirectory::create();
         let cas_root = directory.0.join("cas");
@@ -2634,7 +2841,7 @@ mod tests {
                         .contains("AfterPayloadRoot")
                 );
             }
-            let committed = generations
+            let _committed = generations
                 .commit_with_payload_root(
                     &generation.target,
                     generation.stamp,
@@ -2649,10 +2856,19 @@ mod tests {
                     ),
                 )
                 .expect("admit selected generation and local-cache ref");
+            let commit_identity = generations
+                .history_ref(
+                    &generation.target,
+                    HistoryRefKind::Branch,
+                    &HistoryRefName::new("local-cache").expect("local-cache ref"),
+                )
+                .expect("read selected history ref")
+                .expect("selected history ref exists")
+                .commit();
             if commits.is_empty() {
-                historical_claim = Some((committed.identity(), segment.id_claim(), payload));
+                historical_claim = Some((commit_identity, segment.id_claim(), payload));
             }
-            commits.push(committed.identity());
+            commits.push(commit_identity);
         }
         assert_eq!(commits.len(), 3);
         let history_target = fixture(b"historical segment one", 1, 81).target;
@@ -3312,7 +3528,7 @@ mod tests {
             .persist_history_segment_mapping(
                 &base.target,
                 orphan_segment,
-                backend_store::ObjectId::from_bytes([0x19; 32]),
+                persisted_segment_object_id(&directory, b"orphan map one"),
                 23,
             )
             .expect("persist known unreferenced bridge map");
@@ -3371,7 +3587,7 @@ mod tests {
             .persist_history_segment_mapping(
                 &base.target,
                 next_segment,
-                backend_store::ObjectId::from_bytes([0x1a; 32]),
+                persisted_segment_object_id(&directory, b"orphan map two"),
                 29,
             )
             .expect("reclaimed map slot is reusable");
@@ -3395,7 +3611,7 @@ mod tests {
             .persist_history_segment_mapping(
                 &base.target,
                 orphan_segment,
-                backend_store::ObjectId::from_bytes([0x29; 32]),
+                persisted_segment_object_id(&directory, b"corrupt map fixture"),
                 31,
             )
             .expect("persist known unreferenced bridge map");

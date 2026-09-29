@@ -877,6 +877,24 @@ impl FileStore {
         self.open_closure(ClosureId::from_bytes(claim.0))
     }
 
+    /// Admits a closure claim by checking its stored descriptor and manifest
+    /// index, without loading any member object payloads.
+    ///
+    /// The returned ID is derived from the authenticated manifest descriptor.
+    /// Callers that consume members must still prove membership and verify the
+    /// corresponding object envelope.
+    pub fn admit_closure_claim(
+        &self,
+        claim: ArtifactClosureClaim,
+    ) -> Result<ClosureId, StoreError> {
+        let manifest = self.open_closure_claim(claim)?;
+        let id = manifest.id();
+        if id.as_bytes() != claim.as_bytes() {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(id)
+    }
+
     /// Opens a checked metadata-only view of a stored closure index.
     ///
     /// This is an alias for [`Self::open_closure_claim`] for callers that

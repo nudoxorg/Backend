@@ -166,7 +166,7 @@ impl LocalSemanticGenerationFiles {
     pub(crate) fn history_payload_roots(
         &self,
         target: &SemanticTargetKey,
-    ) -> Result<Vec<ClosureId>, String> {
+    ) -> Result<Vec<ArtifactClosureClaim>, String> {
         let target_root = self.target_root(target);
         let history_root = target_root.join("history");
         if !ensure_optional_directory(&history_root)? {
@@ -180,8 +180,8 @@ impl LocalSemanticGenerationFiles {
                 roots.push(payload.closure);
             }
         }
-        roots.sort_unstable();
-        roots.dedup();
+        roots.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        roots.dedup_by(|left, right| left.as_bytes() == right.as_bytes());
         Ok(roots)
     }
 
@@ -218,7 +218,7 @@ impl LocalSemanticGenerationFiles {
         &self,
         target: &SemanticTargetKey,
         segment: backend_semantic::ir::UntrustedSemanticSegmentId,
-    ) -> Result<Option<(ObjectId, u64)>, String> {
+    ) -> Result<Option<(UntrustedObjectId, u64)>, String> {
         let path = self
             .target_root(target)
             .join("history")
@@ -478,7 +478,7 @@ impl LocalSemanticGenerationFiles {
         &self,
         generation: &LocalSemanticGeneration,
         source: &mut S,
-        payload_root: Option<HistoryPayloadRoot>,
+        payload_root: Option<AdmittedHistoryPayloadRoot>,
     ) -> Result<HistoryAdmissionReceipt, String> {
         let target = &generation.target;
         let target_root = self.target_root(target);
