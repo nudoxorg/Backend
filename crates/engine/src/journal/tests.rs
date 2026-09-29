@@ -229,12 +229,13 @@ fn cold_open_syncs_a_hard_exited_writer_suffix_before_returning_the_cursor() {
     assert_eq!(status.code(), Some(79));
 
     let order = RefCell::new(Vec::new());
+    let replayed = RefCell::new(Vec::new());
     let (journal, scan) = HashChainJournal::<TestLog>::open_streaming_with_mode_and_sync(
         &path,
         limits(),
         |frame| {
             order.borrow_mut().push("visitor");
-            assert_eq!(frame.payload, b"cold-replay");
+            replayed.borrow_mut().push(frame.payload.to_vec());
             Ok(())
         },
         false,
@@ -245,7 +246,8 @@ fn cold_open_syncs_a_hard_exited_writer_suffix_before_returning_the_cursor() {
     )
     .expect("cold replay crosses durability barrier");
     assert_eq!(scan.last_sequence, Some(1));
-    assert_eq!(*order.borrow(), vec!["visitor", "sync"]);
+    assert_eq!(*replayed.borrow(), vec![b"first".to_vec(), b"cold-replay".to_vec()]);
+    assert_eq!(*order.borrow(), vec!["visitor", "visitor", "sync"]);
     drop(journal);
     remove(&candidate_path);
     remove(&path);
