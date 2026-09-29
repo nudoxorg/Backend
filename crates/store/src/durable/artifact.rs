@@ -991,7 +991,7 @@ impl FileStore {
         mut consume_chunk: impl FnMut(&[u8]) -> Result<(), StoreError>,
     ) -> Result<Option<VerifiedObjectEnvelope>, StoreError> {
         let Some((verified, _file)) = verify_object_file_reader_limited_with_payload(
-            &self.store,
+            self,
             claim,
             None,
             Some(maximum_payload_bytes),
