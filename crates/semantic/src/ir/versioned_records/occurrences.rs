@@ -63,6 +63,7 @@ impl CanonicalPlaneRowEncoder for OccurrenceRows {
         let mut rows = Vec::new();
         let mut base_bytes = Vec::new();
         for (id, occurrence) in reader.link_occurrences() {
+            sink.check_row_count(rows.len())?;
             rows.try_reserve(1)
                 .map_err(SemanticPlaneRecordError::Allocation)?;
             base_bytes.clear();

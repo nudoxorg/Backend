@@ -69,12 +69,15 @@ pub(super) fn read_checked_jumbo_descriptor(
 pub(super) fn validate_jumbo_row_size(
     descriptor: &CheckedJumboValueDescriptor,
     fixed_row_bytes: usize,
+    maximum_inline_row_bytes: usize,
 ) -> Result<(), SemanticPlaneRecordError> {
     let fixed_row_bytes =
         u64::try_from(fixed_row_bytes).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+    let maximum_inline_row_bytes = u64::try_from(maximum_inline_row_bytes)
+        .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
     if fixed_row_bytes
         .checked_add(descriptor.byte_length())
-        .is_none_or(|row_bytes| row_bytes <= crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u64)
+        .is_none_or(|row_bytes| row_bytes <= maximum_inline_row_bytes)
     {
         return Err(SemanticPlaneRecordError::RowGrammar);
     }

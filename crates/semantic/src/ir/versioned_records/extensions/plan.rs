@@ -64,6 +64,15 @@ impl CanonicalPlaneRowEncoder for LanguageExtensionRows {
         require_profile(reader, self.profile)?;
         TypedRecordPlan::build(reader)
     }
+    fn build_plan_with_limits<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        maximum_rows: u64,
+        maximum_references: u64,
+    ) -> Result<Self::Plan, SemanticPlaneRecordError> {
+        require_profile(reader, self.profile)?;
+        TypedRecordPlan::build_with_limits(reader, maximum_rows, maximum_references)
+    }
 
     fn collect_keys<Reader: SemanticReader + ?Sized>(
         &self,

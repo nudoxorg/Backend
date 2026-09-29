@@ -335,6 +335,21 @@ impl<'sink, S: JumboRopeObjectSink + ?Sized> RopeWriter<'sink, S> {
         }
         let leaf_length =
             u64::try_from(self.scratch.len()).map_err(|_| JumboRopeError::LengthOverflow)?;
+        let next_leaf_count = self
+            .leaf_count
+            .checked_add(1)
+            .ok_or(JumboRopeError::LengthOverflow)?;
+        let receipt_bytes = usize::try_from(next_leaf_count)
+            .ok()
+            .and_then(|count| count.checked_mul(size_of::<Option<LeafReceipt>>()))
+            .ok_or(JumboRopeError::LengthOverflow)?;
+        if receipt_bytes > self.limits.max_metadata_bytes {
+            return Err(JumboRopeError::MetadataTooLarge {
+                observed: receipt_bytes,
+                maximum: self.limits.max_metadata_bytes,
+            }
+            .into());
+        }
         let id = JumboRopeObjectId(leaf_identity(&self.scratch));
         self.sink
             .write_leaf(JumboRopeLeafRef {
@@ -351,10 +366,7 @@ impl<'sink, S: JumboRopeObjectSink + ?Sized> RopeWriter<'sink, S> {
             leaf_count: 1,
             byte_length: leaf_length,
         };
-        self.leaf_count = self
-            .leaf_count
-            .checked_add(1)
-            .ok_or(JumboRopeError::LengthOverflow)?;
+        self.leaf_count = next_leaf_count;
         self.emitted_bytes = self
             .emitted_bytes
             .checked_add(leaf_length)

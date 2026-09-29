@@ -107,9 +107,11 @@ enum TypedPlanFault {
     AnonymousCycle,
     InvalidProjection,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum TypedPlanError {
     Typed(TypedPlanFault),
+    ReferenceBudgetExceeded(u64),
+    Allocation(alloc::collections::TryReserveError),
 }
 impl From<TypedPlanFault> for TypedPlanError {
     fn from(value: TypedPlanFault) -> Self {
@@ -370,6 +372,14 @@ impl CanonicalPlaneRowEncoder for TypesRows {
     ) -> Result<Self::Plan, SemanticPlaneRecordError> {
         TypedRecordPlan::build(reader)
     }
+    fn build_plan_with_limits<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        maximum_rows: u64,
+        maximum_references: u64,
+    ) -> Result<Self::Plan, SemanticPlaneRecordError> {
+        TypedRecordPlan::build_with_limits(reader, maximum_rows, maximum_references)
+    }
     fn collect_keys<Reader: SemanticReader + ?Sized>(
         &self,
         _reader: &Reader,
@@ -438,73 +448,175 @@ impl TypedRecordPlan {
     pub fn build<Reader: SemanticReader + ?Sized>(
         reader: &Reader,
     ) -> Result<Self, SemanticPlaneRecordError> {
+        Self::build_with_limits(reader, u64::MAX, u64::MAX)
+    }
+
+    /// Builds a checked closure while limiting retained row and edge facts.
+    pub fn build_with_limits<Reader: SemanticReader + ?Sized>(
+        reader: &Reader,
+        maximum_rows: u64,
+        maximum_references: u64,
+    ) -> Result<Self, SemanticPlaneRecordError> {
         let mut roots = BTreeMap::new();
         let mut root_nodes = Vec::new();
         for entity in reader.canonical_entities() {
             let identity = entity.version.identity();
+            if u64::try_from(roots.len()).unwrap_or(u64::MAX) >= maximum_rows {
+                return Err(SemanticPlaneRecordError::RowBudgetExceeded {
+                    maximum: maximum_rows,
+                });
+            }
             if roots.insert(identity, entity.semantic_type).is_some() {
                 return Err(SemanticPlaneRecordError::StableKeyCollision);
             }
             if let Some(ty) = entity.semantic_type {
-                root_nodes.push(TypedPlanNode::Type(ty));
+                push_limited_plan_fact(
+                    &mut root_nodes,
+                    TypedPlanNode::Type(ty),
+                    maximum_references,
+                )?;
             }
         }
         // Extension rows belong to LanguageExtensions; this scan seeds all their typed references.
         for (owner, facts) in reader.typescript_extensions() {
             require_extension_owner(reader, &roots, owner)?;
-            root_nodes.push(TypedPlanNode::TypeParameters(facts.type_parameters));
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::TypeParameters(facts.type_parameters),
+                maximum_references,
+            )?;
             if let Some(ty) = facts.declared {
-                root_nodes.push(TypedPlanNode::Type(ty));
+                push_limited_plan_fact(
+                    &mut root_nodes,
+                    TypedPlanNode::Type(ty),
+                    maximum_references,
+                )?;
             }
             if let Some(ty) = facts.observed {
-                root_nodes.push(TypedPlanNode::Type(ty));
+                push_limited_plan_fact(
+                    &mut root_nodes,
+                    TypedPlanNode::Type(ty),
+                    maximum_references,
+                )?;
             }
         }
         for (owner, facts) in reader.csharp_extensions() {
             require_extension_owner(reader, &roots, owner)?;
-            root_nodes.push(TypedPlanNode::TypeParameters(facts.constraints));
-            root_nodes.push(TypedPlanNode::AtomList(facts.attributes));
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::TypeParameters(facts.constraints),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.attributes),
+                maximum_references,
+            )?;
         }
         for (owner, facts) in reader.go_extensions() {
             require_extension_owner(reader, &roots, owner)?;
-            root_nodes.push(TypedPlanNode::TypeList(facts.signature.parameters));
-            root_nodes.push(TypedPlanNode::TypeList(facts.signature.results));
-            root_nodes.push(TypedPlanNode::TypeParameters(facts.type_parameters));
-            root_nodes.push(TypedPlanNode::AtomList(facts.build_constraints));
-            root_nodes.push(TypedPlanNode::AtomList(facts.constant_value));
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::TypeList(facts.signature.parameters),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::TypeList(facts.signature.results),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::TypeParameters(facts.type_parameters),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.build_constraints),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.constant_value),
+                maximum_references,
+            )?;
         }
         for (owner, facts) in reader.rust_extensions() {
             require_extension_owner(reader, &roots, owner)?;
-            root_nodes.push(TypedPlanNode::AtomList(facts.lifetimes));
-            root_nodes.push(TypedPlanNode::TypeParameters(facts.where_clauses));
-            root_nodes.push(TypedPlanNode::AtomList(facts.macros));
-            root_nodes.push(TypedPlanNode::AtomList(facts.const_defaults));
-            root_nodes.push(TypedPlanNode::FreePredicates(facts.free_predicates));
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.lifetimes),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::TypeParameters(facts.where_clauses),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.macros),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.const_defaults),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::FreePredicates(facts.free_predicates),
+                maximum_references,
+            )?;
         }
         for (owner, facts) in reader.python_extensions() {
             require_extension_owner(reader, &roots, owner)?;
-            root_nodes.push(TypedPlanNode::AtomList(facts.decorators));
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.decorators),
+                maximum_references,
+            )?;
         }
         for (owner, facts) in reader.java_extensions() {
             require_extension_owner(reader, &roots, owner)?;
-            root_nodes.push(TypedPlanNode::TypeList(facts.throws));
-            root_nodes.push(TypedPlanNode::AtomList(facts.annotations));
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::TypeList(facts.throws),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.annotations),
+                maximum_references,
+            )?;
         }
         for (owner, facts) in reader.clang_extensions() {
             require_extension_owner(reader, &roots, owner)?;
-            root_nodes.push(TypedPlanNode::TypeParameters(facts.templates));
-            root_nodes.push(TypedPlanNode::AtomList(facts.includes));
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::TypeParameters(facts.templates),
+                maximum_references,
+            )?;
+            push_limited_plan_fact(
+                &mut root_nodes,
+                TypedPlanNode::AtomList(facts.includes),
+                maximum_references,
+            )?;
         }
         // External endpoints have a public complete census and are also roots for other families.
-        let external_roots = reader
-            .canonical_externals()
-            .map(|(id, _)| id)
-            .collect::<Vec<_>>();
+        let mut external_roots = Vec::new();
+        for (id, _) in reader.canonical_externals() {
+            push_limited_plan_fact(&mut external_roots, id, maximum_references)?;
+        }
+        let maximum_node_rows =
+            maximum_rows.saturating_sub(u64::try_from(roots.len()).unwrap_or(u64::MAX));
         let (nodes, edges, edge_offsets, node_positions, mut atoms, mut externals) =
-            discover_typed_graph(reader, root_nodes)?;
-        externals.extend(external_roots);
+            discover_typed_graph(reader, root_nodes, maximum_node_rows, maximum_references)?;
+        for external in external_roots {
+            push_limited_plan_fact(&mut externals, external, maximum_references)?;
+        }
         for external in externals.iter().copied() {
-            collect_external_atoms(reader, external, &mut atoms)?;
+            collect_external_atoms(reader, external, &mut atoms, maximum_references)?;
         }
         let mut plan = Self {
             nodes,
@@ -523,8 +635,22 @@ impl TypedRecordPlan {
             external_ids: Vec::new(),
             external_keys_by_raw: Vec::new(),
         };
-        plan.materialize_atoms(reader, atoms)?;
-        plan.materialize_externals(reader, externals)?;
+        let remaining_rows = maximum_rows
+            .saturating_sub(u64::try_from(plan.roots.len()).unwrap_or(u64::MAX))
+            .saturating_sub(u64::try_from(plan.nodes.len()).unwrap_or(u64::MAX));
+        plan.materialize_atoms(reader, atoms, remaining_rows)?;
+        let remaining_external_rows =
+            remaining_rows.saturating_sub(u64::try_from(plan.atom_ids.len()).unwrap_or(u64::MAX));
+        plan.materialize_externals(reader, externals, remaining_external_rows)?;
+        let resulting_rows = u64::try_from(plan.atom_ids.len())
+            .ok()
+            .and_then(|count| count.checked_add(u64::try_from(plan.external_ids.len()).ok()?))
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        if resulting_rows > remaining_rows {
+            return Err(SemanticPlaneRecordError::RowBudgetExceeded {
+                maximum: maximum_rows,
+            });
+        }
         plan.materialize_node_keys(reader)?;
         Ok(plan)
     }
@@ -533,6 +659,7 @@ impl TypedRecordPlan {
         &mut self,
         reader: &(impl SemanticReader + ?Sized),
         mut atoms: Vec<crate::ir::AtomId>,
+        maximum_rows: u64,
     ) -> Result<(), SemanticPlaneRecordError> {
         atoms.sort_unstable_by_key(|atom| atom.raw);
         atoms.dedup_by_key(|atom| atom.raw);
@@ -569,7 +696,7 @@ impl TypedRecordPlan {
                 }
                 end += 1;
             }
-            self.atom_ids.push((key, representative));
+            push_limited_plan_row_fact(&mut self.atom_ids, (key, representative), maximum_rows)?;
             cursor = end;
         }
         Ok(())
@@ -579,6 +706,7 @@ impl TypedRecordPlan {
         &mut self,
         reader: &(impl SemanticReader + ?Sized),
         mut externals: Vec<crate::ir::ExternalId>,
+        maximum_rows: u64,
     ) -> Result<(), SemanticPlaneRecordError> {
         externals.sort_unstable_by_key(|external| external.raw);
         externals.dedup_by_key(|external| external.raw);
@@ -611,7 +739,11 @@ impl TypedRecordPlan {
                 }
                 end += 1;
             }
-            self.external_ids.push((key, representative));
+            push_limited_plan_row_fact(
+                &mut self.external_ids,
+                (key, representative),
+                maximum_rows,
+            )?;
             cursor = end;
         }
         Ok(())
@@ -754,6 +886,8 @@ fn require_extension_owner<Reader: SemanticReader + ?Sized>(
 fn discover_typed_graph<Reader: SemanticReader + ?Sized>(
     reader: &Reader,
     roots: Vec<TypedPlanNode>,
+    maximum_rows: u64,
+    maximum_references: u64,
 ) -> Result<
     (
         Vec<TypedPlanNode>,
@@ -777,15 +911,29 @@ fn discover_typed_graph<Reader: SemanticReader + ?Sized>(
         if positions.contains_key(&key) {
             continue;
         }
+        if u64::try_from(nodes.len()).unwrap_or(u64::MAX) >= maximum_rows {
+            return Err(SemanticPlaneRecordError::RowBudgetExceeded {
+                maximum: maximum_rows,
+            });
+        }
         let slot = nodes.len();
         positions.insert(key, slot);
         nodes.push(node);
         offsets.push(edges.len());
         for_each_reader_edge(reader, node, &mut |edge| {
             match edge.target {
-                TypedPlanTarget::Node(child) => pending.push(child),
-                TypedPlanTarget::Atom(atom) => atoms.push(atom),
-                TypedPlanTarget::External(external) => externals.push(external),
+                TypedPlanTarget::Node(child) => {
+                    push_limited_plan_fact(&mut pending, child, maximum_references)
+                        .map_err(map_plan_fact_error)?
+                }
+                TypedPlanTarget::Atom(atom) => {
+                    push_limited_plan_fact(&mut atoms, atom, maximum_references)
+                        .map_err(map_plan_fact_error)?
+                }
+                TypedPlanTarget::External(external) => {
+                    push_limited_plan_fact(&mut externals, external, maximum_references)
+                        .map_err(map_plan_fact_error)?
+                }
                 TypedPlanTarget::Entity(entity) => {
                     if reader.entity(entity).is_none() {
                         return Err(TypedPlanError::Typed(TypedPlanFault::InvalidProjection));
@@ -793,6 +941,10 @@ fn discover_typed_graph<Reader: SemanticReader + ?Sized>(
                 }
                 TypedPlanTarget::Scalar(_) => {}
             }
+            if u64::try_from(edges.len()).unwrap_or(u64::MAX) >= maximum_references {
+                return Err(TypedPlanError::Typed(TypedPlanFault::InvalidProjection));
+            }
+            edges.try_reserve(1).map_err(TypedPlanError::Allocation)?;
             edges.push(edge);
             Ok(())
         })
@@ -807,12 +959,60 @@ fn discover_typed_graph<Reader: SemanticReader + ?Sized>(
     Ok((nodes, edges, offsets, sorted_positions, atoms, externals))
 }
 
+fn push_limited_plan_fact<T>(
+    rows: &mut Vec<T>,
+    row: T,
+    maximum_references: u64,
+) -> Result<(), SemanticPlaneRecordError> {
+    if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= maximum_references {
+        return Err(SemanticPlaneRecordError::ReferenceBudgetExceeded {
+            maximum: maximum_references,
+        });
+    }
+    rows.try_reserve(1)
+        .map_err(SemanticPlaneRecordError::Allocation)?;
+    rows.push(row);
+    Ok(())
+}
+
+fn push_limited_plan_row_fact<T>(
+    rows: &mut Vec<T>,
+    row: T,
+    maximum_rows: u64,
+) -> Result<(), SemanticPlaneRecordError> {
+    if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= maximum_rows {
+        return Err(SemanticPlaneRecordError::RowBudgetExceeded {
+            maximum: maximum_rows,
+        });
+    }
+    rows.try_reserve(1)
+        .map_err(SemanticPlaneRecordError::Allocation)?;
+    rows.push(row);
+    Ok(())
+}
+
 fn map_typed_plan_error(error: TypedPlanError) -> SemanticPlaneRecordError {
     match error {
         TypedPlanError::Typed(TypedPlanFault::AnonymousCycle) => {
             SemanticPlaneRecordError::TypedDependencyCycle
         }
-        _ => SemanticPlaneRecordError::ReaderReference,
+        TypedPlanError::Typed(TypedPlanFault::InvalidProjection) => {
+            SemanticPlaneRecordError::ReaderReference
+        }
+        TypedPlanError::ReferenceBudgetExceeded(maximum) => {
+            SemanticPlaneRecordError::ReferenceBudgetExceeded { maximum }
+        }
+        TypedPlanError::Allocation(error) => SemanticPlaneRecordError::Allocation(error),
+    }
+}
+
+fn map_plan_fact_error(error: SemanticPlaneRecordError) -> TypedPlanError {
+    match error {
+        SemanticPlaneRecordError::ReferenceBudgetExceeded { maximum } => {
+            TypedPlanError::ReferenceBudgetExceeded(maximum)
+        }
+        SemanticPlaneRecordError::Allocation(error) => TypedPlanError::Allocation(error),
+        _ => TypedPlanError::Typed(TypedPlanFault::InvalidProjection),
     }
 }
 fn node_key(node: TypedPlanNode) -> (u8, u32) {
@@ -996,6 +1196,7 @@ fn collect_external_atoms<Reader: SemanticReader + ?Sized>(
     reader: &Reader,
     external: crate::ir::ExternalId,
     atoms: &mut Vec<crate::ir::AtomId>,
+    maximum_references: u64,
 ) -> Result<(), SemanticPlaneRecordError> {
     let target = reader
         .external(external)
@@ -1005,25 +1206,27 @@ fn collect_external_atoms<Reader: SemanticReader + ?Sized>(
         crate::ir::ExternalTarget::Foreign(target) => {
             match target.origin {
                 crate::ir::ForeignTargetOrigin::Package { ecosystem, package } => {
-                    atoms.push(ecosystem);
-                    atoms.push(package);
+                    push_limited_plan_fact(atoms, ecosystem, maximum_references)?;
+                    push_limited_plan_fact(atoms, package, maximum_references)?;
                 }
                 crate::ir::ForeignTargetOrigin::Namespace {
                     ecosystem,
                     namespace,
                 } => {
-                    atoms.push(ecosystem);
-                    atoms.push(namespace);
+                    push_limited_plan_fact(atoms, ecosystem, maximum_references)?;
+                    push_limited_plan_fact(atoms, namespace, maximum_references)?;
                 }
                 crate::ir::ForeignTargetOrigin::Universe { ecosystem }
                 | crate::ir::ForeignTargetOrigin::Unspecified { ecosystem } => {
-                    atoms.push(ecosystem);
+                    push_limited_plan_fact(atoms, ecosystem, maximum_references)?;
                 }
             }
-            atoms.push(target.path);
-            atoms.push(target.display);
+            push_limited_plan_fact(atoms, target.path, maximum_references)?;
+            push_limited_plan_fact(atoms, target.display, maximum_references)?;
         }
-        crate::ir::ExternalTarget::FragmentEntity { display, .. } => atoms.push(display),
+        crate::ir::ExternalTarget::FragmentEntity { display, .. } => {
+            push_limited_plan_fact(atoms, display, maximum_references)?;
+        }
     }
     Ok(())
 }

@@ -63,6 +63,7 @@ pub struct CanonicalSemanticPlaneRowKey<Handle: Copy> {
 /// second copy of the complete semantic plane while records are sorted.
 pub struct CanonicalSemanticPlaneKeySink<Handle: Copy> {
     kind: SemanticPlaneKind,
+    maximum_rows: Option<u64>,
     rows: Vec<CanonicalSemanticPlaneRowKey<Handle>>,
 }
 
@@ -72,16 +73,43 @@ impl<Handle: Copy> CanonicalSemanticPlaneKeySink<Handle> {
     pub fn new(kind: SemanticPlaneKind) -> Self {
         Self {
             kind,
+            maximum_rows: None,
+            rows: Vec::new(),
+        }
+    }
+
+    /// Starts collecting keys with a hard family row ceiling. Push rejects
+    /// before growing the key/handle inventory beyond this count.
+    #[must_use]
+    pub fn with_row_limit(kind: SemanticPlaneKind, maximum_rows: u64) -> Self {
+        Self {
+            kind,
+            maximum_rows: Some(maximum_rows),
             rows: Vec::new(),
         }
     }
 
     /// Adds one stable row key and its non-persisted reader handle.
     pub fn push(&mut self, key: [u8; 32], handle: Handle) -> Result<(), SemanticPlaneRecordError> {
+        self.check_row_count(self.rows.len())?;
         self.rows
             .try_reserve(1)
             .map_err(SemanticPlaneRecordError::Allocation)?;
         self.rows.push(CanonicalSemanticPlaneRowKey { key, handle });
+        Ok(())
+    }
+
+    /// Checks whether a producer-owned temporary row inventory can accept
+    /// one more entry under this sink's aggregate family ceiling.
+    pub(crate) fn check_row_count(
+        &self,
+        current_count: usize,
+    ) -> Result<(), SemanticPlaneRecordError> {
+        if let Some(maximum) = self.maximum_rows
+            && u64::try_from(current_count).map_or(true, |current| current >= maximum)
+        {
+            return Err(SemanticPlaneRecordError::RowBudgetExceeded { maximum });
+        }
         Ok(())
     }
 
@@ -167,8 +195,22 @@ impl<'bytes> CanonicalSemanticPlaneSegmentRef<'bytes> {
     pub fn validate(
         self,
     ) -> Result<ValidatedCanonicalSemanticPlaneSegment<'bytes>, SemanticPlaneRecordError> {
+        self.validate_with_row_limit(crate::ir::MAX_SEMANTIC_SEGMENT_BYTES)
+    }
+
+    /// Validates this segment using the exact family policy's inline-row
+    /// threshold for canonical jumbo placement.
+    pub fn validate_with_row_limit(
+        self,
+        maximum_inline_row_bytes: usize,
+    ) -> Result<ValidatedCanonicalSemanticPlaneSegment<'bytes>, SemanticPlaneRecordError> {
         let descriptor = self.metadata()?;
-        let view = decode_semantic_plane_segment_structure(self.kind, &descriptor, self.bytes)?;
+        let view = decode_semantic_plane_segment_structure(
+            self.kind,
+            &descriptor,
+            self.bytes,
+            maximum_inline_row_bytes,
+        )?;
         let id = descriptor
             .admitted_id()
             .ok_or(SemanticPlaneRecordError::MissingAdmittedId)?;
@@ -569,6 +611,18 @@ pub trait CanonicalPlaneRowEncoder {
         reader: &Reader,
     ) -> Result<Self::Plan, SemanticPlaneRecordError>;
 
+    /// Builds reusable facts under a family row and reference-work ceiling.
+    /// Encoders with potentially large plan scratch should enforce these
+    /// ceilings while traversing rather than after materializing the plan.
+    fn build_plan_with_limits<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        _maximum_rows: u64,
+        _maximum_references: u64,
+    ) -> Result<Self::Plan, SemanticPlaneRecordError> {
+        self.build_plan(reader)
+    }
+
     /// Emits existing canonical-reader keys and ephemeral handles into the sink.
     fn collect_keys<Reader: SemanticReader + ?Sized>(
         &self,
@@ -615,6 +669,31 @@ pub trait CanonicalPlaneRowEncoder {
         payload: &mut Vec<u8>,
     ) -> Result<u8, SemanticPlaneRecordError> {
         self.encode_row_with_jumbo(reader, plan, handle, jumbo_sink, payload)
+    }
+
+    /// Encodes one measured row using the active segment byte ceiling when
+    /// deciding whether jumbo-capable fields must be externalized. Ordinary
+    /// encoders keep their existing behavior through this default.
+    fn encode_row_with_jumbo_measured_for_segment_limit<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        plan: &Self::Plan,
+        handle: Self::Handle,
+        jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+        maximum_segment_bytes: usize,
+        jumbo_limits: crate::ir::JumboRopeLimits,
+        peak_jumbo_scratch_bytes: &mut u64,
+        payload: &mut Vec<u8>,
+    ) -> Result<u8, SemanticPlaneRecordError> {
+        let _ = (maximum_segment_bytes, jumbo_limits);
+        self.encode_row_with_jumbo_measured(
+            reader,
+            plan,
+            handle,
+            jumbo_sink,
+            peak_jumbo_scratch_bytes,
+            payload,
+        )
     }
 }
 
@@ -699,7 +778,19 @@ where
     Encoder: CanonicalPlaneRowEncoder + ?Sized,
     Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
 {
-    stream_canonical_plane_family_inner(reader, encoder, input, maximum_bytes, None, None, sink)
+    stream_canonical_plane_family_inner(
+        reader,
+        encoder,
+        input,
+        maximum_bytes,
+        None,
+        None,
+        None,
+        None,
+        crate::ir::JumboRopeLimits::default(),
+        None,
+        sink,
+    )
 }
 
 /// Encodes one complete row family while persisting jumbo field values through
@@ -724,6 +815,10 @@ where
         input,
         maximum_bytes,
         None,
+        None,
+        None,
+        None,
+        crate::ir::JumboRopeLimits::default(),
         Some(jumbo_sink),
         sink,
     )
@@ -753,6 +848,10 @@ where
         policy.maximum_bytes(),
         Some(policy),
         None,
+        None,
+        None,
+        crate::ir::JumboRopeLimits::default(),
+        None,
         sink,
     )
 }
@@ -778,6 +877,49 @@ where
         input,
         policy.maximum_bytes(),
         Some(policy),
+        None,
+        None,
+        None,
+        crate::ir::JumboRopeLimits::default(),
+        Some(jumbo_sink),
+        sink,
+    )
+}
+
+/// Bounded V3 producer entry point. The row/reference ceilings are aggregate
+/// remaining-work budgets supplied by the caller; jumbo limits apply to every
+/// emitted value and are checked before any leaf callback.
+pub fn stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits<
+    Reader,
+    Encoder,
+    Sink,
+>(
+    reader: &Reader,
+    encoder: &Encoder,
+    input: SemanticInputWitness,
+    policy: CanonicalPlaneSegmentBoundaryPolicy,
+    maximum_rows: u64,
+    maximum_plan_rows: u64,
+    maximum_references: u64,
+    jumbo_limits: crate::ir::JumboRopeLimits,
+    jumbo_sink: &mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>,
+    sink: &mut Sink,
+) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
+where
+    Reader: SemanticReader + ?Sized,
+    Encoder: CanonicalPlaneRowEncoder + ?Sized,
+    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+{
+    stream_canonical_plane_family_inner(
+        reader,
+        encoder,
+        input,
+        policy.maximum_bytes(),
+        Some(policy),
+        Some(maximum_rows),
+        Some(maximum_plan_rows),
+        Some(maximum_references),
+        jumbo_limits,
         Some(jumbo_sink),
         sink,
     )
@@ -789,6 +931,10 @@ fn stream_canonical_plane_family_inner<Reader, Encoder, Sink>(
     input: SemanticInputWitness,
     maximum_bytes: usize,
     boundary_policy: Option<CanonicalPlaneSegmentBoundaryPolicy>,
+    maximum_rows: Option<u64>,
+    maximum_plan_rows: Option<u64>,
+    maximum_references: Option<u64>,
+    jumbo_limits: crate::ir::JumboRopeLimits,
     mut jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
     sink: &mut Sink,
 ) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
@@ -810,8 +956,17 @@ where
         }
         .into());
     }
-    let plan = encoder.build_plan(reader)?;
-    let mut keys = CanonicalSemanticPlaneKeySink::new(encoder.kind());
+    let plan = encoder.build_plan_with_limits(
+        reader,
+        maximum_plan_rows.unwrap_or(u64::MAX),
+        maximum_references.unwrap_or(u64::MAX),
+    )?;
+    let mut keys = match maximum_rows {
+        Some(maximum_rows) => {
+            CanonicalSemanticPlaneKeySink::with_row_limit(encoder.kind(), maximum_rows)
+        }
+        None => CanonicalSemanticPlaneKeySink::new(encoder.kind()),
+    };
     encoder.collect_keys(reader, &plan, &mut keys)?;
     keys.rows
         .sort_unstable_by(|left, right| left.key.cmp(&right.key));
@@ -878,11 +1033,18 @@ where
         let row_sink = jumbo_sink.as_mut().map(|sink| {
             &mut **sink as &mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>
         });
-        let tag = encoder.encode_row_with_jumbo_measured(
+        let inline_row_limit = if boundary_policy.is_some() {
+            maximum_bytes
+        } else {
+            crate::ir::MAX_SEMANTIC_SEGMENT_BYTES
+        };
+        let tag = encoder.encode_row_with_jumbo_measured_for_segment_limit(
             reader,
             &plan,
             row.handle,
             row_sink,
+            inline_row_limit,
+            jumbo_limits,
             &mut row_jumbo_scratch,
             &mut row_scratch,
         )?;
@@ -896,7 +1058,13 @@ where
             )?);
         let row_length =
             u32::try_from(row_scratch.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
-        validate_record(encoder.kind(), row.key, tag, &row_scratch)?;
+        validate_record_with_row_limit(
+            encoder.kind(),
+            row.key,
+            tag,
+            &row_scratch,
+            inline_row_limit,
+        )?;
         let framed_row_length = RECORD_HEADER_BYTES
             .checked_add(row_scratch.len())
             .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
@@ -1111,11 +1279,27 @@ pub fn decode_semantic_plane_segment<'bytes>(
     descriptor: &SemanticPlaneSegment,
     bytes: &'bytes [u8],
 ) -> Result<CanonicalSemanticPlaneSegmentView<'bytes>, SemanticPlaneRecordError> {
+    decode_semantic_plane_segment_with_row_limit(
+        kind,
+        descriptor,
+        bytes,
+        crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+    )
+}
+
+/// Decodes a segment using the family policy's canonical jumbo spill
+/// threshold. The policy must come from trusted manifest metadata.
+pub fn decode_semantic_plane_segment_with_row_limit<'bytes>(
+    kind: SemanticPlaneKind,
+    descriptor: &SemanticPlaneSegment,
+    bytes: &'bytes [u8],
+    maximum_inline_row_bytes: usize,
+) -> Result<CanonicalSemanticPlaneSegmentView<'bytes>, SemanticPlaneRecordError> {
     if !matches!(kind, SemanticPlaneKind::Ir(_)) {
         return Err(SemanticPlaneRecordError::IrKindRequired);
     }
     descriptor.admit(kind, bytes)?;
-    decode_semantic_plane_segment_structure(kind, descriptor, bytes)
+    decode_semantic_plane_segment_structure(kind, descriptor, bytes, maximum_inline_row_bytes)
 }
 
 /// Reopens every segment in a complete family and verifies its committed
@@ -1166,6 +1350,7 @@ fn decode_semantic_plane_segment_structure<'bytes>(
     kind: SemanticPlaneKind,
     descriptor: &SemanticPlaneSegment,
     bytes: &'bytes [u8],
+    maximum_inline_row_bytes: usize,
 ) -> Result<CanonicalSemanticPlaneSegmentView<'bytes>, SemanticPlaneRecordError> {
     if bytes.len() < HEADER_BYTES || bytes[..4] != MAGIC {
         return Err(SemanticPlaneRecordError::Header);
@@ -1200,7 +1385,13 @@ fn decode_semantic_plane_segment_structure<'bytes>(
         if previous.is_some_and(|key| key >= row.key) {
             return Err(SemanticPlaneRecordError::RecordOrder);
         }
-        validate_record(kind, row.key, row.tag, row.payload)?;
+        validate_record_with_row_limit(
+            kind,
+            row.key,
+            row.tag,
+            row.payload,
+            maximum_inline_row_bytes,
+        )?;
         first.get_or_insert(row.key);
         previous = Some(row.key);
     }
@@ -1498,6 +1689,12 @@ pub enum SemanticPlaneRecordError {
     /// A family row length cannot be represented in the canonical u32 cell.
     #[error("canonical row length exceeds the u32 wire limit")]
     RowTooLarge,
+    /// Stable-key collection exceeded the active aggregate family-row budget.
+    #[error("canonical family row count exceeds the aggregate limit {maximum}")]
+    RowBudgetExceeded { maximum: u64 },
+    /// Typed graph edge/root facts exceeded the active reference-work budget.
+    #[error("canonical type plan reference facts exceed the aggregate limit {maximum}")]
+    ReferenceBudgetExceeded { maximum: u64 },
     /// A typed row refers to a missing canonical-reader coordinate.
     #[error("canonical row refers to a missing reader fact")]
     ReaderReference,
@@ -1588,9 +1785,31 @@ fn validate_record(
     tag: u8,
     payload: &[u8],
 ) -> Result<(), SemanticPlaneRecordError> {
+    validate_record_with_row_limit(
+        kind,
+        key,
+        tag,
+        payload,
+        crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+    )
+}
+
+fn validate_record_with_row_limit(
+    kind: SemanticPlaneKind,
+    key: [u8; 32],
+    tag: u8,
+    payload: &[u8],
+    maximum_inline_row_bytes: usize,
+) -> Result<(), SemanticPlaneRecordError> {
     match kind {
         SemanticPlaneKind::Ir(SemanticIrPlane::Core | SemanticIrPlane::Documentation) => {
-            declarations::validate_record(kind, key, tag, payload)
+            declarations::validate_record_with_row_limit(
+                kind,
+                key,
+                tag,
+                payload,
+                maximum_inline_row_bytes,
+            )
         }
         SemanticPlaneKind::Ir(SemanticIrPlane::Relations) => {
             relations::validate_record(key, tag, payload)
@@ -1599,7 +1818,13 @@ fn validate_record(
             occurrences::validate_record(key, tag, payload)
         }
         SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance) => {
-            source_provenance::validate_record(kind, key, tag, payload)
+            source_provenance::validate_record_with_row_limit(
+                kind,
+                key,
+                tag,
+                payload,
+                maximum_inline_row_bytes,
+            )
         }
         SemanticPlaneKind::Ir(SemanticIrPlane::Types) => {
             types::validate_record(kind, key, tag, payload)

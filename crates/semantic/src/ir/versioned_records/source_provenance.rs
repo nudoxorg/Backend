@@ -84,7 +84,15 @@ impl CanonicalPlaneRowEncoder for SourceProvenanceRows {
         out: &mut Vec<u8>,
     ) -> Result<u8, SemanticPlaneRecordError> {
         let mut peak_jumbo_scratch_bytes = 0;
-        encode_source_row(reader, handle, None, &mut peak_jumbo_scratch_bytes, out)
+        encode_source_row(
+            reader,
+            handle,
+            None,
+            crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+            crate::ir::JumboRopeLimits::default(),
+            &mut peak_jumbo_scratch_bytes,
+            out,
+        )
     }
 
     fn encode_row_with_jumbo<Reader: SemanticReader + ?Sized>(
@@ -100,6 +108,8 @@ impl CanonicalPlaneRowEncoder for SourceProvenanceRows {
             reader,
             handle,
             jumbo_sink,
+            crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+            crate::ir::JumboRopeLimits::default(),
             &mut peak_jumbo_scratch_bytes,
             out,
         )
@@ -114,7 +124,37 @@ impl CanonicalPlaneRowEncoder for SourceProvenanceRows {
         peak_jumbo_scratch_bytes: &mut u64,
         out: &mut Vec<u8>,
     ) -> Result<u8, SemanticPlaneRecordError> {
-        encode_source_row(reader, handle, jumbo_sink, peak_jumbo_scratch_bytes, out)
+        encode_source_row(
+            reader,
+            handle,
+            jumbo_sink,
+            crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+            crate::ir::JumboRopeLimits::default(),
+            peak_jumbo_scratch_bytes,
+            out,
+        )
+    }
+
+    fn encode_row_with_jumbo_measured_for_segment_limit<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        _plan: &Self::Plan,
+        handle: Self::Handle,
+        jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+        maximum_segment_bytes: usize,
+        jumbo_limits: crate::ir::JumboRopeLimits,
+        peak_jumbo_scratch_bytes: &mut u64,
+        out: &mut Vec<u8>,
+    ) -> Result<u8, SemanticPlaneRecordError> {
+        encode_source_row(
+            reader,
+            handle,
+            jumbo_sink,
+            maximum_segment_bytes,
+            jumbo_limits,
+            peak_jumbo_scratch_bytes,
+            out,
+        )
     }
 }
 
@@ -122,6 +162,8 @@ fn encode_source_row<Reader: SemanticReader + ?Sized>(
     reader: &Reader,
     handle: SourceProvenanceHandle,
     mut jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+    maximum_segment_bytes: usize,
+    jumbo_limits: crate::ir::JumboRopeLimits,
     peak_jumbo_scratch_bytes: &mut u64,
     out: &mut Vec<u8>,
 ) -> Result<u8, SemanticPlaneRecordError> {
@@ -153,6 +195,8 @@ fn encode_source_row<Reader: SemanticReader + ?Sized>(
                         source.start(),
                         source.end(),
                         jumbo_sink,
+                        maximum_segment_bytes,
+                        jumbo_limits,
                         peak_jumbo_scratch_bytes,
                         out,
                     )?;
@@ -187,6 +231,8 @@ fn encode_source_row<Reader: SemanticReader + ?Sized>(
                         source.start(),
                         source.end(),
                         jumbo_sink,
+                        maximum_segment_bytes,
+                        jumbo_limits,
                         peak_jumbo_scratch_bytes,
                         out,
                     )?;
@@ -207,6 +253,8 @@ fn encode_source_value(
     start: u32,
     end: u32,
     jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+    maximum_segment_bytes: usize,
+    jumbo_limits: crate::ir::JumboRopeLimits,
     peak_jumbo_scratch_bytes: &mut u64,
     out: &mut Vec<u8>,
 ) -> Result<bool, SemanticPlaneRecordError> {
@@ -216,7 +264,12 @@ fn encode_source_value(
     let complete_row_bytes = row_overhead
         .checked_add(u64::try_from(path.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?)
         .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
-    if complete_row_bytes > crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u64 {
+    let spill_threshold = if jumbo_sink.is_some() {
+        maximum_segment_bytes
+    } else {
+        crate::ir::MAX_SEMANTIC_SEGMENT_BYTES
+    };
+    if complete_row_bytes > spill_threshold as u64 {
         let sink = jumbo_sink.ok_or(SemanticPlaneRecordError::JumboObjectStoreRequired)?;
         let context = JumboValueContext::new(
             owner,
@@ -224,9 +277,8 @@ fn encode_source_value(
             0,
             JumboValueEncoding::Bytes,
         );
-        let mut writer =
-            JumboRopeStreamWriter::new(context, crate::ir::JumboRopeLimits::default(), sink)
-                .map_err(super::map_jumbo_operation_error)?;
+        let mut writer = JumboRopeStreamWriter::new(context, jumbo_limits, sink)
+            .map_err(super::map_jumbo_operation_error)?;
         writer
             .push(path)
             .map_err(super::map_jumbo_operation_error)?;
@@ -258,6 +310,22 @@ pub(super) fn validate_record(
     key: [u8; 32],
     tag: u8,
     payload: &[u8],
+) -> Result<(), SemanticPlaneRecordError> {
+    validate_record_with_row_limit(
+        kind,
+        key,
+        tag,
+        payload,
+        crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+    )
+}
+
+pub(super) fn validate_record_with_row_limit(
+    kind: SemanticPlaneKind,
+    key: [u8; 32],
+    tag: u8,
+    payload: &[u8],
+    maximum_inline_row_bytes: usize,
 ) -> Result<(), SemanticPlaneRecordError> {
     if kind != SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance) {
         return Err(SemanticPlaneRecordError::RowGrammar);
@@ -294,6 +362,7 @@ pub(super) fn validate_record(
         validate_jumbo_row_size(
             &descriptor,
             super::HEADER_BYTES + super::RECORD_HEADER_BYTES + 32 + 1 + 4 + 8,
+            maximum_inline_row_bytes,
         )?;
         let start = cursor.u32()?;
         let end = cursor.u32()?;
@@ -326,6 +395,13 @@ pub(super) fn validate_record(
 pub(super) fn jumbo_descriptor_for_record(
     record: super::CanonicalSemanticPlaneRecordView<'_>,
 ) -> Result<Option<CheckedJumboValueDescriptor>, SemanticPlaneRecordError> {
+    jumbo_descriptor_for_record_with_row_limit(record, crate::ir::MAX_SEMANTIC_SEGMENT_BYTES)
+}
+
+pub(super) fn jumbo_descriptor_for_record_with_row_limit(
+    record: super::CanonicalSemanticPlaneRecordView<'_>,
+    maximum_inline_row_bytes: usize,
+) -> Result<Option<CheckedJumboValueDescriptor>, SemanticPlaneRecordError> {
     if !matches!(
         record.tag(),
         DECLARATION_SOURCE_JUMBO_TAG | RELATION_SOURCE_JUMBO_TAG
@@ -347,6 +423,7 @@ pub(super) fn jumbo_descriptor_for_record(
     validate_jumbo_row_size(
         &descriptor,
         super::HEADER_BYTES + super::RECORD_HEADER_BYTES + 32 + 1 + 4 + 8,
+        maximum_inline_row_bytes,
     )?;
     let start = cursor.u32()?;
     let end = cursor.u32()?;

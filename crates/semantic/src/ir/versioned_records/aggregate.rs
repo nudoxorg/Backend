@@ -17,6 +17,7 @@ use crate::ir::{
     SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind, SemanticPlaneRecordError,
     SemanticPlaneSegment, SemanticSegmentId, SemanticTypedPlaneFamilyDescriptorV2,
     SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticSegmentId, decode_semantic_plane_segment,
+    decode_semantic_plane_segment_with_row_limit,
 };
 use crate::vocabulary::{CompileRecipeFact, LanguageProfile};
 use thiserror::Error;
@@ -86,6 +87,38 @@ impl SemanticTypedPlaneVerificationLimitsV2 {
             max_total_jumbo_read_bytes: 512 * 1024 * 1024
                 + 65_536 * crate::ir::jumbo_rope::ROPE_NODE_WIRE_BYTES as u64,
         }
+    }
+
+    pub(crate) const fn max_segments(self) -> usize {
+        self.max_segments
+    }
+
+    pub(crate) const fn max_total_bytes(self) -> u64 {
+        self.max_total_bytes
+    }
+
+    pub(crate) const fn max_total_rows(self) -> u64 {
+        self.max_total_rows
+    }
+
+    pub(crate) const fn max_references(self) -> u64 {
+        self.max_references
+    }
+
+    pub(crate) const fn max_total_jumbo_value_bytes(self) -> u64 {
+        self.max_total_jumbo_value_bytes
+    }
+
+    pub(crate) const fn max_total_jumbo_leaves(self) -> u64 {
+        self.max_total_jumbo_leaves
+    }
+
+    pub(crate) const fn max_total_jumbo_object_reads(self) -> u64 {
+        self.max_total_jumbo_object_reads
+    }
+
+    pub(crate) const fn max_total_jumbo_read_bytes(self) -> u64 {
+        self.max_total_jumbo_read_bytes
     }
 }
 
@@ -590,7 +623,12 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2_with_admission(
                     index: segment_index,
                 });
             }
-            let view = decode_semantic_plane_segment(kind, &descriptor, payload)?;
+            let view = decode_semantic_plane_segment_with_row_limit(
+                kind,
+                &descriptor,
+                payload,
+                family.boundary_policy.maximum_bytes(),
+            )?;
             boundary_verifier.push_segment(view)?;
             if let Some(previous) = decoded_families[family_index].last()
                 && previous.last_key() >= view.first_key()
@@ -608,10 +646,16 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2_with_admission(
             for record in view.records() {
                 let jumbo = match family.family {
                     SemanticIrPlane::Documentation => {
-                        super::declarations::jumbo_descriptor_for_record(record)?
+                        super::declarations::jumbo_descriptor_for_record_with_row_limit(
+                            record,
+                            family.boundary_policy.maximum_bytes(),
+                        )?
                     }
                     SemanticIrPlane::SourceProvenance => {
-                        super::source_provenance::jumbo_descriptor_for_record(record)?
+                        super::source_provenance::jumbo_descriptor_for_record_with_row_limit(
+                            record,
+                            family.boundary_policy.maximum_bytes(),
+                        )?
                     }
                     _ => None,
                 };
@@ -721,10 +765,13 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2_with_admission(
     {
         return Err(SemanticPlaneRecordError::StableKeyCollision.into());
     }
+    let family_row_limits =
+        core::array::from_fn(|index| families[index].boundary_policy.maximum_bytes());
     validate_cross_family_closure(
         build.profile(),
         &decoded_families,
         limits,
+        family_row_limits,
         &jumbo_documentation_references,
         jumbo_documentation_reference_count,
     )?;
@@ -780,8 +827,15 @@ where
                 .map_err(|error| {
                     SemanticTypedPlaneInventoryV2Error::SegmentSource(error.to_string())
                 })?;
-            let (view, _) =
-                admitted_stream_segment(kind, family.family(), segment_index, segment, payload)?;
+            let row_limit = family.boundary_policy().maximum_bytes();
+            let (view, _) = admitted_stream_segment(
+                kind,
+                family.family(),
+                segment_index,
+                segment,
+                payload,
+                row_limit,
+            )?;
             if matches!(
                 family.family(),
                 SemanticIrPlane::Documentation | SemanticIrPlane::SourceProvenance
@@ -789,10 +843,14 @@ where
                 for record in view.records() {
                     let descriptor = match family.family() {
                         SemanticIrPlane::Documentation => {
-                            super::declarations::jumbo_descriptor_for_record(record)?
+                            super::declarations::jumbo_descriptor_for_record_with_row_limit(
+                                record, row_limit,
+                            )?
                         }
                         SemanticIrPlane::SourceProvenance => {
-                            super::source_provenance::jumbo_descriptor_for_record(record)?
+                            super::source_provenance::jumbo_descriptor_for_record_with_row_limit(
+                                record, row_limit,
+                            )?
                         }
                         _ => None,
                     };
@@ -916,8 +974,15 @@ where
                 .map_err(|error| {
                     SemanticTypedPlaneInventoryV2Error::SegmentSource(error.to_string())
                 })?;
-            let (view, admitted_id) =
-                admitted_stream_segment(kind, family.family(), segment_index, segment, payload)?;
+            let row_limit = family.boundary_policy().maximum_bytes();
+            let (view, admitted_id) = admitted_stream_segment(
+                kind,
+                family.family(),
+                segment_index,
+                segment,
+                payload,
+                row_limit,
+            )?;
             boundary_verifier.push_segment(view)?;
             if previous_segment_last.is_some_and(|previous| previous >= view.first_key()) {
                 return Err(SemanticTypedPlaneInventoryV2Error::SegmentOrder {
@@ -977,11 +1042,16 @@ where
                         &jumbo_documentation_references,
                         &mut reference_scratch,
                         false,
+                        family.boundary_policy().maximum_bytes(),
                     )?,
                 )?,
                 5 => merge_source_facts(
                     &mut source_facts,
-                    decode_source_provenance(&[view], &mut reference_scratch)?,
+                    decode_source_provenance(
+                        &[view],
+                        &mut reference_scratch,
+                        family.boundary_policy().maximum_bytes(),
+                    )?,
                 )?,
                 _ => {}
             }
@@ -1192,6 +1262,7 @@ fn admitted_stream_segment<'payload>(
     index: usize,
     claim: &SemanticTypedPlaneSegmentClaimV2,
     payload: &'payload [u8],
+    maximum_inline_row_bytes: usize,
 ) -> Result<
     (
         CanonicalSemanticPlaneSegmentView<'payload>,
@@ -1223,7 +1294,12 @@ fn admitted_stream_segment<'payload>(
     {
         return Err(SemanticTypedPlaneInventoryV2Error::SegmentDescriptor { family, index });
     }
-    let view = decode_semantic_plane_segment(kind, &descriptor, payload)?;
+    let view = decode_semantic_plane_segment_with_row_limit(
+        kind,
+        &descriptor,
+        payload,
+        maximum_inline_row_bytes,
+    )?;
     Ok((view, admitted_id))
 }
 
@@ -1937,6 +2013,7 @@ fn validate_cross_family_closure(
     profile: LanguageProfile,
     families: &[Vec<CanonicalSemanticPlaneSegmentView<'_>>; 7],
     limits: SemanticTypedPlaneVerificationLimitsV2,
+    family_row_limits: [usize; 7],
     jumbo_documentation_references: &[([u8; 32], super::declarations::DocsWireReferences)],
     jumbo_documentation_reference_count: u64,
 ) -> Result<u64, SemanticTypedPlaneInventoryV2Error> {
@@ -1981,8 +2058,10 @@ fn validate_cross_family_closure(
         jumbo_documentation_references,
         &mut reference_scratch,
         true,
+        family_row_limits[4],
     )?;
-    let source = decode_source_provenance(&families[5], &mut reference_scratch)?;
+    let source =
+        decode_source_provenance(&families[5], &mut reference_scratch, family_row_limits[5])?;
     let extension_limits = LanguageExtensionVerificationLimitsV2::bounded(
         limits.max_total_bytes,
         limits.max_total_rows,
@@ -2226,6 +2305,7 @@ fn decode_documentation(
     jumbo_references: &[([u8; 32], super::declarations::DocsWireReferences)],
     reference_scratch: &mut AggregateReferenceScratchV2,
     require_complete_jumbo_set: bool,
+    maximum_inline_row_bytes: usize,
 ) -> Result<DocumentationFamilyFacts, SemanticTypedPlaneInventoryV2Error> {
     let mut facts = DocumentationFamilyFacts::default();
     let mut observed_jumbo_rows = 0_usize;
@@ -2265,7 +2345,11 @@ fn decode_documentation(
                     }
                 }
                 super::declarations::DOCS_JUMBO_TAG => {
-                    let descriptor = super::declarations::jumbo_descriptor_for_record(record)?;
+                    let descriptor =
+                        super::declarations::jumbo_descriptor_for_record_with_row_limit(
+                            record,
+                            maximum_inline_row_bytes,
+                        )?;
                     if descriptor.is_none() {
                         return Err(SemanticPlaneRecordError::RowGrammar.into());
                     }
@@ -2329,6 +2413,7 @@ fn decode_documentation(
 fn decode_source_provenance(
     segments: &[CanonicalSemanticPlaneSegmentView<'_>],
     reference_scratch: &mut AggregateReferenceScratchV2,
+    maximum_inline_row_bytes: usize,
 ) -> Result<SourceFamilyFacts, SemanticTypedPlaneInventoryV2Error> {
     let mut facts = SourceFamilyFacts::default();
     for segment in segments {
@@ -2340,7 +2425,10 @@ fn decode_source_provenance(
                     let available = read_availability(&mut cursor)?;
                     if record.tag() == super::source_provenance::DECLARATION_SOURCE_JUMBO_TAG {
                         let descriptor =
-                            super::source_provenance::jumbo_descriptor_for_record(record)?;
+                            super::source_provenance::jumbo_descriptor_for_record_with_row_limit(
+                                record,
+                                maximum_inline_row_bytes,
+                            )?;
                         if descriptor.is_none() {
                             return Err(SemanticPlaneRecordError::RowGrammar.into());
                         }
@@ -2366,8 +2454,11 @@ fn decode_source_provenance(
                     let available = read_availability(&mut cursor)?;
                     if available {
                         if record.tag() == super::source_provenance::RELATION_SOURCE_JUMBO_TAG {
-                            let descriptor =
-                                super::source_provenance::jumbo_descriptor_for_record(record)?;
+                            let descriptor = super::source_provenance::
+                                jumbo_descriptor_for_record_with_row_limit(
+                                    record,
+                                    maximum_inline_row_bytes,
+                                )?;
                             if descriptor.is_none() {
                                 return Err(SemanticPlaneRecordError::RowGrammar.into());
                             }

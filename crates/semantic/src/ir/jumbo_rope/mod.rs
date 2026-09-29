@@ -164,6 +164,19 @@ impl JumboRopeLimits {
         }
     }
 
+    /// Maximum leaves admitted by both the explicit leaf cap and this
+    /// implementation's optional per-leaf receipt metadata ceiling.
+    #[must_use]
+    pub fn max_admissible_leaf_count(self) -> u64 {
+        let per_leaf = core::mem::size_of::<Option<LeafReceipt>>();
+        if per_leaf == 0 {
+            return self.max_leaf_count;
+        }
+        let by_metadata = self.max_metadata_bytes / per_leaf;
+        self.max_leaf_count
+            .min(u64::try_from(by_metadata).unwrap_or(u64::MAX))
+    }
+
     pub(super) fn validate(self) -> Result<Self, JumboRopeError> {
         if self.max_leaf_count == 0 || self.max_metadata_bytes == 0 {
             return Err(JumboRopeError::InvalidLimits);

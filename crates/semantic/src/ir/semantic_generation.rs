@@ -63,6 +63,92 @@ fn typed_plane_verification_limits(
     }
 }
 
+/// Exact aggregate work ceilings used by cold typed-plane verification.
+///
+/// Producer-side admission uses this same tier-derived value to reject an
+/// object before writing it when adding its receipt would exceed the bounded
+/// verifier window. Keeping the limits sourced here prevents producer and
+/// verifier budgets from drifting apart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticTypedPlaneWorkLimitsV2 {
+    max_segments: usize,
+    max_total_bytes: u64,
+    max_total_rows: u64,
+    max_references: u64,
+    max_total_jumbo_value_bytes: u64,
+    max_total_jumbo_leaves: u64,
+    max_total_jumbo_object_reads: u64,
+    max_total_jumbo_read_bytes: u64,
+}
+
+impl SemanticTypedPlaneWorkLimitsV2 {
+    /// Maximum aggregate segment descriptors.
+    #[must_use]
+    pub const fn max_segments(self) -> usize {
+        self.max_segments
+    }
+
+    /// Maximum aggregate c004 segment payload bytes.
+    #[must_use]
+    pub const fn max_total_bytes(self) -> u64 {
+        self.max_total_bytes
+    }
+
+    /// Maximum aggregate normalized typed rows.
+    #[must_use]
+    pub const fn max_total_rows(self) -> u64 {
+        self.max_total_rows
+    }
+
+    /// Maximum cross-family references checked by the verifier.
+    #[must_use]
+    pub const fn max_references(self) -> u64 {
+        self.max_references
+    }
+
+    /// Maximum aggregate jumbo value bytes.
+    #[must_use]
+    pub const fn max_total_jumbo_value_bytes(self) -> u64 {
+        self.max_total_jumbo_value_bytes
+    }
+
+    /// Maximum aggregate jumbo leaf occurrences.
+    #[must_use]
+    pub const fn max_total_jumbo_leaves(self) -> u64 {
+        self.max_total_jumbo_leaves
+    }
+
+    /// Maximum aggregate jumbo leaf and interior object reads.
+    #[must_use]
+    pub const fn max_total_jumbo_object_reads(self) -> u64 {
+        self.max_total_jumbo_object_reads
+    }
+
+    /// Maximum aggregate jumbo payload bytes reopened by verification.
+    #[must_use]
+    pub const fn max_total_jumbo_read_bytes(self) -> u64 {
+        self.max_total_jumbo_read_bytes
+    }
+}
+
+/// Returns the exact aggregate limits used to verify one workload tier.
+#[must_use]
+pub fn typed_plane_work_limits_v2(
+    tier: SemanticTypedPlaneVerificationTierV2,
+) -> SemanticTypedPlaneWorkLimitsV2 {
+    let limits = typed_plane_verification_limits(tier);
+    SemanticTypedPlaneWorkLimitsV2 {
+        max_segments: limits.max_segments(),
+        max_total_bytes: limits.max_total_bytes(),
+        max_total_rows: limits.max_total_rows(),
+        max_references: limits.max_references(),
+        max_total_jumbo_value_bytes: limits.max_total_jumbo_value_bytes(),
+        max_total_jumbo_leaves: limits.max_total_jumbo_leaves(),
+        max_total_jumbo_object_reads: limits.max_total_jumbo_object_reads(),
+        max_total_jumbo_read_bytes: limits.max_total_jumbo_read_bytes(),
+    }
+}
+
 /// Borrows one exact c004 payload at a time in manifest order.
 ///
 /// Implementations may reuse a single bounded buffer. The returned borrow is
