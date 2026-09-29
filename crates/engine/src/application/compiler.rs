@@ -1550,9 +1550,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut fragment_bytes = 0_usize;
         let mut semantic_bytes = 0_usize;
 
-        // The lane owns one quiescent RA database. A package lease keeps the
-        // candidate database private until every source and output succeeds;
-        // any early return drops it and forces a clean Cargo/RA load next time.
+        // Cross-call reuse is disabled because the RA owner cannot report all
+        // positive and negative reads. This operation's lease keeps its fresh
+        // database alive through staging; every exit drops it after completion.
         let rust_workspace_lease =
             if let backend_semantic::vocabulary::LanguageProfile::Rust(edition) = target.profile {
                 let source_path = package.package_root.join(first_source.relative_path);
@@ -1652,7 +1652,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .collect::<Vec<_>>();
                 Some(
                     scratch
-                        .rust_workspace_sessions
+                        .rust_workspace_session_lane
                         .begin(
                             key,
                             &source_frontier,
