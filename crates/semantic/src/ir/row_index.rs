@@ -748,13 +748,21 @@ fn diff_node<'before, 'after>(
     if before.is_empty() || after.is_empty() {
         let before_rows = collect_run_rows(&[before], counter)?;
         let after_rows = collect_run_rows(&[after], counter)?;
-        return diff_rows(&before_rows, &after_rows, entries, counter);
+        return diff_rows(
+            before_rows.iter().copied(),
+            after_rows.iter().copied(),
+            entries,
+            counter,
+        );
     }
 
     match (before.entries(), after.entries()) {
-        (Some(before_rows), Some(after_rows)) => {
-            diff_rows(before_rows, after_rows, entries, counter)
-        }
+        (Some(before_rows), Some(after_rows)) => diff_rows(
+            before_rows.iter().map(|(key, payload)| (key, payload)),
+            after_rows.iter().map(|(key, payload)| (key, payload)),
+            entries,
+            counter,
+        ),
         (None, None) if before.level() == after.level() => {
             let before_children = collect_children(before)?;
             let after_children = collect_children(after)?;
@@ -857,17 +865,32 @@ fn diff_node_lists<'before, 'after>(
             // into a delete followed by an insert.
             let before_rows = collect_run_rows(&before[before_run..], counter)?;
             let after_rows = collect_run_rows(&after[after_run..], counter)?;
-            diff_rows(&before_rows, &after_rows, entries, counter)?;
+            diff_rows(
+                before_rows.iter().copied(),
+                after_rows.iter().copied(),
+                entries,
+                counter,
+            )?;
             return Ok(());
         }
         let before_rows = collect_run_rows(&before[before_run..before_index], counter)?;
         let after_rows = collect_run_rows(&after[after_run..after_index], counter)?;
-        diff_rows(&before_rows, &after_rows, entries, counter)?;
+        diff_rows(
+            before_rows.iter().copied(),
+            after_rows.iter().copied(),
+            entries,
+            counter,
+        )?;
     }
     if before_index < before.len() || after_index < after.len() {
         let before_rows = collect_run_rows(&before[before_index..], counter)?;
         let after_rows = collect_run_rows(&after[after_index..], counter)?;
-        diff_rows(&before_rows, &after_rows, entries, counter)?;
+        diff_rows(
+            before_rows.iter().copied(),
+            after_rows.iter().copied(),
+            entries,
+            counter,
+        )?;
     }
     Ok(())
 }
@@ -933,8 +956,8 @@ fn collect_rows_into<'tree>(
 }
 
 fn diff_rows<'before, 'after>(
-    before: &[(&'before StableRowKey, &'before RowPayload)],
-    after: &[(&'after StableRowKey, &'after RowPayload)],
+    before: impl ExactSizeIterator<Item = (&'before StableRowKey, &'before RowPayload)>,
+    after: impl ExactSizeIterator<Item = (&'after StableRowKey, &'after RowPayload)>,
     entries: &mut Vec<StableRowIndexDiffEntry<'before, 'after>>,
     counter: &mut StableRowIndexDiffCounter,
 ) -> Result<(), StableRowIndexError> {
@@ -945,25 +968,26 @@ fn diff_rows<'before, 'after>(
     entries
         .try_reserve(maximum_changes)
         .map_err(|_| StableRowIndexError::Allocation)?;
-    let (mut before_index, mut after_index) = (0, 0);
-    while before_index < before.len() && after_index < after.len() {
+    let mut before = before.peekable();
+    let mut after = after.peekable();
+    while let (Some((before_key, before_payload)), Some((after_key, after_payload))) =
+        (before.peek().copied(), after.peek().copied())
+    {
         counter.examined_rows(2)?;
-        let (before_key, before_payload) = before[before_index];
-        let (after_key, after_payload) = after[after_index];
         match before_key.cmp(after_key) {
             std::cmp::Ordering::Less => {
                 entries.push(StableRowIndexDiffEntry::Delete {
                     key: *before_key,
                     before: before_payload,
                 });
-                before_index += 1;
+                before.next();
             }
             std::cmp::Ordering::Greater => {
                 entries.push(StableRowIndexDiffEntry::Insert {
                     key: *after_key,
                     after: after_payload,
                 });
-                after_index += 1;
+                after.next();
             }
             std::cmp::Ordering::Equal => {
                 if before_payload != after_payload {
@@ -973,28 +997,24 @@ fn diff_rows<'before, 'after>(
                         after: after_payload,
                     });
                 }
-                before_index += 1;
-                after_index += 1;
+                before.next();
+                after.next();
             }
         }
     }
-    while before_index < before.len() {
+    for (key, payload) in before {
         counter.examined_rows(1)?;
-        let (key, payload) = before[before_index];
         entries.push(StableRowIndexDiffEntry::Delete {
             key: *key,
             before: payload,
         });
-        before_index += 1;
     }
-    while after_index < after.len() {
+    for (key, payload) in after {
         counter.examined_rows(1)?;
-        let (key, payload) = after[after_index];
         entries.push(StableRowIndexDiffEntry::Insert {
             key: *key,
             after: payload,
         });
-        after_index += 1;
     }
     Ok(())
 }
