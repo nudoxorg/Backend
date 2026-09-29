@@ -1,12 +1,12 @@
 //! Ordered map facade over the shared backend-version persistent tree.
 
 pub(crate) use self::node::{Cas, Node};
-use self::node::{StoreInterner, map_tree_error};
+use self::node::{StoreInterner, map_tree_error, new_cas};
 use super::{
-    Arc, Change, CoverageWitness, DEFAULT_CUT_POLICY, DiffStats, Hash, HashMap, KeyProof, MapDelta,
-    Mutex, Proof, RangeProof, RawRelation, StateRoot, StoreError, StoredValue, UpdateStats,
-    WorkBudget, check_budget, collect_changes, delta_id_for, diff_nodes, fmt, key_proof,
-    range_proof, validate_changes, validate_entries,
+    Arc, Change, CoverageWitness, DEFAULT_CUT_POLICY, DiffStats, Hash, KeyProof, MapDelta, Proof,
+    RangeProof, RawRelation, StateRoot, StoreError, StoredValue, UpdateStats, WorkBudget,
+    check_budget, collect_changes, delta_id_for, diff_nodes, fmt, key_proof, range_proof,
+    validate_changes, validate_entries,
 };
 use std::collections::HashSet;
 
@@ -75,7 +75,7 @@ impl OrderedMap {
     fn try_empty_with_optional_coverage(
         coverage: Option<CoverageWitness>,
     ) -> Result<Self, StoreError> {
-        let cas = Arc::new(Mutex::new(HashMap::new()));
+        let cas = new_cas();
         let interner = StoreInterner { cas: cas.clone() };
         let (tree, _) = backend_version::PersistentTree::empty_with_interner(interner)
             .map_err(map_tree_error)?;
@@ -134,7 +134,7 @@ impl OrderedMap {
         ordered: &[(Vec<u8>, StoredValue)],
         coverage: Option<CoverageWitness>,
     ) -> Result<Self, StoreError> {
-        let cas = Arc::new(Mutex::new(HashMap::new()));
+        let cas = new_cas();
         let interner = StoreInterner { cas: cas.clone() };
         let (tree, _) = backend_version::PersistentTree::from_sorted_items_with_interner_with_work(
             ordered, interner,
@@ -175,15 +175,19 @@ impl OrderedMap {
 
     #[cfg(test)]
     pub(crate) fn cas_counts(&self) -> (usize, usize) {
-        let Ok(entries) = self.cas.lock() else {
-            return (0, 0);
-        };
-        let total = entries.len();
-        let live = entries
-            .values()
-            .filter(|entry| entry.upgrade().is_some())
-            .count();
-        (total, live)
+        self.cas.counts()
+    }
+
+    /// Removes expired weak node handles from this map's shared content
+    /// interner and returns the number removed.
+    ///
+    /// Regular updates perform bounded incremental cleanup. Call this method
+    /// after dropping a large amount of map history when the interner will be
+    /// idle and reclaiming that memory immediately matters. This pass scans
+    /// the complete interner and takes each shard lock in turn.
+    #[must_use]
+    pub fn reap_stale(&self) -> usize {
+        self.cas.reap_stale()
     }
 
     /// Returns the value for one key, if present.
