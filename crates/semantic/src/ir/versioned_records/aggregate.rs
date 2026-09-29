@@ -2460,6 +2460,13 @@ fn decode_source_provenance(
                         if start > end {
                             return Err(SemanticPlaneRecordError::RowGrammar.into());
                         }
+                    } else if available {
+                        let _source_file = cursor.bytes32()?;
+                        let start = cursor.u32()?;
+                        let end = cursor.u32()?;
+                        if start > end {
+                            return Err(SemanticPlaneRecordError::RowGrammar.into());
+                        }
                     }
                     if !cursor.is_empty() || identity != record.key() {
                         return Err(SemanticTypedPlaneInventoryV2Error::RowIdentityMismatch {
@@ -2912,6 +2919,20 @@ mod tests {
     fn source_declaration_row(identity: [u8; 32]) -> Row {
         let mut payload = identity.to_vec();
         payload.push(0); // source unavailable
+        (identity, SOURCE_DECLARATION_TAG, payload)
+    }
+
+    fn source_declaration_row_with_inline_source(
+        identity: [u8; 32],
+        path: &[u8],
+        start: u32,
+        end: u32,
+    ) -> Row {
+        let mut payload = identity.to_vec();
+        payload.push(1); // source captured
+        append_bytes(path, &mut payload);
+        payload.extend_from_slice(&start.to_be_bytes());
+        payload.extend_from_slice(&end.to_be_bytes());
         (identity, SOURCE_DECLARATION_TAG, payload)
     }
 
@@ -3970,6 +3991,44 @@ mod tests {
         )
         .expect("binary source path closure admits in the seven-family inventory");
         assert_eq!(inventory.families()[5].row_count(), 3);
+    }
+
+    #[test]
+    fn aggregate_decodes_captured_inline_declaration_source_fields() {
+        let owner = identity(0x13);
+        let mut rows = valid_rows(owner, None, None, false, true);
+        let captured_source =
+            source_declaration_row_with_inline_source(owner, b"src/captured.rs", 3, 17);
+        let source_row = rows[5]
+            .iter_mut()
+            .find(|row| row.0 == owner)
+            .expect("fixture source row exists");
+        *source_row = captured_source;
+        mark_core_source_available(&mut rows, owner);
+
+        let inventory = verify_rows(rows)
+            .expect("inline source path and span are consumed by aggregate verification");
+        assert_eq!(inventory.families()[5].row_count(), 3);
+    }
+
+    #[test]
+    fn aggregate_rejects_captured_inline_declaration_with_reversed_span() {
+        let owner = identity(0x13);
+        let mut rows = valid_rows(owner, None, None, false, true);
+        let malformed = source_declaration_row_with_inline_source(owner, b"src/captured.rs", 17, 3);
+        let source_row = rows[5]
+            .iter_mut()
+            .find(|row| row.0 == owner)
+            .expect("fixture source row exists");
+        *source_row = malformed;
+        mark_core_source_available(&mut rows, owner);
+
+        assert!(matches!(
+            verify_rows(rows),
+            Err(SemanticTypedPlaneInventoryV2Error::Record(
+                SemanticPlaneRecordError::RowGrammar
+            ))
+        ));
     }
 
     #[test]

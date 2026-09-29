@@ -2778,7 +2778,7 @@ mod tests {
                     // Force the ordinary documentation writer to emit a
                     // content-defined jumbo rope and exercise its durable
                     // leaf/interior receipt path.
-                    "semantic jumbo documentation ".repeat(1_400)
+                    "semantic jumbo documentation ".repeat(40_000)
                 } else if matches!(
                     (shape, *key),
                     (V3FixtureShape::EarlyEdit, 10)
@@ -2797,13 +2797,17 @@ mod tests {
             .collect::<Vec<_>>();
         let versions = stable_keys
             .iter()
-            .map(|key| {
+            .enumerate()
+            .map(|(position, key)| {
                 let mut family = [0_u8; 16];
                 family[8..].copy_from_slice(&key.to_be_bytes());
                 EntityVersion {
                     family: DeclarationFamilyId::from_raw(family),
                     variant: VariantFingerprint::from_raw([0x42; 16]),
-                    core_payload: CorePayloadHash::from_raw([0x43; 16]),
+                    // This fixture varies only the declaration name among
+                    // CorePayloadHash-covered facts; documentation changes
+                    // are intentionally outside that digest's coverage.
+                    core_payload: CorePayloadHash::from_canonical_bytes(names[position].as_bytes()),
                 }
             })
             .collect::<Vec<_>>();
@@ -3540,14 +3544,50 @@ mod tests {
             "c007 content claim is derived from the exact admitted payload closure"
         );
         assert!(base.jumbo_store_metrics().attempted_objects() > 0);
-        assert!(base.jumbo_admissions().iter().any(|receipt| matches!(
-            receipt.identity(),
-            ProducedSemanticObjectIdentity::JumboLeaf { .. }
-        )));
-        assert!(base.jumbo_admissions().iter().any(|receipt| matches!(
-            receipt.identity(),
-            ProducedSemanticObjectIdentity::JumboInterior { .. }
-        )));
+        let jumbo_leaf_receipts = base
+            .jumbo_admissions()
+            .iter()
+            .filter(|receipt| {
+                matches!(
+                    receipt.identity(),
+                    ProducedSemanticObjectIdentity::JumboLeaf { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        let jumbo_interior_receipts = base
+            .jumbo_admissions()
+            .iter()
+            .filter(|receipt| {
+                matches!(
+                    receipt.identity(),
+                    ProducedSemanticObjectIdentity::JumboInterior { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        let leaf_count =
+            u64::try_from(jumbo_leaf_receipts.len()).expect("fixture jumbo leaf count fits u64");
+        let interior_root_leaf_count = jumbo_interior_receipts
+            .iter()
+            .filter_map(|receipt| match receipt.identity() {
+                ProducedSemanticObjectIdentity::JumboInterior {
+                    first_leaf: 0,
+                    leaf_count,
+                    ..
+                } => Some(leaf_count),
+                _ => None,
+            })
+            .max()
+            .expect("multi-leaf fixture has an interior root");
+        assert!(leaf_count > 1, "fixture exercises multi-leaf jumbo values");
+        assert_eq!(
+            leaf_count, interior_root_leaf_count,
+            "the durable receipt stream contains every leaf covered by the root"
+        );
+        assert_eq!(
+            jumbo_interior_receipts.len() as u64,
+            leaf_count - 1,
+            "binary rope emits exactly N - 1 interior nodes for N leaves"
+        );
 
         for (index, family) in base.manifest().families().iter().enumerate() {
             let encoded = base.encoding_metrics()[index];
