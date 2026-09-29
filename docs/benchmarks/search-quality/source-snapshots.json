@@ -26,8 +26,8 @@
     },
     {
       "path": "crates/engine/src/forge/mod.rs",
-      "sha256": "f9509170919e8908b9f50bfaf63f169c3ad3994a4d8336ccc9e762081aa2630b",
-      "snapshot_id": "workspace-file:sha256:f9509170919e8908b9f50bfaf63f169c3ad3994a4d8336ccc9e762081aa2630b"
+      "sha256": "6d067f9e61d84b88068ea40d004cf6bf063b122afa4f024ecb07552d919b2366",
+      "snapshot_id": "workspace-file:sha256:6d067f9e61d84b88068ea40d004cf6bf063b122afa4f024ecb07552d919b2366"
     },
     {
       "path": "crates/engine/src/registry/discovery.rs",
