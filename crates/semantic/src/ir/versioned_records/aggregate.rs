@@ -1731,6 +1731,16 @@ mod tests {
             unsplit.families()[0].segments()[0].admitted_id(),
             split.families()[0].segments()[0].admitted_id()
         );
+        let unsplit_content =
+            crate::ir::VerifiedTypedPlaneContentV2::from_verified_inventory(unsplit)
+                .expect("unsplit content identity");
+        let split_content = crate::ir::VerifiedTypedPlaneContentV2::from_verified_inventory(split)
+            .expect("split content identity");
+        assert_eq!(unsplit_content.content_root(), split_content.content_root());
+        assert_eq!(
+            unsplit_content.generation_root(),
+            split_content.generation_root()
+        );
     }
 
     #[test]
