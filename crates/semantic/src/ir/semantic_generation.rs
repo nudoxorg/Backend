@@ -987,7 +987,7 @@ mod tests {
         ]
         .map(|family| {
             let boundary_policy =
-                crate::ir::CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+                crate::ir::SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
                     crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u32,
                     crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u32,
                     crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u32,

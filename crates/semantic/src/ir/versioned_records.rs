@@ -2698,7 +2698,7 @@ mod tests {
             .expect("validator drains malformed content");
         assert!(matches!(
             validator.finish(),
-            Err(SemanticPlaneRecordError::RowGrammar)
+            Err(declarations::DocsWireValidationError::Grammar)
         ));
 
         let mut trailing = valid;
@@ -2709,7 +2709,7 @@ mod tests {
             .expect("validator drains trailing bytes");
         assert!(matches!(
             validator.finish(),
-            Err(SemanticPlaneRecordError::RowGrammar)
+            Err(declarations::DocsWireValidationError::Grammar)
         ));
     }
 
