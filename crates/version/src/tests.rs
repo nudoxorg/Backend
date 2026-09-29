@@ -41,7 +41,7 @@ impl CanonicalRelation for RelationFixture {
 
 #[test]
 fn owned_bulk_builder_matches_borrowed_canonical_tree() -> Result<(), Box<dyn std::error::Error>> {
-    for size in [0, 1, 63, 64, 256, 1_024, 8_192] {
+    for size in [0_u64, 1, 63, 64, 256, 1_024, 8_192] {
         let rows: Vec<_> = (0..size).map(|key| (key, key.rotate_left(7))).collect();
         let (borrowed, borrowed_work) =
             PersistentTree::<RelationFixture>::from_sorted_items_with_work(&rows)?;
