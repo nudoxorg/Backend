@@ -2391,7 +2391,7 @@ fn validate_type_fields(
     const VARIADIC: fn(u64) -> bool = |value| value <= 2;
     const MODIFIER: fn(u64) -> bool = |value| value <= 2;
 
-    use TypesRowDomainV2::{AtomList, TemplateParts, TupleElements, Type, TypeList};
+    use TypesRowDomainV2::{AtomList, ObjectMembers, TemplateParts, TupleElements, Type, TypeList};
     match kind {
         1 => {
             if !matches!(
