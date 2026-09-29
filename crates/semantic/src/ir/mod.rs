@@ -16,6 +16,8 @@ mod discovery;
 mod docs_facts;
 mod extension_pools;
 mod interner;
+/// Content-addressed chunked storage for jumbo documentation and source values.
+pub mod jumbo_rope;
 #[cfg(feature = "mmap")]
 mod mapping;
 mod model;
@@ -99,6 +101,17 @@ pub use extension_pools::{
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
     ListInterner, ListTable, ListTableView,
+};
+pub use jumbo_rope::{
+    CheckedJumboLeaf, CheckedJumboValueDescriptor, JUMBO_ROPE_MAX_LEAF_BYTES,
+    JUMBO_ROPE_MIN_LEAF_BYTES, JUMBO_ROPE_STREAM_BUFFER_BYTES, JUMBO_ROPE_TARGET_LEAF_BYTES,
+    JumboOperationError, JumboRopeBuildMetrics, JumboRopeClosure, JumboRopeError, JumboRopeLeafRef,
+    JumboRopeLimits, JumboRopeNode, JumboRopeObjectId, JumboRopeObjectKind, JumboRopeObjectSink,
+    JumboRopeObjectSource, JumboRopeProof, JumboRopeProofSibling, JumboRopeProofSide,
+    JumboRopeProofSpan, JumboRopeWriteReceipt, JumboValueContext, JumboValueDescriptorId,
+    JumboValueEncoding, JumboValueFamily, MissingJumboLeafRanges, UntrustedJumboValueDescriptor,
+    VerifiedJumboRope, prove_jumbo_leaf, requires_jumbo_rope, write_jumbo_value,
+    write_jumbo_value_from_reader,
 };
 #[cfg(feature = "mmap")]
 pub use mapping::{
