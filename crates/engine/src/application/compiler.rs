@@ -4,7 +4,7 @@
 //! One single-request local compiler specialization over explicit local ownership.
 
 use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
-use crate::compiler_unit_read_closure_v2::{
+use crate::compiler_read_observation_v2::{
     CompilerReadObservationChannelV2, CompilerReadObservationProducerV2,
     CompilerReadObservationRecorderV2,
 };
