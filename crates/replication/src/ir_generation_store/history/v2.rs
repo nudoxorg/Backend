@@ -618,9 +618,10 @@ mod tests {
     use backend_semantic::ir::{
         ImageProvenance, LanguageProfile, RustEdition, SemanticBuildIdentity,
         SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
-        SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2, Stage,
+        SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
         UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2,
     };
+    use backend_semantic::vocabulary::Stage;
     use backend_version::{Coverage, ScopeRoot};
     use std::time::{SystemTime, UNIX_EPOCH};
 

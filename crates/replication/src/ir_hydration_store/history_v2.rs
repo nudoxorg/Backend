@@ -777,9 +777,10 @@ mod tests {
         JumboValueFamily, LanguageProfile, RustEdition, SemanticBuildIdentity,
         SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
         SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
-        SemanticTypedPlaneSegmentClaimV2, Stage, UntrustedSemanticContentRootV2,
+        SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticContentRootV2,
         UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId, write_jumbo_value,
     };
+    use backend_semantic::vocabulary::Stage;
     use backend_store::{
         ArtifactClosureClaim, ArtifactObjectClaim, StreamingClosureBudget, TypedObject,
     };
