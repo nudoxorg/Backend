@@ -3031,8 +3031,7 @@ mod tests {
             )
             .expect("publish long ancestry tip");
         let unrelated = admit_history(&files, &generation, &[], [0xff; 32]).identity();
-        let retained_name = HistoryRefName::new("aba-retained")
-            .expect("alternate root ref name");
+        let retained_name = HistoryRefName::new("aba-retained").expect("alternate root ref name");
         range_store
             .compare_and_swap_history_ref(
                 &generation.target,
@@ -3743,8 +3742,8 @@ mod tests {
         let base = fixture(b"replay missing parent base", 1, 81);
         let next = fixture(b"replay missing parent next", 2, 82);
         let files = LocalSemanticGenerationFiles::open(&directory.0).expect("open store");
-        let _base_generation = commit(&files, &base, [base.stamp, base.stamp])
-            .expect("commit base generation");
+        let _base_generation =
+            commit(&files, &base, [base.stamp, base.stamp]).expect("commit base generation");
         let base_commit = files
             .history_ref(
                 &base.target,
@@ -3754,8 +3753,7 @@ mod tests {
             .expect("read base ref")
             .expect("base ref exists")
             .commit();
-        let _ = commit(&files, &next, [next.stamp, next.stamp])
-            .expect("commit next generation");
+        let _ = commit(&files, &next, [next.stamp, next.stamp]).expect("commit next generation");
         let tip = files
             .history_ref(
                 &next.target,
@@ -3788,8 +3786,7 @@ mod tests {
             max_chunk: 16 * 1024,
             ..TransportLimits::default()
         };
-        let range_store =
-            FileSemanticRangeStore::open(store, limits).expect("open range store");
+        let range_store = FileSemanticRangeStore::open(store, limits).expect("open range store");
         let files = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
             .expect("open history files");
         let generation = fixture(b"replay page lease", 1, 83);

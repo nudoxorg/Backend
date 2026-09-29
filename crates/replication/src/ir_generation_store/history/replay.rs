@@ -63,15 +63,13 @@ impl LocalSemanticGenerationFiles {
         )?);
 
         while let Some(node) = current.take() {
-            let (node, parent) = validate_replay_parent(
-                target_root.as_path(),
-                target,
-                &commits_root,
-                node,
-            )?;
+            let (node, parent) =
+                validate_replay_parent(target_root.as_path(), target, &commits_root, node)?;
             let parent_identity = parent.as_ref().map(|parent| parent.record.identity);
             entries.push(HistoryReplayEntry {
-                commit: AdmittedHistoryCommit { record: node.record },
+                commit: AdmittedHistoryCommit {
+                    record: node.record,
+                },
                 generation: node.generation,
             });
             after_entry()?;
@@ -126,11 +124,13 @@ fn validate_replay_parent(
 
     let mut parent = None;
     for parent_record in parent_records {
-        if !matches!(parent_record.generation_root, HistoryGenerationRoot::NxfiV1(_)) {
+        if !matches!(
+            parent_record.generation_root,
+            HistoryGenerationRoot::NxfiV1(_)
+        ) {
             return Err("typed V2 history requires typed replay".to_owned());
         }
-        let parent_generation_record =
-            load_record(target_root, parent_record.generation, target)?;
+        let parent_generation_record = load_record(target_root, parent_record.generation, target)?;
         validate_commit_generation(&parent_record, &parent_generation_record)?;
         let parent_generation =
             generation_from_validated_record(parent_generation_record, parent_record.stamp);
