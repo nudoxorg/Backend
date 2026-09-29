@@ -2040,6 +2040,37 @@ mod tests {
         )
     }
 
+    fn jumbo_relation_source_row(
+        relation: [u8; 32],
+        path: &[u8],
+        objects: &mut TestJumboObjects,
+    ) -> Row {
+        let owner = relation_source_row_key(relation);
+        let context = crate::ir::JumboValueContext::new(
+            owner,
+            crate::ir::JumboValueFamily::SourceProvenance,
+            0,
+            crate::ir::JumboValueEncoding::Bytes,
+        );
+        let receipt = crate::ir::write_jumbo_value(
+            context,
+            path,
+            crate::ir::JumboRopeLimits::default(),
+            objects,
+        )
+        .expect("write jumbo relation source fixture objects");
+        let mut payload = relation.to_vec();
+        payload.push(1); // source captured
+        payload.extend_from_slice(&receipt.verified().descriptor().encode_wire());
+        payload.extend_from_slice(&3_u32.to_be_bytes());
+        payload.extend_from_slice(&17_u32.to_be_bytes());
+        (
+            owner,
+            super::super::source_provenance::RELATION_SOURCE_JUMBO_TAG,
+            payload,
+        )
+    }
+
     fn replace_documentation_row(rows: &mut [Vec<Row>; 7], key: [u8; 32], row: Row) {
         let slot = rows[4]
             .iter_mut()
@@ -2540,6 +2571,34 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_verifies_jumbo_relation_source_rope_before_inventory() {
+        let owner = identity(0x13);
+        let path = patterned_text(1_200 * 1024);
+        let mut objects = TestJumboObjects::default();
+        let mut rows = valid_rows(owner, None, None, false, true);
+        let source_relation = rows[5]
+            .iter()
+            .find(|row| row.1 == SOURCE_RELATION_TAG)
+            .expect("fixture relation source row exists");
+        let relation: [u8; 32] = source_relation.2[..32]
+            .try_into()
+            .expect("fixed-width relation identity");
+        let jumbo = jumbo_relation_source_row(relation, &path, &mut objects);
+        let slot = rows[5]
+            .iter_mut()
+            .find(|row| row.0 == jumbo.0)
+            .expect("fixture relation source slot exists");
+        *slot = jumbo;
+        let inventory = verify_rows_with_jumbo_source(
+            rows,
+            &mut objects,
+            crate::ir::JumboRopeLimits::default(),
+        )
+        .expect("jumbo relation source closure preserves the exact relation join");
+        assert_eq!(inventory.families()[5].row_count(), 3);
+    }
+
+    #[test]
     fn cold_c007_reopen_admits_docs_and_source_jumbo_closures() {
         let owner = identity(0x13);
         let text = patterned_text(1_200 * 1024);
@@ -2561,6 +2620,21 @@ mod tests {
             .find(|row| row.0 == owner)
             .expect("fixture source row exists");
         *source_slot = source_row;
+        let relation: [u8; 32] = rows[5]
+            .iter()
+            .find(|row| row.1 == SOURCE_RELATION_TAG)
+            .map(|row| {
+                row.2[..32]
+                    .try_into()
+                    .expect("fixed-width relation identity")
+            })
+            .expect("fixture relation source row exists");
+        let jumbo_relation = jumbo_relation_source_row(relation, &path, &mut objects);
+        let relation_slot = rows[5]
+            .iter_mut()
+            .find(|row| row.0 == jumbo_relation.0)
+            .expect("fixture relation source slot exists");
+        *relation_slot = jumbo_relation;
         mark_core_source_available(&mut rows, owner);
 
         let (encoded, row_counts) = encode_all_rows(&rows);
