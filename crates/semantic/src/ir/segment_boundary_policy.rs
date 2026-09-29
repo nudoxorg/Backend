@@ -147,6 +147,10 @@ pub struct CanonicalSemanticPlaneBoundaryFamilyVerifier {
     current_segment_bytes: usize,
     row_count: u64,
     segment_count: u64,
+    segment_open: bool,
+    segment_encoded_len: usize,
+    segment_row_count: u32,
+    segment_rows_seen: u32,
 }
 
 impl CanonicalSemanticPlaneBoundaryFamilyVerifier {
@@ -163,6 +167,10 @@ impl CanonicalSemanticPlaneBoundaryFamilyVerifier {
             current_segment_bytes: 0,
             row_count: 0,
             segment_count: 0,
+            segment_open: false,
+            segment_encoded_len: 0,
+            segment_row_count: 0,
+            segment_rows_seen: 0,
         }
     }
 
@@ -171,54 +179,96 @@ impl CanonicalSemanticPlaneBoundaryFamilyVerifier {
         &mut self,
         segment: CanonicalSemanticPlaneSegmentView<'_>,
     ) -> Result<(), SemanticPlaneRecordError> {
-        if segment.kind() != crate::ir::SemanticPlaneKind::Ir(self.family) {
+        self.begin_segment(segment.kind(), segment.row_count(), segment.encoded_len())?;
+        for record in segment.records() {
+            self.push_record(record.key(), record.encoded_len())?;
+        }
+        self.finish_segment()
+    }
+
+    /// Starts the boundary-policy stage for one segment before its row parser
+    /// lends records to the aggregate visitor.
+    pub(crate) fn begin_segment(
+        &mut self,
+        kind: crate::ir::SemanticPlaneKind,
+        row_count: u32,
+        encoded_len: usize,
+    ) -> Result<(), SemanticPlaneRecordError> {
+        if self.segment_open {
+            return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
+        }
+        if kind != crate::ir::SemanticPlaneKind::Ir(self.family) {
             return Err(SemanticPlaneRecordError::PlaneKind);
         }
-        if segment.row_count() == 0 {
+        if row_count == 0 || encoded_len > self.policy.maximum_bytes() {
             return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
         }
-        if segment.encoded_len() > self.policy.maximum_bytes() {
-            return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
-        }
+        self.segment_open = true;
+        self.segment_encoded_len = encoded_len;
+        self.segment_row_count = row_count;
+        self.segment_rows_seen = 0;
+        Ok(())
+    }
 
-        for (position, record) in segment.records().enumerate() {
-            if self.previous_key.is_some_and(|key| key >= record.key()) {
-                return Err(SemanticPlaneRecordError::RecordOrder);
-            }
-            let projected = self
-                .current_segment_bytes
-                .checked_add(record.encoded_len())
-                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
-            let expected_cut = self.row_count > 0
-                && (projected > self.policy.maximum_bytes()
-                    || self.policy.cuts_before(
-                        self.family,
-                        self.current_segment_bytes,
-                        &record.key(),
-                    ));
-            let actual_cut = position == 0 && self.row_count > 0;
-            if expected_cut != actual_cut {
-                return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
-            }
-            if actual_cut || self.row_count == 0 {
-                self.current_segment_bytes = crate::ir::versioned_records::SPIR_HEADER_BYTES;
-            }
-            self.current_segment_bytes = self
-                .current_segment_bytes
-                .checked_add(record.encoded_len())
-                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
-            if self.current_segment_bytes > self.policy.maximum_bytes() {
-                return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
-            }
-            self.previous_key = Some(record.key());
-            self.row_count = self
-                .row_count
-                .checked_add(1)
-                .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
-        }
-        if self.current_segment_bytes != segment.encoded_len() {
+    /// Adds one grammar-checked row to the canonical family boundary state.
+    /// The key and encoded length are copied values so the row borrow does not
+    /// escape into retained verifier state.
+    pub(crate) fn push_record(
+        &mut self,
+        key: [u8; 32],
+        encoded_len: usize,
+    ) -> Result<(), SemanticPlaneRecordError> {
+        if !self.segment_open || self.segment_rows_seen >= self.segment_row_count {
             return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
         }
+        if self.previous_key.is_some_and(|previous| previous >= key) {
+            return Err(SemanticPlaneRecordError::RecordOrder);
+        }
+        let projected = self
+            .current_segment_bytes
+            .checked_add(encoded_len)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        let expected_cut = self.row_count > 0
+            && (projected > self.policy.maximum_bytes()
+                || self
+                    .policy
+                    .cuts_before(self.family, self.current_segment_bytes, &key));
+        let actual_cut = self.segment_rows_seen == 0 && self.row_count > 0;
+        if expected_cut != actual_cut {
+            return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
+        }
+        if actual_cut || self.row_count == 0 {
+            self.current_segment_bytes = crate::ir::versioned_records::SPIR_HEADER_BYTES;
+        }
+        self.current_segment_bytes = self
+            .current_segment_bytes
+            .checked_add(encoded_len)
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        if self.current_segment_bytes > self.policy.maximum_bytes() {
+            return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
+        }
+        self.previous_key = Some(key);
+        self.row_count = self
+            .row_count
+            .checked_add(1)
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        self.segment_rows_seen = self
+            .segment_rows_seen
+            .checked_add(1)
+            .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        Ok(())
+    }
+
+    /// Closes the current segment after its parser has exhausted the row
+    /// stream, checking that the visitor observed the exact declared census.
+    pub(crate) fn finish_segment(&mut self) -> Result<(), SemanticPlaneRecordError> {
+        if !self.segment_open
+            || self.segment_rows_seen != self.segment_row_count
+            || self.current_segment_bytes != self.segment_encoded_len
+        {
+            return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
+        }
+        self.segment_open = false;
         self.segment_count = self
             .segment_count
             .checked_add(1)
@@ -232,6 +282,9 @@ impl CanonicalSemanticPlaneBoundaryFamilyVerifier {
         expected_rows: u64,
         expected_segments: u64,
     ) -> Result<(), SemanticPlaneRecordError> {
+        if self.segment_open {
+            return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
+        }
         if self.row_count != expected_rows {
             return Err(SemanticPlaneRecordError::BoundaryFamilyRowCount {
                 expected: expected_rows,

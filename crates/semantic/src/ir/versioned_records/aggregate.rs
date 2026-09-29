@@ -16,7 +16,7 @@ use crate::ir::{
     ImageProvenance, SemanticBuildIdentity, SemanticImageAuthority, SemanticImageFacts,
     SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind, SemanticPlaneRecordError,
     SemanticPlaneSegment, SemanticSegmentId, SemanticTypedPlaneFamilyDescriptorV2,
-    SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticSegmentId, decode_semantic_plane_segment,
+    SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticSegmentId,
     decode_semantic_plane_segment_with_row_limit,
 };
 use crate::vocabulary::{CompileRecipeFact, LanguageProfile};
@@ -871,6 +871,13 @@ where
             .map_err(SemanticPlaneRecordError::Allocation)?;
         let mut observed_rows = 0_u64;
         let mut previous_segment_last = None;
+        // Source-derived residency: this sorted-row builder retains the whole
+        // current family, so borrowed c004 payloads do not make row-index
+        // scratch segment-bounded. On the current 64-bit layout, 250k rows ×
+        // 88-byte slots is about 21 MiB (168 MiB at the 2m-row large-tier
+        // ceiling); the owned tree build can briefly duplicate row slots while
+        // forming leaf slabs. A lower-memory path needs an incremental
+        // canonical root builder in backend-version.
         let mut row_index_builder = StableRowIndex::builder();
         let mut boundary_verifier = CanonicalSemanticPlaneBoundaryFamilyVerifier::begin_family(
             family.family(),
@@ -892,8 +899,8 @@ where
                 segment,
                 payload,
                 row_limit,
+                &mut boundary_verifier,
             )?;
-            boundary_verifier.push_segment(view)?;
             if previous_segment_last.is_some_and(|previous| previous >= view.first_key()) {
                 return Err(SemanticTypedPlaneInventoryV2Error::SegmentOrder {
                     family: family.family(),
@@ -1241,6 +1248,7 @@ fn admitted_stream_segment<'payload>(
     claim: &SemanticTypedPlaneSegmentClaimV2,
     payload: &'payload [u8],
     maximum_inline_row_bytes: usize,
+    boundary_verifier: &mut CanonicalSemanticPlaneBoundaryFamilyVerifier,
 ) -> Result<
     (
         CanonicalSemanticPlaneSegmentView<'payload>,
@@ -1272,11 +1280,18 @@ fn admitted_stream_segment<'payload>(
     {
         return Err(SemanticTypedPlaneInventoryV2Error::SegmentDescriptor { family, index });
     }
-    let view = decode_semantic_plane_segment_with_row_limit(
+    boundary_verifier.begin_segment(kind, descriptor.row_count(), payload.len())?;
+    // `SemanticPlaneSegment::from_payload` computed the sole segment identity
+    // hash over these exact bytes; comparing `admitted_id` with the untrusted
+    // claim binds the claim to this payload before parsing. The structural
+    // visitor then checks the claimed row count/key range against the grammar.
+    // Re-entering the public decoder here would hash the payload a second time.
+    let view = super::decode_semantic_plane_segment_structure_with_record_visitor(
         kind,
         &descriptor,
         payload,
         maximum_inline_row_bytes,
+        |record| boundary_verifier.push_record(record.key(), record.encoded_len()),
     )
     .map_err(|error| match error {
         SemanticPlaneRecordError::StableKeyMismatchAt { key } => {
@@ -1284,6 +1299,7 @@ fn admitted_stream_segment<'payload>(
         }
         error => error.into(),
     })?;
+    boundary_verifier.finish_segment()?;
     Ok((view, admitted_id))
 }
 
@@ -3181,6 +3197,31 @@ mod tests {
         .expect("fixture row-size split boundary policy")
     }
 
+    fn fixture_policy_splits(family: SemanticIrPlane, sorted_rows: &[Row]) -> Vec<usize> {
+        let policy = split_boundary_policy();
+        let mut splits = Vec::new();
+        let mut current_segment_bytes = 0_usize;
+        for (index, (key, _, payload)) in sorted_rows.iter().enumerate() {
+            let row_bytes = 32 + 1 + 4 + payload.len();
+            let projected = current_segment_bytes
+                .checked_add(row_bytes)
+                .expect("fixture row byte count fits");
+            if index > 0
+                && (projected > policy.maximum_bytes()
+                    || policy.cuts_before(family, current_segment_bytes, key))
+            {
+                splits.push(index);
+                current_segment_bytes = super::super::SPIR_HEADER_BYTES;
+            } else if index == 0 {
+                current_segment_bytes = super::super::SPIR_HEADER_BYTES;
+            }
+            current_segment_bytes = current_segment_bytes
+                .checked_add(row_bytes)
+                .expect("fixture segment byte count fits");
+        }
+        splits
+    }
+
     fn verify_rows(
         rows: [Vec<Row>; 7],
     ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error> {
@@ -3203,6 +3244,18 @@ mod tests {
         split: Option<(usize, usize)>,
         limits: SemanticTypedPlaneVerificationLimitsV2,
     ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error> {
+        let mut split_points_by_family: [Vec<usize>; 7] = core::array::from_fn(|_| Vec::new());
+        if let Some((family, split_at)) = split {
+            split_points_by_family[family].push(split_at);
+        }
+        verify_rows_with_family_splits(rows, split_points_by_family, limits)
+    }
+
+    fn verify_rows_with_family_splits(
+        rows: [Vec<Row>; 7],
+        split_points_by_family: [Vec<usize>; 7],
+        limits: SemanticTypedPlaneVerificationLimitsV2,
+    ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error> {
         let kinds = family_kinds();
         let row_counts = rows
             .each_ref()
@@ -3210,21 +3263,22 @@ mod tests {
         let encoded: [Vec<EncodedSegment>; 7] = core::array::from_fn(|index| {
             let mut family_rows = rows[index].clone();
             family_rows.sort_unstable_by_key(|(key, _, _)| *key);
-            if let Some((split_family, split_at)) = split
-                && split_family == index
-                && split_at > 0
-                && split_at < family_rows.len()
+            let mut segments = Vec::new();
+            let mut start = 0;
+            for end in split_points_by_family[index]
+                .iter()
+                .copied()
+                .chain(core::iter::once(family_rows.len()))
             {
-                let right_rows = family_rows.split_off(split_at);
-                vec![
-                    encode_family_segment(kinds[index], family_rows),
-                    encode_family_segment(kinds[index], right_rows),
-                ]
-            } else if family_rows.is_empty() {
-                Vec::new()
-            } else {
-                vec![encode_family_segment(kinds[index], family_rows)]
+                if end > start && end <= family_rows.len() {
+                    segments.push(encode_family_segment(
+                        kinds[index],
+                        family_rows[start..end].to_vec(),
+                    ));
+                    start = end;
+                }
             }
+            segments
         });
         let segment_claims: [Vec<TypedPlaneSegmentPayloadV2<'_>>; 7] =
             core::array::from_fn(|index| {
@@ -3244,10 +3298,10 @@ mod tests {
         let families = core::array::from_fn(|index| TypedPlaneFamilyPayloadsV2 {
             family: kinds[index],
             row_count: row_counts[index],
-            boundary_policy: if split == Some((index, 1)) {
-                split_boundary_policy()
-            } else {
+            boundary_policy: if split_points_by_family[index].is_empty() {
                 terminal_boundary_policy()
+            } else {
+                split_boundary_policy()
             },
             segments: &segment_claims[index],
         });
@@ -3270,6 +3324,7 @@ mod tests {
         calls: usize,
         requested_indices: Vec<usize>,
         tamper: Option<usize>,
+        corrupted_payload: Vec<u8>,
     }
 
     impl TypedPlaneSegmentSourceV2 for BorrowedTestSegmentSource<'_> {
@@ -3295,6 +3350,13 @@ mod tests {
                 .checked_add(1)
                 .ok_or("test source call overflow")?;
             self.requested_indices.push(index);
+            if self.tamper == Some(usize::MAX - 1) && index == 0 {
+                self.corrupted_payload.clear();
+                self.corrupted_payload.extend_from_slice(payload);
+                let last = self.corrupted_payload.last_mut().ok_or("empty fixture")?;
+                *last ^= 1;
+                return Ok(&self.corrupted_payload);
+            }
             if self.tamper == Some(usize::MAX) && index == 0 {
                 return payload
                     .get(..payload.len().saturating_sub(1))
@@ -3350,6 +3412,30 @@ mod tests {
         Vec<usize>,
         usize,
     ) {
+        let mut split_points_by_family: [Vec<usize>; 7] = core::array::from_fn(|_| Vec::new());
+        if let Some(split_at) = split_documentation_at {
+            split_points_by_family[4].push(split_at);
+        }
+        verify_rows_from_borrowed_source_with_family_splits(
+            rows,
+            tamper,
+            limits,
+            jumbo_admission,
+            split_points_by_family,
+        )
+    }
+
+    fn verify_rows_from_borrowed_source_with_family_splits(
+        rows: &[Vec<Row>; 7],
+        tamper: Option<usize>,
+        limits: SemanticTypedPlaneVerificationLimitsV2,
+        mut jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
+        split_points_by_family: [Vec<usize>; 7],
+    ) -> (
+        Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>,
+        Vec<usize>,
+        usize,
+    ) {
         let kinds = family_kinds();
         let row_counts = rows
             .each_ref()
@@ -3357,21 +3443,22 @@ mod tests {
         let encoded: [Vec<EncodedSegment>; 7] = core::array::from_fn(|index| {
             let mut family_rows = rows[index].clone();
             family_rows.sort_unstable_by_key(|(key, _, _)| *key);
-            if index == 4
-                && let Some(split_at) = split_documentation_at
-                && split_at > 0
-                && split_at < family_rows.len()
+            let mut segments = Vec::new();
+            let mut start = 0;
+            for end in split_points_by_family[index]
+                .iter()
+                .copied()
+                .chain(core::iter::once(family_rows.len()))
             {
-                let right_rows = family_rows.split_off(split_at);
-                vec![
-                    encode_family_segment(kinds[index], family_rows),
-                    encode_family_segment(kinds[index], right_rows),
-                ]
-            } else if family_rows.is_empty() {
-                Vec::new()
-            } else {
-                vec![encode_family_segment(kinds[index], family_rows)]
+                if end > start && end <= family_rows.len() {
+                    segments.push(encode_family_segment(
+                        kinds[index],
+                        family_rows[start..end].to_vec(),
+                    ));
+                    start = end;
+                }
             }
+            segments
         });
         let families = core::array::from_fn(|index| {
             let segments = encoded[index]
@@ -3390,10 +3477,10 @@ mod tests {
             SemanticTypedPlaneFamilyDescriptorV2::from_untrusted_claims(
                 kinds[index],
                 row_counts[index],
-                if index == 4 && split_documentation_at.is_some() {
-                    split_boundary_policy()
-                } else {
+                if split_points_by_family[index].is_empty() {
                     terminal_boundary_policy()
+                } else {
+                    split_boundary_policy()
                 },
                 segments,
             )
@@ -3409,6 +3496,7 @@ mod tests {
             calls: 0,
             requested_indices: Vec::new(),
             tamper,
+            corrupted_payload: Vec::new(),
         };
         let result = verify_semantic_typed_plane_inventory_v2_with_segment_source(
             build(),
@@ -4403,6 +4491,173 @@ mod tests {
             assert_eq!(streamed.segments().len(), materialized.segments().len());
             for (streamed_segment, materialized_segment) in
                 streamed.segments().iter().zip(materialized.segments())
+            {
+                assert_eq!(
+                    streamed_segment.admitted_id(),
+                    materialized_segment.admitted_id()
+                );
+                assert_eq!(
+                    streamed_segment.byte_length(),
+                    materialized_segment.byte_length()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lending_segment_verifier_matches_materialized_proof_across_multisegment_families() {
+        let first = identity(0x13);
+        let second = identity(0x72);
+        let mut rows = valid_rows(first, None, None, false, true);
+        rows[0] = vec![core_row(first, true), core_row(second, true)];
+        rows[6].push(extension_row(second));
+        mark_core_source_available(&mut rows, first);
+        let source_slot = rows[5]
+            .iter_mut()
+            .find(|row| row.0 == first)
+            .expect("fixture source declaration exists");
+        *source_slot = source_declaration_row_with_inline_source(first, b"src/captured.rs", 3, 17);
+
+        let kinds = family_kinds();
+        let split_points_by_family = core::array::from_fn(|index| {
+            let mut sorted_rows = rows[index].clone();
+            sorted_rows.sort_unstable_by_key(|(key, _, _)| *key);
+            fixture_policy_splits(kinds[index], &sorted_rows)
+        });
+        for family in [0, 1, 4, 5, 6] {
+            assert!(
+                !split_points_by_family[family].is_empty(),
+                "family {:?} must exercise a split boundary",
+                kinds[family]
+            );
+        }
+
+        let materialized = verify_rows_with_family_splits(
+            rows.clone(),
+            split_points_by_family.clone(),
+            SemanticTypedPlaneVerificationLimitsV2::standard(),
+        )
+        .expect("materialized independent proof");
+        let mut sorted_core_rows = rows[0].clone();
+        sorted_core_rows.sort_unstable_by_key(|(key, _, _)| *key);
+        assert_eq!(split_points_by_family[0], [1]);
+        assert_eq!(
+            11 + 32 + 1 + 4 + sorted_core_rows[0].2.len(),
+            11 + 32 + 1 + 4 + sorted_core_rows[1].2.len(),
+            "the swapped Core payload has the exact same c004 byte length"
+        );
+
+        let total_rows = rows.iter().map(Vec::len).sum::<usize>();
+        let decoder_rows = [0, 2, 3, 4, 5]
+            .into_iter()
+            .map(|family| rows[family].len())
+            .sum::<usize>();
+        let expected_record_visits =
+            u64::try_from(total_rows * 2 + decoder_rows).expect("fixture visit count fits");
+        let previous_record_visits = expected_record_visits
+            .checked_add(u64::try_from(total_rows).expect("fixture row count fits"))
+            .expect("previous traversal count fits");
+        let encoded_row_bytes = rows
+            .iter()
+            .flatten()
+            .map(|(_, _, payload)| u64::try_from(32 + 1 + 4 + payload.len()))
+            .try_fold(0_u64, |total, bytes| total.checked_add(bytes.ok()?))
+            .expect("fixture encoded row bytes fit");
+        let decoder_row_bytes = [0, 2, 3, 4, 5]
+            .into_iter()
+            .flat_map(|family| rows[family].iter())
+            .map(|(_, _, payload)| u64::try_from(32 + 1 + 4 + payload.len()))
+            .try_fold(0_u64, |total, bytes| total.checked_add(bytes.ok()?))
+            .expect("fixture decoder bytes fit");
+        let expected_encoded_row_bytes = encoded_row_bytes
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(decoder_row_bytes))
+            .expect("fixture traversed bytes fit");
+        let previous_encoded_row_bytes = expected_encoded_row_bytes
+            .checked_add(encoded_row_bytes)
+            .expect("previous traversed bytes fit");
+
+        super::super::reset_record_traversal_metrics();
+        let expected_calls = split_points_by_family
+            .iter()
+            .enumerate()
+            .map(|(index, splits)| (if rows[index].is_empty() { 0 } else { 1 }) + splits.len())
+            .sum::<usize>();
+        let (streamed, calls, observed_expected_calls) =
+            verify_rows_from_borrowed_source_with_family_splits(
+                &rows,
+                None,
+                SemanticTypedPlaneVerificationLimitsV2::standard(),
+                None,
+                split_points_by_family.clone(),
+            );
+        let streamed = streamed.expect("lending proof over split families");
+        assert_eq!(observed_expected_calls, expected_calls);
+        assert_eq!(calls.len(), expected_calls, "one source fetch per c004");
+        assert_eq!(calls, (0..expected_calls).collect::<Vec<_>>());
+        assert_eq!(
+            super::super::record_traversal_metrics(),
+            (expected_record_visits, expected_encoded_row_bytes),
+            "record traversal work is measured separately from source fetches"
+        );
+        assert_eq!(
+            previous_record_visits - expected_record_visits,
+            u64::try_from(total_rows).expect("fixture row count fits"),
+            "fusing the boundary stage removes one complete record walk"
+        );
+        assert_eq!(
+            previous_encoded_row_bytes - expected_encoded_row_bytes,
+            encoded_row_bytes,
+            "the removed row walk is counted independently of the single source fetch"
+        );
+
+        let (wrong_id, _, _) = verify_rows_from_borrowed_source_with_family_splits(
+            &rows,
+            Some(0),
+            SemanticTypedPlaneVerificationLimitsV2::standard(),
+            None,
+            split_points_by_family.clone(),
+        );
+        assert!(matches!(
+            wrong_id,
+            Err(SemanticTypedPlaneInventoryV2Error::SegmentDescriptor {
+                family: SemanticIrPlane::Core,
+                index: 0,
+            })
+        ));
+        let (corrupted, _, _) = verify_rows_from_borrowed_source_with_family_splits(
+            &rows,
+            Some(usize::MAX - 1),
+            SemanticTypedPlaneVerificationLimitsV2::standard(),
+            None,
+            split_points_by_family,
+        );
+        assert!(matches!(
+            corrupted,
+            Err(SemanticTypedPlaneInventoryV2Error::SegmentDescriptor {
+                family: SemanticIrPlane::Core,
+                index: 0,
+            })
+        ));
+
+        assert_eq!(streamed.families().len(), materialized.families().len());
+        for (streamed_family, materialized_family) in
+            streamed.families().iter().zip(materialized.families())
+        {
+            assert_eq!(streamed_family.family(), materialized_family.family());
+            assert_eq!(streamed_family.row_count(), materialized_family.row_count());
+            assert_eq!(
+                streamed_family.semantic_row_root(),
+                materialized_family.semantic_row_root()
+            );
+            assert_eq!(
+                streamed_family.segments().len(),
+                materialized_family.segments().len()
+            );
+            for (streamed_segment, materialized_segment) in streamed_family
+                .segments()
+                .iter()
+                .zip(materialized_family.segments())
             {
                 assert_eq!(
                     streamed_segment.admitted_id(),

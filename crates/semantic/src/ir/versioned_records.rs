@@ -25,6 +25,41 @@ pub(crate) const SPIR_HEADER_BYTES: usize = HEADER_BYTES;
 const RECORD_HEADER_BYTES: usize = 32 + 1 + 4;
 const INITIAL_PREFIX_BITS: u16 = 8;
 
+// Keep the test oracle separate from the payload source's fetch counter. A
+// single borrowed source call can still lead to several independent row
+// traversals, which is the cost this verifier's streaming tests need to see.
+#[cfg(test)]
+std::thread_local! {
+    static RECORD_TRAVERSAL_METRICS: core::cell::Cell<(u64, u64)> = const {
+        core::cell::Cell::new((0, 0))
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_record_traversal_metrics() {
+    RECORD_TRAVERSAL_METRICS.with(|metrics| metrics.set((0, 0)));
+}
+
+#[cfg(test)]
+pub(crate) fn record_traversal_metrics() -> (u64, u64) {
+    RECORD_TRAVERSAL_METRICS.with(core::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn note_record_traversal(encoded_len: usize) {
+    RECORD_TRAVERSAL_METRICS.with(|metrics| {
+        let (rows, bytes) = metrics.get();
+        metrics.set((
+            rows.saturating_add(1),
+            bytes.saturating_add(u64::try_from(encoded_len).unwrap_or(u64::MAX)),
+        ));
+    });
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_record_traversal(_encoded_len: usize) {}
+
 pub(crate) mod aggregate;
 mod declarations;
 mod extensions;
@@ -582,6 +617,7 @@ impl<'bytes> Iterator for CanonicalSemanticPlaneRecordCursor<'bytes> {
         let length = usize::try_from(length).ok()?;
         let end = 37_usize.checked_add(length)?;
         let payload = self.bytes.get(37..end)?;
+        note_record_traversal(RECORD_HEADER_BYTES + length);
         self.bytes = self.bytes.get(end..)?;
         self.next += 1;
         Some(CanonicalSemanticPlaneRecordView { key, tag, payload })
@@ -1370,6 +1406,30 @@ fn decode_semantic_plane_segment_structure<'bytes>(
     bytes: &'bytes [u8],
     maximum_inline_row_bytes: usize,
 ) -> Result<CanonicalSemanticPlaneSegmentView<'bytes>, SemanticPlaneRecordError> {
+    decode_semantic_plane_segment_structure_with_record_visitor(
+        kind,
+        descriptor,
+        bytes,
+        maximum_inline_row_bytes,
+        |_| Ok(()),
+    )
+}
+
+/// Strictly parses one segment and lends each grammar-checked record to a
+/// short-lived visitor before advancing the byte cursor. Aggregate admission
+/// uses this to consume boundary facts during the structural pass instead of
+/// reopening the validated view for another row walk.
+pub(crate) fn decode_semantic_plane_segment_structure_with_record_visitor<'bytes, Visitor>(
+    kind: SemanticPlaneKind,
+    descriptor: &SemanticPlaneSegment,
+    bytes: &'bytes [u8],
+    maximum_inline_row_bytes: usize,
+    mut visitor: Visitor,
+) -> Result<CanonicalSemanticPlaneSegmentView<'bytes>, SemanticPlaneRecordError>
+where
+    Visitor:
+        FnMut(CanonicalSemanticPlaneRecordView<'bytes>) -> Result<(), SemanticPlaneRecordError>,
+{
     if bytes.len() < HEADER_BYTES || bytes[..4] != MAGIC {
         return Err(SemanticPlaneRecordError::Header);
     }
@@ -1416,6 +1476,7 @@ fn decode_semantic_plane_segment_structure<'bytes>(
             }
             Err(error) => return Err(error),
         }
+        visitor(row)?;
         first.get_or_insert(row.key);
         previous = Some(row.key);
     }
