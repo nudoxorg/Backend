@@ -532,7 +532,7 @@ impl TypedRecordPlan {
     fn materialize_atoms(
         &mut self,
         reader: &(impl SemanticReader + ?Sized),
-        atoms: Vec<crate::ir::AtomId>,
+        mut atoms: Vec<crate::ir::AtomId>,
     ) -> Result<(), SemanticPlaneRecordError> {
         atoms.sort_unstable_by_key(|atom| atom.raw);
         atoms.dedup_by_key(|atom| atom.raw);
@@ -578,7 +578,7 @@ impl TypedRecordPlan {
     fn materialize_externals(
         &mut self,
         reader: &(impl SemanticReader + ?Sized),
-        externals: Vec<crate::ir::ExternalId>,
+        mut externals: Vec<crate::ir::ExternalId>,
     ) -> Result<(), SemanticPlaneRecordError> {
         externals.sort_unstable_by_key(|external| external.raw);
         externals.dedup_by_key(|external| external.raw);

@@ -759,7 +759,9 @@ pub(super) fn external_identity_from_payload(
             hasher.update(&[1]);
             hasher.update(cursor.take(16)?);
             match cursor.u8()? {
-                0 => hasher.update(&[0]),
+                0 => {
+                    hasher.update(&[0]);
+                }
                 1 => {
                     hasher.update(&[1]);
                     hasher.update(cursor.take(16)?);
@@ -790,7 +792,9 @@ pub(super) fn external_identity_from_payload(
             hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
             hash_external_atom_cell(&mut cursor, &mut hasher, &mut references)?;
             match cursor.u8()? {
-                0 => hasher.update(&[0]),
+                0 => {
+                    hasher.update(&[0]);
+                }
                 1 => {
                     hasher.update(&[1]);
                     let kind = cursor.u16()?;
