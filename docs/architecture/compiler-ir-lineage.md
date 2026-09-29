@@ -51,7 +51,11 @@ Persistent IR commit/replay history is a distinct gap. The older Pijul-like
 package, initially `workspace/nudox-ir-vcs` and later `workspace/ir-vcs`,
 supplied replay, branches/tags, archive serving, and a scan-resistant
 whole-archive `ServeCache` in active-history commits `c91c654ac` and
-`1ec859f8a`; `workspace/ir-vcs` was removed in `23530d79b`.
+`1ec859f8a`. Commit `23530d79b` moved its path into `workspace/ir/vcs`;
+later migrations moved it under `workspace/compiler/ir/vcs`, and
+`335e3732a` removed that repository implementation. The earlier NdIrSym V1
+blob grammar had already been deleted in `451180e5c` and is not a candidate
+for restoration.
 Today's `vcs.rs` is a snapshot-diff API, not that repository. Reintroduce
 historical semantics only where the product needs them, using the canonical IR
 and current store rather than restoring the old parallel implementation. The
