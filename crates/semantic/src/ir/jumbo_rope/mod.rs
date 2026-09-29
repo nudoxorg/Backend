@@ -26,7 +26,8 @@ pub use wire::{
     JumboRopeProofSide, JumboRopeProofSpan,
 };
 pub use writer::{
-    JumboRopeBuildMetrics, JumboRopeWriteReceipt, write_jumbo_value, write_jumbo_value_from_reader,
+    JumboRopeBuildMetrics, JumboRopeStreamWriter, JumboRopeWriteReceipt, write_jumbo_value,
+    write_jumbo_value_from_reader,
 };
 
 /// Smallest non-final content-defined leaf, in bytes.
@@ -37,6 +38,8 @@ pub const JUMBO_ROPE_TARGET_LEAF_BYTES: usize = 128 * 1024;
 pub const JUMBO_ROPE_MAX_LEAF_BYTES: usize = 256 * 1024;
 /// Fixed input buffer used by the reader-based writer, in bytes.
 pub const JUMBO_ROPE_STREAM_BUFFER_BYTES: usize = 64 * 1024;
+/// Fixed wire length of one typed jumbo value descriptor, in bytes.
+pub const JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES: usize = 91;
 
 pub(super) const MAX_PROOF_DEPTH: usize = 64;
 pub(super) const ROPE_NODE_WIRE_BYTES: usize = 4 + 8 + 8 + 8 + (1 + 32 + 8 + 8 + 8) * 2;

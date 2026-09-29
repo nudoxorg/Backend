@@ -42,6 +42,37 @@ impl VerifiedJumboRope {
     }
 }
 
+impl CheckedJumboValueDescriptor {
+    /// Reopens a structurally checked descriptor from the object CAS and
+    /// verifies every ordered leaf and interior node before minting a
+    /// complete-value token. Scratch is bounded to one maximum-size leaf and
+    /// one fixed-depth traversal stack.
+    pub fn admit_stored_closure<S: JumboRopeObjectSource + ?Sized>(
+        &self,
+        source: &mut S,
+    ) -> Result<VerifiedJumboRope, JumboOperationError<S::Error>> {
+        verify_stored_closure(self, None, None, source)?;
+        Ok(VerifiedJumboRope { descriptor: *self })
+    }
+
+    /// Verifies the complete stored closure and streams its authenticated
+    /// ordered bytes to a caller-owned validator or writer. The writer must
+    /// treat its output as tentative until this method returns successfully.
+    /// Scratch remains bounded to one maximum-size leaf and one traversal
+    /// stack.
+    pub fn admit_stored_closure_to<S>(
+        &self,
+        source: &mut S,
+        writer: &mut dyn Write,
+    ) -> Result<VerifiedJumboRope, JumboOperationError<S::Error>>
+    where
+        S: JumboRopeObjectSource + ?Sized,
+    {
+        verify_stored_closure(self, None, Some(writer), source)?;
+        Ok(VerifiedJumboRope { descriptor: *self })
+    }
+}
+
 /// Leaf bytes whose ordinal, byte offset, content ID, and rope path have been
 /// checked against one exact descriptor.
 pub struct CheckedJumboLeaf<'bytes> {
@@ -410,6 +441,22 @@ fn verify_complete_closure<S: JumboRopeObjectSource + ?Sized>(
     slots: &[Option<LeafReceipt>],
     source: &mut S,
 ) -> Result<(), JumboOperationError<S::Error>> {
+    verify_stored_closure(descriptor, Some(slots), None, source)
+}
+
+fn verify_stored_closure<S: JumboRopeObjectSource + ?Sized>(
+    descriptor: &CheckedJumboValueDescriptor,
+    slots: Option<&[Option<LeafReceipt>]>,
+    mut writer: Option<&mut dyn Write>,
+    source: &mut S,
+) -> Result<(), JumboOperationError<S::Error>> {
+    if let Some(slots) = slots {
+        if u64::try_from(slots.len()).map_err(|_| JumboRopeError::LengthOverflow)?
+            != descriptor.leaf_count
+        {
+            return Err(JumboRopeError::ClosureCensusMismatch.into());
+        }
+    }
     if descriptor.leaf_count == 0 {
         if descriptor.byte_length == 0 && descriptor.root == empty_rope_root() {
             return Ok(());
@@ -442,15 +489,17 @@ fn verify_complete_closure<S: JumboRopeObjectSource + ?Sized>(
                 }
                 let index =
                     usize::try_from(next_leaf).map_err(|_| JumboRopeError::LengthOverflow)?;
-                let receipt = slots
-                    .get(index)
-                    .and_then(|slot| *slot)
-                    .ok_or(JumboRopeError::ClosureCensusMismatch)?;
-                if receipt.id != reference.id
-                    || receipt.byte_offset != byte_offset
-                    || receipt.byte_length != reference.byte_length
-                {
-                    return Err(JumboRopeError::ClosureCensusMismatch.into());
+                if let Some(slots) = slots {
+                    let receipt = slots
+                        .get(index)
+                        .and_then(|slot| *slot)
+                        .ok_or(JumboRopeError::ClosureCensusMismatch)?;
+                    if receipt.id != reference.id
+                        || receipt.byte_offset != byte_offset
+                        || receipt.byte_length != reference.byte_length
+                    {
+                        return Err(JumboRopeError::ClosureCensusMismatch.into());
+                    }
                 }
                 let byte_count = source
                     .read_leaf(reference.id, &mut leaf_buffer)
@@ -470,6 +519,11 @@ fn verify_complete_closure<S: JumboRopeObjectSource + ?Sized>(
                     for byte in bytes.iter().copied() {
                         utf8.push(byte)?;
                     }
+                }
+                if let Some(writer) = writer.as_deref_mut() {
+                    writer
+                        .write_all(bytes)
+                        .map_err(JumboOperationError::Output)?;
                 }
                 next_leaf = next_leaf
                     .checked_add(1)
@@ -526,6 +580,7 @@ where
     stack.push((descriptor.root_ref()?, 0_usize));
     let mut next_leaf = 0_u64;
     let mut byte_offset = 0_u64;
+    let mut node_count = 0_u64;
     let mut utf8 = Utf8Validator::default();
     let mut leaf_buffer = [0_u8; JUMBO_ROPE_MAX_LEAF_BYTES];
     while let Some((reference, depth)) = stack.pop() {
@@ -579,12 +634,18 @@ where
                 if node.id() != reference.id || node.as_ref() != reference {
                     return Err(JumboRopeError::InteriorObjectCorrupt.into());
                 }
+                node_count = node_count
+                    .checked_add(1)
+                    .ok_or(JumboRopeError::LengthOverflow)?;
                 stack.push((node.right, depth + 1));
                 stack.push((node.left, depth + 1));
             }
         }
     }
-    if next_leaf != descriptor.leaf_count || byte_offset != descriptor.byte_length {
+    if next_leaf != descriptor.leaf_count
+        || byte_offset != descriptor.byte_length
+        || node_count != descriptor.leaf_count.saturating_sub(1)
+    {
         return Err(JumboRopeError::ClosureCensusMismatch.into());
     }
     if descriptor.encoding == JumboValueEncoding::Utf8 {

@@ -2,7 +2,11 @@
 
 use alloc::vec::Vec;
 
-use crate::ir::{DeclarationIdentity, SemanticPlaneRecordError};
+use crate::ir::{
+    CheckedJumboValueDescriptor, DeclarationIdentity, JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES,
+    JumboRopeLimits, JumboValueEncoding, JumboValueFamily, SemanticPlaneRecordError,
+    UntrustedJumboValueDescriptor,
+};
 
 pub(super) fn encode_identity(identity: DeclarationIdentity, out: &mut Vec<u8>) {
     out.extend_from_slice(identity.family.as_bytes());
@@ -40,6 +44,26 @@ pub(super) fn read_identity(
         family: crate::ir::DeclarationFamilyId::from_raw(family),
         variant: crate::ir::VariantFingerprint::from_raw(variant),
     })
+}
+
+pub(super) fn read_checked_jumbo_descriptor(
+    cursor: &mut Cursor<'_>,
+    expected_owner: [u8; 32],
+    expected_family: JumboValueFamily,
+    expected_field_ordinal: u32,
+    expected_encoding: JumboValueEncoding,
+) -> Result<CheckedJumboValueDescriptor, SemanticPlaneRecordError> {
+    let wire = cursor.take(JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES)?;
+    let untrusted = UntrustedJumboValueDescriptor::decode_wire(wire)?;
+    let descriptor = untrusted.check(JumboRopeLimits::default())?;
+    if descriptor.owner() != &expected_owner
+        || descriptor.family() != expected_family
+        || descriptor.field_ordinal() != expected_field_ordinal
+        || descriptor.encoding() != expected_encoding
+    {
+        return Err(SemanticPlaneRecordError::RowGrammar);
+    }
+    Ok(descriptor)
 }
 
 pub(super) struct Cursor<'bytes> {

@@ -108,10 +108,48 @@ pub fn write_jumbo_value<S: JumboRopeObjectSink + ?Sized>(
     limits: JumboRopeLimits,
     sink: &mut S,
 ) -> Result<JumboRopeWriteReceipt, JumboOperationError<S::Error>> {
-    let limits = limits.validate()?;
-    let mut writer = RopeWriter::new(context, limits, sink)?;
+    let mut writer = JumboRopeStreamWriter::new(context, limits, sink)?;
     writer.push(bytes)?;
-    writer.finish(0)
+    writer.finish()
+}
+
+/// Incremental content-defined writer for a canonical value assembled from
+/// borrowed pieces. Its scratch is bounded to one leaf and the Merkle
+/// frontier, regardless of how many pieces the caller supplies.
+pub struct JumboRopeStreamWriter<'sink, S: JumboRopeObjectSink + ?Sized> {
+    inner: RopeWriter<'sink, S>,
+}
+
+impl<'sink, S: JumboRopeObjectSink + ?Sized> JumboRopeStreamWriter<'sink, S> {
+    /// Starts one value without retaining or copying the caller's input.
+    pub fn new(
+        context: JumboValueContext,
+        limits: JumboRopeLimits,
+        sink: &'sink mut S,
+    ) -> Result<Self, JumboOperationError<S::Error>> {
+        let limits = limits.validate()?;
+        Ok(Self {
+            inner: RopeWriter::new(context, limits, sink)?,
+        })
+    }
+
+    /// Adds the next borrowed bytes in canonical order.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<(), JumboOperationError<S::Error>> {
+        self.inner.push(bytes)
+    }
+
+    /// Finishes the value and returns its descriptor only after all leaf and
+    /// interior writes succeeded and exact length/encoding checks passed.
+    pub fn finish(self) -> Result<JumboRopeWriteReceipt, JumboOperationError<S::Error>> {
+        self.inner.finish(0)
+    }
+
+    pub(super) fn finish_with_input_buffer(
+        self,
+        input_buffer_bytes: u64,
+    ) -> Result<JumboRopeWriteReceipt, JumboOperationError<S::Error>> {
+        self.inner.finish(input_buffer_bytes)
+    }
 }
 
 /// Streams a canonical value from a reader using a fixed input buffer and one
@@ -126,8 +164,7 @@ where
     R: Read + ?Sized,
     S: JumboRopeObjectSink + ?Sized,
 {
-    let limits = limits.validate()?;
-    let mut writer = RopeWriter::new(context, limits, sink)?;
+    let mut writer = JumboRopeStreamWriter::new(context, limits, sink)?;
     let mut input = [0_u8; JUMBO_ROPE_STREAM_BUFFER_BYTES];
     loop {
         let read = reader
@@ -138,7 +175,7 @@ where
         }
         writer.push(&input[..read])?;
     }
-    writer.finish(JUMBO_ROPE_STREAM_BUFFER_BYTES as u64)
+    writer.finish_with_input_buffer(JUMBO_ROPE_STREAM_BUFFER_BYTES as u64)
 }
 
 struct RopeWriter<'sink, S: JumboRopeObjectSink + ?Sized> {

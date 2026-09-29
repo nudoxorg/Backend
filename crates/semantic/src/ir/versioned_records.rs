@@ -13,12 +13,12 @@ use alloc::{boxed::Box, vec::Vec};
 use thiserror::Error;
 
 use crate::ir::{
-    DeclarationIdentity, SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind,
-    SemanticPlaneSegment, SemanticReader,
+    DeclarationIdentity, JumboRopeObjectSink, JumboRopeObjectSource, SemanticInputWitness,
+    SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment, SemanticReader,
 };
 
 const MAGIC: [u8; 4] = *b"SPIR";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const HEADER_BYTES: usize = 4 + 2 + 1 + 4;
 const RECORD_HEADER_BYTES: usize = 32 + 1 + 4;
 const INITIAL_PREFIX_BITS: u16 = 8;
@@ -236,6 +236,8 @@ pub struct CanonicalPlaneEncodingMetrics {
     row_encode_calls: u64,
     peak_row_scratch_capacity_bytes: u64,
     peak_segment_scratch_capacity_bytes: u64,
+    peak_jumbo_rope_scratch_bytes: u64,
+    peak_tracked_scratch_upper_bound_bytes: u64,
     row_index_capacity_bytes: u64,
 }
 
@@ -269,6 +271,19 @@ impl CanonicalPlaneEncodingMetrics {
     #[must_use]
     pub const fn peak_segment_scratch_capacity_bytes(self) -> u64 {
         self.peak_segment_scratch_capacity_bytes
+    }
+    /// Largest live scratch reported by a jumbo value writer during this
+    /// family pass. This is a separate component from row and segment buffers.
+    #[must_use]
+    pub const fn peak_jumbo_rope_scratch_bytes(self) -> u64 {
+        self.peak_jumbo_rope_scratch_bytes
+    }
+    /// Conservative sum of the retained key-index capacity and the maximum
+    /// row, segment, and jumbo-writer scratch capacities observed together in
+    /// one row pass. Encoder plans and sink-owned storage are excluded.
+    #[must_use]
+    pub const fn peak_tracked_scratch_upper_bound_bytes(self) -> u64 {
+        self.peak_tracked_scratch_upper_bound_bytes
     }
     /// Allocated capacity of the compact key/handle/length inventory.
     #[must_use]
@@ -441,6 +456,37 @@ pub trait CanonicalPlaneRowEncoder {
         handle: Self::Handle,
         payload: &mut Vec<u8>,
     ) -> Result<u8, SemanticPlaneRecordError>;
+
+    /// Encodes one row with access to the existing content-addressed jumbo
+    /// object sink. Families without jumbo fields use the default row writer.
+    /// Implementations must emit a typed descriptor in the row and stream
+    /// oversized field bytes through `jumbo_sink`; they must not split SPIR
+    /// record bytes across semantic segments.
+    fn encode_row_with_jumbo<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        plan: &Self::Plan,
+        handle: Self::Handle,
+        _jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+        payload: &mut Vec<u8>,
+    ) -> Result<u8, SemanticPlaneRecordError> {
+        self.encode_row(reader, plan, handle, payload)
+    }
+
+    /// Measured jumbo-aware row encoding. Existing family encoders retain the
+    /// default behavior; jumbo-aware built-ins report the value writer's
+    /// bounded scratch peak through `peak_jumbo_scratch_bytes`.
+    fn encode_row_with_jumbo_measured<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        plan: &Self::Plan,
+        handle: Self::Handle,
+        jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+        _peak_jumbo_scratch_bytes: &mut u64,
+        payload: &mut Vec<u8>,
+    ) -> Result<u8, SemanticPlaneRecordError> {
+        self.encode_row_with_jumbo(reader, plan, handle, jumbo_sink, payload)
+    }
 }
 
 /// Encodes and partitions one family without minting a generation identity.
@@ -493,6 +539,18 @@ fn unwrap_owned_sink_error(
     }
 }
 
+pub(super) fn map_jumbo_operation_error(
+    error: crate::ir::JumboOperationError<SemanticPlaneRecordError>,
+) -> SemanticPlaneRecordError {
+    match error {
+        crate::ir::JumboOperationError::Rope(error) => SemanticPlaneRecordError::JumboRope(error),
+        crate::ir::JumboOperationError::Store(error) => error,
+        crate::ir::JumboOperationError::Input(_) | crate::ir::JumboOperationError::Output(_) => {
+            SemanticPlaneRecordError::JumboStream
+        }
+    }
+}
+
 /// Encodes a row family and lends each bounded output segment to `sink` before
 /// reusing its segment buffer. The encoder retains only the sorted compact
 /// key/handle index, one row scratch buffer, and one segment payload buffer.
@@ -503,6 +561,48 @@ pub fn stream_canonical_plane_family<Reader, Encoder, Sink>(
     encoder: &Encoder,
     input: SemanticInputWitness,
     maximum_bytes: usize,
+    sink: &mut Sink,
+) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
+where
+    Reader: SemanticReader + ?Sized,
+    Encoder: CanonicalPlaneRowEncoder + ?Sized,
+    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+{
+    stream_canonical_plane_family_inner(reader, encoder, input, maximum_bytes, None, sink)
+}
+
+/// Encodes one complete row family while persisting jumbo field values through
+/// the caller's existing object CAS. The typed descriptor remains one SPIR
+/// semantic row; rope leaves and interior nodes are separate CAS objects.
+pub fn stream_canonical_plane_family_with_jumbo<Reader, Encoder, Sink>(
+    reader: &Reader,
+    encoder: &Encoder,
+    input: SemanticInputWitness,
+    maximum_bytes: usize,
+    jumbo_sink: &mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>,
+    sink: &mut Sink,
+) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
+where
+    Reader: SemanticReader + ?Sized,
+    Encoder: CanonicalPlaneRowEncoder + ?Sized,
+    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+{
+    stream_canonical_plane_family_inner(
+        reader,
+        encoder,
+        input,
+        maximum_bytes,
+        Some(jumbo_sink),
+        sink,
+    )
+}
+
+fn stream_canonical_plane_family_inner<Reader, Encoder, Sink>(
+    reader: &Reader,
+    encoder: &Encoder,
+    input: SemanticInputWitness,
+    maximum_bytes: usize,
+    mut jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
     sink: &mut Sink,
 ) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
 where
@@ -528,6 +628,14 @@ where
     if keys.rows.windows(2).any(|pair| pair[0].key == pair[1].key) {
         return Err(SemanticPlaneRecordError::StableKeyCollision.into());
     }
+    let key_capacity = keys
+        .rows
+        .capacity()
+        .checked_mul(core::mem::size_of::<
+            CanonicalSemanticPlaneRowKey<Encoder::Handle>,
+        >())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
     let mut row_scratch = Vec::new();
     let mut segment_bytes = Vec::new();
     let mut current_prefix = None;
@@ -539,6 +647,8 @@ where
     let mut output_bytes = 0_u64;
     let mut peak_row_scratch = 0_usize;
     let mut peak_segment_scratch = 0_usize;
+    let mut peak_jumbo_rope_scratch = 0_u64;
+    let mut peak_tracked_scratch_upper_bound = 0_u64;
     for row in &keys.rows {
         let prefix = prefix_value(&row.key, INITIAL_PREFIX_BITS);
         if segment_rows > 0 && current_prefix != Some(prefix) {
@@ -557,7 +667,23 @@ where
         }
         current_prefix = Some(prefix);
         row_scratch.clear();
-        let tag = encoder.encode_row(reader, &plan, row.handle, &mut row_scratch)?;
+        let mut row_jumbo_scratch = 0_u64;
+        let tag = encoder.encode_row_with_jumbo_measured(
+            reader,
+            &plan,
+            row.handle,
+            jumbo_sink.as_deref_mut(),
+            &mut row_jumbo_scratch,
+            &mut row_scratch,
+        )?;
+        peak_jumbo_rope_scratch = peak_jumbo_rope_scratch.max(row_jumbo_scratch);
+        peak_tracked_scratch_upper_bound =
+            peak_tracked_scratch_upper_bound.max(tracked_family_scratch_bytes(
+                key_capacity,
+                row_scratch.capacity(),
+                segment_bytes.capacity(),
+                row_jumbo_scratch,
+            )?);
         let row_length =
             u32::try_from(row_scratch.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
         validate_record(encoder.kind(), row.key, tag, &row_scratch)?;
@@ -612,6 +738,13 @@ where
         segment_bytes.push(tag);
         segment_bytes.extend_from_slice(&row_length.to_be_bytes());
         segment_bytes.extend_from_slice(&row_scratch);
+        peak_tracked_scratch_upper_bound =
+            peak_tracked_scratch_upper_bound.max(tracked_family_scratch_bytes(
+                key_capacity,
+                row_scratch.capacity(),
+                segment_bytes.capacity(),
+                0,
+            )?);
         last_key = row.key;
         segment_rows = segment_rows
             .checked_add(1)
@@ -637,14 +770,6 @@ where
         )?;
         account_segment(&segment_bytes, &mut segment_count, &mut output_bytes)?;
     }
-    let key_capacity = keys
-        .rows
-        .capacity()
-        .checked_mul(core::mem::size_of::<
-            CanonicalSemanticPlaneRowKey<Encoder::Handle>,
-        >())
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
     let row_scratch_capacity =
         u64::try_from(peak_row_scratch).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
     let segment_scratch_capacity = u64::try_from(peak_segment_scratch)
@@ -656,8 +781,29 @@ where
         row_encode_calls: row_count,
         peak_row_scratch_capacity_bytes: row_scratch_capacity,
         peak_segment_scratch_capacity_bytes: segment_scratch_capacity,
+        peak_jumbo_rope_scratch_bytes: peak_jumbo_rope_scratch,
+        peak_tracked_scratch_upper_bound_bytes: peak_tracked_scratch_upper_bound,
         row_index_capacity_bytes: key_capacity,
     })
+}
+
+fn tracked_family_scratch_bytes(
+    key_index: u64,
+    row_capacity: usize,
+    segment_capacity: usize,
+    jumbo_writer: u64,
+) -> Result<u64, SemanticPlaneRecordError> {
+    key_index
+        .checked_add(
+            u64::try_from(row_capacity).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?,
+        )
+        .and_then(|bytes| {
+            u64::try_from(segment_capacity)
+                .ok()
+                .and_then(|segment| bytes.checked_add(segment))
+        })
+        .and_then(|bytes| bytes.checked_add(jumbo_writer))
+        .ok_or(SemanticPlaneRecordError::MetricsOverflow)
 }
 
 #[derive(Default)]
@@ -818,6 +964,140 @@ pub fn decode_semantic_plane_segment<'bytes>(
     })
 }
 
+/// Opaque proof that every jumbo descriptor in one complete semantic-plane
+/// family resolves to an exact, content-verified leaf and interior closure.
+/// The commitment binds the ordered SPIR segment IDs and row-to-descriptor
+/// associations, so a publication verifier can require this token alongside
+/// its regular seven-family inventory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedJumboPlaneClosure {
+    family: SemanticIrPlane,
+    segment_count: u64,
+    jumbo_value_count: u64,
+    commitment: [u8; 32],
+}
+
+impl VerifiedJumboPlaneClosure {
+    /// The exact typed family whose row references were checked.
+    #[must_use]
+    pub const fn family(self) -> SemanticIrPlane {
+        self.family
+    }
+
+    /// Number of ordered semantic segments covered by this proof.
+    #[must_use]
+    pub const fn segment_count(self) -> u64 {
+        self.segment_count
+    }
+
+    /// Number of jumbo value descriptors whose object closures were checked.
+    #[must_use]
+    pub const fn jumbo_value_count(self) -> u64 {
+        self.jumbo_value_count
+    }
+
+    /// Commitment to the exact family segments and their ordered descriptors.
+    #[must_use]
+    pub const fn commitment(self) -> [u8; 32] {
+        self.commitment
+    }
+}
+
+/// Reopens the complete family payloads, validates their typed rows, and
+/// verifies every referenced jumbo object closure before minting a proof
+/// token. The scan retains no whole jumbo field and reads stored content into
+/// one fixed maximum-leaf buffer at a time.
+pub fn verify_jumbo_plane_family_closures<S>(
+    kind: SemanticPlaneKind,
+    descriptors: &[SemanticPlaneSegment],
+    payloads: &[&[u8]],
+    source: &mut S,
+) -> Result<VerifiedJumboPlaneClosure, SemanticPlaneRecordError>
+where
+    S: JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+{
+    let SemanticPlaneKind::Ir(family) = kind else {
+        return Err(SemanticPlaneRecordError::IrKindRequired);
+    };
+    if descriptors.len() != payloads.len() {
+        return Err(SemanticPlaneRecordError::SegmentCount {
+            expected: descriptors.len(),
+            observed: payloads.len(),
+        });
+    }
+    let mut hasher = blake3::Hasher::new_derive_key("backend.semantic.ir.jumbo-plane-closure.v1");
+    hasher.update(&[ir_plane_code(kind)?]);
+    hasher.update(
+        &u64::try_from(descriptors.len())
+            .map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?
+            .to_be_bytes(),
+    );
+    let mut jumbo_value_count = 0_u64;
+    for (index, (descriptor, payload)) in descriptors.iter().zip(payloads).enumerate() {
+        if descriptor.first_key() > descriptor.last_key()
+            || index > 0 && descriptors[index - 1].last_key() >= descriptor.first_key()
+        {
+            return Err(SemanticPlaneRecordError::RecordOrder);
+        }
+        let segment_id = descriptor.admit(kind, payload)?;
+        let view = decode_semantic_plane_segment(kind, descriptor, payload)?;
+        hasher.update(segment_id.as_bytes());
+        for record in view.records() {
+            let jumbo = match family {
+                SemanticIrPlane::Documentation => {
+                    declarations::jumbo_descriptor_for_record(record)?
+                }
+                SemanticIrPlane::SourceProvenance => {
+                    source_provenance::jumbo_descriptor_for_record(record)?
+                }
+                _ => None,
+            };
+            let Some(jumbo) = jumbo else {
+                continue;
+            };
+            let verified = if family == SemanticIrPlane::Documentation {
+                let mut validator = declarations::DocsWireValidator::new();
+                let verified = jumbo
+                    .admit_stored_closure_to(source, &mut validator)
+                    .map_err(map_jumbo_source_error)?;
+                validator.finish()?;
+                verified
+            } else {
+                jumbo
+                    .admit_stored_closure(source)
+                    .map_err(map_jumbo_source_error)?
+            };
+            hasher.update(&record.key());
+            hasher.update(verified.descriptor_id().as_bytes());
+            jumbo_value_count = jumbo_value_count
+                .checked_add(1)
+                .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+        }
+    }
+    Ok(VerifiedJumboPlaneClosure {
+        family,
+        segment_count: u64::try_from(descriptors.len())
+            .map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?,
+        jumbo_value_count,
+        commitment: *hasher.finalize().as_bytes(),
+    })
+}
+
+fn map_jumbo_source_error<E: core::fmt::Display>(
+    error: crate::ir::JumboOperationError<E>,
+) -> SemanticPlaneRecordError {
+    match error {
+        crate::ir::JumboOperationError::Rope(error) => SemanticPlaneRecordError::JumboRope(error),
+        crate::ir::JumboOperationError::Store(error) => {
+            SemanticPlaneRecordError::JumboObjectStore(error.to_string())
+        }
+        crate::ir::JumboOperationError::Input(_) | crate::ir::JumboOperationError::Output(_) => {
+            SemanticPlaneRecordError::JumboStream
+        }
+    }
+}
+
 /// Re-encodes one complete row family from a checked reader and compares it
 /// with the exact descriptor/payload inventory. Missing ranges and
 /// self-consistent manifest omissions fail the segment-count or byte check.
@@ -950,6 +1230,18 @@ pub enum SemanticPlaneRecordError {
     /// A typed row contains bytes after its exact grammar.
     #[error("canonical typed row has trailing bytes")]
     RowTrailingBytes,
+    /// A jumbo descriptor, proof, or stored object failed verification.
+    #[error(transparent)]
+    JumboRope(#[from] crate::ir::JumboRopeError),
+    /// An oversized canonical field needs an object sink to produce its row.
+    #[error("jumbo semantic value encoding requires an object sink")]
+    JumboObjectStoreRequired,
+    /// A jumbo object store rejected a leaf or interior write.
+    #[error("jumbo semantic value object store failed: {0}")]
+    JumboObjectStore(String),
+    /// A jumbo stream failed while serializing a canonical field.
+    #[error("jumbo semantic value stream failed")]
+    JumboStream,
     /// Stable row key does not commit the typed identity in its payload.
     #[error("canonical row key does not match its typed identity")]
     StableKeyMismatch,
@@ -1050,8 +1342,13 @@ fn ir_plane_code(kind: SemanticPlaneKind) -> Result<u8, SemanticPlaneRecordError
 
 #[cfg(test)]
 mod tests {
-    use alloc::{format, string::String, vec::Vec};
+    use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
+    use std::io::Write as _;
 
+    use crate::ir::jumbo_rope::{
+        JUMBO_ROPE_MAX_LEAF_BYTES, JumboRopeLeafRef, JumboRopeNode, JumboRopeObjectId,
+        JumboRopeObjectSink, JumboRopeObjectSource, ROPE_NODE_WIRE_BYTES,
+    };
     use crate::ir::{
         BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, DocInput,
         EntityAuthorityFacts, EntityVersion, FactAvailability, Ir, IrBuilder, ItemKind, LinkKind,
@@ -1293,6 +1590,183 @@ mod tests {
 
     fn witness() -> SemanticInputWitness {
         SemanticInputWitness::claimed([0xA1; 32], ScopeRoot::from_bytes([0xB2; 32]))
+    }
+
+    fn jumbo_docs_image(text: &str) -> Ir {
+        let version = EntityVersion {
+            family: DeclarationFamilyId::from_raw([0x51; 16]),
+            variant: VariantFingerprint::from_raw([0x52; 16]),
+            core_payload: CorePayloadHash::from_raw([0x53; 16]),
+        };
+        let docs = [DocInput::Text(text)];
+        let item = TreeItemInput {
+            name: b"jumbo_docs",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                members: FactAvailability::Captured,
+                documentation: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                attributes: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &docs,
+            attributes: &[],
+            source: None,
+            extension: None,
+        };
+        let mut builder = IrBuilder::new();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[version],
+                items: &[item],
+                links: &[],
+            })
+            .expect("jumbo documentation tree is valid");
+        builder.finish().expect("jumbo documentation IR is valid")
+    }
+
+    fn jumbo_source_image(path: &[u8]) -> Ir {
+        let mut builder = IrBuilder::new();
+        let file = builder
+            .intern_atom(path)
+            .expect("jumbo source path interns");
+        let source = SourceSpan::new(file, 3, 17).expect("jumbo source span is valid");
+        let version = EntityVersion {
+            family: DeclarationFamilyId::from_raw([0x61; 16]),
+            variant: VariantFingerprint::from_raw([0x62; 16]),
+            core_payload: CorePayloadHash::from_raw([0x63; 16]),
+        };
+        let item = TreeItemInput {
+            name: b"jumbo_source",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                source: FactAvailability::Captured,
+                source_file: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: Some(source),
+            extension: None,
+        };
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[version],
+                items: &[item],
+                links: &[],
+            })
+            .expect("jumbo source tree is valid");
+        builder.finish().expect("jumbo source IR is valid")
+    }
+
+    #[derive(Clone, Default)]
+    struct InMemoryJumboObjects {
+        leaves: BTreeMap<JumboRopeObjectId, Vec<u8>>,
+        interiors: BTreeMap<JumboRopeObjectId, [u8; ROPE_NODE_WIRE_BYTES]>,
+        leaf_order: Vec<JumboRopeObjectId>,
+    }
+
+    impl JumboRopeObjectSink for InMemoryJumboObjects {
+        type Error = SemanticPlaneRecordError;
+
+        fn write_leaf(&mut self, leaf: JumboRopeLeafRef<'_>) -> Result<(), Self::Error> {
+            let bytes = leaf.bytes().to_vec();
+            if let Some(previous) = self.leaves.insert(leaf.id(), bytes.clone()) {
+                assert_eq!(previous, bytes, "content-addressed leaves are immutable");
+            }
+            self.leaf_order.push(leaf.id());
+            Ok(())
+        }
+
+        fn write_interior(&mut self, node: &JumboRopeNode) -> Result<(), Self::Error> {
+            let id = node.id();
+            let bytes = node.encode_wire();
+            if let Some(previous) = self.interiors.insert(id, bytes) {
+                assert_eq!(previous, bytes, "content-addressed nodes are immutable");
+            }
+            Ok(())
+        }
+    }
+
+    impl JumboRopeObjectSource for InMemoryJumboObjects {
+        type Error = SemanticPlaneRecordError;
+
+        fn read_leaf(
+            &mut self,
+            id: JumboRopeObjectId,
+            output: &mut [u8; JUMBO_ROPE_MAX_LEAF_BYTES],
+        ) -> Result<Option<usize>, Self::Error> {
+            let Some(bytes) = self.leaves.get(&id) else {
+                return Ok(None);
+            };
+            if bytes.len() > output.len() {
+                return Ok(Some(output.len() + 1));
+            }
+            output[..bytes.len()].copy_from_slice(bytes);
+            Ok(Some(bytes.len()))
+        }
+
+        fn read_interior(
+            &mut self,
+            id: JumboRopeObjectId,
+        ) -> Result<Option<[u8; ROPE_NODE_WIRE_BYTES]>, Self::Error> {
+            Ok(self.interiors.get(&id).copied())
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturedFamily {
+        rows: Vec<(SemanticPlaneSegment, Vec<u8>)>,
+        maximum_payload_bytes: usize,
+    }
+
+    impl CanonicalSemanticPlaneSegmentSink for CapturedFamily {
+        type Error = SemanticPlaneRecordError;
+
+        fn write_segment(
+            &mut self,
+            segment: CanonicalSemanticPlaneSegmentRef<'_>,
+        ) -> Result<(), Self::Error> {
+            self.maximum_payload_bytes = self.maximum_payload_bytes.max(segment.bytes().len());
+            self.rows
+                .push((segment.metadata()?, segment.bytes().to_vec()));
+            Ok(())
+        }
+    }
+
+    fn verify_captured_jumbo_family(
+        family: SemanticIrPlane,
+        captured: &CapturedFamily,
+        objects: &mut InMemoryJumboObjects,
+    ) -> VerifiedJumboPlaneClosure {
+        let descriptors: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(descriptor, _)| *descriptor)
+            .collect();
+        let payloads: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(_, payload)| payload.as_slice())
+            .collect();
+        verify_jumbo_plane_family_closures(
+            SemanticPlaneKind::Ir(family),
+            &descriptors,
+            &payloads,
+            objects,
+        )
+        .expect("typed family and all jumbo closures verify")
     }
 
     fn ids(values: &[CanonicalSemanticPlaneSegmentPayload]) -> Vec<SemanticSegmentId> {
@@ -1647,6 +2121,220 @@ mod tests {
             .expect("strict UTF-8 docs reopen");
         assert_eq!(view.row_count(), 1);
         assert_eq!(view.records().len(), 1);
+    }
+
+    #[test]
+    fn streamed_documentation_validator_checks_utf8_fragment_grammar() {
+        let mut valid = Vec::from([0, 0, 0, 1, 0, 0, 0, 0, 4]);
+        valid.extend_from_slice("🧠".as_bytes());
+        let mut validator = declarations::DocsWireValidator::new();
+        validator
+            .write_all(&valid[..10])
+            .expect("first block is accepted");
+        validator
+            .write_all(&valid[10..11])
+            .expect("split code point is accepted");
+        validator
+            .write_all(&valid[11..])
+            .expect("last block is accepted");
+        validator
+            .finish()
+            .expect("complete canonical UTF-8 docs validate");
+
+        let malformed = [0, 0, 0, 1, 0, 0, 0, 0, 1, 0xff];
+        let mut validator = declarations::DocsWireValidator::new();
+        validator
+            .write_all(&malformed)
+            .expect("validator drains malformed content");
+        assert!(matches!(
+            validator.finish(),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+
+        let mut trailing = valid;
+        trailing.push(0);
+        let mut validator = declarations::DocsWireValidator::new();
+        validator
+            .write_all(&trailing)
+            .expect("validator drains trailing bytes");
+        assert!(matches!(
+            validator.finish(),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+    }
+
+    #[test]
+    fn jumbo_documentation_is_one_bounded_row_and_reconstructs_cold() {
+        let text = String::from("🧠").repeat(400_000);
+        let ir = jumbo_docs_image(&text);
+        assert!(matches!(
+            encode_canonical_plane_family(
+                &ir,
+                &DocumentationRows,
+                witness(),
+                crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+            ),
+            Err(SemanticPlaneRecordError::JumboObjectStoreRequired)
+        ));
+
+        let mut objects = InMemoryJumboObjects::default();
+        let mut captured = CapturedFamily::default();
+        let metrics = stream_canonical_plane_family_with_jumbo(
+            &ir,
+            &DocumentationRows,
+            witness(),
+            crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+            &mut objects,
+            &mut captured,
+        )
+        .expect("jumbo docs encode as a typed row");
+        assert_eq!(metrics.row_count(), 1);
+        assert!(metrics.peak_row_scratch_capacity_bytes() <= 512);
+        assert!(metrics.peak_jumbo_rope_scratch_bytes() > 0);
+        assert!(
+            metrics.peak_tracked_scratch_upper_bound_bytes()
+                >= metrics.peak_jumbo_rope_scratch_bytes()
+        );
+        assert!(
+            metrics.peak_tracked_scratch_upper_bound_bytes()
+                <= (JUMBO_ROPE_MAX_LEAF_BYTES + 32 * 1024) as u64,
+            "tracked row and rope scratch is bounded to one leaf plus fixed state"
+        );
+        assert_eq!(
+            captured.rows.len(),
+            1,
+            "descriptor stays in one semantic row"
+        );
+        assert!(captured.maximum_payload_bytes < 512);
+        assert!(captured.maximum_payload_bytes < crate::ir::MAX_SEMANTIC_SEGMENT_BYTES);
+
+        let row_descriptor = captured.rows[0].0;
+        let view = decode_semantic_plane_segment(
+            SemanticPlaneKind::Ir(SemanticIrPlane::Documentation),
+            &row_descriptor,
+            &captured.rows[0].1,
+        )
+        .expect("typed documentation row decodes strictly");
+        let record = view.records().next().expect("one documentation row");
+        assert_eq!(record.tag(), declarations::DOCS_JUMBO_TAG);
+        let descriptor = declarations::jumbo_descriptor_for_record(record)
+            .expect("jumbo descriptor context is valid")
+            .expect("large documentation value has a descriptor");
+        assert_eq!(descriptor.byte_length(), (9 + text.len()) as u64);
+        assert_eq!(
+            descriptor.family(),
+            crate::ir::JumboValueFamily::Documentation
+        );
+        assert_eq!(descriptor.encoding(), crate::ir::JumboValueEncoding::Bytes);
+
+        let closure =
+            verify_captured_jumbo_family(SemanticIrPlane::Documentation, &captured, &mut objects);
+        assert_eq!(closure.jumbo_value_count(), 1);
+        let verified = descriptor
+            .admit_stored_closure(&mut objects)
+            .expect("cold storage closure reopens");
+        let mut reassembled = Vec::new();
+        verified
+            .write_value_to(&mut objects, &mut reassembled)
+            .expect("complete canonical documentation value streams back");
+        assert_eq!(
+            u32::from_be_bytes(
+                reassembled
+                    .get(..4)
+                    .expect("fragment count bytes exist")
+                    .try_into()
+                    .expect("fragment count is fixed width")
+            ),
+            1
+        );
+        assert_eq!(reassembled[4], 0);
+        assert_eq!(
+            u32::from_be_bytes(
+                reassembled
+                    .get(5..9)
+                    .expect("text length bytes exist")
+                    .try_into()
+                    .expect("text length is fixed width")
+            ) as usize,
+            text.len()
+        );
+        assert_eq!(
+            core::str::from_utf8(reassembled.get(9..).expect("text bytes exist"))
+                .expect("reassembled documentation is UTF-8"),
+            text
+        );
+    }
+
+    #[test]
+    fn jumbo_source_provenance_preserves_binary_paths_and_requires_full_cold_closure() {
+        let path = vec![0xff; 1536 * 1024];
+        let ir = jumbo_source_image(&path);
+        let mut objects = InMemoryJumboObjects::default();
+        let mut captured = CapturedFamily::default();
+        let metrics = stream_canonical_plane_family_with_jumbo(
+            &ir,
+            &SourceProvenanceRows,
+            witness(),
+            crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+            &mut objects,
+            &mut captured,
+        )
+        .expect("jumbo source path encodes as one typed row");
+        assert_eq!(metrics.row_count(), 1);
+        assert_eq!(captured.rows.len(), 1);
+        assert!(captured.maximum_payload_bytes < 512);
+
+        let row_descriptor = captured.rows[0].0;
+        let view = decode_semantic_plane_segment(
+            SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance),
+            &row_descriptor,
+            &captured.rows[0].1,
+        )
+        .expect("typed source row decodes strictly");
+        let record = view.records().next().expect("one source provenance row");
+        let descriptor = source_provenance::jumbo_descriptor_for_record(record)
+            .expect("source descriptor context is valid")
+            .expect("large source path has a descriptor");
+        assert_eq!(descriptor.byte_length(), path.len() as u64);
+        assert_eq!(
+            descriptor.family(),
+            crate::ir::JumboValueFamily::SourceProvenance
+        );
+        assert_eq!(descriptor.encoding(), crate::ir::JumboValueEncoding::Bytes);
+        let closure = verify_captured_jumbo_family(
+            SemanticIrPlane::SourceProvenance,
+            &captured,
+            &mut objects,
+        );
+        assert_eq!(closure.jumbo_value_count(), 1);
+
+        let verified = descriptor
+            .admit_stored_closure(&mut objects)
+            .expect("source path closure reopens from cold objects");
+        let mut reassembled = Vec::new();
+        verified
+            .write_value_to(&mut objects, &mut reassembled)
+            .expect("binary source path streams back exactly");
+        assert_eq!(reassembled, path);
+
+        let missing_leaf = *objects.leaf_order.first().expect("source has leaves");
+        objects.leaves.remove(&missing_leaf);
+        let descriptors: Vec<_> = captured.rows.iter().map(|(item, _)| *item).collect();
+        let payloads: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(_, payload)| payload.as_slice())
+            .collect();
+        assert!(
+            verify_jumbo_plane_family_closures(
+                SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance),
+                &descriptors,
+                &payloads,
+                &mut objects,
+            )
+            .is_err(),
+            "a missing leaf prevents family closure proof publication"
+        );
     }
 
     #[test]

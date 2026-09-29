@@ -1,16 +1,197 @@
 //! Canonical declaration and documentation record families for SPIR.
 
 use alloc::{boxed::Box, vec::Vec};
+use std::io::{self, Write};
 
-use super::wire::{Cursor, encode_identity, put_bytes, put_text, put_u32, read_identity};
+use super::wire::{
+    Cursor, encode_identity, put_bytes, put_text, put_u32, read_checked_jumbo_descriptor,
+    read_identity,
+};
 use crate::ir::{
-    CanonicalPlaneRowEncoder, CanonicalSemanticPlaneKeySink, DeclarationIdentity, DocFragment,
-    EntityAuthorityFacts, FactAvailability, LinkTarget, ParentageAuthority, SemanticEntity,
-    SemanticPlaneKind, SemanticPlaneRecordError, SemanticReader,
+    CanonicalPlaneRowEncoder, CanonicalSemanticPlaneKeySink, CheckedJumboValueDescriptor,
+    DeclarationIdentity, DocFragment, DocId, EntityAuthorityFacts, FactAvailability,
+    JumboRopeObjectSink, JumboRopeStreamWriter, JumboValueContext, JumboValueEncoding,
+    JumboValueFamily, LinkTarget, ParentageAuthority, SemanticEntity, SemanticPlaneKind,
+    SemanticPlaneRecordError, SemanticReader,
 };
 
 const CORE_TAG: u8 = 1;
 const DOCS_TAG: u8 = 2;
+pub(super) const DOCS_JUMBO_TAG: u8 = 3;
+
+enum DocsTextAfter {
+    Fragment,
+    LinkTarget,
+}
+
+enum DocsWireState {
+    FragmentCount {
+        bytes: [u8; 4],
+        used: usize,
+    },
+    FragmentTag,
+    TextLength {
+        bytes: [u8; 4],
+        used: usize,
+        after: DocsTextAfter,
+    },
+    TextBody {
+        remaining: u32,
+        utf8: crate::ir::jumbo_rope::Utf8Validator,
+        after: DocsTextAfter,
+    },
+    LinkTargetKind,
+    LinkTargetIdentity {
+        remaining: u8,
+    },
+    Done,
+    Failed,
+}
+
+/// Incremental, constant-memory validator for a canonical documentation blob.
+/// Invalid streams are drained by the writer and reported by `finish`, so a
+/// full object closure is still checked before a caller can mint its proof.
+pub(super) struct DocsWireValidator {
+    state: DocsWireState,
+    fragments_remaining: u32,
+}
+
+impl DocsWireValidator {
+    pub(super) const fn new() -> Self {
+        Self {
+            state: DocsWireState::FragmentCount {
+                bytes: [0; 4],
+                used: 0,
+            },
+            fragments_remaining: 0,
+        }
+    }
+
+    pub(super) fn finish(self) -> Result<(), SemanticPlaneRecordError> {
+        if matches!(self.state, DocsWireState::Done) {
+            Ok(())
+        } else {
+            Err(SemanticPlaneRecordError::RowGrammar)
+        }
+    }
+
+    fn after_fragment(&mut self) -> DocsWireState {
+        if self.fragments_remaining == 0 {
+            return DocsWireState::Failed;
+        }
+        self.fragments_remaining -= 1;
+        if self.fragments_remaining == 0 {
+            DocsWireState::Done
+        } else {
+            DocsWireState::FragmentTag
+        }
+    }
+
+    fn consume_byte(&mut self, byte: u8) {
+        let state = core::mem::replace(&mut self.state, DocsWireState::Failed);
+        self.state = match state {
+            DocsWireState::FragmentCount { mut bytes, used } => {
+                bytes[used] = byte;
+                let used = used + 1;
+                if used < bytes.len() {
+                    DocsWireState::FragmentCount { bytes, used }
+                } else {
+                    self.fragments_remaining = u32::from_be_bytes(bytes);
+                    if self.fragments_remaining == 0 {
+                        DocsWireState::Done
+                    } else {
+                        DocsWireState::FragmentTag
+                    }
+                }
+            }
+            DocsWireState::FragmentTag => match byte {
+                0 | 1 => DocsWireState::TextLength {
+                    bytes: [0; 4],
+                    used: 0,
+                    after: DocsTextAfter::Fragment,
+                },
+                2 => DocsWireState::TextLength {
+                    bytes: [0; 4],
+                    used: 0,
+                    after: DocsTextAfter::LinkTarget,
+                },
+                3 | 4 if self.fragments_remaining > 0 => self.after_fragment(),
+                _ => DocsWireState::Failed,
+            },
+            DocsWireState::TextLength {
+                mut bytes,
+                used,
+                after,
+            } => {
+                bytes[used] = byte;
+                let used = used + 1;
+                if used < bytes.len() {
+                    DocsWireState::TextLength { bytes, used, after }
+                } else {
+                    let remaining = u32::from_be_bytes(bytes);
+                    if remaining == 0 {
+                        match after {
+                            DocsTextAfter::Fragment => self.after_fragment(),
+                            DocsTextAfter::LinkTarget => DocsWireState::LinkTargetKind,
+                        }
+                    } else {
+                        DocsWireState::TextBody {
+                            remaining,
+                            utf8: crate::ir::jumbo_rope::Utf8Validator::default(),
+                            after,
+                        }
+                    }
+                }
+            }
+            DocsWireState::TextBody {
+                remaining,
+                mut utf8,
+                after,
+            } => {
+                if utf8.push(byte).is_err() {
+                    DocsWireState::Failed
+                } else if remaining > 1 {
+                    DocsWireState::TextBody {
+                        remaining: remaining - 1,
+                        utf8,
+                        after,
+                    }
+                } else if utf8.finish().is_err() {
+                    DocsWireState::Failed
+                } else {
+                    match after {
+                        DocsTextAfter::Fragment => self.after_fragment(),
+                        DocsTextAfter::LinkTarget => DocsWireState::LinkTargetKind,
+                    }
+                }
+            }
+            DocsWireState::LinkTargetKind if byte <= 1 => {
+                DocsWireState::LinkTargetIdentity { remaining: 32 }
+            }
+            DocsWireState::LinkTargetIdentity { remaining } if remaining > 1 => {
+                DocsWireState::LinkTargetIdentity {
+                    remaining: remaining - 1,
+                }
+            }
+            DocsWireState::LinkTargetIdentity { remaining: 1 } => self.after_fragment(),
+            DocsWireState::Done | DocsWireState::Failed => DocsWireState::Failed,
+            _ => DocsWireState::Failed,
+        };
+    }
+}
+
+impl Write for DocsWireValidator {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for byte in bytes.iter().copied() {
+            self.consume_byte(byte);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Stable-key encoder for canonical declaration/core rows.
 #[derive(Clone, Copy, Debug, Default)]
@@ -104,65 +285,179 @@ impl CanonicalPlaneRowEncoder for DocumentationRows {
         identity: Self::Handle,
         out: &mut Vec<u8>,
     ) -> Result<u8, SemanticPlaneRecordError> {
-        let entity = reader
-            .entity_by_identity(identity)
-            .ok_or(SemanticPlaneRecordError::ReaderReference)?;
+        let mut peak_jumbo_scratch_bytes = 0;
+        encode_documentation_row(reader, identity, None, &mut peak_jumbo_scratch_bytes, out)
+    }
+
+    fn encode_row_with_jumbo<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        _plan: &Self::Plan,
+        identity: Self::Handle,
+        jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+        out: &mut Vec<u8>,
+    ) -> Result<u8, SemanticPlaneRecordError> {
+        let mut peak_jumbo_scratch_bytes = 0;
+        encode_documentation_row(
+            reader,
+            identity,
+            jumbo_sink,
+            &mut peak_jumbo_scratch_bytes,
+            out,
+        )
+    }
+
+    fn encode_row_with_jumbo_measured<Reader: SemanticReader + ?Sized>(
+        &self,
+        reader: &Reader,
+        _plan: &Self::Plan,
+        identity: Self::Handle,
+        jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+        peak_jumbo_scratch_bytes: &mut u64,
+        out: &mut Vec<u8>,
+    ) -> Result<u8, SemanticPlaneRecordError> {
+        encode_documentation_row(reader, identity, jumbo_sink, peak_jumbo_scratch_bytes, out)
+    }
+}
+
+fn encode_documentation_row<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    identity: DeclarationIdentity,
+    jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+    peak_jumbo_scratch_bytes: &mut u64,
+    out: &mut Vec<u8>,
+) -> Result<u8, SemanticPlaneRecordError> {
+    let entity = reader
+        .entity_by_identity(identity)
+        .ok_or(SemanticPlaneRecordError::ReaderReference)?;
+    let doc_bytes = documentation_value_length(reader, entity.docs)?;
+    let row_overhead = u64::try_from(super::HEADER_BYTES + super::RECORD_HEADER_BYTES + 32 + 1)
+        .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+    let complete_row_bytes = row_overhead
+        .checked_add(doc_bytes)
+        .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+    if complete_row_bytes > crate::ir::MAX_SEMANTIC_SEGMENT_BYTES as u64 {
+        let sink = jumbo_sink.ok_or(SemanticPlaneRecordError::JumboObjectStoreRequired)?;
+        let owner = super::declaration_plane_key(
+            SemanticPlaneKind::Ir(crate::ir::SemanticIrPlane::Documentation),
+            identity,
+        );
+        let context = JumboValueContext::new(
+            owner,
+            JumboValueFamily::Documentation,
+            0,
+            JumboValueEncoding::Bytes,
+        );
+        let mut writer =
+            JumboRopeStreamWriter::new(context, crate::ir::JumboRopeLimits::default(), sink)
+                .map_err(super::map_jumbo_operation_error)?;
+        visit_documentation_wire_parts(reader, entity.docs, |part| {
+            writer.push(part).map_err(super::map_jumbo_operation_error)
+        })?;
+        let receipt = writer.finish().map_err(super::map_jumbo_operation_error)?;
+        *peak_jumbo_scratch_bytes =
+            (*peak_jumbo_scratch_bytes).max(receipt.metrics().peak_live_scratch_bytes());
         encode_identity(identity, out);
         out.push(availability(entity.authority.documentation));
-        let docs = reader
-            .docs(entity.docs)
-            .ok_or(SemanticPlaneRecordError::ReaderReference)?;
-        put_u32(out, docs.len())?;
-        for fragment in docs {
-            match fragment {
-                DocFragment::Text(text) => {
-                    out.push(0);
-                    put_text(
-                        out,
-                        reader
-                            .text(text)
-                            .ok_or(SemanticPlaneRecordError::ReaderReference)?,
-                    )?;
-                }
-                DocFragment::Code(text) => {
-                    out.push(1);
-                    put_text(
-                        out,
-                        reader
-                            .text(text)
-                            .ok_or(SemanticPlaneRecordError::ReaderReference)?,
-                    )?;
-                }
-                DocFragment::Link { label, target } => {
-                    out.push(2);
-                    put_text(
-                        out,
-                        reader
-                            .text(label)
-                            .ok_or(SemanticPlaneRecordError::ReaderReference)?,
-                    )?;
-                    match target {
-                        LinkTarget::Local(id) => {
-                            out.push(0);
-                            let target = reader
-                                .entity(id)
-                                .ok_or(SemanticPlaneRecordError::ReaderReference)?;
-                            encode_identity(target.version.identity(), out);
-                        }
-                        LinkTarget::External(id) => {
-                            out.push(1);
-                            let target = crate::ir::ExternalTargetIdentity::capture(reader, id)
-                                .map_err(|_| SemanticPlaneRecordError::ReaderReference)?;
-                            out.extend_from_slice(target.as_bytes());
-                        }
+        out.extend_from_slice(&receipt.verified().descriptor().encode_wire());
+        return Ok(DOCS_JUMBO_TAG);
+    }
+
+    encode_identity(identity, out);
+    out.push(availability(entity.authority.documentation));
+    visit_documentation_wire_parts(reader, entity.docs, |part| {
+        out.extend_from_slice(part);
+        Ok(())
+    })?;
+    Ok(DOCS_TAG)
+}
+
+fn documentation_value_length<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    docs: DocId,
+) -> Result<u64, SemanticPlaneRecordError> {
+    let mut length = 0_u64;
+    visit_documentation_wire_parts(reader, docs, |part| {
+        length = length
+            .checked_add(
+                u64::try_from(part.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?,
+            )
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        Ok(())
+    })?;
+    Ok(length)
+}
+
+fn visit_documentation_wire_parts<Reader, Emit>(
+    reader: &Reader,
+    docs_id: DocId,
+    mut emit: Emit,
+) -> Result<(), SemanticPlaneRecordError>
+where
+    Reader: SemanticReader + ?Sized,
+    Emit: FnMut(&[u8]) -> Result<(), SemanticPlaneRecordError>,
+{
+    let docs = reader
+        .docs(docs_id)
+        .ok_or(SemanticPlaneRecordError::ReaderReference)?;
+    let count = u32::try_from(docs.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+    emit(&count.to_be_bytes())?;
+    for fragment in docs {
+        match fragment {
+            DocFragment::Text(text) => {
+                emit(&[0])?;
+                let value = reader
+                    .text(text)
+                    .ok_or(SemanticPlaneRecordError::ReaderReference)?;
+                emit_text_parts(value, &mut emit)?;
+            }
+            DocFragment::Code(text) => {
+                emit(&[1])?;
+                let value = reader
+                    .text(text)
+                    .ok_or(SemanticPlaneRecordError::ReaderReference)?;
+                emit_text_parts(value, &mut emit)?;
+            }
+            DocFragment::Link { label, target } => {
+                emit(&[2])?;
+                let value = reader
+                    .text(label)
+                    .ok_or(SemanticPlaneRecordError::ReaderReference)?;
+                emit_text_parts(value, &mut emit)?;
+                match target {
+                    LinkTarget::Local(id) => {
+                        emit(&[0])?;
+                        let target = reader
+                            .entity(id)
+                            .ok_or(SemanticPlaneRecordError::ReaderReference)?;
+                        let mut identity_bytes = [0_u8; 32];
+                        let identity = target.version.identity();
+                        identity_bytes[..16].copy_from_slice(identity.family.as_bytes());
+                        identity_bytes[16..].copy_from_slice(identity.variant.as_bytes());
+                        emit(&identity_bytes)?;
+                    }
+                    LinkTarget::External(id) => {
+                        emit(&[1])?;
+                        let target = crate::ir::ExternalTargetIdentity::capture(reader, id)
+                            .map_err(|_| SemanticPlaneRecordError::ReaderReference)?;
+                        emit(target.as_bytes())?;
                     }
                 }
-                DocFragment::SoftBreak => out.push(3),
-                DocFragment::HardBreak => out.push(4),
             }
+            DocFragment::SoftBreak => emit(&[3])?,
+            DocFragment::HardBreak => emit(&[4])?,
         }
-        Ok(DOCS_TAG)
     }
+    Ok(())
+}
+
+fn emit_text_parts(
+    value: &str,
+    emit: &mut impl FnMut(&[u8]) -> Result<(), SemanticPlaneRecordError>,
+) -> Result<(), SemanticPlaneRecordError> {
+    let length = u32::try_from(value.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+    emit(&length.to_be_bytes())?;
+    emit(value.as_bytes())
 }
 
 /// Encodes the two declaration-owned plane families from one complete reader.
@@ -263,6 +558,21 @@ pub(super) fn validate_record(
             }
             identity
         }
+        (SemanticPlaneKind::Ir(crate::ir::SemanticIrPlane::Documentation), DOCS_JUMBO_TAG) => {
+            let identity = read_identity(&mut cursor)?;
+            if cursor.u8()? > 1 {
+                return Err(SemanticPlaneRecordError::RowGrammar);
+            }
+            let owner = super::declaration_plane_key(kind, identity);
+            let _descriptor = read_checked_jumbo_descriptor(
+                &mut cursor,
+                owner,
+                JumboValueFamily::Documentation,
+                0,
+                JumboValueEncoding::Bytes,
+            )?;
+            identity
+        }
         _ => return Err(SemanticPlaneRecordError::RowGrammar),
     };
     if !cursor.is_empty() {
@@ -272,6 +582,41 @@ pub(super) fn validate_record(
         return Err(SemanticPlaneRecordError::StableKeyMismatch);
     }
     Ok(())
+}
+
+pub(super) fn jumbo_descriptor_for_record(
+    record: super::CanonicalSemanticPlaneRecordView<'_>,
+) -> Result<Option<CheckedJumboValueDescriptor>, SemanticPlaneRecordError> {
+    if record.tag() != DOCS_JUMBO_TAG {
+        return Ok(None);
+    }
+    let mut cursor = Cursor::new(record.payload());
+    let identity = read_identity(&mut cursor)?;
+    if cursor.u8()? > 1 {
+        return Err(SemanticPlaneRecordError::RowGrammar);
+    }
+    let descriptor = read_checked_jumbo_descriptor(
+        &mut cursor,
+        super::declaration_plane_key(
+            SemanticPlaneKind::Ir(crate::ir::SemanticIrPlane::Documentation),
+            identity,
+        ),
+        JumboValueFamily::Documentation,
+        0,
+        JumboValueEncoding::Bytes,
+    )?;
+    if !cursor.is_empty() {
+        return Err(SemanticPlaneRecordError::RowTrailingBytes);
+    }
+    if record.key()
+        != super::declaration_plane_key(
+            SemanticPlaneKind::Ir(crate::ir::SemanticIrPlane::Documentation),
+            identity,
+        )
+    {
+        return Err(SemanticPlaneRecordError::StableKeyMismatch);
+    }
+    Ok(Some(descriptor))
 }
 
 fn encode_core_row<Reader: SemanticReader + ?Sized>(
