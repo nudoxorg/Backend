@@ -221,11 +221,11 @@ pub use versioned_records::{
     CanonicalSemanticPlaneRecordView, CanonicalSemanticPlaneRowKey,
     CanonicalSemanticPlaneSegmentPayload, CanonicalSemanticPlaneSegmentRef,
     CanonicalSemanticPlaneSegmentSink, CanonicalSemanticPlaneSegmentView, CoreDeclarationRows,
-    DocumentationRows, MeasuredCanonicalPlaneEncoding, SemanticPlaneRecordError,
-    SourceProvenanceRows, declaration_plane_key, decode_semantic_plane_segment,
-    encode_canonical_plane_family, encode_canonical_plane_family_measured,
-    encode_declaration_planes, stream_canonical_plane_family,
-    verify_semantic_plane_family_against_reader,
+    DocumentationRows, MeasuredCanonicalPlaneEncoding, OccurrenceHandle, OccurrenceRows,
+    RelationRows, SemanticPlaneRecordError, SourceProvenanceRows, declaration_plane_key,
+    decode_semantic_plane_segment, encode_canonical_plane_family,
+    encode_canonical_plane_family_measured, encode_declaration_planes,
+    stream_canonical_plane_family, verify_semantic_plane_family_against_reader,
 };
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{

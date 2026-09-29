@@ -435,7 +435,7 @@ impl IrBuilder {
             // observations join by one total source order, so the legacy
             // representative column never depends on authority emission
             // order. Exhaustive evidence remains in LinkOccurrence rows.
-            if canonical_relation_evidence_precedes(link, known) {
+            if canonical_relation_evidence_precedes(link, known, &self.atoms) {
                 self.links.replace(id, link)?;
             }
             return Ok(id);

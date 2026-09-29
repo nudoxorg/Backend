@@ -24,9 +24,13 @@ const RECORD_HEADER_BYTES: usize = 32 + 1 + 4;
 const INITIAL_PREFIX_BITS: u16 = 8;
 
 mod declarations;
+mod occurrences;
+mod relations;
 mod source_provenance;
 mod wire;
 pub use declarations::{CoreDeclarationRows, DocumentationRows, encode_declaration_planes};
+pub use occurrences::{OccurrenceHandle, OccurrenceRows};
+pub use relations::RelationRows;
 pub use source_provenance::SourceProvenanceRows;
 
 /// One compact handle to a row in the borrowed canonical reader.
@@ -996,6 +1000,12 @@ fn validate_record(
         SemanticPlaneKind::Ir(SemanticIrPlane::Core | SemanticIrPlane::Documentation) => {
             declarations::validate_record(kind, key, tag, payload)
         }
+        SemanticPlaneKind::Ir(SemanticIrPlane::Relations) => {
+            relations::validate_record(key, tag, payload)
+        }
+        SemanticPlaneKind::Ir(SemanticIrPlane::Occurrences) => {
+            occurrences::validate_record(key, tag, payload)
+        }
         SemanticPlaneKind::Ir(SemanticIrPlane::SourceProvenance) => {
             source_provenance::validate_record(kind, key, tag, payload)
         }
@@ -1023,10 +1033,12 @@ mod tests {
     use alloc::{format, string::String, vec::Vec};
 
     use crate::ir::{
-        BorrowedTree, CorePayloadHash, DeclarationFamilyId, DocInput, EntityAuthorityFacts,
-        EntityVersion, FactAvailability, Ir, IrBuilder, ItemKind, ParentageAuthority,
-        SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment,
-        SemanticSegmentId, SourceSpan, TreeItemInput, VariantFingerprint, Visibility,
+        BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, DocInput,
+        EntityAuthorityFacts, EntityVersion, FactAvailability, Ir, IrBuilder, ItemKind, LinkKind,
+        OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader, SemanticInputWitness,
+        SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment, SemanticReader,
+        SemanticSegmentId, SourceSpan, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
+        VariantFingerprint, Visibility,
     };
     use backend_version::ScopeRoot;
 
@@ -1083,6 +1095,179 @@ mod tests {
                 links: &[],
             })
             .expect("fixture tree is valid");
+        builder.finish().expect("fixture IR is valid")
+    }
+
+    fn graph_image(reverse_occurrences: bool, edit_other_site: bool) -> Ir {
+        let mut builder = IrBuilder::new();
+        let file = builder
+            .intern_atom(b"src/graph.rs")
+            .expect("source path interns");
+        let span = |start, end| SourceSpan::new(file, start, end).expect("valid source span");
+        let versions = [
+            EntityVersion {
+                family: DeclarationFamilyId::from_raw([0x11; 16]),
+                variant: VariantFingerprint::from_raw([0x12; 16]),
+                core_payload: CorePayloadHash::from_raw([0x13; 16]),
+            },
+            EntityVersion {
+                family: DeclarationFamilyId::from_raw([0x21; 16]),
+                variant: VariantFingerprint::from_raw([0x22; 16]),
+                core_payload: CorePayloadHash::from_raw([0x23; 16]),
+            },
+        ];
+        let authority = EntityAuthorityFacts {
+            parentage: ParentageAuthority::Root,
+            members: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [
+            TreeItemInput {
+                name: b"caller",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"callee",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        let duplicate = TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
+            kind: LinkKind::Calls,
+            confidence: Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
+            source: Some(span(3, 8)),
+        };
+        let other_site = TreeLinkInput {
+            confidence: Confidence::Heuristic,
+            source: Some(span(
+                13 + if edit_other_site { 1 } else { 0 },
+                18 + if edit_other_site { 1 } else { 0 },
+            )),
+            ..duplicate
+        };
+        let links = if reverse_occurrences {
+            [other_site, duplicate, duplicate]
+        } else {
+            [duplicate, duplicate, other_site]
+        };
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &links,
+            })
+            .expect("fixture graph is valid");
+        builder.finish().expect("fixture IR is valid")
+    }
+
+    fn representative_image(reverse_paths: bool) -> Ir {
+        let mut builder = IrBuilder::new();
+        let (path_z, path_a) = if reverse_paths {
+            let z = builder.intern_atom(b"z.rs").expect("z path interns");
+            let a = builder.intern_atom(b"a.rs").expect("a path interns");
+            (z, a)
+        } else {
+            let a = builder.intern_atom(b"a.rs").expect("a path interns");
+            let z = builder.intern_atom(b"z.rs").expect("z path interns");
+            (z, a)
+        };
+        let versions = [
+            EntityVersion {
+                family: DeclarationFamilyId::from_raw([0x31; 16]),
+                variant: VariantFingerprint::from_raw([0x32; 16]),
+                core_payload: CorePayloadHash::from_raw([0x33; 16]),
+            },
+            EntityVersion {
+                family: DeclarationFamilyId::from_raw([0x41; 16]),
+                variant: VariantFingerprint::from_raw([0x42; 16]),
+                core_payload: CorePayloadHash::from_raw([0x43; 16]),
+            },
+        ];
+        let authority = EntityAuthorityFacts {
+            parentage: ParentageAuthority::Root,
+            members: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [
+            TreeItemInput {
+                name: b"from",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"to",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        let link = |file, start| TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
+            kind: LinkKind::Calls,
+            confidence: Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
+            source: Some(SourceSpan::new(file, start, start + 1).expect("valid source span")),
+        };
+        let z_source = link(path_z, 3);
+        let a_source = link(path_a, 9);
+        let links = if reverse_paths {
+            [a_source, z_source]
+        } else {
+            [z_source, a_source]
+        };
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &links,
+            })
+            .expect("fixture graph is valid");
         builder.finish().expect("fixture IR is valid")
     }
 
@@ -1234,6 +1419,132 @@ mod tests {
                 original.iter().filter(|id| changed.contains(*id)).count(),
                 original.len() - 1,
                 "only the one stable-key bucket holding declaration {edited} should change"
+            );
+        }
+    }
+
+    #[test]
+    fn relation_and_occurrence_rows_are_coordinate_independent_and_preserve_multiplicity() {
+        let forward = graph_image(false, false);
+        let reordered = graph_image(true, false);
+        let input = witness();
+        let relation_segments = encode_canonical_plane_family(&forward, &RelationRows, input, 512)
+            .expect("relation rows encode");
+        let reordered_relations =
+            encode_canonical_plane_family(&reordered, &RelationRows, input, 512)
+                .expect("reordered relation rows encode");
+        let occurrence_segments =
+            encode_canonical_plane_family(&forward, &OccurrenceRows, input, 512)
+                .expect("occurrence rows encode");
+        let reordered_occurrences =
+            encode_canonical_plane_family(&reordered, &OccurrenceRows, input, 512)
+                .expect("reordered occurrence rows encode");
+
+        assert_eq!(ids(&relation_segments), ids(&reordered_relations));
+        assert_eq!(ids(&occurrence_segments), ids(&reordered_occurrences));
+        assert_eq!(
+            occurrence_segments
+                .iter()
+                .map(|segment| segment.row_count() as usize)
+                .sum::<usize>(),
+            3,
+            "identical sites remain separate rows"
+        );
+        assert_eq!(
+            relation_segments
+                .iter()
+                .map(|segment| segment.row_count() as usize)
+                .sum::<usize>(),
+            1,
+            "same logical relation is deduplicated"
+        );
+        for segment in relation_segments.iter().chain(occurrence_segments.iter()) {
+            let descriptor = segment.metadata().expect("segment descriptor");
+            let decoded =
+                decode_semantic_plane_segment(segment.kind(), &descriptor, segment.bytes())
+                    .expect("strict family decoder accepts canonical rows");
+            assert_eq!(decoded.row_count(), segment.row_count());
+        }
+
+        let relation = &relation_segments[0];
+        let mut malformed_relation = relation.bytes().to_vec();
+        malformed_relation[HEADER_BYTES + RECORD_HEADER_BYTES + 32] = 2;
+        let malformed_relation_descriptor = SemanticPlaneSegment::from_payload_with_witness(
+            relation.kind(),
+            *relation.first_key(),
+            *relation.last_key(),
+            relation.row_count(),
+            &malformed_relation,
+            input,
+        )
+        .expect("recomputed malformed relation descriptor");
+        assert!(matches!(
+            decode_semantic_plane_segment(
+                relation.kind(),
+                &malformed_relation_descriptor,
+                &malformed_relation
+            ),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+
+        let occurrence = &occurrence_segments[0];
+        let mut malformed_occurrence = occurrence.bytes().to_vec();
+        malformed_occurrence[HEADER_BYTES + RECORD_HEADER_BYTES + 33] = 0;
+        let malformed_occurrence_descriptor = SemanticPlaneSegment::from_payload_with_witness(
+            occurrence.kind(),
+            *occurrence.first_key(),
+            *occurrence.last_key(),
+            occurrence.row_count(),
+            &malformed_occurrence,
+            input,
+        )
+        .expect("recomputed malformed occurrence descriptor");
+        assert!(matches!(
+            decode_semantic_plane_segment(
+                occurrence.kind(),
+                &malformed_occurrence_descriptor,
+                &malformed_occurrence
+            ),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+
+        let edited = graph_image(false, true);
+        let edited_relations = encode_canonical_plane_family(&edited, &RelationRows, input, 128)
+            .expect("relations survive an occurrence-source edit");
+        let base_occurrences = encode_canonical_plane_family(&forward, &OccurrenceRows, input, 128)
+            .expect("small occurrence segments encode");
+        let edited_occurrences =
+            encode_canonical_plane_family(&edited, &OccurrenceRows, input, 128)
+                .expect("edited occurrence segments encode");
+        assert_eq!(ids(&relation_segments), ids(&edited_relations));
+        let base_ids = ids(&base_occurrences);
+        let edited_ids = ids(&edited_occurrences);
+        assert_eq!(base_ids.len(), 3);
+        assert_eq!(edited_ids.len(), 3);
+        assert_eq!(
+            base_ids
+                .iter()
+                .filter(|id| edited_ids.contains(*id))
+                .count(),
+            2,
+            "the changed occurrence has its own segment while unrelated sites retain IDs"
+        );
+    }
+
+    #[test]
+    fn relation_representative_source_uses_path_bytes_across_atom_reordering() {
+        let first = representative_image(false);
+        let second = representative_image(true);
+        for image in [&first, &second] {
+            let (_, relation) = image
+                .canonical_links()
+                .next()
+                .expect("one canonical relation");
+            let source = relation.source.expect("representative source retained");
+            assert_eq!(
+                image.atom(source.file()).expect("source path exists"),
+                b"a.rs",
+                "lexical source path wins even when its atom coordinate changes"
             );
         }
     }
