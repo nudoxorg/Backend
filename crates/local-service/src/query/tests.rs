@@ -717,10 +717,7 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
         .iter()
         .map(|(entity, _)| {
             local
-                .corpus
-                .candidates
-                .iter()
-                .find_map(|(candidate, selected)| (selected == entity).then_some(*candidate))
+                .candidate_for_entity(*entity)
                 .expect("lexical candidate")
         })
         .collect::<Vec<_>>();
@@ -732,14 +729,11 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
     let semantic_only_row = RowId::Symbol(backend_engine::symbol_key("meaning::related"));
     let semantic_only_entity = local::entity_id(workspace, semantic_only_row).expect("entity");
     assert!(!lexical_entities.contains(&semantic_only_entity));
-    let semantic_only = local
-        .corpus
-        .candidates
-        .iter()
-        .find_map(|(candidate, entity)| (*entity == semantic_only_entity).then_some(*candidate))
+    let semantic_only = coordinator
+        .semantic_candidate(semantic_only_row)
         .expect("semantic-only candidate");
     let unknown = semantic::CandidateId::new(u64::MAX).expect("unknown id");
-    assert!(!local.corpus.candidates.contains_key(&unknown));
+    assert!(local.candidate_row(unknown).is_none());
     let embedding = recipe();
     let payloads = vec![
         (
@@ -798,11 +792,8 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
     let index = semantic::VectorIndex::new(base, facts, source).expect("index");
     let query = semantic::QueryVector::new(embedding, vec![0.0, 0.0]).expect("query vector");
     let expected_first = local
-        .corpus
-        .candidates
-        .get(&lexical_ids[0])
-        .and_then(|entity| local.corpus.entities.get(entity))
-        .copied()
+        .candidate_row(lexical_ids[0])
+        .map(|(_, row)| row.id)
         .expect("expected first row");
     let result = local.accelerate_with(
         CompositionPolicy::RerankLexical,
