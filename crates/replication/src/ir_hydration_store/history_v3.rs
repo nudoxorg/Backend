@@ -600,6 +600,10 @@ impl FileSemanticRangeStore {
             .generations
             .typed_v3_publication_snapshot(target, commit_id)?;
         let persisted_manifest = snapshot.locator().validate()?;
+        let typed_roots_match_commit = persisted_manifest.content_root_claim().as_bytes()
+            == snapshot.claim().content_root_claim().as_bytes()
+            && persisted_manifest.generation_root_claim().as_bytes()
+                == snapshot.claim().generation_root_claim().as_bytes();
         let generation = self
             .generations
             .typed_v3_history_generation(target, commit_id)?;
@@ -610,7 +614,8 @@ impl FileSemanticRangeStore {
             && generation.manifest().root() == selected.manifest().root()
             && commit.selected_stamp() == selected.selected_stamp()
             && commit.manifest_root() == selected.manifest().root()
-            && persisted_manifest.root() == selected.manifest().root()
+            && typed_roots_match_commit
+            && persisted_manifest.build() == selected.manifest().build()
             && persisted_manifest.input_claim() == selected.input_claim()
         {
             Ok(Some(commit_id))
