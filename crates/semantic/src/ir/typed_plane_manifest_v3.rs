@@ -743,7 +743,7 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
         if root_bytes.len() > MAX_TYPED_PLANE_V3_NODE_BYTES {
             return Err(SemanticTypedPlaneIndexV3Error::NodeTooLarge);
         }
-        let claim = UntrustedId::from_wire(
+        let claim: UntrustedId<SemanticTypedPlaneRowRelationV3> = UntrustedId::from_wire(
             &descriptor.tree_root,
             IdContext::relation::<SemanticTypedPlaneRowRelationV3>(),
         )
