@@ -41,8 +41,8 @@
     },
     {
       "path": "crates/local-service/src/builtin/discovery_search/release_projection.rs",
-      "sha256": "a17d4d55574a343838f350b53c8f72bda75f9ce4b69e3db8b5d83e7ed148acb4",
-      "snapshot_id": "workspace-file:sha256:a17d4d55574a343838f350b53c8f72bda75f9ce4b69e3db8b5d83e7ed148acb4"
+      "sha256": "bf40f6864b19464744fc89af68f2c8a0eb402b3b1884acc7f7ec8aa8c62c241c",
+      "snapshot_id": "workspace-file:sha256:bf40f6864b19464744fc89af68f2c8a0eb402b3b1884acc7f7ec8aa8c62c241c"
     },
     {
       "path": "crates/local-service/src/builtin/discovery_search/benchmark.rs",
