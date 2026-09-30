@@ -6404,6 +6404,9 @@ mod tests {
         let executable_bytes = std::fs::metadata(&executable_path)
             .expect("inspect benchmark test executable")
             .len();
+        let cargo_lock_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+        let cargo_lock_sha256 = file_sha256(&cargo_lock_path);
         const EXPECTED_JOURNAL_SHA256: &str =
             "7b156608e0427b60a7fd394f1d4d0c4b68aa7d7df6d55f0b12a1da80f9f36899";
         const WARM_CHAINS_PER_QUERY: usize = 100;
@@ -6658,6 +6661,8 @@ mod tests {
                 },
                 "target_dir": std::env::var("CARGO_TARGET_DIR").unwrap_or_default(),
                 "host": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
+                "cargo_lock_sha256": cargo_lock_sha256,
+                "nix_shell": std::env::var("IN_NIX_SHELL").unwrap_or_default(),
                 "journal_path": journal_path.display().to_string(),
                 "journal_sha256": journal_sha256,
                 "journal_bytes": journal_size,
