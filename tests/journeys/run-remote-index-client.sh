@@ -51,6 +51,7 @@ pub fn remote_index_journey_marker() -> &'static str {
     "remote_index_journey_marker"
 }
 EOF
+shasum -a 256 "$fixture/Cargo.toml" "$fixture/src/lib.rs"
 
 port=${REMOTE_INDEX_PORT:-$(python3 - <<'PY'
 import socket
@@ -82,6 +83,7 @@ start_locald() {
     fi
     if ! kill -0 "$locald_pid" 2>/dev/null; then
       printf '%s\n' "backend-locald exited before becoming ready" >&2
+      tail -n 80 "$root/locald.log" >&2
       exit 1
     fi
     sleep 0.1
