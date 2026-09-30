@@ -6395,10 +6395,13 @@ mod tests {
             journal_sha256, EXPECTED_JOURNAL_SHA256,
             "journal is not pinned input"
         );
+        let journal_size = journal_bytes.len();
+        drop(journal_bytes);
         let labels_bytes = std::fs::read(&labels_path).expect("read independent query labels");
         let labels_sha256 = hex(&Sha256::digest(&labels_bytes));
         let labels: serde_json::Value =
             serde_json::from_slice(&labels_bytes).expect("decode independent query labels");
+        drop(labels_bytes);
         assert_eq!(labels["journal_sha256"], EXPECTED_JOURNAL_SHA256);
         let scope = labels["scope"].as_str().expect("label scope");
         let query_labels = labels["queries"]
@@ -6457,7 +6460,7 @@ mod tests {
             DiscoverySearchIndex::open_with_forge_and_source_pins_at(&cache_root, &store, &[], &[])
                 .expect("cold-open durable production discovery index");
         let cold_projection_open_ns = cold_open_started.elapsed().as_nanos() as u64;
-        assert_eq!(hex(&index.snapshot_root()), built_snapshot_root);
+        let cold_root_matches = hex(&index.snapshot_root()) == built_snapshot_root;
         let rss_after_cold_open = resident_set_kib();
 
         let mut first_page_ns_by_query = Vec::with_capacity(query_labels.len());
@@ -6466,6 +6469,7 @@ mod tests {
         let mut first_observed = Vec::with_capacity(query_labels.len());
         for label in query_labels {
             let query = label["query"].as_str().expect("query text");
+            let rule = label["rule"].as_str().unwrap_or("unspecified");
             let first_page_started = std::time::Instant::now();
             let first_page = index
                 .search_after_with_store(
@@ -6543,6 +6547,7 @@ mod tests {
             first_observed.push(observed.clone());
             timed_queries.push(serde_json::json!({
                 "query": query,
+                "independent_rule": rule,
                 "expected_count": expected.len(),
                 "observed_count": observed.len(),
                 "exact_membership": exact_membership,
@@ -6616,13 +6621,14 @@ mod tests {
         };
         let report = serde_json::json!({
             "schema": "nudox.direct-discovery-index-benchmark.v1",
-            "correct": build_checks_pass && query_checks_pass,
+            "correct": build_checks_pass && query_checks_pass && cold_root_matches,
+            "cold_reopen_root_matches_build": cold_root_matches,
             "provenance": {
                 "source_commit": source_commit,
                 "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
                 "journal_path": journal_path.display().to_string(),
                 "journal_sha256": journal_sha256,
-                "journal_bytes": journal_bytes.len(),
+                "journal_bytes": journal_size,
                 "labels_path": labels_path.display().to_string(),
                 "labels_sha256": labels_sha256,
                 "independent_label_scope": scope,
@@ -6673,6 +6679,11 @@ mod tests {
             serde_json::to_vec_pretty(&report).expect("serialize benchmark report"),
         )
         .expect("persist direct benchmark report");
+        assert!(
+            cold_root_matches,
+            "cold-open changed selected index root; report: {}",
+            report_path.display()
+        );
         assert!(
             build_checks_pass,
             "freshly built production index missed labels; report: {}",
