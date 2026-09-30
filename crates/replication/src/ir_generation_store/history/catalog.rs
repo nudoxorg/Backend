@@ -693,19 +693,7 @@ impl LocalSemanticGenerationFiles {
                     let manifest = locator.validate()?;
                     if manifest.input_claim() != admission.input_claim() {
                         return Err(
-                            "typed V3 publication input witness differs from its locator"
-                                .to_owned(),
-                        );
-                    }
-                    if let Some(input_witness) = admission.input_witness()
-                        && (!input_witness.coverage().is_authorized_complete()
-                            || backend_semantic::ir::SemanticInputClaimV2::from_witness(
-                                &input_witness,
-                            ) != admission.input_claim())
-                    {
-                        return Err(
-                            "typed V3 live publication input witness is stale or incomplete"
-                                .to_owned(),
+                            "typed V3 publication input claim differs from its locator".to_owned()
                         );
                     }
                     let generation = load_record(&target_root, record.generation, target)?;

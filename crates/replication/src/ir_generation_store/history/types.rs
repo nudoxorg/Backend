@@ -646,8 +646,8 @@ impl HistoryAdmissionReceipt {
         })
     }
 
-    /// Borrows the live same-store pin, exact V3 semantic proof, and producer
-    /// input witness required by the V3 ref publication path.
+    /// Borrows the live same-store pin and distinct history-only semantic
+    /// proof required by V3 ref publication.
     pub(crate) fn typed_v3_publication_admission(
         &self,
         store_root: &std::path::Path,
@@ -660,7 +660,6 @@ impl HistoryAdmissionReceipt {
         Some(TypedV3HistoryPublicationAdmission {
             identity: proof.identity,
             content: proof.content,
-            input_witness: Some(proof.input_witness),
             input_claim: proof.input_claim,
             closure: proof.closure,
             locator: proof.locator,
@@ -700,8 +699,8 @@ impl HistoryAdmissionReceipt {
 
     pub(crate) fn with_typed_v3_proof(
         mut self,
-        content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
-        input_witness: backend_semantic::ir::SemanticInputWitness,
+        content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
+        input_claim: backend_semantic::ir::SemanticInputClaimV2,
         closure: ArtifactClosureClaim,
         locator: HistoryTypedV3LocatorId,
         store_root: std::path::PathBuf,
@@ -711,9 +710,7 @@ impl HistoryAdmissionReceipt {
                 "typed V3 publication proof was attached to another history root".to_owned(),
             );
         };
-        let input_claim = backend_semantic::ir::SemanticInputClaimV2::from_witness(&input_witness);
-        if !input_witness.coverage().is_authorized_complete()
-            || content.input_claim() != input_claim
+        if content.input_claim() != input_claim
             || !claim.content_root_claim().matches(content.content_root())
             || !claim
                 .generation_root_claim()
@@ -727,7 +724,6 @@ impl HistoryAdmissionReceipt {
         self.typed_v3_proof = Some(TypedV3HistoryPublicationProof {
             identity: self.commit.identity(),
             content,
-            input_witness,
             input_claim,
             closure,
             locator,
@@ -753,12 +749,11 @@ pub(crate) struct TypedV2HistoryPublicationAdmission<'pin> {
     _gc_pin: &'pin backend_store::GcPinGuard,
 }
 
-/// Capability that binds a typed V3 commit and input witness to the live
-/// same-store closure-verifier pin held by the caller.
+/// Capability that binds a typed V3 commit and claim-only history proof to the
+/// live same-store closure-verifier pin held by the caller.
 pub(crate) struct TypedV3HistoryPublicationAdmission<'pin> {
     identity: HistoryCommitId,
-    content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
-    input_witness: Option<backend_semantic::ir::SemanticInputWitness>,
+    content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
     input_claim: backend_semantic::ir::SemanticInputClaimV2,
     closure: ArtifactClosureClaim,
     locator: HistoryTypedV3LocatorId,
@@ -770,7 +765,7 @@ impl<'pin> TypedV3HistoryPublicationAdmission<'pin> {
         self.identity
     }
 
-    pub(crate) const fn content(&self) -> backend_semantic::ir::VerifiedTypedPlaneContentV2 {
+    pub(crate) const fn content(&self) -> backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3 {
         self.content
     }
 
@@ -786,13 +781,9 @@ impl<'pin> TypedV3HistoryPublicationAdmission<'pin> {
         self.locator
     }
 
-    pub(crate) const fn input_witness(&self) -> Option<backend_semantic::ir::SemanticInputWitness> {
-        self.input_witness
-    }
-
     pub(crate) fn from_cold_verification(
         identity: HistoryCommitId,
-        content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+        content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
         input_claim: backend_semantic::ir::SemanticInputClaimV2,
         closure: ArtifactClosureClaim,
         locator: HistoryTypedV3LocatorId,
@@ -801,7 +792,6 @@ impl<'pin> TypedV3HistoryPublicationAdmission<'pin> {
         Self {
             identity,
             content,
-            input_witness: None,
             input_claim,
             closure,
             locator,
@@ -856,8 +846,7 @@ struct TypedV2HistoryPublicationProof {
 #[derive(Clone, Debug)]
 struct TypedV3HistoryPublicationProof {
     identity: HistoryCommitId,
-    content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
-    input_witness: backend_semantic::ir::SemanticInputWitness,
+    content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
     input_claim: backend_semantic::ir::SemanticInputClaimV2,
     closure: ArtifactClosureClaim,
     locator: HistoryTypedV3LocatorId,
@@ -1082,7 +1071,7 @@ pub enum TypedV3HistoryInputReplayStatus {
 pub struct TypedV3HistoryReplay {
     commit: AdmittedHistoryCommit,
     manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
-    content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+    content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
     input_claim: backend_semantic::ir::SemanticInputClaimV2,
     _gc_pin: Option<std::sync::Arc<backend_store::GcPinGuard>>,
 }
@@ -1091,7 +1080,7 @@ impl TypedV3HistoryReplay {
     pub(crate) fn new(
         commit: AdmittedHistoryCommit,
         manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
-        content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
+        content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
         gc_pin: std::sync::Arc<backend_store::GcPinGuard>,
     ) -> Self {
         let input_claim = manifest.input_claim();
@@ -1119,7 +1108,7 @@ impl TypedV3HistoryReplay {
 
     /// Returns the semantic content proof for the exact persisted closure.
     #[must_use]
-    pub const fn content(&self) -> backend_semantic::ir::VerifiedTypedPlaneContentV2 {
+    pub const fn content(&self) -> backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3 {
         self.content
     }
 

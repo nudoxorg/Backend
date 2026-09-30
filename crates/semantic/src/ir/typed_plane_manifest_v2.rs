@@ -573,11 +573,6 @@ impl SemanticTypedPlaneManifestV2 {
         if segment_ids.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(SemanticTypedPlaneManifestV2Error::DuplicateSegmentId);
         }
-        if self.input_claim.coverage_state() != Coverage::Complete {
-            return Err(SemanticTypedPlaneManifestV2Error::InputClaimNotComplete {
-                observed: self.input_claim.coverage_state(),
-            });
-        }
         self.encoded_length()?;
         Ok(())
     }
@@ -1468,21 +1463,24 @@ mod tests {
     }
 
     #[test]
-    fn input_manifest_witness_is_canonicalized_to_a_claim() {
+    fn input_manifest_preserves_partial_claim_without_authorizing_it() {
         let partial_claim = input_claim(Coverage::Partial);
-        assert!(matches!(
-            SemanticTypedPlaneManifestV2::from_untrusted_claims(
-                build(),
-                facts(),
-                partial_claim,
-                UntrustedSemanticContentRootV2::from_wire_claim([9; 32]),
-                UntrustedSemanticGenerationRootV2::from_wire_claim([10; 32]),
-                empty_families(),
-            ),
-            Err(SemanticTypedPlaneManifestV2Error::InputClaimNotComplete {
-                observed: Coverage::Partial
-            })
-        ));
+        let partial = SemanticTypedPlaneManifestV2::from_untrusted_claims(
+            build(),
+            facts(),
+            partial_claim,
+            UntrustedSemanticContentRootV2::from_wire_claim([9; 32]),
+            UntrustedSemanticGenerationRootV2::from_wire_claim([10; 32]),
+            empty_families(),
+        )
+        .expect("claim-only history manifest retains a partial input declaration");
+        assert_eq!(partial.input_claim(), partial_claim);
+        assert_eq!(
+            SemanticTypedPlaneManifestV2::decode(&partial.encode().expect("encode manifest"))
+                .expect("decode partial input claim")
+                .input_claim(),
+            partial_claim
+        );
 
         let manifest = SemanticTypedPlaneManifestV2::from_untrusted_claims(
             build(),

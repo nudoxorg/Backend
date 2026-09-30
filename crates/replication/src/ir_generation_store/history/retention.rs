@@ -629,6 +629,10 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
             super::super::HistoryTestFault::AfterTypedV2LocatorUnlink,
         )?;
         super::v3::remove_typed_v3_locator_for_commit(target_root, commit)?;
+        #[cfg(test)]
+        super::super::trip_history_test_fault(
+            super::super::HistoryTestFault::AfterTypedV3LocatorUnlink,
+        )?;
         remove_file(
             &target_root
                 .join("history")

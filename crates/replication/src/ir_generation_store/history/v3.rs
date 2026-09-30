@@ -77,7 +77,7 @@ impl HistoryTypedV3RootClaim {
     }
 
     pub(crate) fn from_verified(
-        content: &backend_semantic::ir::VerifiedTypedPlaneContentV2,
+        content: &backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
         closure: ArtifactClosureClaim,
         locator: HistoryTypedV3LocatorId,
     ) -> Self {
@@ -199,29 +199,49 @@ impl TypedV3HistoryLocator {
     pub(crate) fn from_produced(
         produced: &crate::ProducedSemanticTypedPlaneV3,
     ) -> Result<Self, String> {
+        Self::from_receipts(
+            produced.manifest(),
+            produced.segment_admissions(),
+            produced.jumbo_admissions(),
+        )
+    }
+
+    pub(crate) fn from_selected_native_history(
+        produced: &crate::ir_producer_store::ProducedSelectedNativeTypedPlaneHistoryV3,
+    ) -> Result<Self, String> {
+        Self::from_receipts(
+            produced.manifest(),
+            produced.segment_admissions(),
+            produced.jumbo_admissions(),
+        )
+    }
+
+    pub(crate) fn from_receipts(
+        produced_manifest: &backend_semantic::ir::SemanticTypedPlaneManifestV2,
+        segment_receipts: &[crate::DurableSemanticObjectAdmission],
+        jumbo_receipts: &[crate::DurableSemanticObjectAdmission],
+    ) -> Result<Self, String> {
         use crate::{ProducedSemanticObjectIdentity, ProducedSemanticObjectKind};
         use std::collections::BTreeMap;
 
-        let manifest = produced
-            .manifest()
+        let manifest = produced_manifest
             .canonical_bytes()
             .map_err(|error| format!("encode typed V3 history manifest: {error}"))?;
-        let expected_segments = produced
-            .manifest()
+        let expected_segments = produced_manifest
             .resource_usage()
             .map_err(|error| format!("measure typed V3 history manifest: {error}"))?
             .segment_descriptors();
         TypedV2HistoryLocator::preflight_admission_counts(
             expected_segments,
-            produced.segment_admissions().len(),
+            segment_receipts.len(),
             0,
         )?;
 
         let mut segments = Vec::new();
         segments
-            .try_reserve_exact(produced.segment_admissions().len())
+            .try_reserve_exact(segment_receipts.len())
             .map_err(|_| "typed V3 history segment map allocation failed".to_owned())?;
-        for receipt in produced.segment_admissions() {
+        for receipt in segment_receipts {
             let ProducedSemanticObjectIdentity::Segment { id, .. } = receipt.identity() else {
                 return Err("typed V3 segment receipt has a non-segment identity".to_owned());
             };
@@ -236,7 +256,7 @@ impl TypedV3HistoryLocator {
         }
 
         let mut jumbo_by_semantic = BTreeMap::new();
-        for receipt in produced.jumbo_admissions() {
+        for receipt in jumbo_receipts {
             let (id, kind) = match receipt.identity() {
                 ProducedSemanticObjectIdentity::JumboLeaf { id, .. } => {
                     (id, backend_semantic::ir::JumboRopeObjectKind::Leaf)
@@ -298,7 +318,7 @@ impl TypedV3HistoryLocator {
             &jumbo,
             None,
         )?;
-        if bridge.validate()? != *produced.manifest() {
+        if bridge.validate()? != *produced_manifest {
             return Err("typed V3 history locator differs from producer manifest".to_owned());
         }
         Ok(Self { bridge })
@@ -710,7 +730,7 @@ impl LocalSemanticGenerationFiles {
         target: &SemanticTargetKey,
         parents: &[HistoryCommitId],
         provenance: [u8; 32],
-        content: &backend_semantic::ir::VerifiedTypedPlaneContentV2,
+        content: &backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
         locator: &TypedV3HistoryLocator,
         closure: ArtifactClosureClaim,
         locator_id: HistoryTypedV3LocatorId,

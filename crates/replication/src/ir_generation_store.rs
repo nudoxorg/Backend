@@ -47,6 +47,7 @@ pub(super) enum HistoryTestFault {
     AfterHistoryCommitUnlink,
     AfterHistoryPayloadRootUnlink,
     AfterTypedV2LocatorUnlink,
+    AfterTypedV3LocatorUnlink,
     AfterHistoryIndexedUnlink,
     AfterHistoryRetentionStatsWrite,
     AfterHistoryDeleteCandidateUnlink,
@@ -2715,6 +2716,7 @@ mod tests {
             "AfterHistoryCommitUnlink" => HistoryTestFault::AfterHistoryCommitUnlink,
             "AfterHistoryPayloadRootUnlink" => HistoryTestFault::AfterHistoryPayloadRootUnlink,
             "AfterTypedV2LocatorUnlink" => HistoryTestFault::AfterTypedV2LocatorUnlink,
+            "AfterTypedV3LocatorUnlink" => HistoryTestFault::AfterTypedV3LocatorUnlink,
             "AfterHistoryIndexedUnlink" => HistoryTestFault::AfterHistoryIndexedUnlink,
             "AfterHistoryRetentionStatsWrite" => HistoryTestFault::AfterHistoryRetentionStatsWrite,
             "AfterHistoryDeleteCandidateUnlink" => {

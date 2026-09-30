@@ -8,7 +8,8 @@ use backend_semantic::ir::{
     JumboRopeObjectSource, MAX_SEMANTIC_SEGMENT_BYTES, ROPE_NODE_WIRE_BYTES,
     SemanticTypedPlaneManifestV2, SemanticTypedPlaneSegmentClaimV2,
     SemanticTypedPlaneVerificationTierV2, TypedPlaneSegmentSourceV2, VerifiedTypedPlaneContentV2,
-    verify_typed_plane_content_v2_with_jumbo_segment_source,
+    VerifiedTypedPlaneHistoryContentV3, verify_typed_plane_content_v2_with_jumbo_segment_source,
+    verify_typed_plane_history_content_v3_with_jumbo_segment_source,
 };
 use backend_store::{
     ArtifactClosureClaim, DurableManifest, FileStore, GcPinGuard, ObjectId, UntrustedObjectId,
@@ -1249,6 +1250,29 @@ fn verify_typed_v2_history_content(
     Ok(verified)
 }
 
+fn verify_typed_v3_history_content(
+    spool: &TypedV2HistorySpool,
+    locator: &crate::ir_generation_store::TypedV2HistoryLocator,
+    manifest: &SemanticTypedPlaneManifestV2,
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+) -> Result<VerifiedTypedPlaneHistoryContentV3, String> {
+    let mut segment_source = TypedV2SpoolSegmentSource::new(spool, locator, manifest)?;
+    let mut jumbo_source = HistoryJumboSource::new(spool, &locator.jumbo)?;
+    let verified = verify_typed_plane_history_content_v3_with_jumbo_segment_source(
+        manifest,
+        tier,
+        jumbo_limits,
+        &mut segment_source,
+        &mut jumbo_source,
+    )
+    .map_err(|error| format!("verify typed V3 history content: {error}"))?;
+    if jumbo_source.used.iter().any(|used| !used) {
+        return Err("typed V3 history locator contains an unreferenced rope object".to_owned());
+    }
+    Ok(verified)
+}
+
 /// Reopens an exact claim through the existing bounded V2 payload spool and
 /// aggregate verifier. V3 local admission reuses this verifier because its
 /// producer emits the same c007 revision-3 manifest and physical object
@@ -1275,6 +1299,39 @@ pub(super) fn verify_typed_v2_history_payload_closure(
     let spool =
         spool_typed_v2_history_closure(store, closure_claim, &closure, locator, manifest, tier)?;
     let verified = verify_typed_v2_history_content(&spool, locator, manifest, tier, jumbo_limits)?;
+    Ok((
+        verified,
+        closure.id(),
+        spool.members.len(),
+        spool.bytes_written,
+    ))
+}
+
+/// Reopens the exact locator and closure through the same bounded V2 payload
+/// spool, then uses the history-only typed verifier. This preserves Partial or
+/// Unsupported input claims without turning them into complete-read proofs.
+pub(super) fn verify_typed_v3_history_payload_closure(
+    store: &FileStore,
+    closure_claim: ArtifactClosureClaim,
+    locator: &crate::ir_generation_store::TypedV2HistoryLocator,
+    manifest: &SemanticTypedPlaneManifestV2,
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+) -> Result<
+    (
+        VerifiedTypedPlaneHistoryContentV3,
+        backend_store::ClosureId,
+        usize,
+        u64,
+    ),
+    String,
+> {
+    let closure = store
+        .open_closure_claim(closure_claim)
+        .map_err(|error| format!("open typed V3 history payload closure: {error:?}"))?;
+    let spool =
+        spool_typed_v2_history_closure(store, closure_claim, &closure, locator, manifest, tier)?;
+    let verified = verify_typed_v3_history_content(&spool, locator, manifest, tier, jumbo_limits)?;
     Ok((
         verified,
         closure.id(),
