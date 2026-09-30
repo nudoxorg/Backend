@@ -146,6 +146,9 @@ impl From<String> for SelectedTypedV3HistoryError {
 /// errors it returns while resolving the committed selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SelectedNativeImageSourceFailure {
+    /// The source completed an authoritative read and verified that the exact
+    /// target/stamp/image tuple no longer matches the request.
+    StaleSelection,
     /// The source is temporarily unavailable and the owner may retry later.
     RetryableAvailability,
     /// The source rejected the request or reported invalid authority/state.
@@ -1323,6 +1326,9 @@ fn source_failure<S: SelectedNativeImageSource>(
     error: &S::Error,
 ) -> SelectedTypedV3HistoryError {
     match source.classify_selection_error(error) {
+        SelectedNativeImageSourceFailure::StaleSelection => {
+            SelectedTypedV3HistoryError::StaleSelection
+        }
         SelectedNativeImageSourceFailure::RetryableAvailability => {
             SelectedTypedV3HistoryError::RetryableAvailability {
                 operation,
@@ -1774,7 +1780,11 @@ mod tests {
             &self,
             _error: &Self::Error,
         ) -> SelectedNativeImageSourceFailure {
-            self.failure_class
+            if self.move_on_fence {
+                SelectedNativeImageSourceFailure::StaleSelection
+            } else {
+                self.failure_class
+            }
         }
 
         fn selected_semantic_target(&mut self) -> Result<crate::SemanticTargetKey, Self::Error> {
@@ -2328,20 +2338,20 @@ mod tests {
         moved_before_fence.move_on_fence = true;
         let moved_branch =
             crate::HistoryRefName::new("typed-v3-moved-before-fence").expect("V3 branch name");
-        assert!(
-            store
-                .publish_selected_typed_v3_history_branch(
-                    &selected_binding,
-                    moved_branch,
-                    provenance,
-                    v3_test_policies(),
-                    SemanticTypedPlaneVerificationTierV2::Standard,
-                    JumboRopeLimits::default(),
-                    &mut moved_before_fence,
-                )
-                .is_err(),
-            "history publication must reject a selection that moved before the owner fence"
-        );
+        let moved_result = store
+            .publish_selected_typed_v3_history_branch(
+                &selected_binding,
+                moved_branch,
+                provenance,
+                v3_test_policies(),
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+                &mut moved_before_fence,
+            )
+            .expect_err(
+                "history publication must reject a selection that moved before the owner fence",
+            );
+        assert_eq!(moved_result, SelectedTypedV3HistoryError::StaleSelection);
         assert!(
             store
                 .history_ref(
