@@ -66,7 +66,10 @@ use paths::{AbsPath, AbsPathBuf, Utf8PathBuf};
 use rustc_hash::FxHashSet;
 
 pub use crate::{
-    build_dependencies::{ProcMacroDylibPath, WorkspaceBuildScripts},
+    build_dependencies::{
+        BuildScriptEnvironmentPolicy, BuildScriptProcessRunner, ProcMacroDylibPath,
+        WorkspaceBuildScripts,
+    },
     cargo_workspace::{
         CargoConfig, CargoFeatures, CargoMetadataConfig, CargoWorkspace, Package, PackageData,
         PackageDependency, RustLibSource, Target, TargetData, TargetDirectoryConfig, TargetKind,

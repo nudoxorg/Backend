@@ -26,7 +26,7 @@ use crate::{
     CargoConfig, CargoWorkspace, CfgOverrides, InvocationStrategy, ManifestPath, Package,
     ProjectJson, ProjectManifest, RustSourceWorkspaceConfig, Sysroot, TargetData, TargetKind,
     WorkspaceBuildScripts,
-    build_dependencies::{BuildScriptOutput, ProcMacroDylibPath},
+    build_dependencies::{BuildScriptOutput, BuildScriptProcessRunner, ProcMacroDylibPath},
     cargo_config_file::CargoConfigFile,
     cargo_workspace::{CargoMetadataConfig, DepKind, FetchMetadata, PackageData, RustLibSource},
     env::{cargo_config_env, inject_cargo_env, inject_cargo_package_env, inject_rustc_tool_env},
@@ -653,6 +653,26 @@ impl ProjectWorkspace {
         config: &CargoConfig,
         progress: &dyn Fn(String),
     ) -> anyhow::Result<WorkspaceBuildScripts> {
+        self.run_build_scripts_impl(config, progress, None)
+    }
+
+    /// Runs build scripts through a caller-supplied process runner while
+    /// retaining rust-analyzer's generated command and output interpretation.
+    pub fn run_build_scripts_with_runner(
+        &self,
+        config: &CargoConfig,
+        progress: &dyn Fn(String),
+        process_runner: &dyn BuildScriptProcessRunner,
+    ) -> anyhow::Result<WorkspaceBuildScripts> {
+        self.run_build_scripts_impl(config, progress, Some(process_runner))
+    }
+
+    fn run_build_scripts_impl(
+        &self,
+        config: &CargoConfig,
+        progress: &dyn Fn(String),
+        process_runner: Option<&dyn BuildScriptProcessRunner>,
+    ) -> anyhow::Result<WorkspaceBuildScripts> {
         match &self.kind {
             ProjectWorkspaceKind::DetachedFile { cargo: Some((cargo, _, None)), .. }
             | ProjectWorkspaceKind::Cargo { cargo, error: None, .. } => {
@@ -662,6 +682,7 @@ impl ProjectWorkspace {
                     progress,
                     &self.sysroot,
                     self.toolchain.as_ref(),
+                    process_runner,
                 )
                 .with_context(|| {
                     format!("Failed to run build scripts for {}", cargo.workspace_root())
@@ -679,10 +700,41 @@ impl ProjectWorkspace {
         progress: &dyn Fn(String),
         working_directory: &AbsPathBuf,
     ) -> Vec<anyhow::Result<WorkspaceBuildScripts>> {
+        Self::run_all_build_scripts_impl(workspaces, config, progress, working_directory, None)
+    }
+
+    /// Runs build scripts through a caller-supplied process runner while
+    /// retaining rust-analyzer's generated commands and output interpretation.
+    pub fn run_all_build_scripts_with_runner(
+        workspaces: &[ProjectWorkspace],
+        config: &CargoConfig,
+        progress: &dyn Fn(String),
+        working_directory: &AbsPathBuf,
+        process_runner: &dyn BuildScriptProcessRunner,
+    ) -> Vec<anyhow::Result<WorkspaceBuildScripts>> {
+        Self::run_all_build_scripts_impl(
+            workspaces,
+            config,
+            progress,
+            working_directory,
+            Some(process_runner),
+        )
+    }
+
+    fn run_all_build_scripts_impl(
+        workspaces: &[ProjectWorkspace],
+        config: &CargoConfig,
+        progress: &dyn Fn(String),
+        working_directory: &AbsPathBuf,
+        process_runner: Option<&dyn BuildScriptProcessRunner>,
+    ) -> Vec<anyhow::Result<WorkspaceBuildScripts>> {
         if matches!(config.invocation_strategy, InvocationStrategy::PerWorkspace)
             || config.run_build_script_command.is_none()
         {
-            return workspaces.iter().map(|it| it.run_build_scripts(config, progress)).collect();
+            return workspaces
+                .iter()
+                .map(|it| it.run_build_scripts_impl(config, progress, process_runner))
+                .collect();
         }
 
         let cargo_ws: Vec<_> = workspaces
@@ -697,6 +749,7 @@ impl ProjectWorkspace {
             &cargo_ws,
             progress,
             working_directory,
+            process_runner,
         ) {
             Ok(it) => Ok(it.into_iter()),
             // io::Error is not Clone?
