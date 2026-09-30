@@ -47,8 +47,8 @@ edition = "2024"
 EOF
 cat >"$fixture/src/lib.rs" <<'EOF'
 /// Stable text used to verify a real indexed product query across Iroh.
-pub fn remote_index_journey_marker() -> &'static str {
-    "remote_index_journey_marker"
+pub fn remote_index_journey_marker() -> u32 {
+    7
 }
 EOF
 shasum -a 256 "$fixture/Cargo.toml" "$fixture/src/lib.rs"
