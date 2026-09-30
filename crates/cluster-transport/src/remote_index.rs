@@ -6,7 +6,6 @@
 //! trust is not consulted by this protocol.
 
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use iroh::{
     EndpointAddr, EndpointId, SecretKey, Signature,
@@ -695,11 +694,7 @@ pub fn remote_index_now() -> Result<u64, TransportError> {
 }
 
 fn system_now_unix_ms() -> Result<u64, TransportError> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(TransportError::Io)?;
-    u64::try_from(elapsed.as_millis())
-        .map_err(|_| TransportError::Frame("Unix clock exceeds supported range".into()))
+    crate::now_unix_ms().map_err(TransportError::Io)
 }
 
 /// Maximum duration a single remote-index connection may remain active.
