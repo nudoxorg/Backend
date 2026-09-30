@@ -4,7 +4,7 @@
 //! and scenes never read the prototype's file.
 
 use super::json::{self, Json};
-use super::{Change, Crate, Impacted, ReleaseDiff, Severity, SourceAvailability, UseSite, Version, What};
+use super::{Change, Crate, Impacted, RegistryFact, ReleaseDiff, Severity, SourceAvailability, UseSite, Version, What};
 use gpui::SharedString;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -17,6 +17,14 @@ fn text(value: Option<&Json>) -> Option<SharedString> {
 
 fn word(value: Option<&Json>) -> SharedString {
     text(value).unwrap_or_default()
+}
+
+fn fact<T>(value: Option<&Json>, parse: impl FnOnce(&Json) -> Option<T>) -> RegistryFact<T> {
+    if value.and_then(|value| value.get("ambiguous")).is_some_and(Json::truthy) {
+        RegistryFact::Ambiguous
+    } else {
+        value.and_then(parse).map_or(RegistryFact::Missing, RegistryFact::Known)
+    }
 }
 
 impl What {
@@ -128,8 +136,11 @@ fn krate(name: &str, c: &Json) -> Crate {
         .iter()
         .map(|v| Version {
             v: word(v.get("v")),
-            at: word(v.get("at")),
-            yanked: v.get("yanked").is_some_and(Json::truthy),
+            at: fact(v.get("at"), |value| value.str().map(|s| SharedString::from(s.to_owned()))),
+            yanked: fact(v.get("yanked"), |value| match value {
+                Json::Bool(yanked) => Some(*yanked),
+                _ => None,
+            }),
             source: if v.get("local").is_some_and(Json::truthy) {
                 SourceAvailability::Available
             } else {
@@ -219,4 +230,21 @@ pub fn crates() -> &'static [Crate] {
 #[must_use]
 pub fn get(name: &str) -> Option<&'static Crate> {
     crates().iter().find(|c| c.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Json, RegistryFact, fact};
+    use gpui::SharedString;
+
+    #[test]
+    fn release_facts_keep_missing_and_ambiguous_separate_from_known_values() {
+        let date = Json::Str("2026-09-10".to_owned());
+        let conflict = Json::Obj(std::collections::BTreeMap::from([("ambiguous".to_owned(), Json::Bool(true))]));
+        assert_eq!(fact(Some(&date), |value| value.str().map(|s| SharedString::from(s.to_owned()))), RegistryFact::Known(SharedString::from("2026-09-10")));
+        assert_eq!(fact(None, |value| value.str().map(|s| SharedString::from(s.to_owned()))), RegistryFact::<SharedString>::Missing);
+        assert_eq!(fact(Some(&conflict), |value| value.str().map(|s| SharedString::from(s.to_owned()))), RegistryFact::<SharedString>::Ambiguous);
+        let yanked = Json::Bool(false);
+        assert_eq!(fact(Some(&yanked), |value| match value { Json::Bool(value) => Some(*value), _ => None }), RegistryFact::Known(false));
+    }
 }

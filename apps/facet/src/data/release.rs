@@ -164,12 +164,23 @@ pub struct ReleaseDiff {
 pub struct Version {
     /// The version as the registry spells it (build metadata kept).
     pub v: SharedString,
-    /// When it was published (ISO 8601).
-    pub at: SharedString,
-    /// Yanked from the registry.
-    pub yanked: bool,
+    /// Publication date, when the registry has one exact value.
+    pub at: RegistryFact<SharedString>,
+    /// Yanked state, when the registry has one exact value.
+    pub yanked: RegistryFact<bool>,
     /// Whether its source is physically available on this machine.
     pub source: SourceAvailability,
+}
+
+/// What a registry fact says when it is absent or conflicts across sources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegistryFact<T> {
+    /// One exact value is known.
+    Known(T),
+    /// The registry does not provide a value.
+    Missing,
+    /// Sources disagree, so no value can be chosen honestly.
+    Ambiguous,
 }
 
 /// Whether a release's source is present in the current owner's cache.
@@ -179,6 +190,10 @@ pub enum SourceAvailability {
     Available,
     /// The release has metadata, but its source is not available locally.
     Unavailable,
+    /// More than one registry source matches and they disagree.
+    Ambiguous,
+    /// An archive exists, but its source has not been verified.
+    UnverifiedArchive,
 }
 
 /// What is known about comparing a release with the workspace's pinned one.
@@ -190,6 +205,10 @@ pub enum ComparisonStatus {
     SourceUnavailable,
     /// The viewed release's source is present, but this exact comparison is absent.
     DiffUnavailable,
+    /// Several registry sources match, so the source for comparison is uncertain.
+    SourceAmbiguous,
+    /// An archive exists, but the source has not been verified for comparison.
+    SourceUnverified,
 }
 
 impl ComparisonStatus {
@@ -200,6 +219,8 @@ impl ComparisonStatus {
         match krate.versions.iter().find(|version| version.v.as_ref() == to).map(|version| version.source) {
             Some(SourceAvailability::Available) => Self::DiffUnavailable,
             Some(SourceAvailability::Unavailable) | None => Self::SourceUnavailable,
+            Some(SourceAvailability::Ambiguous) => Self::SourceAmbiguous,
+            Some(SourceAvailability::UnverifiedArchive) => Self::SourceUnverified,
         }
     }
 }
@@ -790,10 +811,16 @@ impl Summary {
         match self.status {
             ComparisonStatus::Compared => {}
             ComparisonStatus::SourceUnavailable => {
-                return vec![(format!("{} is not on this machine; only its date is known", short(to)), false)];
+                return vec![(format!("{} source is unavailable; its API comparison is unavailable", short(to)), false)];
             }
             ComparisonStatus::DiffUnavailable => {
                 return vec![(format!("{} is on this machine; its comparison is unavailable", short(to)), false)];
+            }
+            ComparisonStatus::SourceAmbiguous => {
+                return vec![(format!("{} matches multiple registry sources; its API comparison is unavailable", short(to)), false)];
+            }
+            ComparisonStatus::SourceUnverified => {
+                return vec![(format!("{} has an unverified source archive; its API comparison is unavailable", short(to)), false)];
             }
         }
         let mut out = Vec::new();
