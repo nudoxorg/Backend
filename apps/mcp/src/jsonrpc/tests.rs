@@ -1511,6 +1511,7 @@ fn surface_index_search_cursor_round_trips_through_the_mcp_projection() {
     );
 
     let structured = &first["structuredContent"];
+    assert_eq!(structured["surface"]["result"], "index-search-page");
     let measured = structured["budget"]["bytes"]
         .as_u64()
         .expect("typed surface carries measured bytes");
@@ -1521,6 +1522,13 @@ fn surface_index_search_cursor_round_trips_through_the_mcp_projection() {
             .len(),
         measured,
         "the signed cursor is inside the budgeted typed projection"
+    );
+    let final_reply_bytes = serde_json::to_vec(&first)
+        .expect("complete MCP response including Markdown")
+        .len();
+    assert!(
+        final_reply_bytes <= DEFAULT_RESPONSE_BUDGET_BYTES,
+        "structured surface and signed-token Markdown fit together: {final_reply_bytes}"
     );
 
     // The server-side MAC is portable across an MCP process restart when its

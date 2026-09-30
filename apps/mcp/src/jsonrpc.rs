@@ -697,7 +697,7 @@ impl<P: Product> Server<P> {
             ..
         } = &mut command
         {
-            *cursor = Some(self.verified_index_search_cursor(cursor.as_str(), context)?);
+            *cursor = self.verified_index_search_cursor(cursor.as_str(), context)?;
         }
         command
             .admit()
