@@ -379,6 +379,7 @@ These checks actually ran in the saved Nix shell, with one Cargo job per lane:
 
 | Check | Observed result |
 |---|---|
+| `cargo check --locked -j1 --workspace --all-targets --keep-going` | Passed for the integrated tree |
 | `backend-version --lib` | 102 passed |
 | `backend-semantic --lib` | 254 passed |
 | `backend-store --lib`, after the CAS oracle correction | 255 passed |
