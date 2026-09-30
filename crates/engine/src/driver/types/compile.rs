@@ -950,7 +950,7 @@ fn rust_terminal<'diagnostic>(
 /// Writes a bounded Rust authority summary while retaining the exact typed cause separately.
 /// Cargo's raw error chain can contain absolute paths and process configuration, so the public
 /// bytes contain only a closed explanation and a validated package name when Cargo supplies one.
-fn rust_authority_diagnostic<'diagnostic>(
+pub(crate) fn rust_authority_diagnostic<'diagnostic>(
     output: Option<&'diagnostic mut [u8]>,
     cause: &backend_frontend_rust::legacy::RustAuthorityError,
     is_build_script: bool,
