@@ -26,8 +26,13 @@ use backend_library::{
     SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceReply,
     TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
 };
+use backend_library::{
+    IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
+    IndexJobProgressKind, IndexJobStage, IndexJobTerminal, IndexStartResult,
+};
 
 use crate::identity::KeyTag;
+use serde::{Deserialize, Serialize};
 
 /// One product record: a title, an operand to pass back, and its tags.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,6 +171,48 @@ pub struct ProductView {
     note: Option<String>,
     fault: Option<Fault>,
     index_search_page: Option<IndexSearchPageInfo>,
+    index_job: Option<IndexJobProjection>,
+}
+
+/// Exact owner-issued indexing state retained alongside its readable projection.
+///
+/// Keeping the ticket and observation typed here lets every product adapter
+/// return the same resumable identity instead of reducing a job reply to a
+/// heading or debug string.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum IndexJobProjection {
+    /// Immediate start acknowledgement or terminal result.
+    Started(IndexStartResult),
+    /// Terminal owner receipt from the generic surface command.
+    Terminal(IndexJobTerminal),
+    /// Immediate progress, terminal, or unknown-ticket observation.
+    Progress(IndexJobObservation),
+    /// Immediate cancellation acknowledgement and exact requested identity.
+    Cancellation(IndexCancelReceipt),
+}
+
+impl IndexJobProjection {
+    /// Returns the exact ticket carried by this job result, when available.
+    #[must_use]
+    pub fn ticket(&self) -> Option<&backend_library::IndexJobTicket> {
+        match self {
+            Self::Started(IndexStartResult::Started { ticket, .. }) => Some(ticket),
+            Self::Started(IndexStartResult::Terminal(terminal))
+            | Self::Terminal(terminal)
+            | Self::Progress(IndexJobObservation::Terminal(terminal)) => Some(&terminal.ticket),
+            Self::Progress(IndexJobObservation::Pending(page)) => Some(&page.ticket),
+            Self::Progress(IndexJobObservation::Unknown { ticket, .. }) => Some(ticket),
+            Self::Cancellation(receipt) => Some(&receipt.ticket),
+        }
+    }
+
+    /// Returns the ticket's canonical JSON object, ready to pass to another
+    /// structured surface call.
+    #[must_use]
+    pub fn ticket_json(&self) -> Option<String> {
+        self.ticket().map(|ticket| index_ticket_json(ticket))
+    }
 }
 
 /// Page identity and continuation returned by index search.
@@ -305,6 +352,12 @@ impl ProductView {
         self.index_search_page.as_ref()
     }
 
+    /// Returns the exact owner indexing state carried by this product reply.
+    #[must_use]
+    pub const fn index_job(&self) -> Option<&IndexJobProjection> {
+        self.index_job.as_ref()
+    }
+
     /// Returns this product answer's typed owner cursor, when it has one.
     #[must_use]
     pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
@@ -342,6 +395,11 @@ impl ProductView {
         self
     }
 
+    fn with_index_job(mut self, index_job: IndexJobProjection) -> Self {
+        self.index_job = Some(index_job);
+        self
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -354,6 +412,7 @@ impl ProductView {
             note: None,
             fault: None,
             index_search_page: None,
+            index_job: None,
         }
     }
 
@@ -366,6 +425,7 @@ impl ProductView {
             note: Some(note.into()),
             fault: None,
             index_search_page: None,
+            index_job: None,
         }
     }
 
@@ -376,6 +436,7 @@ impl ProductView {
             note: None,
             fault: None,
             index_search_page: None,
+            index_job: None,
         }
     }
 
@@ -386,6 +447,7 @@ impl ProductView {
             note: Some(note.into()),
             fault: None,
             index_search_page: None,
+            index_job: None,
         }
     }
 
@@ -396,6 +458,7 @@ impl ProductView {
             note: None,
             fault: Some(fault),
             index_search_page: None,
+            index_job: None,
         }
     }
 }
@@ -461,8 +524,163 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::SemanticVersionSelected(record) => {
             ProductView::rows("select-semantic-version", vec![semantic_row(record)])
         }
+        SurfaceReply::IndexStarted(result) => {
+            index_start_view(result).with_index_job(IndexJobProjection::Started(result.clone()))
+        }
+        SurfaceReply::IndexTerminal(terminal) => index_terminal_view(terminal)
+            .with_index_job(IndexJobProjection::Terminal(terminal.clone())),
+        SurfaceReply::IndexProgress(observation) => index_observation_view(observation)
+            .with_index_job(IndexJobProjection::Progress(observation.clone())),
+        SurfaceReply::IndexCancellation(receipt) => index_cancellation_view(&receipt.status)
+            .with_index_job(IndexJobProjection::Cancellation(receipt.clone())),
         _ => return None,
     })
+}
+
+fn index_start_view(result: &IndexStartResult) -> ProductView {
+    match result {
+        IndexStartResult::Started { ticket, stage } => ProductView::rows(
+            "index-start",
+            vec![ProductRecord::new(
+                format!("index job {} started", ticket.id()),
+                Some(index_ticket_json(ticket)),
+                vec![
+                    format!("stage {}", index_stage(*stage)),
+                    "poll index_progress".to_owned(),
+                ],
+            )],
+        ),
+        IndexStartResult::Terminal(terminal) => index_terminal_view(terminal),
+    }
+}
+
+fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
+    let (state, detail) = match &terminal.outcome {
+        IndexJobOutcome::Published => ("published", None),
+        IndexJobOutcome::Refused(reason) => ("refused", Some(reason.as_str())),
+        IndexJobOutcome::Cancelled => ("cancelled", None),
+        IndexJobOutcome::Failed(reason) => ("failed", Some(reason.as_str())),
+    };
+    let mut tags = vec![format!("outcome {state}")];
+    if let Some(detail) = detail {
+        tags.push(detail.to_owned());
+    }
+    ProductView::rows(
+        "index-job-terminal",
+        vec![ProductRecord::new(
+            format!("index job {} is {state}", terminal.ticket.id()),
+            Some(index_ticket_json(&terminal.ticket)),
+            tags,
+        )],
+    )
+}
+
+fn index_observation_view(observation: &IndexJobObservation) -> ProductView {
+    match observation {
+        IndexJobObservation::Pending(page) => {
+            let mut tags = vec![
+                format!("stage {}", index_stage(page.stage)),
+                format!("next_sequence {}", page.next_sequence),
+            ];
+            if page.truncated {
+                tags.push("older progress events aged out".to_owned());
+            }
+            if page.has_more {
+                tags.push("more events available".to_owned());
+            }
+            let mut records = vec![ProductRecord::new(
+                format!("index job {} pending", page.ticket.id()),
+                Some(index_ticket_json(&page.ticket)),
+                tags,
+            )];
+            records.extend(page.events.iter().map(|event| {
+                let mut tags = vec![format!("sequence {}", event.sequence)];
+                let title = match &event.kind {
+                    IndexJobProgressKind::StageChanged { stage } => {
+                        format!("stage changed to {}", index_stage(*stage))
+                    }
+                    IndexJobProgressKind::ProfileStarted {
+                        profile,
+                        ordinal,
+                        total,
+                    } => {
+                        tags.push(format!("profile {ordinal}/{total}"));
+                        format!("{} profile started", profile.name().unwrap_or("unknown"))
+                    }
+                    IndexJobProgressKind::ProfileAdmitted {
+                        profile,
+                        ordinal,
+                        total,
+                    } => {
+                        tags.push(format!("profile {ordinal}/{total}"));
+                        format!("{} profile admitted", profile.name().unwrap_or("unknown"))
+                    }
+                };
+                ProductRecord::new(title, None, tags)
+            }));
+            ProductView::rows("index-progress", records)
+        }
+        IndexJobObservation::Terminal(terminal) => index_terminal_view(terminal),
+        IndexJobObservation::Unknown {
+            ticket,
+            current_owner_epoch,
+        } => {
+            let owner_restarted = ticket.owner_epoch() != *current_owner_epoch;
+            ProductView::rows(
+                "index-progress",
+                vec![ProductRecord::new(
+                    format!(
+                        "index job {} is unknown{}",
+                        ticket.id(),
+                        if owner_restarted {
+                            " after owner restart"
+                        } else {
+                            ""
+                        }
+                    ),
+                    Some(index_ticket_json(ticket)),
+                    vec![if owner_restarted {
+                        "ticket owner epoch differs from current owner".to_owned()
+                    } else {
+                        "ticket is no longer active or retained".to_owned()
+                    }],
+                )],
+            )
+        }
+    }
+}
+
+fn index_cancellation_view(status: &IndexCancelStatus) -> ProductView {
+    match status {
+        IndexCancelStatus::Requested => ProductView::scalar(
+            "index-cancel",
+            "cancellation was requested; poll index_progress",
+        ),
+        IndexCancelStatus::Terminal(terminal) => index_terminal_view(terminal),
+        IndexCancelStatus::Unknown => ProductView::scalar(
+            "index-cancel",
+            "no active or retained terminal job matched the exact ticket",
+        ),
+    }
+}
+
+fn index_stage(stage: IndexJobStage) -> &'static str {
+    match stage {
+        IndexJobStage::Acquiring => "acquiring",
+        IndexJobStage::Staging => "staging",
+        IndexJobStage::Scanning => "scanning",
+        IndexJobStage::Compiling => "compiling",
+        IndexJobStage::Publishing => "publishing",
+    }
+}
+
+fn index_ticket_json(ticket: &backend_library::IndexJobTicket) -> String {
+    serde_json::json!({
+        "id": ticket.id(),
+        "owner_epoch": ticket.owner_epoch(),
+        "package": ticket.package(),
+    })
+    .to_string()
 }
 
 fn discovery_row(candidate: &backend_library::RegistryDiscoveryCandidate) -> ProductRecord {
@@ -1947,6 +2165,72 @@ mod tests {
             .expect("product is still returned as product data");
         assert_eq!(value["records"][0]["history_status"]["state"], "refused");
         assert!(value.get("fault").is_none());
+    }
+
+    #[test]
+    fn index_job_projection_preserves_exact_ticket_observation_through_summary_budget() {
+        let ticket = backend_library::IndexJobTicket::new(
+            std::num::NonZeroU64::new(9).expect("nonzero ticket"),
+            [6; 16],
+            PackageReference::parse("pkg:cargo/serde@1.0.228").expect("pinned package"),
+        );
+        let reply = SurfaceReply::IndexProgress(backend_library::IndexJobObservation::Pending(
+            backend_library::IndexProgressPage {
+                ticket: ticket.clone(),
+                stage: backend_library::IndexJobStage::Compiling,
+                events: Box::new([]),
+                next_sequence: 5,
+                truncated: true,
+                has_more: false,
+            },
+        ));
+        let view = product_view(&reply);
+        let job = view.index_job().expect("typed job projection");
+        assert_eq!(job.ticket(), Some(&ticket));
+        assert!(crate::markdown::product(&view).contains("after_sequence 5"));
+        assert!(crate::markdown::product(&view).contains(&job.ticket_json().expect("ticket")));
+
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.index_job.as_ref(), Some(job));
+        let answer = crate::drive::Answer::Product(Box::new(view));
+        let encoded = crate::encode_answer(
+            &answer,
+            crate::Detail::Summary,
+            None,
+            crate::DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("bounded summary retains ticket and observation");
+        let value: serde_json::Value =
+            serde_json::from_slice(&encoded.bytes).expect("typed summary JSON");
+        assert_eq!(value["index_job"]["kind"], "progress");
+        assert_eq!(value["index_job"]["value"]["detail"]["ticket"]["id"], 9);
+        assert_eq!(value["index_job"]["value"]["detail"]["next_sequence"], 5);
+        assert_eq!(value["index_job"]["value"]["detail"]["truncated"], true);
+    }
+
+    #[test]
+    fn cancellation_projection_keeps_the_receipt_ticket_even_for_requested_state() {
+        let ticket = backend_library::IndexJobTicket::new(
+            std::num::NonZeroU64::new(11).expect("nonzero ticket"),
+            [4; 16],
+            PackageReference::parse("/workspace/project").expect("local project"),
+        );
+        let reply = SurfaceReply::IndexCancellation(backend_library::IndexCancelReceipt {
+            ticket: ticket.clone(),
+            status: backend_library::IndexCancelStatus::Requested,
+        });
+        let view = product_view(&reply);
+        let job = view.index_job().expect("typed cancellation projection");
+        assert_eq!(job.ticket(), Some(&ticket));
+        assert!(crate::markdown::product(&view).contains(&job.ticket_json().expect("ticket")));
+        let encoded =
+            serde_json::to_value(crate::dto::ProductDto::new(&view)).expect("typed product DTO");
+        assert_eq!(encoded["index_job"]["kind"], "cancellation");
+        assert_eq!(encoded["index_job"]["value"]["ticket"]["id"], 11);
+        assert_eq!(
+            encoded["index_job"]["value"]["status"]["state"],
+            "requested"
+        );
     }
 
     #[test]
