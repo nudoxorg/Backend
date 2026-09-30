@@ -334,7 +334,8 @@ impl ProductState {
                 {
                     if self.discovery_search.is_none() {
                         self.discovery_search = Some(match discovery {
-                            Some(store) => DiscoverySearchIndex::open_with_forge_and_source_pins(
+                            Some(store) => DiscoverySearchIndex::open_with_forge_and_source_pins_at(
+                                store.search_projection_path(),
                                 store,
                                 &forge_documents,
                                 &forge_source_pin_documents,

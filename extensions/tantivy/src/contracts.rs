@@ -1,7 +1,8 @@
 //! Query and source-facing lexical contracts.
 
-use crate::{Binding, Error, Limits, QueryVersion};
+use crate::{Binding, Error, Limits, QueryVersion, identity::QuerySchema};
 use backend_semantic::EntityId;
+use backend_version::{ObjectVersionHasher, Schema, SchemaIdentity};
 use std::cmp::Ordering;
 
 /// Closed lexical matching grammar shared by local and remote execution.
@@ -96,17 +97,59 @@ impl Relevance {
         }
     }
 
+    pub(crate) const fn rank_parts(self) -> (u32, u32, u16, u16) {
+        (
+            self.matched_bytes,
+            self.term_bytes,
+            self.field_weight,
+            self.matched_clauses,
+        )
+    }
+
+    pub(crate) fn from_rank_parts(
+        matched_bytes: u32,
+        term_bytes: u32,
+        field_weight: u16,
+        matched_clauses: u16,
+    ) -> Result<Self, Error> {
+        let matched_bytes = usize::try_from(matched_bytes).map_err(|_| Error::SizeLimit)?;
+        let term_bytes = usize::try_from(term_bytes).map_err(|_| Error::SizeLimit)?;
+        let mut relevance = Self::new(matched_bytes, term_bytes, field_weight, 1)?;
+        relevance.matched_clauses = matched_clauses;
+        if matched_clauses == 0 {
+            return Err(Error::MalformedInput);
+        }
+        Ok(relevance)
+    }
+
     pub(crate) fn combine(self, other: Self) -> Result<Self, Error> {
-        let weaker = if self < other { self } else { other };
+        // Clause counts and field weights are accumulated over the complete
+        // query. They must not decide which clause contributes the limiting
+        // exact/prefix quality.
+        let weaker = if self.intrinsic_cmp(other).is_lt() {
+            self
+        } else {
+            other
+        };
         Ok(Self {
             exact: self.exact && other.exact,
             matched_bytes: weaker.matched_bytes,
             term_bytes: weaker.term_bytes,
-            field_weight: self.field_weight.max(other.field_weight),
+            field_weight: self
+                .field_weight
+                .checked_add(other.field_weight)
+                .ok_or(Error::SizeLimit)?,
             matched_clauses: self
                 .matched_clauses
                 .checked_add(other.matched_clauses)
                 .ok_or(Error::SizeLimit)?,
+        })
+    }
+
+    fn intrinsic_cmp(self, other: Self) -> Ordering {
+        self.exact.cmp(&other.exact).then_with(|| {
+            (u64::from(self.matched_bytes) * u64::from(other.term_bytes))
+                .cmp(&(u64::from(other.matched_bytes) * u64::from(self.term_bytes)))
         })
     }
 }
@@ -137,6 +180,15 @@ pub struct RankedHit {
     pub document: EntityId,
     /// Lossless recipe rank.
     pub relevance: Relevance,
+}
+
+/// Compares hits in the canonical page order: strongest relevance first,
+/// then stable entity identity ascending.
+pub(crate) fn compare_ranked_hits(left: RankedHit, right: RankedHit) -> Ordering {
+    right
+        .relevance
+        .cmp(&left.relevance)
+        .then_with(|| left.document.cmp(&right.document))
 }
 
 /// Canonicalizes query terms and derives their typed identity.
@@ -214,9 +266,9 @@ impl Query {
         }
         terms.sort();
         terms.dedup();
-        let bytes = admit_query_bytes(&terms, match_mode, &fields, case, limits)?;
+        let version = query_version(&terms, match_mode, &fields, case, limits)?;
         Ok(Self {
-            version: QueryVersion::from_value(&bytes),
+            version,
             terms,
             match_mode,
             fields,
@@ -225,7 +277,7 @@ impl Query {
     }
 
     pub(crate) fn validate(&self, limits: Limits) -> Result<(), Error> {
-        let bytes = admit_query_bytes(
+        let expected = query_version(
             &self.terms,
             self.match_mode,
             &self.fields,
@@ -239,20 +291,20 @@ impl Query {
                     .iter()
                     .all(|byte| !byte.is_ascii_uppercase())
             });
-        if !canonical_order || !canonical_case || QueryVersion::from_value(&bytes) != self.version {
+        if !canonical_order || !canonical_case || expected != self.version {
             return Err(Error::MalformedInput);
         }
         Ok(())
     }
 }
 
-fn admit_query_bytes(
+fn query_version(
     terms: &[String],
     match_mode: MatchMode,
     fields: &FieldSelection,
     case: CaseSensitivity,
     limits: Limits,
-) -> Result<Vec<u8>, Error> {
+) -> Result<QueryVersion, Error> {
     if terms.iter().any(String::is_empty) {
         return Err(Error::MalformedInput);
     }
@@ -261,18 +313,8 @@ fn admit_query_bytes(
     {
         return Err(Error::SizeLimit);
     }
-    let mut bytes = vec![
-        match match_mode {
-            MatchMode::Exact => 1,
-            MatchMode::Prefix => 2,
-        },
-        match case {
-            CaseSensitivity::Sensitive => 1,
-            CaseSensitivity::FoldAscii => 2,
-        },
-    ];
-    match fields {
-        FieldSelection::All => bytes.push(0),
+    let field = match fields {
+        FieldSelection::All => None,
         FieldSelection::Only(field) => {
             if field.is_empty() {
                 return Err(Error::MalformedInput);
@@ -280,16 +322,59 @@ fn admit_query_bytes(
             if field.len() > limits.max_field_bytes {
                 return Err(Error::SizeLimit);
             }
-            bytes.push(1);
-            bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
-            bytes.extend_from_slice(field.as_bytes());
+            Some(field.as_str())
         }
+    };
+    let mut payload_bytes = 3_usize;
+    if let Some(field) = field {
+        payload_bytes = payload_bytes
+            .checked_add(8)
+            .and_then(|bytes| bytes.checked_add(field.len()))
+            .ok_or(Error::SizeLimit)?;
     }
     for term in terms {
-        bytes.extend_from_slice(&(term.len() as u64).to_be_bytes());
-        bytes.extend_from_slice(term.as_bytes());
+        payload_bytes = payload_bytes
+            .checked_add(8)
+            .and_then(|bytes| bytes.checked_add(term.len()))
+            .ok_or(Error::SizeLimit)?;
     }
-    Ok(bytes)
+    let schema = SchemaIdentity::new(QuerySchema::DOMAIN, QuerySchema::TYPE, QuerySchema::VERSION);
+    let mut encoder =
+        ObjectVersionHasher::new(schema, payload_bytes).map_err(|_| Error::SizeLimit)?;
+    let match_tag = [match match_mode {
+        MatchMode::Exact => 1,
+        MatchMode::Prefix => 2,
+    }];
+    let case_tag = [match case {
+        CaseSensitivity::Sensitive => 1,
+        CaseSensitivity::FoldAscii => 2,
+    }];
+    encoder.update(&match_tag).map_err(|_| Error::SizeLimit)?;
+    encoder.update(&case_tag).map_err(|_| Error::SizeLimit)?;
+    if let Some(field) = field {
+        encoder.update(&[1]).map_err(|_| Error::SizeLimit)?;
+        let length = u64::try_from(field.len()).map_err(|_| Error::SizeLimit)?;
+        encoder
+            .update(&length.to_be_bytes())
+            .map_err(|_| Error::SizeLimit)?;
+        encoder
+            .update(field.as_bytes())
+            .map_err(|_| Error::SizeLimit)?;
+    } else {
+        encoder.update(&[0]).map_err(|_| Error::SizeLimit)?;
+    }
+    for term in terms {
+        let length = u64::try_from(term.len()).map_err(|_| Error::SizeLimit)?;
+        encoder
+            .update(&length.to_be_bytes())
+            .map_err(|_| Error::SizeLimit)?;
+        encoder
+            .update(term.as_bytes())
+            .map_err(|_| Error::SizeLimit)?;
+    }
+    encoder
+        .finish_version::<QuerySchema>()
+        .map_err(|_| Error::SizeLimit)
 }
 
 /// A bounded page cursor bound to all lexical inputs and terms.
@@ -298,6 +383,7 @@ pub struct Cursor {
     binding: Binding,
     query: QueryVersion,
     offset: usize,
+    after: Option<RankedHit>,
 }
 
 impl Cursor {
@@ -309,6 +395,25 @@ impl Cursor {
             binding,
             query,
             offset,
+            after: None,
+        }
+    }
+
+    /// Creates the next cursor from an exact ranked boundary. The running
+    /// ordinal preserves adapter continuity checks; the hit binds the sort
+    /// position so a page never needs to retain or skip earlier results.
+    #[must_use]
+    pub(crate) const fn after(
+        binding: Binding,
+        query: QueryVersion,
+        offset: usize,
+        hit: RankedHit,
+    ) -> Self {
+        Self {
+            binding,
+            query,
+            offset,
+            after: Some(hit),
         }
     }
 
@@ -328,5 +433,11 @@ impl Cursor {
     #[must_use]
     pub(crate) const fn offset(self) -> usize {
         self.offset
+    }
+
+    /// Returns the exact last-ranked hit for keyset pagination.
+    #[must_use]
+    pub(crate) const fn after_hit(self) -> Option<RankedHit> {
+        self.after
     }
 }

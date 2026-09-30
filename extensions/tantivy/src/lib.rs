@@ -27,10 +27,11 @@ pub use admission::{
 pub use contracts::{
     CaseSensitivity, Cursor, FieldSelection, MatchMode, Query, RankedHit, Relevance,
 };
+pub(crate) use contracts::compare_ranked_hits;
 pub use delta::{DocumentChange, DocumentDelta, DocumentState};
 pub use engine::{
     DurableCacheBudget, DurableProjectionAction, MaintainOutcome, ProjectionKind,
-    ProjectionRevision, TantivyAdapter, TantivySource, TantivySourceError,
+    ProjectionRevision, RankSnapshotBudget, TantivyAdapter, TantivySource, TantivySourceError,
 };
 pub use identity::{
     Authority, AuthoritySchema, Binding, Frontier, FrontierSchema, IndexRelation, Limits,
