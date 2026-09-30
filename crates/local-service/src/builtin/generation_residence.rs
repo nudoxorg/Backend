@@ -1784,9 +1784,44 @@ mod tests {
         // after it has acquired the same by-product read guard used by the
         // serving selector. It pauses the actual async publisher before the
         // replication API can begin the commit/ref CAS sequence.
-        fence_reached_result
-            .recv_timeout(Duration::from_secs(60))
-            .expect("real V3 publication acquires the committed selection fence");
+        let fence_deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            match fence_reached_result.try_recv() {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("real V3 publication dropped its marker-fence notification")
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+
+            // This fixture uses the same owner-side history completion pump
+            // that the product adapter runs while serving requests. Inspect
+            // the exact status after every drain so a pre-fence refusal is
+            // reported as its cause rather than disguised as a gate timeout.
+            authority
+                .drain_native_history_completions()
+                .expect("pump native-history completions while awaiting the fence");
+            let status = authority
+                .native_history_status(&key, claim_a)
+                .expect("read exact generation A native-history status");
+            match &status {
+                backend_engine::SemanticHistoryPublicationStatus::Refused { reason, .. } => {
+                    panic!("real V3 publication refused before its marker fence: {reason}")
+                }
+                backend_engine::SemanticHistoryPublicationStatus::NotSelected => {
+                    panic!("generation A stopped being selected before the marker fence")
+                }
+                backend_engine::SemanticHistoryPublicationStatus::Published { .. } => {
+                    panic!("V3 publication completed without reaching its marker-fence gate")
+                }
+                _ => {}
+            }
+            assert!(
+                Instant::now() < fence_deadline,
+                "real V3 publication did not acquire the marker fence within 60 seconds; latest owner status: {status:?}; selected stamp: {stamp_a:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let loader = authority.native_history_loader_for_test();
         assert!(
             authority.native_history_reader_holds_selector(),
