@@ -5,7 +5,7 @@
 //! |---|---|
 //! | `clip` | a text box is narrower than its text (clip overflow) or than its widest word (wrap overflow) and draws no ellipsis, or shorter than one line |
 //! | `overlap` | two texts of one [`crate::probe::region`] overlap by more than 1 px in both axes |
-//! | `offscreen` | a focusable element is not entirely inside the viewport, or a text lies wholly past its left or right edge with no scroll container reaching it |
+//! | `offscreen` | an interactive element is not entirely inside the viewport, or text is fully hidden by the window/paint clip with no scroll container reaching it |
 //! | `target` | a clickable element is smaller than 24 x 24 px |
 //! | `contrast` | the ink painted in a text box against the ground painted around it is under 4.5:1 (3:1 for large text: 24 px, or 18.66 px at weight 700) |
 //!
@@ -79,8 +79,12 @@ pub struct Lint {
 pub struct Coverage {
     /// Text boxes checked.
     pub texts: usize,
+    /// Text boxes with at least some painted area inside the window and clip.
+    pub visible_texts: usize,
     /// Targets checked.
     pub targets: usize,
+    /// Targets with at least some area inside the window.
+    pub visible_targets: usize,
     /// Text boxes whose contrast was measured.
     pub contrast: usize,
     /// Text boxes whose contrast could not be measured (1x, off-screen, empty).
@@ -168,6 +172,10 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
             continue;
         }
         out.coverage.texts += 1;
+        let visible = visible_bounds(text, width, height);
+        if visible.is_some() {
+            out.coverage.visible_texts += 1;
+        }
         if let Some(side) = stranded(text, &ledger.scrolls, width) {
             out.lints.push(Lint {
                 rule: Rule::Offscreen,
@@ -176,6 +184,18 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
                     "`{}` at ({:.1}, {:.1}) {:.1}x{:.1} lies wholly past the {} edge of the {width:.0} px viewport, \
                      and no scroll container's content reaches it",
                     text.content, text.bounds.x, text.bounds.y, text.bounds.width, text.bounds.height, side.name()
+                ),
+            });
+        } else if visible.is_none()
+            && !text.content.trim().is_empty()
+            && !ledger.scrolls.iter().any(|scroll| scroll.reaches(&text.bounds))
+        {
+            out.lints.push(Lint {
+                rule: Rule::Offscreen,
+                key: text.key.clone(),
+                detail: format!(
+                    "`{}` at ({:.1}, {:.1}) {:.1}x{:.1} is fully hidden by the window or an ancestor paint clip, and no scroll container's content reaches it",
+                    text.content, text.bounds.x, text.bounds.y, text.bounds.width, text.bounds.height
                 ),
             });
         }
@@ -203,7 +223,6 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
             });
         }
         // Contrast from the pixels.
-        let visible = visible_bounds(text, width, height);
         if visible.is_none() { out.coverage.hidden_texts += 1; }
         let measured = (viewport.scale == 2).then(|| visible.as_ref()).flatten()
             .and_then(|bounds| ink_contrast(image, viewport.scale, bounds.x, bounds.y, bounds.width, bounds.height));
@@ -263,8 +282,11 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
         }
         out.coverage.targets += 1;
         let b = &target.bounds;
+        if b.x < width && b.y < height && b.x + b.width > 0.0 && b.y + b.height > 0.0 {
+            out.coverage.visible_targets += 1;
+        }
         let reachable_by_scroll = ledger.scrolls.iter().any(|scroll| scroll.reaches(b));
-        if target.state.focusable && !b.within(width + 0.5, height + 0.5) && !reachable_by_scroll {
+        if (target.state.focusable || target.state.clickable) && !b.within(width + 0.5, height + 0.5) && !reachable_by_scroll {
             out.lints.push(Lint {
                 rule: Rule::Offscreen,
                 key: target.key.clone(),
@@ -298,10 +320,12 @@ pub fn json(linted: &Linted) -> Json {
             "coverage",
             Json::obj([
                 ("texts", Json::num(linted.coverage.texts as f64)),
+                ("visible_texts", Json::num(linted.coverage.visible_texts as f64)),
                 ("hidden_texts", Json::num(linted.coverage.hidden_texts as f64)),
                 ("occluded_texts", Json::num(linted.coverage.occluded_texts as f64)),
                 ("occluded_targets", Json::num(linted.coverage.occluded_targets as f64)),
                 ("targets", Json::num(linted.coverage.targets as f64)),
+                ("visible_targets", Json::num(linted.coverage.visible_targets as f64)),
                 ("contrast", Json::num(linted.coverage.contrast as f64)),
                 (
                     "contrast_skipped",
@@ -441,7 +465,17 @@ mod tests {
         ], ..Ledger::default() };
         let result = lint(&blank(800,600), &ledger, Viewport { scale: 2, ..viewport() });
         assert_eq!(result.coverage.texts,2); assert_eq!(result.coverage.hidden_texts,1);
-        assert!(!result.lints.iter().any(|lint| lint.key.contains("hidden")), "{:?}",result.lints);
+        assert_eq!(result.coverage.visible_texts,1);
+        assert!(result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "hidden"), "fully hidden text without a scroll extent must not pass: {:?}",result.lints);
+        assert!(!result.lints.iter().any(|lint| lint.rule == super::Rule::Overlap && lint.key.contains("hidden")), "hidden text does not overlap the card: {:?}",result.lints);
+        let scroller = ScrollSample {
+            key: "scroll".to_owned(),
+            viewport: bounds(0.0, 0.0, 80.0, 50.0),
+            content: bounds(0.0, 0.0, 80.0, 150.0),
+        };
+        let reachable = Ledger { scrolls: vec![scroller], ..ledger };
+        let result = lint(&blank(800,600), &reachable, Viewport { scale: 2, ..viewport() });
+        assert!(!result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "hidden"), "a real scroll extent keeps the hidden row reachable: {:?}",result.lints);
     }
 
     #[test]

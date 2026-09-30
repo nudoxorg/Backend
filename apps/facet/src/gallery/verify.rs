@@ -307,8 +307,10 @@ fn lints(scene: &Scene) -> Stage {
             if let Some(frame) = frames.first() {
                 let linted = lint::lint(&frame.image, &frame.ledger, frame.drawn.viewport);
                 stage.summary = format!(
-                    "{} texts, {} targets, contrast measured on {}{}",
+                    "{} visible of {} texts, {} visible of {} targets, contrast measured on {}{}",
+                    linted.coverage.visible_texts,
                     linted.coverage.texts,
+                    linted.coverage.visible_targets,
                     linted.coverage.targets,
                     linted.coverage.contrast,
                     linted
@@ -324,8 +326,8 @@ fn lints(scene: &Scene) -> Stage {
                         format!("{} {}: {}", item.rule.name(), item.key, item.detail),
                     );
                 }
-                if linted.coverage.texts == 0
-                    && linted.coverage.targets == 0
+                if linted.coverage.visible_texts == 0
+                    && linted.coverage.visible_targets == 0
                     && stage.outcome == Outcome::Pass
                 {
                     stage.outcome = Outcome::NotCovered;
@@ -359,7 +361,7 @@ fn matrix_stage(scene: &Scene, axes: Option<&Axes>, out: &Path) -> Stage {
                 .count();
             let linted: usize = results
                 .iter()
-                .map(|r| r.linted.coverage.texts + r.linted.coverage.targets)
+                .map(|r| r.linted.coverage.visible_texts + r.linted.coverage.visible_targets)
                 .sum();
             stage.summary = format!(
                 "{}/{} cells pass, {linted} boxes linted, {compared} settled==reduced comparisons",
