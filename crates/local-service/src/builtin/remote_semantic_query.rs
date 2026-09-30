@@ -10,6 +10,7 @@ use backend_library::{
     Command, CommandDto, CommandReply, ProductText, SurfaceCommand, SurfaceReply,
     decode_command_body, decode_reply_body,
 };
+use backend_platform::directory::DirectoryCapability;
 use backend_replication::{
     LocalControlClient, LocalControlLimits, LocalControlRequest, LocalControlResponse,
     SelectedGenerationStamp, SelectedSemanticImageChunk, SelectedSemanticImageGet,
@@ -17,11 +18,14 @@ use backend_replication::{
     SemanticRangeChunk, SemanticRangeGet, SemanticTargetKey, decode_request, encode_response,
 };
 use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::{self, Read};
+#[cfg(test)]
+use std::fs;
+use std::fs::File;
+use std::io::{self, Read, Write};
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -40,6 +44,13 @@ const GRANT_USAGE_MAGIC: &[u8; 8] = b"BKRUGR01";
 const GRANT_USAGE_CHECKSUM_BYTES: usize = 32;
 const MAX_GRANT_USAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GRANT_USAGE_ENTRIES: usize = 256;
+static NEXT_LEDGER_TEMP: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone)]
+struct GrantUsageLedger {
+    directory: DirectoryCapability,
+    name: String,
+}
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -103,7 +114,7 @@ pub struct RemoteIndexGrantSummary {
 #[derive(Clone)]
 pub struct RemoteIndexUsage {
     entries: Arc<Mutex<BTreeMap<[u8; 16], GrantUsage>>>,
-    path: Option<Arc<PathBuf>>,
+    ledger: Option<Arc<GrantUsageLedger>>,
     owner: Option<backend_engine::cluster_transport::EndpointId>,
     disabled: bool,
 }
@@ -138,7 +149,7 @@ impl Default for RemoteIndexUsage {
     fn default() -> Self {
         Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
-            path: None,
+            ledger: None,
             owner: None,
             disabled: false,
         }
@@ -151,15 +162,15 @@ impl RemoteIndexUsage {
         path: impl Into<PathBuf>,
         owner: backend_engine::cluster_transport::EndpointId,
     ) -> io::Result<Self> {
-        let path = path.into();
-        let _file_lock = lock_usage_ledger(&path)?;
-        let mut entries = read_usage_ledger(&path, owner)?;
+        let ledger = open_usage_ledger(path.into())?;
+        let _file_lock = lock_usage_ledger(&ledger)?;
+        let mut entries = read_usage_ledger(&ledger, owner)?;
         let now = backend_engine::cluster_transport::remote_index_now()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         entries.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now);
         let result = Self {
             entries: Arc::new(Mutex::new(entries)),
-            path: Some(Arc::new(path)),
+            ledger: Some(Arc::new(ledger)),
             owner: Some(owner),
             disabled: false,
         };
@@ -176,7 +187,7 @@ impl RemoteIndexUsage {
     pub(crate) fn disabled() -> Self {
         Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
-            path: None,
+            ledger: None,
             owner: None,
             disabled: true,
         }
@@ -207,14 +218,14 @@ impl RemoteIndexUsage {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let path = self.path.as_deref().ok_or_else(|| {
+        let ledger = self.ledger.as_deref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "remote-index grant ledger has no durable path",
             )
         })?;
-        let _file_lock = lock_usage_ledger(path)?;
-        let mut entries = read_usage_ledger(path, owner)?;
+        let _file_lock = lock_usage_ledger(ledger)?;
+        let mut entries = read_usage_ledger(ledger, owner)?;
         entries.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now_ms);
         let grant_id = capability.grant_id();
         match entries.get(&grant_id) {
@@ -257,16 +268,16 @@ impl RemoteIndexUsage {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let path = self.path.as_deref().ok_or_else(|| {
+        let ledger = self.ledger.as_deref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "remote-index grant ledger has no durable path",
             )
         })?;
-        let _file_lock = lock_usage_ledger(path)?;
+        let _file_lock = lock_usage_ledger(ledger)?;
         let now = backend_engine::cluster_transport::remote_index_now()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        let mut entries = read_usage_ledger(path, owner)?;
+        let mut entries = read_usage_ledger(ledger, owner)?;
         entries.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now);
         let grant = entries.get_mut(&grant_id).ok_or_else(|| {
             io::Error::new(
@@ -299,16 +310,16 @@ impl RemoteIndexUsage {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let path = self.path.as_deref().ok_or_else(|| {
+        let ledger = self.ledger.as_deref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "remote-index grant ledger has no durable path",
             )
         })?;
-        let _file_lock = lock_usage_ledger(path)?;
+        let _file_lock = lock_usage_ledger(ledger)?;
         let now = backend_engine::cluster_transport::remote_index_now()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        let mut entries = read_usage_ledger(path, owner)?;
+        let mut entries = read_usage_ledger(ledger, owner)?;
         entries.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now);
         let result = entries
             .iter()
@@ -350,14 +361,14 @@ impl RemoteIndexUsage {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let owner = self.owner.ok_or(RemoteIndexReject::OwnerUnavailable)?;
-        let path = self
-            .path
+        let ledger = self
+            .ledger
             .as_deref()
             .ok_or(RemoteIndexReject::OwnerUnavailable)?;
         let _file_lock =
-            lock_usage_ledger(path).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+            lock_usage_ledger(ledger).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
         let mut candidate =
-            read_usage_ledger(path, owner).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+            read_usage_ledger(ledger, owner).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
         let now = backend_engine::cluster_transport::remote_index_now()
             .map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
         candidate.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now);
@@ -414,14 +425,14 @@ impl RemoteIndexUsage {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let owner = self.owner.ok_or(RemoteIndexReject::OwnerUnavailable)?;
-        let path = self
-            .path
+        let ledger = self
+            .ledger
             .as_deref()
             .ok_or(RemoteIndexReject::OwnerUnavailable)?;
         let _file_lock =
-            lock_usage_ledger(path).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+            lock_usage_ledger(ledger).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
         let mut candidate =
-            read_usage_ledger(path, owner).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+            read_usage_ledger(ledger, owner).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
         let usage = candidate
             .get_mut(&capability.claims.grant_id)
             .ok_or(RemoteIndexReject::StaleCapability)?;
@@ -457,7 +468,7 @@ impl RemoteIndexUsage {
     }
 
     fn persist(&self, entries: &BTreeMap<[u8; 16], GrantUsage>) -> io::Result<()> {
-        let Some(path) = self.path.as_deref() else {
+        let Some(ledger) = self.ledger.as_deref() else {
             return Ok(());
         };
         let owner = self.owner.ok_or_else(|| {
@@ -487,53 +498,43 @@ impl RemoteIndexUsage {
                 "remote-index usage ledger is full",
             ));
         }
-        backend_platform::durable::write_private_atomic(path, &bytes)
+        write_usage_ledger(ledger, &bytes)
     }
 }
 
-fn lock_usage_ledger(path: &Path) -> io::Result<File> {
+fn open_usage_ledger(path: PathBuf) -> io::Result<GrantUsageLedger> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let lock_path = parent.join(format!("{name}.lock"));
-    let file = backend_platform::durability::open_or_create_regular_file_nofollow(&lock_path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "remote-index ledger lock has an invalid type",
-        ));
-    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid grant ledger name"))?
+        .to_owned();
+    let directory = DirectoryCapability::open(parent)?;
+    directory.validate_private()?;
+    Ok(GrantUsageLedger { directory, name })
+}
+
+fn lock_usage_ledger(ledger: &GrantUsageLedger) -> io::Result<File> {
+    let lock_name = format!("{}.lock", ledger.name);
+    let file = ledger
+        .directory
+        .open_private_file_read_write(&lock_name, true)?;
     #[cfg(unix)]
-    {
-        if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.nlink() != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "remote-index ledger lock must be owned by this user and have one link",
-            ));
-        }
-        if metadata.permissions().mode() & 0o777 != 0o600 {
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        }
-        let metadata = file.metadata()?;
-        if metadata.permissions().mode() & 0o777 != 0o600 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "remote-index ledger lock must have mode 0600",
-            ));
-        }
+    if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     file.lock()?;
     Ok(file)
 }
 
 fn read_usage_ledger(
-    path: &Path,
+    ledger: &GrantUsageLedger,
     owner: backend_engine::cluster_transport::EndpointId,
 ) -> io::Result<BTreeMap<[u8; 16], GrantUsage>> {
-    let file = match backend_platform::durability::open_regular_file_nofollow(path) {
+    let file = match ledger.directory.open_private_file(&ledger.name) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(error) => return Err(error),
@@ -544,18 +545,6 @@ fn read_usage_ledger(
             io::ErrorKind::InvalidData,
             "remote-index grant ledger has an invalid type or size",
         ));
-    }
-    #[cfg(unix)]
-    {
-        if metadata.uid() != rustix::process::geteuid().as_raw()
-            || metadata.nlink() != 1
-            || metadata.permissions().mode() & 0o777 != 0o600
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "remote-index grant ledger must be a single-link owner-only file",
-            ));
-        }
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_GRANT_USAGE_BYTES as u64 + 1)
@@ -625,6 +614,33 @@ fn read_usage_ledger(
             })?;
     }
     Ok(persisted.entries)
+}
+
+fn write_usage_ledger(ledger: &GrantUsageLedger, bytes: &[u8]) -> io::Result<()> {
+    for _ in 0..128 {
+        let sequence = NEXT_LEDGER_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temporary = format!(".{}.tmp-{}-{sequence}", ledger.name, std::process::id());
+        let mut file = match ledger.directory.create_file_exclusive(&temporary) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let write_result = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = ledger.directory.remove_file(&temporary);
+            return Err(error);
+        }
+        if let Err(error) = ledger.directory.rename(&temporary, &ledger.name, true) {
+            let _ = ledger.directory.remove_file(&temporary);
+            return Err(error);
+        }
+        return ledger.directory.sync_all();
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique remote-index ledger temporary",
+    ))
 }
 
 pub(crate) async fn serve_connection(
@@ -1293,6 +1309,8 @@ mod tests {
         RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexPermission,
         RemoteIndexProductScope, RemoteIndexQueryOperation, SecretKey,
     };
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn scratch(label: &str) -> PathBuf {
@@ -1484,8 +1502,9 @@ mod tests {
             .register_capability(&capability, capability.claims.issued_at_unix_ms)
             .expect("register signed grant");
         {
-            let _lock = lock_usage_ledger(&path).expect("ledger lock");
-            let mut entries = read_usage_ledger(&path, owner).expect("read ledger");
+            let ledger = open_usage_ledger(path.clone()).expect("open ledger capability");
+            let _lock = lock_usage_ledger(&ledger).expect("ledger lock");
+            let mut entries = read_usage_ledger(&ledger, owner).expect("read ledger");
             entries
                 .get_mut(&capability.grant_id())
                 .expect("registered grant")
@@ -1718,7 +1737,38 @@ mod tests {
         let lock_link = root.join("lock-link-ledger.lock");
         symlink(&target, &lock_link).expect("symlink lock");
         assert!(RemoteIndexUsage::open(&ledger, capability.claims.server).is_err());
+
+        let outside = root.join("outside");
+        fs::create_dir(&outside).expect("create ancestor symlink target");
+        let ancestor_link = root.join("ancestor-link");
+        symlink(&outside, &ancestor_link).expect("symlink ledger ancestor");
+        assert!(
+            RemoteIndexUsage::open(
+                ancestor_link.join("nested-ledger.v1"),
+                capability.claims.server
+            )
+            .is_err()
+        );
+
         assert_eq!(fs::read(&target).expect("read target"), b"sensitive target");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    #[test]
+    fn grant_ledger_and_lock_refuse_fifos_without_waiting_for_a_writer() {
+        use rustix::fs::{CWD, Mode, mkfifoat};
+
+        let root = scratch("fifo");
+        let capability = capability(4, 64);
+        let ledger = root.join("fifo-ledger.v1");
+        mkfifoat(CWD, &ledger, Mode::from_bits_truncate(0o600)).expect("create ledger FIFO");
+        assert!(RemoteIndexUsage::open(&ledger, capability.claims.server).is_err());
+
+        let lock_ledger = root.join("fifo-lock-ledger.v1");
+        let lock = root.join("fifo-lock-ledger.v1.lock");
+        mkfifoat(CWD, &lock, Mode::from_bits_truncate(0o600)).expect("create lock FIFO");
+        assert!(RemoteIndexUsage::open(&lock_ledger, capability.claims.server).is_err());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1745,6 +1795,38 @@ mod tests {
         drop(usage);
         fs::set_permissions(&opaque, fs::Permissions::from_mode(0o700))
             .expect("restore cleanup access");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grant_ledger_updates_stay_under_the_pinned_parent_after_path_replacement() {
+        let root = scratch("pinned-parent");
+        let parent = root.join("state");
+        fs::create_dir(&parent).expect("create ledger state directory");
+        let path = parent.join("remote-index-grants.v1");
+        let capability = capability(4, 64);
+        let usage = RemoteIndexUsage::open(&path, capability.claims.server)
+            .expect("pin ledger state directory");
+
+        let moved = root.join("moved-state");
+        fs::rename(&parent, &moved).expect("move original state directory");
+        fs::create_dir(&parent).expect("replace original path with fresh directory");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700))
+            .expect("protect replacement directory");
+
+        usage
+            .register_capability(&capability, capability.claims.issued_at_unix_ms)
+            .expect("write through the retained directory handle");
+        assert!(moved.join("remote-index-grants.v1").is_file());
+        assert!(moved.join("remote-index-grants.v1.lock").is_file());
+        assert!(!parent.join("remote-index-grants.v1").exists());
+        drop(usage);
+
+        let fresh = RemoteIndexUsage::open(&path, capability.claims.server)
+            .expect("open replacement directory as a different ledger");
+        assert!(fresh.list().expect("list replacement ledger").is_empty());
+        drop(fresh);
         let _ = fs::remove_dir_all(root);
     }
 

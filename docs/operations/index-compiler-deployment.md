@@ -38,8 +38,10 @@ worker never receives the owner's S3 credentials.
 Create the client identity on the machine that will run the client. The key
 file stays private to that machine; the command prints only its public peer ID.
 Keep both the key and copied capability in a private owner-only directory. The
-CLI opens them through the platform's no-follow private-file reader and checks
-the opened handle before reading; it never prints or logs the key bytes.
+CLI pins the private parent directory, rejects symlinked or reparse-point path
+components, and opens the direct child as an owner-only regular file before
+reading it; it never prints or logs the key bytes. The owner identity and grant
+ledger use the same held-parent storage rules.
 Share that ID with the index owner. The owner must have locald running to read
 the current product root or semantic selection before signing a grant.
 
@@ -182,13 +184,16 @@ and use a separate Iroh client identity.
 | Exact canonical frame metering for large stale-root outcomes | `prepared_response_reports_the_exact_canonical_wire_frame_size` and `stale_root_response_reserves_its_full_canonical_wire_size` | The charged size equals the typed postcard frame actually sent, including both 32-byte roots and the frame prefix. |
 | Revoke before/after result admission | `response_admission_is_the_revoke_linearization_point` and `concurrent_revoke_and_response_admission_has_one_durable_winner` | Revoke-first refuses result admission; permit-first retains a valid in-flight send permit, while later request admission is denied. |
 | Withheld local owner response, caller timeout, and blocking-work permit lifetime | `withheld_local_owner_response_hits_the_configured_socket_deadline`, `detached_blocking_owner_work_keeps_its_slot_until_completion`, and `blocking_work_slot_is_released_after_worker_panic` | The local response read times out; a detached blocked call continues to consume its bounded slot and releases it only on completion or panic. |
-| Interrupted/corrupt semantic range reconnect and resume over two processes | Extend the real client journey with a dropped range stream, corrupted range, owner restart, and resumed `semantic-hydrate` | No unverified bytes become complete; the client resumes the exact selected generation and finishes within signed request/byte budgets. |
+| Private key, capability, owner identity, and grant-ledger storage | CLI, `cluster_owner`, and `remote_semantic_query` path-adversary unit tests | Reads and writes are relative to pinned private parent handles; ancestor links and FIFO entries are refused, and the ledger stays in the originally opened directory after its pathname is replaced. |
+| Corrupted-range rejection, clean retry, and interrupted range resume across an owner restart | `tests/journeys/tests/s3_cold_selected_journey.rs` in the `backend-journeys` package with its `test-support` S3 fixture | The journey injects one corrupted real HTTP 206 response, requires refusal before complete client CAS admission, retries against the unchanged selected generation with an independent segment hash, then resumes a staged range after a cold owner restart. Treat this as source coverage until that journey passes against the reviewed binaries. |
 | Root/snapshot publication race during live query | Mutate the selected root or discovery snapshot while the installed remote query is in flight | The client receives a typed stale result or a closed refusal; no response is attached to a different current root/snapshot. |
 
-The first two rows are executable end-to-end journeys. The remaining rows are
-regression gates: source tests cover the frame and permit-order invariants, while
-range interruption and publication-race behavior still require live two-process
-coverage before claiming those scenarios as verified.
+The first two rows are executable installed-client journeys. The corrupted
+range row is an executable S3-backed owner/client journey in source; run it
+against binaries built from the reviewed revision before claiming runtime
+coverage. The remaining rows are regression gates: source tests cover the frame
+and permit-order invariants, while a live selected-root publication race still
+needs dedicated two-process coverage.
 
 For semantic hydration, the owner creates a grant only after it has admitted
 the current catalog for the exact package, coordinate, and language profile.

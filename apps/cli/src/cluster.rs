@@ -22,22 +22,22 @@ use backend_local_service::cluster_owner::{ClusterOwnerConfig, ClusterOwnerConfi
 use backend_local_service::compiler_trust::{
     CompilerTrustError, TrustedCompilerWorkerGrant, TrustedCompilerWorkerPolicy,
 };
+use backend_platform::directory::DirectoryCapability;
 use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 use backend_replication::SemanticTargetKey;
 use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const TRUST_FILE: &str = "compiler-worker-trust.v1";
 const OWNER_FILE: &str = "cluster-owner.v1";
 const REMOTE_CLIENT_FILE: &str = "remote-index-client.v1";
 const REMOTE_CLIENT_MAGIC: &[u8; 8] = b"BKRICL01";
 const REMOTE_CAPABILITY_MAGIC: &[u8; 8] = b"BKRICP01";
+static NEXT_PRIVATE_FILE_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Runs one owner-side cluster trust command without starting or contacting locald.
 pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> {
@@ -359,7 +359,11 @@ fn owner_init(rest: &[String], options: &Options) -> Result<String, Fault> {
     let flags = parse_flags(rest, &["bind", "advertise"])?;
     let bind = socket_address(required(&flags, "bind")?, "--bind")?;
     let advertised = socket_address(required(&flags, "advertise")?, "--advertise")?;
-    let path = owner_path(options)?;
+    let paths = workspace_paths(options)?;
+    paths
+        .initialize_data_directory()
+        .map_err(|error| workspace_fault(options, error.to_string()))?;
+    let path = paths.data().join(OWNER_FILE);
     let owner = ClusterOwnerConfig::create(&path, bind, advertised)
         .map_err(|error| owner_fault(&path, error))?;
     Ok(format!(
@@ -1212,9 +1216,9 @@ pub(crate) fn load_client_secret(path: &std::path::Path) -> Result<SecretKey, Fa
 }
 
 fn read_bounded_file(path: &std::path::Path, maximum: usize) -> Result<Vec<u8>, Fault> {
-    // Open and validate one private handle. A separate metadata check followed
-    // by File::open would permit a final-component symlink replacement race.
-    let mut file = backend_platform::durable::open_private_read(path)
+    let (directory, name) = private_file_location(path, false)?;
+    let mut file = directory
+        .open_private_file(&name)
         .map_err(|error| storage_fault(path, error.to_string()))?;
     let metadata = file
         .metadata()
@@ -1239,34 +1243,60 @@ fn read_bounded_file(path: &std::path::Path, maximum: usize) -> Result<Vec<u8>, 
 }
 
 fn write_private_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), Fault> {
+    let (directory, name) = private_file_location(path, true)?;
+    for _ in 0..128 {
+        let sequence = NEXT_PRIVATE_FILE_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temporary = format!(".{name}.tmp-{}-{sequence}", std::process::id());
+        let mut file = match directory.create_file_exclusive(&temporary) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(storage_fault(path, error.to_string())),
+        };
+        let write_result = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = directory.remove_file(&temporary);
+            return Err(storage_fault(path, error.to_string()));
+        }
+        if let Err(error) = directory.rename(&temporary, &name, false) {
+            let _ = directory.remove_file(&temporary);
+            return Err(storage_fault(path, error.to_string()));
+        }
+        return directory
+            .sync_all()
+            .map_err(|error| storage_fault(path, error.to_string()));
+    }
+    Err(storage_fault(
+        path,
+        "could not allocate a unique private-file temporary".to_owned(),
+    ))
+}
+
+fn private_file_location(
+    path: &std::path::Path,
+    create_parent: bool,
+) -> Result<(DirectoryCapability, String), Fault> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(std::path::Path::new("."));
-    backend_platform::durable::ensure_private_directory(parent)
-        .map_err(|error| storage_fault(parent, error.to_string()))?;
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options
-        .open(path)
-        .map_err(|error| storage_fault(path, error.to_string()))?;
-    file.write_all(bytes)
-        .map_err(|error| storage_fault(path, error.to_string()))?;
-    file.sync_all()
-        .map_err(|error| storage_fault(path, error.to_string()))?;
-    #[cfg(unix)]
-    {
-        let mut permissions = file
-            .metadata()
-            .map_err(|error| storage_fault(path, error.to_string()))?
-            .permissions();
-        permissions.set_mode(0o600);
-        file.set_permissions(permissions)
-            .map_err(|error| storage_fault(path, error.to_string()))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| storage_fault(path, "file path has no valid final name".to_owned()))?;
+    let directory = if create_parent {
+        DirectoryCapability::open_or_create_private(parent)
+    } else {
+        let directory = DirectoryCapability::open(parent)
+            .map_err(|error| storage_fault(parent, error.to_string()))?;
+        directory
+            .validate_private()
+            .map_err(|error| storage_fault(parent, error.to_string()))?;
+        Ok(directory)
     }
-    Ok(())
+    .map_err(|error| storage_fault(parent, error.to_string()))?;
+    Ok((directory, name.to_owned()))
 }
 
 fn client_fault(error: impl std::fmt::Display) -> Fault {
@@ -1782,6 +1812,48 @@ mod tests {
         let capability_link = root.join("capability-link");
         symlink(&target, &capability_link).expect("link capability fixture");
         assert!(read_bounded_file(&capability_link, 128).is_err());
+
+        let outside = root.join("outside");
+        std::fs::create_dir(&outside).expect("create ancestor target");
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o700))
+            .expect("set private ancestor target");
+        std::fs::copy(&target, outside.join("client-key"))
+            .expect("copy private key beneath target");
+        let ancestor_link = root.join("ancestor-link");
+        symlink(&outside, &ancestor_link).expect("symlink key ancestor");
+        assert!(load_client_secret(&ancestor_link.join("client-key")).is_err());
+        assert!(write_private_new(&ancestor_link.join("new-client-key"), b"secret").is_err());
+        assert!(!outside.join("new-client-key").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    #[test]
+    fn remote_client_key_and_capability_reads_refuse_fifos_without_waiting() {
+        use rustix::fs::{CWD, Mode, mkfifoat};
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-remote-client-fifo-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).expect("create private test directory");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("set private directory mode");
+
+        let key_fifo = root.join("client-key-fifo");
+        mkfifoat(CWD, &key_fifo, Mode::from_bits_truncate(0o600)).expect("create key FIFO");
+        assert!(load_client_secret(&key_fifo).is_err());
+
+        let capability_fifo = root.join("capability-fifo");
+        mkfifoat(CWD, &capability_fifo, Mode::from_bits_truncate(0o600))
+            .expect("create capability FIFO");
+        assert!(read_bounded_file(&capability_fifo, 128).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 
