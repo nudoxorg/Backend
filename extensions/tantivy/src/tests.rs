@@ -650,6 +650,55 @@ fn prefix_rank_is_lossless_at_production_field_weight() {
 }
 
 #[test]
+fn three_clause_ranking_uses_weakest_quality_sum_weight_and_multivalue_maxima() {
+    // Put the exact-last-clause document at the larger identity so the old
+    // clause-count comparison would incorrectly promote it. Both first rows
+    // independently have a weakest ratio of 1/8, so stable identity orders
+    // them. The third repeats `a` across indexed field values; that clause
+    // contributes its best field once, while every query clause contributes
+    // its own weight.
+    let first_identity = document(1).min(document(2));
+    let second_identity = document(1).max(document(2));
+    let documents = vec![
+        (
+            first_identity,
+            vec![("name".into(), "a bbbbbbbb cccccccc".into())],
+        ),
+        (
+            second_identity,
+            vec![("name".into(), "aaaaaaaa bbbbbbbb c".into())],
+        ),
+        (
+            document(3),
+            vec![
+                ("name".into(), "a bbbbbbbb".into()),
+                ("signature".into(), "a cccccccc".into()),
+            ],
+        ),
+    ];
+    let (binding, coverage) = binding(&documents);
+    let state = DocumentState::new(binding, coverage, documents, Limits::default())
+        .expect("three clause ranking state");
+    let source = TantivySource::build(&state, Limits::default()).expect("projection");
+
+    for terms in [
+        vec!["a".into(), "b".into(), "c".into()],
+        vec!["c".into(), "a".into(), "b".into()],
+    ] {
+        let query = Query::new(terms, Limits::default()).expect("three clause query");
+        let hits = source.search(&query).expect("independent fixed-label query");
+        assert_eq!(
+            hits.iter().map(|hit| hit.document).collect::<Vec<_>>(),
+            [first_identity, second_identity, document(3)]
+        );
+        assert_eq!(hits[0].relevance.rank_parts(), (1, 8, 12, 3));
+        assert_eq!(hits[1].relevance.rank_parts(), (1, 8, 12, 3));
+        assert_eq!(hits[2].relevance.rank_parts(), (1, 8, 11, 3));
+        assert!(hits.iter().all(|hit| !hit.relevance.is_exact()));
+    }
+}
+
+#[test]
 fn code_identifier_components_are_searchable_without_scanning() {
     let documents = vec![
         (

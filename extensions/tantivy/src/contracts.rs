@@ -122,16 +122,33 @@ impl Relevance {
     }
 
     pub(crate) fn combine(self, other: Self) -> Result<Self, Error> {
-        let weaker = if self < other { self } else { other };
+        // Clause counts and field weights are accumulated over the complete
+        // query. They must not decide which clause contributes the limiting
+        // exact/prefix quality.
+        let weaker = if self.intrinsic_cmp(other).is_lt() {
+            self
+        } else {
+            other
+        };
         Ok(Self {
             exact: self.exact && other.exact,
             matched_bytes: weaker.matched_bytes,
             term_bytes: weaker.term_bytes,
-            field_weight: self.field_weight.max(other.field_weight),
+            field_weight: self
+                .field_weight
+                .checked_add(other.field_weight)
+                .ok_or(Error::SizeLimit)?,
             matched_clauses: self
                 .matched_clauses
                 .checked_add(other.matched_clauses)
                 .ok_or(Error::SizeLimit)?,
+        })
+    }
+
+    fn intrinsic_cmp(self, other: Self) -> Ordering {
+        self.exact.cmp(&other.exact).then_with(|| {
+            (u64::from(self.matched_bytes) * u64::from(other.term_bytes))
+                .cmp(&(u64::from(other.matched_bytes) * u64::from(self.term_bytes)))
         })
     }
 }
