@@ -27,7 +27,7 @@ use backend_library::interface::{
 };
 use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::{Language, LanguageProfile};
-use backend_version::{Coverage, ScopeRoot};
+use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -631,7 +631,7 @@ pub(super) struct IndexScanWork {
     request_id: u64,
     execution_intent: CompileExecutionIntent,
     project_key: [u8; 32],
-    workspace_root: [u8; 32],
+    workspace_root: WorkspaceRoot,
     before: Option<ProductSourceRecord>,
     old_files: Vec<[u8; 32]>,
     reusable: BTreeMap<[u8; 32], ProductSourceRecord>,
@@ -3496,6 +3496,7 @@ pub(super) fn remove_project_intent(
     let semantic = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
+    let mut semantic_changes = Vec::new();
     let mut after = None;
     loop {
         let page = semantic
@@ -3505,7 +3506,7 @@ pub(super) fn remove_project_intent(
             if key.package_key() != package || !key.is_selected() {
                 continue;
             }
-            let ProductSemanticPublicationRecord::Published { claim, .. } = record else {
+            let ProductSemanticPublicationRecord::Published { .. } = record else {
                 continue;
             };
             let mut hasher = blake3::Hasher::new();
@@ -3513,14 +3514,19 @@ pub(super) fn remove_project_intent(
             hasher.update(package.as_bytes());
             hasher.update(&<[u8; 2]>::from(key.profile()));
             semantic_authority.observe(key, *hasher.finalize().as_bytes(), 0)?;
-            let _ = claim;
+            semantic_changes.push(BuiltinSemanticChange {
+                key: key.clone(),
+                after: Some(ProductSemanticPublicationRecord::Unavailable(
+                    backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority,
+                )),
+            });
         }
         let Some(next) = page.next().cloned() else {
             break;
         };
         after = Some(next);
     }
-    BuiltinIntent::remove_project(package, label, files).map(Some)
+    BuiltinIntent::remove_project(package, label, files, semantic_changes).map(Some)
 }
 
 pub(super) fn semantic_version_record(
@@ -3545,6 +3551,7 @@ pub(super) fn semantic_version_record(
         complete: matches!(coverage, SemanticPublicationCoverage::Complete),
         selected,
         freshness,
+        history_status: backend_engine::SemanticHistoryPublicationStatus::NotSelected,
     }
 }
 
@@ -3610,8 +3617,18 @@ pub(super) fn semantic_versions(
                             "semantic version history exceeds the product row bound".to_owned(),
                         ));
                     }
+                    let selected_key = ProductSemanticPublicationKey::new(
+                        key.package().clone(),
+                        key.coordinate().clone(),
+                        key.profile(),
+                    )
+                    .map_err(|error| {
+                        BuiltinModelError(format!("admit selected semantic target: {error}"))
+                    })?;
                     generations.push((
                         target,
+                        selected_key,
+                        *claim,
                         semantic_version_record(
                             key,
                             coverage,
@@ -3644,11 +3661,15 @@ pub(super) fn semantic_versions(
             "semantic publication unavailable: {reason}"
         )));
     }
-    for (target, record) in &mut generations {
+    for (target, history_key, claim, record) in &mut generations {
         record.selected = selected.get(target).copied() == Some(record.generation.to_bytes());
+        if record.selected {
+            record.history_status =
+                semantic_authority.native_history_status(history_key, *claim)?;
+        }
     }
     if selected.iter().any(|(selected_target, identity)| {
-        !generations.iter().any(|(generation_target, record)| {
+        !generations.iter().any(|(generation_target, _, _, record)| {
             generation_target == selected_target && record.generation.to_bytes() == *identity
         })
     }) {
@@ -3658,7 +3679,7 @@ pub(super) fn semantic_versions(
     }
     Ok(generations
         .into_iter()
-        .map(|(_, record)| record)
+        .map(|(_, _, _, record)| record)
         .collect::<Vec<_>>()
         .into_boxed_slice())
 }

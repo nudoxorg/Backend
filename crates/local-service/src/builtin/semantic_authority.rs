@@ -41,10 +41,11 @@ use backend_version::{
     ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding, ObjectKey, ObjectVersion, Schema,
     SchemaIdentity,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOCAL_BRANCH: &str = "locald";
@@ -58,6 +59,8 @@ const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_PUT_CALLS: usize = 1_000_000;
 const AUTHORITY_PAGE: usize = 512;
+const MAX_NATIVE_HISTORY_STATUS_ROWS: usize = 256;
+const NATIVE_HISTORY_QUEUE_CAPACITY: usize = 8;
 
 /// Durable identity retained before the owner sends a stored-result ACK.
 ///
@@ -347,7 +350,7 @@ fn artifact_budget() -> ArtifactBudget {
 type HistoryKey = (ProductSemanticPublicationKey, [u8; 32]);
 
 #[derive(Default)]
-struct SelectedClosureSnapshot {
+pub(super) struct SelectedClosureSnapshot {
     by_binding: BTreeMap<HistoryKey, SelectedGeneration>,
     /// The product workspace root is the serving marker. Turso may contain a
     /// newer candidate after a crash, but it is never served until this map is
@@ -355,9 +358,55 @@ struct SelectedClosureSnapshot {
     by_product: BTreeMap<ProductSemanticPublicationKey, SemanticPublicationClaim>,
 }
 
-struct SelectedClosureImageLoader {
+struct NativeHistoryStatusEntry {
+    key: ProductSemanticPublicationKey,
+    stamp: backend_replication::SelectedGenerationStamp,
+    status: backend_engine::SemanticHistoryPublicationStatus,
+}
+
+#[derive(Default)]
+struct NativeHistoryWorkerState {
+    statuses: VecDeque<NativeHistoryStatusEntry>,
+    in_flight: HashSet<[u8; 32]>,
+}
+
+pub(super) struct NativeHistoryPublicationWork {
+    pub(super) loader: Arc<SelectedClosureImageLoader>,
+    pub(super) store: FileStore,
+    pub(super) image_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
+    pub(super) key: ProductSemanticPublicationKey,
+    pub(super) expected_claim: SemanticPublicationClaim,
+    pub(super) stamp: backend_replication::SelectedGenerationStamp,
+    pub(super) selection_id: [u8; 32],
+}
+
+fn record_native_history_status(
+    state: &Arc<Mutex<NativeHistoryWorkerState>>,
+    key: ProductSemanticPublicationKey,
+    stamp: backend_replication::SelectedGenerationStamp,
+    status: backend_engine::SemanticHistoryPublicationStatus,
+) {
+    let Ok(mut state) = state.lock() else {
+        return;
+    };
+    if let Some(position) = state
+        .statuses
+        .iter()
+        .position(|entry| entry.key == key && entry.stamp == stamp)
+    {
+        state.statuses.remove(position);
+    }
+    state
+        .statuses
+        .push_back(NativeHistoryStatusEntry { key, stamp, status });
+    while state.statuses.len() > MAX_NATIVE_HISTORY_STATUS_ROWS {
+        state.statuses.pop_front();
+    }
+}
+
+pub(super) struct SelectedClosureImageLoader {
     store: FileStore,
-    selections: RwLock<SelectedClosureSnapshot>,
+    pub(super) selections: RwLock<SelectedClosureSnapshot>,
 }
 
 /// Holds the serving-selector write lock from validation through the durable
@@ -365,6 +414,7 @@ struct SelectedClosureImageLoader {
 /// durable, preventing a native-history lease from crossing the commit gap.
 pub(crate) struct ProductSelectionPublication<'a> {
     selections: RwLockWriteGuard<'a, SelectedClosureSnapshot>,
+    removals: Vec<ProductSemanticPublicationKey>,
     admitted: Vec<(
         ProductSemanticPublicationKey,
         SemanticPublicationClaim,
@@ -376,8 +426,12 @@ impl ProductSelectionPublication<'_> {
     pub(crate) fn commit(self) -> Vec<(ProductSemanticPublicationKey, SelectedGeneration)> {
         let Self {
             mut selections,
+            removals,
             admitted,
         } = self;
+        for key in removals {
+            selections.by_product.remove(&key);
+        }
         for (key, claim, _) in &admitted {
             selections.by_product.insert(key.clone(), *claim);
         }
@@ -482,6 +536,7 @@ impl SelectedClosureImageLoader {
         claim: SemanticPublicationClaim,
     ) -> Result<(), BuiltinModelError> {
         self.commit_product_selections(vec![(key, claim)])
+            .map(|_| ())
     }
 
     fn commit_product_selections(
@@ -495,9 +550,20 @@ impl SelectedClosureImageLoader {
         &self,
         entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
     ) -> Result<ProductSelectionPublication<'_>, BuiltinModelError> {
+        self.prepare_product_selection_changes(entries, Vec::new())
+    }
+
+    fn prepare_product_selection_changes(
+        &self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+        removals: Vec<ProductSemanticPublicationKey>,
+    ) -> Result<ProductSelectionPublication<'_>, BuiltinModelError> {
         let selections = self.acquire_publication_write()?;
         let mut seen = BTreeSet::new();
-        let mut admitted = Vec::with_capacity(entries.len());
+        let mut admitted = Vec::new();
+        admitted.try_reserve_exact(entries.len()).map_err(|_| {
+            BuiltinModelError("product selection admission allocation failed".to_owned())
+        })?;
         for (key, claim) in entries {
             if !seen.insert(key.clone()) {
                 return Err(BuiltinModelError(
@@ -516,8 +582,23 @@ impl SelectedClosureImageLoader {
                 })?;
             admitted.push((key, claim, selected));
         }
+        let mut checked_removals = Vec::new();
+        checked_removals
+            .try_reserve_exact(removals.len())
+            .map_err(|_| {
+                BuiltinModelError("product selection removal allocation failed".to_owned())
+            })?;
+        for key in removals {
+            if !seen.insert(key.clone()) {
+                return Err(BuiltinModelError(
+                    "product selection transaction both selects and removes one key".to_owned(),
+                ));
+            }
+            checked_removals.push(key);
+        }
         Ok(ProductSelectionPublication {
             selections,
+            removals: checked_removals,
             admitted,
         })
     }
@@ -529,7 +610,7 @@ impl SelectedClosureImageLoader {
         self.committed_pair(key).map(|(_, selected)| selected)
     }
 
-    fn committed_pair(
+    pub(super) fn committed_pair(
         &self,
         key: &ProductSemanticPublicationKey,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
@@ -539,7 +620,7 @@ impl SelectedClosureImageLoader {
         Self::committed_pair_in(&selections, key)
     }
 
-    fn committed_pair_in(
+    pub(super) fn committed_pair_in(
         selections: &SelectedClosureSnapshot,
         key: &ProductSemanticPublicationKey,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
@@ -558,7 +639,7 @@ impl SelectedClosureImageLoader {
         Ok((claim, selected))
     }
 
-    fn acquire_publication_read(
+    pub(super) fn acquire_publication_read(
         &self,
     ) -> Result<RwLockReadGuard<'_, SelectedClosureSnapshot>, BuiltinModelError> {
         self.selections.read().map_err(|_| {
@@ -938,6 +1019,8 @@ pub(crate) struct SemanticAuthority {
     /// semantic freshness. Newer candidate observations remain private until
     /// their product intent commits.
     committed_observations: BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>,
+    native_history_state: Arc<Mutex<NativeHistoryWorkerState>>,
+    native_history_sender: SyncSender<NativeHistoryPublicationWork>,
 }
 
 impl SemanticAuthority {
@@ -956,6 +1039,34 @@ impl SemanticAuthority {
             store: store.clone(),
             selections: RwLock::new(SelectedClosureSnapshot::default()),
         });
+        let native_history_state = Arc::new(Mutex::new(NativeHistoryWorkerState::default()));
+        let (native_history_sender, receiver) =
+            mpsc::sync_channel::<NativeHistoryPublicationWork>(NATIVE_HISTORY_QUEUE_CAPACITY);
+        let worker_state = Arc::clone(&native_history_state);
+        std::thread::Builder::new()
+            .name("locald-native-history".to_owned())
+            .spawn(move || {
+                while let Ok(work) = receiver.recv() {
+                    let key = work.key.clone();
+                    let stamp = work.stamp;
+                    let selection_id = work.selection_id;
+                    let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        super::versioned_planes::publish_native_history(work)
+                    }))
+                    .unwrap_or_else(|_| {
+                        backend_engine::SemanticHistoryPublicationStatus::Refused {
+                            selection_id,
+                            reason: "native history worker terminated during publication"
+                                .to_owned(),
+                        }
+                    });
+                    record_native_history_status(&worker_state, key, stamp, status);
+                    if let Ok(mut state) = worker_state.lock() {
+                        state.in_flight.remove(&selection_id);
+                    }
+                }
+            })
+            .map_err(|error| BuiltinModelError(format!("start native history worker: {error}")))?;
         Ok(Self {
             authority,
             store,
@@ -973,6 +1084,8 @@ impl SemanticAuthority {
             history: BTreeMap::new(),
             retained_generations: BTreeMap::new(),
             committed_observations: BTreeMap::new(),
+            native_history_state,
+            native_history_sender,
         })
     }
 
@@ -1020,6 +1133,96 @@ impl SemanticAuthority {
         })
     }
 
+    /// Builds a Send+Sync source over the exact marker selector for a
+    /// background native-history publication. It owns only the shared
+    /// read-side selector and immutable CAS handle, never the Turso writer.
+    pub(crate) fn owned_history_selection_source(
+        &self,
+        key: ProductSemanticPublicationKey,
+    ) -> super::versioned_planes::OwnedSemanticAuthoritySelectionSource {
+        super::versioned_planes::OwnedSemanticAuthoritySelectionSource::new(
+            Arc::clone(&self.image_loader),
+            self.store.clone(),
+            key,
+            Arc::clone(&self.selected_image_readers),
+        )
+    }
+
+    /// Returns the sidecar status only for the exact generation still named
+    /// by the committed product marker.
+    pub(crate) fn native_history_status(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
+        let (selected_claim, selected) = self.image_loader.committed_pair(key)?;
+        if selected_claim != claim {
+            return Ok(backend_engine::SemanticHistoryPublicationStatus::NotSelected);
+        }
+        let stamp = Self::selected_generation_stamp(key, &selected)?;
+        let status = self.native_history_status_for_stamp(key, stamp)?;
+        if status.is_none() {
+            // Status rows are bounded. If an exact selected marker has aged
+            // out, re-enqueue from its immutable closure rather than leaving
+            // a selected generation permanently absent from derived history.
+            self.schedule_native_history(key.clone(), claim)?;
+        }
+        Ok(self
+            .native_history_status_for_stamp(key, stamp)?
+            .unwrap_or_else(
+                || backend_engine::SemanticHistoryPublicationStatus::NotRequested {
+                    selection_id: super::versioned_planes::native_history_selection_id(
+                        key, stamp, None,
+                    ),
+                },
+            ))
+    }
+
+    fn native_history_status_for_stamp(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        stamp: backend_replication::SelectedGenerationStamp,
+    ) -> Result<Option<backend_engine::SemanticHistoryPublicationStatus>, BuiltinModelError> {
+        let state = self
+            .native_history_state
+            .lock()
+            .map_err(|_| BuiltinModelError("native history status map is poisoned".to_owned()))?;
+        Ok(state
+            .statuses
+            .iter()
+            .rev()
+            .find(|entry| entry.key == *key && entry.stamp == stamp)
+            .map(|entry| entry.status.clone()))
+    }
+
+    /// Records one asynchronous history outcome against its exact product
+    /// marker stamp. The FIFO is bounded independently of V3 commit history.
+    pub(crate) fn record_native_history_status(
+        &self,
+        key: ProductSemanticPublicationKey,
+        stamp: backend_replication::SelectedGenerationStamp,
+        status: backend_engine::SemanticHistoryPublicationStatus,
+    ) -> Result<(), BuiltinModelError> {
+        let mut state = self
+            .native_history_state
+            .lock()
+            .map_err(|_| BuiltinModelError("native history status map is poisoned".to_owned()))?;
+        if let Some(position) = state
+            .statuses
+            .iter()
+            .position(|entry| entry.key == key && entry.stamp == stamp)
+        {
+            state.statuses.remove(position);
+        }
+        state
+            .statuses
+            .push_back(NativeHistoryStatusEntry { key, stamp, status });
+        while state.statuses.len() > MAX_NATIVE_HISTORY_STATUS_ROWS {
+            state.statuses.pop_front();
+        }
+        Ok(())
+    }
+
     /// Borrows the serving-selector read lock for a publication that must
     /// remain bound to this exact product marker through an external CAS.
     pub(crate) fn committed_selection_lease(
@@ -1037,7 +1240,7 @@ impl SemanticAuthority {
         })
     }
 
-    fn selected_generation_stamp(
+    pub(super) fn selected_generation_stamp(
         key: &ProductSemanticPublicationKey,
         selected: &SelectedGeneration,
     ) -> Result<backend_replication::SelectedGenerationStamp, BuiltinModelError> {
@@ -1129,17 +1332,32 @@ impl SemanticAuthority {
         selected: &SelectedGeneration,
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
-        let (actual_claim, _) = reopen_record(&self.store, &selected)?;
+        Self::selected_native_image_identity_for_store(
+            &self.store,
+            key,
+            expected_claim,
+            selected,
+            image,
+        )
+    }
+
+    pub(super) fn selected_native_image_identity_for_store(
+        store: &FileStore,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        selected: &SelectedGeneration,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
+        let (actual_claim, _) = reopen_record(store, selected)?;
         if actual_claim != expected_claim {
             return Err(BuiltinModelError(
                 "committed native image claim differs from its retained closure".to_owned(),
             ));
         }
-        let reopened =
-            reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
-                BuiltinModelError(format!("reopen committed native image metadata: {error}"))
-            })?;
-        if !reopened.envelope().matches_selected(&selected) {
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen committed native image metadata: {error}"))
+        })?;
+        if !reopened.envelope().matches_selected(selected) {
             return Err(BuiltinModelError(
                 "committed native image envelope differs from its retained selection".to_owned(),
             ));
@@ -1152,7 +1370,7 @@ impl SemanticAuthority {
                 "committed semantic generation has no selected image catalog".to_owned(),
             )
         })?;
-        if planes.catalog_root().as_bytes() != selected_catalog_root.as_bytes() {
+        if planes.catalog_root().as_bytes() != &selected_catalog_root {
             return Err(BuiltinModelError(
                 "committed native image catalog differs from its selection".to_owned(),
             ));
@@ -1180,6 +1398,29 @@ impl SemanticAuthority {
             })
     }
 
+    pub(super) fn selected_plane_for_store(
+        store: &FileStore,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        selected: &SelectedGeneration,
+    ) -> Result<super::versioned_planes::SelectedVersionedPlanePublication, BuiltinModelError> {
+        let (actual_claim, _) = reopen_record(store, selected)?;
+        if actual_claim != expected_claim {
+            return Err(BuiltinModelError(
+                "committed semantic claim differs from its retained closure".to_owned(),
+            ));
+        }
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
+        })?;
+        super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
+            key, selected, &reopened,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
+        })
+    }
+
     fn resolve_selected_full_image_plan(
         &self,
         key: &ProductSemanticPublicationKey,
@@ -1188,19 +1429,36 @@ impl SemanticAuthority {
         selected: &SelectedGeneration,
         stamp: backend_replication::SelectedGenerationStamp,
     ) -> Result<super::selected_full_image::SelectedFullImagePlan, BuiltinModelError> {
-        let (actual_claim, _) = reopen_record(&self.store, selected)?;
+        Self::selected_full_image_plan_for_store(
+            &self.store,
+            key,
+            expected_claim,
+            image,
+            selected,
+            stamp,
+        )
+    }
+
+    pub(super) fn selected_full_image_plan_for_store(
+        store: &FileStore,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+        selected: &SelectedGeneration,
+        stamp: backend_replication::SelectedGenerationStamp,
+    ) -> Result<super::selected_full_image::SelectedFullImagePlan, BuiltinModelError> {
+        let (actual_claim, _) = reopen_record(store, selected)?;
         if actual_claim != expected_claim {
             return Err(BuiltinModelError(
                 "selected full image claim differs from the committed product root".to_owned(),
             ));
         }
-        let reopened =
-            reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
-                BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
-            })?;
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
+        })?;
         let publication =
             super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
-                key, &selected, &reopened,
+                key, selected, &reopened,
             )
             .map_err(|error| {
                 BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
@@ -1258,7 +1516,7 @@ impl SemanticAuthority {
             total_length,
             object_id: *image_member.object_id(),
             closure_id: *selected.closure_id(),
-            remote_selection: RemoteClosureSelection::from_selected(&selected),
+            remote_selection: RemoteClosureSelection::from_selected(selected),
             environment: *manifest.build().environment(),
             target_platform: *manifest.build().target_platform(),
         })
@@ -2620,11 +2878,118 @@ impl SemanticAuthority {
         entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
         persist_marker: impl FnOnce() -> Result<T, BuiltinModelError>,
     ) -> Result<T, BuiltinModelError> {
-        let publication = self.prepare_product_selections(entries)?;
+        self.commit_product_selection_changes(entries, Vec::new(), persist_marker)
+    }
+
+    /// Commits one durable workspace transition and applies its complete
+    /// selected-key additions/removals under the same selector write lease.
+    pub(crate) fn commit_product_selection_changes<T>(
+        &mut self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+        removals: Vec<ProductSemanticPublicationKey>,
+        persist_marker: impl FnOnce() -> Result<T, BuiltinModelError>,
+    ) -> Result<T, BuiltinModelError> {
+        let history_entries = entries.clone();
+        let observation_removals = removals.clone();
+        let publication = self
+            .image_loader
+            .prepare_product_selection_changes(entries, removals)?;
         let result = persist_marker()?;
         let selected = publication.commit();
         self.remember_product_selection_observations(selected);
+        for key in observation_removals {
+            self.committed_observations.remove(&key);
+        }
+        for (key, claim) in history_entries {
+            let _ = self.schedule_native_history(key, claim);
+        }
         Ok(result)
+    }
+
+    /// Snapshots the currently selected products for one package so a remove
+    /// intent can clear them atomically with its durable workspace marker.
+    pub(crate) fn selected_product_keys_for_package(
+        &self,
+        package: backend_engine::PackageKey,
+    ) -> Result<Vec<ProductSemanticPublicationKey>, BuiltinModelError> {
+        let selections = self.image_loader.acquire_publication_read()?;
+        Ok(selections
+            .by_product
+            .keys()
+            .filter(|key| key.package_key() == package)
+            .cloned()
+            .collect())
+    }
+
+    /// Queues bounded derived history work for one exact committed product
+    /// selection. A full queue is recorded as a refusal and retried at startup.
+    pub(crate) fn schedule_native_history(
+        &self,
+        key: ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<(), BuiltinModelError> {
+        let (current_claim, selected) = self.image_loader.committed_pair(&key)?;
+        if current_claim != claim {
+            return Ok(());
+        }
+        let stamp = Self::selected_generation_stamp(&key, &selected)?;
+        let selection_id = super::versioned_planes::native_history_selection_id(&key, stamp, None);
+        {
+            let mut state = self.native_history_state.lock().map_err(|_| {
+                BuiltinModelError("native history worker set is poisoned".to_owned())
+            })?;
+            if !state.in_flight.insert(selection_id) {
+                return Ok(());
+            }
+        }
+        let work = NativeHistoryPublicationWork {
+            loader: Arc::clone(&self.image_loader),
+            store: self.store.clone(),
+            image_readers: Arc::clone(&self.selected_image_readers),
+            key: key.clone(),
+            expected_claim: claim,
+            stamp,
+            selection_id,
+        };
+        if let Err(error) = self.record_native_history_status(
+            key.clone(),
+            stamp,
+            backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id },
+        ) {
+            if let Ok(mut state) = self.native_history_state.lock() {
+                state.in_flight.remove(&selection_id);
+            }
+            return Err(error);
+        }
+        match self.native_history_sender.try_send(work) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                if let Ok(mut state) = self.native_history_state.lock() {
+                    state.in_flight.remove(&selection_id);
+                }
+                self.record_native_history_status(
+                    key,
+                    stamp,
+                    backend_engine::SemanticHistoryPublicationStatus::Refused {
+                        selection_id,
+                        reason: "native history worker queue is full; retry on restart".to_owned(),
+                    },
+                )
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                if let Ok(mut state) = self.native_history_state.lock() {
+                    state.in_flight.remove(&selection_id);
+                }
+                self.record_native_history_status(
+                    key,
+                    stamp,
+                    backend_engine::SemanticHistoryPublicationStatus::Refused {
+                        selection_id,
+                        reason: "native history worker is unavailable".to_owned(),
+                    },
+                )
+            }
+        }
     }
 
     /// Records the projection-local freshness events after the matching
@@ -2888,7 +3253,7 @@ impl SemanticAuthority {
                                 ..
                             } = recovered
                             {
-                                ensure_recovered_coverage_matches(coverage, recovered_coverage)?;
+                                ensure_recovered_coverage_matches(*coverage, recovered_coverage)?;
                             }
                         }
                         self.remember_selection(key.clone(), claim, selected.clone())?;
@@ -2989,7 +3354,7 @@ impl SemanticAuthority {
                                 .to_owned(),
                         ));
                     }
-                    ensure_recovered_coverage_matches(&coverage, *history_coverage)?;
+                    ensure_recovered_coverage_matches(coverage, *history_coverage)?;
 
                     let namespace =
                         Self::namespace(key.package(), key.coordinate(), key.profile())?;
@@ -3034,12 +3399,13 @@ impl SemanticAuthority {
                         ..
                     } = recovered
                     {
-                        ensure_recovered_coverage_matches(&coverage, recovered_coverage)?;
+                        ensure_recovered_coverage_matches(coverage, recovered_coverage)?;
                     }
                     self.image_loader
                         .commit_product_selection(key.clone(), claim)?;
                     self.committed_observations
-                        .insert(key, selected.observation().clone());
+                        .insert(key.clone(), selected.observation().clone());
+                    let _ = self.schedule_native_history(key, claim);
                 }
             }
         }
@@ -3345,6 +3711,10 @@ mod tests {
 
         authority
             .commit_product_selection_transaction(Vec::new(), || {
+                assert!(matches!(
+                    reader_loader.selections.try_read(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
                 reader = Some(std::thread::spawn(move || {
                     attempted_sender
                         .send(())

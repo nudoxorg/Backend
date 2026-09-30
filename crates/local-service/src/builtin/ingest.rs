@@ -2723,13 +2723,16 @@ mod tests {
     #[test]
     fn cancellable_project_scan_stops_before_opening_the_workspace() {
         let cancellation = AtomicBool::new(true);
-        let error = scan_project_for_unproven_authorities_cancellable(
+        let result = scan_project_for_unproven_authorities_cancellable(
             "workspace-cancelled-before-open",
             [17; 32],
             &BTreeMap::new(),
             &cancellation,
-        )
-        .expect_err("a pre-cancelled scan must not proceed to filesystem access");
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("a pre-cancelled scan must not open the workspace"),
+        };
         assert_eq!(error, INDEX_SCAN_CANCELLED);
     }
 

@@ -361,6 +361,45 @@ pub struct SemanticVersionRecord {
     /// field decode as `Unverified` instead of being claimed as current.
     #[serde(default)]
     pub freshness: SemanticVersionFreshness,
+    /// Status of the selected native-image typed V3 history sidecar.
+    ///
+    /// This is keyed by the exact committed owner-selection stamp. It is
+    /// separate from source-input freshness: a selected compiler generation
+    /// can be current even while its derived history publication is pending
+    /// or refused.
+    #[serde(default)]
+    pub history_status: SemanticHistoryPublicationStatus,
+}
+
+/// Typed status for derived native-image history publication.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SemanticHistoryPublicationStatus {
+    /// This semantic version is not the committed selected product version.
+    NotSelected,
+    /// The committed selection has not yet been reconciled with V3 history.
+    NotRequested { selection_id: [u8; 32] },
+    /// A bounded worker is producing and admitting history for this selection.
+    Pending { selection_id: [u8; 32] },
+    /// The exact selected image is durably published at this V3 branch commit.
+    Published {
+        selection_id: [u8; 32],
+        commit: [u8; 32],
+        reference: String,
+    },
+    /// History could not be produced or admitted for this selected image.
+    Refused {
+        selection_id: [u8; 32],
+        reason: String,
+    },
+    /// The marker advanced while this derived-history job was running.
+    Superseded { selection_id: [u8; 32] },
+}
+
+impl Default for SemanticHistoryPublicationStatus {
+    fn default() -> Self {
+        Self::NotSelected
+    }
 }
 
 /// Source-input status for one immutable semantic generation.
