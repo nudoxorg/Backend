@@ -1311,7 +1311,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         work.emitted_bytes = work
             .emitted_bytes
             .saturating_add(batch_attempt.changed_node_bytes);
-        if let Some(bounded) = bounded {
+        if let Some(mut bounded) = bounded {
             bounded.peak_bytes = bounded.peak_bytes.max(batch_attempt.peak_metadata_bytes);
             work.peak_metadata_bytes = bounded.peak_bytes;
         }
