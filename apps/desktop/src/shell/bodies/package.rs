@@ -135,7 +135,12 @@ pub(super) fn body(
         .unwrap_or_default();
     let (ticker, ticker_note) =
         if let Some(pin) = pin.as_ref().filter(|pin| pin.release().is_some()) {
-            match crate::runtime::releases::get(pin, snapshot.key(), at.as_deref(), cx) {
+            match crate::runtime::releases::get(
+                pin,
+                snapshot.key(),
+                at.as_ref().map(|release| release.as_str()),
+                cx,
+            ) {
                 crate::runtime::releases::Read::Reading => (
                     None,
                     Some("Reading the exact local registry release history…".into()),

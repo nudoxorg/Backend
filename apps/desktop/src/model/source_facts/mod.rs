@@ -601,7 +601,7 @@ pub fn reading(
         package.clone(),
         Slot {
             project: Some(wanted.clone()),
-            authority,
+            authority: authority.clone(),
             expires_at: None,
             entry: Entry::Reading,
         },
