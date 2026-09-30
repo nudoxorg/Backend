@@ -252,10 +252,19 @@ impl RenderOnce for Field {
             .w_full()
             .child(hover_zone(plate, &touch, chamfer, active))
             .children(self.fault.map(|reason| {
-                div()
-                    .set(ty::SMALL, &measure)
-                    .text_color(with_alpha(palette.coral.base.into(), fault))
-                    .child(reason)
+                // Published to the probe like every other text run, so the
+                // harness can lint it and a test can read what was said.
+                crate::probe::text(
+                    ElementId::Name(format!("field-fault:{reason}").into()),
+                    reason.clone(),
+                    measure.role(ty::SMALL),
+                    1.0,
+                    crate::probe::TextOverflow::Wrap,
+                    div()
+                        .set(ty::SMALL, &measure)
+                        .text_color(with_alpha(palette.coral.base.into(), fault))
+                        .child(reason),
+                )
             }))
     }
 }

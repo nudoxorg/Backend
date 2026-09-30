@@ -1,0 +1,53 @@
+# J9 · search, and narrowing. On a real install of toml_pin with the
+# packages its lock pins: ⌘K, the words "toml Value", ↵ opens toml's Value
+# page (its own doc line proves which Value). Back returns to the Library.
+# Then the sidebar narrows toml's outline in place as a person types, and ↵
+# opens what matched. Expected words come from toml 0.8.23's source in the
+# local cargo cache (src/value.rs: "Representation of a TOML value.").
+size 1440x900
+start from install-all frontends/rust/fixtures/toml_pin
+
+check library
+  route like "orbit"
+  state ask "closed"
+
+key cmd-k
+check ask-open
+  state ask "open"
+
+type "toml Value"
+check typed
+  like "*Value*"
+
+# The owner answers: the results panel lists what matched.
+await text "every result, as a page" within 60s
+
+key enter
+check value
+  route like "symbol *toml*Value*view=page*"
+  text "Value" in reader
+  line "Representation of a TOML value." in reader
+  state ask "closed"
+  budget search <= 120ms
+
+key cmd-[
+check back
+  route like "orbit"
+
+# The sidebar: a click on its lens gives it the keyboard; what is typed
+# narrows toml's outline, collapsed groups included, with the count.
+key cmd-]
+check value-again
+  route like "symbol *toml*Value*view=page*"
+
+click "Contents" in shelf
+type "from_str"
+check narrowed
+  text "from_str" in shelf
+  like "* of *" in shelf
+  state zone "shelf"
+
+key escape
+check cleared
+  text "Type to narrow" in shelf
+  route like "symbol *toml*Value*view=page*"

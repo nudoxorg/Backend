@@ -481,116 +481,6 @@ impl Drop for GenerationFixture {
     }
 }
 
-fn probe_generation_fixture_clang(
-    driver: &std::path::Path,
-    libclang: &std::path::Path,
-    root: &std::path::Path,
-) -> Result<
-    (
-        std::path::PathBuf,
-        backend_frontend_clang::ClangAuthorityEnvironment,
-    ),
-    String,
-> {
-    match backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang) {
-        Ok(authority) => Ok((authority.driver().to_path_buf(), authority)),
-        Err(error) if clang_sysroot_query_is_unsupported(driver) => {
-            // Apple Clang and the pinned Nix wrapper reject the GCC-style
-            // `-print-sysroot` query. Recover the effective `-isysroot` from
-            // the real driver's verbose preprocessing probe, then answer only
-            // the unsupported metadata query; all other calls reach Clang.
-            let adapter = root.join("clang-sysroot-query-adapter");
-            let sysroot = clang_sysroot_from_verbose_probe(driver);
-            write_generation_fixture_clang_adapter(&adapter, driver, sysroot.as_deref())?;
-            let authority = backend_frontend_clang::ClangAuthorityEnvironment::probe(
-                &adapter, libclang,
-            )
-            .map_err(|adapter_error| {
-                format!(
-                    "admit compiler fixture through sysroot-query adapter after {error}: {adapter_error}"
-                )
-            })?;
-            Ok((authority.driver().to_path_buf(), authority))
-        }
-        Err(error) => Err(format!("admit generation fixture Clang authority: {error}")),
-    }
-}
-
-fn clang_sysroot_query_is_unsupported(driver: &std::path::Path) -> bool {
-    use std::process::Stdio;
-
-    std::process::Command::new(driver)
-        .arg("-print-sysroot")
-        .env_clear()
-        .stdin(Stdio::null())
-        .output()
-        .is_ok_and(|output| {
-            !output.status.success()
-                && String::from_utf8_lossy(&output.stderr)
-                    .contains("unknown argument: '-print-sysroot'")
-        })
-}
-
-fn clang_sysroot_from_verbose_probe(driver: &std::path::Path) -> Option<std::path::PathBuf> {
-    use std::process::Stdio;
-
-    let output = std::process::Command::new(driver)
-        .args(["-v", "-E", "-x", "c++", "-"])
-        .env_clear()
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let marker = "-isysroot ";
-    let value = stderr.get(stderr.find(marker)? + marker.len()..)?;
-    let path = value.split_whitespace().next()?.trim_matches(['\'', '"']);
-    std::path::Path::new(path)
-        .is_absolute()
-        .then(|| std::path::PathBuf::from(path))
-}
-
-#[cfg(unix)]
-fn write_generation_fixture_clang_adapter(
-    adapter: &std::path::Path,
-    driver: &std::path::Path,
-    sysroot: Option<&std::path::Path>,
-) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let driver = driver
-        .to_str()
-        .ok_or("fixture Clang driver path is not UTF-8")?;
-    let quoted_driver = format!("'{}'", driver.replace('\'', "'\\''"));
-    let sysroot_response = match sysroot {
-        Some(sysroot) => {
-            let sysroot = sysroot
-                .to_str()
-                .ok_or("fixture Clang sysroot path is not UTF-8")?;
-            let quoted_sysroot = format!("'{}'", sysroot.replace('\'', "'\\''"));
-            format!("  printf '%s\\n' {quoted_sysroot}\n  exit 0\n")
-        }
-        None => "  exit 0\n".to_owned(),
-    };
-    let script = format!(
-        "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"$1\" = \"-print-sysroot\" ]; then\n{sysroot_response}fi\nexec {quoted_driver} \"$@\"\n"
-    );
-    std::fs::write(adapter, script).map_err(|error| error.to_string())?;
-    std::fs::set_permissions(adapter, std::fs::Permissions::from_mode(0o700))
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(not(unix))]
-fn write_generation_fixture_clang_adapter(
-    _adapter: &std::path::Path,
-    _driver: &std::path::Path,
-    _sysroot: Option<&std::path::Path>,
-) -> Result<(), String> {
-    Err("sysroot-query adapter is available only on Unix".to_owned())
-}
-
 fn open_generation_fixture() -> Result<GenerationFixture, String> {
     use backend_engine::application::{
         LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
@@ -616,8 +506,10 @@ fn open_generation_fixture() -> Result<GenerationFixture, String> {
         .ok_or("explicit LIBCLANG_PATH is required for semantic generation residence")?;
     let root = unique_directory().map_err(|error| error.to_string())?;
     let (clang, clang_authority, clang_toolchain) = match (|| -> Result<_, String> {
-        let (clang, clang_authority) =
-            probe_generation_fixture_clang(&selected_clang, &libclang, &root)?;
+        let clang_authority =
+            backend_frontend_clang::ClangAuthorityEnvironment::probe(&selected_clang, &libclang)
+                .map_err(|error| format!("admit generation fixture Clang authority: {error}"))?;
+        let clang = clang_authority.driver().to_path_buf();
         let probe_limits = ToolchainProbeLimits::new(
             Duration::from_secs(10),
             NonZeroUsize::new(16 * 1024).ok_or("toolchain probe output limit is zero")?,

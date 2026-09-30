@@ -28,6 +28,9 @@ pub struct SymbolPage {
     pub rose: Rose,
     /// Use sites of this declaration.
     pub references: Known<Arc<[ReferenceSite]>>,
+    /// The lines your workspace uses it on, read with the page (never guessed).
+    #[serde(default)]
+    pub workspace: Arc<[super::UseLine]>,
     /// Where the declaration sits in its package outline.
     pub outline: Known<OutlinePosition>,
 }

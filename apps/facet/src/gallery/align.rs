@@ -360,6 +360,12 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
                 out.stats.entry(Check::Continuity).or_default().skipped += 1;
                 continue;
             }
+            if b.sample.kind == TrackKind::Snap {
+                // A designed snap (a wrapped item changing line, a landing
+                // after a reflow): the step into it is not motion.
+                out.stats.entry(Check::Continuity).or_default().skipped += 1;
+                continue;
+            }
             if b.sample.kind == TrackKind::Input {
                 // Its actual/requested equality was checked above. Input is
                 // allowed to move the camera directly, without animation lag.
@@ -530,10 +536,17 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
             // Settle.
             let deadline = first.started_ms + first.budget_ms;
             let interrupted = end < sequence.len() && !at_rest(sequence[end].sample);
-            let settled = segment
+            let settled_at = segment
                 .iter()
-                .find(|at| !at.sample.live)
-                .or_else(|| sequence.get(end).filter(|next| at_rest(next.sample)));
+                .position(|at| !at.sample.live)
+                .map(|offset| index + offset)
+                .or_else(|| sequence.get(end).filter(|next| at_rest(next.sample)).map(|_| end));
+            let settled = settled_at.map(|at| &sequence[at]);
+            // A track publishes a sample every frame it is drawn. Frames
+            // between its last live sample and its rest in which it published
+            // nothing are frames it was not on screen (its page was away):
+            // when it settled then, nobody saw it, so it cannot be late.
+            let unseen = settled_at.is_some_and(|at| at > index && sequence[at].frame > sequence[at - 1].frame + 1);
             let frame_gap = |at: &At<'_>| {
                 at.frame
                     .checked_sub(1)
@@ -541,6 +554,9 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
                     .map_or(0, |previous| at.at_ms.saturating_sub(previous.drawn.at_ms))
             };
             match settled {
+                Some(_) if unseen => {
+                    out.stats.entry(Check::Settle).or_default().skipped += 1;
+                }
                 Some(at) => {
                     let slack = frame_gap(at) as f64 + 1.0;
                     let late = at.sample.at_ms - deadline;
@@ -1275,6 +1291,79 @@ mod input_canaries {
                     && finding.detail.contains("valid input observation: false")),
             "fake input trajectory was accepted: {:?}",
             report.findings
+        );
+    }
+}
+
+#[cfg(test)]
+mod settle_canaries {
+    use super::{Check, Observed, Tolerance, analyze};
+    use crate::probe::{Ledger, TrackKind, TrackSample};
+    use backend_gui_harness::{Drawn, Viewport};
+    use std::time::Duration;
+
+    /// A card's hover glow that starts at 16 ms with a 64 ms budget and is
+    /// live until `rests`; its element is on screen at the frames `drawn`
+    /// says (a track publishes a sample every frame it is drawn).
+    #[allow(clippy::cast_precision_loss)]
+    fn frames(drawn: impl Fn(u64) -> bool, rests: u64) -> Vec<Observed> {
+        (0..=20_u64)
+            .map(|frame| {
+                let at_ms = frame * 16;
+                let tracks = if drawn(at_ms) {
+                    let started = at_ms >= 16;
+                    let live = started && at_ms < rests;
+                    let span = (rests - 16) as f32;
+                    vec![TrackSample {
+                        key: "card-hover".into(),
+                        kind: TrackKind::Spring,
+                        value: if !started { 0.0 } else if live { (at_ms - 16) as f32 / span } else { 1.0 },
+                        target: if started { 1.0 } else { 0.0 },
+                        velocity: if live { 1000.0 / span } else { 0.0 },
+                        started_ms: if started { 16.0 } else { at_ms as f64 },
+                        budget_ms: if started { 64.0 } else { 0.0 },
+                        at_ms: at_ms as f64,
+                        live,
+                        overshoot_ratio: 0.0,
+                        overshoot_absolute: 0.0,
+                        group: None,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                Observed {
+                    drawn: Drawn {
+                        at_ms,
+                        invalidations: 1,
+                        callbacks: 0,
+                        cpu: Duration::ZERO,
+                        input_cpu: Duration::ZERO,
+                        input_events: 0,
+                        input_max: Duration::ZERO,
+                        viewport: Viewport { width: 1440, height: 900, scale: 1 },
+                        captured: false,
+                    },
+                    ledger: Ledger { tracks, ..Ledger::default() },
+                    events: usize::from(at_ms == 16),
+                    state: None,
+                }
+            })
+            .collect()
+    }
+
+    /// A glow whose page went away mid-flight and came back at rest was not
+    /// on screen while it settled: nothing a person saw was late. The same
+    /// glow on screen and live the whole time is late, and is named.
+    #[test]
+    fn a_track_that_settled_off_screen_is_not_late_and_one_on_screen_is() {
+        let away = analyze(&frames(|at| at <= 32 || at >= 288, 288), Tolerance::default());
+        assert_eq!(away.of(Check::Settle).count(), 0, "settled while its page was away: {:?}", away.findings);
+        assert!(away.stats[&Check::Settle].skipped >= 1, "and it is counted as not judged");
+        let seen = analyze(&frames(|_| true, 288), Tolerance::default());
+        assert!(
+            seen.of(Check::Settle).any(|finding| finding.detail.starts_with("settled 272 ms after it started")),
+            "on screen and live for 272 ms of a 64 ms budget is late: {:?}",
+            seen.findings
         );
     }
 }

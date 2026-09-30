@@ -4,7 +4,7 @@
 
 #![allow(clippy::too_many_lines)]
 
-use super::cards::{CardFacts, Change, columns, symbol_card};
+use super::cards::{CardFacts, Change, symbol_card};
 use super::berg::{Basis, BergBlock, BergFacts, berg, weight};
 use super::crest::{Advisories, Silence, advisories, stamp, unread};
 use super::features::{FeatureFacts, FeatureNode, features};
@@ -19,7 +19,9 @@ use crate::icons::Lang;
 use crate::marks::badges::{Glyph, Item, badge, glyph};
 use crate::marks::license::LicenseFacts;
 use crate::marks::gallery::{Build, stage};
-use crate::measure::Measure;
+use crate::fluid::Modes;
+use crate::measure::{Measure, Space};
+use crate::tokens::fluid::FOLIO_CARDS;
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole, ty};
 use gpui::{AnyElement, AnyView, App, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
@@ -69,8 +71,7 @@ fn board(title: &'static str, sections: Vec<(&'static str, AnyElement)>, measure
 }
 
 fn grid(decls: &[Decl], measure: &Measure, prefix: &'static str, change: impl Fn(usize) -> Option<Change>, at: &str) -> AnyElement {
-    let (count, width) = columns(measure, 300.0);
-    let _ = count;
+    let width = Modes::new().columns(&FOLIO_CARDS, measure.fluid_room(), measure.space(Space::Roomy)).column.width();
     let mut cards = div().flex().flex_wrap().gap(px(10.0));
     for (i, (name, kind, signature, doc)) in decls.iter().enumerate() {
         let item = Item::new(name, Lang::Rust).kind(Some(*kind)).signature(Some(signature));

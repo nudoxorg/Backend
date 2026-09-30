@@ -83,33 +83,40 @@ pub fn labels(
     scale: u8,
     appearance: Appearance,
 ) -> Result<Vec<RgbaImage>, GalleryError> {
-    if lines.is_empty() {
-        return Ok(Vec::new());
-    }
-    LABEL_LINES.with(|cell| *cell.borrow_mut() = lines.to_vec());
-    let scene = Scene {
-        id: "labels",
-        title: "label strip",
-        size: (
-            width,
-            LABEL_HEIGHT * u32::try_from(lines.len()).unwrap_or(u32::MAX),
-        ),
-        build: build_labels,
-    };
-    let mut shot = Shot::new(&scene);
-    shot.scale = scale;
-    shot.appearance = appearance;
-    let frames = capture(&scene, &shot)?;
-    let Some(frame) = frames.into_iter().next() else {
-        return Err(GalleryError("label capture produced no frame".to_owned()));
-    };
-    let cell = LABEL_HEIGHT * u32::from(scale);
-    Ok((0..u32::try_from(lines.len()).unwrap_or(0))
-        .map(|index| {
+    // One capture is one GPU texture, at most `MAX_TEXTURE` physical pixels
+    // tall (Metal aborts the process past it: a journey with ~80 checkpoints
+    // lost its whole report that way). Long lists are captured in chunks.
+    let cell = LABEL_HEIGHT * u32::from(scale.max(1));
+    let per_capture = usize::try_from((MAX_TEXTURE / cell).max(1)).unwrap_or(1);
+    let mut out = Vec::with_capacity(lines.len());
+    for chunk in lines.chunks(per_capture) {
+        LABEL_LINES.with(|held| *held.borrow_mut() = chunk.to_vec());
+        let scene = Scene {
+            id: "labels",
+            title: "label strip",
+            size: (
+                width,
+                LABEL_HEIGHT * u32::try_from(chunk.len()).unwrap_or(u32::MAX),
+            ),
+            build: build_labels,
+        };
+        let mut shot = Shot::new(&scene);
+        shot.scale = scale;
+        shot.appearance = appearance;
+        let frames = capture(&scene, &shot)?;
+        let Some(frame) = frames.into_iter().next() else {
+            return Err(GalleryError("label capture produced no frame".to_owned()));
+        };
+        out.extend((0..u32::try_from(chunk.len()).unwrap_or(0)).map(|index| {
             imageops::crop_imm(&frame.image, 0, index * cell, frame.image.width(), cell).to_image()
-        })
-        .collect())
+        }));
+    }
+    Ok(out)
 }
+
+/// The tallest texture one capture may be, in physical pixels (Metal's
+/// limit is 16384; a margin below it).
+const MAX_TEXTURE: u32 = 16_000;
 
 /// Tiles `frames` in rows of `columns`, each with its label underneath.
 #[must_use]
@@ -265,4 +272,23 @@ pub fn onion(frames: &[&RgbaImage]) -> RgbaImage {
 #[must_use]
 pub fn background(appearance: Appearance) -> Rgba<u8> {
     ground(appearance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LABEL_HEIGHT, MAX_TEXTURE, labels};
+    use crate::tokens::Appearance;
+
+    /// More labels than one texture holds (J11's ~700 tiles once aborted the
+    /// harness with a 32448 px Metal texture): every line still comes back,
+    /// each one label tall.
+    #[test]
+    fn more_labels_than_one_texture_holds_come_back_one_per_line() {
+        let scale = 2_u8;
+        let count = usize::try_from(MAX_TEXTURE / (LABEL_HEIGHT * u32::from(scale))).expect("fits") * 2 + 7;
+        let lines: Vec<String> = (0..count).map(|index| format!("check {index}")).collect();
+        let images = labels(&lines, 120, scale, Appearance::Abyss).expect("the labels are captured");
+        assert_eq!(images.len(), count, "one image per line");
+        assert!(images.iter().all(|image| image.height() == LABEL_HEIGHT * u32::from(scale)), "each one label tall");
+    }
 }

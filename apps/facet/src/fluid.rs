@@ -30,7 +30,7 @@
 //! ```ignore
 //! use facet::tokens::fluid;
 //! // A region, every render:
-//! let room = measure.room();
+//! let room = measure.fluid_room();
 //! let pad = fluid::READER_PAD.at(room);                     // glides with the width
 //! let dock = self.modes.settle(&fluid::DOCK, window_room);  // holds still at an edge
 //! let cols = self.modes.columns(&fluid::ROLES, room, gap);  // 1 or 2, with FLIP

@@ -30,6 +30,7 @@ use backend_engine::{
 use std::fmt;
 use std::path::Path;
 
+pub use backend_engine::application::LocalHostVariable;
 pub use embedded::{EmbeddedLocalService, ServiceStart, start_or_attach};
 pub use listener::{
     DEFAULT_IDLE_TIMEOUT, FilesystemPeerPolicy, ListenerConfig, ListenerError, ListenerShutdown,
@@ -54,7 +55,8 @@ pub use protocol::{
     frame, is_lifecycle, read_frame, unframe, write_frame,
 };
 pub use service::{
-    CompletionAdmission, LocaldOwner, LocaldService, NoCompletionAdmission, NoReplicationAdmission,
+    CommandOutcome, CompletionAdmission, DeferredCommands, Handled, LocaldOwner, LocaldService,
+    NoCompletionAdmission, NoReplicationAdmission,
     NoSemanticRangeAdmission, OwnerService, ReplicationAdmission, SemanticRangeAdmission,
     ServiceError,
 };

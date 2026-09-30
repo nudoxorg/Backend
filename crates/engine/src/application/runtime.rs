@@ -4052,6 +4052,9 @@ mod go_workspace_identity_tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&root).expect("create package root");
+        // The witness records canonical paths; the temporary directory is a
+        // symlink on macOS (`/var` -> `/private/var`).
+        let root = root.canonicalize().expect("canonical package root");
         assert!(!go_authority_witness_is_portable(Language::Go, None));
         assert!(!go_authority_witness_allows_semantic_reuse(
             Language::Go,

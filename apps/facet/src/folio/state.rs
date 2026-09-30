@@ -1,7 +1,17 @@
 //! The small states the folio's components are told, as types: nothing in
 //! the page's public surface is a bare `bool` or a bare `f32` of pixels.
 
+use crate::motion::{Spec, spec};
+use crate::overlay::float::QUICK_REST;
 use gpui::{Pixels, px};
+
+/// How a plate that answers a pointer's *rest* opens or shuts: it opens after
+/// the house rest ([`QUICK_REST`]), so a pointer only passing over it opens
+/// nothing, and it shuts at once when the pointer goes.
+#[must_use]
+pub fn plate(wanted: bool) -> Spec {
+    if wanted { spec::LIFT.delayed(QUICK_REST) } else { spec::LEAVE }
+}
 
 /// Whether your project reaches a name (the mint mark on a shingle or card).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

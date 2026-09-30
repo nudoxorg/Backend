@@ -34,6 +34,7 @@ use crate::runtime::UiEntityGraph;
 use facet::fluid::{Modes, Room};
 use facet::motion::{Motion, spec};
 use facet::paint::ground;
+use facet::tokens::fluid::{ASK, ASK_PANEL, COLUMNS_SHARE, Float};
 use facet::tokens::geo;
 use facet::{ActiveFacet as _, Measure, Reveal};
 use gpui::{
@@ -42,6 +43,11 @@ use gpui::{
     Pixels, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window,
     WindowAppearance, div, px,
 };
+
+/// The drawer's paint priority: above every page's own deferred draws (a
+/// fanned hand of tiles is 1 or 2) and below the float layer (`float::PRIORITY`,
+/// 1000), so a card opened over the drawer still shows above it.
+const DRAWER_PRIORITY: usize = 100;
 
 /// How many times each region rendered (isolation tests, the harness).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -129,6 +135,9 @@ impl Shell {
         let pins = new_region(&links, cx, |store| Pins::new(links.clone(), store));
         let ask_links = links.clone();
         let ask = cx.new(|cx| Ask::new(ask_links, window, cx));
+        // The titlebar draws the query in the bar's place while Ask is open.
+        let ask_field = ask.read(cx).input().clone();
+        titlebar.update(cx, |titlebar, _| titlebar.set_ask_input(ask_field));
         reader.update(cx, |reader, _| {
             reader.targets.set_active(true);
         });
@@ -173,6 +182,8 @@ impl Shell {
             // Any keystroke is a chord, not a hold: disarm a pending reveal.
             let _ = weak.update(cx, |shell, _| shell.hold.key_down());
         });
+        // Twins: what a hovered declaration lights elsewhere is drawn above the regions.
+        let twins = cx.observe_global::<super::side::twin::Lit>(|_, cx| cx.notify());
         let mut shell = Self {
             links,
             graph: UiEntityGraph {
@@ -210,7 +221,7 @@ impl Shell {
             },
             renders: 0,
             frame: None,
-            _subscriptions: vec![events, appearance, activation, moved, keystrokes],
+            _subscriptions: vec![events, appearance, activation, moved, keystrokes, twins],
         };
         shell.apply_facet(cx);
         shell.focus.focus(window, cx);
@@ -358,6 +369,26 @@ impl Shell {
         (self.ask_open, self.peeking.is_some(), self.hints.is_some())
     }
 
+    /// What the shell's own chrome is doing, in words: the keyboard's zone
+    /// and target, the transients, the hand, zen and the shelf. A journey
+    /// that presses a key judges what the key did with these.
+    #[must_use]
+    pub fn chrome_words(&self, cx: &App) -> Vec<(&'static str, String)> {
+        let (zone, focused) = self.focus_state(cx);
+        let on = |open: bool| if open { "open" } else { "closed" }.to_owned();
+        vec![
+            ("zone", format!("{zone:?}").to_lowercase()),
+            ("focus", focused.map_or_else(|| "none".to_owned(), |id| id.to_string())),
+            ("ask", on(self.ask_open)),
+            ("peek", on(self.peeking.is_some())),
+            ("hints", on(self.hints.is_some())),
+            ("hand", on(self.hand_open)),
+            ("zen", if self.zen { "on" } else { "off" }.to_owned()),
+            ("shelf", self.frame.map_or_else(|| "none".to_owned(), |frame| format!("{:?}", frame.shelf).to_lowercase())),
+            ("drawer", on(self.shelf_over_open)),
+        ]
+    }
+
     /// Subscribes `notified` to every view the window draws (the root and
     /// each region): a notification is what dirties a real window, so tests
     /// count these to prove an idle window costs nothing.
@@ -494,6 +525,7 @@ impl Shell {
     }
 
     fn sync_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        super::onboard::sync(&self.links, window, cx);
         let wants_ask = self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette);
         if wants_ask == self.ask_open {
             return;
@@ -540,6 +572,7 @@ impl Shell {
             visit: snapshot.route().clone(),
             root: snapshot.key(),
             message: format!("{} isn't in the index", query.text).into(),
+            retry: None,
         };
         self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
     }
@@ -724,7 +757,8 @@ impl Shell {
         self.set_zone(next, cx);
     }
 
-    fn set_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
+    /// The zone takes the keyboard (Tab, or a click in the sidebar).
+    pub(crate) fn set_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
         if zone == self.zone {
             return;
         }
@@ -955,6 +989,11 @@ impl Shell {
             cx.notify();
             return;
         }
+        // The page folds what it has open (a module) before it leaves the past.
+        if let Some(fold) = self.reader.read(cx).targets.escape() {
+            run(fold, window, cx);
+            return;
+        }
         // Viewing another release: Esc returns to the one you pin.
         if self.links.snapshot(cx).route().at().is_some() {
             self.links.dispatch(Intent::SetRelease(None), cx);
@@ -986,6 +1025,7 @@ impl Shell {
                     visit: snapshot.route().clone(),
                     root: snapshot.key(),
                     message: format!("{}::{}::{} isn't in the index", focus.package, focus.module, focus.name).into(),
+                    retry: None,
                 };
                 self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
                 return;
@@ -1138,25 +1178,42 @@ impl Shell {
         Some(layer.into_any_element())
     }
 
-    fn ask_layer(&self, cx: &App) -> Option<AnyElement> {
+    /// Ask's results: a plate over the shelf's column below the titlebar
+    /// (which draws the query itself), a panel from 320 to 440 px as the
+    /// window grows and a sheet across it on a phone (`facet::tokens::fluid::ASK`,
+    /// held through its hysteresis band). The rest of the page is veiled; a click
+    /// on the veil puts Ask away.
+    fn ask_layer(&self, frame: &Frame, status: f32, viewport: gpui::Size<Pixels>, cx: &App) -> Option<AnyElement> {
         if !self.ask_open {
             return None;
         }
         let palette = cx.facet().palette();
         let links = self.links.clone();
+        let width = match self.modes.settle(&ASK, frame.room).mode {
+            Float::Panel => ASK_PANEL.at(frame.room),
+            Float::Sheet => viewport.width,
+        };
         Some(
             div()
                 .id("ask-veil")
                 .absolute()
-                .inset_0()
+                .top(frame.titlebar)
+                .bottom(px(status))
+                .left_0()
+                .right_0()
                 .bg(palette.veil)
-                .flex()
-                .justify_center()
-                .pt(px(72.0 * cx.facet().text_scale))
                 .on_click(move |_, _, cx| links.dispatch(Intent::DismissOverlay, cx))
-                .child(
+                // The plate is there once there is a query for it to answer:
+                // an empty plate is not something to look at.
+                .children(self.ask.read(cx).shows().then(|| {
                     div()
                         .id("ask-frame")
+                        .debug_selector(|| "ask-plate".to_owned())
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(width)
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .capture_key_down({
                             let ask = self.ask.clone();
@@ -1172,8 +1229,8 @@ impl Shell {
                                 _ => {}
                             }
                         })
-                        .child(self.ask.clone()),
-                )
+                        .child(self.ask.clone())
+                }))
                 .into_any_element(),
         )
     }
@@ -1188,8 +1245,7 @@ fn run(act: super::focus::Act, window: &mut Window, cx: &mut App) {
 impl Shell {
     /// Publishes the transient layers as the float stack the harness checks
     /// (unique keys, at most one of each, nothing left once settled).
-    fn publish_stack(&self, cx: &mut App) {
-        let ask = self.ask_open;
+    fn publish_stack(&self, ask: Option<Vec<facet::probe::BoundsSample>>, cx: &mut App) {
         let hints = self.hints.as_ref().map(HintMode::remaining);
         facet::probe::record_stack(cx, move || {
             let entry = |key: String, kind: &str, pinned: bool| facet::probe::StackEntry {
@@ -1203,8 +1259,8 @@ impl Shell {
             // Peeks and pins are W-Float's layer's own entries; the shell
             // adds its transients: Ask and hint mode.
             let mut entries = Vec::new();
-            if ask {
-                entries.push(entry("ask".to_owned(), "dialog", false));
+            for bounds in ask.into_iter().flatten() {
+                entries.push(facet::probe::StackEntry { bounds: Some(bounds.clone()), ..entry(bounds.key.clone(), "dialog", false) });
             }
             if let Some(count) = hints {
                 entries.push(entry(format!("hints:{count}"), "hints", false));
@@ -1265,8 +1321,9 @@ impl Render for Shell {
         // Structural changes animate (the shelf becoming a spine, the pins
         // column arriving); a window drag inside one mode tracks directly,
         // because the targets do not move.
-        let shelf_width = self.motion.animate("shelf-w", f32::from(frame.shelf_width), spec::SETTLE, window, cx);
-        let pins_width = self.motion.animate("pins-w", f32::from(frame.pins_width), spec::SETTLE, window, cx);
+        let columns_cap = f32::from(viewport.width) * COLUMNS_SHARE.at(frame.room);
+        let shelf_width = self.motion.animate("shelf-w", f32::from(frame.shelf_width), spec::SETTLE, window, cx).min(columns_cap);
+        let pins_width = self.motion.animate("pins-w", f32::from(frame.pins_width), spec::SETTLE, window, cx).min((columns_cap - shelf_width).max(0.0));
         let spine = geo::KSPINE * scale;
         self.shelf.update(cx, |shelf, _| shelf.set_rest(frame.shelf_body, spine));
         self.shelf_over.update(cx, |shelf, _| shelf.set_rest(frame.drawer, spine));
@@ -1280,7 +1337,7 @@ impl Render for Shell {
         });
         let over = frame.shelf_overlays && self.shelf_over_open;
         let drawer = f32::from(frame.drawer);
-        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx);
+        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx).min(columns_cap);
 
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -1365,6 +1422,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             }))
+            .on_action(cx.listener(|shell, _: &keys::AddFolder, _, cx| shell.links.dispatch(Intent::OpenAddProject, cx)))
             .on_modifiers_changed(cx.listener(|shell, event: &ModifiersChangedEvent, _, cx| {
                 shell.modifiers(event.modifiers, cx);
             }))
@@ -1406,34 +1464,45 @@ impl Render for Shell {
         }
         if over || over_x > -drawer + 0.5 {
             // The drawer's scrim: the page dims as the shelf slides over it,
-            // and a click on the strip of page left beside it puts it away.
+            // and a click on the strip of page left beside it puts it away. The
+            // whole is a deferred draw above the page's own (a fanned hand of
+            // tiles paints deferred too, and must not cover the drawer) and
+            // below the float layer's cards (`float::PRIORITY`).
             let opened = ((over_x + drawer) / drawer.max(1.0)).clamp(0.0, 1.0);
-            root = root
-                .child(
+            root = root.child(
+                gpui::deferred(
                     div()
-                        .id("shelf-scrim")
+                        .id("shelf-over")
                         .absolute()
                         .top(frame.titlebar)
                         .bottom(px(status_height))
                         .left_0()
                         .right_0()
-                        .bg(palette.veil.alpha(opened))
-                        .on_click(cx.listener(|shell, _, _, cx| {
-                            shell.shelf_over_open = false;
-                            cx.notify();
-                        })),
+                        .child(
+                            div()
+                                .id("shelf-scrim")
+                                .absolute()
+                                .inset_0()
+                                .bg(palette.veil.alpha(opened))
+                                .on_click(cx.listener(|shell, _, _, cx| {
+                                    shell.shelf_over_open = false;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("shelf-drawer")
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px(over_x))
+                                .w(frame.drawer)
+                                .bg(palette.g2)
+                                .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
+                        ),
                 )
-                .child(
-                    div()
-                        .id("shelf-drawer")
-                        .absolute()
-                        .top(frame.titlebar)
-                        .bottom(px(status_height))
-                        .left(px(over_x))
-                        .w(frame.drawer)
-                        .bg(palette.g2)
-                        .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
-                );
+                .with_priority(DRAWER_PRIORITY),
+            );
         }
         // A peek the layer closed by itself (pointer, click outside) is over.
         if let Some(key) = self.peeking.clone()
@@ -1446,10 +1515,49 @@ impl Render for Shell {
             self.pinned = pinned;
             self.pins.update(cx, |_, cx| cx.notify());
         }
-        self.publish_stack(cx);
+        let ask_width = match self.modes.settle(&ASK, frame.room).mode {
+            Float::Panel => ASK_PANEL.at(frame.room),
+            Float::Sheet => viewport.width,
+        };
+        // Ask is a dialog over the veiled page: its field (the titlebar) and
+        // its plate are what a person reads; the page under the veil is not.
+        let ask_bounds = self.ask_open.then(|| {
+            let sample = |key: &str, x: Pixels, y: Pixels, width: Pixels, height: Pixels| facet::probe::BoundsSample {
+                key: key.to_owned(),
+                x: f32::from(x),
+                y: f32::from(y),
+                width: f32::from(width),
+                height: f32::from(height),
+            };
+            let mut parts = vec![sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar)];
+            // The plate is drawn once there is a query for it to answer
+            // (`ask_layer`): before that the page under the veil is all
+            // there is (J9's ask-open frame held the shelf's words to text
+            // contrast under a plate that was not there).
+            if self.ask.read(cx).shows() {
+                parts.push(sample("ask-plate", px(0.0), frame.titlebar, ask_width, (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))));
+            }
+            parts
+        });
+        self.publish_stack(ask_bounds, cx);
         let float = float::layer(window, cx);
-        root.children(self.ask_layer(cx))
+        // Twins: a ring on every other place the hovered declaration stands,
+        // each clipped to the region it is in (the shelf's rows, the page).
+        let twins = super::side::twin::lit(cx).and_then(|symbol| {
+            let list = self.shelf.read(cx).viewport();
+            let page = gpui::Bounds::new(
+                gpui::point(px(shelf_width), frame.titlebar),
+                gpui::size((viewport.width - px(shelf_width) - px(pins_width)).max(px(0.0)), (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))),
+            );
+            let regions = [
+                (list, self.shelf.read(cx).targets.twins_of(&symbol)),
+                (page, self.reader.read(cx).targets.twins_of(&symbol)),
+            ];
+            super::side::twin::rings(&regions, window.mouse_position(), cx)
+        });
+        root.children(self.ask_layer(&frame, status_height, viewport, cx))
             .children(self.hint_layer(cx))
+            .children(twins)
             .child(float)
     }
 }

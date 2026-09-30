@@ -1,55 +1,81 @@
-# J1 · first look (gui-plan §3 item 10).
-# launch → Orbit → your project → a dependency's package page → Start here,
-# stop 1 → its page → ⌘. code → back ×3.
-# Your project is `frontends/rust/fixtures/toml_pin` (pins toml 0.8.23 and
-# calls toml::from_str); the dependency is toml 0.8.23 from the cargo
-# registry cache. toml's tour (§8.2): from_str → Value → Table → Array →
-# Index → Error. A detour (`else`) only keeps the journey going when the
-# person could not do a step; the step still fails.
+# J1 · first look (gui-plan §3 item 10), on a real install of toml_pin.
+# launch → Orbit → your project → one of its own items → its code (⌘.) →
+# back ×2 → the dependency toml 0.8.23's page → from_str → its code → back.
+# Expected words are read from the sources: toml_pin's Cargo.toml and
+# src/lib.rs; toml 0.8.23's src/de.rs:41 in the local cargo cache.
+# gui-plan's "Start here" tour was removed from the package page on purpose
+# (W-Folio: no fixture-ranked tour), so stop 1 is reached through the page's
+# own modules instead (a region opens in place into its cards).
 size 1440x900
-start orbit
+start from install-all frontends/rust/fixtures/toml_pin
 
 check orbit
-  route orbit
+  route like "orbit"
   text "toml_pin" in reader
 
-click orbit-project-*toml_pin else route package toml_pin
+click "toml_pin" in reader
 check your-project
-  route package toml_pin
+  route like "package *toml_pin"
   text "toml-pin-fixture" in reader
   budget page-open <= 120ms
 
-click "toml" after "Depends on" in reader else route package toml-0.8.23
-check package
-  route package toml-0.8.23
-  text "toml" in reader
-  line "0.8.23" in reader
-  order "Start here" "from_str" "Value" "Table" "Array" "Index" "Error" in reader
+# The page draws each module as a region of shingles; a click opens it in
+# place, its names as cards.
+click "lib" in reader
+check your-module
+  text "read_settings" "project_name" "Settings" in reader
+
+click "read_settings" in reader
+check your-item
+  route like "symbol *read_settings view=page*"
+  text "read_settings" in reader
   budget page-open <= 120ms
 
-click "from_str" after "Start here" in reader else route symbol toml-0.8.23::src/de.rs::from_str
+key cmd-.
+check your-item-code
+  route like "symbol *read_settings view=code*"
+  line "pub fn read_settings(text: &str) -> Result<Settings, toml::de::Error> {" in reader
+
+key cmd-[
+check back-to-your-project
+  route like "package *toml_pin"
+  focus restored
+
+needs product "toml 0.8.23, the crate toml_pin pins, is indexed and its dependency row is a link (GAPS.md G15)"
+click "toml" in reader
+check package
+  route like "package *toml*0.8.23*"
+  text "toml" in reader
+  line "0.8.23" in reader
+  budget page-open <= 120ms
+
+click "de" in reader
+check toml-module
+  text "from_str" in reader
+
+click "from_str" in reader
 check stop-1
-  route symbol toml-0.8.23::src/de.rs::from_str
+  route like "symbol *from_str view=page*"
   text "from_str" in reader
   budget page-open <= 120ms
 
 key cmd-.
 check code
-  route symbol toml-0.8.23::src/de.rs::from_str view=code
-  text "pub fn from_str<T>(s: &'_ str) -> Result<T, Error>" in reader
+  route like "symbol *from_str view=code*"
+  line "pub fn from_str<T>(s: &'_ str) -> Result<T, Error>" in reader
 
 key cmd-[
 check back-1
-  route package toml-0.8.23
-  focus "from_str" after "Start here" in reader
+  route like "package *toml*0.8.23*"
+  focus restored
 
 key cmd-[
 check back-2
-  route package toml_pin
-  focus "toml" after "Depends on" in reader
+  route like "package *toml_pin"
+  focus restored
 
 key cmd-[
 check back-3
-  route orbit
-  focus orbit-project-*toml_pin
+  route like "orbit"
+  focus restored
   budget frame-p95 <= 8ms

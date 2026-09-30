@@ -167,6 +167,54 @@ impl ViewJournal {
         self.load_scoped(capability, workspace_root.to_bytes())
     }
 
+    /// How this journal shows that another build wrote it, when one did.
+    ///
+    /// Recovery refuses a journal whose format it does not speak, and says so
+    /// as prose. This reads the file's own version numbers instead, so a host
+    /// can tell "another build's cache" from "damaged": the frame version in
+    /// its header, the envelope version of its last snapshot, and the wire
+    /// version of the view that snapshot carries. A journal with a bad magic, a
+    /// bad checksum or a torn frame is damaged, not another build's, and says
+    /// nothing here.
+    pub(super) fn written_by_another_build(&self) -> Option<String> {
+        let mut header = [0_u8; HEADER_BYTES];
+        File::open(&self.path)
+            .and_then(|mut file| file.read_exact(&mut header))
+            .ok()?;
+        if &header[..8] != MAGIC {
+            return None;
+        }
+        if header[8] != VERSION {
+            return Some(format!(
+                "its view journal is format {} and this build reads {VERSION}",
+                header[8]
+            ));
+        }
+        let mut last_snapshot = None;
+        self.scan_frames(|kind, payload| {
+            if kind == SNAPSHOT {
+                last_snapshot = Some(payload);
+            }
+            Ok(())
+        })
+        .ok()?;
+        let envelope: serde_json::Value = serde_json::from_slice(&last_snapshot?).ok()?;
+        let version = |value: Option<&serde_json::Value>| value?.get("version")?.as_u64();
+        let journal = version(Some(&envelope))?;
+        if journal != u64::from(VERSION) {
+            return Some(format!(
+                "its view journal snapshot is version {journal} and this build reads {VERSION}"
+            ));
+        }
+        let wire = version(envelope.get("view"))?;
+        (wire != u64::from(backend_library::DTO_VERSION)).then(|| {
+            format!(
+                "its view snapshot is wire version {wire} and this build reads {}",
+                backend_library::DTO_VERSION
+            )
+        })
+    }
+
     fn persist_snapshot(
         &mut self,
         workspace_root: WorkspaceRoot,

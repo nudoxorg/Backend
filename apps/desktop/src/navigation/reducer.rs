@@ -24,7 +24,8 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         _ => {}
     }
     match intent {
-        Intent::Noop => {}
+        // The window root adds a release (`runtime::acquire`): no state here.
+        Intent::Noop | Intent::AddRelease(_) => {}
         Intent::Navigate(route) => {
             navigate(&mut next, route);
             effects.push(Effect::Persist);
@@ -244,6 +245,9 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::TestConnection
         | Intent::ConnectionResult { .. }
         | Intent::OwnerReady { .. }
+        | Intent::DismissNote(_)
+        | Intent::LibraryRebuilding { .. }
+        | Intent::WindowResized { .. }
         | Intent::OpenHelp => {
             unreachable!("workspace reducer owns workspace intents")
         }

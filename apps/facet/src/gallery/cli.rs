@@ -1290,7 +1290,7 @@ fn lint(options: &Options) -> Result<()> {
         let linted = lint::lint(&frame.image, &frame.ledger, frame.drawn.viewport);
         let covered = linted.coverage.texts > 0 || linted.coverage.targets > 0;
         println!(
-            "{} {}: {}  {} texts ({} hidden), {} targets, contrast measured on {} ({} not){}",
+            "{} {}: {}  {} texts ({} hidden, {} under a veil), {} targets ({} under a veil), contrast measured on {} ({} not){}",
             scene.id,
             suffix(&shot, frame.time_ms),
             if !covered {
@@ -1302,7 +1302,9 @@ fn lint(options: &Options) -> Result<()> {
             },
             linted.coverage.texts,
             linted.coverage.hidden_texts,
+            linted.coverage.occluded_texts,
             linted.coverage.targets,
+            linted.coverage.occluded_targets,
             linted.coverage.contrast,
             linted.coverage.contrast_skipped,
             linted

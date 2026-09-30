@@ -112,6 +112,17 @@ pub struct Site {
     pub open: Option<String>,
 }
 
+/// How far a trait is implemented on this machine.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct Implementors {
+    /// How many types implement it.
+    pub total: u32,
+    /// How many crates they are in.
+    pub crates: u32,
+    /// The share of them that derive it, in percent, when that is known.
+    pub derived: Option<u32>,
+}
+
 /// Everything [`compile`](super::derive::compile) reads.
 #[derive(Clone, Debug)]
 pub struct Facts {
@@ -148,8 +159,8 @@ pub struct Facts {
     pub does: Vec<Member>,
     /// The traits it implements, by name, and whether each is derived.
     pub implements: Vec<(String, bool)>,
-    /// How many types implement it, for a trait.
-    pub implementors: Option<u32>,
+    /// The types that implement it on this machine, for a trait.
+    pub implementors: Option<Implementors>,
     /// The names beside it in its module, in outline order.
     pub beside: Vec<Beside>,
     /// The releases on disk: `(version, differs from the pinned one)`.

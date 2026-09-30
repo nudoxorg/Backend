@@ -63,12 +63,22 @@ pub(crate) fn rail_head_tone(
     palette: &crate::tokens::Palette,
 ) -> crate::tokens::Tone {
     let family = thread_tone(palette, EdgeFamily::of_word(word).slot());
-    if text_contrast(family, palette.g0) >= 4.5 {
+    // Readable where it is read: at full strength AND at the opacity a
+    // column that is not the reading one draws its head at (a hue that
+    // passes only at full strength is 3.0:1 in the rest of the rail).
+    let readable = |tone: crate::tokens::Tone| {
+        text_contrast(tone, palette.g0) >= 4.5 && text_contrast(tone.alpha(NORMAL_COLUMN_ALPHA), palette.g0) >= 4.5
+    };
+    if readable(family) {
         family
     } else {
         palette.ink1
     }
 }
+
+/// The opacity a rail column's head is drawn at when the column is not the
+/// one being read.
+const NORMAL_COLUMN_ALPHA: f32 = 0.75;
 
 fn text_contrast(ink: crate::tokens::Tone, ground: crate::tokens::Tone) -> f32 {
     let ink = ink.rgba();
@@ -358,10 +368,12 @@ mod rail_tests {
             ] {
                 let color = rail_head_tone(word, palette);
                 assert!(text_contrast(color, palette.g0) >= 4.5);
-                assert!(text_contrast(color.alpha(0.75), palette.g0) >= 4.5);
+                assert!(text_contrast(color.alpha(NORMAL_COLUMN_ALPHA), palette.g0) >= 4.5, "{word:?}: {} at the normal column opacity", text_contrast(color.alpha(NORMAL_COLUMN_ALPHA), palette.g0));
                 let semantic = thread_tone(palette, EdgeFamily::of_word(word).slot());
-                if text_contrast(semantic, palette.g0) >= 4.5 {
-                    assert_eq!(color, semantic, "readable family hues remain intact");
+                if text_contrast(semantic, palette.g0) >= 4.5
+                    && text_contrast(semantic.alpha(NORMAL_COLUMN_ALPHA), palette.g0) >= 4.5
+                {
+                    assert_eq!(color, semantic, "hues readable at both opacities remain intact");
                 }
             }
         }

@@ -428,12 +428,14 @@ pub fn health_text(model: &HealthModel) -> String {
 pub fn render_text(store: &DataStore) -> String {
     let mut out = String::new();
     let stats = store.stats();
-    let (queued, running) = store.pool_load();
+    let pool = store.pool_activity();
     let _ = writeln!(
         out,
-        "data plane · root {} · focused {} · pool {queued} queued / {running} running · {} landed, {} superseded, {} cancelled",
+        "data plane · root {} · focused {} · pool {} queued / {} running · {} landed, {} superseded, {} cancelled",
         store.snapshot().key(),
         store.focused().len(),
+        pool.queued,
+        pool.running,
         stats.landed,
         stats.superseded,
         stats.cancelled

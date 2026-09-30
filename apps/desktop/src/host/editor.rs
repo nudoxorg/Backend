@@ -20,22 +20,22 @@ pub(crate) struct Command {
 
 /// Runs commands.
 pub(crate) trait Launch {
-    /// Runs `command`; whether it started.
-    fn run(&self, command: &Command) -> bool;
+    /// Runs `command`: `Ok` when it started, the reason when it did not.
+    fn run(&self, command: &Command) -> std::io::Result<()>;
 }
 
 /// The system: spawns the process and does not wait for it.
 pub(crate) struct System;
 
 impl Launch for System {
-    fn run(&self, command: &Command) -> bool {
+    fn run(&self, command: &Command) -> std::io::Result<()> {
         std::process::Command::new(&command.program)
             .args(&command.args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .is_ok()
+            .map(drop)
     }
 }
 
@@ -60,14 +60,15 @@ pub(crate) fn launcher(cx: &App) -> Rc<dyn Launch> {
 pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<Command> {
     let mut out = Vec::new();
     if let Some(template) = configured.map(str::trim).filter(|t| !t.is_empty()) {
-        let filled = template.replace("{path}", path).replace("{line}", &line.to_string());
-        let mut words = filled.split_whitespace().map(ToOwned::to_owned);
+        // Each word of the template is one argument, filled on its own: a
+        // path with a space in it stays the one argument it is.
+        let mut words = template.split_whitespace();
         if let Some(program) = words.next() {
-            let mut args: Vec<String> = words.collect();
+            let mut args: Vec<String> = words.map(|word| word.replace("{path}", path).replace("{line}", &line.to_string())).collect();
             if !template.contains("{path}") {
                 args.push(format!("{path}:{line}"));
             }
-            out.push(Command { program, args });
+            out.push(Command { program: program.to_owned(), args });
         }
     }
     out.push(Command { program: "code".to_owned(), args: vec!["-g".to_owned(), format!("{path}:{line}")] });
@@ -81,7 +82,7 @@ pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<C
 pub(crate) fn open(launch: &dyn Launch, configured: Option<&str>, path: &str, line: u32) -> Vec<Command> {
     let mut tried = Vec::new();
     for command in commands(configured, path, line) {
-        let started = launch.run(&command);
+        let started = launch.run(&command).is_ok();
         tried.push(command);
         if started {
             break;
@@ -102,9 +103,9 @@ mod tests {
     }
 
     impl Launch for Recorder {
-        fn run(&self, command: &Command) -> bool {
+        fn run(&self, command: &Command) -> std::io::Result<()> {
             self.ran.borrow_mut().push(command.clone());
-            self.works.contains(&command.program.as_str())
+            if self.works.contains(&command.program.as_str()) { Ok(()) } else { Err(std::io::ErrorKind::NotFound.into()) }
         }
     }
 
@@ -123,8 +124,8 @@ mod tests {
         assert_eq!(tried[1].args, ["/w/a.rs:7"]);
         let none = Recorder { ran: RefCell::new(Vec::new()), works: vec![] };
         let tried = open(&none, None, "/w/a.rs", 7);
-        assert_eq!(tried.len(), 4, "code, zed, the platform's opener: all tried");
-        assert_eq!(tried[3].args, ["/w/a.rs"]);
+        assert_eq!(tried.len(), 3, "code, zed, the platform's opener: all tried");
+        assert_eq!(tried[2].args, ["/w/a.rs"]);
     }
 
     #[test]
@@ -134,5 +135,7 @@ mod tests {
         assert_eq!(tried, [Command { program: "subl".into(), args: vec!["/w/a.rs:12".into()] }]);
         let bare = commands(Some("vim"), "/w/a.rs", 3);
         assert_eq!(bare[0], Command { program: "vim".into(), args: vec!["/w/a.rs:3".into()] });
+        let spaced = commands(Some("subl {path}:{line}"), "/w/my project/a.rs", 3);
+        assert_eq!(spaced[0].args, ["/w/my project/a.rs:3"], "a path with a space is one argument");
     }
 }

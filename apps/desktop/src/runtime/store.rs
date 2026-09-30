@@ -24,27 +24,43 @@
 //! Results arrive through a coalescing wake signal awaited by one
 //! `cx.spawn` task: nothing polls, and an idle window requests no frame.
 
+mod keeper;
+mod owner_link;
+
+use self::keeper::SnapshotKeeper;
+use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
-use super::owner::{OwnerGate, OwnerState};
+use super::owner::{OwnerFault, OwnerGate};
 use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
-use super::snapshot::{Keep, Kept, SnapRoot, SnapshotFile, kept_keys};
+use super::snapshot::{Keep, kept_keys};
 use crate::core::{ErrorValue, FaultCode, Resource, UnavailableReason};
 use crate::model::AppSnapshot;
 use crate::model::pages::{
-    HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore, ReadFailure,
+    Generation, HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore, ReadFailure,
     SearchPage, SearchQuery, SourceView, Stamp, SymbolPage, SymbolRef,
 };
 use crate::navigation::Route;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Duration;
 
-/// How long the pages rest before the launch snapshot is saved (I2).
-const SAVE_IDLE: Duration = Duration::from_millis(1_500);
+/// What the read pool is doing: jobs waiting for a worker, and jobs a worker
+/// is running.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PoolLoad {
+    /// Jobs no worker has taken yet.
+    pub queued: usize,
+    /// Jobs a worker is running.
+    pub running: usize,
+}
 
-/// Where the route's pages go, the root they are current at, and the pages.
-type ToSave = (SnapshotFile, crate::core::VersionedRoot, Vec<(PageKey, Kept)>);
+impl PoolLoad {
+    /// Whether nothing is queued or running.
+    #[must_use]
+    pub const fn is_idle(self) -> bool {
+        self.queued == 0 && self.running == 0
+    }
+}
 
 /// One snapshot branch, as named by a change event.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -178,20 +194,6 @@ pub struct StoreStats {
     pub events: u64,
 }
 
-/// Whether the owner behind this window's reads is answering (I1). While it
-/// starts, reads are held here, never queued behind a socket that does not
-/// exist yet, and never asked at a root nobody served; a failed owner is a
-/// fault on every page, in its own words.
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum OwnerPhase {
-    /// Answering (the harness, tests, and every window once its owner is).
-    Serving,
-    /// Not answered yet: pages ask, and wait here.
-    Starting,
-    /// Could not start: every page says so.
-    Failed(Arc<str>),
-}
-
 /// The data plane entity.
 pub struct DataStore {
     snapshot: Arc<AppSnapshot>,
@@ -213,17 +215,12 @@ pub struct DataStore {
     /// it shows the world. Leaving the world drops it.
     tour: Option<(PackageRef, u64)>,
     tours: u64,
-    /// The owner's phase, and the gate that restarts a failed one.
-    owner: OwnerPhase,
-    gate: Option<OwnerGate>,
-    /// Pages asked for while the owner starts, fetched once it answers.
-    held: BTreeSet<PageKey>,
-    /// The root the launch snapshot's pages were read at, until the first
-    /// served root settles them (confirmed as they are, or revalidated).
-    seed_root: Option<SnapRoot>,
-    /// Where the pages are saved for the next launch, and the pending save.
-    snapshots: Option<SnapshotFile>,
-    saving: Option<Task<()>>,
+    /// The fixture world's fault the window was last told of (told once).
+    world_fault: Option<super::fixture_world::WorldFault>,
+    /// The owner behind the reads: its phase, and the pages held for it.
+    owner: OwnerLink,
+    /// The launch snapshot: seeded pages, and saving them for next time.
+    keeper: SnapshotKeeper,
 }
 
 impl std::fmt::Debug for DataStore {
@@ -248,9 +245,37 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
     };
     let pinned = PackageRef::parse(package.as_str()).ok()?;
     Some(match at {
-        Some(at) => pinned.at(at.as_str()).unwrap_or(pinned),
+        Some(at) => pinned.at(at.as_str()).or_else(|| release_tree(&pinned, at.as_str())).unwrap_or(pinned),
         None => pinned,
     })
+}
+
+/// The tree of the release `at` of the registry package whose tree `pinned`
+/// is: a registry root is read at another release by reading that release's
+/// own tree (`…/toml-0.5.11` beside `…/toml-0.8.23`), which the library holds
+/// once it is added. `None` for a person's own project, for the pinned
+/// release itself, and for a release this machine does not have.
+fn release_tree(pinned: &PackageRef, at: &str) -> Option<PackageRef> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, PoisonError};
+    static TREES: Mutex<Option<HashMap<(String, String), Option<String>>>> = Mutex::new(None);
+    let (name, version) = pinned.registry_release()?;
+    if version == at {
+        return None;
+    }
+    let key = (pinned.as_str().to_owned(), at.to_owned());
+    let known = TREES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|trees| trees.get(&key).cloned());
+    let tree = match known {
+        Some(tree) => tree,
+        None => {
+            let release = crate::model::release::Release::new(name, at).ok()?;
+            let composed = crate::host::registry::composed()?;
+            let tree = composed.source.tree_of(&release).and_then(|tree| tree.to_str().map(str::to_owned));
+            TREES.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new).insert(key, tree.clone());
+            tree
+        }
+    }?;
+    PackageRef::parse(&tree).ok()
 }
 
 /// The declaration a route reads, scoped to the release it views.
@@ -284,15 +309,6 @@ pub fn route_declaration(route: &Route) -> Result<SymbolRef, Unread> {
     let pinned = PackageRef::parse(route.package.as_str()).map_err(|_| Unread::NotADeclaration)?;
     let viewed = pinned.at(at.as_str()).ok_or_else(|| Unread::ReleaseNotHere(at.clone()))?;
     Ok(symbol.rebased(&pinned, &viewed).unwrap_or(symbol))
-}
-
-/// A declaration page is about to be read from the index: the world thread
-/// starts on its anatomy now, so it is computed by the time the page lands
-/// and the page's first frame already has it (`fixture_world::warm`).
-fn warm_anatomy(key: &PageKey, cx: &mut App) {
-    if let PageKey::Symbol(symbol) = key {
-        super::fixture_world::warm_symbol(symbol, cx);
-    }
 }
 
 /// Returns the page keys one route displays.
@@ -330,12 +346,9 @@ impl DataStore {
             tour: None,
             tours: 0,
             notice: None,
-            owner: OwnerPhase::Serving,
-            gate: None,
-            held: BTreeSet::new(),
-            seed_root: None,
-            snapshots: None,
-            saving: None,
+            world_fault: None,
+            owner: OwnerLink::serving(),
+            keeper: SnapshotKeeper::default(),
         }
     }
 
@@ -390,7 +403,7 @@ impl DataStore {
     /// [`Self::install`] for a window whose owner may not have answered yet
     /// (`None`: it has, as in the harness and tests), painting the launch
     /// snapshot's pages until it does (`keep`, W-Open I2).
-    pub fn install_with_owner(
+    pub(crate) fn install_with_owner(
         cx: &mut App,
         snapshot: Arc<AppSnapshot>,
         pool: Option<ReadPool>,
@@ -401,15 +414,11 @@ impl DataStore {
             let route = route_keys(snapshot.route());
             let mut store = Self::new(snapshot, pool);
             if let Some(gate) = gate {
-                store.owner = match gate.state() {
-                    OwnerState::Starting => OwnerPhase::Starting,
-                    OwnerState::Ready { .. } => OwnerPhase::Serving,
-                    OwnerState::Failed(message) => OwnerPhase::Failed(message),
-                };
-                store.gate = Some(gate);
+                store.owner = OwnerLink::behind(gate);
             }
             if let Some(keep) = keep {
-                store.keep(keep);
+                let root = store.snapshot.key();
+                store.keeper.keep(&mut store.pages, root, keep);
             }
             store.start(cx);
             // The first route is focused like every later one.
@@ -432,120 +441,12 @@ impl DataStore {
         }));
     }
 
-    /// Seeds the launch snapshot's pages at the current (unserved) root and
-    /// remembers where to save them.
-    fn keep(&mut self, keep: Keep) {
-        let root = self.snapshot.key();
-        if let Some(seed) = keep.seed {
-            let mut seeded = 0_usize;
-            for (key, value) in seed.pages {
-                let name = format!("{key:?}");
-                if self.pages.seed(&key, value, root) {
-                    seeded += 1;
-                    super::trace::mark("snapshot.seed", name);
-                }
-            }
-            if seeded > 0 {
-                self.seed_root = Some(seed.root);
-            }
-        }
-        self.snapshots = Some(keep.file);
-    }
-
-    /// The first served root settles the seeded pages: at the root they
-    /// were read at they are current as they are; otherwise their next
-    /// fetch revalidates them quietly.
-    fn settle_seed(&mut self) {
-        let root = self.snapshot.key();
-        if root.is_unserved() {
-            return;
-        }
-        let Some(seed) = self.seed_root.take() else {
-            return;
-        };
-        if seed.serves(root) {
-            let confirmed = self
-                .pages
-                .keys()
-                .into_iter()
-                .filter(|key| self.pages.confirm(key, root))
-                .count();
-            super::trace::mark("snapshot.confirm", format_args!("{confirmed} pages at the served root"));
-        } else {
-            super::trace::mark("snapshot.revalidate", "the owner serves a newer root");
-        }
-    }
-
-    /// The route's pages as they are now, when all are current at a served
-    /// root: what the next launch paints first.
-    fn to_save(&self) -> Option<ToSave> {
-        fn at<T>(resource: &Resource<T>, root: crate::core::VersionedRoot) -> Option<Arc<T>> {
-            (resource.is_loaded() && resource.value_root().is_some_and(|at| at.same_authority(root)))
-                .then(|| resource.loaded_arc().cloned())
-                .flatten()
-        }
-        let file = self.snapshots.clone()?;
-        let root = self.snapshot.key();
-        if root.is_unserved() {
-            return None;
-        }
-        let current = |key: &PageKey| -> Option<Kept> {
-            if self.pages.is_seeded(key) {
-                return None;
-            }
-            match key {
-                PageKey::Symbol(symbol) => at(&self.pages.symbol(symbol), root).map(Kept::Symbol),
-                PageKey::Source(symbol) => at(&self.pages.source(symbol), root).map(Kept::Source),
-                PageKey::Package(package) => at(&self.pages.package(package), root).map(Kept::Package),
-                PageKey::Orbit => at(&self.pages.orbit(), root).map(Kept::Orbit),
-                _ => None,
-            }
-        };
-        let pages = kept_keys(self.snapshot.route())
-            .into_iter()
-            .filter_map(|key| current(&key).map(|kept| (key, kept)))
-            .collect::<Vec<_>>();
-        (!pages.is_empty()).then_some((file, root, pages))
-    }
-
     /// Saves the launch snapshot now, on this thread (quit).
     ///
     /// # Errors
     /// The snapshot file's I/O error; nothing to save is `Ok(0)`.
-    pub fn save_now(&self) -> std::io::Result<usize> {
-        let Some((file, root, pages)) = self.to_save() else {
-            return Ok(0);
-        };
-        let saving = std::time::Instant::now();
-        let written = file.write(root, &pages)?;
-        super::trace::span("snapshot.write", saving, format_args!("{} pages, {written} bytes, on quit", pages.len()));
-        Ok(written)
-    }
-
-    /// Saves the launch snapshot once the pages have rested (a newer landing
-    /// restarts the wait), encoding and writing off the UI thread.
-    fn save_at_rest(&mut self, cx: &mut Context<Self>) {
-        if self.snapshots.is_none() {
-            return;
-        }
-        self.saving = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SAVE_IDLE).await;
-            let Ok(Some((file, root, pages))) = this.update(cx, |store, _| store.to_save()) else {
-                return;
-            };
-            cx.background_spawn(async move {
-                let saving = std::time::Instant::now();
-                match file.write(root, &pages) {
-                    Ok(written) => super::trace::span(
-                        "snapshot.write",
-                        saving,
-                        format_args!("{} pages, {written} bytes, at rest", pages.len()),
-                    ),
-                    Err(error) => eprintln!("backend-desktop: save {}: {error}", file.path().display()),
-                }
-            })
-            .await;
-        }));
+    pub(crate) fn save_now(&self) -> std::io::Result<usize> {
+        self.keeper.save_now(&self.pages, &self.snapshot)
     }
 
     /// Emits `key`'s change only when its visible state moved.
@@ -573,12 +474,20 @@ impl DataStore {
         &self.focused
     }
 
-    /// Returns the read pool's (queued, running) job counts.
+    /// What the read pool is doing now.
+    #[must_use]
+    pub fn pool_activity(&self) -> PoolLoad {
+        self.pool.as_ref().map_or_else(PoolLoad::default, |pool| PoolLoad { queued: pool.queued(), running: pool.running() })
+    }
+
+    /// The read pool's `(queued, running)` counts, as a tuple: the callers in
+    /// `harness.rs`, `shell/tests.rs`, the folio capture and `tests/` still
+    /// destructure one. They move to [`Self::pool_activity`] (MIGRATE.md, R-Open3),
+    /// then this goes.
     #[must_use]
     pub fn pool_load(&self) -> (usize, usize) {
-        self.pool
-            .as_ref()
-            .map_or((0, 0), |pool| (pool.queued(), pool.running()))
+        let PoolLoad { queued, running } = self.pool_activity();
+        (queued, running)
     }
 
     fn emit(&mut self, event: StoreEvent, cx: &mut Context<Self>) {
@@ -636,7 +545,8 @@ impl DataStore {
             self.emit(StoreEvent::Snapshot(*branch), cx);
         }
         if changed.contains(&Branch::Root) {
-            self.settle_seed();
+            let root = self.snapshot.key();
+            self.keeper.settle(&mut self.pages, root);
         }
         if changed.contains(&Branch::Route) {
             self.focus(route_keys(snapshot.route()), cx);
@@ -648,20 +558,39 @@ impl DataStore {
         }
     }
 
+    /// Tells the window once when the fixture world could not be read: the
+    /// graph and the hand's roads are then absent, and a person should know
+    /// why. Cheap to repeat (a views calls it from render).
+    fn announce_world_fault(&mut self, cx: &mut Context<Self>) {
+        let Some(fault) = super::fixture_world::fault(cx) else { return };
+        if self.world_fault.as_ref() == Some(&fault) {
+            return;
+        }
+        let notice = super::graph_focus::Notice {
+            visit: self.snapshot.route().clone(),
+            root: self.snapshot.key(),
+            message: Arc::from(format!("The world could not be read, so the graph and the hand's roads are missing. {fault}")),
+            retry: None,
+        };
+        self.world_fault = Some(fault);
+        self.set_notice(Some(notice), cx);
+    }
+
     /// Ensures one page is loaded at the current root. Idempotent: a page
     /// that is current or in flight costs nothing, so views may call this
     /// from render. A queued prefetch for the key is promoted.
     pub fn ensure(&mut self, key: PageKey, cx: &mut Context<Self>) -> Stamp {
+        self.announce_world_fault(cx);
         self.keep_focused_resident();
-        match &self.owner {
+        match self.owner.phase() {
             OwnerPhase::Serving => {}
             OwnerPhase::Starting => {
-                self.held.insert(key.clone());
+                self.owner.hold(key.clone());
                 return self.pages.stamp(&key);
             }
-            OwnerPhase::Failed(message) => {
-                let message = Arc::clone(message);
-                self.fail(&key, &message, cx);
+            OwnerPhase::Failed(fault) => {
+                let fault = fault.clone();
+                self.fail(&key, &fault, cx);
                 return self.pages.stamp(&key);
             }
         }
@@ -669,7 +598,6 @@ impl DataStore {
         let before = self.pages.stamp(&key);
         if let Some(generation) = self.pages.begin(&key, root) {
             self.prefetching.remove(&key);
-            warm_anatomy(&key, cx);
             self.submit(key.clone(), ReadRequest::for_key(&key), generation, Priority::Normal, None, cx);
             let stamp = self.pages.stamp(&key);
             self.emit_moved(key, before, cx);
@@ -695,7 +623,7 @@ impl DataStore {
             .difference(&next)
             .cloned()
             .collect::<Vec<_>>();
-        self.held.retain(|key| next.contains(key));
+        self.owner.retain_held(|key| next.contains(key));
         self.focused = next;
         for key in dropped {
             if self.prefetching.contains(&key) {
@@ -712,7 +640,7 @@ impl DataStore {
     /// rested on a link for 120 ms. Low priority, cancellable, and a no-op
     /// when the page is current or already requested.
     pub fn prefetch(&mut self, key: PageKey, cx: &mut Context<Self>) {
-        if self.owner != OwnerPhase::Serving {
+        if !self.owner.is_serving() {
             return;
         }
         self.keep_focused_resident();
@@ -721,7 +649,6 @@ impl DataStore {
         if let Some(generation) = self.pages.begin(&key, root) {
             self.prefetching.insert(key.clone());
             self.stats.prefetched = self.stats.prefetched.saturating_add(1);
-            warm_anatomy(&key, cx);
             self.submit(key.clone(), ReadRequest::for_key(&key), generation, Priority::Prefetch, None, cx);
             self.emit_moved(key, before, cx);
         }
@@ -758,21 +685,16 @@ impl DataStore {
 
     /// Fetches a page again even when it is current (retry after a fault).
     pub fn retry(&mut self, key: PageKey, cx: &mut Context<Self>) {
-        match &self.owner {
+        match self.owner.phase() {
             OwnerPhase::Serving => {}
             // "Try again" on a page the owner could not serve asks the owner
             // to start again; the page is fetched once it answers.
             OwnerPhase::Failed(_) => {
-                if let Some(gate) = &self.gate {
-                    // A starting owner is left alone; either way the page waits.
-                    let _ = gate.restart();
-                }
-                self.owner = OwnerPhase::Starting;
-                self.held.insert(key);
+                self.owner.retry(key);
                 return;
             }
             OwnerPhase::Starting => {
-                self.held.insert(key);
+                self.owner.hold(key);
                 return;
             }
         }
@@ -787,7 +709,7 @@ impl DataStore {
     /// Requests the next page of a loaded search. Returns whether a request
     /// was issued (false when there is no continuation).
     pub fn load_more(&mut self, query: &SearchQuery, cx: &mut Context<Self>) -> bool {
-        if self.owner != OwnerPhase::Serving {
+        if !self.owner.is_serving() {
             return false;
         }
         let Some(next) = self
@@ -822,7 +744,7 @@ impl DataStore {
         &mut self,
         key: PageKey,
         request: ReadRequest,
-        generation: u64,
+        generation: Generation,
         priority: Priority,
         affinity: Option<usize>,
         cx: &mut Context<Self>,
@@ -857,9 +779,8 @@ impl DataStore {
     /// The owner answered, and its root is already admitted
     /// (`UiRootEntity::admit_owner`): every held page, and every page the
     /// route shows, is fetched now, at that root.
-    pub fn owner_ready(&mut self, cx: &mut Context<Self>) {
-        self.owner = OwnerPhase::Serving;
-        let mut keys = std::mem::take(&mut self.held);
+    pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
+        let mut keys = self.owner.answered();
         keys.extend(self.focused.iter().cloned());
         for key in keys {
             self.ensure(key, cx);
@@ -868,44 +789,48 @@ impl DataStore {
 
     /// The owner could not start: every held page, and every page the route
     /// shows, lands as a fault carrying the owner's words.
-    pub fn owner_failed(&mut self, message: &Arc<str>, cx: &mut Context<Self>) {
-        self.owner = OwnerPhase::Failed(Arc::clone(message));
-        let mut keys = std::mem::take(&mut self.held);
+    pub(crate) fn owner_failed(&mut self, fault: &OwnerFault, cx: &mut Context<Self>) {
+        let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
         for key in keys {
-            self.fail(&key, message, cx);
+            self.fail(&key, fault, cx);
         }
-        // A page painted from the launch snapshot stays (it is the page as
-        // it was left), and says it could not be brought up to date.
-        if self.focused.iter().any(|key| self.pages.is_seeded(key)) {
-            let notice = super::graph_focus::Notice {
-                visit: self.snapshot.route().clone(),
-                root: self.snapshot.key(),
-                message: Arc::from(format!(
-                    "The index could not start, so this is the page as you left it. {message}"
-                )),
-            };
-            self.set_notice(Some(notice), cx);
-        }
+        // The foot says it wherever the person is, with "Try again" beside
+        // it (R7). A page painted from the launch snapshot stays (it is the
+        // page as it was left), and says it could not be brought up to date.
+        let seeded = self.focused.iter().any(|key| self.pages.is_seeded(key));
+        let message = if seeded {
+            format!("The index could not start, so this is the page as you left it. {fault}")
+        } else {
+            format!("The index could not start. {fault}")
+        };
+        let notice = super::graph_focus::Notice {
+            visit: self.snapshot.route().clone(),
+            root: self.snapshot.key(),
+            message: Arc::from(message),
+            // "Try again" asks the page for itself again, which starts the
+            // owner; with no page on the route, the Library's.
+            retry: Some(self.focused.iter().next().cloned().unwrap_or(PageKey::Orbit)),
+        };
+        self.set_notice(Some(notice), cx);
     }
 
     /// The owner is starting (again): pages asked from now on are held.
-    pub fn owner_starting(&mut self, cx: &mut Context<Self>) {
-        if self.owner != OwnerPhase::Serving {
-            self.owner = OwnerPhase::Starting;
+    pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
+        if self.owner.starting() {
             cx.notify();
         }
     }
 
     /// Lands the owner's failure in `key`'s slot, once per root.
-    fn fail(&mut self, key: &PageKey, message: &Arc<str>, cx: &mut Context<Self>) {
+    fn fail(&mut self, key: &PageKey, fault: &OwnerFault, cx: &mut Context<Self>) {
         let root = self.snapshot.key();
         let Some(generation) = self.pages.begin(key, root) else {
             return;
         };
         let failure = ReadFailure::Fault(ErrorValue::new(
             FaultCode::Transport,
-            format!("The index could not start. {message}"),
+            format!("The index could not start. {fault}"),
         ));
         if self.pages.land(key, generation, Err(failure)) == Landing::Applied {
             self.emit(StoreEvent::Resource(key.clone()), cx);
@@ -947,7 +872,7 @@ impl DataStore {
             }
         }
         if save {
-            self.save_at_rest(cx);
+            self.keeper.save_at_rest(cx);
         }
         applied
     }
@@ -1061,6 +986,7 @@ mod tests {
                 implemented_by: Known::Unknown(unknown()),
             },
             references: Known::Unknown(unknown()),
+            workspace: Arc::from([]),
             outline: Known::Unknown(unknown()),
         }
     }
@@ -1174,15 +1100,10 @@ mod tests {
 
         /// Runs the executor until `done` holds, letting worker threads land.
         fn until(&self, cx: &mut TestAppContext, done: impl Fn(&DataStore) -> bool) {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
+            crate::runtime::wait::until("the store reached the state the test waits for", || {
                 cx.run_until_parked();
-                if self.store.read_with(cx, |store, _| done(store)) {
-                    return;
-                }
-                assert!(Instant::now() < deadline, "condition never held");
-                std::thread::sleep(Duration::from_millis(1));
-            }
+                self.store.read_with(cx, |store, _| done(store))
+            });
         }
     }
 
@@ -1238,9 +1159,9 @@ mod tests {
         rig.until(cx, |store| store.symbol(&symbol("fast-new")).is_loaded());
         // The cancelled read never lands, even when its gate opens later.
         rig.open("slow-old");
-        cx.run_until_parked();
-        std::thread::sleep(Duration::from_millis(20));
-        cx.run_until_parked();
+        // Wait for the cancelled read to finish (its worker leaves the pool),
+        // not for a guessed 20 ms: only then is "it never lands" a claim.
+        rig.until(cx, |store| store.pool_activity().is_idle());
         assert!(
             rig.store
                 .read_with(cx, |store, _| store.symbol(&symbol("slow-old")).loaded_value().is_none())
@@ -1307,6 +1228,14 @@ mod tests {
             orbit.terminal(),
             crate::core::ResourceTerminal::Complete | crate::core::ResourceTerminal::Unavailable(_)
         ));
+    }
+
+    #[test]
+    fn a_pool_is_idle_only_when_nothing_is_queued_and_nothing_is_running() {
+        assert!(PoolLoad::default().is_idle(), "no jobs is idle");
+        assert!(!PoolLoad { queued: 1, running: 0 }.is_idle(), "a queued job is work");
+        assert!(!PoolLoad { queued: 0, running: 1 }.is_idle(), "a running job is work");
+        assert!(!PoolLoad { queued: 2, running: 3 }.is_idle(), "both is work");
     }
 }
 

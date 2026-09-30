@@ -11,6 +11,7 @@ use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{HoverIntent, package_route, pending, quiet, text};
 use crate::shell::reader::Reader;
 use facet::icons::{Kind, KindSize};
+use facet::tokens::fluid::PROJECT_GEM;
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
@@ -28,7 +29,7 @@ pub(super) fn body(
 ) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let mut leaves = Vec::new();
+    let mut leaves = crate::shell::onboard::library::notes(snapshot, ctx);
     if let Some(leaf) = resume(snapshot, ctx, cx) {
         leaves.push(leaf);
     }
@@ -39,23 +40,15 @@ pub(super) fn body(
         .and_then(|model| model.indexed.known().map(|indexed| indexed.len()))
         .unwrap_or(0);
     if workspace.projects.is_empty() && indexed == 0 {
-        let line = ctx.say("Nothing on the shelf yet. Add a folder and its dependencies arrive here.");
-        let links = ctx.links.clone();
-        leaves.push(Leaf::new(
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(measure.space(Space::Gutter))
-                .py(measure.space(Space::Chapter))
-                .child(facet::paint::gem(Kind::Module).size(56.0 * measure.scale()).opacity(0.5))
-                .child(text(ty::LEDE, &measure, palette.ink2).child(line))
-                .child(
-                    facet::controls::button("add-folder", "Add a folder", &measure)
-                        .primary()
-                        .on_click(move |_, cx| links.dispatch(Intent::OpenFolderPicker, cx)),
-                ),
-        ));
+        // A Library the index could not answer is not an empty one: say why
+        // it could not, with the way to try again, before offering a first run.
+        let orbit = store.orbit();
+        let fault = shown(&orbit);
+        if matches!(fault, Shown::Fault(_)) {
+            leaves.extend(super::state::not_ready(&fault, &PageKey::Orbit, "The Library", ctx, cx));
+        } else {
+            leaves.push(crate::shell::onboard::library::empty(ctx));
+        }
         return leaves;
     }
     // Your projects: the centre.
@@ -103,6 +96,8 @@ pub(super) fn body(
         let state = match project.phase {
             crate::model::ProjectPhase::Indexing => ctx.say("indexing"),
             crate::model::ProjectPhase::Failed => ctx.say("stopped"),
+            crate::model::ProjectPhase::Cancelling => ctx.say("stopping"),
+            crate::model::ProjectPhase::Cancelled => ctx.say("paused"),
             crate::model::ProjectPhase::Missing => ctx.say("folder missing"),
             _ => SharedString::default(),
         };
@@ -115,14 +110,17 @@ pub(super) fn body(
                     .flex_col()
                     .items_center()
                     .gap(measure.space(Space::Base))
-                    .child(facet::paint::gem(Kind::Module).size(44.0 * measure.scale()).opacity(if active { 1.0 } else { 0.8 }))
+                    .child(crate::shell::onboard::library::tile_gem(project, f32::from(PROJECT_GEM.at(ctx.wide.fluid_room())), active, ctx))
                     .child(text(ty::HEAD, &measure, if active { palette.ink0 } else { palette.ink1 }).child(name))
                     .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)))
                     .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
             ),
         );
     }
-    leaves.push(Leaf::new(centre));
+    leaves.push(Leaf::new(centre).wide());
+    leaves.extend(crate::shell::onboard::library::indexing(snapshot, ctx, cx));
+    leaves.extend(crate::shell::onboard::failure::stopped(&workspace.projects, ctx, cx));
+    leaves.push(crate::shell::onboard::library::add_another(ctx));
     // The packages around them.
     let orbit = store.orbit();
     match shown(&orbit) {
@@ -131,30 +129,60 @@ pub(super) fn body(
                 let mut ring = div().flex().flex_wrap().justify_center().gap(measure.space(Space::Roomy));
                 // The names wrap as the room changes; a name that moves to
                 // another line glides there (FLIP) instead of jumping.
-                let flow = facet::motion::Flow::scoped("orbit-ring", cx);
+                // Drawn away from the scroller (leaving under a plate), the
+                // Library is inert: its names stand where they lay out, and
+                // neither fly with the plate nor leave the live ring's
+                // springs mid-flight when the page goes (J9 saw chips fly
+                // 700 px as the Library left for a page and came back).
+                let flow = if ctx.active { ctx.ring_flow.clone() } else { facet::motion::Flow::new("orbit-inert") };
                 flow.epoch((measure.density(), measure.scale().to_bits()));
-                for package in indexed.iter() {
+                // Your projects stand in the middle; the ring is what they
+                // use, in the library's own order (the same after a
+                // relaunch), one name told apart from its twin. It re-wraps
+                // as an install adds packages: a name that must go to
+                // another line lands there (the ring's flow is `wrapped`).
+                let around = crate::shell::side::beside_your_projects(indexed, &workspace, crate::shell::side::LibraryOrder::Library);
+                let apart = crate::shell::side::told_apart(&around);
+                for (package, apart) in around.into_iter().zip(apart) {
                     let key = gpui::ElementId::Name(format!("orbit-chip-{}", package.package).into());
-                    ring = ring.child(flow.item(key, package_name(package, ctx, cx)));
+                    ring = ring.child(flow.item(key, package_name(package, apart, ctx, cx)));
                 }
-                leaves.push(Leaf::new(ring));
+                leaves.push(Leaf::new(ring).wide());
             }
         }
         Shown::Pending => leaves.push(Leaf::new(
             div().flex().justify_center().child(pending(px(360.0 * measure.scale()), ty::MONO_ROW, &measure, palette)),
         )),
-        Shown::Fault(error) => {
-            let words = ctx.say(format!("The packages around your projects could not be read: {}", error.message()));
-            leaves.push(Leaf::new(quiet(words, &measure, palette)));
+        fault @ Shown::Fault(_) => {
+            leaves.extend(super::state::not_ready(&fault, &PageKey::Orbit, "The packages around your projects", ctx, cx));
         }
         Shown::Unavailable(..) => {}
     }
-    if let Some(health) = store.health().loaded_value() {
-        let words = ctx.say(format!(
-            "{} declarations from {} of {} files",
-            health.rows, health.ingest.files_indexed, health.ingest.files_discovered
-        ));
-        leaves.push(Leaf::new(div().flex().justify_center().child(quiet(words, &measure, palette))));
+    // The counts describe the last revision the owner published. While a
+    // project is being indexed they describe something older than what is
+    // running, and "0 declarations from 0 of 0 files" reads as a result.
+    let running = workspace.projects.iter().any(|project| project.phase == crate::model::ProjectPhase::Indexing);
+    if let Some(health) = store.health().loaded_value().filter(|health| !running && health.rows > 0) {
+        let (packages, yours) = store.orbit().loaded_value().and_then(|model| model.indexed.known().map(|indexed| {
+            let yours = indexed.iter().filter(|package| workspace.projects.iter().any(|project| project.id.as_str() == package.package.as_str())).count();
+            (indexed.len(), yours)
+        })).unwrap_or((0, 0));
+        let arrival = crate::shell::onboard::library::Arrival {
+            ready_projects: workspace.projects.iter().filter(|project| project.phase == crate::model::ProjectPhase::Ready).count(),
+            packages,
+            yours,
+            declarations: health.rows,
+            files_indexed: health.ingest.files_indexed,
+            files_discovered: health.ingest.files_discovered,
+        };
+        let mut lines = div().flex().flex_col().items_center().gap(measure.space(Space::Snug));
+        for line in arrival.says() {
+            let words = ctx.say(line);
+            // `min_w(0)`: a text in a flex row is as wide as its one line unless it may shrink,
+            // and then wraps to the column (200 % text on a phone cut it on both sides).
+            lines = lines.child(quiet(words, &measure, palette).min_w(px(0.0)).text_center());
+        }
+        leaves.push(Leaf::new(div().flex().justify_center().child(lines)));
     }
     leaves
 }
@@ -219,10 +247,13 @@ fn ago(ms: u64) -> String {
     }
 }
 
-fn package_name(package: &IndexedPackage, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
+fn package_name(package: &IndexedPackage, apart: Option<SharedString>, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
     let measure: Measure = ctx.measure;
     let palette: &Palette = ctx.palette;
     let name = ctx.say(package.name.to_string());
+    // What tells it apart from a twin of the same name, said with it: its
+    // release (a registry package), or the folder it is in.
+    let apart = package.package.release_version().map(ToOwned::to_owned).or_else(|| apart.map(|apart| apart.to_string())).map(|apart| ctx.say(apart));
     let id: SharedString = format!("orbit-package-{}", package.package).into();
     let route = package_route(&package.package);
     let links = ctx.links.clone();
@@ -254,9 +285,11 @@ fn package_name(package: &IndexedPackage, ctx: &mut Ctx<'_>, cx: &mut Context<Re
                 .gap(measure.space(Space::Snug))
                 .px(measure.space(Space::Base))
                 .h(measure.row())
+                .max_w_full()
                 .hover(|style| style.bg(palette.tint))
                 .child(crate::shell::kit::kind_mark(Kind::Package, KindSize::Sm, &measure, palette))
-                .child(text(ty::MONO_ROW, &measure, ink).child(name))
+                .child(text(ty::MONO_ROW, &measure, ink).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                .children(apart.map(|apart| text(ty::MONO_SMALL, &measure, palette.ink3).keyed(SharedString::from(format!("orbit-apart:{}", package.package))).flex_none().whitespace_nowrap().child(apart)))
                 .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
                 .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx))),
         )

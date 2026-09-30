@@ -5,6 +5,7 @@ pub mod hand;
 pub mod local_package;
 pub mod pages;
 pub mod persistence;
+pub mod release;
 pub mod selectors;
 pub mod snapshot;
 pub mod source_facts;
@@ -28,6 +29,7 @@ pub use snapshot::{
     ServiceMode, SessionState, SettingsState, ShelfItem, ShelfState, ZoomPreference, ZoomStep,
     WorkspaceProject, WorkspaceState,
 };
+pub use workspace::{Note, WindowSize};
 pub use viewport::{
     DocumentViewportState, SourceViewportState, ViewportId, ViewportState, VirtualCollection,
 };

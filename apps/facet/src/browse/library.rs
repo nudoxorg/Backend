@@ -244,12 +244,12 @@ fn hero(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette) -> 
 /// Roles in one or two columns, balanced by height, then "Here twice".
 fn roles(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette, window: &mut Window, cx: &mut App) -> AnyElement {
     let modes = Modes::keyed(child(id, "roles-modes"), window, cx);
-    let columns = modes.columns(&ROLES, measure.fluid_room(), measure.space(Space::Section));
-    let (count, column) = (columns.count, measure.within(columns.column.width()));
+    let laid = modes.columns(&ROLES, measure.fluid_room(), measure.space(Space::Section));
+    let (count, column) = (laid.count, measure.within(laid.column.width()));
     // A change of column count is an epoch: the blocks spring to their new
     // places instead of jumping.
     let flow = Flow::scoped(format!("library-roles-{id:?}"), cx);
-    flow.epoch((columns.epoch, count));
+    flow.epoch((laid.epoch, count));
     // Each block's height in rows; the duplicates block goes last, in the shorter column.
     let mut blocks: Vec<(usize, AnyElement)> = model
         .roles

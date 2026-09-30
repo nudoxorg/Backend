@@ -344,7 +344,7 @@ fn density_art(density: Density, size: Pixels, ink: Hsla) -> AnyElement {
 }
 
 impl RenderOnce for Seg {
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let palette = cx.palette();
         let measure = self.measure;
@@ -368,7 +368,7 @@ impl RenderOnce for Seg {
         let art_px = measure.icon(22.0);
         let swatch_px = measure.icon(12.0);
         let inner = px(8.0 * s);
-        let widths: Vec<Pixels> = self
+        let mut widths: Vec<Pixels> = self
             .choices
             .iter()
             .map(|choice| match &choice.face {
@@ -400,16 +400,29 @@ impl RenderOnce for Seg {
             xs.push(at);
             at += *width + gap;
         }
-        let well_w = at - gap + pad;
-        let well_h = item_h + pad * 2.0;
+        // A row wider than the room it is given (a phone at large text) stands
+        // its choices one over the other, all as wide as the widest, instead of
+        // running off the window: the plate then glides down the column.
+        let stacked = at - gap + pad > measure.width() && widths.len() > 1;
+        let (well_w, well_h, ys) = if stacked {
+            let widest = widths.iter().copied().fold(px(0.0), |a, b| if b > a { b } else { a });
+            widths.iter_mut().for_each(|width| *width = widest);
+            xs.iter_mut().for_each(|x| *x = pad);
+            let ys: Vec<Pixels> = (0..widths.len()).map(|i| pad + (item_h + gap) * i as f32).collect();
+            (widest + pad * 2.0, ys.last().copied().unwrap_or(pad) + item_h + pad, ys)
+        } else {
+            (at - gap + pad, item_h + pad * 2.0, vec![pad; widths.len()])
+        };
 
         let (target_x, target_w) = xs
             .get(selected)
             .copied()
             .zip(widths.get(selected).copied())
             .unwrap_or((pad, px(0.0)));
+        let target_y = ys.get(selected).copied().unwrap_or(pad);
         let x = motion.animate(track(&id, "x"), f32::from(target_x), spec::FOLLOW, window, cx);
         let w = motion.animate(track(&id, "w"), f32::from(target_w), spec::FOLLOW, window, cx);
+        let y = motion.animate(track(&id, "y"), f32::from(target_y), spec::FOLLOW, window, cx);
         // Lean toward a hovered choice: the plate wants to go there.
         let lean_to = match touch.hot_item {
             Some(hot) if hot != selected && active => {
@@ -417,6 +430,7 @@ impl RenderOnce for Seg {
             }
             _ => 0.0,
         };
+        let lean_to = if stacked { 0.0 } else { lean_to };
         let lean = motion.animate(track(&id, "lean"), lean_to, spec::HOVER, window, cx);
         let press = motion.animate(
             track(&id, "press"),
@@ -447,12 +461,15 @@ impl RenderOnce for Seg {
             .plate(Plate::Flat)
             .fill(palette.plate3)
             .absolute()
-            .top(pad)
+            .top(px(y))
             .left(px(plate_x))
             .w(px(plate_w.max(0.0)))
             .h(item_h);
 
         let mut row = div().absolute().top(pad).left(pad).flex().gap(gap);
+        if stacked {
+            row = row.flex_col();
+        }
         for (index, choice) in self.choices.iter().enumerate() {
             let hot = touch.hot_item == Some(index);
             let lit = motion.animate(

@@ -3,11 +3,12 @@
 //! editor, the folds, and the doors every linked name is.
 
 use super::key::{FoldKey, Key, Sec};
-use super::view::Verb;
+use super::view::{ImportsListed, Listed, TestsListed, Verb};
 use crate::anatomy::page::{Door, Doors, Fold};
+use crate::motion::Flow;
 use crate::motion::presence::Presence;
 use gpui::{AnyElement, App, Bounds, Pixels, SharedString, Window};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -27,8 +28,6 @@ pub struct Ui {
     pub tests: bool,
     /// The list is filtered to places where a generic is this type.
     pub fill: Option<String>,
-    /// The package menu is open.
-    pub menu: bool,
     /// Packages showing every place, not five.
     pub expanded: BTreeSet<String>,
 }
@@ -44,20 +43,26 @@ pub enum Change {
     Tests,
     /// Filter to where a generic is this type (`None`: clear).
     Fill(Option<String>),
-    /// Open or close the package menu.
-    Menu(bool),
     /// Show every place of a package.
     Expand(String),
 }
 
 impl Ui {
+    /// What the list leaves out in this state.
+    #[must_use]
+    pub const fn listed(&self) -> Listed {
+        Listed {
+            imports: if self.imports { ImportsListed::Shown } else { ImportsListed::Hidden },
+            tests: if self.tests { TestsListed::Included } else { TestsListed::Left },
+        }
+    }
+
     /// The state after `change`.
     #[must_use]
     pub fn apply(mut self, change: &Change) -> Self {
         match change {
             Change::Package(package) => {
                 self.package = package.clone().filter(|package| self.package.as_ref() != Some(package));
-                self.menu = false;
             }
             Change::Verb(verb) => {
                 if *verb == Verb::Imports {
@@ -72,7 +77,6 @@ impl Ui {
                     self.package = None;
                 }
             }
-            Change::Menu(open) => self.menu = *open,
             Change::Expand(package) => {
                 self.expanded.insert(package.clone());
             }
@@ -82,13 +86,11 @@ impl Ui {
 }
 
 /// What the page remembers between frames, outside the shell's state: where
-/// its sections were laid out (for "scroll to") and which side of the
-/// rail's breakpoint it last drew (so a width that hovers at the edge does
-/// not flicker).
+/// its sections were laid out (for "scroll to").
 #[derive(Debug, Default)]
 pub struct Spots {
     map: RefCell<BTreeMap<Sec, Bounds<Pixels>>>,
-    beside: Cell<Option<bool>>,
+    frames: RefCell<BTreeMap<SharedString, Bounds<Pixels>>>,
 }
 
 impl Spots {
@@ -109,15 +111,16 @@ impl Spots {
         self.map.borrow_mut().insert(section, bounds);
     }
 
-    /// Whether the rail was beside the page the last frame.
+    /// Where the element `key` was laid out (a card opened from the keyboard
+    /// anchors to it).
     #[must_use]
-    pub fn beside(&self) -> Option<bool> {
-        self.beside.get()
+    pub fn frame(&self, key: &Key) -> Option<Bounds<Pixels>> {
+        self.frames.borrow().get(&key.text()).copied()
     }
 
-    /// Remembers the rail's side.
-    pub fn set_beside(&self, beside: bool) {
-        self.beside.set(Some(beside));
+    /// Records where the element `key` was laid out.
+    pub fn record_frame(&self, key: &Key, bounds: Bounds<Pixels>) {
+        self.frames.borrow_mut().insert(key.text(), bounds);
     }
 }
 
@@ -139,6 +142,9 @@ pub trait Host: Doors {
     fn reveal(&self, section: Sec) -> Act;
     /// What the page remembers between frames.
     fn spots(&self) -> Rc<Spots>;
+    /// The flow the page's moving parts are wrapped in, so a layout that
+    /// changes mode springs to its new places.
+    fn flow(&self) -> Flow;
 }
 
 /// A page with no shell: a still (the gallery, tests). State is fixed, the
@@ -151,13 +157,14 @@ pub struct Fixed {
     spots: Rc<Spots>,
     doors: crate::anatomy::page::Still,
     presences: RefCell<BTreeMap<FoldKey, Presence>>,
+    flow: Flow,
 }
 
 impl Fixed {
     /// A still page in state `ui`.
     #[must_use]
     pub fn new(ui: Ui) -> Self {
-        Self { ui, open: BTreeSet::new(), spots: Spots::new(), doors: crate::anatomy::page::Still, presences: RefCell::new(BTreeMap::new()) }
+        Self { ui, open: BTreeSet::new(), spots: Spots::new(), doors: crate::anatomy::page::Still, presences: RefCell::new(BTreeMap::new()), flow: Flow::new("s6-still") }
     }
 
     /// The same still with `folds` unrolled.
@@ -208,5 +215,8 @@ impl Host for Fixed {
     }
     fn spots(&self) -> Rc<Spots> {
         Rc::clone(&self.spots)
+    }
+    fn flow(&self) -> Flow {
+        self.flow.clone()
     }
 }

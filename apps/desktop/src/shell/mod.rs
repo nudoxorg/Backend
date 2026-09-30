@@ -23,6 +23,7 @@
 //!    its wake task; the shell only reads what already landed and asks for
 //!    the rest (`ensure`, `prefetch`), so an idle window requests no frame.
 
+pub(crate) mod acquire;
 mod ask;
 pub(crate) mod bodies;
 mod facet_sync;
@@ -33,6 +34,7 @@ mod jump;
 mod hints;
 mod keys;
 pub(crate) mod kit;
+mod onboard;
 mod peeks;
 mod pins;
 mod reader;
@@ -40,6 +42,7 @@ mod region;
 mod reveal;
 mod root;
 mod shelf;
+mod side;
 mod status;
 mod symbol_links;
 mod system;
@@ -52,6 +55,8 @@ pub(crate) mod tests;
 mod anatomy_tests;
 #[cfg(test)]
 mod motion_tests;
+#[cfg(test)]
+mod orbit_tests;
 #[cfg(test)]
 mod comb_tests;
 #[cfg(test)]
@@ -70,4 +75,5 @@ mod fluid_tests;
 pub use frame::{Frame, FrameInput, ShelfMode};
 pub use reader::Way;
 pub use keys::bindings as key_bindings;
+pub(crate) use keys::{Command as KeyCommand, TABLE as KEY_TABLE};
 pub use root::{RenderCounts, Shell, open_shell};

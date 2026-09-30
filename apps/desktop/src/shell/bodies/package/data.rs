@@ -48,10 +48,54 @@ pub(super) struct ItemData {
 pub(super) struct ModuleData {
     /// Its path (`sync::mpsc`).
     pub name: SharedString,
+    /// Whether the index recorded that its names are in it.
+    pub placement: Placement,
     /// Its own first sentence.
     pub doc: Option<SharedString>,
     /// Its public names, in outline order.
     pub items: Vec<ItemData>,
+}
+
+/// Whether the index recorded which module a name is in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Placement {
+    /// It did: the module is the one the index (or the source) names.
+    Recorded,
+    /// It did not: the names were gathered into one region for want of a module.
+    Gathered,
+}
+
+/// What the modules on the page are, said with the count of names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Structure {
+    /// Modules as the index and the source record them.
+    Modules,
+    /// One region, the crate root, whose names are re-exported from `hidden`
+    /// private modules: the crate's public API is flat by design.
+    Root { hidden: usize },
+    /// The index records no module for these names.
+    Gathered,
+}
+
+/// What `modules` (as `modules(.., source)` returned them) are: told apart so
+/// the page says a flat root, or names with no module, in words rather than
+/// drawing one region as though that were how the package is organised.
+pub(super) fn structure(modules: &[ModuleData], source: Option<&SourceFacts>) -> Structure {
+    let [only] = modules else { return Structure::Modules };
+    if only.placement == Placement::Gathered {
+        return Structure::Gathered;
+    }
+    let Some(scanned) = source.and_then(|source| source.module(only.name.as_ref()).or_else(|| source.module(&source_key(only.name.as_ref())))) else {
+        return Structure::Modules;
+    };
+    let mut origins: Vec<&str> = only
+        .items
+        .iter()
+        .filter_map(|item| scanned.items.iter().find(|found| found.name.as_str() == item.name.as_ref()).and_then(|found| found.from.as_deref()))
+        .collect();
+    origins.sort_unstable();
+    origins.dedup();
+    if origins.is_empty() { Structure::Modules } else { Structure::Root { hidden: origins.len() } }
 }
 
 impl ModuleData {
@@ -137,7 +181,7 @@ fn module_path(node: &OutlineNode) -> String {
     parts.join(separator)
 }
 
-fn collect(node: &OutlineNode, name: String, package_name: &str, out: &mut Vec<ModuleData>) {
+fn collect(node: &OutlineNode, name: String, package_name: &str, placement: Placement, out: &mut Vec<ModuleData>) {
     let _ = package_name;
     let mut items = Vec::new();
     let mut nested = Vec::new();
@@ -166,11 +210,11 @@ fn collect(node: &OutlineNode, name: String, package_name: &str, out: &mut Vec<M
         }
     }
     if !items.is_empty() {
-        out.push(ModuleData { name: name.clone().into(), doc: None, items });
+        out.push(ModuleData { name: name.clone().into(), placement, doc: None, items });
     }
     for child in nested {
         let inner = super::super::super::shelf::shelf_name(child);
-        collect(child, format!("{name}::{inner}"), package_name, out);
+        collect(child, format!("{name}::{inner}"), package_name, placement, out);
     }
 }
 
@@ -182,20 +226,43 @@ pub(super) fn modules(tree: &OutlineTree, package_name: &str, source: Option<&So
     for root in tree.roots.iter() {
         if root.decl.kind == Some(DeclarationKind::Module) {
             if !super::super::super::shelf::is_test_module(root) {
-                collect(root, module_path(root), package_name, &mut out);
+                collect(root, module_path(root), package_name, Placement::Recorded, &mut out);
             }
         } else if is_name(root.decl.kind) {
             top.push(root);
         }
     }
     if !top.is_empty() {
-        // Top-level names of languages that have no file module (Go
-        // packages, a Python `__init__`) read as one module of the package.
-        let synthetic = OutlineNode {
-            children: top.iter().map(|node| (*node).clone()).collect::<Vec<_>>().into(),
-            ..top[0].clone()
-        };
-        collect(&synthetic, package_name.to_owned(), package_name, &mut out);
+        // A compiler-backed Rust outline is flat: no file-module node holds a
+        // file's names, but each name says which file it is declared in, and in
+        // Rust a file is a module. So a name that carries its path is placed in
+        // that module. What carries none (an implementation block, a type the
+        // signatures merely mention) has no module to be placed in and is not a
+        // public name of one.
+        let placed: Vec<&OutlineNode> =
+            top.iter().copied().filter(|node| node.decl.language == backend_present::Language::Rust && node.decl.path.is_some()).collect();
+        if placed.is_empty() {
+            // Top-level names of languages that have no file module (Go
+            // packages, a Python `__init__`), and of an outline that places
+            // none of its names, read as one module of the package.
+            let synthetic = OutlineNode {
+                children: top.iter().map(|node| (*node).clone()).collect::<Vec<_>>().into(),
+                ..top[0].clone()
+            };
+            collect(&synthetic, package_name.to_owned(), package_name, Placement::Gathered, &mut out);
+        }
+        let mut by_module: Vec<(String, Vec<OutlineNode>)> = Vec::new();
+        for node in placed {
+            let module = module_path(node);
+            match by_module.iter_mut().find(|(name, _)| *name == module) {
+                Some((_, names)) => names.push(node.clone()),
+                None => by_module.push((module, vec![node.clone()])),
+            }
+        }
+        for (name, names) in by_module {
+            let group = OutlineNode { children: names.clone().into(), ..names[0].clone() };
+            collect(&group, name, package_name, Placement::Recorded, &mut out);
+        }
     }
     // The same module can be read from two files (`mod.rs` and `x.rs`):
     // merge by name.
@@ -283,7 +350,7 @@ fn enrich(modules: &mut Vec<ModuleData>, source: &SourceFacts) {
             let mut items = Vec::new();
             adopt(&module.path, &mut items);
             if !items.is_empty() {
-                modules.push(ModuleData { name: module.path.clone().into(), doc: source.docs.get(&module.path).map(|d| d.sentence.clone().into()), items });
+                modules.push(ModuleData { name: module.path.clone().into(), placement: Placement::Recorded, doc: source.docs.get(&module.path).map(|d| d.sentence.clone().into()), items });
             }
         }
         for module in modules.iter_mut() {
@@ -476,14 +543,18 @@ pub(super) fn past(package: &PackageRef, at: &str, cx: &mut gpui::App) -> Past {
 /// The ticker for a dossier: its recorded releases, with the dates the
 /// release fixture knows, and the pin from the route.
 pub(super) fn ticker(dossier: &PackageDossier, source: Option<&SourceFacts>, pin: Option<&str>, reading: Option<&str>, today: &str, cx: &mut gpui::App) -> Option<Rc<TickerFacts>> {
-    let versions = dossier.versions.known()?;
-    if versions.is_empty() {
-        return None;
-    }
     // Every release the registry's index cache knows, dated; the ones the
-    // index has read are the ones whose names the page can show.
+    // index has read are the ones whose names the page can show. This holds
+    // for a crate the library indexed from an unpacked registry directory
+    // too, whose version list the dossier does not carry: the pin is the
+    // release whose names are read then.
     if let Some(published) = source.map(|s| &s.releases).filter(|r| r.len() > 1) {
-        let read = |version: &str| versions.iter().any(|entry| entry.version.as_ref() == version || facet::marks::semver::short(&entry.version) == facet::marks::semver::short(version));
+        let versions = dossier.versions.known();
+        let same = |a: &str, b: &str| a == b || facet::marks::semver::short(a) == facet::marks::semver::short(b);
+        let read = |version: &str| match versions {
+            Some(list) => list.iter().any(|entry| same(entry.version.as_ref(), version)),
+            None => pin.is_some_and(|pin| same(pin, version)),
+        };
         let releases: Vec<Release> = published
             .iter()
             .map(|release| Release {
@@ -494,6 +565,10 @@ pub(super) fn ticker(dossier: &PackageDossier, source: Option<&SourceFacts>, pin
             })
             .collect();
         return Some(Rc::new(TickerFacts::new(&releases, pin, today).reading(reading)));
+    }
+    let versions = dossier.versions.known()?;
+    if versions.is_empty() {
+        return None;
     }
     let dated = crate::runtime::fixture_releases::release_data(&dossier.package, cx);
     let releases: Vec<Release> = versions

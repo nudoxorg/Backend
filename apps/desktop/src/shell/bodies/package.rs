@@ -15,6 +15,7 @@ use crate::shell::kit::{HoverIntent, package_route, quiet, text};
 use crate::shell::reader::Reader;
 use facet::icons::Kind;
 use facet::marks::{DepFacts, DepKind, Eco, EcoFacts, dep_line, ecosystem_mark};
+use facet::tokens::fluid::PACKAGE_GEM;
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
@@ -23,6 +24,10 @@ use std::rc::Rc;
 mod data;
 mod fluid;
 mod folio;
+mod target;
+use target::PageTarget;
+#[cfg(test)]
+mod regions_tests;
 #[cfg(test)]
 mod tests;
 
@@ -59,7 +64,8 @@ pub(super) fn body(
         Route::Symbol(route) => (PackageRef::parse(route.package.as_str()).ok(), route.at.clone()),
         _ => (None, None),
     };
-    let pin_version = pin.as_ref().and_then(|pin| pin.version()).map(str::to_owned);
+    // A registry tree read as a local root is a release too (`toml-0.8.23`).
+    let pin_version = pin.as_ref().and_then(PackageRef::release_version).map(str::to_owned);
     let record = dossier.record.known();
     let name = record.map_or_else(|| dossier.package.display_name().to_owned(), |record| record.name.to_string());
     let project_name = active.name.as_deref().unwrap_or("your project");
@@ -83,6 +89,7 @@ pub(super) fn body(
         at: at.as_ref().map(|at| at.as_str().to_owned().into()),
         pin: pin_version.clone().map(Into::into),
         documented: data::documented(&modules),
+        structure: data::structure(&modules, ready.as_deref()),
         outline_gap: match &dossier.outline {
             crate::model::pages::Known::Unknown(gap) => Some(crate::shell::kit::gap_words(gap)),
             _ => None,
@@ -102,13 +109,13 @@ pub(super) fn body(
     // territory wants the room the reader has.
     let measure = page_measure(ctx);
     let byline = ready.as_deref().map(data::byline).unwrap_or_default();
-    let hero = hero(&dossier, &active, &name, &byline, &measure, ctx);
+    let hero = hero(&dossier, &active, &name, &byline, &measure, ctx, cx);
     let id = format!("folio-{}", pin.as_ref().map_or_else(|| dossier.package.as_str().to_owned(), |pin| pin.as_str().to_owned()));
     // A click on a card left this page: that card's module is open again on
     // coming back.
     let reopen = ctx.targets.left_by(place).and_then(|left| {
-        let symbol = left.strip_prefix("pkg-card-")?.to_owned();
-        facts.modules.iter().find(|m| m.items.iter().any(|i| i.symbol.as_str() == symbol)).map(|m| m.name.clone())
+        let PageTarget::Card(symbol) = PageTarget::parse(&left)? else { return None };
+        facts.modules.iter().find(|m| m.items.iter().any(|i| i.symbol == symbol)).map(|m| m.name.clone())
     });
     let folio = folio::Folio {
         id: id.into(),
@@ -125,26 +132,23 @@ pub(super) fn body(
     // Centred on the reading column it overflows.
     let overshoot = (measure.width() - ctx.measure.width()).max(px(0.0));
     let mut leaves = vec![Leaf::new(div().ml(-(overshoot * 0.5)).child(folio))];
+    // A registry release the owner has not indexed offers to be added (W-Acquire).
+    if let Some(offer) = crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure, cx) {
+        leaves.insert(0, Leaf::new(offer));
+    }
     if let Some(leaf) = readme(&dossier, ctx) {
         leaves.push(leaf);
     }
     leaves
 }
 
-/// The measure of the page: the room the reader has, up to a cap, rather
-/// than the reading column's width. The reader's scroller reports its own
-/// bounds once it has been laid out; before that the reading column is all
-/// there is.
+/// The measure of the page: the room the reader gives it this frame (the
+/// window's, never a frame behind), up to a cap, rather than the reading
+/// column's width.
 fn page_measure(ctx: &Ctx<'_>) -> Measure {
-    let viewport = ctx.reader_scroll.bounds().size.width;
     let scale = ctx.measure.scale();
-    let column = ctx.measure.width();
-    if viewport <= column {
-        return ctx.measure;
-    }
-    let pad = ctx.measure.within(viewport).fluid(22.0, 40.0);
-    let content = (viewport - pad * 2.0).max(column);
-    ctx.measure.within(content.min(px(PAGE_MAX * scale)))
+    let room = ctx.content.width().max(ctx.measure.width());
+    ctx.content.within(room.min(px(PAGE_MAX * scale)))
 }
 
 /// The widest the folio grows, px at 100 % text.
@@ -157,13 +161,21 @@ fn hero(
     byline: &[SharedString],
     measure: &Measure,
     ctx: &mut Ctx<'_>,
+    cx: &gpui::App,
 ) -> AnyElement {
     let palette = ctx.palette;
     let record = dossier.record.known();
     let name = ctx.say(name.to_owned());
-    let mut words = div().flex().flex_col().gap(measure.space(Space::Tight)).child(text(ty::HERO, measure, palette.ink0).child(name));
+    // The name is never ellipsized: it wraps at identifier boundaries and
+    // steps down only when one segment cannot fit the room beside the gem.
+    let gem = PACKAGE_GEM.at(measure.fluid_room());
+    let room = (measure.width() - gem - measure.space(Space::Wide)).max(px(120.0));
+    let (lines, role) = crate::shell::text_fit::fit_name(&name, ty::HERO, measure, room, cx);
+    ctx.hero.extend(lines.iter().map(|line| SharedString::from(line.clone())));
+    let mut words = div().flex().flex_col().gap(measure.space(Space::Tight)).child(crate::shell::text_fit::name_lines(&lines, role, palette.ink0));
     if let Some(description) = record.and_then(|record| record.description.known()) {
-        let lede = ctx.say(description.to_string());
+        // A Cargo description wraps its lines in the manifest; the page wraps its own.
+        let lede = ctx.say(description.split_whitespace().collect::<Vec<_>>().join(" "));
         words = words.child(text(ty::LEDE, measure, palette.ink2).max_w(measure.width() * 0.9).child(lede));
     }
     // Who made it, read from its manifest (labelled: not an index fact).
@@ -199,11 +211,33 @@ fn hero(
         && !list.is_empty()
     {
         let parent = dossier.package.display_name().to_owned();
-        let facts: Vec<DepFacts> = list.iter().map(|dependency| dep_facts(dependency, active)).collect();
-        let links = ctx.links.clone();
-        marks = marks.child(dep_line("mk-deps", facts, parent, measure).on_open(move |target, _window, cx| {
-            open_dependency(target, &links, cx);
-        }));
+        // The library, to link a dependency to the release of it that is
+        // indexed here (a project's own dependencies are indexed as the
+        // trees its lock pins, not under a registry address).
+        let store = ctx.links.store.read(cx);
+        let orbit = store.orbit();
+        let indexed: &[crate::model::pages::IndexedPackage] = orbit.loaded_value().and_then(|model| model.indexed.known()).map_or(&[], |list| &list[..]);
+        let facts: Vec<DepFacts> = list.iter().map(|dependency| dep_facts(dependency, active, indexed)).collect();
+        // Each dependency that goes somewhere is a door: the keyboard stands
+        // on it, Enter opens it as a click does, and Back lands on it again.
+        let door_of: Vec<(SharedString, SharedString)> =
+            facts.iter().filter_map(|dep| dep.target.clone().map(|place| (place, PageTarget::Dependency(dep.name.clone()).id()))).collect();
+        let (targets, on_page, recall) = (ctx.targets.clone(), ctx.active, ctx.targets.recall());
+        let (click_links, click_recall, door_links) = (ctx.links.clone(), recall.clone(), ctx.links.clone());
+        marks = marks.child(
+            dep_line("mk-deps", facts, parent, measure)
+                .on_open(move |place, _window, cx| {
+                    let door = door_of.iter().find(|(at, _)| at == place).map(|(_, id)| id.clone());
+                    open_dependency(place, door, &click_recall, &click_links, cx);
+                })
+                .wrap(move |dep, link| {
+                    let Some(place) = dep.target.clone() else { return link };
+                    let door = PageTarget::Dependency(dep.name.clone());
+                    let (links, recall, id) = (door_links.clone(), recall.clone(), door.id());
+                    let act: crate::shell::focus::Act = Rc::new(move |_window, cx| open_dependency(&place, Some(id.clone()), &recall, &links, cx));
+                    folio::door(&targets, on_page, &door, dep.name.clone(), act, link)
+                }),
+        );
     }
     div()
         .flex()
@@ -214,8 +248,10 @@ fn hero(
                 .flex()
                 .items_center()
                 .gap(measure.space(Space::Wide))
-                .child(facet::paint::gem(Kind::Package).size(f32::from(measure.fluid(48.0, 64.0))))
-                .child(words),
+                .min_w_0()
+                .child(facet::paint::gem(Kind::Package).size(f32::from(gem)).flex_none())
+                // The words take what the gem leaves, and wrap inside it.
+                .child(words.flex_1().min_w_0()),
         )
         .child(marks)
         .into_any_element()
@@ -245,7 +281,7 @@ fn today() -> String {
 /// of the reader's own cargo workspace (`active.members`, from its
 /// `[workspace] members`) — not merely a coordinate that resolves to a
 /// path on this machine, which vendored and registry sources do too.
-fn dep_facts(dependency: &Dependency, active: &ActiveProject) -> DepFacts {
+fn dep_facts(dependency: &Dependency, active: &ActiveProject, indexed: &[crate::model::pages::IndexedPackage]) -> DepFacts {
     let kind = match dependency.scope {
         DependencyScope::Development => DepKind::Dev,
         DependencyScope::Build => DepKind::Build,
@@ -257,9 +293,8 @@ fn dep_facts(dependency: &Dependency, active: &ActiveProject) -> DepFacts {
     // text, never as a control that looks live but goes nowhere. An
     // unresolved dependency has no target at all, rather than a name that
     // cannot actually open.
-    let target = dependency
-        .resolved
-        .as_ref()
+    let target = in_the_library(dependency, indexed)
+        .or(dependency.resolved.as_ref())
         .map(|package| SharedString::from(package.as_str().to_owned()));
     DepFacts {
         name: dependency.name.to_string().into(),
@@ -281,11 +316,32 @@ fn dep_facts(dependency: &Dependency, active: &ActiveProject) -> DepFacts {
     }
 }
 
-/// Follows a dependency mark's link to the package it names.
-fn open_dependency(target: &SharedString, links: &crate::shell::region::Links, cx: &mut gpui::App) {
+/// The release of `dependency` the library holds, when it holds one: the
+/// release its resolver chose, else the one release of that name, else the
+/// one whose version the requirement names exactly (`0.8.23`, `=0.8.23`).
+fn in_the_library<'a>(dependency: &Dependency, indexed: &'a [crate::model::pages::IndexedPackage]) -> Option<&'a PackageRef> {
+    let named: Vec<&PackageRef> = indexed.iter().map(|package| &package.package).filter(|package| package.display_name() == dependency.name.as_ref()).collect();
+    let chosen = dependency.resolved.as_ref().and_then(PackageRef::release_version);
+    let written = dependency.requirement.trim_start_matches(['=', '^', '~', ' ']);
+    named
+        .iter()
+        .copied()
+        .find(|package| chosen.is_some_and(|version| package.release_version() == Some(version)))
+        .or_else(|| (named.len() == 1).then(|| named[0]))
+        .or_else(|| named.iter().copied().find(|package| package.release_version() == Some(written)))
+}
+
+/// Follows a dependency mark's link to the package it names; the page is
+/// left by its door (`door`), so Back lands on it again.
+fn open_dependency(target: &SharedString, door: Option<SharedString>, recall: &crate::shell::focus::Recall, links: &crate::shell::region::Links, cx: &mut gpui::App) {
     if let Ok(package) = PackageRef::parse(target.as_ref())
         && let Some(route) = package_route(&package)
     {
+        if let Some(door) = door {
+            let leaving = links.snapshot(cx).route().clone();
+            recall.focus(door.clone());
+            recall.remember_leave(leaving, door);
+        }
         links.dispatch(Intent::Navigate(route), cx);
     }
 }

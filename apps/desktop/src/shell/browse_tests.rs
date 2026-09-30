@@ -39,7 +39,8 @@ fn owner() -> (backend_local_service::EmbeddedLocalService, PathBuf, PathBuf) {
     // `/tmp`, not `temp_dir()`: a long socket path exceeds `sockaddr_un`.
     let state = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}"));
     let endpoint = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}.sock"));
-    std::fs::create_dir_all(state.join("data")).expect("workspace");
+    // The owner refuses a state directory anyone else could enter: 0700, not the umask's 0755.
+    crate::host::private_dir(&state.join("data")).expect("workspace");
     let paths = backend_runtime::WorkspacePaths::discover(Some(repository()), Some(state.join("data")), Some(endpoint.clone()))
         .expect("workspace paths");
     paths.initialize().expect("initialize");
@@ -79,7 +80,11 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     let fixture = repository().join("apps/desktop/tests/fixtures/browse_tree");
     let reader_endpoint = endpoint.clone();
     let pool = ReadPool::start(2, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
-    let mut rig = rig_with_reads(cx, Some(tree_route(&fixture)), 1440.0, 900.0, pool);
+    let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
+    // A real owner reads the tree through `cargo metadata`: real seconds,
+    // more under load, which `settle` waits for in real time.
+    rig.patience = Duration::from_secs(120);
+    rig.go(crate::navigation::Intent::Navigate(tree_route(&fixture)));
     let lede = "Your 2 packages lean on 3 others directly, and 31 in all.";
     let started = Instant::now();
     let mut said = rig.said();

@@ -18,6 +18,9 @@ mod source;
 mod state;
 mod symbol;
 
+/// How many declaration pages are still reading their lines (the harness
+/// waits for none before a capture).
+
 
 use super::focus::Targets;
 use super::kit::HoverIntent;
@@ -40,6 +43,9 @@ pub(crate) struct Leaf {
     pub main: AnyElement,
     /// Its note: beside it when the reader is wide, under it otherwise.
     pub note: Option<AnyElement>,
+    /// The block takes the wide measure (`Ctx::wide`) rather than the reading
+    /// column: a table, a rail, a ring of names. Prose never does.
+    pub wide: bool,
 }
 
 impl Leaf {
@@ -47,7 +53,15 @@ impl Leaf {
         Self {
             main: main.into_any_element(),
             note: None,
+            wide: false,
         }
+    }
+
+    /// The block may take the wide measure (`Ctx::wide`): in a big window it
+    /// fills what the reading column leaves empty.
+    pub(crate) fn wide(mut self) -> Self {
+        self.wide = true;
+        self
     }
 
     pub(crate) fn with_note(mut self, note: impl gpui::IntoElement) -> Self {
@@ -68,10 +82,17 @@ pub(crate) struct Ctx<'a> {
     /// folio's until 1440 px, then growing to fill a big window
     /// (`facet::tokens::fluid::WIDE_FOLIO`). Prose keeps `measure`.
     pub wide: Measure,
+    /// The whole room the reader gives a page, gutters excluded, exactly as
+    /// this frame's window has it (never a frame behind, as the scroller's
+    /// own bounds are): for a page that fills the window rather than a
+    /// column of it (the package page's territory).
+    pub content: Measure,
     /// The reader's layout modes, for a page whose own arrangement changes
     /// with its room (`Modes::settle`, `Modes::columns`): held through a
     /// hysteresis band so a width on the edge cannot flip it every frame.
     pub modes: facet::fluid::Modes,
+    /// The Library's ring of names: their flow (`facet::motion::Flow`).
+    pub ring_flow: facet::motion::Flow,
     /// The active palette.
     pub palette: &'static Palette,
     /// Held reveal modes.

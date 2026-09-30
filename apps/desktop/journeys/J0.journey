@@ -1,0 +1,56 @@
+# J0 · install (W-Journey brief §3). A clean machine: no state dir, no
+# settings, no projects. First run → add frontends/rust/fixtures/toml_pin by
+# keyboard through the add-folder dialog → the real owner compiles it and
+# the crates its Cargo.lock pins (offline, from the local cargo cache) → the
+# Library names the project and its dependencies → the person opens the
+# project's page → quit → relaunch → still there, on the same page and theme.
+size 1440x900
+start clean
+
+do install frontends/rust/fixtures/toml_pin
+
+check library
+  route like "orbit"
+  text "toml_pin" in reader
+  text "toml_pin" in shelf
+  like "1 project · * packages" in shelf
+  ground dark in reader
+
+# The project is ready; the packages its lock pins follow, one at a time,
+# from the local cargo cache (the Library says how many so far).
+needs product "installing a project indexes the crates its Cargo.lock pins, and the Library lists them (GAPS.md G15)"
+await like "All * packages toml_pin uses are in the library*" in reader within 40m
+check library-dependencies
+  unlike "* · 0 packages" in shelf
+  like "All * packages toml_pin uses are in the library*" in reader
+  text "toml" "serde" "toml_edit" "winnow" in reader
+  text "toml" "serde" "toml_edit" "winnow" in shelf
+  like "* declarations from * of * files" in reader
+  unlike "0 declarations *" in reader
+
+click "toml_pin" in reader
+check project-page
+  route like "package *toml_pin"
+  text "toml-pin-fixture" in reader
+  ground dark in reader
+
+do relaunch
+
+check restored
+  route like "package *toml_pin"
+  text "toml-pin-fixture" in reader
+  text "toml_pin" in shelf
+  ground dark in reader
+
+needs product "a finished index is persisted, so a relaunch does not index it again (GAPS.md G4)"
+check restored-ready
+  absent "indexing" "Compiling toml_pin." in reader
+
+# Back to the Library by its key: everything the install brought is still there.
+key ctrl-1
+check library-restored
+  route like "orbit"
+  like "1 project · * packages" in shelf
+  unlike "* · 0 packages" in shelf
+  text "toml" "serde" "toml_edit" "winnow" in shelf
+  absent "indexing" "Compiling toml_pin." in reader

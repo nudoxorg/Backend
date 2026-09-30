@@ -415,10 +415,20 @@ impl Library {
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
+        // A snapshot's rows are held in key order, so the ranked order
+        // travels as each row's score: the rows left in the ranking after it,
+        // counted from its end (the first row of the whole ranking scores
+        // highest, on every page).
+        let total = ranked_ids.len();
         let rows = page
             .ids
             .iter()
-            .filter_map(|&id| self.view.row(id))
+            .enumerate()
+            .filter_map(|(at, &id)| {
+                let mut row = self.view.row(id)?;
+                row.score = u32::try_from(total - (start + at)).ok();
+                Some(row)
+            })
             .collect::<Vec<_>>();
         self.work.record_seek();
         self.work.record_output(rows.len());

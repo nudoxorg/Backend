@@ -23,16 +23,17 @@ use super::kit::{keycap, text};
 use super::region::{Links, Region, RegionCore};
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
-use crate::navigation::{Intent, OrbitRoute, Route, View};
+use crate::navigation::{Intent, OrbitRoute, Overlay, Route, View};
 use crate::runtime::store::{Branch, DataStore, route_package, route_symbol};
 use facet::icons::{self, Icon, IconSize, KindSize};
-use facet::motion::Flow;
+use facet::motion::{Flow, Motion};
 use facet::tokens::fluid::{BAR, Bar};
 use facet::overlay::float::{self, FloatKind, FloatRequest, Side};
 use facet::overlay::menu::{self, Menu, MenuItem};
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
-use facet::{ActiveFacet as _, Measure, Palette, Space};
+use facet::{ActiveFacet as _, Measure, Palette, Set as _, Space};
+use gpui_component::input::{Input, InputState};
 use gpui::{
     AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, WindowControlArea, div, px,
@@ -53,9 +54,14 @@ pub(crate) struct Titlebar {
     press: Option<Task<()>>,
     /// The press became a long press: its click is not a step back.
     long: Rc<Cell<bool>>,
-    /// What the bar's modes move: the controls that arrive or leave and the
-    /// plate's segments glide to their new places.
+    /// What the bar's modes move: the plate's segments and name glide to
+    /// their new places when a control arrives or leaves (the controls at the
+    /// window's edges follow the edge and need no flow of their own).
     flow: Flow,
+    /// The bar's mode changes: what arrives fades in.
+    motion: Motion,
+    /// Ask's field (`Ask::input`): drawn in the bar's place while Ask is open.
+    ask_input: Option<gpui::Entity<InputState>>,
 }
 
 impl Titlebar {
@@ -67,11 +73,18 @@ impl Titlebar {
             press: None,
             long: Rc::new(Cell::new(false)),
             flow: Flow::new("titlebar"),
+            motion: Motion::new(),
+            ask_input: None,
         }
     }
 
     pub(crate) const fn renders(&self) -> u64 {
         self.core.renders()
+    }
+
+    /// Hands the bar Ask's field, which it draws while Ask is open.
+    pub(crate) fn set_ask_input(&mut self, input: gpui::Entity<InputState>) {
+        self.ask_input = Some(input);
     }
 }
 
@@ -91,7 +104,7 @@ impl Region for Titlebar {
 }
 
 impl Render for Titlebar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.core.rendered();
         self.targets.begin();
         let measure = self.core.measure(cx);
@@ -100,6 +113,9 @@ impl Render for Titlebar {
         let keys = facet.reveal.keys;
         let bar = self.core.modes().settle(&BAR, measure.fluid_room());
         self.flow.epoch(bar.epoch);
+        // What a change of mode brings in fades in as the rest glides to its
+        // place; a settled bar (or reduced motion) is fully drawn.
+        let arriving = bar.progress(&self.motion, window, cx);
         let inbox_shown = bar.mode >= Bar::Snug;
         let snapshot = self.links.snapshot(cx);
         let (here, segments) = {
@@ -132,11 +148,14 @@ impl Render for Titlebar {
         if let Some(active) = view_of(snapshot.route())
             && bar.mode == Bar::Full
         {
-            let switch = self.view_switch(active, &measure, palette, keys);
-            left = left.child(self.flow.item("tb-flow-views", switch));
+            let fade = if bar.from.is_some_and(|from| from < Bar::Full) { arriving } else { 1.0 };
+            left = left.child(div().opacity(fade).child(self.view_switch(active, &measure, palette, keys)));
         }
 
-        let center = if orbit {
+        let asking = snapshot.overlay() == Some(Overlay::CommandPalette);
+        let center = if let (true, Some(input)) = (asking, self.ask_input.clone()) {
+            Self::ask_typing(&input, &measure, palette)
+        } else if orbit {
             self.ask_field(&measure, palette, keys, cx)
         } else {
             self.jump_bar(&snapshot, &here, &segments, bar.mode, &measure, palette, keys, cx)
@@ -148,11 +167,11 @@ impl Render for Titlebar {
             let target_links = links.clone();
             let act: super::focus::Act = Rc::new(move |_, cx| target_links.dispatch(Intent::OpenInbox, cx));
             self.targets.push(Target { id: id.into(), label: "Inbox".into(), act: Rc::clone(&act), peek: None, source: None });
-            let inbox = self.targets.track(
+            let fade = if bar.from.is_some_and(|from| from < Bar::Snug) { arriving } else { 1.0 };
+            right = right.child(div().opacity(fade).child(self.targets.track(
                 id,
                 facet::controls::icon_button(id, Icon::Inbox, "Inbox", &measure).on_click(move |window, cx| act(window, cx)),
-            );
-            right = right.child(self.flow.item("tb-flow-inbox", inbox));
+            )));
         }
 
         let glow = self.targets.glow(&measure);
@@ -266,7 +285,7 @@ impl Titlebar {
                     .justify_center()
                     .size(hit_side(measure))
                     .cursor_pointer()
-                    .child(text(ty::ROW, measure, if can_back { palette.ink2 } else { palette.ink4 }).child("‹"))
+                    .child(text(ty::ROW, measure, if can_back { palette.ink2 } else { palette.ink3 }).child("‹"))
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         let links = press_links.clone();
                         let targets = press_targets.clone();
@@ -515,6 +534,41 @@ impl Titlebar {
             .into_any_element()
     }
 
+    /// The bar while Ask is open: the query, live, on the plate the field
+    /// rests on (the results are the plate over the shelf's column).
+    fn ask_typing(input: &gpui::Entity<InputState>, measure: &Measure, palette: &Palette) -> AnyElement {
+        let height = px(32.0 * measure.scale());
+        div()
+            .id("ask-typing")
+            .relative()
+            .min_w(px(0.0))
+            .flex_1()
+            .max_w(px(460.0 * measure.scale()))
+            .child(
+                cut()
+                    .chamfer(Chamfer::Float)
+                    .bevel(Bevel::Focus)
+                    .fill(palette.plate)
+                    .h(height)
+                    .px(measure.space(Space::Roomy))
+                    .flex()
+                    .items_center()
+                    .gap(measure.space(Space::Base))
+                    .child(icons::ui(Icon::Search, IconSize::S14, palette.ink2).size(measure.icon(14.0)))
+                    .child(
+                        Input::new(input)
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .set(ty::ROW, measure)
+                            .px(px(0.0))
+                            .flex_1()
+                            .min_w(px(0.0)),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn ask_field(&mut self, measure: &Measure, palette: &Palette, keys: bool, _cx: &mut Context<Self>) -> AnyElement {
         let links = self.links.clone();
         let act: super::focus::Act = Rc::new(move |_, cx| {
@@ -624,12 +678,10 @@ fn hit_side(measure: &Measure) -> Pixels {
     px((24.0 * measure.scale()).max(24.0))
 }
 
-/// Whether one of the jump bar's menus (back's places, a segment's
-/// siblings) is open.
+/// Whether a menu is open (the jump bar's back places and siblings, the
+/// symbol page's package menu): it owns the plain keys.
 pub(crate) fn menu_open(window: &Window, cx: &mut App) -> bool {
-    std::iter::once(gpui::ElementId::from(SharedString::from("jump-back-menu")))
-        .chain((0..8).flat_map(|index| [format!("jump-siblings-{index}"), format!("jump-siblings-{index}-tests")]).map(|key| gpui::ElementId::from(SharedString::from(key))))
-        .any(|key| facet::overlay::float::is_open(&key, window, cx))
+    facet::overlay::float::menu_open(window, cx)
 }
 
 /// Opens the siblings of segment `index` under it: the outline level it

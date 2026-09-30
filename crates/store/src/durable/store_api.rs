@@ -61,6 +61,13 @@ impl FileStore {
         let _process_lock = store.acquire_process_lock()?;
         store.read_state()?;
         store.recover_gc_on_open()?;
+        // A session open cannot recover (a link the store never made) stays
+        // where it is: the next write session reaps again and refuses with
+        // `Corrupt`, as it always has, while every other object still reads.
+        match super::artifact_fs::reap_stale_sessions_on_open(&store) {
+            Ok(()) | Err(StoreError::Corrupt) => {}
+            Err(other) => return Err(other),
+        }
         Ok(store)
     }
 

@@ -9,8 +9,9 @@ use super::super::{
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    index_project_intent, index_project_intent_at, index_project_intent_with_cluster_and_intent,
-    remove_project_intent, semantic_version_record, semantic_versions,
+    DeferredIndex, PreparedIndex, finish_deferred_index, index_project_intent,
+    index_project_intent_at, index_project_intent_with_cluster_and_intent, prepare_index_project,
+    remove_project_intent, run_deferred_compile, semantic_version_record, semantic_versions,
 };
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
@@ -69,6 +70,88 @@ pub(in crate::builtin) struct CommandAdapter {
     pending_stored_acks: Option<Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     dependencies: Option<ResidentDependencies>,
     browse: super::super::browse::BrowseCache,
+    /// The index job whose compile runs off the owner loop, if one does.
+    indexing: Option<IndexJob>,
+    /// Commands that change state, waiting for that job: one writer at a
+    /// time, in arrival order. Reads never wait here.
+    waiting: std::collections::VecDeque<(u64, Vec<u8>)>,
+}
+
+/// An `Add` of a local folder whose compile runs off the owner loop.
+struct IndexJob {
+    ticket: u64,
+    request_id: u64,
+    requested_package: backend_engine::PackageKey,
+    job: DeferredIndex,
+    compiled: std::sync::mpsc::Receiver<
+        Vec<Result<backend_engine::application::StagedSemanticPackage, String>>,
+    >,
+}
+
+/// What the owner loop answers while an index job compiles: reads, from the
+/// last publication. A command not named here changes state (or might) and
+/// waits for the job.
+fn answers_while_indexing(command: &Command) -> bool {
+    use backend_library::SurfaceCommand as S;
+    match command {
+        Command::Packages
+        | Command::PackagePage(_)
+        | Command::Document(_)
+        | Command::Source(_)
+        | Command::Show { .. }
+        | Command::Outline(_)
+        | Command::OutlinePage { .. }
+        | Command::Name(_)
+        | Command::Resolve { .. }
+        | Command::Search(_)
+        | Command::Graph(_)
+        | Command::Related(_)
+        | Command::GraphPage { .. }
+        | Command::GraphQuery(_)
+        | Command::Health
+        | Command::Revision => true,
+        Command::Surface(surface) => matches!(
+            surface,
+            S::Read { .. }
+                | S::References { .. }
+                | S::Diff { .. }
+                | S::Explore { .. }
+                | S::Package { .. }
+                | S::Dependents { .. }
+                | S::Dependencies { .. }
+                | S::PackageGraphPage { .. }
+                | S::Owner { .. }
+                | S::IndexSearch { .. }
+                | S::PackageVersions { .. }
+                | S::SemanticVersions { .. }
+                | S::PackageProfile { .. }
+                | S::Subscriptions
+                | S::Releases { .. }
+                | S::Projects
+                | S::Tree
+                | S::ProjectTree { .. }
+        ),
+        Command::Add { .. } | Command::Remove { .. } => false,
+    }
+}
+
+/// The reply to an `Add` of `requested_package`, as the add path gives it.
+fn added_reply(requested_package: backend_engine::PackageKey) -> AdmittedReply {
+    let intent_id = backend_engine::intent_id("request_package", requested_package.as_bytes());
+    let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
+        id: backend_engine::encode_id(intent_id.as_bytes()),
+        token: "request_package".to_owned(),
+        payload: requested_package.as_bytes().to_vec().into_boxed_slice(),
+    });
+    (CommandReply::Added(intent_id), Some(certificate))
+}
+
+/// What executing one command came to.
+pub(in crate::builtin) enum Executed {
+    /// The reply body.
+    Reply(Vec<u8>),
+    /// Answered later under its ticket ([`CommandAdapter::poll_deferred`]).
+    Deferred,
 }
 
 struct ResidentDependencies {
@@ -123,7 +206,183 @@ impl CommandAdapter {
             pending_stored_acks,
             dependencies: None,
             browse: super::super::browse::BrowseCache::default(),
+            indexing: None,
+            waiting: std::collections::VecDeque::new(),
         }
+    }
+
+    /// [`Self::execute`], except that indexing a local folder hands its
+    /// compile off the owner loop and answers under `ticket` once it is
+    /// published, and that a command that changes state waits while such a
+    /// compile runs. Reads are answered at once, from the last publication.
+    pub(in crate::builtin) fn execute_or_defer(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        let owner = daemon.engine().daemon().library().cursor();
+        let request = backend_engine::decode_command_dto_for_owner(body, owner)
+            .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        if self.indexing.is_some() && !answers_while_indexing(&request.command) {
+            self.waiting.push_back((ticket, body.to_vec()));
+            return Ok(Executed::Deferred);
+        }
+        if let Command::Add {
+            package,
+            execution_intent,
+        } = request.command
+            && self.owner_cluster.is_none()
+        {
+            let certificate = request.certificate().cloned();
+            if let Some(started) = self.start_index_job(
+                daemon,
+                package,
+                execution_intent,
+                certificate.as_ref(),
+                request.request_id,
+                ticket,
+            )? {
+                return Self::encode(daemon, request.request_id, started, None).map(Executed::Reply);
+            }
+            return Ok(Executed::Deferred);
+        }
+        self.execute(daemon, body).map(Executed::Reply)
+    }
+
+    /// Publishes the index job's compile once it is done, then runs the
+    /// commands that waited for it, in order, until one defers again.
+    /// Returns every reply that is ready, by ticket.
+    pub(in crate::builtin) fn poll_deferred(
+        &mut self,
+        daemon: &mut ProductDaemon,
+    ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        let mut ready = Vec::new();
+        if let Some(indexing) = &self.indexing {
+            let compiled = match indexing.compiled.try_recv() {
+                Ok(compiled) => Some(compiled),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return ready,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            };
+            let Some(IndexJob {
+                ticket,
+                request_id,
+                requested_package,
+                job,
+                ..
+            }) = self.indexing.take()
+            else {
+                return ready;
+            };
+            let reply = match compiled {
+                Some(compiled) => finish_deferred_index(daemon, &mut self.semantic_authority, job, compiled),
+                None => Err(BuiltinModelError(
+                    "the compile stopped before it answered; prior selected semantic generation was preserved"
+                        .to_owned(),
+                )),
+            }
+            .and_then(|intent| self.finish_add(daemon, intent, request_id, requested_package))
+            .or_else(|refusal| {
+                // As in place: the committed source frontier is published, so
+                // the refused project is listed with its reason.
+                let _ = self.publish_view(daemon, None);
+                Err(refusal)
+            })
+            .and_then(|admitted| Self::encode(daemon, request_id, admitted, None));
+            ready.push((ticket, reply));
+        }
+        while self.indexing.is_none()
+            && let Some((ticket, body)) = self.waiting.pop_front()
+        {
+            match self.execute_or_defer(daemon, &body, ticket) {
+                Ok(Executed::Reply(reply)) => ready.push((ticket, Ok(reply))),
+                Ok(Executed::Deferred) => {}
+                Err(error) => ready.push((ticket, Err(error))),
+            }
+        }
+        ready
+    }
+
+    /// Starts indexing a local folder: its scan and source frontier on the
+    /// loop, its compile on a thread. `Some` when there was nothing to
+    /// compile off the loop (the reply is ready), `None` when the job runs.
+    fn start_index_job(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        package: backend_engine::PackageKey,
+        execution_intent: CompileExecutionIntent,
+        certificate: Option<&WireCertificate>,
+        request_id: u64,
+        ticket: u64,
+    ) -> Result<Option<AdmittedReply>, BuiltinModelError> {
+        let label = certified_package_label(certificate, package)?;
+        let requested_package = package;
+        let (package, label) = canonical_local_package(package, label)?;
+        if !matches!(classify_add_target(&label)?, AddTarget::LocalDirectory) {
+            return self
+                .add(daemon, requested_package, execution_intent, certificate, request_id)
+                .map(Some);
+        }
+        let prepared = match prepare_index_project(
+            daemon,
+            package,
+            &label,
+            request_id,
+            execution_intent,
+            &self.compiler,
+            &mut self.semantic_authority,
+        ) {
+            Ok(prepared) => prepared,
+            Err(refusal) => {
+                let _ = self.publish_view(daemon, None);
+                return Err(refusal);
+            }
+        };
+        match prepared {
+            PreparedIndex::Ready(intent) => {
+                self.finish_add(daemon, intent, request_id, requested_package).map(Some)
+            }
+            PreparedIndex::Compile(mut job) => {
+                let work = job.take_work();
+                let compiler = self.compiler.clone();
+                let (sender, compiled) = std::sync::mpsc::sync_channel(1);
+                std::thread::Builder::new()
+                    .name("locald-index-compile".to_owned())
+                    .spawn(move || {
+                        let _ = sender.send(run_deferred_compile(&compiler, work));
+                    })
+                    .map_err(|error| BuiltinModelError(format!("start the index compile: {error}")))?;
+                self.indexing = Some(IndexJob {
+                    ticket,
+                    request_id,
+                    requested_package,
+                    job,
+                    compiled,
+                });
+                Ok(None)
+            }
+        }
+    }
+
+    /// Commits an index job's semantic intent and publishes the view: the
+    /// end of `add` for a local folder.
+    fn finish_add(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        intent: Option<BuiltinIntent>,
+        request_id: u64,
+        requested_package: backend_engine::PackageKey,
+    ) -> Result<AdmittedReply, BuiltinModelError> {
+        let committed = if let Some(intent) = intent {
+            commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                BuiltinModelError(format!("commit product source intent: {error}"))
+            })?;
+            Some(intent)
+        } else {
+            None
+        };
+        self.publish_view(daemon, committed.as_ref())?;
+        Ok(added_reply(requested_package))
     }
 
     pub(in crate::builtin) fn execute(
@@ -138,8 +397,22 @@ impl CommandAdapter {
         let certificate = request.certificate().cloned();
         let is_search = matches!(&request.command, Command::Search(_));
         self.pending_semantic_search = None;
-        let (reply, certificate) =
-            self.dispatch(daemon, request.command, certificate, request_id)?;
+        let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
+        let status = if is_search {
+            self.pending_semantic_search.take()
+        } else {
+            None
+        };
+        Self::encode(daemon, request_id, admitted, status)
+    }
+
+    /// One admitted reply as the wire's reply DTO.
+    fn encode(
+        daemon: &ProductDaemon,
+        request_id: u64,
+        (reply, certificate): AdmittedReply,
+        search_status: Option<backend_library::SemanticSearchStatus>,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
         let mut reply = match reply {
             CommandReply::Health(root) => backend_engine::ReplyDto::health(
                 request_id,
@@ -148,7 +421,7 @@ impl CommandAdapter {
             ),
             reply => backend_engine::ReplyDto::new(request_id, reply),
         };
-        if is_search && let Some(status) = self.pending_semantic_search.take() {
+        if let Some(status) = search_status {
             reply = reply.with_semantic_search_status(status);
         }
         if let Some(certificate) = certificate {
@@ -524,7 +797,7 @@ impl CommandAdapter {
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
         let intent = match classify_add_target(&label)? {
-            AddTarget::LocalDirectory => index_project_intent_with_cluster_and_intent(
+            AddTarget::LocalDirectory => match index_project_intent_with_cluster_and_intent(
                 daemon,
                 package,
                 &label,
@@ -534,7 +807,18 @@ impl CommandAdapter {
                 &mut self.semantic_authority,
                 self.owner_cluster.as_deref(),
                 self.pending_stored_acks.as_ref(),
-            )?,
+            ) {
+                Ok(intent) => intent,
+                Err(refusal) => {
+                    // The source frontier commits before the compiler runs, so a
+                    // refused compile leaves that frontier durable. Publish it now:
+                    // the project is listed, on its structural rows, in the same
+                    // boot that names why it was refused, instead of staying out of
+                    // the view until the next command or restart.
+                    let _ = self.publish_view(daemon, None);
+                    return Err(refusal);
+                }
+            },
             AddTarget::PackageUrl => self.registry_intent(daemon, package, &label, request_id)?,
         };
         let committed = if let Some(intent) = intent {
@@ -546,13 +830,7 @@ impl CommandAdapter {
             None
         };
         self.publish_view(daemon, committed.as_ref())?;
-        let intent_id = backend_engine::intent_id("request_package", requested_package.as_bytes());
-        let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
-            id: backend_engine::encode_id(intent_id.as_bytes()),
-            token: "request_package".to_owned(),
-            payload: requested_package.as_bytes().to_vec().into_boxed_slice(),
-        });
-        Ok((CommandReply::Added(intent_id), Some(certificate)))
+        Ok(added_reply(requested_package))
     }
 
     fn registry_intent(

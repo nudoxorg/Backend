@@ -225,8 +225,15 @@ pub(crate) fn cargo_language_profile(project_root: &Path) -> Result<LanguageProf
                 manifest.display()
             )
         })?;
-    let edition = package_string_field(package, project_root, &manifest, "edition")?;
+    // Cargo's rule: a package that declares no edition is a 2015-edition
+    // package (the owner's own registry staging reads it so, `registry.rs`).
+    // Many published crates omit it; refusing them refused their whole index.
+    let edition = match package.get("edition") {
+        None => "2015".to_owned(),
+        Some(_) => package_string_field(package, project_root, &manifest, "edition")?,
+    };
     match edition.as_str() {
+        "2015" => Ok(LanguageProfile::Rust(RustEdition::Rust2015)),
         "2018" => Ok(LanguageProfile::Rust(RustEdition::Rust2018)),
         "2021" => Ok(LanguageProfile::Rust(RustEdition::Rust2021)),
         "2024" => Ok(LanguageProfile::Rust(RustEdition::Rust2024)),
@@ -1284,11 +1291,13 @@ mod tests {
             &root.join("package.json"),
             r#"{"name":"not-cargo","version":"9.9.9"}"#,
         );
-        let missing_edition = read_local_manifest(&root);
-        assert!(
-            missing_edition
-                .expect_err("missing edition")
-                .contains("edition")
+        // No edition is Cargo's 2015 edition, never a refusal.
+        let missing_edition = read_local_manifest(&root)
+            .expect("a manifest without an edition")
+            .expect("identity");
+        assert_eq!(
+            missing_edition.profile,
+            LanguageProfile::Rust(RustEdition::Rust2015)
         );
 
         write(

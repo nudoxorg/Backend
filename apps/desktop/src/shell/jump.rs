@@ -91,7 +91,7 @@ fn pinned_release(route: &Route, store: &DataStore) -> Option<String> {
             .known()
             .and_then(|versions| versions.iter().find(|entry| entry.current).map(|entry| entry.version.to_string()))
     });
-    current.or_else(|| package.version().map(ToOwned::to_owned))
+    current.or_else(|| package.release_version().map(ToOwned::to_owned))
 }
 
 /// One segment of the jump bar: its words and where it leads.

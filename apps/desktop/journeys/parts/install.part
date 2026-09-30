@@ -1,0 +1,58 @@
+# Installing: a person with an empty library adds a folder, and the real
+# owner compiles it and its dependencies (offline, from the local cargo
+# cache). Expected words come from the project's own files: its folder name,
+# its Cargo.toml, its Cargo.lock.
+
+# first-run: the empty Library, as a first launch shows it.
+part first-run
+check first-run
+  line "0 projects · 0 packages" in shelf
+  link "Add a folder" in reader
+
+# install PROJECT: from the empty Library, by keyboard. "Add a folder" opens
+# the add-project dialog; the path is typed into its field and ↵ adds it.
+part install PROJECT:path
+do first-run
+click "Add a folder" in reader
+check add-dialog
+  text "Choose folder…" "Cancel" "Add"
+type "{PROJECT.abs}"
+check path-typed-{PROJECT.name}
+  text "{PROJECT.name} · a Rust project (Cargo.toml)"
+key enter
+do indexed {PROJECT}
+
+# install-by-picker PROJECT: the same, choosing the folder in the native
+# panel ("Choose folder…"). The panel is answered with PROJECT: the one
+# substitution a journey may make (nothing can click an OS panel headless).
+part install-by-picker PROJECT:path
+do first-run
+click "Add a folder" in reader
+click "Choose folder…"
+answer-picker {PROJECT}
+do indexed {PROJECT}
+
+# indexed PROJECT: the project is on the shelf and indexing; the owner's
+# work is awaited in real time (its stages are logged as they appear: the
+# project compiling, then each package its lock pins, "N of M"); then it is
+# ready. A launch from Finder has none of the dev shell's toolchain
+# variables: the app must find the person's own Rust, or the project stops.
+part indexed PROJECT:path
+check indexing-{PROJECT.name}
+  text "{PROJECT.name}" in reader
+  text "indexing" in reader
+await absent "indexing" in reader within 40m
+needs product "the app finds this Mac's Rust toolchain without the dev shell, so a Finder launch indexes the project (FINISH.md addendum: toolchain discovery)"
+await absent "stopped" in reader within 5s
+check installed-{PROJECT.name}
+  text "{PROJECT.name}" in reader
+  absent "indexing" "stopped" in reader
+  saw "Compiling {PROJECT.name}." in reader
+
+# install-all PROJECT: installed, and every package its lock pins is in the
+# library too (the state journeys that browse the packages start from).
+part install-all PROJECT:path
+do install {PROJECT}
+await like "All * packages {PROJECT.name} uses are in the library*" in reader within 40m
+check installed-all-{PROJECT.name}
+  like "All * packages {PROJECT.name} uses are in the library*" in reader

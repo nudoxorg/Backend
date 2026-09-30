@@ -24,7 +24,7 @@ use backend_engine::application::{
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticUnavailableReason};
 use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, product_source_file_key};
 use backend_semantic::ir::{
-    DeclarationIdentity, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
+    DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
     SemanticImageView, SemanticReader as _,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -942,6 +942,9 @@ impl<'a> StructuralSites<'a> {
 /// entity by span start with the k-th structural declaration by line. A key
 /// whose two extractions disagree on the count, or whose semantic spans are
 /// not all captured, is ambiguous and keeps no site rather than a guess.
+/// Implementation blocks and parameters are not counted: they have no
+/// structural twin. A key with exactly one entity on each side pairs without
+/// a span.
 fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     session: &DocumentationSession<'_, Reader>,
     declarations: &[&'a backend_compile::SourceDeclaration],
@@ -965,6 +968,20 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     for entity in session.canonical_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
+        // An implementation block and a parameter have no structural twin: the
+        // tag query emits declarations, and only references for
+        // implementations, and it does not see parameters at all. Counting
+        // them in their name's family made every type with an `impl` (and
+        // every field named like a parameter) count more semantic entities
+        // than structural declarations, and the count rule below then dropped
+        // the type's own site along with theirs.
+        if matches!(
+            entity.entity.kind,
+            backend_semantic::ir::ItemKind::Implementation
+                | backend_semantic::ir::ItemKind::Parameter
+        ) {
+            continue;
+        }
         let family = declaration_family(declaration_kind(entity.entity.kind));
         semantic
             .entry((entity.name.to_vec(), family))
@@ -981,7 +998,12 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
         let Some(candidates) = structural.get(&(name, family)) else {
             continue;
         };
-        if candidates.len() != entities.len() || entities.iter().any(|(start, _)| start.is_none()) {
+        // The only entity of its name and family in the file needs no order to
+        // find its twin. Two or more are paired by span order, which needs
+        // every span.
+        if candidates.len() != entities.len()
+            || (entities.len() > 1 && entities.iter().any(|(start, _)| start.is_none()))
+        {
             continue;
         }
         entities.sort_by_key(|(start, _)| *start);
@@ -996,6 +1018,10 @@ pub(super) struct SemanticRowContent {
     pub(super) document: Vec<Fragment>,
     pub(super) signature: Option<String>,
     encoded_bytes: usize,
+    /// The external declarations the documentation links to (`[`f64::NAN`]`),
+    /// each with its handle in the image. The view gives each an external
+    /// row, so the search corpus must give each an external fact.
+    pub(super) documentation_targets: Vec<(ExternalTargetIdentity, ExternalId)>,
 }
 
 /// Projects one semantic image into rows whose basis is stamped on admission.
@@ -1117,15 +1143,24 @@ pub(super) fn project_image_rows(
             duplicate: DuplicatePolicy::Error,
             charges,
         });
+        let mut external = Vec::new();
         for (_, link) in image.links_from(entity.entity.id) {
             let LinkTarget::External(target) = link.target else {
                 continue;
             };
-            let identity = ExternalTargetIdentity::capture(image, target).map_err(|error| {
+            external.push(ExternalTargetIdentity::capture(image, target).map_err(|error| {
                 BuiltinModelError(format!(
                     "identify project semantic external target: {error}"
                 ))
-            })?;
+            })?);
+        }
+        // A documentation link to an external declaration (`[`f64::NAN`]`)
+        // targets the same external row a graph link would. Without that row
+        // the link dangles: its target has no claim in the view's
+        // certificate, and the owner could not reopen its own view journal
+        // ("snapshot row document: missing producer key commitment").
+        external.extend(content.documentation_targets.iter().map(|(identity, _)| *identity));
+        for identity in external {
             let symbol = external_semantic_symbol(project.package, image_identity, identity);
             let label = "external semantic target";
             let preimage = backend_engine::encode_id(
@@ -1329,16 +1364,17 @@ pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader 
         .write_into(&mut output)
         .map_err(|error| BuiltinModelError(format!("write project semantic document: {error}")))?;
     let mut document = Vec::with_capacity(documentation.len());
-    document.extend(
-        documentation
-            .into_iter()
-            .map(|fragment| documentation_fragment(reader, package, image_identity, fragment))
-            .collect::<Result<Vec<_>, _>>()?,
-    );
+    let mut documentation_targets = Vec::new();
+    for fragment in documentation {
+        let (fragment, external) = documentation_fragment(reader, package, image_identity, fragment)?;
+        document.push(fragment);
+        documentation_targets.extend(external);
+    }
     Ok(SemanticRowContent {
         document,
         signature,
         encoded_bytes,
+        documentation_targets,
     })
 }
 
@@ -1357,21 +1393,24 @@ fn documentation_bytes(
     })
 }
 
+/// One documentation fragment as a row fragment, and the external
+/// declaration it links to, when it does.
 fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &Reader,
     package: backend_engine::PackageKey,
     image: [u8; 32],
     fragment: DocumentationFragment<'_>,
-) -> Result<Fragment, BuiltinModelError> {
+) -> Result<(Fragment, Option<(ExternalTargetIdentity, ExternalId)>), BuiltinModelError> {
     Ok(match fragment {
-        DocumentationFragment::Text(text) => Fragment::Text(text.to_owned()),
-        DocumentationFragment::Code(code) => Fragment::Code(code.to_owned()),
-        DocumentationFragment::SoftBreak | DocumentationFragment::HardBreak => Fragment::Break,
-        DocumentationFragment::Link { label, target } => Fragment::Link {
-            label: label.to_owned(),
-            target: match target {
+        DocumentationFragment::Text(text) => (Fragment::Text(text.to_owned()), None),
+        DocumentationFragment::Code(code) => (Fragment::Code(code.to_owned()), None),
+        DocumentationFragment::SoftBreak | DocumentationFragment::HardBreak => {
+            (Fragment::Break, None)
+        }
+        DocumentationFragment::Link { label, target } => {
+            let (target, external) = match target {
                 backend_engine::application::DocumentationTarget::Local(target) => {
-                    semantic_symbol(package, target.entity.version.identity())
+                    (semantic_symbol(package, target.entity.version.identity()), None)
                 }
                 backend_engine::application::DocumentationTarget::External { id, .. } => {
                     let identity =
@@ -1380,10 +1419,17 @@ fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>
                                 "identify documentation external target: {error}"
                             ))
                         })?;
-                    external_semantic_symbol(package, image, identity)
+                    (external_semantic_symbol(package, image, identity), Some((identity, id)))
                 }
-            },
-        },
+            };
+            (
+                Fragment::Link {
+                    label: label.to_owned(),
+                    target,
+                },
+                external,
+            )
+        }
     })
 }
 

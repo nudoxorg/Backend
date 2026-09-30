@@ -102,6 +102,66 @@ pub(super) fn strip_leading(mut source: &str) -> &str {
     }
 }
 
+/// Rustdoc's intra-doc links as plain markup: `[`Name`]` and `[`Name`][path]`
+/// become `` `Name` ``; `[`Name`](target)` becomes `[Name](target)`.
+pub(super) fn clean(markup: &str) -> String {
+    let mut out = String::with_capacity(markup.len());
+    let mut rest = markup;
+    while let Some(at) = rest.find("[`") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        let Some(end) = after.find("`]") else {
+            // No closer: not a code link. Leave the rest for the link pass.
+            out.push_str(&rest[at..]);
+            rest = "";
+            break;
+        };
+        let inner = &after[..end];
+        let mut tail = &after[end + 2..];
+        if let Some(target) = tail.strip_prefix('(').and_then(|t| t.find(')').map(|close| (&t[..close], &t[close + 1..]))) {
+            out.push_str(&format!("[{inner}]({})", target.0));
+            tail = target.1;
+        } else if let Some(reference) = tail.strip_prefix('[').and_then(|t| t.find(']').map(|close| &t[close + 1..])) {
+            out.push_str(&format!("`{inner}`"));
+            tail = reference;
+        } else {
+            out.push_str(&format!("`{inner}`"));
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    unlink_code(&out)
+}
+
+/// `[the `x` module](self)` (a link whose words hold code and whose target is
+/// not a web address) reads as its words: the code stays code.
+fn unlink_code(markup: &str) -> String {
+    let mut out = String::with_capacity(markup.len());
+    let mut rest = markup;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let linked = after.find("](").and_then(|close| {
+            let label = &after[..close];
+            let tail = &after[close + 2..];
+            let end = tail.find(')')?;
+            (label.contains('`') && !label.contains('[') && !tail[..end].starts_with("http")).then(|| (label, &tail[end + 1..]))
+        });
+        match linked {
+            Some((label, tail)) => {
+                out.push_str(label);
+                rest = tail;
+            }
+            None => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Collapses runs of whitespace to one space.
 pub(super) fn squash(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -197,6 +257,23 @@ pub(super) fn plain(markup: &str) -> String {
     squash(&out)
 }
 
+/// A description of a kind of failure without its lead-in: "The error was
+/// caused by a failure to read" says "a failure to read".
+pub(super) fn lead_out(doc: &str) -> String {
+    let lower = doc.to_ascii_lowercase();
+    let mut rest = doc.trim();
+    for subject in ["the error", "this error", "the failure", "this failure", "the problem", "this kind"] {
+        for verb in [" was caused by ", " is caused by ", " is due to ", " was due to ", " happens when ", " occurs when "] {
+            let lead = format!("{subject}{verb}");
+            if lower.starts_with(&lead) {
+                rest = &doc[lead.len()..];
+                return rest.trim().trim_end_matches('.').to_owned();
+            }
+        }
+    }
+    rest.trim_end_matches('.').to_owned()
+}
+
 /// `text` with its first letter in lower case.
 pub(super) fn lower_first(text: &str) -> String {
     let mut chars = text.chars();
@@ -222,6 +299,13 @@ mod tests {
     fn sentences_skip_code_and_links() {
         assert_eq!(first_sentence("Deserialize an instance of type `T` from a string of JSON text. More."), "Deserialize an instance of type `T` from a string of JSON text.");
         assert_eq!(first_sentence("Read [the guide][crate::v1.2] before calling `value.get()` again. A second."), "Read [the guide][crate::v1.2] before calling `value.get()` again.");
+    }
+
+    #[test]
+    fn intra_doc_links_become_code() {
+        assert_eq!(clean("See the [`serde_json::value`] module and [`Map`][crate::Map] or [`x`](http://a)."), "See the `serde_json::value` module and `Map` or [x](http://a).");
+        assert_eq!(clean("plain [text](t) and `code`"), "plain [text](t) and `code`");
+        assert_eq!(clean("See the [`serde_json::value` module documentation](self) for usage."), "See the `serde_json::value` module documentation for usage.");
     }
 
     #[test]

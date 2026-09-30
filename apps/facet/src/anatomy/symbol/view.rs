@@ -8,6 +8,9 @@
 //! context rail.
 
 use std::collections::BTreeSet;
+use std::ops::Range;
+
+pub use super::facts::Implementors;
 
 /// The language a declaration is written in, as the page tags it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -461,7 +464,63 @@ pub struct Case {
     /// Its address, for a door.
     pub link: Option<String>,
     /// How many of your places match on it or build it.
-    pub yours: u32,
+    pub yours: Yours,
+}
+
+/// What your places do with one case, field or method: how many make it,
+/// match on it, read it and change it.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct Yours {
+    /// Places that build or call it.
+    pub made: u32,
+    /// Places that match on it.
+    pub matched: u32,
+    /// Places that read it.
+    pub read: u32,
+    /// Places that change it.
+    pub changed: u32,
+    /// Places that reach it in some other way.
+    pub other: u32,
+}
+
+impl Yours {
+    /// Every place.
+    #[must_use]
+    pub const fn total(self) -> u32 {
+        self.made + self.matched + self.read + self.changed + self.other
+    }
+
+    /// Counts one place that does `verb`.
+    pub fn count(&mut self, verb: Verb) {
+        match verb {
+            Verb::Makes | Verb::Calls => self.made += 1,
+            Verb::Matches => self.matched += 1,
+            Verb::Reads => self.read += 1,
+            Verb::Changes | Verb::UsesUp => self.changed += 1,
+            _ => self.other += 1,
+        }
+    }
+
+    /// The words for a row: `you read it · 5`, `you match it · 4 · build it · 2`;
+    /// none when no place reaches it.
+    #[must_use]
+    pub fn says(self) -> Option<String> {
+        let parts: Vec<String> = [(self.matched, "match"), (self.made, "build"), (self.read, "read"), (self.changed, "change"), (self.other, "use")]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, word)| format!("{word} it · {n}"))
+            .collect();
+        (!parts.is_empty()).then(|| format!("you {}", parts.join(" · ")))
+    }
+}
+
+/// What your places do with one member of the symbol.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Tally {
+    /// The member's name.
+    pub member: String,
+    /// What the places do with it.
+    pub yours: Yours,
 }
 
 /// One field of a struct.
@@ -477,8 +536,8 @@ pub struct Field {
     pub more: Option<String>,
     /// Its address, for a door.
     pub link: Option<String>,
-    /// How many places of yours read it.
-    pub yours: u32,
+    /// What your places do with it.
+    pub yours: Yours,
 }
 
 /// One method a trait's implementor writes.
@@ -512,8 +571,8 @@ pub enum Shape {
     Write {
         /// The required methods.
         rows: Vec<Owed>,
-        /// How many implement it, when counted.
-        implementors: Option<u32>,
+        /// How far it is implemented, when counted.
+        implementors: Option<Implementors>,
     },
 }
 
@@ -560,8 +619,8 @@ pub struct Row {
     pub link: Option<String>,
     /// How many places of yours call it.
     pub yours: u32,
-    /// A trait impl folded into one row (`From`).
-    pub folded: bool,
+    /// The other names your places call it by (`parse` is `from_str`).
+    pub also: Vec<String>,
 }
 
 /// Methods that share a verb.
@@ -804,7 +863,7 @@ pub struct Use {
     /// The line of code.
     pub text: String,
     /// The name to mark in the line, as a byte range of `text`.
-    pub mark: Option<(usize, usize)>,
+    pub mark: Option<Range<usize>>,
     /// What the place does.
     pub verb: Verb,
     /// The member of the symbol it reaches, when it is one.
@@ -849,13 +908,51 @@ pub struct Uses {
     pub elsewhere: Option<String>,
 }
 
-impl Uses {
-    /// The packages, most places first (imports counted only when `imports`).
+/// Whether the places that only import the symbol are listed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportsListed {
+    /// They are.
+    Shown,
+    /// They are left out.
+    Hidden,
+}
+
+/// Whether the places in tests are listed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TestsListed {
+    /// They are.
+    Included,
+    /// They are left out.
+    Left,
+}
+
+/// What a list of places leaves out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Listed {
+    /// The imports.
+    pub imports: ImportsListed,
+    /// The tests.
+    pub tests: TestsListed,
+}
+
+impl Listed {
+    /// What the rail counts: the places that use it, in code or in tests.
+    pub const USES: Self = Self { imports: ImportsListed::Hidden, tests: TestsListed::Included };
+
+    /// Whether `site` is listed.
     #[must_use]
-    pub fn packages(&self, imports: bool, tests: bool) -> Vec<PackageUse> {
+    pub fn lists(self, site: &Use) -> bool {
+        (self.imports == ImportsListed::Shown || site.verb != Verb::Imports) && (self.tests == TestsListed::Included || site.ctx != Ctx::Test)
+    }
+}
+
+impl Uses {
+    /// The packages, most places first, counting what `listed` lists.
+    #[must_use]
+    pub fn packages(&self, listed: Listed) -> Vec<PackageUse> {
         let mut out: Vec<PackageUse> = Vec::new();
         for site in &self.all {
-            if (!imports && site.verb == Verb::Imports) || (!tests && site.ctx == Ctx::Test) {
+            if !listed.lists(site) {
                 continue;
             }
             match out.iter_mut().find(|entry| entry.package == site.package) {
@@ -872,11 +969,11 @@ impl Uses {
 
     /// What `generic`-typed places choose, most places first.
     #[must_use]
-    pub fn fills(&self, tests: bool) -> Vec<Fill> {
+    pub fn fills(&self, tests: TestsListed) -> Vec<Fill> {
         let mut out: Vec<Fill> = Vec::new();
         for site in &self.all {
             let Some(fill) = &site.fill else { continue };
-            if !tests && site.ctx == Ctx::Test {
+            if tests == TestsListed::Left && site.ctx == Ctx::Test {
                 continue;
             }
             match out.iter_mut().find(|entry| entry.ty == *fill) {
@@ -896,18 +993,48 @@ impl Uses {
         out
     }
 
-    /// How many places call each member, most first.
+    /// What the places do with each member, most places first.
     #[must_use]
-    pub fn by_member(&self) -> Vec<(String, u32)> {
-        let mut out: Vec<(String, u32)> = Vec::new();
+    pub fn tally(&self) -> Vec<Tally> {
+        let mut out: Vec<Tally> = Vec::new();
         for site in &self.all {
             let Some(member) = &site.member else { continue };
-            match out.iter_mut().find(|(name, _)| name == member) {
-                Some((_, count)) => *count += 1,
-                None => out.push((member.clone(), 1)),
-            }
+            let at = match out.iter().position(|tally| tally.member == *member) {
+                Some(at) => at,
+                None => {
+                    out.push(Tally { member: member.clone(), yours: Yours::default() });
+                    out.len() - 1
+                }
+            };
+            out[at].yours.count(site.verb);
         }
-        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out.sort_by(|a, b| b.yours.total().cmp(&a.yours.total()).then_with(|| a.member.cmp(&b.member)));
         out
+    }
+}
+
+impl Implementors {
+    /// The line under a trait's socket: "8,322 types implement it across 343
+    /// crates on this machine, 83% of them by derive."
+    #[must_use]
+    pub fn says(self) -> String {
+        let thousands = |n: u32| {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (at, digit) in digits.chars().enumerate() {
+                if at > 0 && (digits.len() - at) % 3 == 0 {
+                    out.push(',');
+                }
+                out.push(digit);
+            }
+            out
+        };
+        let types = if self.total == 1 { "type implements" } else { "types implement" };
+        let mut line = format!("{} {types} it across {} crate{} on this machine", thousands(self.total), thousands(self.crates), if self.crates == 1 { "" } else { "s" });
+        if let Some(derived) = self.derived {
+            line.push_str(&format!(", {derived}% of them by derive"));
+        }
+        line.push('.');
+        line
     }
 }

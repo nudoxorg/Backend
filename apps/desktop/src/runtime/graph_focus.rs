@@ -3,7 +3,7 @@
 
 use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
-use crate::model::pages::{PackageRef, SymbolRef};
+use crate::model::pages::{PackageRef, PageKey, SymbolRef};
 use crate::navigation::{Route, View};
 use backend_library::DeclarationKind;
 use std::sync::Arc;
@@ -63,6 +63,10 @@ pub(crate) struct Notice {
     pub visit: Route,
     pub root: VersionedRoot,
     pub message: Arc<str>,
+    /// The page whose "Try again" the foot offers beside the message: for a
+    /// notice that says the index could not start, asking for this page again
+    /// starts the owner again (`DataStore::retry`). `None`: nothing to retry.
+    pub retry: Option<PageKey>,
 }
 impl Notice {
     pub(crate) fn active(&self, snapshot: &AppSnapshot) -> bool {

@@ -14,6 +14,9 @@
 //!   intent) and leaves the way it came.
 //! - Nothing tweens: colour and stroke steps are instant.
 //! - Keyboard focus lights exactly like the pointer ([`focus`]).
+//! - The pointer's target lets go when the pointer leaves the window, when
+//!   the content moves out from under a still pointer, and on navigation
+//!   ([`clear`]); a focus target stays until focus moves.
 //!
 //! ```ignore
 //! let subject = hover::Subject::new("present::glyph::SemanticLinkKind");
@@ -29,7 +32,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, Tone};
 use gpui::{
     AnyElement, App, Bounds, ColorExt, ElementId, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, LayoutId, MouseMoveEvent, Pixels, SharedString, Window,
+    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Window,
     WindowId, fill, point, px, size,
 };
 use std::collections::HashMap;
@@ -80,21 +83,45 @@ pub enum Shape {
     Diamond,
 }
 
+/// What made an element the target: the pointer over it, or keyboard focus
+/// on it. The pointer's target follows the pointer (it lets go when the
+/// element moves out from under a still pointer); a focus target stays
+/// until focus moves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Source {
+    /// The pointer is over it.
+    Pointer,
+    /// Keyboard focus is on it.
+    Keyboard,
+}
+
+/// The element lit as the target, its subject and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Held {
+    id: ElementId,
+    subject: Subject,
+    source: Source,
+}
+
 /// The per-window hover field: which element is the target, and its
 /// subject.
 #[derive(Default)]
 struct Field {
-    windows: HashMap<WindowId, (ElementId, Subject)>,
+    windows: HashMap<WindowId, Held>,
 }
 
 impl Global for Field {}
 
-fn target(window: &Window, cx: &App) -> Option<(ElementId, Subject)> {
+fn held(window: &Window, cx: &App) -> Option<Held> {
     cx.try_global::<Field>()
         .and_then(|field| field.windows.get(&window.window_handle().window_id()).cloned())
 }
 
-fn set_target(value: Option<(ElementId, Subject)>, window: &mut Window, cx: &mut App) {
+fn target(window: &Window, cx: &App) -> Option<(ElementId, Subject)> {
+    held(window, cx).map(|held| (held.id, held.subject))
+}
+
+fn set_target(value: Option<Held>, window: &mut Window, cx: &mut App) {
     let id = window.window_handle().window_id();
     let field = cx.default_global::<Field>();
     let changed = match &value {
@@ -110,6 +137,14 @@ fn set_target(value: Option<(ElementId, Subject)>, window: &mut Window, cx: &mut
     };
     // Answer in the same frame the input arrived in.
     window.refresh();
+}
+
+/// Lets go of the target, whatever holds it: the page under the pointer
+/// changed (navigation), so nothing on the old page is hovered any more.
+/// [`float::close_all`] calls this, and the shell calls that on every
+/// navigation.
+pub fn clear(window: &mut Window, cx: &mut App) {
+    set_target(None, window, cx);
 }
 
 /// The subject of whatever is the target now (the pointer's or keyboard
@@ -143,7 +178,11 @@ pub fn lit(subject: &Subject, window: &Window, cx: &App) -> Lit {
 /// Keyboard focus lights like the pointer: `Some` makes `id` the target,
 /// `None` clears it (only if `id` holds it).
 pub fn focus(target: Option<(ElementId, Subject)>, window: &mut Window, cx: &mut App) {
-    set_target(target, window, cx);
+    set_target(
+        target.map(|(id, subject)| Held { id, subject, source: Source::Keyboard }),
+        window,
+        cx,
+    );
 }
 
 /// The ink a hoverable's text takes: one step up the ink ramp when lit
@@ -310,15 +349,36 @@ impl gpui::Element for Hoverable {
             return;
         };
         let (id, subject) = (self.id.clone(), self.subject.clone());
-        window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
-            if phase != gpui::DispatchPhase::Bubble {
-                return;
+        // The pointer is still but the content moved (a scroll, a reflow, a
+        // page that changed): the target follows the layout, not the last move.
+        if held(window, cx).is_some_and(|held| held.id == id && held.source == Source::Pointer)
+            && !hitbox.is_hovered(window)
+        {
+            set_target(None, window, cx);
+        }
+        window.on_mouse_event({
+            let (id, subject) = (id.clone(), subject.clone());
+            move |_: &MouseMoveEvent, phase, window, cx| {
+                if phase != gpui::DispatchPhase::Bubble {
+                    return;
+                }
+                let hovered = hitbox.is_hovered(window);
+                let holds = target(window, cx).is_some_and(|(held, _)| held == id);
+                if hovered && !holds {
+                    let held = Held { id: id.clone(), subject: subject.clone(), source: Source::Pointer };
+                    set_target(Some(held), window, cx);
+                } else if !hovered && holds {
+                    set_target(None, window, cx);
+                }
             }
-            let hovered = hitbox.is_hovered(window);
-            let holds = target(window, cx).is_some_and(|(held, _)| held == id);
-            if hovered && !holds {
-                set_target(Some((id.clone(), subject.clone())), window, cx);
-            } else if !hovered && holds {
+        });
+        // The pointer can leave the window without a final move (GPUI's own
+        // hover clears on the exit event for the same reason): a target the
+        // pointer held stays lit for ever otherwise.
+        window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+            if phase == gpui::DispatchPhase::Bubble
+                && held(window, cx).is_some_and(|held| held.id == id && held.source == Source::Pointer)
+            {
                 set_target(None, window, cx);
             }
         });

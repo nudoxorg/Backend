@@ -795,6 +795,13 @@ pub mod fluid {
     /// The page keeps its full measure beside a third column from 1900.
     pub const PINS: Ladder<Pins> = Ladder::new(ModeId::Pins, &[rung(Pins::Over, 0.0), rung(Pins::Column, 1900.0)]);
 
+    /// The most of the window the shelf and the pins column may take while they
+    /// move, as a share of it: on a fast shrink the columns are still on their
+    /// way to their new width, and the reader must not be squeezed to a sliver
+    /// meanwhile (the columns clip, they do not reflow). 42 % on a phone, 32 %
+    /// from 900, where the shelf at rest (264) is 29 %.
+    pub const COLUMNS_SHARE: Blend = Blend::new(&[stop(320.0, 0.42), stop(900.0, 0.32)]);
+
     /// The drawer's scrim strip: the part of the page left showing beside an
     /// open drawer, so a click there can close it.
     pub const DRAWER_STRIP: Length = Length::new(&[stop(320.0, 48.0), stop(640.0, 96.0)]);
@@ -873,6 +880,22 @@ pub mod fluid {
 
     /// The marks gallery's hero gem: 48 on a phone, 64 from 640.
     pub const MARK_GEM: Length = Length::new(&[stop(320.0, 48.0), stop(640.0, 64.0)]);
+
+    // ---- The sidebar ----
+
+    /// How the sidebar sets its lens strip and its rows for the room it has.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum SideForm {
+        /// A lens you are not on shows its chord letter instead of its
+        /// word, and a row drops the quiet words after its name.
+        Tight,
+        /// Every lens says its word, every row its quiet words.
+        Full,
+    }
+
+    /// The sidebar is Full from 232 design px (its floor is 200, its
+    /// default 264).
+    pub const SIDE: Ladder<SideForm> = Ladder::new(ModeId::Side, &[rung(SideForm::Tight, 0.0), rung(SideForm::Full, 232.0)]);
 
     /// The marks gallery's dependency line sits beside the marks from 760.
     pub const HERO_DEPS: Ladder<Split> = Ladder::new(ModeId::Lab, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)]);
@@ -980,6 +1003,42 @@ pub mod fluid {
     /// The hero gem (`rhythm::GEM_NARROW` 40 below 720, `rhythm::GEM` 56 above).
     pub const PAGE_GEM: Length = Length::new(&[stop(560.0, 40.0), stop(760.0, 56.0)]);
 
+    /// The gap between the symbol page's sections: 24 at 480, 34 from 1600.
+    pub const SYMBOL_SECTION: Length = Length::new(&[stop(480.0, 24.0), stop(1600.0, 34.0)]).smooth();
+
+    /// The width of the symbol page's label column (`GIVES`, a port's name).
+    pub const SYMBOL_LABEL: Length = Length::new(&[stop(480.0, 58.0), stop(1600.0, 84.0)]).smooth();
+
+    /// The width of a place's file column in "In your workspace".
+    pub const SYMBOL_PLACE: Length = Length::new(&[stop(480.0, 132.0), stop(1600.0, 210.0)]).smooth();
+
+    /// How the rose is drawn.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Form {
+        /// Four quiet lines: `is  Display, ToString`.
+        List,
+        /// The field of four directions.
+        Field,
+    }
+
+    /// The rose is four quiet lines below 560 and a field above; `Rose` reads
+    /// it through a `Modes` of its own (`data/rose.rs`), and `Rose::list(..)`
+    /// still forces one.
+    pub const ROSE: Ladder<Form> = Ladder::new(ModeId::Rose, &[rung(Form::List, 0.0), rung(Form::Field, 560.0)]);
+
+    /// How a version comb is drawn.
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub enum Comb {
+        /// A band of ticks: all a column this narrow can hold.
+        Band,
+        /// The style the comb was asked for.
+        Asked,
+    }
+
+    /// A comb is a band below 240 and the style it was asked for above
+    /// (`marks/version.rs`), held 32 px through the edge.
+    pub const COMB: Ladder<Comb> = Ladder::new(ModeId::Comb, &[rung(Comb::Band, 0.0), rung(Comb::Asked, 240.0)]);
+
     /// How many cells of the package page's crest share a row.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub enum Crest {
@@ -999,24 +1058,25 @@ pub mod fluid {
     /// The package hero's gem (`bodies/package.rs` `fluid(48.0, 64.0)`).
     pub const PACKAGE_GEM: Length = Length::new(&[stop(480.0, 48.0), stop(1600.0, 64.0)]).smooth();
 
-    /// How Ask (⌘K) sits over the page.
+    /// The package page's symbol cards: as many columns as fit, each at least
+    /// 262 px at 100 % text (240 on a phone, so one column fills a 320 window).
+    pub const FOLIO_CARDS: Grid = Grid::new(ModeId::Folio, Length::new(&[stop(320.0, 240.0), stop(480.0, 262.0)]), 6);
+
+    /// How Ask's results sit over the page.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub enum Float {
-        /// A sheet across the window, a gutter from every edge.
+        /// A sheet across the window, below the titlebar.
         Sheet,
-        /// A panel floating over the page, centred.
+        /// A panel over the shelf's column, at the left.
         Panel,
     }
 
     /// Ask is a floating panel from 640 and a sheet across the window below.
     pub const ASK: Ladder<Float> = Ladder::new(ModeId::Ask, &[rung(Float::Sheet, 0.0), rung(Float::Panel, 640.0)]);
 
-    /// The floating panel's width.
-    pub const ASK_PANEL: Length = Length::new(&[stop(640.0, 480.0), stop(1440.0, 640.0)]);
-
-    /// The panel's distance from the top of the window, and the sheet's
-    /// distance from every edge.
-    pub const ASK_EDGE: Length = Length::new(&[stop(320.0, 8.0), stop(640.0, 72.0)]);
+    /// The results plate over the shelf's column: a panel from 320 to 440 px
+    /// as the window grows (a sheet across the window below 640).
+    pub const ASK_PANEL: Length = Length::new(&[stop(640.0, 320.0), stop(1440.0, 440.0)]);
 
     /// How a page sets its detail against its list.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

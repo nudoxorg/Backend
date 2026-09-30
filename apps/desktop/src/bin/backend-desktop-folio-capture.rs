@@ -152,7 +152,10 @@ fn dossier(package: &PackageRef) -> Option<PackageDossier> {
                 Some(VersionEntry {
                     package: package.at(&release.version)?,
                     version: Arc::from(release.version.as_str()),
-                    standing: release.standing,
+                    standing: match release.standing {
+                        facet::folio::state::Standing::Yanked => Standing::Yanked,
+                        facet::folio::state::Standing::Available => Standing::Available,
+                    },
                     current: release.version == pinned,
                 })
             })
@@ -439,7 +442,8 @@ fn main() {
     };
     let mut shots = Vec::new();
     for (label, package) in [("toml", &toml), ("tokio", &tokio), ("serde_json", &serde_json), ("present", &present)] {
-        for (width, height) in [(1024, 700), (1440, 900), (2560, 1440)] {
+        // Phones are taller than the fold: the whole page is what is looked at.
+        for (width, height) in [(320, 2000), (390, 2000), (430, 2000), (800, 900), (1024, 700), (1440, 900), (2560, 1440)] {
             shots.push(still(&format!("{label}-{width}"), package, width, height));
         }
     }
@@ -452,6 +456,18 @@ fn main() {
     // Motion is eased on the harness clock, which moves before an act, not
     // after: every act is followed by a frame with nothing to do.
     shots.push(staged("tokio-region", &tokio, vec![vec![], vec![Act::Hover("region-sync::mpsc")], vec![]]));
+    // The shingles of a clicked module in the air: frames 40 ms apart from the click.
+    shots.push(Shot {
+        frames: vec![0, 1000, 1040, 1080, 1120, 1180, 1500],
+        acts: vec![vec![], vec![Act::Click("region-sync::mpsc")], vec![], vec![], vec![], vec![], vec![]],
+        ..still("tokio-flight", &tokio, 1440, 1100)
+    });
+    // The berg dropping in: frames 40 ms apart from the click.
+    shots.push(Shot {
+        frames: vec![0, 1000, 1040, 1080, 1120, 1180, 1500],
+        acts: vec![vec![], vec![Act::Click("weight-label")], vec![], vec![], vec![], vec![], vec![]],
+        ..still("tokio-berg-open", &tokio, 1440, 900)
+    });
     shots.push(staged("tokio-module", &tokio, vec![vec![], vec![Act::Click("region-sync::mpsc")], vec![Act::Away], vec![]]));
     shots.push(staged("tokio-heads", &tokio, vec![vec![], vec![Act::HoverAt("heads-label", 0.0, 27.0)], vec![]]));
     shots.push(staged("tokio-heads-sheet", &tokio, vec![vec![], vec![Act::HoverAt("heads-label", 0.0, 27.0)], vec![Act::ClickAt("heads-label", 0.0, 27.0)], vec![]]));

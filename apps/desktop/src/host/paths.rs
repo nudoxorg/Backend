@@ -56,7 +56,7 @@ pub(crate) fn discover() -> Result<WorkspacePaths, RuntimeError> {
 /// chosen. Keeping this pure over its root lets the cold-restart test prove
 /// that two ambient launches derive one workspace identity without mutating
 /// process environment variables.
-fn ambient_paths(user_root: &Path) -> Result<WorkspacePaths, RuntimeError> {
+pub(crate) fn ambient_paths(user_root: &Path) -> Result<WorkspacePaths, RuntimeError> {
     let data = user_root.join("workspace");
     let starter = user_root.join("starter");
     std::fs::create_dir_all(&starter).map_err(RuntimeError::Io)?;
@@ -161,6 +161,7 @@ mod tests {
             .expect("clock after epoch")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("nudox-cold-restart-{nonce}"));
+        crate::host::private_dir(&root).expect("a private root, as the owner requires");
         let first = ambient_paths(&root).expect("first ambient launch");
         first.initialize().expect("initialize first launch");
         let second = ambient_paths(&root).expect("cold restart launch");

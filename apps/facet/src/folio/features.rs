@@ -20,6 +20,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::motion::{BOUNCE, QUICK};
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
+    AnyElement,
     App, Bounds, ColorExt as _, ElementId, Entity, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
     Styled, Window, canvas, div, px,
 };
@@ -136,6 +137,10 @@ const SMALL: TypeRole = TypeRole { size: 10.5, line: 14.0, ..ty::MONO_SMALL };
 const LABEL: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::SMALL };
 const NUMBER: TypeRole = TypeRole { weight: 600.0, size: 12.0, line: 16.0, ..ty::MONO_SMALL };
 
+/// What a host may do with each chip: its index, its name, what pressing it
+/// does, and the chip itself (to wrap in a keyboard door).
+pub type Wrap = Rc<dyn Fn(usize, &str, Rc<dyn Fn(&mut Window, &mut App)>, AnyElement) -> AnyElement>;
+
 /// The bar (see [`features`]).
 #[derive(IntoElement)]
 pub struct FeatureBar {
@@ -144,12 +149,13 @@ pub struct FeatureBar {
     measure: Measure,
     width: Pixels,
     initial: Option<BTreeSet<String>>,
+    wrap: Option<Wrap>,
 }
 
 /// A bar of `facts` `width` px wide.
 #[must_use]
 pub fn features(id: impl Into<ElementId>, facts: Rc<FeatureFacts>, width: Pixels, measure: &Measure) -> FeatureBar {
-    FeatureBar { id: id.into(), facts, measure: *measure, width, initial: None }
+    FeatureBar { id: id.into(), facts, measure: *measure, width, initial: None, wrap: None }
 }
 
 impl FeatureBar {
@@ -158,6 +164,14 @@ impl FeatureBar {
     #[must_use]
     pub fn chosen(mut self, names: &[&str]) -> Self {
         self.initial = Some(names.iter().map(|n| (*n).to_owned()).collect());
+        self
+    }
+
+    /// The host's hook on each chip: it gets the chip and what pressing it
+    /// does, so it can make the chip a keyboard target.
+    #[must_use]
+    pub fn wrap(mut self, wrap: impl Fn(usize, &str, Rc<dyn Fn(&mut Window, &mut App)>, AnyElement) -> AnyElement + 'static) -> Self {
+        self.wrap = Some(Rc::new(wrap));
         self
     }
 }
@@ -237,7 +251,6 @@ struct Chip {
     default: bool,
     flash: f32,
     shake: f32,
-    held_by: Vec<String>,
     measure: Measure,
     act: Rc<dyn Fn(&mut Window, &mut App)>,
 }
@@ -280,7 +293,6 @@ impl RenderOnce for Chip {
             row = row.child(one(key(&self.id, "default"), "default", SMALL, palette.ink3, &measure));
         }
         let shake = if self.shake > 0.0 { (self.shake * std::f32::consts::TAU * 3.0).sin() * 3.0 * scale * self.shake } else { 0.0 };
-        let held = self.held_by.clone();
         let plate = cut()
             .chamfer(Chamfer::Px(4.0 * scale))
             .edge(edge)
@@ -291,7 +303,6 @@ impl RenderOnce for Chip {
             .id(self.id.clone());
         let act = self.act.clone();
         let plate = wire(plate, &touch, Some(act));
-        let _ = held;
         hover_zone(plate, &touch, 4.0 * scale, true)
     }
 }
@@ -329,7 +340,6 @@ impl RenderOnce for FeatureBar {
         for (index, name) in facts.names.iter().enumerate() {
             let is_on = resolved.on.contains(name);
             let is_locked = resolved.locked.contains(name);
-            let held_by = facts.held_by(name, &chosen);
             let flash = if current.flashed.contains(name) {
                 motion.animate_from(key(&self.id, format!("flash-{name}-{}", current.epoch)), 1.0, 0.0, Spec::tween(std::time::Duration::from_millis(420), crate::tokens::motion::GLIDE), window, cx)
             } else {
@@ -365,7 +375,7 @@ impl RenderOnce for FeatureBar {
                     });
                 })
             };
-            row = row.child(Chip {
+            let chip = Chip {
                 id: key(&self.id, format!("chip-{index}")),
                 name: name.clone().into(),
                 enables: facts.enables(name).len(),
@@ -374,10 +384,13 @@ impl RenderOnce for FeatureBar {
                 default: facts.default.contains(name),
                 flash,
                 shake,
-                held_by,
                 measure,
-                act,
-            });
+                act: act.clone(),
+            };
+            row = match &self.wrap {
+                Some(wrap) => row.child(wrap(index, name, act, chip.into_any_element())),
+                None => row.child(chip),
+            };
         }
         if !resolved.pulled.is_empty() {
             let shown: Vec<&str> = resolved.pulled.iter().take(8).map(String::as_str).collect();

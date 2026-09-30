@@ -1300,7 +1300,18 @@ mod tests {
     #[test]
     fn multi_source_result_uses_per_source_recipes_and_rejects_wrong_tool()
     -> Result<(), Box<dyn std::error::Error>> {
-        let clang = find_clang().ok_or("clang is required for the result recipe regression")?;
+        // C compiles only under an explicit libclang authority (281ec6686,
+        // `clang_requires_an_explicit_project_authority`): the selected driver
+        // and libclang, as the development shell names them, else a found
+        // clang with `LIBCLANG_PATH`.
+        let driver = std::env::var_os("NUDOX_CLANG")
+            .map(PathBuf::from)
+            .or_else(find_clang)
+            .ok_or("clang is required for the result recipe regression")?;
+        let libclang = std::env::var_os("LIBCLANG_PATH")
+            .ok_or("LIBCLANG_PATH is required for the result recipe regression")?;
+        let environment = backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)?;
+        let clang = environment.driver().to_path_buf();
         let version = Command::new(&clang).arg("--version").output()?;
         if !version.status.success() {
             return Err("clang version probe failed".into());
@@ -1325,7 +1336,7 @@ mod tests {
         let mut scratch = LocalCompilerScratch::with_fragment_capacity(
             NonZeroUsize::new(16 * 1024 * 1024).ok_or("fragment capacity is zero")?,
         )?;
-        let mut compiler = LocalCompiler::create(
+        let mut compiler = LocalCompiler::create_with_package_authority(
             LocalCompilerConfig {
                 toolchains: selected,
                 artifact_directory: &artifacts,
@@ -1335,6 +1346,11 @@ mod tests {
                     timeout: LocalCompilerTimeout::new(std::time::Duration::from_secs(30))?,
                     cancelled: &cancelled,
                 },
+            },
+            crate::application::LocalPackageRootSet::EMPTY,
+            crate::application::PackageAuthorityConfiguration {
+                clang: Some(&environment),
+                ..crate::application::PackageAuthorityConfiguration::UNAVAILABLE
             },
             backend_store::journal::PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
             &mut scratch,

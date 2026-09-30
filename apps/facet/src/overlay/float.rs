@@ -27,7 +27,7 @@
 //!   a card never loses it.
 //! - **Placement.** Preferred side, flip, shift to stay 8 px inside, height
 //!   cap with internal scroll, a hairline connector to the anchor rect; a
-//!   full-width bottom sheet at `Room::Narrow`.
+//!   full-width bottom sheet on a phone (a `Float::Sheet` mode).
 //! - **Chain.** A rest on a trigger inside an open card opens a child beside
 //!   it with the crumb row and the focus bevel; three deep, then the deepest
 //!   card offers "open". [`step_back`] (Esc) closes one.
@@ -65,7 +65,7 @@ use gpui::{
     FocusHandle, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
     InteractiveElement, IntoElement, KeyDownEvent, Keystroke, LayoutId, MouseDownEvent,
     MouseExitEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, ScrollWheelEvent,
-    SharedString, Size, StatefulInteractiveElement, Style, Styled, Task, Window, WindowId,
+    SharedString, Size, StatefulInteractiveElement, Style, Styled, Window, WindowId,
     deferred, div, fill, point, px, size,
 };
 use place::Hang;
@@ -254,7 +254,7 @@ struct Report {
 struct Layer {
     model: Model,
     host: Option<EntityId>,
-    timer: Option<(Instant, Task<()>)>,
+    timer: super::deadline::Deadline,
     motion: Motion,
     focus: HashMap<u64, CardFocus>,
     /// Handles of cards that closed, with where they restored to: a later
@@ -283,7 +283,7 @@ impl Layer {
         Self {
             model: Model::new(),
             host: None,
-            timer: None,
+            timer: super::deadline::Deadline::default(),
             motion: Motion::new(),
             focus: HashMap::new(),
             retired: Vec::new(),
@@ -423,28 +423,18 @@ fn arm(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let current = layer.borrow().timer.as_ref().map(|(at, _)| *at);
-    if current == deadline {
-        return;
-    }
-    let Some(at) = deadline else {
-        layer.borrow_mut().timer = None;
-        return;
-    };
-    let delay = at.saturating_duration_since(now);
-    let weak = Rc::downgrade(layer);
-    let task = window.spawn(cx, async move |cx| {
-        cx.background_executor().timer(delay).await;
-        let _ = cx.update(|window, cx| {
-            if let Some(layer) = weak.upgrade() {
-                layer.borrow_mut().timer = None;
-                let now = motion::now(cx);
-                layer.borrow_mut().model.tick(now);
-                settle(&layer, window, cx);
-            }
-        });
-    });
-    layer.borrow_mut().timer = Some((at, task));
+    super::deadline::arm(
+        layer,
+        |layer| &mut layer.timer,
+        deadline,
+        now,
+        window,
+        cx,
+        |layer, now, window, cx| {
+            layer.borrow_mut().model.tick(now);
+            settle(layer, window, cx);
+        },
+    );
 }
 
 // ------------------------------------------------------------------ API
@@ -511,8 +501,10 @@ pub fn unpin(key: &ElementId, window: &mut Window, cx: &mut App) -> bool {
 }
 
 /// Closes everything that floats (pins stay). The shell calls this on
-/// navigation.
+/// navigation, so it also lets go of the hover target: the page under the
+/// pointer is a different page (`hover::clear`).
 pub fn close_all(window: &mut Window, cx: &mut App) -> bool {
+    crate::hover::clear(window, cx);
     with_model(window, cx, |model, now| model.close_all(now))
 }
 
@@ -672,6 +664,17 @@ pub fn is_open(key: &ElementId, window: &Window, cx: &mut App) -> bool {
         .model
         .cards()
         .any(|card| card.is_open() && card.key == *key)
+}
+
+/// Whether any menu is open: an open menu owns the plain keys (arrows, ↵,
+/// type-ahead), so what binds them elsewhere steps aside.
+#[must_use]
+pub fn menu_open(window: &Window, cx: &mut App) -> bool {
+    state(window, cx)
+        .borrow()
+        .model
+        .cards()
+        .any(|card| card.is_open() && card.kind == FloatKind::Menu)
 }
 
 /// The keys of the pinned cards, newest first.
@@ -1879,7 +1882,7 @@ fn pins_header(measure: &Measure, palette: &Palette) -> AnyElement {
 }
 
 /// The pinned column's contents (the shell's chrome draws the column frame
-/// and shows it at `Room::Vast`): "Pinned", then one row per pin, newest
+/// and shows it in a big window, `tokens::fluid::PINS`): "Pinned", then one row per pin, newest
 /// first. Keys show only while ⌘ is held.
 pub fn pinned_column(measure: &Measure, window: &mut Window, cx: &mut App) -> AnyElement {
     let layer = state(window, cx);
@@ -2070,13 +2073,23 @@ fn paint_unfurl(draw: &mut CardDraw, palette: &Palette, window: &mut Window, cx:
 /// A tracked trigger around `child`: reports hover (rest/leave) and its own
 /// bounds to the layer every pointer move and every frame, so its card
 /// re-anchors when it moves and closes when it is gone.
+///
+/// The layer matches a card's leave, re-anchor and unmount by the card's key
+/// ([`FloatRequest::key`]: "the exact trigger"), so a trigger reports under
+/// the key its request carries, whatever `key` names it: a word called
+/// `…-hover` that opens `peek:…` would otherwise report its leave to a card
+/// that does not exist, and the card would outlive the pointer. `key` is
+/// only the name a request without one would have had, and is kept for the
+/// call sites that name their triggers.
 pub fn trigger(
     key: impl Into<ElementId>,
     request: impl Fn(Bounds<Pixels>) -> FloatRequest + 'static,
     child: impl IntoElement,
 ) -> Trigger {
+    let _named = key.into();
+    let card_key = request(Bounds::default()).key;
     Trigger {
-        key: key.into(),
+        key: card_key,
         request: Rc::new(request),
         child: child.into_any_element(),
     }

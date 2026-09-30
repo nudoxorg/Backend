@@ -62,6 +62,81 @@ impl T {
     }
 }
 
+/// How a language spells its types back.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Spelling {
+    /// `&str`, `Vec<T>`, `[T]`, `impl A + B`.
+    Rust,
+    /// `string`, `T[]`, `A | B`.
+    Script,
+    /// `str`, `list[T]`, `A | B`.
+    Python,
+    /// `string`, `[]T`, `map[K]V`.
+    Go,
+}
+
+impl From<super::super::view::Lang> for Spelling {
+    fn from(lang: super::super::view::Lang) -> Self {
+        use super::super::view::Lang;
+        match lang {
+            Lang::Python => Self::Python,
+            Lang::Go => Self::Go,
+            Lang::JavaScript | Lang::TypeScript => Self::Script,
+            _ => Self::Rust,
+        }
+    }
+}
+
+impl T {
+    /// The type written back the way `spelling` writes it: the quiet text
+    /// beside its plain words. Lifetimes and paths are not kept.
+    pub(super) fn spelled(&self, spelling: Spelling) -> String {
+        let list = |items: &[Self]| items.iter().map(|item| item.spelled(spelling)).collect::<Vec<_>>().join(", ");
+        match self {
+            Self::Name { path, args } => {
+                let head = path.join(if spelling == Spelling::Rust { "::" } else { "." });
+                match (args.is_empty(), spelling) {
+                    (true, _) => head,
+                    (false, Spelling::Python | Spelling::Go) => format!("{head}[{}]", list(args)),
+                    (false, _) => format!("{head}<{}>", list(args)),
+                }
+            }
+            Self::Ref { mutable, inner } => match (spelling, mutable) {
+                (Spelling::Rust, true) => format!("&mut {}", inner.spelled(spelling)),
+                (Spelling::Rust, false) => format!("&{}", inner.spelled(spelling)),
+                _ => inner.spelled(spelling),
+            },
+            Self::Slice(inner) => match spelling {
+                Spelling::Rust => format!("[{}]", inner.spelled(spelling)),
+                Spelling::Script => format!("{}[]", inner.spelled(spelling)),
+                Spelling::Python => format!("list[{}]", inner.spelled(spelling)),
+                Spelling::Go => format!("[]{}", inner.spelled(spelling)),
+            },
+            Self::Tuple(items) => format!("({})", list(items)),
+            Self::Func { params, ret } => {
+                let ret = ret.as_ref().map(|r| r.spelled(spelling));
+                match (spelling, ret) {
+                    (Spelling::Rust, Some(ret)) => format!("fn({}) -> {ret}", list(params)),
+                    (Spelling::Rust, None) => format!("fn({})", list(params)),
+                    (_, Some(ret)) => format!("({}) => {ret}", list(params)),
+                    (_, None) => format!("({}) => void", list(params)),
+                }
+            }
+            Self::Any(bounds) => {
+                let joined = bounds.iter().map(|b| b.spelled(spelling)).collect::<Vec<_>>().join(" + ");
+                if spelling == Spelling::Rust { format!("impl {joined}") } else { joined }
+            }
+            Self::Union(items) => items.iter().map(|item| item.spelled(spelling)).collect::<Vec<_>>().join(" | "),
+            Self::Lit(text) => text.clone(),
+            Self::Object(fields) => {
+                let inner = fields.iter().map(|(name, ty, optional)| format!("{name}{}: {}", if *optional { "?" } else { "" }, ty.spelled(spelling))).collect::<Vec<_>>().join(", ");
+                format!("{{ {inner} }}")
+            }
+            Self::Infer => "_".to_owned(),
+        }
+    }
+}
+
 // ------------------------------------------------------------------ parsing
 
 struct Parser {
@@ -95,10 +170,6 @@ impl Parser {
         } else {
             false
         }
-    }
-
-    fn rest(&self) -> String {
-        self.chars[self.at.min(self.chars.len())..].iter().collect()
     }
 
     fn word(&mut self) -> Option<String> {
@@ -429,16 +500,64 @@ fn is_maybe(name: &str) -> bool {
     matches!(name, "Option" | "Optional" | "Maybe")
 }
 
+/// What a wrapper type adds to what it holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Wrap {
+    /// It may hold nothing.
+    Maybe,
+    /// It answers later.
+    Later,
+    /// It gives many.
+    Many,
+    /// It can fail.
+    Fails,
+}
+
+/// The wrapper `name` is when it is applied to `arity` arguments. The names
+/// a user's own type is likely to reuse (`Task`, `Stream`, `Iter`) count
+/// only when they wrap something, so a plain `Task` stays a type.
+fn wrapper(name: &str, arity: usize) -> Option<Wrap> {
+    let wraps = arity > 0;
+    match name {
+        "Result" | "Fallible" => Some(Wrap::Fails),
+        "Option" | "Optional" | "Maybe" if wraps => Some(Wrap::Maybe),
+        "Promise" | "PromiseLike" | "Future" | "Awaitable" | "Coroutine" | "CoroutineType" | "BoxFuture" => Some(Wrap::Later),
+        "Task" | "ValueTask" | "Deferred" if wraps => Some(Wrap::Later),
+        "Iterator" | "IntoIterator" | "Generator" | "AsyncGenerator" | "AsyncIterator" | "AsyncIterable" | "IterableIterator" | "ExactSizeIterator" | "DoubleEndedIterator" => Some(Wrap::Many),
+        "Stream" | "Observable" | "Iter" if wraps => Some(Wrap::Many),
+        _ => None,
+    }
+}
+
 fn is_later(name: &str) -> bool {
-    matches!(name, "Promise" | "PromiseLike" | "Future" | "Awaitable" | "Task" | "ValueTask" | "Coroutine" | "CoroutineType" | "BoxFuture" | "Deferred")
+    wrapper(name, 1) == Some(Wrap::Later)
 }
 
 fn is_many(name: &str) -> bool {
-    matches!(name, "Iterator" | "IntoIterator" | "Generator" | "AsyncGenerator" | "AsyncIterator" | "AsyncIterable" | "Stream" | "IterableIterator" | "Observable" | "Iter" | "ExactSizeIterator" | "DoubleEndedIterator")
+    wrapper(name, 1) == Some(Wrap::Many)
 }
 
 fn is_none_word(t: &T) -> bool {
     matches!(t.last(), Some("None" | "null" | "undefined" | "void")) || matches!(t, T::Tuple(items) if items.is_empty())
+}
+
+/// Whether, and how, a type can fail.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum Fails {
+    /// It cannot.
+    #[default]
+    Never,
+    /// It can, and the type does not say with what (`Result<T>` of a crate's own alias).
+    Untyped,
+    /// It can, with this error type.
+    With(T),
+}
+
+impl Fails {
+    /// Whether it can fail at all.
+    pub(super) const fn can(&self) -> bool {
+        !matches!(self, Self::Never)
+    }
 }
 
 /// What a type says once its wrappers are peeled off.
@@ -452,8 +571,11 @@ pub(super) struct Peeled {
     pub later: bool,
     /// It gives many.
     pub many: bool,
-    /// It can fail, with this error type.
-    pub fails: Option<Option<T>>,
+    /// It can fail.
+    pub fails: Fails,
+    /// The type as it stood when the last wrapper came off, borrow and all
+    /// (`&str` for `Option<&str>`); none when nothing was wrapped.
+    pub held: Option<T>,
 }
 
 /// Peels `Result`, `Option`, `Promise` and iterator wrappers, outermost
@@ -465,53 +587,50 @@ pub(super) fn peel(t: &T) -> Peeled {
         match &current {
             T::Name { path, args } => {
                 let name = path.last().map_or("", String::as_str);
-                if name == "Result" || name == "Fallible" {
-                    out.fails = Some(args.get(1).cloned());
-                    current = args.first().cloned().unwrap_or(T::Tuple(Vec::new()));
-                } else if is_maybe(name) && !args.is_empty() {
-                    out.maybe = true;
-                    current = args[0].clone();
-                } else if is_later(name) {
-                    out.later = true;
-                    match args.first() {
-                        Some(inner) => current = inner.clone(),
-                        None => {
-                            current = T::Tuple(Vec::new());
-                        }
+                match wrapper(name, args.len()) {
+                    Some(Wrap::Fails) => {
+                        out.fails = args.get(1).cloned().map_or(Fails::Untyped, Fails::With);
+                        current = args.first().cloned().unwrap_or(T::Tuple(Vec::new()));
                     }
-                } else if is_many(name) {
-                    out.many = true;
-                    match args.first() {
-                        Some(inner) => current = inner.clone(),
-                        None => {
-                            current = T::Infer;
-                        }
+                    Some(Wrap::Maybe) => {
+                        out.maybe = true;
+                        current = args[0].clone();
                     }
-                } else if is_wrapper(name) && args.len() == 1 && matches!(name, "Pin" | "Box") && matches!(&args[0], T::Any(_)) {
-                    current = args[0].clone();
-                } else {
-                    break;
+                    Some(Wrap::Later) => {
+                        out.later = true;
+                        current = args.first().cloned().unwrap_or(T::Tuple(Vec::new()));
+                    }
+                    Some(Wrap::Many) => {
+                        out.many = true;
+                        current = args.first().cloned().unwrap_or(T::Infer);
+                    }
+                    None if is_wrapper(name) && args.len() == 1 && matches!(name, "Pin" | "Box") && matches!(&args[0], T::Any(_)) => current = args[0].clone(),
+                    None => break,
                 }
+                out.held = Some(current.clone());
             }
             T::Any(bounds) => {
                 // `impl Iterator<Item = T>` / `impl Future<Output = T>`.
-                let Some(first) = bounds.first() else { break };
-                let T::Name { path, args } = first else { break };
+                let Some(T::Name { path, args }) = bounds.first() else { break };
                 let name = path.last().map_or("", String::as_str);
-                if is_many(name) {
-                    out.many = true;
-                    current = args.first().cloned().unwrap_or(T::Infer);
-                } else if is_later(name) {
-                    out.later = true;
-                    current = args.first().cloned().unwrap_or(T::Tuple(Vec::new()));
-                } else {
-                    break;
+                match wrapper(name, args.len().max(1)) {
+                    Some(Wrap::Many) => {
+                        out.many = true;
+                        current = args.first().cloned().unwrap_or(T::Infer);
+                    }
+                    Some(Wrap::Later) => {
+                        out.later = true;
+                        current = args.first().cloned().unwrap_or(T::Tuple(Vec::new()));
+                    }
+                    _ => break,
                 }
+                out.held = Some(current.clone());
             }
             T::Union(items) if items.iter().any(is_none_word) && items.len() > 1 => {
                 out.maybe = true;
                 let rest: Vec<T> = items.iter().filter(|item| !is_none_word(item)).cloned().collect();
                 current = if rest.len() == 1 { rest[0].clone() } else { T::Union(rest) };
+                out.held = Some(current.clone());
             }
             T::Ref { inner, .. } => current = (**inner).clone(),
             _ => break,
@@ -688,7 +807,7 @@ mod tests {
     #[test]
     fn wrappers_peel_into_outcomes() {
         let out = peel(&parse("Result<Option<Value>, Error>"));
-        assert!(out.maybe && out.fails.is_some());
+        assert!(out.maybe && out.fails.can());
         assert_eq!(out.inner.and_then(|t| t.last().map(str::to_owned)).as_deref(), Some("Value"));
         let later = peel(&parse("Promise<string>"));
         assert!(later.later);
@@ -698,7 +817,7 @@ mod tests {
         let union = peel(&parse("Match | None"));
         assert!(union.maybe);
         let t = peel(&parse("Result<T>"));
-        assert_eq!(t.fails, Some(None));
+        assert_eq!(t.fails, Fails::Untyped);
     }
 
     #[test]

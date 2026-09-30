@@ -37,6 +37,6 @@ pub mod gallery;
 
 pub use fonts::Typeset;
 pub use motion::{Motion, Pose, Pulse, Spec};
-pub use measure::{Control, Density, Measure, Needs, Reveal, Room, Rung, Set, Space};
+pub use measure::{Control, Density, Measure, Needs, Reveal, Rung, Set, Space};
 pub use theme::{ActiveFacet, Contrast, Facet, set_facet};
 pub use tokens::{Appearance, Face, Family, Palette, Tone, TypeRole, Voice};

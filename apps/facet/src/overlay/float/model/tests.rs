@@ -376,11 +376,12 @@ fn one_tip_per_window_and_tips_sweep_warm() {
     let t0 = Instant::now();
     let mut model = Model::new();
     model.rest(req("t1", b(10.0, 10.0, 20.0, 20.0), FloatKind::Tip), t0);
-    model.tick(t0 + ms(449));
+    let rest = FloatKind::Tip.rest_delay();
+    model.tick(t0 + rest - ms(1));
     assert!(model.tip().is_none());
-    model.tick(t0 + ms(450));
+    model.tick(t0 + rest);
     let id = model.tip().expect("tip").id;
-    let t1 = t0 + ms(500);
+    let t1 = t0 + rest + ms(50);
     model.leave(&key("t1"), t1);
     model.rest(req("t2", b(40.0, 10.0, 20.0, 20.0), FloatKind::Tip), t1 + ms(30));
     let tip = model.tip().expect("swept");
@@ -582,4 +583,31 @@ fn storm_of_interleaved_events_keeps_the_model_consistent_and_settles_to_nothing
         assert!(model.pins().is_empty(), "seed {seed}: a pin survived");
         assert!(model.is_settled(now), "seed {seed}: not settled");
     }
+}
+
+/// The owner's popover budget: nothing waits longer than 400 ms to rise, and
+/// a tip (which the pointer cannot enter) has rolled its body up within 120 ms
+/// of the pointer leaving its trigger.
+#[test]
+fn no_card_rests_over_400_ms_and_a_tip_is_gone_120_ms_after_the_leave() {
+    for kind in [FloatKind::Tip, FloatKind::Peek, FloatKind::Lens, FloatKind::Menu] {
+        assert!(kind.rest_delay() <= ms(400), "{kind:?} waits {:?} to rise", kind.rest_delay());
+    }
+    let t0 = Instant::now();
+    let mut model = Model::new();
+    model.rest(req("t", b(10.0, 10.0, 20.0, 20.0), FloatKind::Tip), t0);
+    let rose = t0 + FloatKind::Tip.rest_delay();
+    model.tick(rose + crate::overlay::float::UNFURL_ENTER);
+    assert!(model.tip().is_some(), "the tip is up");
+    let left = rose + ms(400);
+    model.leave(&key("t"), left);
+    // The layer ticks at the deadline the model reports: the grace runs out, the exit begins.
+    model.tick(left + FloatKind::Tip.grace());
+    let before = left + ms(100);
+    let gone = left + ms(120);
+    model.tick(gone);
+    assert!(model.tip().is_none(), "the tip is closed 120 ms after the leave");
+    let body = |at: Instant| model.cards().map(|card| card.presence.bands(at).body).fold(0.0_f32, f32::max);
+    assert!(body(before) > 0.0, "the body is still rolling up at 100 ms: the check is not vacuous");
+    assert!(body(gone) <= 0.0, "the body is gone 120 ms after the leave: {}", body(gone));
 }

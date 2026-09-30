@@ -33,6 +33,7 @@ use crate::protocol::ProtocolError;
 use crate::service::{LocaldService, OwnerService};
 use backend_engine::UnixEndpointPath;
 use backend_engine::advisory::AdvisorySource;
+use backend_engine::application::LocalHostVariable;
 use backend_engine::registry::{
     AcquisitionLimits, AcquisitionPolicy, AuthenticationToken, RegistryEcosystem, RegistryEndpoint,
     RegistrySource, RegistrySourceSet,
@@ -149,6 +150,11 @@ pub struct ProcessConfig {
     /// Source-only package catalog discovery, backed by the official public
     /// feed for each ecosystem unless explicit discovery sources are set.
     pub discovery: RegistryDiscoveryConfig,
+    /// Compiler paths an embedding host supplies itself. Each one stands in
+    /// for the process variable of the same name; every other variable is
+    /// still read from the process. [`Self::parse`] leaves it empty, so a
+    /// standalone locald is configured by its environment alone.
+    pub compiler_environment: Vec<(LocalHostVariable, PathBuf)>,
 }
 
 /// Source-only catalog discovery configuration. Zero-configuration locald
@@ -965,6 +971,7 @@ impl ProcessConfig {
             advisory,
             forge,
             discovery,
+            compiler_environment: Vec::new(),
         })
     }
 }
@@ -1323,6 +1330,13 @@ pub enum ProcessError {
     Help,
     /// A compiled profile could not construct its checked composition.
     Profile(String),
+    /// The workspace is intact but was written by another build of the
+    /// product, in a layout this build does not read. The message names what
+    /// was recognised. Nothing here is corrupt: a host that owns its
+    /// workspace can set it aside and index again
+    /// ([`crate::EmbeddedLocalService::start_replacing_state_from_another_build`]);
+    /// one that does not must ask its operator.
+    StateFromAnotherBuild(String),
     /// Framing/transport limits failed validation.
     Protocol(ProtocolError),
     /// Unix listener startup or lifecycle failure.
@@ -1336,6 +1350,12 @@ impl fmt::Display for ProcessError {
             Self::Help => formatter.write_str("help requested"),
             Self::Profile(message) => {
                 write!(formatter, "compiled locald profile failed: {message}")
+            }
+            Self::StateFromAnotherBuild(message) => {
+                write!(
+                    formatter,
+                    "workspace state is from another build: {message}"
+                )
             }
             Self::Protocol(error) => error.fmt(formatter),
             Self::Listener(error) => error.fmt(formatter),

@@ -298,7 +298,21 @@ fn run(
     arguments: &[&str],
     maximum: usize,
 ) -> Result<Vec<u8>, String> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    // Cargo runs `rustc` to learn the host's targets and cfgs, found through
+    // `RUSTC` or `PATH`. A Finder launch's `PATH` holds no `rustc`, and a
+    // metadata read that cannot run it fell back to the bare lockfile (every
+    // pinned package, including those no build here compiles): name the
+    // compiler that ships with this cargo.
+    if std::env::var_os("RUSTC").is_none()
+        && let Some(rustc) = program
+            .parent()
+            .map(|bin| bin.join("rustc"))
+            .filter(|rustc| rustc.is_file())
+    {
+        command.env("RUSTC", rustc);
+    }
+    let mut child = command
         .args(arguments)
         .current_dir(directory)
         .stdin(Stdio::null())

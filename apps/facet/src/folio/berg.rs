@@ -13,7 +13,7 @@
 //!   reached. Click goes to that package. All of it inside the berg.
 
 use super::state::{Fold, Nominal};
-use super::text::{key, one};
+use super::text::key;
 use crate::controls::button::wire;
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::data::text::{shape, shape_fit};
@@ -27,7 +27,7 @@ use crate::tokens::{Face, TypeRole, ty};
 use gpui::{
     App, Bounds, ColorExt as _, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, ParentElement, Pixels, RenderOnce,
-    SharedString, Style, Styled, Window, canvas, div, px,
+    SharedString, Style, Styled, Window, canvas, px,
 };
 use std::rc::Rc;
 use std::sync::Arc;
@@ -171,6 +171,15 @@ pub struct Placed {
     pub w: f32,
     /// Height.
     pub h: f32,
+}
+
+/// Where each block of the berg sits at rest, relative to the berg's own
+/// corner: a box a host can put a keyboard door on.
+#[must_use]
+pub fn doors(facts: &BergFacts, measure: &Measure) -> Vec<Bounds<Pixels>> {
+    let s = measure.scale();
+    let (placed, _) = place(facts, f32::from(measure.width()) / s);
+    placed.iter().map(|p| Bounds::new(gpui::point(px(p.x * s), px(p.y * s)), gpui::size(px(p.w * s), px(p.h * s)))).collect()
 }
 
 /// The waterline's y, px at scale 1.

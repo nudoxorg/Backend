@@ -8,9 +8,9 @@
 //! release being read: gone (coral, struck), changed (amber), new (mint), or
 //! not yet there (dashed and dimmed).
 
+use super::flight::{Marks, arrival, mark as flight_mark};
 use super::state::{Pick, Use};
 use super::text::{ellipsis, key, one, wrap};
-use crate::Set;
 use crate::controls::button::{Handler, wire};
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::icons::{Kind, KindSize, Lang, kind_mark};
@@ -139,6 +139,8 @@ pub struct SymbolCard {
     width: Option<Pixels>,
     lit: Pick,
     on_open: Option<Handler>,
+    mark: Option<(Marks, usize)>,
+    carried: f32,
 }
 
 /// A card for `facts` in a column of `measure`, remembering its hover under `id`.
@@ -152,6 +154,8 @@ pub fn symbol_card(id: impl Into<ElementId>, facts: Rc<CardFacts>, measure: &Mea
         width: None,
         lit: Pick::Rest,
         on_open: None,
+        mark: None,
+        carried: 1.0,
     }
 }
 
@@ -174,6 +178,22 @@ impl SymbolCard {
     #[must_use]
     pub const fn lit(mut self, lit: Pick) -> Self {
         self.lit = lit;
+        self
+    }
+
+    /// Reports where this card's kind mark is, as card `index` of a module
+    /// whose shingles are flying to it.
+    #[must_use]
+    pub fn mark(mut self, marks: &Marks, index: usize) -> Self {
+        self.mark = Some((marks.clone(), index));
+        self
+    }
+
+    /// How far the module's shingles have come (`0..=1`): the card and its
+    /// mark stay away until they are nearly over it.
+    #[must_use]
+    pub const fn carried(mut self, progress: f32) -> Self {
+        self.carried = progress;
         self
     }
 
@@ -222,7 +242,14 @@ impl RenderOnce for SymbolCard {
             .items_center()
             .gap(measure.space(Space::Base))
             .min_w_0()
-            .child(kind_mark(facts.kind, KindSize::Sm, palette))
+            .child({
+                let arrived = arrival(self.carried);
+                let mark = div().opacity(arrived).child(kind_mark(facts.kind, KindSize::Sm, palette));
+                match &self.mark {
+                    Some((marks, index)) => flight_mark(marks, *index, mark).into_any_element(),
+                    None => mark.into_any_element(),
+                }
+            })
             .child(div().flex_1().min_w_0().flex().child(name));
         if facts.yours.is_yours() {
             head = head.child(one(key(&self.id, "yours"), "you use it", YOURS, palette.mint.base, &measure));
@@ -281,14 +308,6 @@ impl RenderOnce for SymbolCard {
             .id(self.id.clone());
         let body = wire(body, &touch, self.on_open);
         let shown = if facts.change == Some(Change::Absent) { 0.55 } else { 1.0 };
-        hover_zone(body.opacity(shown), &touch, 9.0 * scale, true)
+        hover_zone(body.opacity(shown * arrival(self.carried).max(0.0001)), &touch, 9.0 * scale, true)
     }
-}
-
-/// How many columns of cards of at least `min` px fit in `measure`, and the
-/// width each takes.
-#[must_use]
-pub fn columns(measure: &Measure, min: f32) -> (usize, Pixels) {
-    let (count, one) = measure.columns(min, Space::Roomy, 6);
-    (count, one.width())
 }

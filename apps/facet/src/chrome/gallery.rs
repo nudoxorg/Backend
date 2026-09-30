@@ -19,12 +19,14 @@ use super::{
     status_bar, titlebar,
 };
 use crate::Set;
+use crate::fluid::Modes;
 use crate::gallery::{Scene, declare_script};
 use crate::icons::{Icon, Kind};
 use crate::measure::{Density, Measure};
 use crate::paint::{gem, ground};
 use crate::theme::{ActiveFacet, Facet};
-use crate::tokens::{Face, TypeRole, ty};
+use crate::tokens::fluid::{DOCK, Dock, MOCK_SHELF, PINS, Pins};
+use crate::tokens::{Face, TypeRole, geo, ty};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Context, ElementId, Entity, IntoElement, ParentElement,
     Render, SharedString, Styled, Window, div, px,
@@ -272,16 +274,18 @@ fn window_frame(facet: &Facet, width: f32, height: f32, filter: &Entity<InputSta
     let palette = cx.palette();
     let win = facet.measure(px(width));
     let s = win.scale();
-    let effective = win.effective();
-    let shelf_w = (effective * 0.18).clamp(220.0, 264.0) * s;
-    // The flow targets' container queries: `max-width` is inclusive.
-    let side: Option<AnyElement> = if effective > 900.0 {
-        Some(
+    // The mock window's frame reads the same modes as the product's
+    // (`facet::tokens::fluid`), held through their hysteresis bands.
+    let room = win.fluid_room();
+    let modes = Modes::keyed("chrome-window-frame", window, cx);
+    let dock = modes.settle(&DOCK, room).mode;
+    let shelf_w = f32::from(MOCK_SHELF.at(room));
+    let side: Option<AnyElement> = match dock {
+        Dock::Shelf => Some(
             shelf("shelf", shelf_data(filter), &facet.measure(px(shelf_w)))
                 .into_any_element(),
-        )
-    } else if effective > 640.0 {
-        Some(
+        ),
+        Dock::Spine => Some(
             spine(
                 "spine",
                 flow_rows()
@@ -293,15 +297,14 @@ fn window_frame(facet: &Facet, width: f32, height: f32, filter: &Entity<InputSta
                 &win,
             )
             .into_any_element(),
-        )
-    } else {
-        None
+        ),
+        Dock::Drawer => None,
     };
     let pins_w = 280.0 * s;
-    let pins = (effective >= 1900.0)
+    let pins = (modes.settle(&PINS, room).mode == Pins::Column)
         .then(|| super::pins_frame(&facet.measure(px(pins_w)), window, cx));
     let reader_w = width
-        - side.as_ref().map_or(0.0, |_| if effective > 900.0 { shelf_w } else { 42.0 * s })
+        - side.as_ref().map_or(0.0, |_| if dock == Dock::Shelf { shelf_w } else { f32::from(geo::KSPINE) * s })
         - pins.as_ref().map_or(0.0, |_| pins_w);
     div()
         .size_full()

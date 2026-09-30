@@ -8,7 +8,7 @@ use crate::model::pages::{PageKey, SymbolRef};
 use crate::navigation::Intent;
 use crate::shell::focus::{Act as Action, Target, Targets};
 use crate::shell::kit::symbol_route;
-use crate::shell::reader::{Reader, SymbolDisclosure, SymbolFold};
+use crate::shell::reader::{Reader, SymbolDisclosure};
 use crate::shell::region::Links;
 use facet::anatomy::page::{Door, Doors, Fold};
 use facet::anatomy::symbol::key::{FoldKey, Key, Sec};
@@ -109,7 +109,7 @@ impl Host for ShellHost<'_> {
     }
 
     fn unfold(&self, key: &FoldKey) -> Option<Fold> {
-        let fold = SymbolFold::Page(key.clone());
+        let fold = key.clone();
         let (reader, symbol) = (self.reader.clone(), self.symbol.clone());
         let toggle_fold = fold.clone();
         Some(Fold {
@@ -158,5 +158,14 @@ impl Host for ShellHost<'_> {
 
     fn spots(&self) -> Rc<Spots> {
         Rc::clone(&self.disclosure.spots)
+    }
+
+    fn flow(&self) -> facet::motion::Flow {
+        // A page drawn away from the scroller (leaving, folding, under a
+        // plate) is inert: it stands where it was. A fresh flow places each
+        // part where it lays out, so a still copy neither glides (a moving
+        // part is drawn above the page, out of the fold's reach) nor moves
+        // the live page's springs.
+        if self.active { self.disclosure.flow.clone() } else { facet::motion::Flow::new("s6-inert") }
     }
 }

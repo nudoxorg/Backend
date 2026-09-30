@@ -155,6 +155,27 @@ fn the_first_card_is_whispered_once(cx: &mut TestAppContext) {
     assert!(restored.whispered && restored.whisper.is_none(), "a restart says nothing again");
 }
 
+/// The whisper ends by its OWN timer, whatever the motion clock says: the
+/// executor's clock alone passing 2.4 s spends it (a timer that fired and
+/// left the whisper standing was re-armed from an unmoved motion clock, for
+/// ever: the rig never settled and the foot spun a core).
+#[gpui::test]
+fn the_whisper_is_spent_when_its_timer_fires(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    install(&mut rig);
+    let whisper = |rig: &mut Rig| {
+        let ledger = painted(rig);
+        let texts: Vec<String> = ledger.texts.iter().map(|text| text.content.clone()).collect();
+        texts.windows(2).any(|pair| pair[1] == "in hand")
+    };
+    rig.keys("cmd-d");
+    assert!(whisper(&mut rig), "the first card is whispered");
+    rig.cx.executor().advance_clock(std::time::Duration::from_millis(3_000));
+    rig.cx.run_until_parked();
+    rig.draw();
+    assert!(!whisper(&mut rig), "its timer fired: it is spent");
+}
+
 /// Take → hand: the held card's stone starts over the hero stone it was
 /// held from and travels to its place in the foot.
 #[gpui::test]

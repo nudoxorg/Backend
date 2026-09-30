@@ -648,6 +648,7 @@ fn project_reference_facts_from_bytes(
         target_symbol,
         project_paths,
         structural_pairs,
+        None,
     )
 }
 
@@ -658,8 +659,12 @@ fn project_opened_reference_facts(
     target_symbol: backend_engine::SymbolKey,
     project_paths: &BTreeSet<String>,
     structural_pairs: &[(String, String)],
+    // The package's source root, where a name-matched call's file is read
+    // to place it; `None` places none.
+    root: Option<&std::path::Path>,
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
     let image_refs = images.iter().collect::<Vec<_>>();
+    let mut files = std::collections::BTreeMap::new();
     let mut facts = Vec::new();
     for image in images {
         append_reference_facts(package, image, target_symbol, &mut facts)?;
@@ -824,26 +829,22 @@ fn project_opened_reference_facts(
         ) {
             continue;
         }
-        let (start, end) = caller_row
-            .excerpt
-            .text()
-            .and_then(|excerpt| view_build::structural_call_span(excerpt, &target_name))
-            .map(|(start, end)| {
-                (
-                    u32::try_from(start).unwrap_or(u32::MAX),
-                    u32::try_from(end).unwrap_or(u32::MAX),
-                )
-            })
-            .unwrap_or((0, target_name.len().min(u32::MAX as usize) as u32));
-        let source = match caller_row.source.captured() {
-            Some(location) => Some(backend_engine::SemanticSourceSpan {
-                file: backend_engine::ProductText::new(location.path()).map_err(|error| {
-                    BuiltinModelError(format!("structural references path: {error:?}"))
-                })?,
-                start,
-                end,
-            }),
-            None => None,
+        // A name-matched call is placed where it is in the file, or not at
+        // all (`view_build::structural_file_span`).
+        let source = match (caller_row.source.captured(), caller_row.excerpt.text(), root) {
+            (Some(location), Some(excerpt), Some(root)) => view_build::structural_call_span(excerpt, &target_name)
+                .and_then(|span| view_build::structural_file_span(root, location, excerpt, span, &mut files))
+                .map(|(start, end)| {
+                    Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
+                        file: backend_engine::ProductText::new(location.path()).map_err(|error| {
+                            BuiltinModelError(format!("structural references path: {error:?}"))
+                        })?,
+                        start,
+                        end,
+                    })
+                })
+                .transpose()?,
+            _ => None,
         };
         facts.push(backend_engine::ReferenceFact {
             site: caller_symbol,
@@ -982,6 +983,7 @@ pub(super) fn execute_references(
     } else {
         Vec::new()
     };
+    let root = sources.projects.get(&package.to_bytes()).map(|project| std::path::PathBuf::from(&project.label));
     let facts = project_opened_reference_facts(
         &opened,
         view,
@@ -989,6 +991,7 @@ pub(super) fn execute_references(
         target_symbol,
         &project_paths,
         &pairs,
+        root.as_deref(),
     )?;
     let references = library.references(target, &facts).map_err(|error| {
         BuiltinModelError(format!("project references through the catalog: {error}"))

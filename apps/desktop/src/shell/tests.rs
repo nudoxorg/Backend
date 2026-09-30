@@ -123,6 +123,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             implemented_by: Known::Known(Arc::from([])),
         },
         references: Known::Unknown(unknown(GapReason::NoSemanticPublication)),
+        workspace: Arc::from([]),
         outline: Known::Unknown(unknown(GapReason::NotServed)),
     }
 }
@@ -305,6 +306,9 @@ pub(crate) struct Rig {
     pub shell: Entity<Shell>,
     pub graph: UiEntityGraph,
     pub cx: &'static mut VisualTestContext,
+    /// How long [`Rig::settle`] waits, in real time, for reads that are in
+    /// flight (a fake engine answers at once; a real owner takes seconds).
+    pub patience: Duration,
 }
 
 /// Opens a real shell window at `route` (after an Orbit start, so the
@@ -314,6 +318,19 @@ pub(crate) fn rig(cx: &mut TestAppContext, route: Option<Route>, width: f32, hei
 }
 
 pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, width: f32, height: f32, pool: ReadPool) -> Rig {
+    rig_with_engine(cx, route, width, height, pool, RootOnly)
+}
+
+/// [`rig_with_reads`] over an engine of the caller's (an index that fails,
+/// say), instead of the one that answers only the root.
+pub(crate) fn rig_with_engine(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+) -> Rig {
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -330,7 +347,7 @@ pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, widt
     workspace.host = LocalProjectId::from_path(&folder).ok();
     snapshot = snapshot.with_workspace(workspace);
     snapshot = snapshot.with_session(SessionState::default());
-    let actor = EngineActor::start(RootOnly, 8).expect("actor");
+    let actor = EngineActor::start(engine, 8).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool)));
     let window_graph = UiEntityGraph {
@@ -359,6 +376,7 @@ pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, widt
         shell,
         graph,
         cx: visual,
+        patience: Duration::from_secs(20),
     };
     rig.settle();
     if let Some(route) = route {
@@ -385,7 +403,13 @@ impl Rig {
 
     /// Lets reads land and motion finish, drawing as a platform would.
     pub(crate) fn settle(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        /// Rounds of 700 ms of virtual time: 28 s, longer than any motion
+        /// budget. A shell still asking for work after that is not settling:
+        /// something reschedules itself (a timer that notifies a render that
+        /// arms the timer again), and this says so instead of spinning a CPU.
+        const ROUNDS: usize = 40;
+        let deadline = Instant::now() + self.patience;
+        let mut rounds = 0;
         loop {
             self.cx.run_until_parked();
             self.draw();
@@ -395,13 +419,30 @@ impl Rig {
             let frames = self.cx.update(|window, cx| window.simulate_next_frame(cx));
             self.draw();
             let (queued, running) = self.graph.store.read_with(self.cx, |store, _| store.pool_load());
-            if frames == 0 && queued == 0 && running == 0
-                && !self.graph.root.read_with(self.cx, |root, _| root.has_pending_work())
-                && self.shell.read_with(self.cx, |shell, cx| shell.graph_ready(cx)) {
+            let asking = frames > 0
+                || self.graph.root.read_with(self.cx, |root, _| root.has_pending_work())
+                || !self.shell.read_with(self.cx, |shell, cx| shell.graph_ready(cx));
+            let reading = queued > 0 || running > 0;
+            if !asking && !reading {
                 self.draw();
                 return;
             }
-            assert!(Instant::now() < deadline, "the shell never settled");
+            // Only the shell asking again is held to the rounds: a read in
+            // flight is waiting on real work, which the deadline bounds.
+            if asking {
+                rounds += 1;
+            }
+            assert!(
+                rounds <= ROUNDS,
+                "the shell never settled: after {ROUNDS} rounds of 700 ms of virtual time it still asks for {frames} frame(s), \
+                 {queued} queued and {running} running read(s); renders so far {:?}",
+                self.counts()
+            );
+            assert!(
+                Instant::now() < deadline,
+                "the shell never settled: after {:?} of real time {queued} read(s) are queued and {running} running",
+                self.patience
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -446,25 +487,25 @@ impl Rig {
 #[gpui::test]
 fn a_page_renders_its_real_content_through_the_shell(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let painted = |key: &str| ledger.texts.iter().filter(|text| text.key == key).map(|text| text.content.clone()).collect::<Vec<_>>();
     let said = rig.said();
-    // The drawn page: the name, the lede, the fork (one tine per variant,
-    // what each carries, the accessor that reads it), then What it does.
-    for expected in [
-        "RelationLabel",
-        "The readable label of RelationLabel.",
-        "one of 2",
-        "Typed",
-        "SemanticLinkKind",
-        "is_typed",
-        "Related",
-        "What it does",
-        "as_str",
-    ] {
-        assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
-    }
-    // A variant's doc is its peek, never a line at rest; the tabs and the
-    // relation list are gone.
-    for gone in ["A relation whose kind is known.", "One of", "Reference", "Relations", "Usage", "History"] {
+    // The drawn page: the name, the lede, what it is (a fork, one row per
+    // variant with what each holds, in words), then what you can do with it.
+    assert!(said.iter().any(|line| line == "RelationLabel"), "the name is not on screen: {said:#?}");
+    assert_eq!(painted("s6-kind"), ["ENUM"]);
+    assert_eq!(painted("s6-lede"), ["The readable label of RelationLabel."]);
+    assert_eq!(painted("s6-shape-head-count"), ["one of 2"]);
+    assert_eq!(painted("s6-case-0-name"), ["Typed"]);
+    assert_eq!(painted("s6-case-0-holds-0-word"), ["SemanticLinkKind"]);
+    assert_eq!(painted("s6-case-1-name"), ["Related"]);
+    assert_eq!(painted("s6-group-0-head"), ["Reads it"]);
+    assert_eq!(painted("s6-group-0-method-0-name"), ["as_str"]);
+    // A variant's doc is its line on the row; the tabs and the relation list
+    // are gone, and source lives in Code.
+    for gone in ["One of", "Reference", "Relations", "Usage", "History"] {
         assert!(!said.iter().any(|line| line == gone), "{gone:?} is still on screen: {said:#?}");
     }
     assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "source lives in Code: {said:#?}");
@@ -794,6 +835,59 @@ fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     assert_eq!(rig.route(), page_route("RelationLabel"), "and nothing else moved");
 }
 
+/// Settings › Keys lists every key a person can press, the sidebar's own
+/// (typing narrows, the `G` chords) beside the shell's table and the graph's.
+#[gpui::test]
+fn settings_keys_lists_the_sidebars_keys_beside_the_shells_and_the_graphs(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Help));
+    let said = rig.said();
+    for words in ["open what the focus stands on", "In the sidebar", "narrow the list as you type; the last row widens to Find", "G C  G V  G R  G U", "In the graph"] {
+        assert!(said.iter().any(|line| line == words), "Settings › Keys says {words:?}: {said:#?}");
+    }
+    let at = |words: &str| said.iter().position(|line| line == words).unwrap_or(usize::MAX);
+    assert!(at("In the sidebar") < at("In the graph"), "the sidebar's keys come before the graph's");
+}
+
+/// GAPS D5: Esc closes Settings, whether the keyboard is still where ⌘,
+/// found it or a person has just clicked one of Settings' own controls; the
+/// page under it is where it was.
+#[gpui::test]
+fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAppContext) {
+    use crate::navigation::Overlay;
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let overlay = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
+    let drawn = |rig: &mut Rig, words: &str| super::fit_tests::painted(rig).texts.iter().any(|text| text.content == words);
+    rig.keys("cmd-,");
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "⌘, opened Settings");
+    assert!(drawn(&mut rig, "Contrast"), "and Settings is drawn");
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), None, "Esc closed Settings");
+    assert!(!drawn(&mut rig, "Contrast"), "and it is gone from the window");
+    assert_eq!(rig.route(), page_route("RelationLabel"), "the page under it did not move");
+
+    rig.keys("cmd-,");
+    // A segmented choice paints its own label (it is not a probe text): find
+    // it where gpui painted it.
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+    rig.repaint();
+    let choice = rig
+        .cx
+        .update(|window, _| window.painted_texts().iter().find(|text| text.text.as_ref() == "Compact").map(|text| text.bounds.center()))
+        .expect("Settings paints the Compact density");
+    rig.cx.simulate_click(choice, Modifiers::default());
+    rig.settle();
+    assert_eq!(
+        rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().density),
+        crate::model::DensityPreference::Compact,
+        "the click chose Compact"
+    );
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "a click on a control keeps Settings open");
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), None, "Esc closed Settings after a click in it");
+    assert!(!drawn(&mut rig, "Contrast"), "and it is gone from the window");
+}
+
 #[gpui::test]
 fn hint_mode_labels_every_visible_target_and_a_code_activates_one(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
@@ -813,13 +907,17 @@ fn hint_mode_labels_every_visible_target_and_a_code_activates_one(cx: &mut TestA
 #[gpui::test]
 fn the_regions_degrade_with_the_window_and_the_text(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 2560.0, 1440.0);
+    // Dragged narrower: each mode holds through the 32 px band around its
+    // edge (`facet::fluid`), so 899 is still a shelf and 639 still a spine.
     for (width, shelf) in [
         (2560.0, super::ShelfMode::Shelf),
         (1440.0, super::ShelfMode::Shelf),
         (1100.0, super::ShelfMode::Shelf),
-        (899.0, super::ShelfMode::Spine),
+        (899.0, super::ShelfMode::Shelf),
+        (880.0, super::ShelfMode::Spine),
         (760.0, super::ShelfMode::Spine),
-        (639.0, super::ShelfMode::Hidden),
+        (639.0, super::ShelfMode::Spine),
+        (620.0, super::ShelfMode::Hidden),
         (480.0, super::ShelfMode::Hidden),
     ] {
         rig.cx.simulate_resize(size(px(width), px(900.0)));

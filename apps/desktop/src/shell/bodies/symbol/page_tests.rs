@@ -6,18 +6,16 @@
 //! painted (the probe ledger): the words, never a count.
 
 use crate::model::pages::{
-    Arrival, DeclRef, DocFragment, DocSection, DocSections, Excerpt, Gap, GapReason, Known, LineSpan, Member, Members, MethodGroup, OutlinePosition, PageValue, Provenance, ReadFailure, Receiver, ReferenceScope,
-    ReferenceSite, Relation, RelationKind, Rose, SectionKind, SignatureText, SourceLocation, SourceSite, SymbolPage,
+    Arrival, DeclRef, DocFragment, DocSection, DocSections, Excerpt, Gap, GapReason, Known, LineSpan, Member, Members, MethodGroup, OutlinePosition, PageValue, Provenance, ReadFailure, Receiver, Relation, RelationKind, Resolution, Rose, SectionKind, SignatureText, SourceLocation, SourceSite, SymbolPage, UseLine,
 };
-use crate::model::pages::{ByteSpan, FileSpan};
 use crate::navigation::{Coordinate, Route, SymbolRoute, View};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
+use crate::shell::anatomy_tests::painted;
 use crate::shell::tests::{Fixture, PACKAGE, Rig, rig_with_reads};
-use backend_library::DeclarationKind;
+use backend_library::{DeclarationKind, SemanticLinkKind};
 use facet::probe::{Ledger, TextSample};
 use gpui::TestAppContext;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 pub(super) fn label(file: &str, line: u32, name: &str) -> String {
@@ -67,6 +65,7 @@ pub(super) fn page(identity: DeclRef, sig: &str, doc: Option<&str>, made_of: Vec
         }),
         rose: Rose { up: Known::Known(Arc::from([])), down: Known::Known(Arc::from([])), left: Known::Unknown(gap()), right: Known::Known(Arc::from([])), implemented_by: Known::Known(Arc::from([])) },
         references: Known::Known(Arc::from([])),
+        workspace: Arc::from([]),
         outline,
         identity,
     }
@@ -88,7 +87,35 @@ fn from_str() -> SymbolPage {
         lead: Arc::from([DocFragment::Text(Arc::from("Deserialize an instance of type `T` from a string of JSON text.")), DocFragment::Break, DocFragment::Break, DocFragment::Code(Arc::from("let u: User = serde_json::from_str(j).unwrap();\nprintln!(\"{:#?}\", u);"))]),
         sections: Arc::from([DocSection { kind: SectionKind::Errors, title: Arc::from("Errors"), body: text(errors), entries: Arc::from([]) }]),
     };
+    page.workspace = workspace();
     page
+}
+
+/// One place of your workspace: the line as the read worker put it on the
+/// page, with the token the index's span covers marked.
+fn place(package: &str, file: &str, line: u32, text: &str, token: &str, relation: SemanticLinkKind) -> UseLine {
+    let at = u32::try_from(text.find(token).expect("the token is on the line")).expect("a short line");
+    UseLine {
+        package: Arc::from(package),
+        file: Arc::from(file),
+        path: Arc::from(format!("/work/{package}/{file}")),
+        line,
+        text: Arc::from(text),
+        mark: Some(at..at + u32::try_from(token.len()).expect("a short token")),
+        relation,
+        resolution: Resolution::Resolved,
+    }
+}
+
+/// Who calls `from_str` in the workspace: two places in `engine`, one in
+/// `gui-harness`, and one test in `gui-harness`.
+fn workspace() -> Arc<[UseLine]> {
+    Arc::from([
+        place("engine", "src/a.rs", 12, "let m: Metadata = serde_json::from_str(json)?;", "from_str", SemanticLinkKind::Calls),
+        place("engine", "src/b.rs", 40, "let c = serde_json::from_str::<Command>(text)?;", "from_str", SemanticLinkKind::Calls),
+        place("gui-harness", "src/c.rs", 7, "let v: Value = serde_json::from_str(&s)?;", "from_str", SemanticLinkKind::Calls),
+        place("gui-harness", "tests/t.rs", 9, "assert!(serde_json::from_str::<Command>(bad).is_err());", "from_str", SemanticLinkKind::Calls),
+    ])
 }
 
 fn value() -> SymbolPage {
@@ -123,7 +150,7 @@ fn relation(name: &str, kind: DeclarationKind) -> Relation {
 
 fn as_str() -> SymbolPage {
     page(
-        decl("mod.rs", 492, "as_str", DeclarationKind::Method),
+        decl("mod.rs", 492, "Value::as_str", DeclarationKind::Method),
         "pub fn as_str(&self) -> Option<&str>",
         Some("If the `Value` is a String, returns the associated str. Returns None otherwise."),
         Vec::new(),
@@ -187,7 +214,7 @@ fn zod_parse() -> SymbolPage {
 }
 
 /// Serves the pinned pages; everything else from the shell's fixture.
-struct Pinned;
+pub(super) struct Pinned;
 
 impl PageReader for Pinned {
     fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
@@ -223,8 +250,13 @@ pub(super) fn route(file: &str, line: u32, name: &str) -> Route {
 }
 
 fn open(cx: &mut TestAppContext, file: &str, line: u32, name: &str, width: f32) -> (Rig, Ledger) {
+    open_in(cx, file, line, name, width, 900.0)
+}
+
+/// [`open`] in a window `height` tall (a long page all on screen, so a click can reach any part of it).
+fn open_in(cx: &mut TestAppContext, file: &str, line: u32, name: &str, width: f32, height: f32) -> (Rig, Ledger) {
     let pool = ReadPool::start(2, |_| Pinned).expect("pinned pool");
-    let mut rig = rig_with_reads(cx, Some(route(file, line, name)), width, 900.0, pool);
+    let mut rig = rig_with_reads(cx, Some(route(file, line, name)), width, height, pool);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     rig.settle();
     rig.repaint();
@@ -287,7 +319,7 @@ fn value_is_a_fork_whose_cases_hold_things_in_words(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_method_that_may_give_nothing_says_when(cx: &mut TestAppContext) {
-    let (_rig, ledger) = open(cx, "mod.rs", 492, "as_str", 1440.0);
+    let (_rig, ledger) = open(cx, "mod.rs", 492, "Value::as_str", 1440.0);
     assert_eq!(says(&ledger, "s6-kind").as_deref(), Some("METHOD"));
     assert_eq!(says(&ledger, "s6-recv-type-word").as_deref(), Some("Value"));
     assert_eq!(says(&ledger, "s6-recv-says").as_deref(), Some("reads it"));
@@ -336,20 +368,236 @@ fn typescript_keeps_its_declared_types(cx: &mut TestAppContext) {
     assert!(says(&ledger, "s6-block-how").is_none(), "declared types need no note");
 }
 
-/// Real lines, read from the local files at the index's spans; picking a
-/// place opens it. (The workspace list.)
-#[allow(dead_code)]
-fn workspace_files() -> HashMap<PathBuf, Arc<str>> {
-    HashMap::new()
+/// Rests the pointer on `key`'s text (its own box) and lets the card rise.
+fn rest_on(rig: &mut Rig, ledger: &Ledger, key: &str) -> Ledger {
+    let at = texts(ledger, key).first().map(|t| (t.bounds.x + t.bounds.width / 2.0, t.bounds.y + t.bounds.height / 2.0)).unwrap_or_else(|| panic!("`{key}` is not painted"));
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.cx.simulate_mouse_move(gpui::point(gpui::px(at.0), gpui::px(at.1)), None, gpui::Modifiers::default());
+    for _ in 0..3 {
+        rig.frame(120);
+    }
+    rig.repaint();
+    rig.cx.update(|_, cx| facet::probe::take(cx))
 }
 
-#[allow(dead_code)]
-fn site(name: &str, file: &str, at: u32, relation: backend_library::SemanticLinkKind) -> ReferenceSite {
-    ReferenceSite {
-        site: decl(file, 1, name, DeclarationKind::Function),
-        relation,
-        confidence: backend_library::SemanticConfidence::Compiler,
-        span: Known::Known(FileSpan { file: Arc::from(file), bytes: ByteSpan::new(at, at + 8).expect("span") }),
-        scope: ReferenceScope::Local,
+/// The generic's pill is a door into progressive disclosure: resting on it
+/// says its role in words and what it must be.
+#[gpui::test]
+fn resting_on_a_generic_says_what_it_must_be(cx: &mut TestAppContext) {
+    let (mut rig, ledger) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    assert!(texts(&ledger, "s6-card-").is_empty(), "no card until you rest on something");
+    let card = rest_on(&mut rig, &ledger, "s6-gives-type-pill-name");
+    assert_eq!(says(&card, "s6-card-gen-title").as_deref(), Some("you choose it"));
+    assert_eq!(says(&card, "s6-card-gen-says").as_deref(), Some("You choose it: whatever you read the input into."));
+    assert_eq!(says(&card, "s6-card-gen-must-title").is_some() || says(&card, "s6-card-gen-must").is_some(), true);
+    assert_eq!(says(&card, "s6-card-gen-must").as_deref(), Some("IT MUST BE"));
+    assert_eq!(says(&card, "s6-card-gen-bound-0-name").as_deref(), Some("Deserialize"));
+    assert_eq!(says(&card, "s6-card-gen-bound-0-means").as_deref(), Some("can be read by serde (any format)"));
+}
+
+/// The error type opens its kinds.
+#[gpui::test]
+fn resting_on_the_error_says_what_it_is(cx: &mut TestAppContext) {
+    let (mut rig, ledger) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    let card = rest_on(&mut rig, &ledger, "s6-fail-type-word");
+    let keys: Vec<&str> = card.texts.iter().filter(|t| t.key.contains("card") || t.key.contains("fail")).map(|t| t.key.as_str()).collect();
+    assert_eq!(says(&card, "s6-card-err-title").as_deref(), Some("Error"), "{keys:?}");
+    assert!(says(&card, "s6-card-err-when").is_some_and(|when| when.starts_with("This conversion can fail if the structure")), "the docs' own words");
+}
+
+
+// ------------------------------------------------------------------ in your workspace
+
+
+/// The centre of the target `key` (a stop in the reader's walk, a click's place).
+fn centre(ledger: &Ledger, key: &str) -> gpui::Point<gpui::Pixels> {
+    let target = ledger.targets.iter().find(|target| target.key == key).unwrap_or_else(|| panic!("`{key}` is not a target: {:?}", ledger.targets.iter().map(|t| t.key.as_str()).collect::<Vec<_>>()));
+    gpui::point(gpui::px(target.bounds.x + target.bounds.width / 2.0), gpui::px(target.bounds.y + target.bounds.height / 2.0))
+}
+
+/// What is painted now, with the ledger recording.
+fn now(rig: &mut Rig) -> Ledger {
+    painted(rig)
+}
+
+#[gpui::test]
+fn your_workspace_lists_the_real_lines_by_package_most_places_first(cx: &mut TestAppContext) {
+    let (_rig, ledger) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    // Tests are left out until you include them: three places, two packages.
+    assert_eq!(all(&ledger, "s6-pkg-", "-name"), ["engine", "gui-harness"]);
+    assert_eq!(all(&ledger, "s6-pkg-", "-count"), ["2", "1"]);
+    assert_eq!(says(&ledger, "s6-pkg-0-place-0-code").as_deref(), Some("let m: Metadata = serde_json::from_str(json)?;"));
+    assert_eq!(says(&ledger, "s6-pkg-0-place-0-place").as_deref(), Some("src/a.rs:12"));
+    assert_eq!(says(&ledger, "s6-pkg-1-place-0-code").as_deref(), Some("let v: Value = serde_json::from_str(&s)?;"));
+    // What each place does with it: the chips.
+    assert_eq!(all(&ledger, "s6-chip-", "-word"), ["calls", "include tests"]);
+    // A generic call says what it chose, from the turbofish or the annotation.
+    assert_eq!(all(&ledger, "s6-pkg-", "-fill"), ["T = Metadata", "T = Command", "T = Value"]);
+}
+
+#[gpui::test]
+fn a_click_on_a_place_opens_that_file_at_that_line_in_the_editor(cx: &mut TestAppContext) {
+    use crate::host::editor::{Command, Launch};
+    use std::cell::RefCell;
+    struct Recorder(Rc<RefCell<Vec<Command>>>);
+    impl Launch for Recorder {
+        fn run(&self, command: &Command) -> std::io::Result<()> {
+            self.0.borrow_mut().push(command.clone());
+            Ok(())
+        }
     }
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    let (mut rig, _) = open_in(cx, "de.rs", 2709, "from_str", 1440.0, 2600.0);
+    rig.cx.update(|_, cx| crate::host::editor::install(Rc::new(Recorder(Rc::clone(&ran))), cx));
+    let ledger = now(&mut rig);
+    let at = centre(&ledger, "s6-pkg-1-place-0");
+    rig.cx.simulate_click(at, gpui::Modifiers::default());
+    rig.settle();
+    assert_eq!(*ran.borrow(), [Command { program: "code".into(), args: vec!["-g".into(), "/work/gui-harness/src/c.rs:7".into()] }], "the file the place is in, at its line");
+}
+
+#[gpui::test]
+fn picking_a_package_from_the_menu_narrows_the_list_and_escape_closes_the_menu(cx: &mut TestAppContext) {
+    let (mut rig, _) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    let ledger = now(&mut rig);
+    rig.cx.simulate_click(centre(&ledger, "s6-picker"), gpui::Modifiers::default());
+    rig.settle();
+    let menu_key: gpui::ElementId = "s6-menu".to_owned().into();
+    assert!(rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu_key, window, cx)), "the chip opens the menu");
+    rig.keys("down");
+    assert!(rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu_key, window, cx)), "an arrow walks the menu, it does not close it");
+    rig.keys("escape");
+    assert!(!rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu_key, window, cx)), "Escape closes it");
+    let ledger = now(&mut rig);
+    rig.cx.simulate_click(centre(&ledger, "s6-picker"), gpui::Modifiers::default());
+    rig.settle();
+    // The menu opens on the first row (all packages): engine, then gui-harness, two rows down.
+    assert!(rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu_key, window, cx)), "the menu is open again");
+    rig.keys("down down enter");
+    assert!(!rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu_key, window, cx)), "choosing a row closes the menu");
+    let ledger = now(&mut rig);
+    assert_eq!(says(&ledger, "s6-picker-name").as_deref(), Some("gui-harness"), "the chip names the package chosen");
+    assert_eq!(all(&ledger, "s6-pkg-", "-name"), ["gui-harness"], "only its places are listed");
+}
+
+#[gpui::test]
+fn clicking_a_chip_filters_to_that_verb_and_a_test_place_shows_when_tests_are_included(cx: &mut TestAppContext) {
+    let (mut rig, _) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    let ledger = now(&mut rig);
+    let tests = ledger.targets.iter().find(|target| target.key.starts_with("s6-chip-tests") || target.key == "s6-chip-tests").map(|target| target.key.clone()).expect("include tests is a chip");
+    rig.cx.simulate_click(centre(&ledger, &tests), gpui::Modifiers::default());
+    rig.settle();
+    let ledger = now(&mut rig);
+    assert_eq!(all(&ledger, "s6-pkg-", "-count"), ["2", "2"], "gui-harness now counts its test place too");
+}
+
+// ------------------------------------------------------------------ fit
+
+use crate::shell::fit_tests::{findings, resize};
+
+/// What the page painted, by the words of each text and where it sits: what a
+/// fresh window and a window that was resized about must agree on.
+fn layout_of(ledger: &Ledger) -> std::collections::BTreeMap<String, (String, i32, i32, i32)> {
+    ledger
+        .texts
+        .iter()
+        .filter(|text| text.key.starts_with("s6-"))
+        .map(|text| (text.key.clone(), (text.content.clone(), text.bounds.x.round() as i32, text.bounds.y.round() as i32, text.bounds.width.round() as i32)))
+        .collect()
+}
+
+/// A phone shows the page whole: nothing of it is cut mid-glyph, hangs past
+/// the window's edge, lies where nothing shows it, or sits over other text.
+#[gpui::test]
+fn on_a_phone_the_page_fits_the_window_with_nothing_cut_or_hanging_past_the_edge(cx: &mut TestAppContext) {
+    let (mut rig, _) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    let mut wrong = Vec::new();
+    for (width, height) in [(320.0, 568.0), (360.0, 640.0), (390.0, 844.0), (430.0, 932.0), (800.0, 900.0)] {
+        resize(&mut rig, width, height);
+        let ledger = painted(&mut rig);
+        assert!(ledger.texts.iter().any(|text| text.key == "s6-pkg-0-name"), "{width}: the workspace is on the page");
+        let found = findings(&ledger, width, height);
+        wrong.extend(found.iter().filter(|finding| finding.what.contains("[s6-")).map(|finding| format!("{width:.0} px: {finding}")));
+    }
+    assert!(wrong.is_empty(), "{} findings:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// The page after a storm of resizes is the page a fresh window of that size
+/// paints: modes are a function of the room, not a memory of the drag.
+#[gpui::test]
+fn after_a_resize_storm_the_page_is_what_a_fresh_window_paints(cx: &mut TestAppContext) {
+    let (mut stormed, _) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    for width in [1300.0, 1000.0, 720.0, 320.0, 900.0, 1500.0, 640.0, 360.0, 1240.0, 800.0] {
+        resize(&mut stormed, width, 900.0);
+    }
+    let after = layout_of(&painted(&mut stormed));
+    drop(stormed);
+    let (mut fresh, _) = open(cx, "de.rs", 2709, "from_str", 800.0);
+    let fresh = layout_of(&painted(&mut fresh));
+    assert_eq!(after.keys().collect::<Vec<_>>(), fresh.keys().collect::<Vec<_>>(), "the same things are on the page");
+    let moved: Vec<String> = after.iter().filter(|(key, at)| fresh.get(*key) != Some(at)).map(|(key, at)| format!("{key}: {at:?} vs {:?}", fresh.get(key))).collect();
+    assert!(moved.is_empty(), "{} places differ from a fresh window:\n{}", moved.len(), moved.join("\n"));
+}
+
+/// Every action on the page is a stop in the keyboard walk, and every stop is
+/// at least 24 px square: nothing a mouse can do is out of a keyboard's reach.
+#[gpui::test]
+fn every_action_on_the_page_is_a_stop_in_the_walk_and_at_least_24_px(cx: &mut TestAppContext) {
+    let (mut rig, _) = open_in(cx, "de.rs", 2709, "from_str", 1440.0, 2600.0);
+    let ledger = now(&mut rig);
+    let stops: Vec<&str> = ledger.targets.iter().filter(|target| target.key.starts_with("s6-")).map(|target| target.key.as_str()).collect();
+    for wanted in [
+        "s6-example-0-line",       // a fold
+        "s6-gives-type-pill",      // a generic's card
+        "s6-fail-type-card",       // an error's card
+        "s6-picker",               // the package menu
+        "s6-chip-0",               // a verb filter
+        "s6-chip-tests",           // include tests
+        "s6-pkg-0-place-0",        // a place opens its file
+        "s6-block-source",         // the source link
+    ] {
+        assert!(stops.contains(&wanted), "`{wanted}` is not a stop in the walk: {stops:?}");
+    }
+    let small: Vec<String> = ledger
+        .targets
+        .iter()
+        .filter(|target| target.key.starts_with("s6-") && (target.bounds.height < 23.5 || target.bounds.width < 23.5))
+        .map(|target| format!("{} {:.0}x{:.0}", target.key, target.bounds.width, target.bounds.height))
+        .collect();
+    assert!(small.is_empty(), "stops under 24 px: {small:?}");
+}
+
+// ------------------------------------------------------------------ the hover card's clock
+
+/// Steps virtual time `step` ms at a time until `wanted` holds of what is painted; the ms it took.
+fn until(rig: &mut Rig, step: u64, limit: u64, wanted: impl Fn(&Ledger) -> bool) -> Option<u64> {
+    let mut at = 0;
+    while at <= limit {
+        if wanted(&painted(rig)) {
+            return Some(at);
+        }
+        rig.frame(step);
+        at += step;
+    }
+    None
+}
+
+/// The card is up soon after the pointer comes to rest on its word, and gone soon
+/// after it leaves (measured in virtual time: the clock the motion runs on).
+#[gpui::test]
+fn the_generic_card_rises_after_the_rest_and_is_gone_after_the_pointer_leaves(cx: &mut TestAppContext) {
+    let (mut rig, ledger) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    let word = texts(&ledger, "s6-gives-type-pill-name").first().map(|t| (t.bounds.x + t.bounds.width / 2.0, t.bounds.y + t.bounds.height / 2.0)).expect("the pill is painted");
+    rig.cx.simulate_mouse_move(gpui::point(gpui::px(word.0), gpui::px(word.1)), None, gpui::Modifiers::default());
+    let up = until(&mut rig, 8, 400, |ledger| ledger.texts.iter().any(|t| t.key == "s6-card-gen-title")).expect("the card never came up");
+    eprintln!("HOVER-CARD: painted {up} ms after the pointer came to rest");
+    assert!((100..=150).contains(&up), "the card is up between the 120 ms rest and 150 ms: {up} ms");
+    // Let it finish arriving, then leave.
+    for _ in 0..4 {
+        rig.frame(120);
+    }
+    rig.cx.simulate_mouse_move(gpui::point(gpui::px(4.0), gpui::px(880.0)), None, gpui::Modifiers::default());
+    let gone = until(&mut rig, 8, 1200, |ledger| !ledger.texts.iter().any(|t| t.key.starts_with("s6-card-gen-"))).expect("the card never went");
+    eprintln!("HOVER-CARD: gone {gone} ms after the pointer left");
+    assert!(gone <= 600, "a card the pointer left goes: {gone} ms");
 }

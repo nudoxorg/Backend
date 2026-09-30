@@ -22,8 +22,10 @@
 use super::card::{self, Content, k, text};
 use super::semver::{self, ReleaseFact, list, plural};
 use crate::controls::comb::{AlsoTooth, CombStyle, Release, ReleaseId, Step, VersionSelected, version_comb};
+use crate::fluid::Modes;
 use crate::measure::Measure;
 use crate::theme::ActiveFacet;
+use crate::tokens::fluid::{COMB, Comb};
 use gpui::{
     AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, canvas, div, px,
 };
@@ -331,10 +333,18 @@ impl VersionMark {
         self
     }
 
-    /// The style this width gets: a band below 240 px.
+    /// The style this width gets on its own: a band below 240 px. (What is
+    /// drawn holds its style through the edge's band: see `render`.)
     #[must_use]
     pub fn style_for(&self) -> CombStyle {
-        if self.measure.effective() < 240.0 { CombStyle::Band } else { self.style }
+        self.style_in(COMB.at(self.measure.fluid_room()))
+    }
+
+    fn style_in(&self, comb: Comb) -> CombStyle {
+        match comb {
+            Comb::Band => CombStyle::Band,
+            Comb::Asked => self.style,
+        }
     }
 }
 
@@ -426,7 +436,8 @@ impl RenderOnce for VersionMark {
             });
         }
         let yanked: Vec<usize> = sorted.iter().enumerate().filter(|(_, r)| r.yanked).map(|(i, _)| i).collect();
-        let style = self.style_for();
+        let held = Modes::keyed(ElementId::NamedChild(Arc::new(self.id.clone()), "style".into()), window, cx);
+        let style = self.style_in(held.settle(&COMB, measure.fluid_room()).mode);
         let ids: Vec<String> = sorted.iter().map(|r| r.v.clone()).collect();
         let external = self.on_select.clone();
         let own_select = own.clone();

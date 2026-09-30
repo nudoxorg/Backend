@@ -20,7 +20,33 @@ mod runtime;
 #[path = "service/transport.rs"]
 mod transport;
 
-pub use transport::{LocaldService, OwnerService};
+pub use transport::{CommandOutcome, Handled, LocaldService, OwnerService};
+
+/// Commands an owner can take now and answer later: an index job hands its
+/// compile off the owner loop, and the loop answers reads from the last
+/// publication meanwhile. Installed with [`LocaldOwner::with_deferred_commands`].
+pub trait DeferredCommands<M, V, A>
+where
+    M: backend_engine::WorkspaceModel,
+    V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
+    A: backend_engine::AttestationVerifier + Send + Sync + 'static,
+{
+    /// Handles one command body now, or takes it under `ticket`.
+    ///
+    /// # Errors
+    ///
+    /// The owner's refusal, in its words.
+    fn command(
+        &mut self,
+        daemon: &mut crate::Locald<M, V, A>,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<CommandOutcome, String>;
+
+    /// Finishes whatever deferred work is ready, on the owner loop, and
+    /// returns the reply bodies by ticket.
+    fn poll(&mut self, daemon: &mut crate::Locald<M, V, A>) -> Vec<(u64, Result<Vec<u8>, String>)>;
+}
 #[path = "service/subscription.rs"]
 mod subscription;
 
@@ -53,6 +79,7 @@ pub struct LocaldOwner<
     semantic_ranges: S,
     leases: BTreeMap<LocalSubscriptionId, DurableLease>,
     next_lease_nonce: u64,
+    deferred: Option<Box<dyn DeferredCommands<M, V, A> + Send>>,
 }
 
 /// Owner-retained state for one leased subscription.
@@ -117,6 +144,17 @@ where
     R: ReplicationAdmission<M, V, A>,
     S: SemanticRangeAdmission,
 {
+    /// Lets `deferred` take commands now and answer them later, so the owner
+    /// loop answers other requests while their long part runs.
+    #[must_use]
+    pub fn with_deferred_commands(
+        mut self,
+        deferred: Box<dyn DeferredCommands<M, V, A> + Send>,
+    ) -> Self {
+        self.deferred = Some(deferred);
+        self
+    }
+
     fn allocate_lease(&mut self, request_id: u64, cursor: &[u8]) -> LocalSubscriptionId {
         loop {
             self.next_lease_nonce = self.next_lease_nonce.wrapping_add(1);
@@ -733,6 +771,7 @@ where
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
+            deferred: None,
         }
     }
 }
@@ -755,6 +794,7 @@ where
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
+            deferred: None,
         }
     }
 
@@ -775,6 +815,7 @@ where
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
+            deferred: None,
         }
     }
 
@@ -798,6 +839,7 @@ where
             semantic_ranges,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
+            deferred: None,
         }
     }
 
@@ -806,6 +848,7 @@ where
     pub const fn daemon(&self) -> &crate::Locald<M, V, A> {
         &self.daemon
     }
+
 
     /// Returns the embedded daemon mutably.
     #[must_use]
@@ -828,6 +871,30 @@ where
     fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
         (self.command)(&mut self.daemon, body)
             .map_err(|error| ProtocolError::CommandExecution(error.to_string()))
+    }
+
+    fn command_or_defer(
+        &mut self,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<CommandOutcome, ProtocolError> {
+        match self.deferred.as_mut() {
+            Some(deferred) => deferred
+                .command(&mut self.daemon, body, ticket)
+                .map_err(ProtocolError::CommandExecution),
+            None => self.command(body).map(CommandOutcome::Reply),
+        }
+    }
+
+    fn poll_deferred(&mut self) -> Vec<(u64, Result<Vec<u8>, ProtocolError>)> {
+        let Some(deferred) = self.deferred.as_mut() else {
+            return Vec::new();
+        };
+        deferred
+            .poll(&mut self.daemon)
+            .into_iter()
+            .map(|(ticket, reply)| (ticket, reply.map_err(ProtocolError::CommandExecution)))
+            .collect()
     }
 
     fn engine(

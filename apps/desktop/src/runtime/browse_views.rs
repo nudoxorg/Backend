@@ -79,9 +79,13 @@ pub fn prepare_find(query: &str, answers: &Known<SearchPage>, packages: &[FindPa
     use facet::browse::find::{Candidate, Model};
     let query = SharedString::from(query.to_owned());
     let mut candidates = packages.iter().map(|package| Candidate {
-        key: package.package.as_str().to_owned().into(), name: package.name.to_string().into(), version: package.package.version().map(|v| v.to_owned().into()),
+        // A registry release reads as its crate and version, wherever its tree is.
+        key: package.package.as_str().to_owned().into(),
+        name: package.offer.as_ref().map_or_else(|| package.name.to_string(), |offer| offer.release.name.to_string()).into(),
+        version: package.offer.as_ref().map(|offer| offer.release.version.short().to_owned()).or_else(|| package.package.version().map(str::to_owned)).map(Into::into),
         indexed: package.indexed, summary: package.description.as_ref().map(|text| summary(text)),
         facts: package.record.as_ref().map(record_facts).unwrap_or_default(), answers: vec![],
+        offer: package.offer.as_ref().map(crate::shell::acquire::facet_offer),
     }).collect::<Vec<_>>();
     let mut loose = Vec::new();
     if let Some(answers) = answers.known() {
@@ -90,7 +94,7 @@ pub fn prepare_find(query: &str, answers: &Known<SearchPage>, packages: &[FindPa
                 let key = SharedString::from(package.as_str().to_owned());
                 let at = candidates.iter().position(|candidate| candidate.key == key).unwrap_or_else(|| {
                     candidates.push(Candidate { key: key.clone(), name: package.display_name().to_owned().into(), version: package.version().map(|v| v.to_owned().into()),
-                        indexed: true, summary: None, facts: vec![], answers: vec![] });
+                        indexed: true, summary: None, facts: vec![], answers: vec![], offer: None });
                     candidates.len() - 1
                 });
                 // A declaration returned by the local index is positive

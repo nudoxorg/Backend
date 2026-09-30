@@ -208,6 +208,10 @@ pub enum Intent {
     },
     /// Retry a stopped or failed index job.
     RetryIndex(LocalProjectId),
+    /// Add a registry release to the library: its source is resolved and the
+    /// owner indexes it (`runtime::acquire`, run by the window root; never
+    /// reduced).
+    AddRelease(crate::model::release::Release),
     /// Cancel an active index job while retaining the shelf row.
     CancelIndex(LocalProjectId),
     /// Run a local connection probe.
@@ -227,6 +231,21 @@ pub enum Intent {
     },
     /// Open the help page in Settings.
     OpenHelp,
+    /// Let go of a note that was said.
+    DismissNote(crate::model::Note),
+    /// The index an earlier build wrote was set aside: say so, and index every
+    /// project on the shelf again.
+    LibraryRebuilding {
+        /// Where the earlier index was moved to.
+        kept_at: Arc<str>,
+    },
+    /// The window stopped being resized at this size (logical pixels).
+    WindowResized {
+        /// Width.
+        width: u32,
+        /// Height.
+        height: u32,
+    },
     /// Stop all currently running engine work without changing the route.
     Stop,
     /// Begin a version-pinned root refresh.

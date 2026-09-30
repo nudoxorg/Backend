@@ -1,13 +1,14 @@
 //! The badge element: a small cut plate wearing a glyph and one word. Rest
-//! on it and its sentence opens *inside* it (the plate widens, the meaning
-//! slides out beside the word), so a hover never covers a neighbour and
-//! never leaves the badge to be read.
+//! on it and its sentence floats beside it on the window's float layer (the
+//! house tip: a rest, then a warm sweep between badges), so a hover never
+//! moves a neighbour and the meaning is never cut to the badge's width.
 
 use super::{Badge as Facts, Ink};
 use crate::Set;
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::measure::{Measure, Space};
 use crate::motion::spec;
+use crate::overlay::tooltip::Tipped;
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::probe::{self, TextOverflow};
 use crate::theme::ActiveFacet;
@@ -19,8 +20,6 @@ use gpui::{
 
 /// The words on a badge: the role it is set in.
 const WORD: TypeRole = TypeRole { weight: 520.0, ..ty::BUTTON };
-/// The sentence that opens.
-const TIP: TypeRole = TypeRole { weight: 400.0, ..ty::SMALL };
 
 /// One badge as an element (see [`badge`]).
 #[derive(IntoElement)]
@@ -43,7 +42,7 @@ pub fn badge(id: impl Into<ElementId>, facts: &Facts, measure: &Measure) -> Badg
 }
 
 impl Badge {
-    /// Shows the sentence open, whatever the pointer does (scenes, tests).
+    /// Shows the plate as a pointer on it would (scenes, tests).
     #[must_use]
     pub const fn open(mut self) -> Self {
         self.held = true;
@@ -99,10 +98,6 @@ impl RenderOnce for Badge {
         let ink = ink_of(self.facts.ink, palette);
         let scale = measure.scale();
         let word_role = measure.role(WORD);
-        let tip_role = measure.role(TIP);
-        let tip: SharedString = self.facts.tip.clone();
-        let natural = f32::from(probe::natural_width(&tip, tip_role, 1.0, window));
-        let tip_w = (natural + 6.0 * scale) * open;
 
         let word = probe::text(
             ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "word".into()),
@@ -111,14 +106,6 @@ impl RenderOnce for Badge {
             1.0,
             TextOverflow::Clip,
             div().set(WORD, &measure).text_color(ink).whitespace_nowrap().child(self.facts.word.clone()),
-        );
-        let sentence = probe::text(
-            ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "tip".into()),
-            tip.clone(),
-            tip_role,
-            1.0,
-            TextOverflow::Clip,
-            div().set(TIP, &measure).text_color(palette.ink2.hsla()).whitespace_nowrap().child(tip),
         );
         let fill = mix(palette.plate.into(), palette.plate2.into(), open);
         let body = cut()
@@ -134,8 +121,11 @@ impl RenderOnce for Badge {
             .pl(measure.space(Space::Snug))
             .pr(measure.space(Space::Snug) + px(1.0))
             .child(super::glyph(self.facts.glyph, 12.0 * scale, ink))
-            .child(word)
-            .children((open > 0.01).then(|| div().flex_none().overflow_hidden().w(px(tip_w)).child(sentence)));
-        hover_zone(body, &touch, 3.0 * scale, true)
+            .child(word);
+        let (title, sentence): (SharedString, SharedString) = (self.facts.word.clone(), self.facts.tip.clone());
+        // The plate is 21 px; the pointer's target around it is 24 (a
+        // badge is something a person points at: its tip).
+        let zone = div().flex().items_center().h(px(24.0 * scale)).child(body);
+        div().id(self.id.clone()).flex_none().child(hover_zone(zone, &touch, 3.0 * scale, true)).tip_rich(title, sentence, &[])
     }
 }

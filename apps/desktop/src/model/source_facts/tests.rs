@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn krate(name: &str, files: &[(&str, &str)]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("nudox-source-facts-{}-{name}", std::process::id()));
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/scratch").join(format!("nudox-source-facts-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     for (path, body) in files {
         let at = dir.join(path);

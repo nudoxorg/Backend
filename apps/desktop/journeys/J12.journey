@@ -1,0 +1,54 @@
+# J12 · the crawler. On a real install of toml_pin with the packages its lock
+# pins: from the Library, every target the reader publishes is hovered (a
+# card that rises must come quickly, stay in the window and off its
+# trigger, and go when the pointer leaves), clicked (the page it opens draws:
+# no fault plate, no empty reader, no lint), and left by ⌘[ (the route comes
+# back with the keyboard on what was clicked), two pages deep; then again at
+# a big screen, a narrow window and two phones, in both themes.
+size 1440x900
+start from install-all frontends/rust/fixtures/toml_pin
+
+check library
+  route like "orbit"
+  ground dark in reader
+
+crawl 2 per 8
+
+resize 2560x1440
+crawl 1 per 6
+
+resize 760x900
+crawl 1 per 6
+
+resize 390x844
+crawl 1 per 5
+
+resize 320x640
+crawl 1 per 5
+
+# Glacier, by the person's own hand in Settings.
+resize 1440x900
+key cmd-,
+click "Glacier" in reader
+key escape
+check glacier
+  route like "orbit"
+  ground light in reader
+
+crawl 2 per 8
+
+resize 2560x1440
+crawl 1 per 6
+
+resize 760x900
+crawl 1 per 6
+
+resize 390x844
+crawl 1 per 5
+
+resize 320x640
+crawl 1 per 5
+
+resize 1440x900
+check end
+  route like "orbit"

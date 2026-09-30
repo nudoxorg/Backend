@@ -11,8 +11,9 @@ use super::super::view::{
     Bound, Call, Change, Effect, FailWord, Failure, Generic, Gives, Joint, Lang, OptionRow, Origin, Port, Receiver, Role, Ty,
 };
 use super::docs::{errors_prose, none_when, note, section, short_when};
-use super::text::{balanced, keyword, plain, split_top, squash, strip_leading};
-use super::words::{Cx, T, head, parse, peel, ty_of, word};
+use super::known::{Parameter, Std};
+use super::text::{balanced, keyword, split_top, squash, strip_leading};
+use super::words::{Cx, Fails, Spelling, T, head, parse, peel, ty_of, word};
 
 /// The call and its generics.
 pub(super) struct Derived {
@@ -32,11 +33,22 @@ struct Param {
     rest: bool,
 }
 
+/// Whether the call has a receiver, and what it does to it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Recv {
+    /// A function on its own, or a constructor.
+    #[default]
+    None,
+    /// A receiver whose effect the language does not say.
+    Unsaid,
+    /// A receiver, and what the call does to it.
+    Does(Effect),
+}
+
 /// One signature, read.
 #[derive(Debug, Default)]
 struct Parsed {
-    /// `Some(None)`: a receiver whose effect the language does not say.
-    receiver: Option<Option<Effect>>,
+    receiver: Recv,
     generics: Vec<(String, Vec<String>)>,
     params: Vec<Param>,
     ret: Option<String>,
@@ -53,7 +65,7 @@ pub(super) fn callable(facts: &Facts) -> Option<Derived> {
     let parsed = match facts.lang {
         Lang::Rust => rust(signature, name)?,
         Lang::Python => python(signature, name)?,
-        Lang::JavaScript | Lang::TypeScript => script(signature, name)?,
+        Lang::JavaScript | Lang::TypeScript => script(signature)?,
         Lang::Go => go(signature, name)?,
         _ => return None,
     };
@@ -115,7 +127,7 @@ fn rust(signature: &str, name: &str) -> Option<Parsed> {
             } else {
                 Effect::UsesUp
             };
-            parsed.receiver = Some(Some(effect));
+            parsed.receiver = Recv::Does(effect);
             continue;
         }
         let Some((pattern, ty)) = split_colon(&raw) else { continue };
@@ -222,8 +234,8 @@ fn python(signature: &str, name: &str) -> Option<Parsed> {
             continue;
         }
         let param = split_param(raw);
-        if (param.name == "self" || param.name == "cls") && parsed.params.is_empty() && parsed.receiver.is_none() {
-            parsed.receiver = Some(None);
+        if (param.name == "self" || param.name == "cls") && parsed.params.is_empty() && parsed.receiver == Recv::None {
+            parsed.receiver = Recv::Unsaid;
             continue;
         }
         parsed.params.push(param);
@@ -231,7 +243,7 @@ fn python(signature: &str, name: &str) -> Option<Parsed> {
     Some(parsed)
 }
 
-fn script(signature: &str, name: &str) -> Option<Parsed> {
+fn script(signature: &str) -> Option<Parsed> {
     let signature = strip_leading(signature);
     let mut depth = 0_i32;
     let mut open = None;
@@ -273,7 +285,6 @@ fn script(signature: &str, name: &str) -> Option<Parsed> {
             ret = Some(r.to_owned());
         }
     }
-    let _ = name;
     let mut parsed = Parsed { ret, is_async: before.split_whitespace().any(|w| w == "async"), generator, ..Parsed::default() };
     for raw in split_top(params, ',') {
         let raw = raw.trim();
@@ -312,7 +323,7 @@ fn go(signature: &str, name: &str) -> Option<Parsed> {
     let rest = if text.starts_with('(') {
         let (receiver, after) = balanced(text, 0)?;
         let pointer = receiver.contains('*');
-        parsed.receiver = Some(Some(if pointer { Effect::Changes } else { Effect::Reads }));
+        parsed.receiver = Recv::Does(if pointer { Effect::Changes } else { Effect::Reads });
         text[after..].trim_start()
     } else {
         text
@@ -354,7 +365,11 @@ fn build(parsed: &Parsed, facts: &Facts) -> Derived {
     let parameters = section(facts, SectionKind::Parameters);
     let mut call = Call::default();
 
-    if let Some(effect) = parsed.receiver {
+    if let Some(effect) = match parsed.receiver {
+        Recv::None => None,
+        Recv::Unsaid => Some(None),
+        Recv::Does(effect) => Some(Some(effect)),
+    } {
         let owner = facts.owner.clone().unwrap_or_else(|| "it".to_owned());
         let ty = Ty { link: facts.owner.as_deref().and_then(|o| facts.link(o)).map(ToOwned::to_owned), ..Ty::plain(owner) };
         call.receiver = Some(Receiver { effect, ty });
@@ -367,7 +382,9 @@ fn build(parsed: &Parsed, facts: &Facts) -> Derived {
             consumed_entries.push(param.name.trim_start_matches('*').to_owned());
         }
         let note_text = entry.map(|(_, text)| note(&strip_type_prefix(text).1)).filter(|t| !t.is_empty());
-        let (mut ty, options) = port_type(param, entry.map(|(_, text)| text), parameters, facts, &declared);
+        let (mut ty, options) = port_type(param, entry.map(|(_, text)| text), parameters, &declared);
+        // A note that only repeats the type's word ("options" beside "options") says nothing.
+        let note_text = note_text.filter(|text| !text.eq_ignore_ascii_case(&ty.word));
         if let Some(generic) = ty.generic.clone()
             && let Some((_, bounds)) = parsed.generics.iter().find(|(n, _)| *n == generic)
             && let Some(short) = bounds.first().map(|b| bound_word(b))
@@ -418,12 +435,9 @@ fn build(parsed: &Parsed, facts: &Facts) -> Derived {
     if let (Some(tree), Some(text)) = (gives_ty, gives_text) {
         let nothing = matches!(&tree, T::Tuple(items) if items.is_empty()) || word(&tree, &declared) == "nothing";
         if !nothing {
-            let mut ty = ty_of(&tree, &text, &declared);
-            // A written type wrapped in `Result<…>` or `Option<…>` reads its inner text.
-            if peeled.fails.is_some() || peeled.maybe || peeled.later || peeled.many {
-                ty.written = inner_text(&tree, &declared);
-            }
-            gives.ty = Some(ty);
+            // A type wrapped in `Result<…>` or `Option<…>` is written as what it holds.
+            let written = peeled.held.as_ref().map_or(text, |held| held.spelled(Spelling::from(facts.lang)));
+            gives.ty = Some(ty_of(&tree, &written, &declared));
         }
     } else if untyped_output && !matches!(facts.kind, super::super::view::Kind::Other) {
         // No annotation: the docs may say what comes back.
@@ -480,7 +494,14 @@ fn build(parsed: &Parsed, facts: &Facts) -> Derived {
         call.none = Some(when);
     }
     // fails
-    call.fails = failure(parsed, facts, &declared, &peeled.fails, go_fails, later);
+    call.fails = failure(facts, &declared, &peeled.fails, go_fails, later);
+    // An option that turns the failure into nothing says when nothing comes.
+    if call.none.is_none()
+        && call.fails.is_some()
+        && let Some(option) = call.ports.iter().flat_map(|port| port.options.iter()).find(|option| option.change == Some(Change::FailsToNone))
+    {
+        call.none = Some(format!("only with {}", option.name));
+    }
     // An option that turns a failure into nothing: the call can give nothing too.
     Derived { call, generics }
 }
@@ -493,15 +514,8 @@ fn declared_type_is_none(ty: &Ty) -> bool {
     ty.word == "nothing"
 }
 
-/// The text of the inner type once `Result<…>`/`Option<…>` are peeled.
-fn inner_text(tree: &T, cx: &Cx<'_>) -> Option<String> {
-    let written = word(tree, cx);
-    let _ = written;
-    None
-}
-
 /// How the call can fail, in the language's own verb.
-fn failure(parsed: &Parsed, facts: &Facts, cx: &Cx<'_>, fails: &Option<Option<T>>, go_fails: Option<Ty>, later: bool) -> Option<Failure> {
+fn failure(facts: &Facts, cx: &Cx<'_>, fails: &Fails, go_fails: Option<Ty>, later: bool) -> Option<Failure> {
     let word_for = match facts.lang {
         Lang::Rust => FailWord::Fails,
         Lang::Python => FailWord::Raises,
@@ -516,14 +530,13 @@ fn failure(parsed: &Parsed, facts: &Facts, cx: &Cx<'_>, fails: &Option<Option<T>
             short_when(&text)
         }).unwrap_or_default()
     };
-    let _ = parsed;
     if let Some(ty) = go_fails {
         return Some(Failure { word: word_for, ty, when: when_of(&prose) });
     }
-    if let Some(error) = fails {
-        let ty = match error {
-            Some(tree) => ty_of(tree, "", cx),
-            None => Ty { link: facts.link("Error").map(ToOwned::to_owned), ..Ty::plain("Error") },
+    if fails.can() {
+        let ty = match fails {
+            Fails::With(tree) => ty_of(tree, "", cx),
+            _ => Ty { link: facts.link("Error").map(ToOwned::to_owned), ..Ty::plain("Error") },
         };
         return Some(Failure { word: word_for, ty, when: when_of(&prose) });
     }
@@ -582,17 +595,16 @@ fn literal_word(default: &str) -> Option<&'static str> {
     }
 }
 
-fn port_type(param: &Param, entry: Option<&str>, parameters: Option<&Section>, facts: &Facts, declared: &Cx<'_>) -> (Ty, Vec<OptionRow>) {
+fn port_type(param: &Param, entry: Option<&str>, parameters: Option<&Section>, declared: &Cx<'_>) -> (Ty, Vec<OptionRow>) {
     let mut options = Vec::new();
     // Declared.
     if let Some(text) = &param.ty {
         let tree = parse(text);
         if let T::Object(fields) = &tree {
-            for (name, ty, optional) in fields {
+            for (name, ty, _) in fields {
                 let inner = ty_of(ty, "", declared);
                 let note_text = parameters.and_then(|s| entry_for(s, &format!("{}.{name}", param.name))).map(|(_, t)| note(&strip_type_prefix(t).1)).unwrap_or_default();
-                let _ = optional;
-                options.push(OptionRow { change: change_of(name, &note_text), name: name.clone(), ty: inner, note: note_text });
+                options.push(OptionRow { change: change_of(&note_text), name: name.clone(), ty: inner, note: note_text });
             }
         }
         let mut ty = ty_of(&tree, text, declared);
@@ -611,7 +623,7 @@ fn port_type(param: &Param, entry: Option<&str>, parameters: Option<&Section>, f
             let tree = ty_text.as_deref().map_or(T::Infer, parse);
             let ty = ty_of(&tree, "", &Cx { origin: if ty_text.is_some() { Origin::Docs } else { Origin::Code }, ..clone_cx(declared) });
             let prose = note(&prose);
-            options.push(OptionRow { change: change_of(rest, &prose), name: rest.to_owned(), ty, note: prose });
+            options.push(OptionRow { change: change_of(&prose), name: rest.to_owned(), ty, note: prose });
         }
     }
     if !options.is_empty() {
@@ -630,15 +642,16 @@ fn port_type(param: &Param, entry: Option<&str>, parameters: Option<&Section>, f
     {
         return (Ty { origin: Origin::Code, ..Ty::plain(word) }, options);
     }
-    let _ = facts;
     (Ty { origin: Origin::Code, ..Ty::plain("anything") }, options)
 }
 
-fn change_of(name: &str, note_text: &str) -> Option<Change> {
+/// What an option changes about the call, from the sentence that documents it.
+fn change_of(note_text: &str) -> Option<Change> {
     let lower = note_text.to_ascii_lowercase();
-    if lower.contains("instead of throw") || lower.contains("instead of rais") || lower.contains("instead of fail") || (name == "nothrow" || name == "noThrow") {
+    let says = |phrases: &[&str]| phrases.iter().any(|phrase| lower.contains(phrase));
+    if says(&["instead of throw", "instead of rais", "instead of fail", "instead of erroring", "rather than throw"]) {
         Some(Change::FailsToNone)
-    } else if name == "all" || lower.contains("every match") || lower.contains("all matches") {
+    } else if says(&["every match", "all matches", "all of them", "instead of just the first", "instead of only the first"]) {
         Some(Change::OneToMany)
     } else {
         None
@@ -653,81 +666,34 @@ fn bound_name(bound: &str) -> String {
 
 /// What a bound means, in words.
 pub(super) fn bound_means(bound: &str) -> String {
-    match bound_name(bound).as_str() {
-        "Deserialize" | "DeserializeOwned" => "can be read by serde (any format)",
-        "Serialize" => "can be written by serde (any format)",
-        "Serializer" => "a serializer: a format's writer",
-        "Deserializer" => "a deserializer: a format's reader",
-        "Index" => "an index: a position or a key",
-        "Ord" | "PartialOrd" => "can be ordered",
-        "Hash" => "can be hashed",
-        "Clone" => "can be copied",
-        "Copy" => "is copied by assignment",
-        "Debug" => "prints for debugging",
-        "Display" => "prints",
-        "Send" => "can move between threads",
-        "Sync" => "can be shared between threads",
-        "IntoIterator" => "can be looped over",
-        "Iterator" => "gives one at a time",
-        "AsRef" => "can be read as",
-        "Into" => "turns into",
-        "From" => "made from",
-        "Read" => "a reader (io::Read)",
-        "Write" => "a writer (io::Write)",
-        "Future" => "a future",
-        "IntoFuture" => "anything you can await",
-        "Fn" | "FnMut" | "FnOnce" => "a function",
-        "Default" => "has a default",
-        "PartialEq" | "Eq" => "can be compared",
-        "Error" => "is an error",
-        "FromStr" => "parses from text",
-        "ToString" => "prints to text",
-        other => return other.to_owned(),
-    }
-    .to_owned()
+    Std::of(bound).map_or_else(|| bound_name(bound), |std| std.means().to_owned())
 }
 
 /// A bound as the word for a parameter typed by it.
 fn bound_word(bound: &str) -> String {
-    match bound_name(bound).as_str() {
-        "Serializer" => "a serializer".to_owned(),
-        "Deserializer" => "a deserializer".to_owned(),
-        "Index" => "an index".to_owned(),
-        "Read" => "a reader".to_owned(),
-        "Write" => "a writer".to_owned(),
-        "Fn" | "FnMut" | "FnOnce" => "a function".to_owned(),
-        "IntoIterator" | "Iterator" => "anything to loop over".to_owned(),
-        "Into" | "AsRef" | "From" => {
+    match Std::of(bound).and_then(Std::parameter) {
+        Some(Parameter::Word(word)) => word.to_owned(),
+        Some(Parameter::Converts) => {
             let inner = bound.split_once('<').map_or("", |(_, tail)| tail.trim_end_matches('>'));
-            let tree = parse(inner);
             let none: Vec<String> = Vec::new();
             let link = |_: &str| None;
             let cx = Cx { generics: &none, owner: None, link: &link, origin: Origin::Declared };
-            if inner.is_empty() { "anything that converts".to_owned() } else { word(&tree, &cx) }
+            if inner.is_empty() { "anything that converts".to_owned() } else { word(&parse(inner), &cx) }
         }
-        other => format!("any {other}"),
+        None => format!("any {}", bound_name(bound)),
     }
 }
 
 fn role_sentence(role: Role, bounds: &[Bound]) -> String {
     match role {
-        Role::Choose => {
-            let what = bounds.first().map_or("", |b| b.name.as_str());
-            match what {
-                "Deserialize" | "DeserializeOwned" => "You choose it: whatever you read the input into.".to_owned(),
-                "Default" => "You choose it: whatever you want made.".to_owned(),
-                "FromStr" => "You choose it: whatever you parse the text into.".to_owned(),
-                _ => "You choose it: it is only in what comes out.".to_owned(),
-            }
-        }
+        Role::Choose => bounds
+            .iter()
+            .find_map(|bound| Std::of(&bound.name).and_then(Std::choice))
+            .unwrap_or("You choose it: it is only in what comes out.")
+            .to_owned(),
         Role::Through => "The same kind you give comes back.".to_owned(),
         Role::Needs => "Any kind that fits will do.".to_owned(),
     }
-}
-
-/// The plain sentence for a callable's docs-only outcome (used by rows).
-pub(super) fn plain_note(text: &str) -> String {
-    plain(text)
 }
 
 #[cfg(test)]
@@ -780,6 +746,32 @@ mod tests {
         assert_eq!(d.call.gives.ty.as_ref().map(|t| t.word.as_str()), Some("text"));
         assert!(d.call.none.is_some());
         assert!(d.call.fails.is_none());
+    }
+
+    #[test]
+    fn a_wrapped_output_keeps_what_it_holds_as_its_written_type() {
+        let mut f = facts("as_str", Lang::Rust, "pub fn as_str(&self) -> Option<&str>");
+        f.owner = Some("Value".into());
+        let ty = call(&f).call.gives.ty.expect("gives");
+        assert_eq!((ty.word.as_str(), ty.written.as_deref()), ("text", Some("&str")));
+        let f = facts("read", Lang::Rust, "pub fn read(path: &str) -> Result<Vec<u8>, Error>");
+        let ty = call(&f).call.gives.ty.expect("gives");
+        assert_eq!((ty.word.as_str(), ty.written.as_deref()), ("bytes", Some("Vec<u8>")));
+        let f = facts("first", Lang::TypeScript, "function first(items: string[]): string | undefined");
+        let ty = call(&f).call.gives.ty.expect("gives");
+        assert_eq!((ty.word.as_str(), ty.written.as_deref()), ("text", Some("string")), "undefined came off, string stayed");
+    }
+
+    #[test]
+    fn a_plain_type_named_like_a_wrapper_is_still_a_type() {
+        for name in ["Task", "Stream", "Iter", "Deferred", "Observable"] {
+            let f = facts("make", Lang::Rust, &format!("pub fn make() -> {name}"));
+            let d = call(&f);
+            assert_eq!(d.call.gives.ty.as_ref().map(|t| t.word.as_str()), Some(name), "{name} names a type here");
+            assert!(d.call.later.is_none() && !d.call.gives.many, "{name} is not a wrapper without an argument");
+        }
+        let f = facts("make", Lang::Rust, "pub fn make() -> Stream<Value>");
+        assert!(call(&f).call.gives.many, "Stream<Value> gives each");
     }
 
     #[test]
@@ -875,6 +867,19 @@ mod tests {
         assert_eq!(opt.options[0].change, Some(Change::FailsToNone));
         assert_eq!(opt.options[1].change, Some(Change::OneToMany));
         assert_eq!(opt.options[2].change, None);
+        assert_eq!(d.call.none.as_deref(), None, "no failure is documented here, so no nothing either");
+    }
+
+    #[test]
+    fn an_option_that_turns_a_failure_into_nothing_says_when_nothing_comes() {
+        let mut f = facts("which.sync", Lang::JavaScript, "const whichSync = (cmd, opt) => {");
+        f.sections = vec![
+            Section { kind: SectionKind::Parameters, body: String::new(), entries: vec![("opt".into(), "{object} options".into()), ("opt.nothrow".into(), "{boolean} give null instead of throwing".into())] },
+            Section { kind: SectionKind::Errors, body: String::new(), entries: vec![("Error".into(), "if it isn't on PATH, unless nothrow".into())] },
+        ];
+        let d = call(&f);
+        assert_eq!(d.call.none.as_deref(), Some("only with nothrow"));
+        assert!(d.call.fails.is_some());
     }
 
     #[test]

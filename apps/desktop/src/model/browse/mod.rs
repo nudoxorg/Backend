@@ -128,6 +128,9 @@ pub struct FindPackage {
     pub indexed: bool,
     /// Catalog facts when available.
     pub record: Option<PackageRecord>,
+    /// The registry release behind it, which can be added to the library
+    /// (or already is).
+    pub offer: Option<crate::model::release::Offer>,
 }
 
 /// A project's tree as the Library page shows it.

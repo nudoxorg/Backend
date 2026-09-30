@@ -83,6 +83,10 @@ use worker::connect_worker;
 mod cluster_dispatch;
 #[path = "builtin/compiler_scope.rs"]
 mod compiler_scope;
+#[path = "builtin/embedded_host.rs"]
+mod embedded_host;
+#[cfg(any(test, feature = "test-support"))]
+pub use embedded_host::write_state_from_another_build;
 #[path = "builtin/generation_residence.rs"]
 mod generation_residence;
 #[path = "builtin/pending_stored.rs"]
@@ -1376,8 +1380,13 @@ pub(crate) fn compose_owner(
         compiler_root.join("embedding.config"),
     )
     .map_err(|error| ProcessError::Profile(format!("open compiler embedding runtime: {error}")))?;
-    let compiler_host =
-        backend_engine::application::LocalCompilerHost::production_at(compiler_root);
+    let compiler_host = backend_engine::application::LocalCompilerHost::new(
+        embedded_host::EmbeddedCompilerEnvironment {
+            data_root: compiler_root,
+            supplied: config.compiler_environment.clone(),
+        },
+        backend_engine::application::LocalHostDiscovery::ExplicitOnly,
+    );
     let compiler =
         match embedding.provisioning_failure() {
             Some(cause) => compiler_host
@@ -1409,7 +1418,7 @@ pub(crate) fn compose_owner(
         .map_err(|error| ProcessError::Profile(error.to_string()))?;
     let recovered_view = view_journal
         .load_for_workspace(workspace_root, &view_capability)
-        .map_err(ProcessError::Profile)?;
+        .map_err(|error| embedded_host::journal_refusal(&view_journal, error))?;
     daemon
         .engine_mut()
         .daemon_mut()
@@ -1439,7 +1448,7 @@ pub(crate) fn compose_owner(
             &mut image_rows,
             &mut generations,
         )
-        .map_err(|error| ProcessError::Profile(error.to_string()))?;
+        .map_err(|error| embedded_host::view_refusal(&daemon, &error, ""))?;
         let cursor = backend_engine::Cursor::for_view_root(&view);
         let admission = BuiltinViewAdmission {
             workspace_root,
@@ -1464,7 +1473,9 @@ pub(crate) fn compose_owner(
         &mut image_rows,
         &mut generations,
     )
-    .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
+    .map_err(|error| {
+        embedded_host::view_refusal(&daemon, &error, "repair product view: ")
+    })?;
     let published_roots = published.roots;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
     let mut sql_projection = futures_executor::block_on(
@@ -1627,12 +1638,54 @@ pub(crate) fn compose_owner(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .serve_semantic_control(request_id, payload)
     };
-    Ok(daemon.into_owner_with_admission_and_semantic_ranges(
-        command,
-        NoCompletionAdmission,
-        replication,
-        semantic_ranges,
-    ))
+    let deferred = Box::new(DeferredBuiltinCommands(Arc::clone(&commands)));
+    Ok(daemon
+        .into_owner_with_admission_and_semantic_ranges(
+            command,
+            NoCompletionAdmission,
+            replication,
+            semantic_ranges,
+        )
+        .with_deferred_commands(deferred))
+}
+
+/// The builtin owner's deferred commands: an `Add` of a local folder hands
+/// its compile off the owner loop, which answers reads meanwhile.
+struct DeferredBuiltinCommands(Arc<Mutex<commands::CommandAdapter>>);
+
+impl crate::DeferredCommands<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>
+    for DeferredBuiltinCommands
+{
+    fn command(
+        &mut self,
+        daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<crate::CommandOutcome, String> {
+        match self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .execute_or_defer(daemon, body, ticket)
+        {
+            Ok(commands::Executed::Reply(reply)) => Ok(crate::CommandOutcome::Reply(reply)),
+            Ok(commands::Executed::Deferred) => Ok(crate::CommandOutcome::Deferred),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn poll(
+        &mut self,
+        daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    ) -> Vec<(u64, Result<Vec<u8>, String>)> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .poll_deferred(daemon)
+            .into_iter()
+            .map(|(ticket, reply)| (ticket, reply.map_err(|error| error.to_string())))
+            .collect()
+    }
 }
 
 /// Processes one durable row per retry sweep, rotating through unresolved rows so an older

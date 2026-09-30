@@ -84,44 +84,6 @@ impl Density {
     }
 }
 
-/// A container's width class, decided on effective width (width ÷ text scale).
-///
-/// **Legacy:** hard cutoffs cannot glide. New layout reads a [`crate::fluid`]
-/// token (a value that follows the room) or a [`crate::fluid::Ladder`] mode
-/// (which holds still at an edge) through [`Measure::fluid_room`]; this class
-/// stays for callers not yet migrated (see `.local/lanes/wave6/fluid/ADOPT.md`).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub enum Room {
-    /// Under 480: a phone-width column. Lists, not diagrams.
-    Narrow,
-    /// 480–760: one column, compact marks.
-    Slim,
-    /// 760–1100: the reading column without a margin.
-    Regular,
-    /// 1100–1600: reading column plus margin.
-    Wide,
-    /// 1600 and up: room for a third column (pinned peeks).
-    Vast,
-}
-
-impl Room {
-    /// Classifies an effective width in px.
-    #[must_use]
-    pub fn of(effective: f32) -> Self {
-        if effective < 480.0 {
-            Self::Narrow
-        } else if effective < 760.0 {
-            Self::Slim
-        } else if effective < 1100.0 {
-            Self::Regular
-        } else if effective < 1600.0 {
-            Self::Wide
-        } else {
-            Self::Vast
-        }
-    }
-}
-
 /// The spacing scale, in px at comfortable density and 100 % text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Space {
@@ -270,12 +232,6 @@ impl Measure {
         f32::from(self.width) / self.scale
     }
 
-    /// The width class (legacy: hard cutoffs; prefer [`Measure::fluid_room`]).
-    #[must_use]
-    pub fn room(&self) -> Room {
-        Room::of(self.effective())
-    }
-
     /// The room this container has: its width and the text scale, what every
     /// [`crate::fluid`] token and mode is read from.
     #[must_use]
@@ -314,30 +270,6 @@ impl Measure {
     #[must_use]
     pub fn inset(&self, by: Pixels) -> Self {
         self.within(self.width - by * 2.0)
-    }
-
-    /// How many columns of at least `min` effective px fit (≤ `max`), and the
-    /// measure of one column, with `gap` between them (legacy: the count
-    /// changes at a bare edge; new code uses a [`crate::fluid::Grid`], which
-    /// holds its count through a hysteresis band).
-    #[must_use]
-    pub fn columns(&self, min: f32, gap: Space, max: usize) -> (usize, Self) {
-        let gap = f32::from(self.space(gap));
-        let width = f32::from(self.width);
-        let min = min * self.scale;
-        let mut count = 1;
-        while count < max.max(1) {
-            let next = count + 1;
-            #[allow(clippy::cast_precision_loss)] // column counts are tiny
-            let column = (width - gap * (next - 1) as f32) / next as f32;
-            if column < min {
-                break;
-            }
-            count = next;
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let column = (width - gap * (count - 1) as f32) / count as f32;
-        (count, self.within(px(column)))
     }
 
     /// Where this container sits on the fluid curve, 0.0 (480 effective px or
@@ -443,7 +375,7 @@ impl<E: Styled> Set for E {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Density, Measure, Needs, Reveal, Room, Rung, Space};
+    use super::{Density, Measure, Needs, Reveal, Rung, Space};
     use crate::theme::Facet;
     use crate::tokens::ty;
     use gpui::px;
@@ -460,11 +392,9 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn big_text_behaves_like_a_small_window() {
         // 200 % text on 1440 px is a 720 design px room, the same as 720 px at 100 %.
-        assert_eq!(at(1440.0, 2.0, Density::Comfortable).room(), Room::Slim);
-        assert_eq!(at(720.0, 1.0, Density::Comfortable).room(), Room::Slim);
-        assert_eq!(at(1440.0, 1.0, Density::Comfortable).room(), Room::Wide);
         let big = at(1440.0, 2.0, Density::Comfortable).fluid_room();
         assert_eq!(big.design(), at(720.0, 1.0, Density::Comfortable).fluid_room().design());
         assert_eq!(big.design().get(), 720.0);
@@ -493,15 +423,6 @@ mod tests {
         assert!(narrow.role(ty::BODY).size >= 10.5);
         let wide = at(1600.0, 1.0, Density::Comfortable);
         assert!((wide.role(ty::HERO).size - ty::HERO.size).abs() < 0.001);
-    }
-
-    #[test]
-    fn columns_fit_and_never_underflow() {
-        let (count, column) = at(1000.0, 1.0, Density::Comfortable).columns(300.0, Space::Gutter, 6);
-        assert_eq!(count, 3);
-        assert!(f32::from(column.width()) >= 300.0);
-        let (one, _) = at(200.0, 1.0, Density::Comfortable).columns(300.0, Space::Gutter, 6);
-        assert_eq!(one, 1);
     }
 
     #[test]

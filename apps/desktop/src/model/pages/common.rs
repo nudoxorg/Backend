@@ -173,10 +173,64 @@ impl PackageRef {
         Self::parse(&format!("{}@{version}{rest}", &text[..at])).ok()
     }
 
-    /// Returns the readable name: the last path component of a local root,
-    /// or the purl name without its namespace and version.
+    /// The registry release this package is: a purl's, or a registry tree's
+    /// (as its manifest names it). `None` for a person's own project.
+    #[must_use]
+    pub fn release(&self) -> Option<crate::model::release::Release> {
+        match self.registry_release() {
+            Some((name, version)) => crate::model::release::Release::new(name, version).ok(),
+            None => crate::model::release::Release::from_purl(self.as_str()),
+        }
+    }
+
+    /// The registry release a local root is, as `(name, version)` from its
+    /// manifest, when it is a registry package's unpacked source: cargo's
+    /// cache (`…/registry/src/index.…/NAME-VERSION`) or this app's own
+    /// (`…/registry-sources/NAME-VERSION/NAME-VERSION`). The tree is named
+    /// `{name}-{version}` after its manifest; the strings returned are the
+    /// manifest's name and version (read and compared), borrowed from the
+    /// path that spells them.
+    #[must_use]
+    pub fn registry_release(&self) -> Option<(&str, &str)> {
+        if !self.is_local() {
+            return None;
+        }
+        let path = std::path::Path::new(self.as_str());
+        let stem = path.file_name()?.to_str()?;
+        let parent = path.parent()?;
+        let parent_name = parent.file_name()?.to_str()?;
+        let in_cargo = parent_name.starts_with("index.")
+            && parent.parent().is_some_and(|src| src.ends_with("registry/src"));
+        let in_app = parent_name == stem
+            && parent.parent().is_some_and(|dir| dir.file_name().is_some_and(|name| name == "registry-sources"));
+        if !(in_cargo || in_app) {
+            return None;
+        }
+        let (name, version) = stem.match_indices('-').find_map(|(at, _)| {
+            let (name, version) = (&stem[..at], &stem[at + 1..]);
+            crate::model::release::Release::new(name, version).ok().map(|_| (name, version))
+        })?;
+        // The name and version are the manifest's: the tree's own
+        // `Cargo.toml` is read (once per tree) and must say exactly these.
+        manifest_says(path, name, version).then_some((name, version))
+    }
+
+    /// The version to show beside [`Self::display_name`]: a registry
+    /// release's, pinned or unpacked.
+    #[must_use]
+    pub fn release_version(&self) -> Option<&str> {
+        self.version().or_else(|| self.registry_release().map(|(_, version)| version))
+    }
+
+    /// Returns the readable name: a registry package's own name (its
+    /// unpacked source tree is `NAME-VERSION`, [`Self::registry_release`]),
+    /// else the last path component of a local root, or the purl name
+    /// without its namespace and version.
     #[must_use]
     pub fn display_name(&self) -> &str {
+        if let Some((name, _)) = self.registry_release() {
+            return name;
+        }
         let text = self.as_str();
         if self.is_local() {
             return text
@@ -188,6 +242,26 @@ impl PackageRef {
         let without_version = text.split('@').next().unwrap_or(text);
         without_version.rsplit('/').next().unwrap_or(without_version)
     }
+}
+
+/// Whether `root/Cargo.toml` names the package `name` at `version`, read once
+/// per root for the life of the process.
+fn manifest_says(root: &std::path::Path, name: &str, version: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{OnceLock, PoisonError, RwLock};
+    static READ: OnceLock<RwLock<HashMap<std::path::PathBuf, Option<(String, String)>>>> = OnceLock::new();
+    let read = READ.get_or_init(RwLock::default);
+    let known = read.read().unwrap_or_else(PoisonError::into_inner).get(root).cloned();
+    let identity = known.unwrap_or_else(|| {
+        let identity = std::fs::read_to_string(root.join("Cargo.toml")).ok().and_then(|text| {
+            let manifest = text.parse::<toml::Table>().ok()?;
+            let package = manifest.get("package")?.as_table()?;
+            Some((package.get("name")?.as_str()?.to_owned(), package.get("version")?.as_str()?.to_owned()))
+        });
+        read.write().unwrap_or_else(PoisonError::into_inner).insert(root.to_path_buf(), identity.clone());
+        identity
+    });
+    identity.is_some_and(|(said_name, said_version)| said_name == name && said_version == version)
 }
 
 impl fmt::Display for PackageRef {

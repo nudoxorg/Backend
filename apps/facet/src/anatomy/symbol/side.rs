@@ -5,9 +5,9 @@
 use super::body::outcome_marks;
 use super::host::{Change, Ui};
 use super::ink::{G, mark};
-use super::key::{Key, Part, Sec};
+use super::key::{Key, Part, Slot};
 use super::kit::{Ellipsis, Env, caps, ink, roles, said, said_in, truncated, wrapped};
-use super::view::{Cap, Kind, Rail, Uses, Verb};
+use super::view::{Cap, Kind, Listed, Rail, Uses, Verb};
 use crate::anatomy::page::named_as;
 use crate::icons::{self, KindSize};
 use gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div};
@@ -35,7 +35,7 @@ pub(super) fn kind_mark(env: &Env<'_>, kind: Kind, size: KindSize) -> AnyElement
 fn block(env: &Env<'_>, n: usize, title: &str, body: Vec<AnyElement>) -> AnyElement {
     let i = ink(env.p);
     let key = Key::of(Part::Block).at(n);
-    div().id(key.id()).flex().flex_col().gap(env.k(8.0)).child(said(env, &key.field("title"), caps(title), roles::RAIL_HEAD, i.ink3)).children(body).into_any_element()
+    div().id(key.id()).flex().flex_col().gap(env.k(8.0)).child(said(env, &key.field(Slot::Title), caps(title), roles::RAIL_HEAD, i.ink3)).children(body).into_any_element()
 }
 
 fn cap_chip(env: &Env<'_>, cap: &Cap, n: usize) -> AnyElement {
@@ -57,9 +57,9 @@ fn cap_chip(env: &Env<'_>, cap: &Cap, n: usize) -> AnyElement {
 fn source_block(env: &Env<'_>, rail: &Rail, n: usize) -> Option<AnyElement> {
     let source = rail.source.as_ref()?;
     let i = ink(env.p);
-    let key = Key::of(Part::Block).field("source");
+    let key = Key::of(Part::Block).field(Slot::Source);
     let place = format!("{}:{}", source.file, source.line);
-    let mut link = div().id(key.id()).flex().items_center().gap(env.k(8.0)).child(mark(G::Open, env.p, 11.0 * env.m.scale())).child(said(env, &key.field("place"), place.clone(), roles::RAIL, i.ink1));
+    let mut link = div().id(key.id()).flex().items_center().min_h(env.s(24.0)).gap(env.k(8.0)).child(mark(G::Open, env.p, 11.0 * env.m.scale())).child(said(env, &key.field(Slot::Place), place.clone(), roles::RAIL, i.ink1));
     let link = match &source.open {
         Some(path) => {
             let open = env.host.open_source(path, source.line);
@@ -70,17 +70,17 @@ fn source_block(env: &Env<'_>, rail: &Rail, n: usize) -> Option<AnyElement> {
         None => link.into_any_element(),
     };
     let sub = if source.pinned { format!("{} · your pin", source.package) } else { source.package.clone() };
-    Some(block(env, n, "Source", vec![link, said(env, &key.field("sub"), sub, roles::RAIL_SAY, i.ink3)]))
+    Some(block(env, n, "Source", vec![link, said(env, &key.field(Slot::Sub), sub, roles::RAIL_SAY, i.ink3)]))
 }
 
 fn packages_block(env: &Env<'_>, uses: &Uses, ui: &Ui, n: usize) -> AnyElement {
     let i = ink(env.p);
-    let packages = uses.packages(false, true);
+    let packages = uses.packages(Listed::USES);
     let mut body: Vec<AnyElement> = Vec::new();
     if let Some(note) = &uses.elsewhere {
-        body.push(wrapped(env, &Key::of(Part::RailPackage).field("elsewhere"), note.clone(), roles::RAIL_SAY, i.ink2));
+        body.push(wrapped(env, &Key::of(Part::RailPackage).field(Slot::Elsewhere), note.clone(), roles::RAIL_SAY, i.ink2));
     } else if packages.is_empty() {
-        body.push(said(env, &Key::of(Part::RailPackage).field("none"), "None of them use it.", roles::RAIL_SAY, i.ink3));
+        body.push(said(env, &Key::of(Part::RailPackage).field(Slot::None), "None of them use it.", roles::RAIL_SAY, i.ink3));
     } else {
         for (k, entry) in packages.iter().take(9).enumerate() {
             let key = Key::of(Part::RailPackage).at(k);
@@ -96,9 +96,9 @@ fn packages_block(env: &Env<'_>, uses: &Uses, ui: &Ui, n: usize) -> AnyElement {
                 .h(env.s(26.0))
                 .px(env.k(4.0))
                 .cursor_pointer()
-                .hover(|style| style.bg(i.g2))
+                .hover(|style| style.bg(i.g3))
                 .on_click(move |_, window, cx| pick(window, cx))
-                .child(div().min_w_0().flex_1().child(truncated(env, &key.field("name"), entry.package.clone(), roles::RAIL, i.mint, Ellipsis::End)))
+                .child(div().min_w_0().flex_1().child(truncated(env, &key.field(Slot::Name), entry.package.clone(), roles::RAIL, i.mint, Ellipsis::End)))
                 .child(div().flex().items_center().gap(env.k(5.0)).flex_none().children(verbs.iter().map(|v| mark(G::Verb(*v), env.p, 14.0 * env.m.scale()))));
             if on {
                 row = row.bg(i.g2);
@@ -106,7 +106,7 @@ fn packages_block(env: &Env<'_>, uses: &Uses, ui: &Ui, n: usize) -> AnyElement {
             body.push(env.host.target(&key, SharedString::from(entry.package.clone()), picked, row.into_any_element()));
         }
         if packages.len() > 9 {
-            body.push(said(env, &Key::of(Part::RailPackage).field("more"), format!("and {} more", packages.len() - 9), roles::RAIL_SAY, i.ink3));
+            body.push(said(env, &Key::of(Part::RailPackage).field(Slot::More), format!("and {} more", packages.len() - 9), roles::RAIL_SAY, i.ink3));
         }
     }
     block(env, n, if uses.elsewhere.is_some() { "Where it's used" } else { "Your packages that use it" }, body)
@@ -129,8 +129,8 @@ pub(super) fn rail(env: &Env<'_>, rail: &Rail, uses: &Uses, ui: &Ui) -> Vec<AnyE
                 let key = Key::of(Part::Sibling).at(k);
                 let m = env.m;
                 let colour = i.ink1;
-                let (name, name_key) = (sibling.name.clone(), key.field("name"));
-                let door = named_as(key.field("door").text(), &sibling.name, sibling.link.as_deref(), colour, env.host, false, move |_| said_in(&m, &name_key, name, roles::PACKAGE, colour));
+                let (name, name_key, height) = (sibling.name.clone(), key.field(Slot::Name), env.s(24.0));
+                let door = named_as(key.field(Slot::Door).text(), &sibling.name, sibling.link.as_deref(), colour, env.host, false, move |_| div().min_h(height).flex().items_center().child(said_in(&m, &name_key, name, roles::PACKAGE, colour)).into_any_element());
                 div()
                     .flex()
                     .items_center()
@@ -139,7 +139,7 @@ pub(super) fn rail(env: &Env<'_>, rail: &Rail, uses: &Uses, ui: &Ui) -> Vec<AnyE
                     .px(env.k(4.0))
                     .child(kind_mark(env, sibling.kind, KindSize::Sm))
                     .child(door)
-                    .child(div().min_w_0().flex_1().child(truncated(env, &key.field("differs"), sibling.differs.clone(), roles::RAIL_SAY, i.ink3, Ellipsis::End)))
+                    .child(div().min_w_0().flex_1().child(truncated(env, &key.field(Slot::Differs), sibling.differs.clone(), roles::RAIL_SAY, i.ink3, Ellipsis::End)))
                     .child(outcome_marks(env, sibling.outcomes))
                     .into_any_element()
             })
@@ -161,12 +161,11 @@ pub(super) fn rail(env: &Env<'_>, rail: &Rail, uses: &Uses, ui: &Ui) -> Vec<AnyE
             (None, false) => format!("the same in {}", rail.releases.iter().map(|r| r.version.clone()).collect::<Vec<_>>().join(" and ")),
             (None, true) => "it changed between releases".to_owned(),
         };
-        let key = Key::of(Part::Block).field("across");
+        let key = Key::of(Part::Block).field(Slot::Across);
         out.push(block(env, out.len(), "Across releases", vec![div().flex().items_center().gap(env.k(8.0)).child(dots).child(div().min_w_0().flex_1().child(wrapped(env, &key, words, roles::RAIL_SAY, i.ink2))).into_any_element()]));
     }
     if let Some(how) = &rail.how {
-        out.push(block(env, out.len(), "How we know", vec![wrapped(env, &Key::of(Part::Block).field("how"), how.clone(), roles::RAIL_SAY, i.amber)]));
+        out.push(block(env, out.len(), "How we know", vec![wrapped(env, &Key::of(Part::Block).field(Slot::How), how.clone(), roles::RAIL_SAY, i.amber)]));
     }
-    let _ = Sec::Rail;
     out
 }

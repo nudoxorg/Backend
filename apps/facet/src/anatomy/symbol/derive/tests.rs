@@ -1,9 +1,9 @@
 //! End to end on real declarations: what the page says for serde_json's
 //! `from_str`, `Value`, `as_str`, a Python and a TypeScript declaration.
 
-use crate::anatomy::symbol::facts::{Facts, Member, Owes, Receives, Section, SectionKind, Site};
+use crate::anatomy::symbol::facts::{Facts, Member, Receives, Section, SectionKind, Site};
 use crate::anatomy::symbol::view::{Block, FailWord, Joint, Kind, Lang, Origin, Shape};
-use crate::anatomy::symbol::{compile, view::Uses};
+use crate::anatomy::symbol::compile;
 
 const FROM_STR: &str = "pub fn from_str<'a, T>(s: &'a str) -> Result<T>\nwhere\n    T: de::Deserialize<'a>,";
 
@@ -155,6 +155,56 @@ fn tom_and_smallvec_read_like_serde_json() {
     let call = compile(&f).call.expect("a call");
     assert_eq!(call.ports[0].name, "value");
     assert!(call.fails.is_none() && call.none.is_none());
-    let _ = Uses::default();
-    let _ = Owes::Unknown;
+}
+
+#[test]
+fn an_io_kind_is_possible_when_the_call_takes_a_reader() {
+    let mut f = from_str();
+    f.name = "from_reader".into();
+    f.signature = Some("pub fn from_reader<R, T>(rdr: R) -> Result<T>\nwhere\n    R: io::Read,\n    T: DeserializeOwned,".into());
+    let view = compile(&f);
+    let kinds = &view.fails.as_ref().expect("if it fails").kinds;
+    assert!(kinds[0].impossible.is_none(), "a reader can fail to read");
+    let text = compile(&from_str());
+    assert!(text.fails.as_ref().expect("if it fails").kinds[0].impossible.as_deref().is_some_and(|why| why.starts_with("Io can't happen")));
+}
+
+#[test]
+fn a_kinds_lead_in_is_dropped_whatever_the_crate() {
+    let view = compile(&from_str());
+    let kinds = &view.fails.as_ref().expect("if it fails").kinds;
+    assert_eq!(kinds[1].doc, "input that was not syntactically valid JSON");
+    let mut other = from_str();
+    other.error_kinds = vec![("Timeout".into(), "This error is due to a peer that stopped answering.".into())];
+    let view = compile(&other);
+    assert_eq!(view.fails.as_ref().expect("if it fails").kinds[0].doc, "a peer that stopped answering");
+}
+
+#[test]
+fn a_case_row_says_in_words_how_your_places_use_it() {
+    use crate::anatomy::symbol::derive::uses::{Reader, Rel, Site, mark_of, read_all};
+    use crate::anatomy::symbol::with_uses;
+    let view = compile(&value());
+    let site = |text: &str| Site { package: "engine".into(), file: "src/a.rs".into(), path: "/w/a.rs".into(), line: 1, text: text.into(), mark: mark_of(text, "Value"), rel: Rel::TypeReference, exact: true };
+    let sites = [
+        site("Some(serde_json::Value::Null) => Absent,"),
+        site("assert!(matches!(v, Value::Null));"),
+        site("other => serde_json::Value::Null,"),
+        site("let v = Value::Array(items);"),
+    ];
+    let uses = read_all(&sites, &Reader::of(&view));
+    let view = with_uses(view, &uses);
+    let Some(Shape::OneOf(cases)) = &view.shape else { panic!("a fork") };
+    let says = |name: &str| cases.iter().find(|case| case.name == name).and_then(|case| case.yours.says());
+    assert_eq!(says("Null").as_deref(), Some("you match it · 2 · build it · 1"));
+    assert_eq!(says("Array").as_deref(), Some("you build it · 1"));
+    assert_eq!(says("Bool"), None, "a case nobody touches says nothing, not a zero");
+}
+
+#[test]
+fn a_trait_says_how_far_it_is_implemented_on_this_machine() {
+    use crate::anatomy::symbol::facts::Implementors;
+    assert_eq!(Implementors { total: 8322, crates: 343, derived: Some(83) }.says(), "8,322 types implement it across 343 crates on this machine, 83% of them by derive.");
+    assert_eq!(Implementors { total: 1, crates: 1, derived: None }.says(), "1 type implements it across 1 crate on this machine.");
+    assert_eq!(Implementors { total: 1_204_005, crates: 12, derived: None }.says(), "1,204,005 types implement it across 12 crates on this machine.");
 }

@@ -316,7 +316,8 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
             .translate(gpui::point(px(0.0), px((1.0 - t) * 10.0 * scale)))
             .opacity(t),
         );
-    Some(scrim.into_any_element())
+    // The scrim occludes the page: tell the lints what is under it.
+    Some(crate::probe::veil("dialog-scrim", scrim).into_any_element())
 }
 
 #[cfg(test)]
@@ -374,6 +375,61 @@ mod tests {
             dismissible,
             sheet: None,
         }
+    }
+
+    /// A page with one published text under the float layer.
+    struct Labelled;
+
+    impl Render for Labelled {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(crate::probe::text(
+                    "page-text",
+                    "the page under the dialog",
+                    crate::tokens::ty::BODY,
+                    1.0,
+                    crate::probe::TextOverflow::Clip,
+                    div().child("the page under the dialog"),
+                ))
+                .child(float::layer(window, cx))
+        }
+    }
+
+    /// The scrim publishes itself as a veil: what was published before it, inside it, is under it.
+    #[gpui::test]
+    fn an_open_dialog_publishes_a_veil_over_the_page_beneath(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::probe::enable(cx));
+        let (_view, cx) = cx.add_window_view(|_, _| Labelled);
+        cx.simulate_resize(size(px(900.0), px(700.0)));
+        frame(cx);
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        assert!(ledger.veils.is_empty(), "no dialog, no veil");
+        cx.update(|window, cx| open(a_dialog(true), window, cx));
+        frame(cx);
+        // One draw's worth of ledger: a frame's texts and veils, in paint order.
+        cx.update(|_, cx| {
+            crate::probe::take(cx);
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        assert_eq!(ledger.veils.len(), 1, "one scrim, one veil: {:?}", ledger.veils);
+        let veil = &ledger.veils[0];
+        let (index, page) = ledger
+            .texts
+            .iter()
+            .enumerate()
+            .find(|(_, text)| text.key == "page-text")
+            .expect("the page text is published");
+        assert!(veil.covers_text(index, &page.bounds), "the page text is under the veil: {veil:?} vs {:?}", page.bounds);
+        assert!(veil.bounds.width >= 899.0 && veil.bounds.height >= 699.0, "the scrim fills the window: {:?}", veil.bounds);
+        assert!(
+            ledger.texts.iter().enumerate().filter(|(i, _)| *i >= veil.texts).all(|(i, t)| !veil.covers_text(i, &t.bounds)),
+            "what the dialog paints above the veil is not covered by it"
+        );
     }
 
     #[gpui::test]

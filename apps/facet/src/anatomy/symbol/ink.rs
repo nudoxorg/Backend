@@ -102,6 +102,9 @@ pub enum G {
     Many,
     /// The rail's end: it fails.
     Fail,
+    /// A kind of failure that cannot happen here: the failure block, drawn
+    /// in ink.
+    Impossible,
     /// The rail's end: it may give nothing.
     None,
     /// The rail: it answers later.
@@ -158,6 +161,7 @@ fn glyph(g: G, h: Hue) -> (f32, f32, Vec<Prim>) {
         G::Out => (14.0, 14.0, vec![Fill(vec![(2.0, 3.5), (12.0, 7.0), (2.0, 10.5)], h.peri_hi)]),
         G::Many => (16.0, 14.0, vec![Fill(vec![(1.0, 3.5), (8.0, 7.0), (1.0, 10.5)], h.peri_hi), Fill(vec![(7.0, 3.5), (14.0, 7.0), (7.0, 10.5)], h.peri_hi)]),
         G::Fail => (14.0, 14.0, vec![Fill(rect(1.0, 1.0, 12.0, 12.0), h.coral), Line(vec![(4.4, 4.4), (9.6, 9.6)], h.deep, 1.9), Line(vec![(9.6, 4.4), (4.4, 9.6)], h.deep, 1.9)]),
+        G::Impossible => (14.0, 14.0, vec![Poly(rect(1.0, 1.0, 12.0, 12.0), h.ink3, 1.4), Line(vec![(4.4, 4.4), (9.6, 9.6)], h.ink3, 1.5), Line(vec![(9.6, 4.4), (4.4, 9.6)], h.ink3, 1.5)]),
         G::None => (14.0, 14.0, vec![Fill(circle(7.0, 7.0, 5.2), h.bg), Dashed(circle(7.0, 7.0, 5.2), h.slate, 1.8, [2.6, 1.9])]),
         G::Later => (16.0, 16.0, vec![Fill(circle(8.0, 8.0, 6.2), h.bg), Poly(circle(8.0, 8.0, 6.2), h.peri, 1.5), Line(vec![(8.0, 4.6), (8.0, 8.0), (10.3, 9.5)], h.peri, 1.5)]),
         G::Case => (12.0, 12.0, vec![Fill(diamond(6.0, 6.0, 4.5), h.bg), Poly(diamond(6.0, 6.0, 4.5), h.make, 1.5)]),

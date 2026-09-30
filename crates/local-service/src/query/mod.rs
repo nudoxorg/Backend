@@ -10,7 +10,7 @@ mod remote;
 mod semantic;
 
 pub use local::{
-    CoverageBasis, Freshness, Lane, LaneReport, LocalAnswer, LocalQuery, QueryCoordinator,
+    CoverageBasis, Freshness, Lane, LaneReport, LeftOut, LocalAnswer, LocalQuery, QueryCoordinator,
     QueryError, QueryResult, RankedRow, SearchSnapshotOwner, SemanticDocument, SourceBasis,
 };
 pub use remote::{

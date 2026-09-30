@@ -8,6 +8,28 @@ use crate::protocol::{
 use std::fmt;
 use std::io::{Read, Write};
 
+/// What handling one command came to.
+#[derive(Debug, Eq, PartialEq)]
+pub enum CommandOutcome {
+    /// The reply body, now.
+    Reply(Vec<u8>),
+    /// The owner took the command and replies through
+    /// [`OwnerService::poll_deferred`] under its ticket: its long part (an
+    /// index job's compile) runs off the owner loop, which answers other
+    /// requests meanwhile.
+    Deferred,
+}
+
+/// What handling one payload came to on the listener's owner loop.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Handled {
+    /// The response payload, now.
+    Reply(Vec<u8>),
+    /// The response comes through [`LocaldService::poll_deferred`] under the
+    /// payload's ticket.
+    Deferred,
+}
+
 /// A process-owned adapter around the one durable engine owner.
 pub trait OwnerService {
     /// Handles one CLI/MCP/library command body. The body is still a wire
@@ -34,6 +56,27 @@ pub trait OwnerService {
     /// processed. The listener uses this between client reads to prevent a
     /// busy or slow connection from starving another lane.
     fn serve_one(&mut self) -> bool;
+
+    /// Handles one command body, or takes it and replies later under
+    /// `ticket` ([`Self::poll_deferred`]). An owner that never defers
+    /// answers every command now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the command is malformed or rejected by the owner.
+    fn command_or_defer(
+        &mut self,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<CommandOutcome, ProtocolError> {
+        let _ = ticket;
+        self.command(body).map(CommandOutcome::Reply)
+    }
+
+    /// The replies of deferred commands that are ready, by ticket.
+    fn poll_deferred(&mut self) -> Vec<(u64, Result<Vec<u8>, ProtocolError>)> {
+        Vec::new()
+    }
 
     /// Closes request lanes and releases external transport references.
     fn close(&mut self);
@@ -167,6 +210,51 @@ impl<O: OwnerService> LocaldService<O> {
             },
         };
         encode_response(&response, self.limits)
+    }
+
+    /// [`Self::handle_payload`], except that a command the owner defers
+    /// replies later through [`Self::poll_deferred`] under `ticket`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding, owner admission, or response encoding fails.
+    pub fn handle_payload_or_defer(
+        &mut self,
+        payload: &[u8],
+        ticket: u64,
+    ) -> Result<Handled, ProtocolError> {
+        if self.closed {
+            return Err(ProtocolError::Closed);
+        }
+        match decode_request(payload, self.limits) {
+            Ok(RequestFrame::Command(body)) => match self.owner.command_or_defer(&body, ticket)? {
+                CommandOutcome::Reply(reply) => encode_response(
+                    &ResponseFrame::Command(reply.into_boxed_slice()),
+                    self.limits,
+                )
+                .map(Handled::Reply),
+                CommandOutcome::Deferred => Ok(Handled::Deferred),
+            },
+            _ => self.handle_payload(payload).map(Handled::Reply),
+        }
+    }
+
+    /// The response payloads of deferred commands that are ready, by ticket.
+    pub fn poll_deferred(&mut self) -> Vec<(u64, Result<Vec<u8>, ProtocolError>)> {
+        if self.closed {
+            return Vec::new();
+        }
+        let limits = self.limits;
+        self.owner
+            .poll_deferred()
+            .into_iter()
+            .map(|(ticket, reply)| {
+                let response = reply.and_then(|reply| {
+                    encode_response(&ResponseFrame::Command(reply.into_boxed_slice()), limits)
+                });
+                (ticket, response)
+            })
+            .collect()
     }
 
     /// Handles one already-connected byte stream until EOF, protocol error,

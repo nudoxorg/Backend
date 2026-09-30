@@ -13,15 +13,17 @@ use super::fixture;
 use super::license::{self, license_mark};
 use super::version::{self, version_mark};
 use super::card;
+use crate::fluid::Modes;
 use crate::gallery::Scene;
 use crate::icons::Kind;
 use crate::measure::{Measure, Set};
 use crate::overlay::float;
 use crate::paint::{gem, ground};
 use crate::theme::ActiveFacet;
-use crate::tokens::{Face, TypeRole, ty};
+use crate::tokens::fluid::{DOCK, Dock, HERO_DEPS, MARK_GEM, MOCK_SHELF, Split};
+use crate::tokens::{Face, TypeRole, geo, ty};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Context, FontFeatures, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    AnyElement, AnyView, App, AppContext, Context, ElementId, FontFeatures, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     Styled, Window, div, px,
 };
 use std::sync::Arc;
@@ -377,10 +379,16 @@ fn first_sentence(text: &str) -> String {
 fn hero(pkg: &'static str, look: Look, measure: &Measure, window: &mut Window, cx: &mut App) -> AnyElement {
     let palette = cx.facet().palette();
     let s = measure.scale();
-    let vw = measure.effective();
+    let room = measure.fluid_room();
+    let modes = Modes::keyed(ElementId::Name(format!("marks-hero-{pkg}").into()), window, cx);
     // The window around the reader, as the prototype draws it: a titlebar
-    // strip and the shelf (a spine below 900 px, gone below 640 px).
-    let shelf = if vw >= 900.0 { (vw * 0.18).clamp(220.0, 264.0) } else if vw >= 640.0 { 42.0 } else { 0.0 } * s;
+    // strip and the shelf (a spine below 900 px, gone below 640 px): the
+    // product's own modes, held through their hysteresis bands.
+    let shelf = match modes.settle(&DOCK, room).mode {
+        Dock::Shelf => f32::from(MOCK_SHELF.at(room)),
+        Dock::Spine => f32::from(geo::KSPINE) * s,
+        Dock::Drawer => 0.0,
+    };
     let reader_w = f32::from(measure.width()) - shelf;
     let cqi = reader_w / 100.0;
     let pad_x = (4.0 * cqi).clamp(16.0 * s, 48.0 * s);
@@ -406,7 +414,7 @@ fn hero(pkg: &'static str, look: Look, measure: &Measure, window: &mut Window, c
         _ => {}
     }
     let deps = fixture::deps(pkg);
-    let wrap = column.effective() <= 760.0;
+    let wrap = modes.settle(&HERO_DEPS, column.fluid_room()).mode == Split::Stacked;
     // Beside the eco and license marks, the deps get what the line has left.
     let marks_w = 16.0 * s * 2.0 + 180.0 * s + 22.0 * s * 2.0;
     let deps_measure = if wrap { column } else { column.within(px((column_w - marks_w).max(120.0 * s))) };
@@ -420,7 +428,7 @@ fn hero(pkg: &'static str, look: Look, measure: &Measure, window: &mut Window, c
             _ => line,
         });
     }
-    let gem_px = if vw < 640.0 { 48.0 } else { 64.0 } * s;
+    let gem_px = f32::from(MARK_GEM.at(room));
     let head = div()
         .flex()
         .items_center()

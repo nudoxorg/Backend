@@ -11,7 +11,7 @@
 //! Parametric like the board's `rose(W, hover)`: the geometry is a pure
 //! function of the width the rose gets (its effective width, so 200 % text
 //! behaves like half the window), stepping down smoothly as the room
-//! shrinks; at 560 effective px or less it becomes four quiet lines
+//! shrinks; below 560 effective px it becomes four quiet lines
 //! (`word  name, name, name`), one per direction. On first sight the spokes
 //! grow out of the hub, a direction at a time.
 
@@ -21,12 +21,14 @@ use super::live::{self, Hooks, Live};
 use super::spell::{Seg, spell};
 use super::strands::{self, Strand, Voice};
 use super::text::{Shaped, shape};
+use crate::fluid::Modes;
 use crate::icons::{Kind, Stroke, variant_path};
 use crate::measure::Measure;
 use crate::motion::{Spec, spec};
 use crate::paint::geom::{Fill, Pt, pt};
 use crate::paint::gem;
 use crate::theme::ActiveFacet;
+use crate::tokens::fluid::{Form, ROSE};
 use crate::tokens::{TypeRole, motion as dur, ty};
 use gpui::{
     AnyElement, App, Bounds, ColorExt, Element, ElementId, Entity, GlobalElementId, Hitbox, Hsla,
@@ -34,6 +36,7 @@ use gpui::{
     Styled, TransformationMatrix, Window, div, point, px, size,
 };
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// One thing the symbol touches.
 #[derive(Clone, Debug, PartialEq)]
@@ -77,8 +80,6 @@ impl Member {
 
 /// Members drawn per direction; the rest wait in the direction's lens.
 pub const SHOWN: usize = 3;
-/// At or below this effective width the rose is four lines.
-pub const LIST_BELOW: f32 = 560.0;
 
 /// The rose. Build with [`rose`].
 pub struct Rose {
@@ -278,11 +279,30 @@ impl IntoElement for Rose {
     type Element = AnyElement;
 
     fn into_element(self) -> AnyElement {
-        let list = self.list.unwrap_or(self.measure.effective() <= LIST_BELOW);
-        if list {
-            RoseList { rose: self }.into_any_element()
-        } else {
-            RoseField { rose: self }.into_any_element()
+        RoseForm { rose: self }.into_any_element()
+    }
+}
+
+/// Which of the two the rose is: read through the rose's own memory, so a
+/// window resting on the edge does not flip it back and forth.
+#[derive(IntoElement)]
+struct RoseForm {
+    rose: Rose,
+}
+
+impl gpui::RenderOnce for RoseForm {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let form = match self.rose.list {
+            Some(true) => Form::List,
+            Some(false) => Form::Field,
+            None => {
+                let held = Modes::keyed(ElementId::NamedChild(Arc::new(self.rose.id.clone()), "form".into()), window, cx);
+                held.settle(&ROSE, self.rose.measure.fluid_room()).mode
+            }
+        };
+        match form {
+            Form::List => RoseList { rose: self.rose }.into_any_element(),
+            Form::Field => RoseField { rose: self.rose }.into_any_element(),
         }
     }
 }
@@ -326,7 +346,7 @@ impl gpui::RenderOnce for RoseList {
             if let Some(door) = &rose.door {
                 line = line
                     .id(ElementId::NamedChild(
-                        std::sync::Arc::new(rose.id.clone()),
+                        Arc::new(rose.id.clone()),
                         SharedString::from(format!("list-{}", dir.index())),
                     ))
                     .door(door.clone())
@@ -695,9 +715,52 @@ fn merged_door(direction: Option<Door>, member: Option<Door>, members: [Rc<[Memb
 
 #[cfg(test)]
 mod tests {
-    use super::{Dir, Member, Rose, SHOWN, geometry, strand};
+    use super::{Dir, Member, Rose, SHOWN, geometry, rose, strand};
     use crate::icons::Kind;
+    use crate::theme::ActiveFacet;
+    use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div, px};
     use std::rc::Rc;
+
+    /// A page that draws a rose in the width it is given.
+    struct Host {
+        width: f32,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let measure = cx.facet().measure(px(self.width));
+            div().size_full().child(
+                rose("rose", Kind::Struct, &measure)
+                    .members(Dir::Is, vec![Member::new("Display", Kind::Trait), Member::new("ToString", Kind::Trait)]),
+            )
+        }
+    }
+
+    /// Whether the rose drawn at `width` is the four quiet lines (the `is`
+    /// line names its members in one text); the field draws each name apart.
+    fn is_a_list(host: &Entity<Host>, cx: &mut VisualTestContext, width: f32) -> bool {
+        host.update(cx, |host, cx| {
+            host.width = width;
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        cx.update(|window, _| window.painted_texts().iter().any(|text| text.text.contains("Display, ToString")))
+    }
+
+    #[gpui::test]
+    fn a_rose_on_the_edge_of_its_form_holds_the_one_it_has(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(gpui::TextTrace));
+        let (host, cx) = cx.add_window_view(|_, _| Host { width: 700.0 });
+        assert!(!is_a_list(&host, cx, 700.0), "wide: the field");
+        assert!(!is_a_list(&host, cx, 552.0), "8 px under the edge, dragged narrower: still the field");
+        assert!(is_a_list(&host, cx, 540.0), "past the band: the four lines");
+        assert!(is_a_list(&host, cx, 568.0), "8 px over the edge, dragged wider: still the lines");
+        assert!(!is_a_list(&host, cx, 580.0), "past the band: the field");
+    }
 
     #[test]
     fn the_board_layout_at_760_is_the_targets() {

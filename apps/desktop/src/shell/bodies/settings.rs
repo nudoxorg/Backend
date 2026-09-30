@@ -13,7 +13,7 @@ use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
 
 pub(super) fn body(
     page: SettingsPage,
@@ -143,6 +143,18 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Index & registries", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
+    // What compiles your code: the Rust the app found (or where it looked),
+    // in the words the first run says it in.
+    if let Some(rust) = crate::host::toolchain::report() {
+        let missing = matches!(rust, crate::host::toolchain::Rust::Missing { .. });
+        let words = ctx.say(rust.words());
+        let ink = if missing { palette.coral.base } else { palette.ink1 };
+        leaves.push(setting(
+            "Compiler",
+            text(ty::SMALL, &measure, ink).min_w(px(0.0)).child(words).into_any_element(),
+            ctx,
+        ));
+    }
     match store.health().loaded_value() {
         Some(health) => {
             let facts = [
@@ -191,16 +203,22 @@ fn keys(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             ctx,
         ));
     }
-    // The graph's own keys, while it has the keyboard.
-    let measure = ctx.measure;
-    let palette = ctx.palette;
-    let heading = ctx.say("In the graph");
-    leaves.push(Leaf::new(
-        text(ty::HEAD, &measure, palette.ink0).pt(measure.space(Space::Roomy)).pb(measure.space(Space::Base)).child(heading),
-    ));
-    for key in facet::graph::keys::KEYS {
-        let caps = ctx.say(key.cap);
-        leaves.push(setting(key.says, text(ty::MONO_ROW, &measure, palette.ink1).child(caps).into_any_element(), ctx));
+    // The sidebar's and the graph's own keys, while each has the keyboard.
+    let groups: [(&str, Vec<(&str, &str)>); 2] = [
+        ("In the sidebar", crate::shell::side::KEYS.iter().map(|key| (key.cap, key.says)).collect()),
+        ("In the graph", facet::graph::keys::KEYS.iter().map(|key| (key.cap, key.says)).collect()),
+    ];
+    for (group, keys) in groups {
+        let measure = ctx.measure;
+        let palette = ctx.palette;
+        let heading = ctx.say(group);
+        leaves.push(Leaf::new(
+            text(ty::HEAD, &measure, palette.ink0).pt(measure.space(Space::Roomy)).pb(measure.space(Space::Base)).child(heading),
+        ));
+        for (cap, says) in keys {
+            let caps = ctx.say(cap);
+            leaves.push(setting(says, text(ty::MONO_ROW, &measure, palette.ink1).child(caps).into_any_element(), ctx));
+        }
     }
     leaves
 }

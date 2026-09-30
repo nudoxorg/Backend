@@ -559,10 +559,15 @@ impl VersionedRoot {
 
     /// Returns whether this key is older in producer order. Observation order
     /// is never consulted for admission.
+    ///
+    /// Within an epoch the order is the cursor's sequence, which every
+    /// publication advances. Not the cursor as a whole: its derived order
+    /// compares the view root (a hash) first, so a later publication was
+    /// judged older about half the time and its root read was dropped.
     #[must_use]
     pub fn is_older_authority(self, other: Self) -> bool {
         if self.producer_epoch() == other.producer_epoch() {
-            return self.revision() < other.revision();
+            return self.generation() < other.generation();
         }
         self.producer_epoch() < other.producer_epoch()
     }

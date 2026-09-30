@@ -968,6 +968,24 @@ pub fn product_source_file_key(project: [u8; 32], path: &str) -> [u8; 32] {
     ProductSourceFileKey::new(project, path).to_bytes()
 }
 
+/// The key a build before the project-affine layout gave a source file: one
+/// 32-byte BLAKE3 digest over `backend.product-source.file.v1`, the full
+/// project key and the exact path bytes.
+///
+/// Nothing writes this key any more. It is kept so a workspace written by such
+/// a build is recognised as state from another build, not reported as a
+/// corrupt project frontier: its records decode (`SOURCE_RECORD_VERSION` did
+/// not change) and only their keys differ.
+#[must_use]
+pub fn legacy_product_source_file_key(project: [u8; 32], path: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.product-source.file.v1\0");
+    hasher.update(&project);
+    hasher.update(&(path.len() as u64).to_be_bytes());
+    hasher.update(path.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
 fn push_count(output: &mut Vec<u8>, count: usize) {
     output.extend_from_slice(&u32::try_from(count).unwrap_or(u32::MAX).to_be_bytes());
 }
@@ -1600,6 +1618,28 @@ mod tests {
         ProductSourceRelation::encode_key(&decoded, &mut encoded_again);
         assert_eq!(decoded, keys[0]);
         assert_eq!(encoded_again, key_bytes);
+    }
+
+    #[test]
+    fn the_retired_source_file_key_layout_is_reproducible_and_never_the_current_one() {
+        let project = [0x11; 32];
+        // The retired layout, spelled out independently of the function under
+        // test: one 32-byte digest, no project prefix.
+        let mut retired = blake3::Hasher::new();
+        retired.update(b"backend.product-source.file.v1\0");
+        retired.update(&project);
+        retired.update(&("src/lib.rs".len() as u64).to_be_bytes());
+        retired.update(b"src/lib.rs");
+        let retired = *retired.finalize().as_bytes();
+
+        let legacy = super::legacy_product_source_file_key(project, "src/lib.rs");
+        assert_eq!(legacy, retired);
+        assert_ne!(
+            legacy,
+            super::product_source_file_key(project, "src/lib.rs"),
+            "a workspace keyed this way is state from another build, not a current one"
+        );
+        assert_ne!(legacy[..16], project[..16], "the retired key carries no project prefix");
     }
 
     #[test]
