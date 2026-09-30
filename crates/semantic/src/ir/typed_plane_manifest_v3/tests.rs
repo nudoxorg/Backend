@@ -370,7 +370,7 @@ fn cold_seek_is_path_bounded_and_closure_counts_exact_pages_and_rows() {
     // overhead, and aggregate-verifier buffers; they describe logical
     // row-index buffers, not peak process memory.
     let mut semantic_rows = super::super::row_index::StableRowIndex::builder();
-    for ordinal in 0..2_048 {
+    for ordinal in 0_u32..2_048 {
         let payload = ordinal.to_be_bytes();
         semantic_rows
             .push(
@@ -701,10 +701,11 @@ fn grammar_valid_row_claim_stays_untrusted_until_payload_bytes_are_checked() {
         None,
         &[(ordinal_key(RowFamily::Core, 7), forged_reference)],
     );
+    let mut core = Some(core);
     let mut families = Vec::with_capacity(FAMILY_COUNT);
     for family in RowFamily::ALL {
         if family == RowFamily::Core {
-            families.push(core);
+            families.push(core.take().expect("core family is inserted once"));
         } else {
             let profile = (family == RowFamily::LanguageExtensions)
                 .then_some(LanguageProfile::Rust(RustEdition::Rust2021));

@@ -919,8 +919,8 @@ fn rename_is_delete_plus_insert_and_survives_cold_reopen() {
     // Stable identity follows the declaration key. Keeping its payload digest
     // while changing the key still means a tombstone and an insertion.
     let changes = [
-        StableRowIndexChange::new(old_key, None),
-        StableRowIndexChange::new(new_key, Some(unchanged_payload)),
+        StableRowIndexChange::new(old_key, StableRowAction::Delete),
+        StableRowIndexChange::new(new_key, StableRowAction::Put(unchanged_payload)),
     ];
     let prepared = before
         .prepare_update(&changes)
@@ -975,7 +975,7 @@ fn complete_scan_oracle_catches_omitted_transitive_and_plane_changes() {
     // derived rows stale. The complete-reader oracle must reject that target.
     let incomplete = [StableRowIndexChange::new(
         key(RowFamily::Types, 41),
-        after_model.get(&key(RowFamily::Types, 41)).copied(),
+        StableRowAction::Put(after_model[&key(RowFamily::Types, 41)]),
     )];
     let incomplete = before
         .prepare_update(&incomplete)
@@ -995,7 +995,10 @@ fn complete_scan_oracle_catches_omitted_transitive_and_plane_changes() {
     );
     let complete_changes = expected
         .iter()
-        .map(|(key, _, after)| StableRowIndexChange::new(*key, *after))
+        .map(|(key, _, after)| {
+            let action = after.map_or(StableRowAction::Delete, StableRowAction::Put);
+            StableRowIndexChange::new(*key, action)
+        })
         .collect::<Vec<_>>();
     let complete = before
         .prepare_update(&complete_changes)
