@@ -225,7 +225,10 @@ impl CargoCache {
 
     /// Effective Cargo home and registry authority paths, in stable order.
     pub(crate) fn authority_key(&self) -> CargoAuthorityKey {
-        let configured_root = self.source_root.as_ref().map(stable_path);
+        let configured_root = self
+            .source_root
+            .as_ref()
+            .map(|path| stable_path(path.clone()));
         CargoAuthorityKey(format!(
             "cargo-home={:?}; cargo-root={:?}; registry-indices={:?}; source-indices={:?}; archive-indices={:?}",
             stable_path(self.home.clone()),
@@ -402,6 +405,7 @@ impl CargoCache {
             .into_iter()
             .filter(|record| record.index == index && record.version == release.version.as_str())
             .filter_map(|record| record.checksum)
+            .filter(|checksum| archive::is_sha256(checksum))
             .collect::<Vec<_>>();
         checksums.sort();
         checksums.dedup();
@@ -417,7 +421,10 @@ impl CargoCache {
         if records.len() != 1 {
             return None;
         }
-        records.pop()?.checksum
+        records
+            .pop()?
+            .checksum
+            .filter(|checksum| archive::is_sha256(checksum))
     }
 
     /// Only records in the configured Cargo source root are effective. With
@@ -449,12 +456,18 @@ impl CargoCache {
     }
 
     /// Where this app unpacks `release`.
-    fn own_tree(&self, release: &Release) -> PathBuf {
+    fn own_tree(&self, release: &Release, checksum: &str) -> Option<PathBuf> {
+        if !archive::is_sha256(checksum) {
+            return None;
+        }
         let stem = release.stem();
-        self.unpacked
-            .join(self.authority_digest())
-            .join(&stem)
-            .join(stem)
+        Some(
+            self.unpacked
+                .join(self.authority_digest())
+                .join(&stem)
+                .join(checksum.to_ascii_lowercase())
+                .join(stem),
+        )
     }
 
     fn release_checksum(&self, release: &Release, index: &str) -> Option<String> {
@@ -462,12 +475,10 @@ impl CargoCache {
     }
 
     fn cache_is_verified(&self, release: &Release, checksum: &str) -> bool {
-        archive::cache_matches(
-            &self.own_tree(release),
-            &self.authority_digest(),
-            release,
-            checksum,
-        )
+        let Some(tree) = self.own_tree(release, checksum) else {
+            return false;
+        };
+        archive::cache_matches(&tree, &self.authority_digest(), release, checksum)
     }
 
     fn locate(&self, release: &Release) -> Availability {
@@ -524,7 +535,9 @@ impl CargoCache {
                 .and_then(|index| self.release_checksum(release, index));
             if let Some(checksum) = checksum {
                 if self.cache_is_verified(release, &checksum) {
-                    return Availability::Unpacked(self.own_tree(release));
+                    if let Some(tree) = self.own_tree(release, &checksum) {
+                        return Availability::Unpacked(tree);
+                    }
                 }
                 return Availability::Archive(file.clone());
             }
@@ -538,7 +551,9 @@ impl CargoCache {
             .unique_release_checksum(release)
             .filter(|checksum| self.cache_is_verified(release, checksum))
         {
-            return Availability::Unpacked(self.own_tree(release));
+            if let Some(tree) = self.own_tree(release, &checksum) {
+                return Availability::Unpacked(tree);
+            }
         }
         Availability::Download
     }
@@ -658,8 +673,8 @@ impl RegistrySource for CargoCache {
             Availability::Unpacked(tree) => Some(tree.canonicalize().unwrap_or(tree)),
             // `resolve` unpacks it here, and the owner lists it by this path.
             Availability::Archive(_) => {
-                let own = self.own_tree(release);
-                Some(own)
+                let checksum = self.unique_release_checksum(release)?;
+                self.own_tree(release, &checksum)
             }
             Availability::UnverifiedArchive(_)
             | Availability::Download
@@ -685,7 +700,13 @@ impl RegistrySource for CargoCache {
             reason: error.to_string(),
         };
         let (root, origin) = match self.locate(release) {
-            Availability::Unpacked(tree) if self.own_tree(release) == tree => {
+            Availability::Unpacked(tree)
+                if self
+                    .unique_release_checksum(release)
+                    .is_some_and(|checksum| {
+                        self.own_tree(release, &checksum).as_ref() == Some(&tree)
+                    }) =>
+            {
                 (tree, Origin::AppCache)
             }
             Availability::Unpacked(tree) => (tree, Origin::Cargo),

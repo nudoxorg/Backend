@@ -14,6 +14,12 @@ fn scratch(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("nx-w-acquire-{tag}-{}-{nonce}", std::process::id()))
 }
 
+fn private_unpack(tag: &str) -> (PathBuf, PathBuf) {
+    let parent = scratch(tag);
+    crate::host::private_dir(&parent).expect("private temporary parent");
+    (parent.clone(), parent.join("registry-sources"))
+}
+
 fn source() -> CargoCache {
     CargoCache::from_env(scratch("test-unpacked")).expect("an effective cargo cache")
 }
@@ -348,7 +354,7 @@ fn an_explicit_source_root_selects_the_matching_registry_metadata() {
 fn an_archive_unpacks_to_exactly_the_files_cargo_unpacked() {
     let anyhow = release("anyhow", "1.0.104");
     let fake = archive_only_home(&anyhow);
-    let unpacked = scratch("unpacked");
+    let (private_root, unpacked) = private_unpack("unpacked");
     let source = CargoCache::at(fake.clone(), unpacked.clone());
     assert!(matches!(
         source
@@ -358,7 +364,12 @@ fn an_archive_unpacks_to_exactly_the_files_cargo_unpacked() {
             .map(|entry| entry.availability),
         Some(Availability::Archive(_))
     ));
-    let planned = source.own_tree(&anyhow);
+    let checksum = source
+        .unique_release_checksum(&anyhow)
+        .expect("one effective archive checksum");
+    let planned = source
+        .own_tree(&anyhow, &checksum)
+        .expect("valid checksum gives an app cache path");
     let tree = source.resolve(&anyhow).expect("unpack");
     assert_eq!(
         tree.root,
@@ -414,14 +425,14 @@ fn an_archive_unpacks_to_exactly_the_files_cargo_unpacked() {
         "a different registry authority cannot reuse the app cache"
     );
     let _ = std::fs::remove_dir_all(&fake);
-    let _ = std::fs::remove_dir_all(&unpacked);
+    let _ = std::fs::remove_dir_all(private_root);
 }
 
 #[test]
 fn an_app_cache_is_rechecked_against_its_extracted_source_bytes() {
     let release = release("anyhow", "1.0.104");
     let fake = archive_only_home(&release);
-    let unpacked = scratch("tampered-cache");
+    let (private_root, unpacked) = private_unpack("tampered-cache");
     let source = CargoCache::at(fake.clone(), unpacked);
     let archive = source.archive(&release).expect("archive");
     let tree = source.resolve(&release).expect("verified archive").root;
@@ -434,6 +445,7 @@ fn an_app_cache_is_rechecked_against_its_extracted_source_bytes() {
         Err(SourceError::NeedsDownload(_))
     ));
     std::fs::remove_dir_all(fake).expect("remove temporary registry");
+    std::fs::remove_dir_all(private_root).expect("remove private app cache");
 }
 
 #[test]
