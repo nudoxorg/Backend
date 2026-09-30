@@ -829,7 +829,7 @@ fn selected_history_provenance(
     hasher.update(&image.artifact_ordinal().to_le_bytes());
     hasher.update(image.semantic_generation().as_bytes());
     hasher.update(image.manifest_root().as_bytes());
-    hasher.update(selected.image_identity().as_bytes());
+    hasher.update(selected.image_identity().as_ref());
     *hasher.finalize().as_bytes()
 }
 
