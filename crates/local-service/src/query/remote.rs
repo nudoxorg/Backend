@@ -7,7 +7,9 @@
 
 use super::embedding_cache::EmbeddingCacheFile;
 use super::projection_state::ProjectionState;
-use super::{LocalAnswer, QueryCoordinator, QueryResult, SemanticAcceleration, SemanticDocument};
+use super::{
+    LocalAnswer, QueryCoordinator, QueryError, QueryResult, SemanticAcceleration, SemanticDocument,
+};
 use backend_compile::{
     EmbeddingArtifact, EmbeddingBatchProtocol, EmbeddingExecutable, EmbeddingExecutableError,
     EmbeddingInputIdentity, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPurpose,
@@ -24,7 +26,7 @@ use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
 use std::mem::size_of;
-use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
+use std::num::{NonZeroU8, NonZeroU16, NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -633,14 +635,49 @@ impl ConfiguredQdrant {
         // admitted. This keeps cleanup debt bounded to one fully identified
         // projection even while the remote service is unhealthy.
         self.retire_pending()?;
-        ProjectionEnvelope::for_recipe(self.recipe)?
-            .admit(coordinator.semantic_document_count())?;
-        let (documents, target_inputs) =
-            self.embed_documents_with_input_identities(coordinator.semantic_documents())?;
-        let target_rows = documents
-            .iter()
-            .map(|document| document.row.stable_key())
-            .collect::<Vec<_>>();
+        let document_count = coordinator.semantic_document_count();
+        ProjectionEnvelope::for_recipe(self.recipe)?.admit(document_count)?;
+        let page_size = NonZeroUsize::new(MAX_EMBEDDING_BATCH_ITEMS)
+            .ok_or(RemoteConfigError::ProducerProtocol)?;
+        let producer = self
+            .producer
+            .as_ref()
+            .ok_or(RemoteConfigError::ProducerUnavailable)?;
+        let mut target_inputs = BTreeMap::new();
+        let mut live_identities = BTreeSet::new();
+        for page in coordinator
+            .semantic_document_pages(page_size)
+            .map_err(RemoteConfigError::SelectedView)?
+        {
+            if page.len() > page_size.get() {
+                return Err(RemoteConfigError::ProducerProtocol);
+            }
+            for document in page {
+                let row_key = document.row.stable_key();
+                if target_inputs.contains_key(&row_key) {
+                    return Err(RemoteConfigError::StaleRow);
+                }
+                let identity = DocumentEmbeddingId(
+                    producer
+                        .input_identity(
+                            self.recipe.version(),
+                            EmbeddingTreatment::Document,
+                            &document.text,
+                        )
+                        .as_bytes(),
+                );
+                target_inputs.insert(row_key, identity);
+                live_identities.insert(identity);
+            }
+        }
+        if target_inputs.len() != document_count {
+            return Err(RemoteConfigError::ProducerProtocol);
+        }
+        let target_rows = target_inputs.keys().cloned().collect::<Vec<_>>();
+        // Only this view's unique vectors may stay resident. Old durable cache
+        // entries remain available for later exact-identity reuse.
+        self.document_embeddings
+            .retain(|identity, _| live_identities.contains(identity));
         if let Some(state) = self.projection_state.as_mut() {
             state
                 .stage(&target_rows)
@@ -649,6 +686,28 @@ impl ConfiguredQdrant {
         // A failed upsert can leave a mixed remote projection. Keep the last
         // active source unavailable until a later complete verification.
         self.projection_uncertain = true;
+        let mut documents = Vec::with_capacity(document_count);
+        for page in coordinator
+            .semantic_document_pages(page_size)
+            .map_err(RemoteConfigError::SelectedView)?
+        {
+            if page.len() > page_size.get() {
+                return Err(RemoteConfigError::ProducerProtocol);
+            }
+            let (page_documents, page_inputs) =
+                self.embed_documents_with_input_identities(&page)?;
+            if page_inputs.len() != page.len()
+                || page_inputs
+                    .iter()
+                    .any(|(row, identity)| target_inputs.get(row) != Some(identity))
+            {
+                return Err(RemoteConfigError::ProducerProtocol);
+            }
+            documents.extend(page_documents);
+        }
+        if documents.len() != document_count {
+            return Err(RemoteConfigError::ProducerProtocol);
+        }
         let replacement = self.activate(coordinator, coverage, documents)?;
         if let Some(previous) = self.active.replace(replacement) {
             debug_assert!(self.retired.is_none());
@@ -745,15 +804,6 @@ impl ConfiguredQdrant {
             .iter()
             .map(|(document, identity)| (document.row.stable_key(), *identity))
             .collect::<BTreeMap<_, _>>();
-        let live = planned
-            .iter()
-            .map(|(_, identity)| *identity)
-            .collect::<BTreeSet<_>>();
-        // The previous view may be large. Drop its dead entries before staging
-        // new misses so retained cache vectors plus pending vectors remain
-        // within the admitted live projection's byte envelope.
-        self.document_embeddings
-            .retain(|identity, _| live.contains(identity));
         if let Some(cache) = self.embedding_cache.as_mut() {
             for (_, identity) in &planned {
                 if !self.document_embeddings.contains_key(identity)
@@ -1125,6 +1175,7 @@ impl EmbeddingProducer {
         {
             return Err(RemoteConfigError::ArtifactChanged);
         }
+        let device = selected_embedding_device()?;
         let dimensions = u16::try_from(self.dimensions.get())
             .ok()
             .and_then(NonZeroU16::new)
@@ -1132,6 +1183,10 @@ impl EmbeddingProducer {
         let mut options = blake3::Hasher::new_derive_key("backend.qdrant.embedding-options.v1");
         options.update(recipe.version().as_bytes());
         options.update(&self.manifest);
+        // Device selection is an execution semantic even when a CPU and GPU
+        // happen to produce equivalent vectors. Bind it into the runtime
+        // identity so a cache entry cannot cross device/provider contexts.
+        options.update(device.as_bytes());
         let maximum_text = u32::try_from(MAX_EMBEDDING_TEXT_BYTES)
             .ok()
             .and_then(std::num::NonZeroU32::new)
@@ -1168,7 +1223,6 @@ impl EmbeddingProducer {
             return Err(RemoteConfigError::ProjectionLimit);
         }
         let limits = bounded_embedding_process_limits(resource_bound)?;
-        let device = selected_embedding_device()?;
         let environment = ProcessEnvironment::new(vec![
             ("BACKEND_EMBEDDING_DEVICE".into(), device.into()),
             ("LC_ALL".into(), "C".into()),
@@ -1658,6 +1712,8 @@ pub enum RemoteConfigError {
     ArtifactChanged,
     /// A document row does not belong to the selected view.
     StaleRow,
+    /// Bounded semantic-document pages could not be read from the selected view.
+    SelectedView(QueryError),
     /// Projection activation requires owner-authorized complete coverage.
     IncompleteCoverage,
     /// Durable membership could not be committed around the projection mutation.
@@ -1706,6 +1762,12 @@ impl fmt::Display for RemoteConfigError {
             }
             Self::StaleRow => {
                 formatter.write_str("embedding names a row outside the selected view")
+            }
+            Self::SelectedView(error) => {
+                write!(
+                    formatter,
+                    "selected semantic document pages failed: {error}"
+                )
             }
             Self::IncompleteCoverage => {
                 formatter.write_str("Qdrant activation requires complete owner coverage")
@@ -1868,6 +1930,49 @@ mod tests {
         fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
+    #[test]
+    fn disjoint_maximum_views_survive_staged_membership_restart() {
+        let (coordinator, _, _, _, recipe) = http_projection_inputs();
+        let workspace = coordinator.workspace_root();
+        let count = MAX_REMOTE_SEMANTIC_DOCUMENTS;
+        let previous = (0..count)
+            .map(|index| format!("symbol:{index:064x}"))
+            .collect::<Vec<_>>();
+        let target = (count..count * 2)
+            .map(|index| format!("symbol:{index:064x}"))
+            .collect::<Vec<_>>();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("fixture clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "backend-qdrant-large-membership-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("fixture directory");
+        let scope = qdrant_projection_scope("https://qdrant.example", "large-semantic");
+        let mut state =
+            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), scope)
+                .expect("open membership state");
+        state.commit(&previous).expect("commit previous full view");
+        state
+            .stage(&target)
+            .expect("stage both maximum-sized disjoint views");
+        assert_eq!(state.row_keys().len(), count * 2);
+        drop(state);
+
+        let mut recovered =
+            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), scope)
+                .expect("recover maximum staged union");
+        assert_eq!(recovered.row_keys().len(), count * 2);
+        recovered
+            .commit(&target)
+            .expect("commit replacement after remote verification");
+        assert_eq!(recovered.row_keys(), target.as_slice());
+        drop(recovered);
+        fs::remove_dir_all(directory).expect("remove fixture directory");
+    }
+
     #[cfg(unix)]
     #[test]
     fn duplicate_document_payloads_share_one_exact_producer_result() {
@@ -1914,10 +2019,10 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
         manifest.update(&tokenizer_bytes);
         manifest.update(&EMBEDDING_PROTOCOL_ABI.to_be_bytes());
         let manifest = *manifest.finalize().as_bytes();
-        let producer = EmbeddingProducer {
-            program,
-            model,
-            tokenizer,
+        let make_producer = || EmbeddingProducer {
+            program: program.clone(),
+            model: model.clone(),
+            tokenizer: tokenizer.clone(),
             program_identity: *blake3::hash(&program_bytes).as_bytes(),
             model_identity,
             tokenizer_identity,
@@ -1928,6 +2033,11 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             _batch_workspace: None,
         };
         let recipe = test_recipe();
+        let cache_directory = directory.join("durable-cache");
+        let open_cache = || {
+            EmbeddingCacheFile::open_in_directory(&cache_directory, *recipe.version().as_bytes(), 2)
+                .expect("open durable embedding cache")
+        };
         let client =
             qdrant::QdrantHttpClient::new(test_transport("http://127.0.0.1:9".into()), recipe)
                 .expect("HTTP client");
@@ -1935,10 +2045,10 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             client,
             recipe,
             projection_scope: [0; 32],
-            producer: Some(producer),
+            producer: Some(make_producer()),
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
-            embedding_cache: None,
+            embedding_cache: Some(open_cache()),
             projection_state: None,
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
@@ -1993,6 +2103,44 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
                 .all(|document| document.write == qdrant::CoordinateWrite::Replace)
         );
         drop(configured);
+
+        // Simulate a cold process restart: the durable exact-input cache is
+        // reopened, while the process-local vectors and verified projection
+        // are gone. The cache avoids inference but does not authorize Hold.
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport("http://127.0.0.1:9".into()), recipe)
+                .expect("reopened HTTP client");
+        let mut restarted = ConfiguredQdrant {
+            client,
+            recipe,
+            projection_scope: [0; 32],
+            producer: Some(make_producer()),
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            embedding_cache: Some(open_cache()),
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        let recovered = restarted
+            .embed_documents(&documents)
+            .expect("reuse durable vector after process restart");
+        assert_eq!(
+            fs::read_to_string(&calls).expect("calls").lines().count(),
+            1
+        );
+        assert_eq!(
+            cold[0].coordinates.as_ref(),
+            recovered[0].coordinates.as_ref()
+        );
+        assert!(
+            recovered
+                .iter()
+                .all(|document| document.write == qdrant::CoordinateWrite::Replace)
+        );
+        drop(restarted);
         fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
@@ -2437,14 +2585,13 @@ for identity in items:
         let evidence = super::super::tests::semantic_evidence(workspace, &view);
         let coordinator = QueryCoordinator::new(workspace, view.clone(), coverage, evidence)
             .expect("coordinator");
-        let target_index = coordinator
-            .semantic_documents()
+        let semantic_documents = collect_semantic_documents(&coordinator);
+        let target_index = semantic_documents
             .iter()
             .position(|document| document.text.contains("semantic-only"))
             .expect("semantic document");
-        let row = coordinator.semantic_documents()[target_index].row;
-        let documents = coordinator
-            .semantic_documents()
+        let row = semantic_documents[target_index].row;
+        let documents = semantic_documents
             .iter()
             .map(|document| QdrantDocument {
                 row: document.row,
@@ -2887,13 +3034,12 @@ for identity in items:
         let evidence = super::super::tests::semantic_evidence(workspace, &view);
         let coordinator =
             QueryCoordinator::new(workspace, view, coverage, evidence).expect("coordinator");
-        let target_index = coordinator
-            .semantic_documents()
+        let semantic_documents = collect_semantic_documents(&coordinator);
+        let target_index = semantic_documents
             .iter()
             .position(|document| document.text.contains("semantic-only"))
             .expect("semantic document");
-        let documents = coordinator
-            .semantic_documents()
+        let documents = semantic_documents
             .iter()
             .map(|document| QdrantDocument {
                 row: document.row,
@@ -2908,6 +3054,14 @@ for identity in items:
             target_index,
             test_recipe(),
         )
+    }
+
+    fn collect_semantic_documents(coordinator: &QueryCoordinator) -> Vec<SemanticDocument> {
+        coordinator
+            .semantic_document_pages(NonZeroUsize::new(128).expect("nonzero page size"))
+            .expect("selected semantic document pages")
+            .flat_map(|page| page)
+            .collect()
     }
 
     #[test]
@@ -2931,8 +3085,7 @@ for identity in items:
         let evidence = super::super::tests::semantic_evidence(workspace, &view);
         let coordinator =
             QueryCoordinator::new(workspace, view, coverage, evidence).expect("coordinator");
-        let row = coordinator
-            .semantic_documents()
+        let row = collect_semantic_documents(&coordinator)
             .first()
             .expect("semantic document")
             .row;

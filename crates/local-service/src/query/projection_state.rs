@@ -17,6 +17,7 @@ const VERSION: u8 = 1;
 const FIXED_BYTES: usize = 8 + 1 + 32 + 32 + 32 + 4;
 const CHECKSUM_BYTES: usize = 32;
 const MAX_ROWS: usize = 65_536;
+const MAX_STAGED_ROWS: usize = MAX_ROWS * 2;
 const MAX_ROW_KEY_BYTES: usize = 4096;
 const MAX_STATE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STATE_FILES: usize = 64;
@@ -95,6 +96,7 @@ impl ProjectionState {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
+        let rows = validate_staged_rows(&rows)?;
         self.persist(&rows)?;
         self.row_keys = rows;
         Ok(())
@@ -194,7 +196,15 @@ impl ProjectionState {
 }
 
 fn validate_rows(rows: &[String]) -> io::Result<Vec<String>> {
-    if rows.len() > MAX_ROWS {
+    validate_rows_with_limit(rows, MAX_ROWS)
+}
+
+fn validate_staged_rows(rows: &[String]) -> io::Result<Vec<String>> {
+    validate_rows_with_limit(rows, MAX_STAGED_ROWS)
+}
+
+fn validate_rows_with_limit(rows: &[String], row_limit: usize) -> io::Result<Vec<String>> {
+    if rows.len() > row_limit {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "projection row limit",
@@ -238,7 +248,7 @@ fn encode_state(
     provider_scope: [u8; 32],
     rows: &[String],
 ) -> io::Result<Vec<u8>> {
-    let rows = validate_rows(rows)?;
+    let rows = validate_staged_rows(rows)?;
     let capacity = validate_rows_size(&rows).ok_or_else(state_data_error)?;
     let mut output = Vec::new();
     output
@@ -316,7 +326,7 @@ fn read_state(
         bytes[105..109].try_into().map_err(|_| ())?,
     ))
     .map_err(|_| ())?;
-    if count > MAX_ROWS {
+    if count > MAX_STAGED_ROWS {
         return Err(());
     }
     let mut offset = FIXED_BYTES;

@@ -1,9 +1,11 @@
 //! Bounded durable cache for exact document-embedding inputs.
 //!
 //! Each input identity has one checksummed file, so a changed view writes only
-//! its new embeddings. Entries are keyed by `EmbeddingInputIdentity`; a vector
-//! cannot be reused for another model, tokenizer, launch recipe, treatment, or
-//! semantic text. Cache failures are misses because the cache is an optimization.
+//! its new embeddings. Entries are keyed by `EmbeddingInputIdentity`; that key
+//! binds the exact model, tokenizer, executable, runtime options, treatment,
+//! and semantic text. Recipe metadata remains in the file for diagnostics but
+//! does not partition the cache: exact identities can survive a recipe switch.
+//! Cache failures are misses because the cache is an optimization.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -49,10 +51,9 @@ impl EmbeddingCacheFile {
         if !root.is_absolute() || dimensions == 0 {
             return None;
         }
-        let parent = root.join("cache").join(CACHE_PARENT);
-        create_private_directory(&parent).ok()?;
-        remove_other_recipe_directories(&parent, &recipe);
-        let directory = parent.join(hexadecimal(&recipe));
+        let directory = root.join("cache").join(CACHE_PARENT);
+        create_private_directory(&directory).ok()?;
+        migrate_legacy_recipe_directories(&directory).ok()?;
         Self::open_in_directory(&directory, recipe, dimensions)
     }
 
@@ -277,7 +278,6 @@ impl EmbeddingCacheFile {
         read_hashed(&mut file, &mut hasher, &mut header)?;
         if &header[..8] != MAGIC
             || header[8] != VERSION
-            || header[9..41] != self.recipe
             || header[41..73] != identity
             || header[73..77] != self.dimensions.to_be_bytes()
         {
@@ -385,24 +385,69 @@ fn inventory(directory: &Path) -> Result<(u64, BTreeMap<[u8; 32], CacheEntry>, u
     Ok((bytes, inventory, recency))
 }
 
-fn remove_other_recipe_directories(parent: &Path, recipe: &[u8; 32]) {
-    let Ok(entries) = fs::read_dir(parent) else {
-        return;
-    };
+fn migrate_legacy_recipe_directories(directory: &Path) -> io::Result<()> {
+    let entries = fs::read_dir(directory)?;
     for (index, entry) in entries.enumerate() {
-        if index >= MAX_CACHE_ENTRIES {
-            return;
+        // The previous cache layout allowed only one recipe directory. Keep
+        // migration work bounded if the cache path was populated externally.
+        if index >= MAX_CACHE_ENTRIES.saturating_add(64) {
+            break;
         }
-        let Ok(entry) = entry else {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let Some(recipe) = entry.file_name().to_str().and_then(parse_hexadecimal_32) else {
+            // This namespace is reserved for embedding cache files. A
+            // non-cache subdirectory cannot be allowed to make inventory
+            // discard otherwise-valid entries from the global cache.
+            fs::remove_dir_all(entry.path())?;
             continue;
         };
-        if entry.file_name() == hexadecimal(recipe) {
-            continue;
+        let legacy = entry.path();
+        let files = fs::read_dir(&legacy)?;
+        for (file_index, file) in files.enumerate() {
+            if file_index >= MAX_CACHE_ENTRIES {
+                break;
+            }
+            let file = file?;
+            if !file.file_type()?.is_file() {
+                continue;
+            }
+            let name = file.file_name();
+            let Some(identity) = name.to_str().and_then(parse_identity_filename) else {
+                if name
+                    .to_str()
+                    .is_some_and(|name| name.starts_with('.') && name.ends_with(".tmp"))
+                {
+                    let _ = fs::remove_file(file.path());
+                }
+                continue;
+            };
+            if name != format!("{}.vec", hexadecimal(&identity)) {
+                continue;
+            }
+            let mut cache_file = File::open(file.path())?;
+            let mut header = [0_u8; HEADER_BYTES];
+            if cache_file.read_exact(&mut header).is_err()
+                || &header[..8] != MAGIC
+                || header[8] != VERSION
+                || header[9..41] != recipe
+                || header[41..73] != identity
+            {
+                let _ = fs::remove_file(file.path());
+                continue;
+            }
+            let destination = directory.join(format!("{}.vec", hexadecimal(&identity)));
+            if destination.exists() {
+                let _ = fs::remove_file(file.path());
+            } else if fs::rename(file.path(), destination).is_err() {
+                return Err(io::Error::other("embedding cache migration failed"));
+            }
         }
-        if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
-            let _ = fs::remove_dir_all(entry.path());
-        }
+        fs::remove_dir_all(legacy)?;
     }
+    Ok(())
 }
 
 fn parse_identity_filename(name: &str) -> Option<[u8; 32]> {
@@ -416,6 +461,18 @@ fn parse_identity_filename(name: &str) -> Option<[u8; 32]> {
         identity[index] = u8::from_str_radix(pair, 16).ok()?;
     }
     Some(identity)
+}
+
+fn parse_hexadecimal_32(name: &str) -> Option<[u8; 32]> {
+    if name.len() != 64 {
+        return None;
+    }
+    let mut value = [0_u8; 32];
+    for (index, pair) in name.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(pair).ok()?;
+        value[index] = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(value)
 }
 
 fn hexadecimal(bytes: &[u8]) -> String {
@@ -586,6 +643,78 @@ mod tests {
             Some(&later_vector[..])
         );
         assert!(reopened.load([3; 32]).is_none());
+    }
+
+    #[test]
+    fn exact_identity_survives_recipe_switch_and_legacy_layout_migration() {
+        let fixture = Fixture::new();
+        let identity = [0x31; 32];
+        let vector = [0.6, 0.8];
+        let legacy_directory = fixture.directory.join(hexadecimal(&[7; 32]));
+        fs::create_dir(&legacy_directory).expect("legacy recipe directory");
+        let mut legacy = EmbeddingCacheFile {
+            directory: legacy_directory,
+            recipe: [7; 32],
+            dimensions: 2,
+            bytes_used: 0,
+            entries: BTreeMap::new(),
+            recency: 0,
+        };
+        legacy
+            .store_batch(&[(identity, &vector)])
+            .expect("store legacy recipe entry");
+        drop(legacy);
+
+        migrate_legacy_recipe_directories(&fixture.directory).expect("migrate cache layout");
+        let (bytes_used, entries, recency) = inventory(&fixture.directory).expect("inventory");
+        let mut reopened = EmbeddingCacheFile {
+            directory: fixture.directory.clone(),
+            recipe: [8; 32],
+            dimensions: 2,
+            bytes_used,
+            entries,
+            recency,
+        };
+        assert_eq!(
+            reopened.load(identity).as_deref(),
+            Some(&vector[..]),
+            "input identity already binds the exact runtime recipe"
+        );
+    }
+
+    #[test]
+    fn global_cache_evicts_the_least_recently_used_exact_entry() {
+        let fixture = Fixture::new();
+        let first_identity = [0x41; 32];
+        let second_identity = [0x42; 32];
+        let third_identity = [0x43; 32];
+        let mut cache = fixture.cache();
+        cache
+            .store_batch(&[(first_identity, &[0.6, 0.8])])
+            .expect("store first");
+        cache
+            .store_batch(&[(second_identity, &[0.8, 0.6])])
+            .expect("store second");
+        cache
+            .entries
+            .get_mut(&first_identity)
+            .expect("first entry")
+            .last_used = 1;
+        cache
+            .entries
+            .get_mut(&second_identity)
+            .expect("second entry")
+            .last_used = 2;
+        // Force the byte cap to require one eviction without allocating a
+        // half-gigabyte fixture on disk.
+        cache.bytes_used = MAX_CACHE_BYTES;
+        cache
+            .store_batch(&[(third_identity, &[1.0, 0.0])])
+            .expect("store third under cap");
+        assert!(!cache.entry_path(&first_identity).exists());
+        assert!(cache.entry_path(&second_identity).exists());
+        assert!(cache.entry_path(&third_identity).exists());
+        assert_eq!(cache.bytes_used, MAX_CACHE_BYTES);
     }
 
     #[test]

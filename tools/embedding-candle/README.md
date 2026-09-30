@@ -1,6 +1,6 @@
 # Bounded Candle embedding provider
 
-This executable implements the local service's verified BEM2 embedding protocol with Candle's BERT model. On macOS it uses Candle Metal when `BACKEND_EMBEDDING_DEVICE=metal`; `cpu` selects Candle's CPU device for reference checks. Other platforms build the CPU provider. Device selection is part of the local embedding runtime identity, so a CPU vector cannot be reused under a Metal identity or the reverse.
+This executable implements the local service's verified BEM2 embedding protocol with Candle's BERT implementation. Its BERT layers follow Candle 0.11.0's upstream implementation; its LayerNorm uses the same formula as Candle's CPU path expressed as tensor operations so it also runs on Candle Metal. On macOS it uses Candle Metal when `BACKEND_EMBEDDING_DEVICE=metal`; `cpu` selects Candle's CPU device for reference checks. Other platforms build the CPU provider. Device selection is part of the local embedding runtime identity, so a CPU vector cannot be reused under a Metal identity or the reverse.
 
 The helper is pinned to the Apache-2.0 `sentence-transformers/all-MiniLM-L6-v2` files at Hugging Face revision `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`:
 
@@ -9,7 +9,7 @@ The helper is pinned to the Apache-2.0 `sentence-transformers/all-MiniLM-L6-v2` 
 | `model.safetensors` | 90,868,376 bytes | `8087e9bf97c265f8435ed268733ecf3791825ad24850fd5d84d89e32ee3a589a` |
 | `tokenizer.json` | 466,247 bytes | `82483bb4f0bdb81779f295ecc5a93285d2156834e994a2169f9800e4c8f250c1` |
 
-The model produces 384 coordinates. The helper truncates to 256 wordpieces, applies the tokenizer's normalizer and special-token template, sends attention masks into BERT, mean-pools all attended tokens (including `[CLS]` and `[SEP]`), and L2-normalizes. It validates all artifacts and frame identities before inference, processes at most 16 inputs per tensor microbatch and 256 per BEM2 invocation, and emits a response only after all vectors pass shape, finite-value, and norm checks. There is no generated or hash-based vector fallback.
+The model produces 384 coordinates. The helper clears the tokenizer JSON's fixed export padding and pads dynamically within each bounded microbatch. It truncates to 256 wordpieces, applies the tokenizer's normalizer and special-token template, sends attention masks into BERT, mean-pools all attended tokens (including `[CLS]` and `[SEP]`), and L2-normalizes. It validates all artifacts and frame identities before inference, processes at most 16 inputs per tensor microbatch and 256 per BEM2 invocation, and emits a response only after all vectors pass shape, finite-value, and norm checks. There is no generated or hash-based vector fallback.
 
 Download only those two files from the pinned revision, then build the helper for the current host:
 

@@ -1212,7 +1212,7 @@ impl QueryCoordinator {
 
     /// Returns the typed workspace identity selected by this coordinator.
     #[must_use]
-    pub(crate) const fn workspace_root(&self) -> WorkspaceRoot {
+    pub(crate) fn workspace_root(&self) -> WorkspaceRoot {
         self.corpus.workspace
     }
     /// Checks the non-root portion of a semantic binding against this exact
