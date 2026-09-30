@@ -1847,11 +1847,13 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
     };
     let _ = poll_owner(&mut owner, &mut transport).expect("initial release");
     let first_epoch = owner.policy_epoch();
+    let first_facts_frontier = owner.facts_frontier();
     assert_ne!(first_epoch, 0);
     let first = owner.published(&coordinate).expect("published").artifact;
     let _ = poll_owner(&mut owner, &mut transport).expect("yank delta");
     let second_epoch = owner.policy_epoch();
-    assert_ne!(second_epoch, first_epoch);
+    assert_eq!(second_epoch, first_epoch);
+    assert_ne!(owner.facts_frontier(), first_facts_frontier);
     let current = owner.published(&coordinate).expect("updated");
     assert_eq!(transport.archive_fetches, 1);
     assert_eq!(current.artifact, first);
@@ -1885,11 +1887,11 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
             self.pages += 1;
             self.page = self.page.saturating_add(1);
             let coordinate = PackageCoordinate::parse("pkg:cargo/demo@2.0.0").expect("coordinate");
-            let standing = if self.page == 1 {
-                ReleaseStanding::Available
-            } else {
-                ReleaseStanding::Yanked
-            };
+            let advisory = (self.page > 1).then(|| {
+                let mut advisory = backend_advisory::AdvisoryPackageDto::unknown();
+                advisory.decision = backend_advisory::AcquisitionDecision::Deny(Box::new([]));
+                advisory
+            });
             Ok(TransportResult::Available(FeedPage {
                 base: request.cursor,
                 next_token: [self.page; 32],
@@ -1899,9 +1901,9 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
                         *CapabilityArtifactId::from_value(&self.archive).as_bytes(),
                     ),
                     provenance: ProvenanceDigest::from_authenticated_feed([self.page; 32]),
-                    facts: test_facts_for(standing),
+                    facts: test_facts_for(ReleaseStanding::Available),
                     native_metadata: test_native_metadata(),
-                    advisory: None,
+                    advisory,
                     dependency_facts: unavailable_dependency_facts(),
                     archive_url: Arc::from("https://registry.example.test/demo.crate"),
                 }],
@@ -1945,6 +1947,16 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     let crate::acquisition::AcquisitionOutcome::Hit(first) = first else {
         panic!("initial acquisition must publish")
     };
+    let first_facts_frontier = first.snapshot.facts_frontier();
+    let first_record = service
+        .recover_product_record(&request)
+        .expect("recover first product receipt")
+        .expect("first acquisition must publish a durable product receipt");
+    assert!(matches!(
+        first_record.terminal,
+        crate::acquisition::AcquisitionProductTerminal::Published
+    ));
+    assert_eq!(first_record.facts_frontier, first_facts_frontier);
     let coordinate = PackageCoordinate::parse("pkg:cargo/demo@2.0.0").expect("coordinate");
     let admitted = service
         .published_package(&coordinate)
@@ -1977,11 +1989,27 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     assert!(matches!(
         second,
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
-            kind: crate::acquisition::NegativeFactKind::Yanked,
+            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
             ..
         })
     ));
-    assert_ne!(service.policy_epoch(), epoch);
+    assert_eq!(service.policy_epoch(), epoch);
+    let updated_facts_frontier = service.facts_frontier();
+    assert_ne!(updated_facts_frontier, first_facts_frontier);
+    let updated_record = service
+        .recover_product_record(&request)
+        .expect("recover advisory-blocked product receipt")
+        .expect("advisory denial must be durably recorded");
+    assert_eq!(updated_record.facts_frontier, updated_facts_frontier);
+    assert!(matches!(
+        updated_record.terminal,
+        crate::acquisition::AcquisitionProductTerminal::NegativeFact(
+            crate::acquisition::NegativeFact {
+                kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+                ..
+            }
+        )
+    ));
     assert_eq!(transport.pages, 2);
     assert_eq!(transport.archives, 1);
     assert!(matches!(
@@ -1999,14 +2027,14 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
             &mut self,
             _: FeedRequest,
         ) -> Result<TransportResult<FeedPage>, TransportFailure> {
-            panic!("durable yanked fact must recover without a metadata request")
+            panic!("durable advisory denial must recover without a metadata request")
         }
 
         fn fetch_archive(
             &mut self,
             _: &RemotePackage,
         ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
-            panic!("durable yanked fact must not fetch an archive")
+            panic!("durable advisory denial must not fetch an archive")
         }
     }
     let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
@@ -2017,14 +2045,14 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     assert!(matches!(
         service.acquire(&request, &mut NoNetwork),
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
-            kind: crate::acquisition::NegativeFactKind::Yanked,
+            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
             ..
         })
     ));
     let durable = service
         .recover_product_record(&request)
-        .expect("recover yanked product record")
-        .expect("durable yanked product record");
+        .expect("recover advisory-blocked product record")
+        .expect("durable advisory-blocked product record");
     let admitted = service
         .published_package(&coordinate)
         .expect("recovered owner metadata");
