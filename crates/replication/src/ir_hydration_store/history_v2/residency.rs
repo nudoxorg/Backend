@@ -25,11 +25,11 @@ pub struct TypedV2HistoryResidencyCache {
     sketch: [[u8; SKETCH_WIDTH]; SKETCH_ROWS],
     observations: u64,
     sketch_ages: u64,
-    hits: u64,
-    cold_misses: u64,
+    pub(super) hits: u64,
+    pub(super) cold_misses: u64,
     pub(super) payload_bytes_read: u64,
-    resident_payload_bytes_reused: u64,
-    payload_bytes_served: u64,
+    pub(super) resident_payload_bytes_reused: u64,
+    pub(super) payload_bytes_served: u64,
     admissions: u64,
     admission_rejections: u64,
     evictions: u64,
@@ -250,7 +250,7 @@ impl TypedV2HistoryResidentReplay<'_> {
         if pooled.schema != member.schema || pooled.byte_length != member.byte_length {
             return None;
         }
-        Some((member.schema, member.offset, &pooled.payload))
+        Some((member.schema, member.offset, &pooled.payload[..]))
     }
 
     /// Iterates exact object identities, schemas, closure offsets, and payload
@@ -265,7 +265,7 @@ impl TypedV2HistoryResidentReplay<'_> {
                 .ok()?;
             let object = self.objects.get(index)?;
             (object.schema == member.schema && object.byte_length == member.byte_length)
-                .then_some((member.id, member.schema, member.offset, &object.payload))
+                .then_some((member.id, member.schema, member.offset, &object.payload[..]))
         })
     }
 
@@ -720,9 +720,9 @@ impl TypedV2HistoryResidencyCache {
                 .len()
                 .checked_add(additional_objects)
                 .ok_or_else(|| "typed V2 resident object count overflows".to_owned())?;
-            let extra_table_bytes = object_capacity
-                .saturating_sub(self.objects.capacity())
-                .saturating_mul(size_of::<TypedV2ResidentObject>());
+            let extra_table_bytes = capacity_bytes::<TypedV2ResidentObject>(
+                object_capacity.saturating_sub(self.objects.capacity()),
+            );
             let full_by_count = self.entries.len() >= self.max_entries;
             let projected_global = self
                 .accounted_bytes()
