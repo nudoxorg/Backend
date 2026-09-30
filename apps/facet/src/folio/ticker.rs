@@ -64,6 +64,19 @@ pub struct TickerFacts {
     today_day: f64,
 }
 
+/// A keyboard command for moving through every release on a ticker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TickerNavigation {
+    /// Move one semver-ordered release toward the oldest.
+    Previous,
+    /// Move one semver-ordered release toward the newest.
+    Next,
+    /// Move to the oldest release.
+    First,
+    /// Move to the newest release.
+    Last,
+}
+
 /// One release as the registry gives it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
@@ -126,6 +139,30 @@ impl TickerFacts {
     pub fn reading(mut self, version: Option<&str>) -> Self {
         self.reading = version.and_then(|v| self.ticks.iter().position(|t| t.version == v));
         self
+    }
+
+    /// The destination for a keyboard command, counting every release rather
+    /// than only the releases that receive a visual label or shell target.
+    /// The vector is semver-sorted by [`Self::new`], so a step includes minor
+    /// and patch releases. At the ends, Previous and Next stay in place. With
+    /// no current release, a directional command starts at its corresponding
+    /// end (oldest for Next, newest for Previous).
+    #[must_use]
+    pub fn destination(&self, current: Option<usize>, command: TickerNavigation) -> Option<usize> {
+        let last = self.ticks.len().checked_sub(1)?;
+        let Some(current) = current else {
+            return Some(match command {
+                TickerNavigation::Previous | TickerNavigation::Last => last,
+                TickerNavigation::Next | TickerNavigation::First => 0,
+            });
+        };
+        let current = current.min(last);
+        Some(match command {
+            TickerNavigation::Previous => current.saturating_sub(1),
+            TickerNavigation::Next => current.saturating_add(1).min(last),
+            TickerNavigation::First => 0,
+            TickerNavigation::Last => last,
+        })
     }
 
     /// Whether at least two releases carry a date, so the axis is time.
@@ -787,7 +824,7 @@ fn bar_ink(facts: &TickerFacts, i: usize, hot: bool, palette: &Palette) -> Hsla 
 
 #[cfg(test)]
 mod tests {
-    use super::{Release, TickerFacts, civil_year, fisheye};
+    use super::{Release, TickerFacts, TickerNavigation, civil_year, fisheye};
     use crate::data::release::{RegistryFact, SourceAvailability};
 
     fn facts(releases: &[(&str, Option<&str>)], pin: &str) -> TickerFacts {
@@ -811,6 +848,34 @@ mod tests {
         assert_eq!(order, ["0.5.11", "0.8.23", "1.0.0", "1.1.6"]);
         assert_eq!(f.pin, Some(1));
         assert_eq!(f.latest, Some(3));
+    }
+
+    #[test]
+    fn keyboard_navigation_steps_through_minor_and_patch_releases_and_clamps() {
+        let f = facts(&[("1.1.0", None), ("1.0.1", None), ("1.0.0", None), ("1.2.0", None)], "1.0.0");
+        let versions: Vec<&str> = f.ticks.iter().map(|tick| tick.version.as_ref()).collect();
+        assert_eq!(versions, ["1.0.0", "1.0.1", "1.1.0", "1.2.0"]);
+        assert_eq!(f.destination(Some(0), TickerNavigation::Next), Some(1), "a patch release is a step");
+        assert_eq!(f.destination(Some(1), TickerNavigation::Next), Some(2), "a minor release is a step");
+        assert_eq!(f.destination(Some(2), TickerNavigation::Previous), Some(1));
+        assert_eq!(f.destination(Some(0), TickerNavigation::Previous), Some(0));
+        assert_eq!(f.destination(Some(3), TickerNavigation::Next), Some(3));
+        assert_eq!(f.destination(Some(1), TickerNavigation::First), Some(0));
+        assert_eq!(f.destination(Some(1), TickerNavigation::Last), Some(3));
+        assert_eq!(f.destination(Some(usize::MAX), TickerNavigation::Previous), Some(2), "stale route positions clamp safely");
+    }
+
+    #[test]
+    fn keyboard_navigation_has_directional_entry_when_no_release_is_selected() {
+        let f = facts(&[("0.8.0", None), ("1.0.0", None), ("1.0.1", None)], "1.0.0");
+        assert_eq!(f.destination(None, TickerNavigation::Next), Some(0));
+        assert_eq!(f.destination(None, TickerNavigation::Previous), Some(2));
+        assert_eq!(f.destination(None, TickerNavigation::First), Some(0));
+        assert_eq!(f.destination(None, TickerNavigation::Last), Some(2));
+        let empty = TickerFacts::new(&[], None, "2026-09-28");
+        for command in [TickerNavigation::Previous, TickerNavigation::Next, TickerNavigation::First, TickerNavigation::Last] {
+            assert_eq!(empty.destination(None, command), None);
+        }
     }
 
     #[test]
