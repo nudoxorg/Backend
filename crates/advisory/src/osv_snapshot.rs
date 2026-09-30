@@ -11,8 +11,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
+use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -27,6 +29,9 @@ const MAX_OSV_SNAPSHOT_ROW_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OSV_QUERY_RECORDS: u64 = 100_000;
 const MAX_OSV_QUERY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OSV_STORAGE_ENTRIES: usize = 4_000_000;
+const OSV_ROOT_LOCK: &str = ".osv-root.lock";
+const OSV_LEASE_DIRECTORY: &str = "leases";
+const OSV_GENERATION_LOCK: &str = "generation.lock";
 
 /// Upper bound on source objects retained by one staged snapshot.
 pub const MAX_OSV_SNAPSHOT_OBJECTS: u64 = 1_000_000;
@@ -66,6 +71,8 @@ pub enum OsvSnapshotError {
     Invalid(&'static str),
     /// A bounded source or query reached an explicit quota.
     Limit(OsvSnapshotLimit),
+    /// Another process currently owns staging/retention for this root.
+    Busy,
 }
 
 impl std::fmt::Display for OsvSnapshotError {
@@ -75,6 +82,7 @@ impl std::fmt::Display for OsvSnapshotError {
             Self::Encoding(_) => formatter.write_str("OSV snapshot record encoding failed"),
             Self::Invalid(reason) => write!(formatter, "OSV snapshot is invalid: {reason}"),
             Self::Limit(limit) => write!(formatter, "OSV snapshot limit reached: {limit:?}"),
+            Self::Busy => formatter.write_str("OSV snapshot root is busy"),
         }
     }
 }
@@ -111,7 +119,83 @@ struct OsvSnapshotManifest {
 /// `directory` and `index_verified` are process-local and never serialized.
 /// A cold opener reconstructs and verifies them from the advisory journal's
 /// parent directory and the immutable generation identity.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LeaseMode {
+    Shared,
+    Exclusive,
+    Released,
+}
+
+#[derive(Debug)]
+struct LeaseState {
+    file: File,
+    mode: LeaseMode,
+}
+
+/// Kernel-managed lease on either the snapshot owner lock or one generation.
+/// Clones share the same handle so dropping any one reader cannot release a
+/// lock another reader is relying on.
+#[derive(Debug)]
+struct FileLease(Mutex<LeaseState>);
+
+impl FileLease {
+    fn open(
+        path: &Path,
+        create: bool,
+        mode: LeaseMode,
+        wait: bool,
+    ) -> Result<Option<Self>, OsvSnapshotError> {
+        let file = open_lease_file(path, create)?;
+        let locked = match (mode, wait) {
+            (LeaseMode::Shared, true) => {
+                file.lock_shared()?;
+                true
+            }
+            (LeaseMode::Exclusive, true) => {
+                file.lock_exclusive()?;
+                true
+            }
+            (LeaseMode::Shared, false) => file.try_lock_shared()?,
+            (LeaseMode::Exclusive, false) => file.try_lock_exclusive()?,
+            (LeaseMode::Released, _) => {
+                return Err(OsvSnapshotError::Invalid("released lease acquisition"));
+            }
+        };
+        if !locked {
+            return Ok(None);
+        }
+        Ok(Some(Self(Mutex::new(LeaseState { file, mode }))))
+    }
+
+    fn downgrade_to_shared(&self) -> Result<(), OsvSnapshotError> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| OsvSnapshotError::Invalid("snapshot lease mutex"))?;
+        if state.mode == LeaseMode::Exclusive {
+            // The root owner lease prevents collection while this lock changes
+            // modes, so the short unlock/relock transition is race-free.
+            state.file.unlock()?;
+            state.file.lock_shared()?;
+            state.mode = LeaseMode::Shared;
+        }
+        Ok(())
+    }
+
+    fn release(&self) -> Result<(), OsvSnapshotError> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| OsvSnapshotError::Invalid("snapshot lease mutex"))?;
+        if state.mode != LeaseMode::Released {
+            state.file.unlock()?;
+            state.mode = LeaseMode::Released;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OsvSnapshotRef {
     generation: String,
     scope: OsvFeedScope,
@@ -125,7 +209,30 @@ pub struct OsvSnapshotRef {
     directory: PathBuf,
     #[serde(skip)]
     index_verified: bool,
+    /// Shared lease held by live readers, or exclusive until selection is
+    /// durably committed.
+    #[serde(skip)]
+    lease: Option<Arc<FileLease>>,
+    /// Serializes staging against quota accounting and generation collection
+    /// until the authority journal has durably selected this generation.
+    #[serde(skip)]
+    pending_root_lease: Option<Arc<FileLease>>,
 }
+
+impl PartialEq for OsvSnapshotRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.generation == other.generation
+            && self.scope == other.scope
+            && self.source_digest == other.source_digest
+            && self.package_index_digest == other.package_index_digest
+            && self.advisory_objects == other.advisory_objects
+            && self.package_rows == other.package_rows
+            && self.package_count == other.package_count
+            && self.stored_bytes == other.stored_bytes
+    }
+}
+
+impl Eq for OsvSnapshotRef {}
 
 impl OsvSnapshotRef {
     /// Selected source scope represented by this immutable generation.
@@ -168,6 +275,7 @@ impl OsvSnapshotRef {
     /// Verifies the manifest and complete package index, then binds this
     /// reference to the local immutable generation directory.
     pub fn attach_root(&mut self, root: impl AsRef<Path>) -> Result<(), OsvSnapshotError> {
+        let root = root.as_ref();
         if self.generation.len() != 64
             || !self
                 .generation
@@ -176,7 +284,59 @@ impl OsvSnapshotRef {
         {
             return Err(OsvSnapshotError::Invalid("generation identity"));
         }
-        let directory = root.as_ref().join(&self.generation);
+        let root_metadata = fs::symlink_metadata(root)?;
+        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+            return Err(OsvSnapshotError::Invalid("snapshot root directory"));
+        }
+        let root_lease = FileLease::open(
+            &root.join(OSV_ROOT_LOCK),
+            true,
+            LeaseMode::Shared,
+            true,
+        )?
+        .ok_or(OsvSnapshotError::Invalid("snapshot owner lease unavailable"))?;
+        let directory = root.join(&self.generation);
+        let directory_metadata = fs::symlink_metadata(&directory)?;
+        if directory_metadata.file_type().is_symlink()
+            || !directory_metadata.is_dir()
+            || !private_permissions(&directory_metadata)
+        {
+            return Err(OsvSnapshotError::Invalid("generation directory"));
+        }
+        let leases_directory = directory.join(OSV_LEASE_DIRECTORY);
+        ensure_private_directory(&leases_directory)?;
+        let lease_path = leases_directory.join(OSV_GENERATION_LOCK);
+        if matches!(fs::symlink_metadata(&lease_path), Err(ref error) if error.kind() == io::ErrorKind::NotFound)
+        {
+            match create_private_lock_file(&lease_path) {
+                Ok(file) => {
+                    file.sync_all()?;
+                    sync_directory(&leases_directory)?;
+                }
+                Err(OsvSnapshotError::Io(error))
+                    if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let lease = Arc::new(
+            FileLease::open(&lease_path, false, LeaseMode::Shared, true)?
+                .ok_or(OsvSnapshotError::Invalid("generation lease unavailable"))?,
+        );
+        let attached = self.attach_root_with_lease(root, lease);
+        drop(root_lease);
+        attached
+    }
+
+    fn attach_root_with_lease(
+        &mut self,
+        root: &Path,
+        lease: Arc<FileLease>,
+    ) -> Result<(), OsvSnapshotError> {
+        let root_metadata = fs::symlink_metadata(root)?;
+        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+            return Err(OsvSnapshotError::Invalid("snapshot root directory"));
+        }
+        let directory = root.join(&self.generation);
         let directory_metadata = fs::symlink_metadata(&directory)?;
         if directory_metadata.file_type().is_symlink()
             || !directory_metadata.is_dir()
@@ -191,6 +351,22 @@ impl OsvSnapshotRef {
             || !private_permissions(&package_metadata)
         {
             return Err(OsvSnapshotError::Invalid("package posting directory"));
+        }
+        let leases_directory = directory.join(OSV_LEASE_DIRECTORY);
+        let leases_metadata = fs::symlink_metadata(&leases_directory)?;
+        if leases_metadata.file_type().is_symlink()
+            || !leases_metadata.is_dir()
+            || !private_permissions(&leases_metadata)
+        {
+            return Err(OsvSnapshotError::Invalid("generation lease directory"));
+        }
+        let lease_path = leases_directory.join(OSV_GENERATION_LOCK);
+        let lease_metadata = fs::symlink_metadata(&lease_path)?;
+        if lease_metadata.file_type().is_symlink()
+            || !lease_metadata.is_file()
+            || !private_permissions(&lease_metadata)
+        {
+            return Err(OsvSnapshotError::Invalid("generation lease file"));
         }
         let manifest = read_manifest(&directory)?;
         if manifest.schema != SNAPSHOT_SCHEMA
@@ -240,7 +416,38 @@ impl OsvSnapshotRef {
         )?;
         self.directory = directory;
         self.index_verified = true;
+        self.lease = Some(lease);
         Ok(())
+    }
+
+    pub(crate) fn generation_id(&self) -> &str {
+        &self.generation
+    }
+
+    pub(crate) fn root_path(&self) -> Option<&Path> {
+        self.directory.parent()
+    }
+
+    /// Releases the root writer lease only after the durable authority file
+    /// names this generation and downgrades its generation lock to a reader.
+    pub(crate) fn commit_persisted(&self) -> Result<(), OsvSnapshotError> {
+        if let Some(lease) = self.lease.as_ref() {
+            lease.downgrade_to_shared()?;
+        }
+        if let Some(root_lease) = self.pending_root_lease.as_ref() {
+            root_lease.release()?;
+        }
+        Ok(())
+    }
+
+    /// Removes orphan staging directories and unreferenced immutable
+    /// generations while holding the cross-process owner lock. Active readers
+    /// are protected by per-generation shared kernel leases.
+    pub(crate) fn prune_unreferenced_generations(
+        root: impl AsRef<Path>,
+        retained: &BTreeSet<String>,
+    ) -> Result<bool, OsvSnapshotError> {
+        prune_unreferenced_generations(root.as_ref(), retained)
     }
 
     /// Reads and validates only the selected package's postings, then returns
@@ -380,6 +587,7 @@ struct PackageWriter {
 /// Bounded writer for one unpublished OSV source generation.
 pub struct OsvSnapshotBuilder {
     root: PathBuf,
+    root_lease: Option<Arc<FileLease>>,
     staging: Option<tempfile::TempDir>,
     scope: OsvFeedScope,
     maximum_objects: u64,
@@ -420,6 +628,15 @@ impl OsvSnapshotBuilder {
         if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
             return Err(OsvSnapshotError::Invalid("snapshot root directory"));
         }
+        let root_lease = Arc::new(
+            FileLease::open(
+                &root.join(OSV_ROOT_LOCK),
+                true,
+                LeaseMode::Exclusive,
+                false,
+            )?
+            .ok_or(OsvSnapshotError::Busy)?,
+        );
         let existing_bytes = snapshot_storage_bytes(root)?;
         let maximum_root_bytes = maximum_stored_bytes.min(MAX_OSV_SNAPSHOT_STORAGE_BYTES);
         let index_reserve = maximum_packages
@@ -441,8 +658,12 @@ impl OsvSnapshotBuilder {
         let package_directory = staging.path().join("packages");
         fs::create_dir(&package_directory)?;
         set_private_directory_permissions(&package_directory)?;
+        let lease_directory = staging.path().join(OSV_LEASE_DIRECTORY);
+        fs::create_dir(&lease_directory)?;
+        set_private_directory_permissions(&lease_directory)?;
         Ok(Self {
             root: root.to_path_buf(),
+            root_lease: Some(root_lease),
             staging: Some(staging),
             scope,
             maximum_objects: maximum_objects.min(MAX_OSV_SNAPSHOT_OBJECTS),
@@ -657,7 +878,19 @@ impl OsvSnapshotBuilder {
         serde_json::to_writer(&mut manifest_file, &manifest)?;
         manifest_file.write_all(b"\n")?;
         manifest_file.sync_all()?;
+        let staged_lease_path = staging
+            .path()
+            .join(OSV_LEASE_DIRECTORY)
+            .join(OSV_GENERATION_LOCK);
+        let staged_lease_file = create_private_lock_file(&staged_lease_path)?;
+        staged_lease_file.sync_all()?;
+        staged_lease_file.lock_exclusive()?;
+        let mut generation_lease = Some(Arc::new(FileLease(Mutex::new(LeaseState {
+            file: staged_lease_file,
+            mode: LeaseMode::Exclusive,
+        }))));
         sync_directory(&staging.path().join("packages"))?;
+        sync_directory(&staging.path().join(OSV_LEASE_DIRECTORY))?;
         sync_directory(staging.path())?;
         if snapshot_storage_bytes(&self.root)? > self.maximum_root_bytes {
             return Err(OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes));
@@ -669,16 +902,21 @@ impl OsvSnapshotBuilder {
             .ok_or(OsvSnapshotError::Invalid("staging directory missing"))?
             .keep();
         let destination = self.root.join(&generation);
-        match fs::rename(&staging_path, &destination) {
-            Ok(()) => sync_directory(&self.root)?,
+        let published_with_staged_lease = match fs::rename(&staging_path, &destination) {
+            Ok(()) => {
+                sync_directory(&self.root)?;
+                true
+            }
             Err(_error) if destination.exists() => {
+                generation_lease.take();
                 let _ = fs::remove_dir_all(&staging_path);
+                false
             }
             Err(error) => {
                 let _ = fs::remove_dir_all(&staging_path);
                 return Err(OsvSnapshotError::Io(error));
             }
-        }
+        };
         let mut reference = OsvSnapshotRef {
             generation,
             scope: self.scope,
@@ -690,8 +928,31 @@ impl OsvSnapshotBuilder {
             stored_bytes: self.stored_bytes,
             directory: PathBuf::new(),
             index_verified: false,
+            lease: None,
+            pending_root_lease: None,
         };
-        reference.attach_root(&self.root)?;
+        if published_with_staged_lease {
+            reference.attach_root_with_lease(
+                &self.root,
+                generation_lease
+                    .take()
+                    .ok_or(OsvSnapshotError::Invalid("generation lease missing"))?,
+            )?;
+        } else {
+            let existing_lease = Arc::new(
+                FileLease::open(
+                    &destination
+                        .join(OSV_LEASE_DIRECTORY)
+                        .join(OSV_GENERATION_LOCK),
+                    false,
+                    LeaseMode::Shared,
+                    true,
+                )?
+                .ok_or(OsvSnapshotError::Invalid("generation lease unavailable"))?,
+            );
+            reference.attach_root_with_lease(&self.root, existing_lease)?;
+        }
+        reference.pending_root_lease = self.root_lease.take();
         Ok(reference)
     }
 }
@@ -854,6 +1115,50 @@ fn create_private_file(path: &Path) -> Result<File, OsvSnapshotError> {
     options.open(path).map_err(OsvSnapshotError::Io)
 }
 
+fn create_private_lock_file(path: &Path) -> Result<File, OsvSnapshotError> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map_err(OsvSnapshotError::Io)
+}
+
+fn open_lease_file(path: &Path, create: bool) -> Result<File, OsvSnapshotError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || !private_permissions(&metadata) =>
+        {
+            return Err(OsvSnapshotError::Invalid("snapshot lease file"));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound && !create => {
+            return Err(OsvSnapshotError::Io(error));
+        }
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            return Err(OsvSnapshotError::Io(error));
+        }
+        Err(_) => {}
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(create);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || !private_permissions(&metadata) {
+        return Err(OsvSnapshotError::Invalid("snapshot lease file"));
+    }
+    Ok(file)
+}
+
 fn private_permissions(metadata: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -878,6 +1183,29 @@ fn set_private_directory_permissions(path: &Path) -> Result<(), OsvSnapshotError
         let _ = path;
     }
     Ok(())
+}
+
+fn ensure_private_directory(path: &Path) -> Result<(), OsvSnapshotError> {
+    loop {
+        match fs::symlink_metadata(path) {
+            Ok(metadata)
+                if metadata.file_type().is_symlink()
+                    || !metadata.is_dir()
+                    || !private_permissions(&metadata) =>
+            {
+                return Err(OsvSnapshotError::Invalid("snapshot private directory"));
+            }
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match fs::create_dir(path) {
+                    Ok(()) => return set_private_directory_permissions(path),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(OsvSnapshotError::Io(error)),
+                }
+            }
+            Err(error) => return Err(OsvSnapshotError::Io(error)),
+        }
+    }
 }
 
 fn sync_directory(path: &Path) -> Result<(), OsvSnapshotError> {
@@ -941,6 +1269,85 @@ fn snapshot_storage_bytes(root: &Path) -> Result<u64, OsvSnapshotError> {
     let mut total = 0;
     visit(root, 0, &mut entries, &mut total)?;
     Ok(total)
+}
+
+fn prune_unreferenced_generations(
+    root: &Path,
+    retained: &BTreeSet<String>,
+) -> Result<bool, OsvSnapshotError> {
+    let root_metadata = fs::symlink_metadata(root)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(OsvSnapshotError::Invalid("snapshot root directory"));
+    }
+    let Some(_root_lease) = FileLease::open(
+        &root.join(OSV_ROOT_LOCK),
+        true,
+        LeaseMode::Exclusive,
+        false,
+    )? else {
+        return Ok(false);
+    };
+
+    static DELETE_NONCE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let mut visited = 0_usize;
+    for item in fs::read_dir(root)? {
+        visited = visited
+            .checked_add(1)
+            .filter(|count| *count <= MAX_OSV_STORAGE_ENTRIES)
+            .ok_or(OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes))?;
+        let item = item?;
+        let name = item.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let path = item.path();
+        let recognized = name.starts_with(".osv-stage-")
+            || name.starts_with(".osv-delete-")
+            || is_generation_name(name);
+        if !recognized {
+            continue;
+        }
+        let file_type = item.file_type()?;
+        if file_type.is_symlink() || !file_type.is_dir() {
+            return Err(OsvSnapshotError::Invalid("snapshot generation entry"));
+        }
+        if name.starts_with(".osv-stage-") || name.starts_with(".osv-delete-") {
+            fs::remove_dir_all(path)?;
+            continue;
+        }
+        if retained.contains(name) {
+            continue;
+        }
+        let lock_path = path
+            .join(OSV_LEASE_DIRECTORY)
+            .join(OSV_GENERATION_LOCK);
+        let lease = match FileLease::open(&lock_path, false, LeaseMode::Exclusive, false) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => continue,
+            Err(OsvSnapshotError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                // A generation without its lock cannot prove that no older
+                // reader still has it open, so leave it for explicit repair.
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let tombstone = root.join(format!(
+            ".osv-delete-{}-{}-{}",
+            &name[..16],
+            std::process::id(),
+            DELETE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::rename(&path, &tombstone)?;
+        drop(lease);
+        fs::remove_dir_all(tombstone)?;
+    }
+    sync_directory(root)?;
+    Ok(true)
+}
+
+fn is_generation_name(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn trim_line(line: &[u8]) -> &[u8] {

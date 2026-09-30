@@ -18,7 +18,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::parse::{parse_ghsa_value, parse_osv_value};
-use super::osv_snapshot::OsvSnapshotRef;
+use super::osv_snapshot::{OsvSnapshotError, OsvSnapshotRef};
 use super::{
     AcquisitionDecision, AcquisitionGate, Advisory, AdvisoryCoverage, AdvisoryDelta,
     AdvisoryJournal, AdvisoryJournalError, AdvisoryObservation, AdvisorySource, AdvisorySync, Alias,
@@ -374,6 +374,9 @@ pub struct AdvisoryAuthority {
     /// Selected immutable OSV package index for a large streamed archive.
     #[serde(default)]
     osv_snapshot: Option<OsvSnapshotRef>,
+    /// Previous durable OSV generation retained as a rollback/audit point.
+    #[serde(default)]
+    osv_previous_snapshot: Option<OsvSnapshotRef>,
     /// Cross-authority alias graph.  Per-source journals retain their own source-local graph for
     /// transactional admission; this graph prevents OSV/RustSec/GHSA feeds from silently
     /// disagreeing about one shared CVE/GHSA identity.
@@ -398,6 +401,7 @@ impl AdvisoryAuthority {
             configured: BTreeSet::new(),
             osv_scope: Some(OsvFeedScope::All),
             osv_snapshot: None,
+            osv_previous_snapshot: None,
             aliases: AliasGraph::default(),
             journals: BTreeMap::new(),
             frontiers: BTreeMap::new(),
@@ -497,6 +501,11 @@ impl AdvisoryAuthority {
         {
             frontier.availability = AuthorityAvailability::Unavailable;
         }
+        if let Some(snapshot) = authority.osv_previous_snapshot.as_mut()
+            && snapshot.attach_root(osv_snapshot_root(path)).is_err()
+        {
+            authority.osv_previous_snapshot = None;
+        }
         authority.max_age_secs = max_age_secs;
         authority.maximum_state_bytes = maximum_state_bytes;
         Ok(authority)
@@ -546,7 +555,7 @@ impl AdvisoryAuthority {
         fs::rename(temporary, path).map_err(AuthorityStorageError::Io)?;
         // The file is durable before the rename; syncing the directory makes the name update
         // durable as well on filesystems which otherwise allow a power loss between the two.
-        match OpenOptions::new().read(true).open(parent) {
+        let durable = match OpenOptions::new().read(true).open(parent) {
             Ok(directory) => directory.sync_all().or_else(|error| {
                 // Windows and a few network filesystems do not expose directory fsync.  The
                 // atomic file rename still gives readers a complete old-or-new state there.
@@ -569,7 +578,41 @@ impl AdvisoryAuthority {
             }
             Err(error) => Err(error),
         }
-        .map_err(AuthorityStorageError::Io)
+        .map_err(AuthorityStorageError::Io);
+        durable?;
+        if let Some(snapshot) = self.osv_snapshot.as_ref() {
+            snapshot
+                .commit_persisted()
+                .map_err(AuthorityStorageError::Snapshot)?;
+        }
+        if let Some(snapshot) = self.osv_previous_snapshot.as_ref() {
+            snapshot
+                .commit_persisted()
+                .map_err(AuthorityStorageError::Snapshot)?;
+        }
+        if self.osv_snapshot.is_some() || self.osv_previous_snapshot.is_some() {
+            let mut keep = BTreeSet::new();
+            if let Some(snapshot) = self.osv_snapshot.as_ref() {
+                keep.insert(snapshot.generation_id().to_owned());
+            }
+            if let Some(snapshot) = self.osv_previous_snapshot.as_ref() {
+                keep.insert(snapshot.generation_id().to_owned());
+            }
+            let snapshot_root = self
+                .osv_snapshot
+                .as_ref()
+                .and_then(OsvSnapshotRef::root_path)
+                .or_else(|| {
+                    self.osv_previous_snapshot
+                        .as_ref()
+                        .and_then(OsvSnapshotRef::root_path)
+                })
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| osv_snapshot_root(path));
+            OsvSnapshotRef::prune_unreferenced_generations(snapshot_root, &keep)
+                .map_err(AuthorityStorageError::Snapshot)?;
+        }
+        Ok(())
     }
 
     /// Applies one source body transactionally and advances its frontier.
@@ -674,6 +717,14 @@ impl AdvisoryAuthority {
             };
             if supplied_snapshot {
                 self.journals.remove(&source);
+                if self
+                    .osv_snapshot
+                    .as_ref()
+                    .is_some_and(|selected| selected.generation_id() != snapshot.generation_id())
+                    && let Some(previous) = self.osv_snapshot.take()
+                {
+                    self.osv_previous_snapshot = Some(previous);
+                }
             }
             self.osv_snapshot = Some(snapshot.clone());
             (checkpoint, snapshot.advisory_objects())
@@ -683,7 +734,9 @@ impl AdvisoryAuthority {
                 && !feed.freshness.not_modified
                 && feed_osv_scope == self.osv_scope
             {
-                self.osv_snapshot = None;
+                if let Some(previous) = self.osv_snapshot.take() {
+                    self.osv_previous_snapshot = Some(previous);
+                }
             }
             let entries = feed
                 .entries
@@ -1101,6 +1154,8 @@ pub trait AdvisoryResolver: Send + Sync {
 pub enum AuthorityStorageError {
     /// Filesystem operation failed.
     Io(std::io::Error),
+    /// Immutable OSV generation validation or retention failed.
+    Snapshot(OsvSnapshotError),
     /// Persisted state was not valid JSON.
     Decode(serde_json::Error),
     /// State could not be encoded.
@@ -1309,6 +1364,119 @@ mod tests {
             observation.advisories[0].summary.as_deref(),
             Some("new partial positive advisory")
         );
+    }
+
+    #[test]
+    fn snapshot_retention_keeps_selected_previous_and_live_readers_only() {
+        fn stage(root: &Path, scope: OsvFeedScope, id: &str) -> (AuthorityFeed, String) {
+            let advisory = super::super::parse_osv(&osv_for(id, "Cargo"), 10)
+                .expect("OSV object");
+            let mut builder = super::super::OsvSnapshotBuilder::create(
+                root,
+                scope,
+                10,
+                10,
+                10,
+                1024 * 1024,
+            )
+            .expect("snapshot builder");
+            builder.push(&advisory).expect("stage advisory");
+            let snapshot = builder
+                .finish(*blake3::hash(id.as_bytes()).as_bytes())
+                .expect("seal snapshot");
+            let generation = snapshot.generation_id().to_owned();
+            (
+                AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None),
+                generation,
+            )
+        }
+
+        let directory = tempfile::tempdir().expect("authority directory");
+        let authority_path = directory.path().join("authority.json");
+        let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+
+        let (first_feed, first) = stage(&snapshot_root, scope, "OSV-RETENTION-1");
+        authority.apply(first_feed).expect("select first snapshot");
+        authority.persist(&authority_path).expect("persist first selection");
+
+        let (second_feed, second) = stage(&snapshot_root, scope, "OSV-RETENTION-2");
+        authority.apply(second_feed).expect("select second snapshot");
+        authority
+            .persist(&authority_path)
+            .expect("persist second selection");
+        assert_eq!(
+            authority
+                .osv_previous_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(first.as_str())
+        );
+        let reopened = AdvisoryAuthority::open(&authority_path, 100)
+            .expect("reopen current and previous generations");
+        assert_eq!(
+            reopened
+                .osv_previous_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(first.as_str())
+        );
+        drop(reopened);
+
+        let live_reader = authority.osv_previous_snapshot.clone();
+        let (third_feed, third) = stage(&snapshot_root, scope, "OSV-RETENTION-3");
+        authority.apply(third_feed).expect("select third snapshot");
+        authority
+            .persist(&authority_path)
+            .expect("persist third selection");
+        assert!(snapshot_root.join(&first).is_dir());
+        assert!(snapshot_root.join(&second).is_dir());
+        assert!(snapshot_root.join(&third).is_dir());
+
+        drop(live_reader);
+        authority
+            .persist(&authority_path)
+            .expect("collect after live reader closes");
+        assert!(!snapshot_root.join(first).exists());
+        assert!(snapshot_root.join(second).is_dir());
+        assert!(snapshot_root.join(third).is_dir());
+    }
+
+    #[test]
+    fn active_snapshot_builder_holds_owner_lease_against_collection() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let builder = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            OsvFeedScope::Ecosystem(OsvEcosystem::Cargo),
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("snapshot builder");
+        assert_eq!(
+            OsvSnapshotRef::prune_unreferenced_generations(
+                directory.path(),
+                &BTreeSet::new()
+            )
+            .expect("bounded collection attempt"),
+            false
+        );
+        assert!(matches!(
+            super::super::OsvSnapshotBuilder::create(
+                directory.path(),
+                OsvFeedScope::Ecosystem(OsvEcosystem::Cargo),
+                10,
+                10,
+                10,
+                1024 * 1024,
+            ),
+            Err(OsvSnapshotError::Busy)
+        ));
+        drop(builder);
     }
 
     #[test]
