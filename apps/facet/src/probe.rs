@@ -289,12 +289,11 @@ pub struct TargetSample {
 /// scrolling" from "clipped by a fixed box or the window, unreachable".
 ///
 /// This is an opt-in seam: a scroll container calls [`record_scroll`] once
-/// per frame it paints. Nothing calls it yet in the shipped shell (see
-/// `apps/desktop/src/shell/*`, none of which this lane owns) — until one
-/// does, focusables inside a real scroll container still lint as
-/// `offscreen` exactly as before. The rule and its exemption are proven by
-/// canary scenes in `apps/facet/src/gallery/bench.rs` that call this
-/// directly.
+/// per frame it paints and wraps the actual child subtree with
+/// [`scroll_scope`]. The measured key must occur in a text or target's real
+/// ancestry before its extent can exempt offscreen lint. Shell reader and
+/// shelf rows use this pairing; other scrollers remain untrusted until they
+/// publish both facts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScrollSample {
     /// The container's key.
@@ -305,8 +304,21 @@ pub struct ScrollSample {
     /// would be laid out at scroll offset zero (i.e. everything reachable by
     /// scrolling this container, not just what is visible right now).
     pub content: BoundsSample,
+    /// The scroll's current window displacement (GPUI `ScrollHandle::offset`:
+    /// negative when content has moved up or left). Missing means this sample
+    /// cannot prove that offscreen content is reachable.
+    pub offset: Option<ScrollOffset>,
     /// Actual ancestor scroll identities, outermost first.
     pub ancestors: Vec<String>,
+}
+
+/// A scroll container's actual current displacement in window coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollOffset {
+    /// Horizontal displacement; GPUI offsets are negative when scrolled right.
+    pub x: f32,
+    /// Vertical displacement; GPUI offsets are negative when scrolled down.
+    pub y: f32,
 }
 
 impl ScrollSample {
@@ -318,6 +330,10 @@ impl ScrollSample {
     /// either axis does not scroll at all, so it reaches nothing extra.
     #[must_use]
     pub fn reaches(&self, bounds: &BoundsSample, ancestors: &[String]) -> bool {
+        let Some(offset) = self.offset else { return false };
+        if !offset.x.is_finite() || !offset.y.is_finite() {
+            return false;
+        }
         let Some(position) = ancestors.iter().position(|ancestor| ancestor == &self.key) else {
             return false;
         };
@@ -329,10 +345,13 @@ impl ScrollSample {
         if !scrolls_x && !scrolls_y {
             return false;
         }
-        let within_content = bounds.x >= self.content.x - 0.5
-            && bounds.y >= self.content.y - 0.5
-            && bounds.x + bounds.width <= self.content.x + self.content.width + 0.5
-            && bounds.y + bounds.height <= self.content.y + self.content.height + 0.5;
+        // Translate the currently painted, window-space item back into the
+        // content's zero-offset coordinate system before checking extent.
+        let (content_x, content_y) = (bounds.x - offset.x, bounds.y - offset.y);
+        let within_content = content_x >= self.content.x - 0.5
+            && content_y >= self.content.y - 0.5
+            && content_x + bounds.width <= self.content.x + self.content.width + 0.5
+            && content_y + bounds.height <= self.content.y + self.content.height + 0.5;
         let within_viewport_x = bounds.x >= self.viewport.x - 0.5
             && bounds.x + bounds.width <= self.viewport.x + self.viewport.width + 0.5;
         let within_viewport_y = bounds.y >= self.viewport.y - 0.5
@@ -578,11 +597,34 @@ pub fn record_scroll(
     viewport: Bounds<Pixels>,
     content: Bounds<Pixels>,
 ) {
+    record_scroll_with_offset_value(cx, key, viewport, content, None);
+}
+
+/// Publishes a scroll container with its observed current displacement. Only
+/// this form can prove that content outside the current viewport is reachable.
+pub fn record_scroll_with_offset(
+    cx: &mut App,
+    key: &ElementId,
+    viewport: Bounds<Pixels>,
+    content: Bounds<Pixels>,
+    offset: gpui::Point<Pixels>,
+) {
+    record_scroll_with_offset_value(cx, key, viewport, content, Some(ScrollOffset { x: f32::from(offset.x), y: f32::from(offset.y) }));
+}
+
+fn record_scroll_with_offset_value(
+    cx: &mut App,
+    key: &ElementId,
+    viewport: Bounds<Pixels>,
+    content: Bounds<Pixels>,
+    offset: Option<ScrollOffset>,
+) {
     if enabled(cx) {
         let sample = ScrollSample {
             key: key.to_string(),
             viewport: bounds_sample(key, viewport),
             content: bounds_sample(key, content),
+            offset,
             ancestors: current_scroll_ancestors(),
         };
         cx.default_global::<Probe>().ledger.scrolls.push(sample);

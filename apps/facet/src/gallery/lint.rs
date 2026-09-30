@@ -5,7 +5,7 @@
 //! |---|---|
 //! | `clip` | a text box is narrower than its text (clip overflow) or than its widest word (wrap overflow) and draws no ellipsis, or shorter than one line |
 //! | `overlap` | two texts of one [`crate::probe::region`] overlap by more than 1 px in both axes |
-//! | `offscreen` | an interactive element is not entirely inside the viewport, or text is fully hidden by the window/paint clip with no scroll container reaching it |
+//! | `offscreen` | a focusable or clickable element lacks substantial renderer-confirmed visibility and no actual ancestor scroller reaches it, or nonblank text is hidden/clipped without that reachability |
 //! | `target` | a clickable element is smaller than 24 x 24 px |
 //! | `contrast` | the ink painted in a text box against the ground painted around it is under 4.5:1 (3:1 for large text: 24 px, or 18.66 px at weight 700) |
 //!
@@ -417,7 +417,7 @@ pub fn json(linted: &Linted) -> Json {
 #[cfg(test)]
 mod tests {
     use super::{fully_visible, ink_contrast, lint};
-    use crate::probe::{BoundsSample, Ledger, ScrollSample, Target, TargetSample};
+    use crate::probe::{BoundsSample, Ledger, ScrollOffset, ScrollSample, Target, TargetSample};
     use backend_gui_harness::Viewport;
     use image::{Rgba, RgbaImage};
 
@@ -526,6 +526,7 @@ mod tests {
             key: "scroll".to_owned(),
             viewport: bounds(0.0, 0.0, 80.0, 50.0),
             content: bounds(0.0, 0.0, 80.0, 150.0),
+            offset: Some(ScrollOffset { x: 0.0, y: 0.0 }),
             ancestors: Vec::new(),
         };
         let mut ledger = ledger;
@@ -577,6 +578,7 @@ mod tests {
             key: "unrelated-scroll".to_owned(),
             viewport: bounds(0.0, 0.0, 400.0, 300.0),
             content: bounds(0.0, 0.0, 400.0, 600.0),
+            offset: None,
             ancestors: Vec::new(),
         };
         let result = lint(&blank(400, 300), &Ledger { targets: vec![target], scrolls: vec![unrelated], ..Ledger::default() }, viewport());
@@ -642,6 +644,7 @@ mod tests {
                 key: "list".to_owned(),
                 viewport: bounds(0.0, 0.0, 400.0, 300.0),
                 content: bounds(0.0, 0.0, 400.0, 500.0),
+                offset: Some(ScrollOffset { x: 0.0, y: 0.0 }),
                 ancestors: Vec::new(),
             }],
             ..Ledger::default()
@@ -669,6 +672,7 @@ mod tests {
                 key: "list".to_owned(),
                 viewport: bounds(0.0, 0.0, 400.0, 300.0),
                 content: bounds(0.0, 0.0, 400.0, 300.0),
+                offset: Some(ScrollOffset { x: 0.0, y: 0.0 }),
                 ancestors: Vec::new(),
             }],
             ..Ledger::default()
@@ -741,7 +745,13 @@ mod tests {
         assert!(finding.detail.contains("wholly past the right edge"), "{}", finding.detail);
         // Inside the window, or reached by a scroller, it is not.
         assert_eq!(offscreen(&Ledger { texts: vec![strip(100.0)], ..Ledger::default() }), 0);
-        let scroller = ScrollSample { key: "strip".to_owned(), viewport: bounds(0.0, 0.0, 400.0, 60.0), content: bounds(0.0, 0.0, 900.0, 60.0), ancestors: Vec::new() };
+        let scroller = ScrollSample {
+            key: "strip".to_owned(),
+            viewport: bounds(0.0, 0.0, 400.0, 60.0),
+            content: bounds(0.0, 0.0, 900.0, 60.0),
+            offset: Some(ScrollOffset { x: 0.0, y: 0.0 }),
+            ancestors: Vec::new(),
+        };
         let mut reached = strip(420.0);
         reached.scroll_ancestors.push("strip".to_owned());
         assert_eq!(offscreen(&Ledger { texts: vec![reached], scrolls: vec![scroller], ..Ledger::default() }), 0);

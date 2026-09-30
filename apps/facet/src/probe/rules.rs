@@ -6,7 +6,7 @@
 //! shell's rig tests (`apps/desktop/src/shell/fit_tests.rs`) both call these,
 //! so a rule is written once and both read the same frame the same way.
 
-use super::{BoundsSample, ScrollSample, TextSample};
+use super::{BoundsSample, ScrollOffset, ScrollSample, TextSample};
 
 /// The part of a text box that is actually on screen: inside the `width` x
 /// `height` window and inside the clip its ancestors set. `None` when none
@@ -191,6 +191,7 @@ mod tests {
             key: "strip".to_owned(),
             viewport: bounds(0.0, 0.0, 360.0, 40.0),
             content: bounds(0.0, 0.0, 900.0, 40.0),
+            offset: Some(ScrollOffset { x: 0.0, y: 0.0 }),
             ancestors: Vec::new(),
         };
         let mut strip = strip;
@@ -205,6 +206,7 @@ mod tests {
             key: "owned-scroll".to_owned(),
             viewport: bounds(0.0, 0.0, 400.0, 300.0),
             content: bounds(0.0, 0.0, 400.0, 500.0),
+            offset: Some(ScrollOffset { x: 0.0, y: 0.0 }),
             ancestors: Vec::new(),
         };
         assert!(!scroller.reaches(&sample.bounds, &sample.scroll_ancestors));
@@ -218,6 +220,43 @@ mod tests {
         assert!(!nested.reaches(&sample.bounds, &sample.scroll_ancestors));
         sample.scroll_ancestors = vec!["outer-scroll".to_owned(), "owned-scroll".to_owned()];
         assert!(nested.reaches(&sample.bounds, &sample.scroll_ancestors));
+    }
+
+    #[test]
+    fn reachability_translates_scrolled_items_back_to_content_coordinates() {
+        let ancestors = vec!["list".to_owned()];
+        let above_fold = bounds(10.0, -80.0, 80.0, 20.0);
+        let vertical = ScrollSample {
+            key: "list".to_owned(),
+            viewport: bounds(0.0, 0.0, 300.0, 200.0),
+            content: bounds(0.0, 0.0, 300.0, 1000.0),
+            offset: Some(ScrollOffset { x: 0.0, y: -100.0 }),
+            ancestors: Vec::new(),
+        };
+        assert!(vertical.reaches(&above_fold, &ancestors), "an above-fold row can be reached after scrolling back up");
+
+        let left_of_viewport = bounds(-50.0, 10.0, 20.0, 80.0);
+        let horizontal = ScrollSample {
+            key: "list".to_owned(),
+            viewport: bounds(0.0, 0.0, 300.0, 200.0),
+            content: bounds(0.0, 0.0, 1000.0, 200.0),
+            offset: Some(ScrollOffset { x: -100.0, y: 0.0 }),
+            ancestors: Vec::new(),
+        };
+        assert!(horizontal.reaches(&left_of_viewport, &ancestors), "a left-of-viewport item can be reached after scrolling back left");
+    }
+
+    #[test]
+    fn a_scroll_sample_without_observed_offset_cannot_claim_reachability() {
+        let target = bounds(10.0, 340.0, 80.0, 20.0);
+        let sample = ScrollSample {
+            key: "list".to_owned(),
+            viewport: bounds(0.0, 0.0, 300.0, 200.0),
+            content: bounds(0.0, 0.0, 300.0, 1000.0),
+            offset: None,
+            ancestors: Vec::new(),
+        };
+        assert!(!sample.reaches(&target, &["list".to_owned()]));
     }
 
     #[test]
