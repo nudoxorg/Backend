@@ -20,6 +20,26 @@ const MAX_TYPED_V3_LOCATOR_BYTES: usize = MAX_HISTORY_TYPED_V2_LOCATOR_BYTES + 1
 const MAX_TYPED_V3_ROOT_CLAIM_BYTES: usize = 1 + 4 * 32 + CHECKSUM_BYTES;
 const MAX_TYPED_V3_PENDING_RECONCILE: usize = super::MAX_HISTORY_GC_BATCH_RECORDS / 2;
 
+struct FencedSelectedGenerationSource<'fence> {
+    fence: &'fence dyn crate::SelectedNativeImagePublicationFence,
+}
+
+impl SelectedGenerationSource for FencedSelectedGenerationSource<'_> {
+    type Error = &'static str;
+
+    fn current_selected_generation(&mut self) -> Result<SelectedGenerationStamp, Self::Error> {
+        Ok(self.fence.selected_stamp())
+    }
+
+    fn selected_image_is_current(
+        &mut self,
+        expected_stamp: SelectedGenerationStamp,
+        image: SemanticPlaneImageKey,
+    ) -> Result<bool, Self::Error> {
+        Ok(expected_stamp == self.fence.selected_stamp() && image == self.fence.selected_image())
+    }
+}
+
 /// Portable identity of one immutable V3 manifest/object-bridge locator.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -818,11 +838,11 @@ impl LocalSemanticGenerationFiles {
         Ok(UnpublishedHistoryProposal { record, identity })
     }
 
-    pub(crate) fn admit_typed_v3_history_proposal<S: SelectedGenerationSource>(
+    pub(crate) fn admit_typed_v3_history_proposal<F: crate::SelectedNativeImagePublicationFence>(
         &self,
         proposal: UnpublishedHistoryProposal,
         payload_root: AdmittedHistoryPayloadRoot,
-        source: &mut S,
+        selection_fence: &F,
     ) -> Result<HistoryAdmissionReceipt, String> {
         let HistoryGenerationRoot::TypedV3(claim) = proposal.record.generation_root else {
             return Err("typed V3 history proposal carries another generation root".to_owned());
@@ -830,12 +850,31 @@ impl LocalSemanticGenerationFiles {
         if claim.closure().as_bytes() != payload_root.closure.as_bytes() {
             return Err("typed V3 commit and payload closure roots differ".to_owned());
         }
+        if selection_fence.selected_target() != &proposal.record.target
+            || selection_fence.selected_stamp() != proposal.record.stamp
+        {
+            return Err("typed V3 proposal differs from its selected-owner fence".to_owned());
+        }
         let target_root = self.target_root(&proposal.record.target);
         let _ = load_typed_v3_history_locator(&target_root, proposal.identity, claim.locator())?;
+        let selected = super::super::load_record(
+            &target_root,
+            proposal.record.generation,
+            &proposal.record.target,
+        )?;
+        super::catalog::validate_commit_generation(&proposal.record, &selected)?;
+        if selection_fence.selected_image() != selected.image
+            || selection_fence.selected_image_identity() != selected.image_identity
+        {
+            return Err("typed V3 generation differs from its selected-owner fence".to_owned());
+        }
         // Persist the payload root before the commit/index. If interrupted,
         // the durable pending-locator marker removes both unreachable sidecars.
         super::codec::write_history_payload_root(&target_root, proposal.identity, payload_root)?;
-        self.admit_history_proposal(proposal, source)
+        let mut source = FencedSelectedGenerationSource {
+            fence: selection_fence,
+        };
+        self.admit_history_proposal(proposal, &mut source)
     }
 }
 
