@@ -518,6 +518,20 @@ impl AliasGraph {
         Ok(canonical)
     }
 
+    /// Admits one claim into an unpublished copy-on-write transaction.
+    ///
+    /// The caller must own a candidate graph which will be discarded if any
+    /// later operation in the enclosing transaction fails. Keeping this path
+    /// separate from [`Self::admit`] preserves that method's standalone
+    /// rollback guarantee while avoiding a full graph clone for every object
+    /// in a large feed.
+    pub(crate) fn admit_staged(
+        &mut self,
+        advisory: &Advisory,
+    ) -> Result<CanonicalAdvisoryId, AliasGraphError> {
+        self.admit_mut(advisory)
+    }
+
     /// Admits only the identity edges for a cross-authority graph.
     ///
     /// Source-local journals use [`Self::admit`] because they need to reject contradictory
