@@ -1055,6 +1055,7 @@ impl QueryCoordinator {
                     | lexical::TantivySourceError::BudgetExceeded { .. }
                     | lexical::TantivySourceError::OrdinalMapCapacityExceeded { .. }
                     | lexical::TantivySourceError::RankSnapshotBudgetExceeded { .. }
+                    | lexical::TantivySourceError::PostingCoverBudgetExceeded { .. }
                     | lexical::TantivySourceError::DurableProjectionImmutable => {
                         QueryError::LexicalProvider
                     }

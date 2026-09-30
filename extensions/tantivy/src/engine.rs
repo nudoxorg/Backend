@@ -50,6 +50,9 @@ const MAX_RANK_MATERIAL_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_RANK_SCRATCH_BYTES: usize = 1024 * 1024 * 1024;
 const DEFAULT_RETAINED_RANK_BYTES: usize = 64 * 1024 * 1024;
 const RANK_SCRATCH_BYTES_PER_MATCH: usize = 320;
+const MAX_POSTING_COVER_SCRATCH_BYTES: usize = 256 * 1024 * 1024;
+// Conservative per-token charge for borrowed term references and tokenizer scratch.
+const POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN: usize = 96;
 const MAX_DURABLE_ROOT_SCAN_ENTRIES: usize = 65_536;
 static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 
@@ -210,6 +213,7 @@ struct OrdinalDocument {
 struct BindingWork {
     payload_rows_scanned: usize,
     source_posting_checks: usize,
+    posting_cover_edges_scanned: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -422,6 +426,13 @@ pub enum TantivySourceError {
         /// Bytes required by the exact query snapshot or conservative build bound.
         required_bytes: usize,
     },
+    /// Cold exact-posting validation exceeded its bounded per-row scratch allowance.
+    PostingCoverBudgetExceeded {
+        /// Maximum temporary bytes permitted while counting source-authoritative posting edges.
+        budget_bytes: usize,
+        /// Conservative temporary bytes required by the selected row.
+        required_bytes: usize,
+    },
     /// Durable projections are immutable; updates must publish a new root.
     DurableProjectionImmutable,
 }
@@ -453,6 +464,13 @@ impl std::fmt::Display for TantivySourceError {
             } => write!(
                 formatter,
                 "exact lexical query needs {required_bytes} bytes, above its {budget_bytes}-byte query budget",
+            ),
+            Self::PostingCoverBudgetExceeded {
+                budget_bytes,
+                required_bytes,
+            } => write!(
+                formatter,
+                "cold posting validation needs {required_bytes} bytes, above its {budget_bytes}-byte scratch budget",
             ),
             Self::DurableProjectionImmutable => write!(
                 formatter,
@@ -561,8 +579,14 @@ impl TantivySource {
             .try_into()?;
         let mut documents =
             read_ordinal_map(state, projection_fingerprint(state.binding()), directory)?;
-        let binding_work =
-            bind_document_addresses(&reader, &mut documents, limits, state, projected.fields)?;
+        let binding_work = bind_document_addresses(
+            &reader,
+            &mut documents,
+            limits,
+            state,
+            projected.fields,
+            true,
+        )?;
         let fields = projected.fields;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
@@ -1000,7 +1024,8 @@ impl TantivySource {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        let binding_work = bind_document_addresses(&reader, &mut documents, limits, state, fields)?;
+        let binding_work =
+            bind_document_addresses(&reader, &mut documents, limits, state, fields, false)?;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
             binding: state.binding(),
@@ -2671,6 +2696,7 @@ fn is_definitively_corrupt_root(error: &TantivySourceError) -> bool {
         TantivySourceError::BudgetExceeded { .. } => false,
         TantivySourceError::OrdinalMapCapacityExceeded { .. } => false,
         TantivySourceError::RankSnapshotBudgetExceeded { .. } => false,
+        TantivySourceError::PostingCoverBudgetExceeded { .. } => false,
         TantivySourceError::DurableProjectionImmutable => false,
         TantivySourceError::Contract(_)
         | TantivySourceError::Backend(_)
@@ -3137,6 +3163,10 @@ pub(crate) mod test_support {
             source.last_binding_work.payload_rows_scanned,
             source.last_binding_work.source_posting_checks,
         )
+    }
+
+    pub(crate) fn posting_cover_edges_scanned(source: &super::TantivySource) -> u64 {
+        source.last_binding_work.posting_cover_edges_scanned
     }
 
     pub(crate) fn resident_segment_id(
@@ -4088,12 +4118,190 @@ fn require_document_posting(
     Ok(())
 }
 
+#[derive(Clone, Copy, Default)]
+struct PostingEdgeCounts {
+    raw: u64,
+    folded: u64,
+    field_raw: u64,
+    field_folded: u64,
+}
+
+impl PostingEdgeCounts {
+    fn add(&mut self, other: Self) -> Result<(), TantivySourceError> {
+        self.raw = self.raw.checked_add(other.raw).ok_or(Error::SizeLimit)?;
+        self.folded = self
+            .folded
+            .checked_add(other.folded)
+            .ok_or(Error::SizeLimit)?;
+        self.field_raw = self
+            .field_raw
+            .checked_add(other.field_raw)
+            .ok_or(Error::SizeLimit)?;
+        self.field_folded = self
+            .field_folded
+            .checked_add(other.field_folded)
+            .ok_or(Error::SizeLimit)?;
+        Ok(())
+    }
+}
+
+fn source_posting_edge_counts(
+    source_fields: &[(String, String)],
+    expected_postings: u32,
+) -> Result<PostingEdgeCounts, TantivySourceError> {
+    let expected_postings = usize::try_from(expected_postings).map_err(|_| Error::SizeLimit)?;
+    let required_bytes = expected_postings
+        .checked_mul(POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN)
+        .ok_or(Error::SizeLimit)?;
+    if required_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
+        return Err(TantivySourceError::PostingCoverBudgetExceeded {
+            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+            required_bytes,
+        });
+    }
+
+    let mut all_terms = Vec::<&str>::new();
+    all_terms
+        .try_reserve_exact(expected_postings)
+        .map_err(|_| TantivySourceError::PostingCoverBudgetExceeded {
+            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+            required_bytes,
+        })?;
+    let allocated_bytes = all_terms
+        .capacity()
+        .checked_mul(std::mem::size_of::<&str>())
+        .ok_or(Error::SizeLimit)?;
+    if allocated_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
+        return Err(TantivySourceError::PostingCoverBudgetExceeded {
+            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+            required_bytes: allocated_bytes,
+        });
+    }
+
+    let mut counts = PostingEdgeCounts::default();
+    for (_, text) in source_fields {
+        let mut tokens = searchable_tokens(text);
+        for token in &tokens {
+            all_terms.push(token.searchable);
+        }
+
+        // Field-qualified terms include the field name, so their expected edge
+        // cardinality is the sum of distinct terms within each authoritative field.
+        tokens.sort_unstable_by(|left, right| left.searchable.cmp(right.searchable));
+        let mut previous = None;
+        for token in &tokens {
+            if previous != Some(token.searchable) {
+                counts.field_raw = counts.field_raw.checked_add(1).ok_or(Error::SizeLimit)?;
+                previous = Some(token.searchable);
+            }
+        }
+
+        tokens.sort_unstable_by(|left, right| {
+            compare_ascii_folded_terms(left.searchable, right.searchable)
+        });
+        let mut previous: Option<&str> = None;
+        for token in &tokens {
+            if previous.is_none_or(|prior| {
+                compare_ascii_folded_terms(prior, token.searchable) != std::cmp::Ordering::Equal
+            }) {
+                counts.field_folded = counts.field_folded.checked_add(1).ok_or(Error::SizeLimit)?;
+                previous = Some(token.searchable);
+            }
+        }
+    }
+
+    if all_terms.len() != expected_postings {
+        return Err(TantivySource::corrupt(
+            "source token count changed during cold posting validation",
+        )
+        .into());
+    }
+    all_terms.sort_unstable();
+    let mut previous = None;
+    for term in &all_terms {
+        if previous != Some(*term) {
+            counts.raw = counts.raw.checked_add(1).ok_or(Error::SizeLimit)?;
+            previous = Some(*term);
+        }
+    }
+    all_terms.sort_unstable_by(|left, right| compare_ascii_folded_terms(left, right));
+    let mut previous: Option<&str> = None;
+    for term in &all_terms {
+        if previous.is_none_or(|prior| {
+            compare_ascii_folded_terms(prior, term) != std::cmp::Ordering::Equal
+        }) {
+            counts.folded = counts.folded.checked_add(1).ok_or(Error::SizeLimit)?;
+            previous = Some(term);
+        }
+    }
+    Ok(counts)
+}
+
+fn compare_ascii_folded_terms(left: &str, right: &str) -> std::cmp::Ordering {
+    left.bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+}
+
+fn validate_exact_live_posting_cover(
+    searcher: &tantivy::Searcher,
+    fields: ProjectionFields,
+    expected: PostingEdgeCounts,
+) -> Result<u64, TantivySourceError> {
+    let mut total_edges_scanned = 0u64;
+    for (field, expected_edges) in [
+        (fields.raw_token, expected.raw),
+        (fields.folded_token, expected.folded),
+        (fields.field_raw_token, expected.field_raw),
+        (fields.field_folded_token, expected.field_folded),
+    ] {
+        let mut actual_edges = 0u64;
+        let mut scanned_edges = 0u64;
+        for segment in searcher.segment_readers() {
+            let inverted_index = segment.inverted_index(field)?;
+            let mut terms = inverted_index.terms().stream()?;
+            while let Some((_, term_info)) = terms.next() {
+                let mut postings = inverted_index
+                    .read_postings_from_terminfo(term_info, IndexRecordOption::Basic)?;
+                loop {
+                    let doc = postings.doc();
+                    if doc == TERMINATED {
+                        break;
+                    }
+                    scanned_edges = scanned_edges.checked_add(1).ok_or(Error::SizeLimit)?;
+                    if !segment.is_deleted(doc) {
+                        actual_edges = actual_edges.checked_add(1).ok_or(Error::SizeLimit)?;
+                        if actual_edges > expected_edges {
+                            return Err(TantivySource::corrupt(
+                                "Tantivy contains surplus live source-term postings",
+                            )
+                            .into());
+                        }
+                    }
+                    postings.advance();
+                }
+            }
+        }
+        if actual_edges != expected_edges {
+            return Err(TantivySource::corrupt(
+                "live Tantivy posting coverage disagrees with authoritative source terms",
+            )
+            .into());
+        }
+        total_edges_scanned = total_edges_scanned
+            .checked_add(scanned_edges)
+            .ok_or(Error::SizeLimit)?;
+    }
+    Ok(total_edges_scanned)
+}
+
 fn bind_document_addresses(
     reader: &IndexReader,
     documents: &mut DocumentTable,
     limits: Limits,
     state: &DocumentState,
     fields: ProjectionFields,
+    validate_exact_posting_cover: bool,
 ) -> Result<BindingWork, TantivySourceError> {
     for entry in &mut documents.live {
         entry.address = None;
@@ -4106,6 +4314,7 @@ fn bind_document_addresses(
     }
     let mut bound = 0usize;
     let mut work = BindingWork::default();
+    let mut expected_postings = PostingEdgeCounts::default();
     let mut material = Vec::new();
     for (segment_ord, segment) in searcher.segment_readers().iter().enumerate() {
         let segment_id = segment.segment_id();
@@ -4183,6 +4392,12 @@ fn bind_document_addresses(
                 )
                 .into());
             }
+            if validate_exact_posting_cover {
+                expected_postings.add(source_posting_edge_counts(
+                    source_fields,
+                    entry.document.postings,
+                )?)?;
+            }
             for (field, text) in source_fields {
                 for token in searchable_tokens(text) {
                     require_document_posting(segment, fields.raw_token, token.searchable, doc)?;
@@ -4213,6 +4428,10 @@ fn bind_document_addresses(
             "selected ordinal map has no exact Tantivy row address",
         )
         .into());
+    }
+    if validate_exact_posting_cover {
+        work.posting_cover_edges_scanned =
+            validate_exact_live_posting_cover(&searcher, fields, expected_postings)?;
     }
     Ok(work)
 }

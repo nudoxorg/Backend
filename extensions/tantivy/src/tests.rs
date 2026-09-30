@@ -1409,6 +1409,45 @@ fn concrete_tantivy_can_commit_its_projection_to_disk() {
 }
 
 #[test]
+fn cold_posting_cover_counts_distinct_edges_across_case_and_field_duplicates() {
+    let documents = vec![(
+        document(19),
+        vec![
+            ("name".into(), "Alpha alpha".into()),
+            ("signature".into(), "ALPHA beta".into()),
+        ],
+    )];
+    let state = state_for(documents, [0x93; 32]);
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-posting-cover-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create index directory");
+    drop(
+        TantivySource::build_in_dir(&state, Limits::default(), &directory)
+            .expect("build trusted projection"),
+    );
+
+    let reopened = TantivySource::open_in_dir(&state, Limits::default(), &directory)
+        .expect("cold-bind exact posting cover");
+    assert_eq!(
+        crate::engine::test_support::binding_work(&reopened),
+        (1, 16)
+    );
+    assert_eq!(
+        crate::engine::test_support::posting_cover_edges_scanned(&reopened),
+        13,
+        "raw/folded edges deduplicate across fields, while qualified edges remain field-specific"
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(directory).expect("remove test index directory");
+}
+
+#[test]
 fn cold_reopen_rejects_rank_material_changed_under_a_refreshed_manifest() {
     let authoritative_fields = vec![("name".into(), "map".into())];
     let documents = vec![(document(17), authoritative_fields.clone())];
@@ -2499,16 +2538,14 @@ fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
 }
 
 #[test]
-fn cold_tail_validation_filters_surplus_postings_and_measures_their_scan_work() {
+fn cold_exact_posting_cover_rejects_surplus_edges_and_rebuilds_from_source() {
     static NEXT_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     const ROWS: usize = 128;
     let sequence = NEXT_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let directory = std::env::temp_dir().join(format!(
+    let root = std::env::temp_dir().join(format!(
         "backend-tantivy-surplus-postings-{}-{sequence}",
         std::process::id()
     ));
-    std::fs::create_dir_all(&directory).expect("create forged projection directory");
-
     let documents = (1..=ROWS)
         .map(|ordinal| {
             (
@@ -2518,6 +2555,10 @@ fn cold_tail_validation_filters_surplus_postings_and_measures_their_scan_work() 
         })
         .collect::<Vec<_>>();
     let state = state_for(documents, [0x92; 32]);
+    let directory = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(state.binding())));
+    std::fs::create_dir_all(&directory).expect("create forged selected projection directory");
     crate::engine::test_support::write_projection_with_surplus_posting_fixture(
         &state,
         &directory,
@@ -2526,32 +2567,26 @@ fn cold_tail_validation_filters_surplus_postings_and_measures_their_scan_work() 
     )
     .expect("write rows with one surplus Tantivy posting each");
 
-    // Cold binding checks that every source token is present and that the rank tail
-    // exactly matches authoritative fields. It currently does not enumerate/reject
-    // additional index terms, so the false candidates must be filtered by the scorer.
-    let source = TantivySource::open_in_dir(&state, Limits::default(), &directory)
-        .expect("cold-open rows whose authoritative tails are intact");
+    assert!(matches!(
+        TantivySource::open_in_dir(&state, Limits::default(), &directory),
+        Err(TantivySourceError::Corrupt(_))
+    ));
+
+    let (source, action) =
+        TantivySource::open_or_build_in_dir_with_action(&state, Limits::default(), &root)
+            .expect("discard the corrupt selected projection and rebuild from authoritative state");
+    assert_eq!(action, DurableProjectionAction::Built);
     assert_eq!(
         crate::engine::test_support::binding_work(&source),
         (ROWS, ROWS * 4),
-        "cold binding validates each source row and all four expected posting projections"
+        "the replacement binds all source rows and verifies each required posting projection"
     );
-    let visited_before = source.rank_docs_visited();
-    let hits = source
-        .search(&Query::new(vec!["forgedneedle".into()], Limits::default()).expect("query"))
-        .expect("search forged term");
-    assert!(
-        hits.is_empty(),
-        "surplus postings must not create semantic hits"
-    );
-    assert_eq!(
-        source.rank_docs_visited() - visited_before,
-        ROWS as u64,
-        "one forged posting per row makes the scorer visit the entire live corpus"
-    );
+    let expected_ids = state.iter().map(|(id, _)| id).collect::<Vec<_>>();
+    assert_eq!(term_hits(&source, "authoritativemarker"), expected_ids);
+    assert!(term_hits(&source, "forgedneedle").is_empty());
 
     drop(source);
-    std::fs::remove_dir_all(directory).expect("remove forged projection directory");
+    std::fs::remove_dir_all(root).expect("remove forged projection cache root");
 }
 
 #[test]
