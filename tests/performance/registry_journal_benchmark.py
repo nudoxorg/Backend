@@ -86,22 +86,31 @@ def latency_summary(samples: list[int]) -> dict[str, int | None]:
 
 
 def process_rss_bytes(pid: int) -> int | None:
-    try:
-        result = subprocess.run(
-            ["ps", "-o", "rss=", "-p", str(pid)],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    if result.returncode or not result.stdout.strip():
-        return None
-    try:
-        # macOS and BSD ``ps`` report RSS in KiB.
-        return int(result.stdout.strip().splitlines()[-1]) * 1024
-    except ValueError:
-        return None
+    # The saved macOS shell puts a restricted GUI-tools `ps` first on PATH;
+    # it refuses RSS without entitlement. Prefer the system process tool
+    # there, then retain PATH lookup for other platforms.
+    commands = (
+        [["/bin/ps", "-o", "rss=", "-p", str(pid)], ["ps", "-o", "rss=", "-p", str(pid)]]
+        if platform.system() == "Darwin"
+        else [["ps", "-o", "rss=", "-p", str(pid)]]
+    )
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            continue
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                # macOS and BSD `ps` report RSS in KiB.
+                return int(result.stdout.strip().splitlines()[-1]) * 1024
+            except ValueError:
+                continue
+    return None
 
 
 class RssSampler:
