@@ -15,7 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use backend_platform::directory::DirectoryCapability;
+use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 use serde::{Deserialize, Serialize};
 
 use super::osv_snapshot::{OsvSnapshotError, OsvSnapshotRef};
@@ -479,7 +479,7 @@ impl AdvisoryAuthority {
             }
             Err(error) => return Err(AuthorityStorageError::Io(error)),
         };
-        let file = match directory.open_file_read(name) {
+        let file = match directory.open_private_file(name) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut authority = Self::new(max_age_secs);
@@ -636,19 +636,15 @@ impl AdvisoryAuthority {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(AuthorityStorageError::InvalidStateFile)?;
-        if let Err(error) = directory.rename(&temporary, destination, true) {
-            let _ = directory.remove_file(&temporary);
-            return Err(AuthorityStorageError::Io(error));
-        }
-        // The file is durable before the rename; syncing the directory makes the name update
-        // durable as well on filesystems which otherwise allow a power loss between the two.
-        if let Err(error) = directory.sync_all()
-            && !matches!(
-                error.kind(),
-                std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
-            )
-        {
-            return Err(AuthorityStorageError::Io(error));
+        match directory.rename_with_outcome(&temporary, destination, true) {
+            Ok(()) => {}
+            Err(DirectoryRenameError::NotCommitted(error)) => {
+                let _ = directory.remove_file(&temporary);
+                return Err(AuthorityStorageError::Io(error));
+            }
+            Err(DirectoryRenameError::CommittedButNotDurable(error)) => {
+                return Err(AuthorityStorageError::CommittedButNotDurable(error));
+            }
         }
         if let Some(snapshot) = self.osv_snapshot.as_ref() {
             snapshot
@@ -1264,6 +1260,9 @@ pub trait AdvisoryResolver: Send + Sync {
 pub enum AuthorityStorageError {
     /// Filesystem operation failed.
     Io(std::io::Error),
+    /// The selected state name changed, but its directory flush failed. The
+    /// new file may be visible now and must be resolved from disk on retry.
+    CommittedButNotDurable(std::io::Error),
     /// Immutable OSV generation validation or retention failed.
     Snapshot(OsvSnapshotError),
     /// Persisted state was not valid JSON.

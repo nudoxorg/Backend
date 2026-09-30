@@ -17,7 +17,7 @@ use std::{
     },
 };
 
-use backend_platform::directory::DirectoryCapability;
+use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,9 @@ pub enum OsvSnapshotLimit {
 pub enum OsvSnapshotError {
     /// Local filesystem operation failed.
     Io(io::Error),
+    /// A generation name changed, but the containing directory flush failed.
+    /// The generation remains an unselected durable candidate until recovery.
+    CommittedButNotDurable(io::Error),
     /// One advisory object could not be encoded or decoded.
     Encoding(serde_json::Error),
     /// A source object violated the admitted identity or snapshot format.
@@ -85,6 +88,9 @@ impl std::fmt::Display for OsvSnapshotError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(_) => formatter.write_str("OSV snapshot local storage failed"),
+            Self::CommittedButNotDurable(_) => {
+                formatter.write_str("OSV snapshot rename committed but durability is uncertain")
+            }
             Self::Encoding(_) => formatter.write_str("OSV snapshot record encoding failed"),
             Self::Invalid(reason) => write!(formatter, "OSV snapshot is invalid: {reason}"),
             Self::Limit(limit) => write!(formatter, "OSV snapshot limit reached: {limit:?}"),
@@ -1000,16 +1006,21 @@ impl OsvSnapshotBuilder {
         self.staging_directory.take();
         let staging_name = std::mem::take(&mut self.staging_name);
         let published_with_staged_lease =
-            match root_directory.rename(&staging_name, &generation, false) {
+            match root_directory.rename_with_outcome(&staging_name, &generation, false) {
                 Ok(()) => true,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                Err(DirectoryRenameError::NotCommitted(error))
+                    if error.kind() == io::ErrorKind::AlreadyExists =>
+                {
                     generation_lease.take();
                     root_directory.remove_dir_all(&staging_name, MAX_OSV_STORAGE_ENTRIES)?;
                     false
                 }
-                Err(error) => {
+                Err(DirectoryRenameError::NotCommitted(error)) => {
                     let _ = root_directory.remove_dir_all(&staging_name, MAX_OSV_STORAGE_ENTRIES);
                     return Err(OsvSnapshotError::Io(error));
+                }
+                Err(DirectoryRenameError::CommittedButNotDurable(error)) => {
+                    return Err(OsvSnapshotError::CommittedButNotDurable(error));
                 }
             };
         let mut reference = OsvSnapshotRef {
@@ -1354,7 +1365,15 @@ fn prune_unreferenced_generations_locked(
         );
         drop(leases);
         drop(generation);
-        root.rename(name, &tombstone, false)?;
+        match root.rename_with_outcome(name, &tombstone, false) {
+            Ok(()) => {}
+            Err(DirectoryRenameError::NotCommitted(error)) => {
+                return Err(OsvSnapshotError::Io(error));
+            }
+            Err(DirectoryRenameError::CommittedButNotDurable(error)) => {
+                return Err(OsvSnapshotError::CommittedButNotDurable(error));
+            }
+        }
         drop(lease);
         root.remove_dir_all(&tombstone, MAX_OSV_STORAGE_ENTRIES)?;
     }

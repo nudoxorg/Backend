@@ -441,9 +441,22 @@ impl RegistryGateway {
                 error,
             });
         }
-        authority
-            .persist(&self.advisory_path)
-            .map_err(|error| error.to_string())?;
+        if let Err(error) = authority.persist(&self.advisory_path) {
+            if matches!(
+                &error,
+                backend_engine::advisory::AuthorityStorageError::CommittedButNotDurable(_)
+            ) {
+                // The authority pathname now refers to this candidate, but a
+                // failed parent flush means cold recovery must decide whether
+                // the old or new journal survived. Keep both snapshot leases
+                // alive in memory, and prevent another refresh from collecting
+                // the maybe-selected generation before that recovery.
+                self.advisory = Arc::new(authority);
+                self.slots.clear();
+                self.projection = None;
+            }
+            return Err(error.to_string());
+        }
         self.advisory = Arc::new(authority);
         // Open owners hold the previous authority as their resolver; they
         // reopen lazily with the new one.
@@ -2210,7 +2223,8 @@ fn read_rustsec_tree(
     let mut output = Vec::new();
     let mut directories = Vec::new();
     let mut files = Vec::new();
-    let root_directory = DirectoryCapability::open(root).map_err(|error| error.to_string())?;
+    let root_directory =
+        DirectoryCapability::open_read_only_source(root).map_err(|error| error.to_string())?;
     visit(
         &root_directory,
         0,

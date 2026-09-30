@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-use backend_platform::directory::DirectoryCapability;
+use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -657,18 +657,21 @@ fn publish_json_immutable_at<T: Serialize>(
         let _ = directory.remove_file(&temporary);
         return Err(error);
     }
-    match directory.rename(&temporary, name, false) {
+    match directory.rename_with_outcome(&temporary, name, false) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+        Err(DirectoryRenameError::NotCommitted(error))
+            if error.kind() == io::ErrorKind::AlreadyExists =>
+        {
             let compare = compare_capability_files(directory, &temporary, name);
             let _ = directory.remove_file(&temporary);
             compare?;
             directory.sync_all()
         }
-        Err(error) => {
+        Err(DirectoryRenameError::NotCommitted(error)) => {
             let _ = directory.remove_file(&temporary);
             Err(error)
         }
+        Err(error @ DirectoryRenameError::CommittedButNotDurable(_)) => Err(error.into_io_error()),
     }
 }
 
@@ -716,17 +719,24 @@ fn atomic_replace_at(directory: &DirectoryCapability, name: &str, bytes: &[u8]) 
         std::process::id(),
         TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let result = (|| {
+    let staged = (|| {
         let mut file = directory.create_file_exclusive(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        drop(file);
-        directory.rename(&temporary, name, true)
+        Ok(())
     })();
-    if result.is_err() {
+    if let Err(error) = staged {
         let _ = directory.remove_file(&temporary);
+        return Err(error);
     }
-    result
+    match directory.rename_with_outcome(&temporary, name, true) {
+        Ok(()) => Ok(()),
+        Err(DirectoryRenameError::NotCommitted(error)) => {
+            let _ = directory.remove_file(&temporary);
+            Err(error)
+        }
+        Err(error @ DirectoryRenameError::CommittedButNotDurable(_)) => Err(error.into_io_error()),
+    }
 }
 
 #[cfg(test)]
