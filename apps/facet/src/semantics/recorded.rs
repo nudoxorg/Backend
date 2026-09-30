@@ -221,6 +221,17 @@ fn c_pipe(signature: &str, expected: &str) -> Option<Pipe> {
     }
     if parameter_count == 0 || (variadic && inputs.is_empty()) { return None; }
 
+    let does_not_return = (0..declaration.named_child_count()).any(|index| {
+        declaration.named_child(index as u32).is_some_and(|node| {
+            node.kind() == "type_qualifier"
+                && c_node_text(signature, node).is_some_and(|text| matches!(text.trim(), "_Noreturn" | "noreturn"))
+        })
+    });
+    let returns_void = (0..declaration.named_child_count()).any(|index| {
+        declaration.named_child(index as u32).is_some_and(|node| {
+            node.kind() == "type_specifier" && c_node_text(signature, node).is_some_and(|text| text.trim() == "void")
+        })
+    });
     let base = c_base_type(signature, declaration)?;
     let mut pointers = String::new();
     for node in path.iter().take(function_at) {
@@ -239,9 +250,12 @@ fn c_pipe(signature: &str, expected: &str) -> Option<Pipe> {
             _ => return None,
         }
     }
+    if does_not_return && (!returns_void || !pointers.is_empty()) { return None; }
     let result = if pointers.is_empty() { base } else { format!("{base} {pointers}") };
-    let output = (result.trim() != "void").then(|| scope.spell_text(&result));
-    let flags = if variadic { vec!["accepts additional arguments"] } else { Vec::new() };
+    let output = (!returns_void || !pointers.is_empty()).then(|| scope.spell_text(&result));
+    let mut flags = Vec::new();
+    if variadic { flags.push("accepts additional arguments"); }
+    if does_not_return { flags.push("does not return"); }
     Some(Pipe { inputs, output, fails: None, wheres: Vec::new(), flags })
 }
 
@@ -296,7 +310,10 @@ fn c_base_type(source: &str, declaration: tree_sitter::Node<'_>) -> Option<Strin
                 types += 1;
                 parts.push(c_node_text(source, child)?);
             }
-            "type_qualifier" => parts.push(c_node_text(source, child)?),
+            "type_qualifier" => {
+                let qualifier = c_node_text(source, child)?;
+                if !matches!(qualifier.trim(), "_Noreturn" | "noreturn") { parts.push(qualifier); }
+            }
             "storage_class_specifier" | "compound_statement" => {}
             "attribute_specifier" | "attribute_declaration" | "ms_declspec_modifier" | "ms_call_modifier" => return None,
             kind if c_declarator_kind(kind) => {}
@@ -500,6 +517,10 @@ mod tests {
         let variadic = callable("int log_line(const char *format, ...);", "log_line", Language::C).unwrap();
         assert_eq!(variadic.flags, vec!["accepts additional arguments"]);
         assert_eq!(variadic.inputs[0].name.as_ref(), "format");
+
+        let terminating = callable("_Noreturn void fail(const char *reason);", "fail", Language::C).unwrap();
+        assert!(terminating.output.is_none());
+        assert!(terminating.flags.contains(&"does not return"));
     }
 
     #[test]
