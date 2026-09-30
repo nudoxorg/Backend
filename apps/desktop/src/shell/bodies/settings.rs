@@ -472,6 +472,27 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             .into_any_element(),
         ctx,
     ));
+    let locald = installed.as_deref().and_then(locald_companion);
+    let locald_status = ctx.say(locald.as_ref().map_or_else(
+        || "backend-locald must be installed beside backend-mcp so this setup can start the local service when Nudox is closed.".to_owned(),
+        |path| format!("Local service executable found at {}", path.display()),
+    ));
+    leaves.push(setting(
+        "Service executable",
+        text(
+            ty::SMALL,
+            &measure,
+            if locald.is_some() {
+                palette.ink1
+            } else {
+                palette.coral.base
+            },
+        )
+        .min_w(px(0.0))
+        .child(locald_status)
+        .into_any_element(),
+        ctx,
+    ));
     let recheck = facet::controls::button("settings-recheck-mcp", "Check again", &measure)
         .ghost()
         .on_click(|_, cx| cx.refresh_windows());
@@ -487,7 +508,12 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         leaves.push(Leaf::new(quiet(detail, &measure, palette)));
         return leaves;
     };
-    let Some(config) = mcp_config(&project, &data, &endpoint, binary) else {
+    let Some(locald) = locald.as_deref() else {
+        let detail = ctx.say("Install backend-locald beside backend-mcp. The MCP process uses that exact companion when it needs to start the local index; when Nudox is already open it attaches to the live service.");
+        leaves.push(Leaf::new(quiet(detail, &measure, palette)));
+        return leaves;
+    };
+    let Some(config) = mcp_config(&project, &data, &endpoint, binary, locald) else {
         let detail = ctx.say("The MCP setup paths could not be represented in the client configuration. Check the project and workspace paths in Settings › Diagnostics.");
         leaves.push(Leaf::new(quiet(detail, &measure, palette)));
         return leaves;
@@ -616,15 +642,25 @@ fn owner_paths(snapshot: &AppSnapshot) -> (Option<PathBuf>, Option<PathBuf>, Opt
     (project, data, endpoint)
 }
 
-fn mcp_config(project: &Path, data: &Path, endpoint: &Path, binary: &Path) -> Option<String> {
+fn mcp_config(
+    project: &Path,
+    data: &Path,
+    endpoint: &Path,
+    binary: &Path,
+    locald: &Path,
+) -> Option<String> {
     let project = project.to_str()?;
     let data = data.to_str()?;
     let endpoint = endpoint.to_str()?;
     let binary = binary.to_str()?;
+    let locald = locald.to_str()?;
     let config = serde_json::json!({
         "mcpServers": {
             "nudox": {
                 "command": binary,
+                "env": {
+                    "BACKEND_LOCALD_BIN": locald
+                },
                 "args": [
                     "--project", project,
                     "--workspace", data,
@@ -693,7 +729,30 @@ fn find_mcp_binary(
     candidates
         .into_iter()
         .filter(|candidate| seen.insert(candidate.clone()))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| is_executable_file(candidate))
+}
+
+fn locald_companion(mcp: &Path) -> Option<PathBuf> {
+    let locald = mcp.with_file_name(format!("backend-locald{}", std::env::consts::EXE_SUFFIX));
+    is_executable_file(&locald).then_some(locald)
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 #[allow(dead_code)]
@@ -702,9 +761,9 @@ fn _palette(_: &Palette, _: &Measure) {}
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::find_mcp_binary;
+    use super::{find_mcp_binary, locald_companion, mcp_config};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -717,6 +776,12 @@ mod tests {
         let binary = home.join(".cargo/bin/backend-mcp");
         fs::create_dir_all(binary.parent().expect("binary directory")).expect("create bin");
         fs::write(&binary, b"test executable").expect("write executable marker");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
+                .expect("set executable marker permissions");
+        }
 
         let found = find_mcp_binary(
             "backend-mcp",
@@ -728,6 +793,67 @@ mod tests {
 
         assert_eq!(found, Some(binary));
         fs::remove_dir_all(home).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn locald_companion_requires_an_executable_sibling() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("nudox-mcp-companion-{nonce}"));
+        fs::create_dir_all(&directory).expect("create app bin directory");
+        let mcp = directory.join("backend-mcp");
+        let locald = directory.join("backend-locald");
+        fs::write(&mcp, b"mcp").expect("write mcp marker");
+        fs::write(&locald, b"locald").expect("write locald marker");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&locald, fs::Permissions::from_mode(0o755))
+                .expect("set locald executable permissions");
+        }
+
+        assert_eq!(locald_companion(&mcp), Some(locald.clone()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&locald, fs::Permissions::from_mode(0o644))
+                .expect("remove locald executable permissions");
+            assert_eq!(locald_companion(&mcp), None);
+        }
+        fs::remove_dir_all(directory).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn mcp_setup_config_pins_the_service_and_workspace_paths() {
+        let config = mcp_config(
+            Path::new("/project"),
+            Path::new("/workspace/data"),
+            Path::new("/workspace/locald.sock"),
+            Path::new("/app/Contents/MacOS/backend-mcp"),
+            Path::new("/app/Contents/MacOS/backend-locald"),
+        )
+        .expect("absolute UTF-8 setup paths");
+        let config: serde_json::Value =
+            serde_json::from_str(&config).expect("valid MCP client config");
+        let server = &config["mcpServers"]["nudox"];
+        assert_eq!(server["command"], "/app/Contents/MacOS/backend-mcp");
+        assert_eq!(
+            server["env"]["BACKEND_LOCALD_BIN"],
+            "/app/Contents/MacOS/backend-locald"
+        );
+        assert_eq!(
+            server["args"],
+            serde_json::json!([
+                "--project",
+                "/project",
+                "--workspace",
+                "/workspace/data",
+                "--endpoint",
+                "/workspace/locald.sock"
+            ])
+        );
     }
 
     #[test]
