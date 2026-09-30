@@ -4,7 +4,7 @@ use backend_engine::cluster_transport::{
     EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims, RemoteIndexCapabilityError,
     RemoteIndexCapabilityIssuer, ScopedClusterInvite, SecretKey,
 };
-use backend_platform::directory::DirectoryCapability;
+use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -192,6 +192,8 @@ pub enum ClusterOwnerConfigError {
     InvalidInvite,
     /// The host cannot prove owner-only persistence for this platform.
     Permissions,
+    /// The owner identity name was published, but directory durability was not confirmed.
+    CommittedButNotDurable(String),
     /// A filesystem operation failed.
     Io(String),
 }
@@ -208,6 +210,10 @@ impl std::fmt::Display for ClusterOwnerConfigError {
             Self::Permissions => {
                 formatter.write_str("owner-only cluster config storage is unavailable")
             }
+            Self::CommittedButNotDurable(error) => write!(
+                formatter,
+                "cluster owner identity was published but directory durability could not be confirmed: {error}"
+            ),
             Self::Io(error) => write!(formatter, "cluster owner config I/O failed: {error}"),
         }
     }
@@ -341,16 +347,22 @@ fn write_private_new(
             let _ = directory.remove_file(&temporary);
             return Err(io_error(error));
         }
-        if let Err(error) = directory.rename(&temporary, name, false) {
-            let _ = directory.remove_file(&temporary);
-            return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
-                ClusterOwnerConfigError::AlreadyExists
-            } else {
-                io_error(error)
-            });
+        match directory.rename_with_outcome(&temporary, name, false) {
+            Ok(()) => return Ok(()),
+            Err(DirectoryRenameError::NotCommitted(error)) => {
+                let _ = directory.remove_file(&temporary);
+                return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    ClusterOwnerConfigError::AlreadyExists
+                } else {
+                    io_error(error)
+                });
+            }
+            Err(DirectoryRenameError::CommittedButNotDurable(error)) => {
+                return Err(ClusterOwnerConfigError::CommittedButNotDurable(
+                    error.to_string(),
+                ));
+            }
         }
-        directory.sync_all().map_err(io_error)?;
-        return Ok(());
     }
     Err(ClusterOwnerConfigError::Io(
         "could not allocate a unique owner-config temporary".to_owned(),
@@ -495,6 +507,17 @@ mod tests {
                 .filter_map(|result| result.as_ref().ok())
                 .any(|created| created.endpoint_id() == persisted.endpoint_id())
         );
+        let remaining_names = std::fs::read_dir(&scratch.0)
+            .expect("list private owner directory")
+            .map(|entry| {
+                entry
+                    .expect("read owner directory entry")
+                    .file_name()
+                    .into_string()
+                    .expect("owner entry name is UTF-8")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_names, vec!["cluster-owner.v1".to_owned()]);
     }
 
     #[test]

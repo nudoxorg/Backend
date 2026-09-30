@@ -10,7 +10,7 @@ use backend_library::{
     Command, CommandDto, CommandReply, ProductText, SurfaceCommand, SurfaceReply,
     decode_command_body, decode_reply_body,
 };
-use backend_platform::directory::DirectoryCapability;
+use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 use backend_replication::{
     LocalControlClient, LocalControlLimits, LocalControlRequest, LocalControlResponse,
     SelectedGenerationStamp, SelectedSemanticImageChunk, SelectedSemanticImageGet,
@@ -631,11 +631,19 @@ fn write_usage_ledger(ledger: &GrantUsageLedger, bytes: &[u8]) -> io::Result<()>
             let _ = ledger.directory.remove_file(&temporary);
             return Err(error);
         }
-        if let Err(error) = ledger.directory.rename(&temporary, &ledger.name, true) {
-            let _ = ledger.directory.remove_file(&temporary);
-            return Err(error);
+        match ledger
+            .directory
+            .rename_with_outcome(&temporary, &ledger.name, true)
+        {
+            Ok(()) => return Ok(()),
+            Err(DirectoryRenameError::NotCommitted(error)) => {
+                let _ = ledger.directory.remove_file(&temporary);
+                return Err(error);
+            }
+            Err(error @ DirectoryRenameError::CommittedButNotDurable(_)) => {
+                return Err(error.into_io_error());
+            }
         }
-        return ledger.directory.sync_all();
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,

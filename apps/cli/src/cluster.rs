@@ -22,7 +22,7 @@ use backend_local_service::cluster_owner::{ClusterOwnerConfig, ClusterOwnerConfi
 use backend_local_service::compiler_trust::{
     CompilerTrustError, TrustedCompilerWorkerGrant, TrustedCompilerWorkerPolicy,
 };
-use backend_platform::directory::DirectoryCapability;
+use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 use backend_replication::SemanticTargetKey;
 use backend_semantic::vocabulary::{LanguageProfile, Stage};
@@ -1258,13 +1258,21 @@ fn write_private_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), Fault> 
             let _ = directory.remove_file(&temporary);
             return Err(storage_fault(path, error.to_string()));
         }
-        if let Err(error) = directory.rename(&temporary, &name, false) {
-            let _ = directory.remove_file(&temporary);
-            return Err(storage_fault(path, error.to_string()));
+        match directory.rename_with_outcome(&temporary, &name, false) {
+            Ok(()) => return Ok(()),
+            Err(DirectoryRenameError::NotCommitted(error)) => {
+                let _ = directory.remove_file(&temporary);
+                return Err(storage_fault(path, error.to_string()));
+            }
+            Err(DirectoryRenameError::CommittedButNotDurable(error)) => {
+                return Err(storage_fault(
+                    path,
+                    format!(
+                        "private file was published but directory durability could not be confirmed: {error}"
+                    ),
+                ));
+            }
         }
-        return directory
-            .sync_all()
-            .map_err(|error| storage_fault(path, error.to_string()));
     }
     Err(storage_fault(
         path,
