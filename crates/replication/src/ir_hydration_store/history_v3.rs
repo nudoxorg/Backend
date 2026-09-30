@@ -475,6 +475,34 @@ impl FileSemanticRangeStore {
         jumbo_limits: JumboRopeLimits,
         source: &mut S,
     ) -> Result<crate::HistoryAdmissionReceipt, String> {
+        self.admit_selected_typed_v3_history_commit_then(
+            selected,
+            parents,
+            provenance,
+            policies,
+            tier,
+            jumbo_limits,
+            source,
+            |receipt, _source| Ok(receipt),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_selected_typed_v3_history_commit_then<
+        S: SelectedNativeImageSource,
+        R,
+        F: FnOnce(crate::HistoryAdmissionReceipt, &mut S) -> Result<R, String>,
+    >(
+        &self,
+        selected: &SelectedNativeHistoryImage<'_>,
+        parents: &[crate::HistoryCommitId],
+        provenance: [u8; 32],
+        policies: crate::SemanticTypedPlaneBoundaryPoliciesV3,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+        source: &mut S,
+        after_admission: F,
+    ) -> Result<R, String> {
         let pin = self.pin_typed_v3_history_admission()?;
         let target = selected.target();
         let selected_stamp = selected.selected_stamp();
@@ -597,7 +625,7 @@ impl FileSemanticRangeStore {
         drop(admission);
         drop(produced);
         let guard = pin.into_guard();
-        receipt
+        let receipt = receipt
             .with_gc_pin(std::sync::Arc::new(guard))
             .with_typed_v3_proof(
                 content,
@@ -605,7 +633,8 @@ impl FileSemanticRangeStore {
                 closure_claim,
                 locator_id,
                 self.store.root().to_path_buf(),
-            )
+            )?;
+        after_admission(receipt, source)
     }
 
     /// Produces and publishes one selected native image on a durable branch.
@@ -628,7 +657,7 @@ impl FileSemanticRangeStore {
         let current = self.history_ref(target, crate::HistoryRefKind::Branch, &branch)?;
         let expected = current.as_ref().map(crate::SelectedHistoryRef::commit);
         let parents = expected.into_iter().collect::<Vec<_>>();
-        let admission = self.admit_selected_typed_v3_history_commit(
+        self.admit_selected_typed_v3_history_commit_then(
             selected,
             &parents,
             provenance,
@@ -636,19 +665,21 @@ impl FileSemanticRangeStore {
             tier,
             jumbo_limits,
             source,
-        )?;
-        let receipt = self.publish_typed_v3_history_ref(
-            target,
-            crate::HistoryRefKind::Branch,
-            branch,
-            expected,
-            &admission,
-            source,
-        )?;
-        if receipt.current() != Some(admission.commit().identity()) {
-            return Err("typed V3 branch CAS returned another selected commit".to_owned());
-        }
-        Ok(receipt)
+            |admission, source| {
+                let receipt = self.publish_typed_v3_history_ref_under_state_lock(
+                    target,
+                    crate::HistoryRefKind::Branch,
+                    branch,
+                    expected,
+                    &admission,
+                    source,
+                )?;
+                if receipt.current() != Some(admission.commit().identity()) {
+                    return Err("typed V3 branch CAS returned another selected commit".to_owned());
+                }
+                Ok(receipt)
+            },
+        )
     }
 
     /// Publishes a live V3 admission receipt with a named-ref compare-and-swap.
@@ -665,13 +696,27 @@ impl FileSemanticRangeStore {
         admission: &crate::HistoryAdmissionReceipt,
         source: &mut S,
     ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+        let _state_lock = self.acquire_state_lock()?;
+        self.publish_typed_v3_history_ref_under_state_lock(
+            target, kind, name, expected, admission, source,
+        )
+    }
+
+    fn publish_typed_v3_history_ref_under_state_lock<S: SelectedNativeImageSource>(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: crate::HistoryRefName,
+        expected: Option<crate::HistoryCommitId>,
+        admission: &crate::HistoryAdmissionReceipt,
+        source: &mut S,
+    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
         let proof = admission
             .typed_v3_publication_admission(self.store.root())
             .ok_or_else(|| {
                 "typed V3 publication requires a live same-store verifier receipt".to_owned()
             })?;
         let commit = admission.commit();
-        let _state_lock = self.acquire_state_lock()?;
         let current = self
             .generations
             .typed_v3_history_generation(target, commit.identity())?;
