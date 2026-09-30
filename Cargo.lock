@@ -811,11 +811,13 @@ dependencies = [
 name = "backend-client"
 version = "0.1.0"
 dependencies = [
+ "backend-engine",
  "backend-library",
  "backend-replication",
  "backend-semantic",
  "hashlink",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1324,6 +1326,7 @@ dependencies = [
 name = "backend-local-service"
 version = "0.1.0"
 dependencies = [
+ "backend-client",
  "backend-compile",
  "backend-engine",
  "backend-extension-qdrant",
@@ -1352,6 +1355,7 @@ dependencies = [
  "futures-util",
  "hashlink",
  "hmac",
+ "postcard",
  "rustix 1.1.4",
  "serde",
  "serde_json",
