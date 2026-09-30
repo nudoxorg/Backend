@@ -13,6 +13,7 @@ command -v "$locald_bin" >/dev/null 2>&1 || {
 }
 
 root=$(mktemp -d "${TMPDIR:-/tmp}/backend-remote-index.XXXXXX")
+root=$(cd "$root" && pwd -P)
 owner_data=$root/owner
 client_data=$root/client
 fixture=$root/fixture
