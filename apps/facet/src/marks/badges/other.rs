@@ -1,4 +1,4 @@
-//! The other six ecosystems' signatures, read as far as the text honestly
+//! Other languages' signatures, read as far as the text honestly
 //! says: what it is, whether it is async, generic, abstract or static, and
 //! what its return type promises (an error, nothing, an iterator).
 //! Anything the text does not say earns no badge.
@@ -13,6 +13,7 @@ pub(super) fn read(item: &Item<'_>, text: &str, lang: Lang) -> Reading {
         Lang::Go => go(item, text, &mut badges),
         Lang::Java => java(item, text, &mut badges),
         Lang::Csharp => csharp(item, text, &mut badges),
+        Lang::C => c(item, text, &mut badges),
         Lang::Cpp => cpp(item, text, &mut badges),
         Lang::Rust | Lang::Unknown => Shape::Item,
     };
@@ -439,6 +440,52 @@ fn csharp(item: &Item<'_>, text: &str, out: &mut Vec<Badge>) -> Shape {
         returns(out, ret, &["Task", "ValueTask"], &["IEnumerable", "IAsyncEnumerable", "IEnumerator"]);
     }
     let _ = item;
+    Shape::Function
+}
+
+// ---------------------------------------------------------------- C
+
+/// C declarations share a few readable shapes with C++, but not its
+/// templates, member qualifiers, exceptions, or async semantics. Keep this
+/// reader deliberately narrow: it identifies declarations and counts
+/// parameters without inventing names or behavior the spelling does not
+/// establish.
+fn c(_item: &Item<'_>, text: &str, out: &mut Vec<Badge>) -> Shape {
+    let s = text.trim();
+    if s.starts_with("#define ") {
+        return Shape::Macro;
+    }
+    if s.starts_with("typedef ") {
+        return Shape::Alias;
+    }
+    let head = s.split(['{', ';']).next().unwrap_or(s);
+    if !head.contains('(') {
+        if has_word(head, "struct") {
+            return Shape::Struct;
+        }
+        if has_word(head, "enum") {
+            return Shape::Enum;
+        }
+        if has_word(head, "union") {
+            return Shape::Union;
+        }
+    }
+    let Some(open) = s.find('(') else {
+        return Shape::Constant;
+    };
+    let parameters = between(&s[open..], '(', ')').unwrap_or("").trim();
+    if parameters == "void" {
+        takes(out, &[]);
+    } else if !parameters.is_empty() {
+        let parameters = split_top(parameters);
+        badge(
+            out,
+            Glyph::Takes,
+            format!("takes {}", parameters.len()),
+            format!("It receives {} declared parameters.", parameters.len()),
+            Ink::Plain,
+        );
+    }
     Shape::Function
 }
 
