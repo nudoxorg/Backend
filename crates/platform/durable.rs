@@ -410,7 +410,7 @@ fn ensure_private_child_directory_platform(_path: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn rustix_io(error: rustix::io::Errno) -> io::Error {
-    io::Error::other(error.to_string())
+    io::Error::from_raw_os_error(error.raw_os_error())
 }
 
 #[cfg(windows)]
@@ -679,6 +679,34 @@ mod tests {
         assert_eq!(bytes, b"durable private state");
         drop(reopened);
         remove_private(&path).expect("durably remove private state");
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_private_state_preserves_the_filesystem_error_kind() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = fixture("private-missing");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("protect fixture directory");
+        let path = root.join("new-journal.bin");
+        let error = open_private_read(&path).expect_err("journal is not created yet");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::NOENT.raw_os_error())
+        );
+
+        // A missing file beneath an inadmissible parent is not a fresh journal.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755))
+            .expect("make fixture nonprivate");
+        assert_eq!(
+            open_private_read(&path)
+                .expect_err("reject public parent")
+                .kind(),
+            io::ErrorKind::PermissionDenied,
+        );
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
