@@ -3569,6 +3569,17 @@ fn verify_search_projection(
             }
         };
     let manifest_path = directory.join(SEARCH_PROJECTION_MANIFEST);
+    let manifest_metadata = match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("inspect discovery search manifest: {error}")),
+    };
+    if !manifest_metadata.file_type().is_file() {
+        // A symlink or special entry is a disposable-cache defect. Classify it
+        // from no-follow metadata instead of treating ELOOP as transient I/O;
+        // recovery below rebuilds from the authoritative source documents.
+        return Ok(false);
+    }
     let bytes = match read_bounded_search_file(&manifest_path, MAX_SEARCH_PROJECTION_MANIFEST_BYTES)
     {
         Ok(bytes) => bytes,
@@ -7949,6 +7960,21 @@ mod tests {
             &[],
         )
         .expect("recover symlink manifest from source documents");
+        assert_eq!(rebuilt.snapshot_root, latest_snapshot_root);
+        let restored = rebuilt
+            .search(
+                DiscoverySearchRequest {
+                    text: "rootpinmarker8",
+                    ecosystem: Some(RegistryEcosystem::Cargo),
+                },
+                8,
+            )
+            .expect("search authoritative posting after manifest recovery");
+        assert_eq!(restored.hits.len(), 1);
+        assert_eq!(
+            restored.hits[0].key.coordinate.as_str(),
+            "pkg:cargo/pinned@1.0.0"
+        );
         assert_eq!(
             std::fs::read(&external).expect("external target remains readable"),
             b"outside bytes remain unchanged"
