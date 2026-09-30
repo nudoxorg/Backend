@@ -316,6 +316,7 @@ pub struct TantivySource {
     rank_material_len: Field,
     documents: DocumentTable,
     identity_ordinals: Vec<IdentityOrdinal>,
+    durable: bool,
     _root_lease: Option<File>,
     poisoned: bool,
     rank_budget: RankSnapshotBudget,
@@ -437,6 +438,8 @@ pub enum TantivySourceError {
         /// Bytes required by the exact query snapshot or conservative build bound.
         required_bytes: usize,
     },
+    /// Durable projections are immutable; updates must publish a new root.
+    DurableProjectionImmutable,
 }
 
 impl std::fmt::Display for TantivySourceError {
@@ -466,6 +469,10 @@ impl std::fmt::Display for TantivySourceError {
             } => write!(
                 formatter,
                 "exact lexical query needs {required_bytes} bytes, above its {budget_bytes}-byte query budget",
+            ),
+            Self::DurableProjectionImmutable => write!(
+                formatter,
+                "durable Tantivy projections are immutable; publish an updated root",
             ),
         }
     }
@@ -585,6 +592,7 @@ impl TantivySource {
             rank_material_len: fields.rank_material_len,
             documents,
             identity_ordinals,
+            durable: true,
             _root_lease: None,
             poisoned: false,
             rank_budget: RankSnapshotBudget::default(),
@@ -634,7 +642,7 @@ impl TantivySource {
         preflight_ordinal_map_capacity(state.iter().count())?;
         let projected = projection_schema();
         let index = Index::create_in_dir(directory.as_ref(), projected.schema)?;
-        let source = Self::populate(state, limits, index, projected.fields)?;
+        let mut source = Self::populate(state, limits, index, projected.fields)?;
         write_ordinal_map(
             directory.as_ref(),
             projection_fingerprint(state.binding()),
@@ -646,6 +654,7 @@ impl TantivySource {
             projection_fingerprint(state.binding()),
             budget,
         )?;
+        source.durable = true;
         Ok(source)
     }
 
@@ -920,7 +929,7 @@ impl TantivySource {
                     return Err(error);
                 }
             };
-        let revision = match staged.maintain(next, budget) {
+        let revision = match staged.maintain_for_publication(next, budget) {
             Ok(MaintainOutcome::Applied(revision)) => revision,
             Ok(MaintainOutcome::RebuildRequired) => {
                 drop(staged);
@@ -1014,6 +1023,7 @@ impl TantivySource {
             rank_material_len: fields.rank_material_len,
             documents,
             identity_ordinals,
+            durable: false,
             _root_lease: None,
             poisoned: false,
             rank_budget: RankSnapshotBudget::default(),
@@ -1086,8 +1096,34 @@ impl TantivySource {
     /// # Errors
     ///
     /// Returns a typed coverage, size, or Tantivy failure. A failure leaves
-    /// the resident binding and ordinal map unchanged.
+    /// the resident binding and ordinal map unchanged. Durable sources return
+    /// [`TantivySourceError::DurableProjectionImmutable`]; update those through
+    /// [`Self::open_or_advance_in_dir`] so a new root is published atomically.
     pub fn maintain(
+        &mut self,
+        next: &DocumentState,
+        budget: OverlayLimits,
+    ) -> Result<MaintainOutcome, TantivySourceError> {
+        if self.durable {
+            return Err(TantivySourceError::DurableProjectionImmutable);
+        }
+        self.maintain_projection(next, budget)
+    }
+
+    fn maintain_for_publication(
+        &mut self,
+        next: &DocumentState,
+        budget: OverlayLimits,
+    ) -> Result<MaintainOutcome, TantivySourceError> {
+        if !self.durable || self._root_lease.is_some() {
+            return Err(Self::corrupt(
+                "durable publication must mutate an unpinned staging projection",
+            ));
+        }
+        self.maintain_projection(next, budget)
+    }
+
+    fn maintain_projection(
         &mut self,
         next: &DocumentState,
         budget: OverlayLimits,
@@ -2478,6 +2514,7 @@ fn is_definitively_corrupt_root(error: &TantivySourceError) -> bool {
         TantivySourceError::BudgetExceeded { .. } => false,
         TantivySourceError::OrdinalMapCapacityExceeded { .. } => false,
         TantivySourceError::RankSnapshotBudgetExceeded { .. } => false,
+        TantivySourceError::DurableProjectionImmutable => false,
         TantivySourceError::Contract(_)
         | TantivySourceError::Backend(_)
         | TantivySourceError::Io(_) => false,
@@ -2655,6 +2692,7 @@ fn touch_durable_root(path: &Path) -> Result<(), std::io::Error> {
 fn pin_durable_root(source: &mut TantivySource, path: &Path) -> Result<(), TantivySourceError> {
     let lease = open_root_lease(path)?;
     lease.lock_shared()?;
+    source.durable = true;
     source._root_lease = Some(lease);
     Ok(())
 }
@@ -2999,6 +3037,13 @@ pub(crate) mod test_support {
         root: &std::path::Path,
     ) -> Result<u64, std::io::Error> {
         super::durable_root_size(root)
+    }
+
+    pub(crate) fn projection_files_for_test(
+        root: &std::path::Path,
+    ) -> Result<std::collections::BTreeMap<String, (u64, [u8; 32])>, super::TantivySourceError>
+    {
+        super::projection_file_fingerprints(root, super::DurableCacheBudget::default())
     }
 }
 

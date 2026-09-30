@@ -1290,6 +1290,82 @@ fn durable_selected_roots_reopen_update_and_roll_back_against_fixed_answers() {
 }
 
 #[test]
+fn public_mutation_cannot_rewrite_a_selected_durable_root() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-immutable-root-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let initial = state_for(
+        vec![
+            (document(1), vec![("name".into(), "old-alpha".into())]),
+            (document(2), vec![("name".into(), "old-beta".into())]),
+        ],
+        [91; 32],
+    );
+    let next = state_for(
+        vec![
+            (document(1), vec![("name".into(), "new-gamma".into())]),
+            (document(3), vec![("name".into(), "new-delta".into())]),
+        ],
+        [92; 32],
+    );
+    let mut selected_source =
+        TantivySource::open_or_build_in_dir(&initial, Limits::default(), &root)
+            .expect("publish initial selected root");
+    let root_key = hex_fingerprint(projection_fingerprint(initial.binding()));
+    let selected_root = root.join(DURABLE_ROOTS_DIRECTORY).join(root_key);
+    let before_files = crate::engine::test_support::projection_files_for_test(&selected_root)
+        .expect("hash exact selected files");
+    let before_bytes = crate::engine::test_support::durable_root_bytes_for_test(&selected_root)
+        .expect("measure selected root");
+
+    assert!(matches!(
+        selected_source.maintain(&next, OverlayLimits::default()),
+        Err(TantivySourceError::DurableProjectionImmutable)
+    ));
+    assert_eq!(
+        crate::engine::test_support::projection_files_for_test(&selected_root)
+            .expect("selected files after rejected mutation"),
+        before_files,
+        "a rejected public mutation must leave every selected file byte-identical"
+    );
+    assert_eq!(
+        crate::engine::test_support::durable_root_bytes_for_test(&selected_root)
+            .expect("selected root size after rejected mutation"),
+        before_bytes
+    );
+    drop(selected_source);
+
+    let cold = TantivySource::open_or_build_in_dir(&initial, Limits::default(), &root)
+        .expect("cold rollback to the original selected root");
+    assert_eq!(term_hits(&cold, "old-alpha"), vec![document(1)]);
+    assert_eq!(term_hits(&cold, "old-beta"), vec![document(2)]);
+    assert!(term_hits(&cold, "new-gamma").is_empty());
+    assert!(term_hits(&cold, "new-delta").is_empty());
+    drop(cold);
+
+    let raw_root = root.join("raw-durable-root");
+    std::fs::create_dir_all(&raw_root).expect("create direct durable root");
+    let mut raw_source = TantivySource::build_in_dir(&initial, Limits::default(), &raw_root)
+        .expect("build direct durable root");
+    assert!(matches!(
+        raw_source.maintain(&next, OverlayLimits::default()),
+        Err(TantivySourceError::DurableProjectionImmutable)
+    ));
+    drop(raw_source);
+    let raw_cold = TantivySource::open_in_dir(&initial, Limits::default(), &raw_root)
+        .expect("direct durable root remains reopenable");
+    assert_eq!(term_hits(&raw_cold, "old-alpha"), vec![document(1)]);
+    assert!(term_hits(&raw_cold, "new-gamma").is_empty());
+    drop(raw_cold);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn durable_budget_refusal_keeps_a_valid_selected_root_for_later_reopen() {
     let root = std::env::temp_dir().join(format!(
         "backend-tantivy-budget-{}-{}",

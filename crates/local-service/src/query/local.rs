@@ -987,7 +987,8 @@ impl QueryCoordinator {
                     | lexical::TantivySourceError::Corrupt(_)
                     | lexical::TantivySourceError::BudgetExceeded { .. }
                     | lexical::TantivySourceError::OrdinalMapCapacityExceeded { .. }
-                    | lexical::TantivySourceError::RankSnapshotBudgetExceeded { .. } => {
+                    | lexical::TantivySourceError::RankSnapshotBudgetExceeded { .. }
+                    | lexical::TantivySourceError::DurableProjectionImmutable => {
                         QueryError::LexicalProvider
                     }
                 })?
