@@ -30,6 +30,7 @@ use backend_present::{
     encode_serializable, fault_value, grammar_for_tool, lower, markdown, oversized_fault,
     record_list,
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
     Serialize, Serializer,
     ser::{SerializeMap, SerializeSeq},
@@ -784,7 +785,7 @@ impl<P: Product> Server<P> {
             RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
         })?;
         self.product
-            .decode_continuation(owner_token)
+            .decode_continuation(&owner_token)
             .map(Some)
             .map_err(|error| match error {
                 ClientError::StaleCursor => RpcError::stale_cursor(),
@@ -817,7 +818,7 @@ impl<P: Product> Server<P> {
         let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
             RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
         })?;
-        IndexSearchCursor::new(owner_token.to_owned()).map_err(|_| {
+        IndexSearchCursor::new(owner_token).map_err(|_| {
             RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
         })
     }
@@ -850,15 +851,16 @@ impl<P: Product> Server<P> {
     }
 
     fn sign_cursor_token_at(&self, expiry: u64, owner_token: &str, context: &[u8]) -> String {
-        let body = format!("{expiry}-{owner_token}");
+        let encoded_owner = URL_SAFE_NO_PAD.encode(owner_token.as_bytes());
+        let body = format!("{expiry}-{encoded_owner}");
         let mac = self.cursor_mac(&body, context);
         format!("mcp1-{body}-{}", hex_bytes(&mac.as_bytes()[..16]))
     }
 
-    fn verify_cursor_token<'a>(&self, token: &'a str, context: &[u8]) -> Option<&'a str> {
+    fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Option<String> {
         let body = token.strip_prefix("mcp1-")?;
         let (body, encoded_mac) = body.rsplit_once('-')?;
-        let (expiry, owner_token) = body.split_once('-')?;
+        let (expiry, encoded_owner) = body.split_once('-')?;
         let expiry = expiry.parse::<u64>().ok()?;
         // Treat the expiry second as closed: a token is valid strictly before
         // its deadline. This avoids a one-second replay window at the exact
@@ -870,7 +872,7 @@ impl<P: Product> Server<P> {
         if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
             return None;
         }
-        Some(owner_token)
+        decode_cursor_owner(encoded_owner)
     }
 
     fn cursor_mac(&self, body: &str, context: &[u8]) -> blake3::Hash {
@@ -1015,6 +1017,26 @@ fn hex_bytes(bytes: &[u8]) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
+}
+
+const MAX_CURSOR_OWNER_ENCODED_BYTES: usize = backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+    .saturating_mul(4)
+    .saturating_add(2)
+    / 3;
+
+fn decode_cursor_owner(encoded: &str) -> Option<String> {
+    if encoded.len() > MAX_CURSOR_OWNER_ENCODED_BYTES {
+        return None;
+    }
+    let decoded = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    if decoded.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+        || URL_SAFE_NO_PAD.encode(&decoded) != encoded
+    {
+        return None;
+    }
+    String::from_utf8(decoded)
+        .ok()
+        .filter(|owner_token| !owner_token.is_empty())
 }
 
 /// Renders one answer: Markdown for a reader, the typed DTO for a program.
