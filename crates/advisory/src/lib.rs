@@ -64,6 +64,28 @@ mod tests {
         parse_osv(osv(r#"[{"introduced":"0"},{"fixed":"1.2.0"},{"introduced":"2.0.0"},{"last_affected":"2.1.0"},{"introduced":"3.0.0"},{"limit":"3.1.0"}]"#).as_bytes(), 7).expect("valid OSV")
     }
 
+    fn aliased_object(id: &str, package: &str) -> Advisory {
+        let source = format!(
+            r#"{{"schema_version":"1.3.1","id":"{id}","aliases":["CVE-SHARED-1"],"affected":[{{"package":{{"ecosystem":"Cargo","name":"{package}"}},"ranges":[{{"type":"SEMVER","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
+        );
+        parse_osv(source.as_bytes(), 7).expect("valid aliased OSV")
+    }
+
+    fn complete_snapshot(entries: Vec<Advisory>) -> AdvisorySync {
+        AdvisorySync {
+            mode: SyncMode::Snapshot,
+            complete: true,
+            entries: entries.into_iter().map(AdvisoryDelta::Upsert).collect(),
+            freshness: FeedFreshness {
+                etag: None,
+                last_modified: None,
+                observed_at: 7,
+                expires_at: None,
+                not_modified: false,
+            },
+        }
+    }
+
     #[test]
     fn osv_event_boundaries_are_not_lexicographic() {
         let advisory = object();
@@ -236,6 +258,29 @@ unaffected = ["< 1.0.0"]
             journal.tombstone_reason(&CanonicalAdvisoryId("OSV-TEST-1".to_owned())),
             Some("snapshot-omitted")
         );
+    }
+
+    #[test]
+    fn complete_snapshot_admission_is_order_independent_and_failure_is_atomic() {
+        let left = aliased_object("OSV-A-1", "demo");
+        let right = aliased_object("OSV-Z-1", "demo");
+        let mut forward = AdvisoryJournal::new();
+        forward
+            .apply(complete_snapshot(vec![left.clone(), right.clone()]))
+            .expect("forward snapshot");
+        let mut reverse = AdvisoryJournal::new();
+        reverse
+            .apply(complete_snapshot(vec![right, left]))
+            .expect("reverse snapshot");
+        assert_eq!(forward, reverse);
+        assert!(forward.get(&CanonicalAdvisoryId("OSV-A-1".to_owned())).is_some());
+
+        let before = forward.clone();
+        let conflicting = aliased_object("OSV-BAD-1", "other");
+        assert!(forward
+            .apply(complete_snapshot(vec![aliased_object("OSV-NEXT-1", "demo"), conflicting]))
+            .is_err());
+        assert_eq!(forward, before, "a rejected feed must leave the old frontier intact");
     }
 
     #[test]
