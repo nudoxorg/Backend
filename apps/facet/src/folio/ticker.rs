@@ -13,7 +13,7 @@
 //! shell decides what it means. Keyboard: ←/→ one release, Home/End the
 //! first and newest.
 
-use super::state::{Names, Standing};
+use crate::data::release::{RegistryFact, SourceAvailability};
 use crate::data::text::{Shaped, shape};
 use crate::marks::semver::{self, Tick as Kind};
 use crate::measure::Measure;
@@ -35,12 +35,13 @@ pub struct Tick {
     /// The version as the registry spells it.
     pub version: SharedString,
     /// Its publish date (`2026-01-31`), when known.
-    pub date: Option<SharedString>,
-    /// Whether the publisher withdrew it.
-    pub standing: Standing,
-    /// Whether its names are read (in the index); a release that is not is
-    /// drawn quieter and says so.
-    pub names: Names,
+    pub date: RegistryFact<SharedString>,
+    /// Whether the publisher withdrew it; absence and disagreement stay distinct.
+    pub yanked: RegistryFact<bool>,
+    /// Whether the release source is present and verified on this machine.
+    pub source: SourceAvailability,
+    /// Whether the exact release is present in the current owner index.
+    pub indexed: RegistryFact<bool>,
     /// How big a step it was.
     pub kind: Kind,
     /// Days since 1970-01-01, when it has a date.
@@ -69,11 +70,13 @@ pub struct Release {
     /// The version as the registry spells it.
     pub version: String,
     /// Its publish date (`2026-01-31`), when known.
-    pub date: Option<String>,
-    /// Whether the publisher withdrew it.
-    pub standing: Standing,
-    /// Whether its names are read.
-    pub names: Names,
+    pub date: RegistryFact<String>,
+    /// Whether the publisher withdrew it; absence and disagreement stay distinct.
+    pub yanked: RegistryFact<bool>,
+    /// Whether the release source is present and verified on this machine.
+    pub source: SourceAvailability,
+    /// Whether the exact release is present in the current owner index.
+    pub indexed: RegistryFact<bool>,
 }
 
 impl TickerFacts {
@@ -89,16 +92,27 @@ impl TickerFacts {
             .zip(kinds)
             .map(|(r, kind)| Tick {
                 version: r.version.clone().into(),
-                date: r.date.clone().map(Into::into),
-                standing: r.standing,
-                names: r.names,
+                date: match &r.date {
+                    RegistryFact::Known(date) => RegistryFact::Known(date.clone().into()),
+                    RegistryFact::Missing => RegistryFact::Missing,
+                    RegistryFact::Ambiguous => RegistryFact::Ambiguous,
+                },
+                yanked: r.yanked.clone(),
+                source: r.source,
+                indexed: r.indexed.clone(),
                 kind,
-                day: r.date.as_deref().and_then(semver::days),
+                day: match &r.date {
+                    RegistryFact::Known(date) => semver::days(date),
+                    RegistryFact::Missing | RegistryFact::Ambiguous => None,
+                },
             })
             .collect();
-        let pin = pin.and_then(|pin| ticks.iter().position(|t| t.version == pin || semver::short(&t.version) == semver::short(pin)));
-        // The newest is the highest release that is not yanked.
-        let latest = ticks.iter().rposition(|t| t.standing == Standing::Available && t.kind != Kind::Pre).or_else(|| ticks.len().checked_sub(1));
+        // Registry versions are identities, not display labels: only exact
+        // spelling can establish a pin or the release the host is reading.
+        let pin = pin.and_then(|pin| ticks.iter().position(|t| t.version == pin));
+        // Only an explicit non-yanked fact establishes the newest release.
+        // Missing/conflicting status never silently becomes available.
+        let latest = ticks.iter().rposition(|t| t.yanked == RegistryFact::Known(false) && t.kind != Kind::Pre);
         Self {
             ticks,
             pin,
@@ -112,7 +126,7 @@ impl TickerFacts {
     /// The release being read (`None`: the pin).
     #[must_use]
     pub fn reading(mut self, version: Option<&str>) -> Self {
-        self.reading = version.and_then(|v| self.ticks.iter().position(|t| t.version == v || semver::short(&t.version) == semver::short(v)));
+        self.reading = version.and_then(|v| self.ticks.iter().position(|t| t.version == v));
         self
     }
 
@@ -494,34 +508,46 @@ impl Element for Ticker {
         if let Some(i) = hot {
             let tick = &facts.ticks[i];
             let mut parts: Vec<(SharedString, Hsla)> = vec![(tick.version.clone(), palette.ink0.into())];
-            if let Some(date) = &tick.date {
-                parts.push((date.clone(), palette.ink2.into()));
-            }
-            parts.push(if tick.standing == Standing::Yanked {
-                ("yanked".into(), palette.coral.base.into())
-            } else {
-                (
+            parts.push(match &tick.date {
+                RegistryFact::Known(date) => (date.clone(), palette.ink2.into()),
+                RegistryFact::Missing => ("date missing".into(), palette.ink2.into()),
+                RegistryFact::Ambiguous => ("date conflicts".into(), palette.ink2.into()),
+            });
+            parts.push(match &tick.yanked {
+                RegistryFact::Known(true) => ("yanked".into(), palette.coral.base.into()),
+                RegistryFact::Known(false) => (
                     match tick.kind {
-                        Kind::Breaking => "breaking",
-                        Kind::Minor => "features",
-                        Kind::Patch => "fixes",
-                        Kind::Pre => "pre-release",
+                        Kind::Breaking => "breaking · not yanked",
+                        Kind::Minor => "features · not yanked",
+                        Kind::Patch => "fixes · not yanked",
+                        Kind::Pre => "pre-release · not yanked",
                     }
                     .into(),
                     palette.ink1.into(),
-                )
+                ),
+                RegistryFact::Missing => ("yank status missing".into(), palette.ink2.into()),
+                RegistryFact::Ambiguous => ("yank status conflicts".into(), palette.ink2.into()),
+            });
+            parts.push(match tick.source {
+                SourceAvailability::Available => ("source local".into(), palette.ink2.into()),
+                SourceAvailability::Unavailable => ("source absent".into(), palette.ink2.into()),
+                SourceAvailability::Ambiguous => ("source conflicts".into(), palette.ink2.into()),
+                SourceAvailability::UnverifiedArchive => ("archive unverified".into(), palette.ink2.into()),
             });
             if facts.pin == Some(i) {
                 parts.push(("your pin".into(), palette.mint.base.into()));
             } else if facts.latest == Some(i) {
                 parts.push(("newest".into(), palette.amber.base.into()));
-            } else if let Some(ago) = tick.date.as_deref().and_then(|d| semver::ago(d, &facts.today)) {
+            } else if let RegistryFact::Known(date) = &tick.date
+                && let Some(ago) = semver::ago(date, &facts.today)
+            {
                 parts.push((format!("{ago} ago").into(), palette.ink2.into()));
             }
-            parts.push(if tick.names == Names::Read {
-                ("read".into(), palette.peri_hi.into())
-            } else {
-                ("not read yet".into(), palette.ink2.into())
+            parts.push(match &tick.indexed {
+                RegistryFact::Known(true) => ("release indexed".into(), palette.peri_hi.into()),
+                RegistryFact::Known(false) => ("release not indexed".into(), palette.ink2.into()),
+                RegistryFact::Missing => ("index status missing".into(), palette.ink2.into()),
+                RegistryFact::Ambiguous => ("index status conflicts".into(), palette.ink2.into()),
             });
             let label_role = self.measure.role(LABEL);
             let shaped: Vec<(Shaped, SharedString)> = parts.into_iter().map(|(w, ink)| (shape(w.clone(), label_role, ink, window), w)).collect();
@@ -725,7 +751,7 @@ fn bar_ink(facts: &TickerFacts, i: usize, hot: bool, palette: &Palette) -> Hsla 
     if facts.pin == Some(i) {
         return palette.mint.base.into();
     }
-    if tick.standing == Standing::Yanked {
+    if tick.yanked == RegistryFact::Known(true) {
         return palette.coral.base.into();
     }
     if facts.latest == Some(i) {
@@ -736,7 +762,7 @@ fn bar_ink(facts: &TickerFacts, i: usize, hot: bool, palette: &Palette) -> Hsla 
         Kind::Minor => palette.ink2.into(),
         Kind::Patch | Kind::Pre => palette.ink3.into(),
     };
-    if tick.names == Names::Read {
+    if tick.indexed == RegistryFact::Known(true) {
         base
     } else {
         crate::paint::mix(base, palette.g1.into(), 0.45)
@@ -746,10 +772,19 @@ fn bar_ink(facts: &TickerFacts, i: usize, hot: bool, palette: &Palette) -> Hsla 
 #[cfg(test)]
 mod tests {
     use super::{Release, TickerFacts, civil_year, fisheye};
-    use crate::folio::state::{Names, Standing};
+    use crate::data::release::{RegistryFact, SourceAvailability};
 
     fn facts(releases: &[(&str, Option<&str>)], pin: &str) -> TickerFacts {
-        let releases: Vec<Release> = releases.iter().map(|(v, d)| Release { version: (*v).to_owned(), date: d.map(str::to_owned), standing: Standing::Available, names: Names::Read }).collect();
+        let releases: Vec<Release> = releases
+            .iter()
+            .map(|(v, d)| Release {
+                version: (*v).to_owned(),
+                date: d.map_or(RegistryFact::Missing, |d| RegistryFact::Known(d.to_owned())),
+                yanked: RegistryFact::Known(false),
+                source: SourceAvailability::Available,
+                indexed: RegistryFact::Known(true),
+            })
+            .collect();
         TickerFacts::new(&releases, Some(pin), "2026-09-28")
     }
 
@@ -760,6 +795,48 @@ mod tests {
         assert_eq!(order, ["0.5.11", "0.8.23", "1.0.0", "1.1.6"]);
         assert_eq!(f.pin, Some(1));
         assert_eq!(f.latest, Some(3));
+    }
+
+    #[test]
+    fn uncertain_yank_facts_never_become_the_newest_release() {
+        let releases = [
+            Release {
+                version: "1.0.0".to_owned(),
+                date: RegistryFact::Missing,
+                yanked: RegistryFact::Known(false),
+                source: SourceAvailability::Available,
+                indexed: RegistryFact::Known(true),
+            },
+            Release {
+                version: "2.0.0".to_owned(),
+                date: RegistryFact::Ambiguous,
+                yanked: RegistryFact::Ambiguous,
+                source: SourceAvailability::Ambiguous,
+                indexed: RegistryFact::Ambiguous,
+            },
+        ];
+        let f = TickerFacts::new(&releases, None, "2026-09-28");
+        assert_eq!(f.latest, Some(0));
+        assert_eq!(f.ticks[1].date, RegistryFact::Ambiguous);
+        assert_eq!(f.ticks[1].yanked, RegistryFact::Ambiguous);
+        assert_eq!(f.ticks[1].source, SourceAvailability::Ambiguous);
+        assert_eq!(f.ticks[1].indexed, RegistryFact::Ambiguous);
+
+        let unresolved = [Release {
+            version: "1.0.0".to_owned(),
+            date: RegistryFact::Missing,
+            yanked: RegistryFact::Missing,
+            source: SourceAvailability::Unavailable,
+            indexed: RegistryFact::Missing,
+        }];
+        assert_eq!(TickerFacts::new(&unresolved, None, "2026-09-28").latest, None);
+    }
+
+    #[test]
+    fn pin_and_reading_match_only_exact_registry_versions() {
+        let f = facts(&[("1.0.0", None)], "1.0").reading(Some("1.0"));
+        assert_eq!(f.pin, None);
+        assert_eq!(f.reading, None);
     }
 
     /// A release's door is a target a pointer can hit: at least 24 px each
