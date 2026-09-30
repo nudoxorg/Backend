@@ -304,10 +304,14 @@ impl Shelf {
             if on {
                 tab = tab.child(div().absolute().left_0().right_0().bottom(px(-1.0)).h(px(2.0)).bg(palette.peri.base));
             }
-            bar = bar.child(tab.on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
+            // A tab is a control a person points at (the keyboard reaches
+            // lenses by their `G` chords, not by walking): published as a
+            // target, not a stop on the walk.
+            let tab = tab.on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
                 shelf.take_keyboard(cx);
                 shelf.perform(&Do::Lens(lens), cx);
-            })));
+            }));
+            bar = bar.child(self.targets.track(format!("shelf-lens-{}", lens.key()), tab));
         }
         bar.into_any_element()
     }

@@ -266,7 +266,9 @@ pub fn door(facts: &TickerFacts, measure: &Measure, tick: usize) -> Bounds<Pixel
     let s = measure.scale();
     let xs = facts.positions(f32::from(measure.width()), PAD * s);
     let x = xs.get(tick).copied().unwrap_or(0.0);
-    Bounds::new(gpui::point(px(x - 5.0 * s), px(TOP * s)), gpui::size(px(10.0 * s), px(BARS * s)))
+    // At least 24 px wide, centred on its bar: a target the pointer can hit
+    // (the bar itself is 10 px).
+    Bounds::new(gpui::point(px(x - 12.0 * s), px(TOP * s)), gpui::size(px(24.0 * s), px(BARS * s)))
 }
 
 impl Ticker {
@@ -756,6 +758,20 @@ mod tests {
         assert_eq!(order, ["0.5.11", "0.8.23", "1.0.0", "1.1.6"]);
         assert_eq!(f.pin, Some(1));
         assert_eq!(f.latest, Some(3));
+    }
+
+    /// A release's door is a target a pointer can hit: at least 24 px each
+    /// way, centred on its 10 px bar (J1 linted every door 10 x 44 px).
+    #[test]
+    fn a_release_door_is_at_least_24_px_and_centred_on_its_bar() {
+        let f = facts(&[("0.5.11", None), ("0.8.23", None), ("1.0.0", None)], "0.8.23");
+        let measure = crate::Measure::new(gpui::px(600.0), &crate::theme::Facet::default());
+        let xs = f.positions(f32::from(measure.width()), super::PAD * measure.scale());
+        for (tick, x) in xs.iter().enumerate() {
+            let door = super::door(&f, &measure, tick);
+            assert!(f32::from(door.size.width) >= 24.0 && f32::from(door.size.height) >= 24.0, "{tick}: {door:?}");
+            assert!((f32::from(door.center().x) - x).abs() < 0.01, "{tick}: centred on its bar at {x}: {door:?}");
+        }
     }
 
     #[test]

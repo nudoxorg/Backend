@@ -610,3 +610,21 @@ fn a_shelf_row_hands_its_name_to_the_title_it_opens(cx: &mut TestAppContext) {
     let on_title = rig.cx.update(|window, cx| facet::motion::shared::last_bounds(key.clone(), window, cx)).expect("the title owns the key");
     assert!(f32::from(on_title.origin.x) > 264.0, "after arriving, the key is the title's, in the reader: {on_title:?}");
 }
+
+/// The lens tabs are controls a person points at: each is a published
+/// target (J9 could not click "Contents": its words were not a link), and a
+/// click on one gives the sidebar the keyboard, so what is typed next
+/// narrows it.
+#[gpui::test]
+fn a_lens_tab_is_a_target_and_a_click_on_it_gives_the_sidebar_the_keyboard(cx: &mut TestAppContext) {
+    let mut rig = open(cx);
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let tabs: Vec<&str> = ledger.targets.iter().map(|target| target.key.as_str()).filter(|key| key.starts_with("shelf-lens-")).collect();
+    assert_eq!(tabs, ["shelf-lens-contents", "shelf-lens-versions", "shelf-lens-rests-on", "shelf-lens-used-by"]);
+    let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(zone, super::focus::Zone::Shelf, "the sidebar does not have the keyboard yet");
+    click_text(&mut rig, "Contents");
+    let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone, super::focus::Zone::Shelf, "a click on a lens gives the sidebar the keyboard");
+}

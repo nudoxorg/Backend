@@ -90,8 +90,17 @@ fn differs(facts: &Facts, current: &[String], name: &str, kind: Kind, signature:
             return format!("{} {}", other[0], port.ty.word);
         }
     }
-    // Nothing differs in the words of the name: say what it is instead of saying its name twice.
-    if tail.is_empty() { kind.word().to_owned() } else { tail.join(" ") }
+    // Only the tail is shared (`ser_value` beside `de_value`): what differs
+    // is its head.
+    let trail = current.iter().rev().zip(other.iter().rev()).take_while(|(a, b)| a == b).count();
+    if lead == 0 && trail > 0 && trail < other.len() {
+        return other[..other.len() - trail].join(" ");
+    }
+    // Nothing differs in the words of the name, or nothing is shared (the
+    // whole name differs, and it is already shown): say what it is instead
+    // of saying its name twice (`Settings` beside `read_settings` read
+    // "Settings settings").
+    if tail.is_empty() || lead == 0 { kind.word().to_owned() } else { tail.join(" ") }
 }
 
 fn siblings(facts: &Facts) -> Vec<Sibling> {
@@ -183,6 +192,20 @@ mod tests {
         assert!(slice.outcomes.fails);
         let reader = rail.siblings.iter().find(|s| s.name == "from_reader").expect("from_reader");
         assert_eq!(reader.differs, "from a reader");
+    }
+
+    /// A name that shares no words with the page's is not said twice: its
+    /// kind is; one that shares only its tail says its head (J1: "Settings
+    /// settings", "project_name project name" beside `read_settings`).
+    #[test]
+    fn a_sibling_that_shares_nothing_says_its_kind_and_one_that_shares_a_tail_says_its_head() {
+        let mut f = Facts::new("read_settings", Kind::Function, Lang::Rust, "toml_pin");
+        f.beside = vec![beside("Settings", Kind::Struct, None), beside("read_settings", Kind::Function, None), beside("project_name", Kind::Function, None), beside("write_settings", Kind::Function, None)];
+        let rail = rail(&f, false);
+        let said = |name: &str| rail.siblings.iter().find(|s| s.name == name).map(|s| s.differs.clone()).unwrap_or_else(|| panic!("{name} is beside it"));
+        assert_eq!(said("Settings"), Kind::Struct.word());
+        assert_eq!(said("project_name"), Kind::Function.word());
+        assert_eq!(said("write_settings"), "write");
     }
 
     #[test]

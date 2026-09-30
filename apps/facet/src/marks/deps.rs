@@ -335,10 +335,13 @@ impl RenderOnce for DepLink {
             .child(text(name_key, self.facts.name.clone(), card::DEP, &measure, ink));
         let open = self.on_open.clone();
         let click_target = target.clone();
+        // A link is a target a finger or pointer can hit: at least 24 px
+        // tall, its words centred in it.
         let link = div()
             .id(ElementId::NamedChild(Arc::new(self.id.clone()), "link".into()))
             .flex()
             .items_center()
+            .min_h(px(24.0 * s))
             .gap(px(7.0 * s))
             .cursor_pointer()
             .child(diamond)
