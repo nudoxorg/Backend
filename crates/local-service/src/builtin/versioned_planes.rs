@@ -292,7 +292,7 @@ impl OwnedSemanticAuthoritySelectionSource {
     }
 }
 
-struct OwnedSemanticAuthorityPublicationFence<'a> {
+pub(super) struct OwnedSemanticAuthorityPublicationFence<'a> {
     _selections: RwLockReadGuard<'a, super::semantic_authority::SelectedClosureSnapshot>,
     target: SemanticTargetKey,
     stamp: SelectedGenerationStamp,
@@ -413,7 +413,7 @@ impl SelectedNativeImageSource for SemanticAuthoritySelectionSource<'_> {
     }
 }
 
-struct SemanticAuthorityPublicationFence<'a> {
+pub(super) struct SemanticAuthorityPublicationFence<'a> {
     _lease: super::semantic_authority::CommittedSemanticSelectionLease<'a>,
     target: SemanticTargetKey,
     stamp: SelectedGenerationStamp,
