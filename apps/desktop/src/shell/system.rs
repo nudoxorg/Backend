@@ -27,7 +27,10 @@ pub(crate) enum SystemPreference<T> {
 ///
 /// The preference can be unavailable on platforms that do not expose a
 /// supported system API. In that case the shell's documented System fallback
-/// is full motion.
+/// is full motion. Keep this value for the lifetime of the shell that consumes
+/// [`Self::changes`]: dropping it unregisters the macOS or Windows observer, or
+/// stops the background portal monitor. Cloned receivers only keep the channel
+/// alive; they do not keep the native subscription installed.
 pub(crate) struct ReducedMotionWatch {
     initial: SystemPreference<bool>,
     changes: async_channel::Receiver<SystemPreference<bool>>,
@@ -49,9 +52,11 @@ impl ReducedMotionWatch {
     }
 }
 
-/// Installs the platform watcher and returns promptly. Linux portal reads are
-/// performed on a worker thread; native macOS and Windows APIs do not spawn a
-/// process. Unsupported APIs produce `Unavailable`, never a guessed value.
+/// Installs the platform watcher and returns promptly. Linux portal reads and
+/// signal monitoring are performed on a worker thread; dropping the watch
+/// stops its monitor and reaps the child away from the render path. Native
+/// macOS and Windows APIs do not spawn a process. Unsupported APIs produce
+/// `Unavailable`, never a guessed value.
 #[must_use]
 pub(crate) fn watch_reduced_motion() -> ReducedMotionWatch {
     let (sender, changes) = async_channel::unbounded();
@@ -271,7 +276,11 @@ mod portal_motion {
             let mut guard = self.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(mut child) = guard.take() {
                 let _ = child.kill();
-                let _ = child.wait();
+                // Reap away from shell teardown and the render executor too;
+                // killing the monitor closes stdout and wakes its reader.
+                thread::spawn(move || {
+                    let _ = child.wait();
+                });
             }
         }
     }
