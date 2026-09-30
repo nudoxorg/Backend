@@ -1413,8 +1413,14 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         use std::time::Instant;
 
-        let root = scratch("withheld-owner");
-        let endpoint = root.join("owner.sock");
+        let endpoint = std::env::temp_dir().join(format!(
+            "ri-{}-{}.sock",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("wall clock")
+                .as_nanos()
+        ));
         let listener =
             backend_replication::LocalListener::bind(&endpoint).expect("bind withheld test owner");
         fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600))
@@ -1450,7 +1456,7 @@ mod tests {
 
         release.send(()).expect("release withheld owner thread");
         server.join().expect("join withheld owner thread");
-        fs::remove_dir_all(root).expect("remove withheld owner test directory");
+        fs::remove_file(endpoint).expect("remove withheld owner socket");
     }
 
     #[test]
@@ -1464,7 +1470,7 @@ mod tests {
             .register_capability(&capability, capability.claims.issued_at_unix_ms)
             .expect("register signed grant");
         usage.charge_request(&capability).expect("first request");
-        usage.admit_response(&capability, 8).expect("reserve bytes");
+        let _response_permit = usage.admit_response(&capability, 8).expect("reserve bytes");
         drop(usage);
 
         let reopened = RemoteIndexUsage::open(&path, owner).expect("cold-reopened ledger");
@@ -1812,6 +1818,8 @@ mod tests {
         let root = scratch("pinned-parent");
         let parent = root.join("state");
         fs::create_dir(&parent).expect("create ledger state directory");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700))
+            .expect("make original ledger state directory private");
         let path = parent.join("remote-index-grants.v1");
         let capability = capability(4, 64);
         let usage = RemoteIndexUsage::open(&path, capability.claims.server)
