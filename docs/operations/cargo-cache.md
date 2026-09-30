@@ -8,10 +8,15 @@ parallel without mutating the same intermediate graph. A warm directory is
 reused without cleaning only by the same canonical worktree; handing it to a
 different worktree first resets the old Cargo graph. Cross-worktree compiler
 reuse comes from `sccache`, which avoids stale `rmeta` and public-API leakage.
-The pool size is also a hard host-wide compiler ceiling. When every lane is
+The pool size caps simultaneous Cargo invocations sharing `NUDOX_BUILD_CACHE_ROOT`.
+Use the same cache root for every lane on a host; different roots have separate
+leases. When every lane is
 busy, another caller waits for `NUDOX_CARGO_SLOT_WAIT_MS` (five minutes by
 default) and exits with status 75 if no lane opens. It never creates an
-overflow compiler, so bursts of agent work cannot exceed the memory budget.
+overflow lane. This caps invocations, not compiler memory: an explicit
+`CARGO_BUILD_JOBS` is preserved, and each invocation's workload has its own RAM
+cost. The readiness runs also coordinate four machine-wide lanes explicitly
+and set one compiler job per lane.
 
 Compiling commands also acquire a lease keyed by the canonical git worktree
 path. The first command records the warm lane it used in the cache affinity
@@ -32,7 +37,7 @@ such as `package` and `clean`, also stay on the conservative path. Unknown
 commands use the compiling path so a new Cargo subcommand cannot accidentally
 weaken isolation. An explicit
 `CARGO_BUILD_BUILD_DIR` is always preserved verbatim. It still acquires the
-same worktree and host capacity leases, while leaving pooled build graphs and
+same worktree and shared-cache capacity leases, while leaving pooled build graphs and
 their affinity unchanged. An override cannot start a fifth compiler when the
 four configured slots are occupied. Explicit directories are caller-managed;
 callers must give each concurrently active worktree its own directory.
@@ -45,7 +50,7 @@ handlers forward cancellation to Cargo and release the slot and worktree
 leases through the single exit cleanup path. The affinity map is updated by a
 same-worktree lease and an atomic rename, so a killed process can leave only a
 harmless temporary file. Warm lanes are retained for reuse, which bounds both
-cache growth and active compiler memory by the configured pool.
+the number of warm build graphs and simultaneous wrapped Cargo invocations.
 
 The protocol tests are intentionally shell-only and run without Nix or a
 workspace build:
@@ -57,4 +62,5 @@ workspace build:
 They use fake Cargo, git, and sccache processes to prove same-worktree
 serialization and reuse, independent-worktree parallelism, metadata bypass,
 explicit override preservation, dead-owner recovery, cancellation cleanup,
-and the hard concurrency ceiling.
+and the shared-root invocation ceiling. They do not measure real compiler
+memory or arbitrate callers using a different cache root or unwrapped Cargo.
