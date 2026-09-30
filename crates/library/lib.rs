@@ -135,7 +135,8 @@ pub use registry_forge::{
     RegistryForgeSourceIdentity,
 };
 pub use registry_native::{
-    MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS, MAX_REGISTRY_NATIVE_TEXT_BYTES,
+    CargoPublishTime, MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS,
+    MAX_REGISTRY_NATIVE_TEXT_BYTES,
     REGISTRY_NATIVE_METADATA_VERSION, RegistryCargoMetadata, RegistryConanMetadata,
     RegistryConanSourceAvailability, RegistryGoMetadata, RegistryGoRetract, RegistryGoSourceFacts,
     RegistryMavenChecksum, RegistryMavenMetadata, RegistryNativeArtifact,

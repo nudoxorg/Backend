@@ -20,9 +20,8 @@ use flate2::read::{DeflateDecoder, GzDecoder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::io::Seek;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -37,7 +36,6 @@ const PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS: u64 = 60_000;
 /// an observation for every package version they have ever fetched.
 const MAX_FRESH_PACKAGE_FACT_OBSERVATIONS: usize = 4_096;
 const MAX_OSV_ZIP_MEMBERS: usize = 100_000;
-static ADVISORY_ZIP_TEMP_NONCE: AtomicU64 = AtomicU64::new(1);
 
 /// Durable registry state attached to one local owner loop.
 pub(super) struct RegistryGateway {
@@ -419,6 +417,7 @@ impl RegistryGateway {
                 complete: frontier.is_some_and(|frontier| frontier.complete),
                 advisories: frontier.map_or(0, |frontier| frontier.entries),
                 observed_at: frontier.map_or(0, |frontier| frontier.observed_at),
+                expires_at: frontier.and_then(|frontier| frontier.expires_at),
                 error,
             });
         }
@@ -1426,19 +1425,9 @@ fn open_advisory_authority(
 }
 
 /// A bounded, seekable compressed OSV response staged outside the authority
-/// journal. The temporary archive is removed on every exit path.
-struct AdvisoryZipTempFile {
-    path: PathBuf,
-}
-
-impl Drop for AdvisoryZipTempFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
+/// journal. The anonymous temporary file is removed when this handle closes.
 struct AdvisoryZipSpool {
-    temp: AdvisoryZipTempFile,
+    file: File,
     digest: [u8; 32],
 }
 
@@ -1449,27 +1438,8 @@ fn spool_advisory_zip(
     if maximum == 0 {
         return Err("OSV ZIP compressed bound is zero".to_owned());
     }
-    let temp_root = std::env::temp_dir();
-    let (path, mut file) = (0..16)
-        .find_map(|_| {
-            let nonce = ADVISORY_ZIP_TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
-            let path = temp_root.join(format!(
-                "backend-osv-{}-{nonce}.zip",
-                std::process::id()
-            ));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => Some(Ok((path, file))),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
-                Err(error) => Some(Err(error)),
-            }
-        })
-        .ok_or_else(|| "could not reserve bounded OSV ZIP spool".to_owned())?
-        .map_err(|_| "could not create bounded OSV ZIP spool".to_owned())?;
-    let temp = AdvisoryZipTempFile { path };
+    let mut file = tempfile::tempfile()
+        .map_err(|_| "could not create private bounded OSV ZIP spool".to_owned())?;
     let mut hasher = blake3::Hasher::new();
     let mut total = 0usize;
     let mut buffer = [0_u8; 64 * 1024];
@@ -1515,9 +1485,8 @@ fn spool_advisory_zip(
         drop(file);
         return Err("could not sync bounded OSV ZIP spool".to_owned());
     }
-    drop(file);
     Ok(AdvisoryZipSpool {
-        temp,
+        file,
         digest: *hasher.finalize().as_bytes(),
     })
 }
@@ -1573,8 +1542,48 @@ fn bounded_advisory_error(mut error: String) -> String {
     error
 }
 
+fn advisory_http_expiry(
+    cache_control: Option<&str>,
+    age: Option<&str>,
+    expires: Option<&str>,
+    observed_at: u64,
+) -> Option<u64> {
+    let mut deadlines = Vec::new();
+    if let Some(cache_control) = cache_control {
+        for directive in cache_control.split(',').map(str::trim) {
+            let (name, value) = directive
+                .split_once('=')
+                .map_or((directive, None), |(name, value)| (name.trim(), Some(value.trim())));
+            if name.eq_ignore_ascii_case("no-cache") || name.eq_ignore_ascii_case("no-store") {
+                return Some(observed_at);
+            }
+            if name.eq_ignore_ascii_case("max-age") {
+                if let Some(max_age) = value
+                    .map(|value| value.trim_matches('"'))
+                    .and_then(|value| value.parse::<u64>().ok())
+                {
+                    let response_age = age
+                        .and_then(|age| age.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
+                    deadlines.push(observed_at.saturating_add(max_age.saturating_sub(response_age)));
+                }
+            }
+        }
+    }
+    if let Some(expires) = expires
+        && let Ok(deadline) = httpdate::parse_http_date(expires)
+    {
+        let seconds = deadline
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        deadlines.push(seconds);
+    }
+    deadlines.into_iter().min()
+}
+
 fn parse_osv_zip(
-    spool: &AdvisoryZipSpool,
+    spool: &mut AdvisoryZipSpool,
     observed_at: u64,
     maximum_expanded_bytes: usize,
     etag: Option<String>,
@@ -1584,10 +1593,12 @@ fn parse_osv_zip(
     let scope = scope.ok_or_else(|| {
         "OSV ZIP requires an explicit --advisory-osv-scope selection".to_owned()
     })?;
-    let input = File::open(&spool.temp.path)
-        .map_err(|_| "could not reopen bounded OSV ZIP spool".to_owned())?;
+    spool
+        .file
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| "could not rewind private OSV ZIP spool".to_owned())?;
     parse_osv_zip_reader(
-        input,
+        &mut spool.file,
         spool.digest,
         observed_at,
         maximum_expanded_bytes,
@@ -1683,16 +1694,18 @@ fn parse_osv_zip_reader(
         ));
         entries.push(advisory);
     }
-    if archive.len() != 0 && entries.is_empty() {
+    if documents == 0 {
         return Err("OSV advisory ZIP contains no advisory JSON documents".to_owned());
     }
-    Ok(backend_engine::advisory::AuthorityFeed::from_entries(
+    let mut feed = backend_engine::advisory::AuthorityFeed::from_entries(
         backend_engine::advisory::AdvisorySource::Osv,
         entries,
         observed_at,
         etag,
         last_modified,
-    ))
+    );
+    feed.osv_scope = Some(scope);
+    Ok(feed)
 }
 
 fn refresh_authority_source(
@@ -1708,6 +1721,7 @@ fn refresh_authority_source(
     let observed_at = advisory_now();
     let is_osv_zip = advisory_location_is_osv_zip(source);
     let mut zip_spool = None;
+    let mut response_expires_at = None;
     let (bytes, etag, last_modified, not_modified) = if source.location.starts_with("https://")
         || source.location.starts_with("http://localhost")
         || source.location.starts_with("http://127.0.0.1")
@@ -1730,6 +1744,21 @@ fn refresh_authority_source(
             request = request.header("if-modified-since", last_modified);
         }
         let mut response = request.call().map_err(public_advisory_request_error)?;
+        response_expires_at = advisory_http_expiry(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            response
+                .headers()
+                .get("age")
+                .and_then(|value| value.to_str().ok()),
+            response
+                .headers()
+                .get("expires")
+                .and_then(|value| value.to_str().ok()),
+            observed_at,
+        );
         let status = response.status().as_u16();
         let etag = response
             .headers()
@@ -1798,16 +1827,16 @@ fn refresh_authority_source(
             )
         }
     };
-    if not_modified {
-        Ok(backend_engine::advisory::AuthorityFeed::not_modified(
+    let mut feed = if not_modified {
+        backend_engine::advisory::AuthorityFeed::not_modified(
             source.source,
             observed_at,
             etag,
             last_modified,
-        ))
+        )
     } else {
-        if let Some(spool) = zip_spool.as_ref() {
-            parse_osv_zip(spool, observed_at, maximum, etag, last_modified, osv_scope)
+        if let Some(spool) = zip_spool.as_mut() {
+            parse_osv_zip(spool, observed_at, maximum, etag, last_modified, osv_scope)?
         } else {
             let mut feed = backend_engine::advisory::AuthorityFeed::parse(
                 source.source,
@@ -1823,9 +1852,11 @@ fn refresh_authority_source(
                 // an explicit selection is a complete OSV snapshot.
                 feed.complete = false;
             }
-            Ok(feed)
+            feed
         }
-    }
+    };
+    feed.freshness.expires_at = response_expires_at;
+    Ok(feed)
 }
 
 fn read_rustsec_tree(
@@ -2812,6 +2843,27 @@ mod tests {
         assert!(error.len() <= 256);
         assert!(!error.contains("secret"));
         assert!(!error.contains("hidden"));
+    }
+
+    #[test]
+    fn advisory_expiry_uses_cache_age_and_absolute_expiry_conservatively() {
+        assert_eq!(
+            advisory_http_expiry(Some("public, max-age=120"), Some("20"), None, 1_000),
+            Some(1_100)
+        );
+        assert_eq!(
+            advisory_http_expiry(
+                Some("max-age=120"),
+                Some("20"),
+                Some("Thu, 01 Jan 1970 00:18:00 GMT"),
+                1_000,
+            ),
+            Some(1_080)
+        );
+        assert_eq!(
+            advisory_http_expiry(Some("no-cache"), None, None, 1_000),
+            Some(1_000)
+        );
     }
 
     fn empty_product_view() -> backend_engine::ViewRoot {
@@ -3953,6 +4005,22 @@ mod tests {
             Some(expected_snapshot.as_str())
         );
 
+        let mut authority = backend_engine::advisory::AdvisoryAuthority::new(100);
+        let scope = backend_engine::advisory::OsvFeedScope::Ecosystem(
+            backend_engine::advisory::OsvEcosystem::Cargo,
+        );
+        authority.configure_sources([backend_engine::advisory::AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority.apply(feed).expect("admit OSV snapshot");
+        let package = backend_engine::advisory::normalize_package("cargo", "demo")
+            .expect("Cargo identity");
+        let observation = authority.observe(&package, "1.0.0", false, false, 17, false);
+        assert_eq!(
+            observation.coverage,
+            backend_engine::advisory::AdvisoryCoverage::Complete
+        );
+        assert_eq!(observation.advisories.len(), 1);
+
         let cursor = Cursor::new(Vec::new());
         let empty = zip::ZipWriter::new(cursor)
             .finish()
@@ -3968,18 +4036,101 @@ mod tests {
             backend_engine::advisory::OsvFeedScope::Ecosystem(
                 backend_engine::advisory::OsvEcosystem::Cargo,
             ),
-        )
-        .expect("valid explicitly selected empty snapshot");
-        assert!(empty.complete);
-        assert!(empty.entries.is_empty());
+        );
+        assert!(empty.is_err(), "empty ZIP cannot assert a clean feed");
+    }
+
+    #[test]
+    fn osv_zip_rejects_malformed_declared_overrun_and_crc_corruption() {
+        let scope = backend_engine::advisory::OsvFeedScope::Ecosystem(
+            backend_engine::advisory::OsvEcosystem::Cargo,
+        );
+        assert!(
+            parse_osv_zip_reader(
+                Cursor::new(b"not a ZIP"),
+                [0; 32],
+                17,
+                1024,
+                None,
+                None,
+                scope,
+            )
+            .is_err()
+        );
+
+        let document = br#"{"id":"OSV-TEST-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "osv/CARGO/OSV-TEST-1.json",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("start OSV JSON member");
+        writer.write_all(document).expect("write OSV JSON member");
+        let valid = writer.finish().expect("finish OSV ZIP").into_inner();
+        assert!(
+            parse_osv_zip_reader(
+                Cursor::new(valid.clone()),
+                *blake3::hash(&valid).as_bytes(),
+                17,
+                document.len() - 1,
+                None,
+                None,
+                scope,
+            )
+            .is_err(),
+            "declared expansion beyond the configured bound must fail before allocation"
+        );
+
+        let mut corrupt = valid;
+        let local_header = corrupt
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x03\x04")
+            .expect("local ZIP header");
+        let central_header = corrupt
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x01\x02")
+            .expect("central ZIP header");
+        corrupt[local_header + 14] ^= 1;
+        corrupt[central_header + 16] ^= 1;
+        assert!(
+            parse_osv_zip_reader(
+                Cursor::new(corrupt),
+                [0; 32],
+                17,
+                1024,
+                None,
+                None,
+                scope,
+            )
+            .is_err(),
+            "archive checksum corruption must not be admitted"
+        );
     }
 
     #[test]
     fn osv_zip_spool_hashes_a_bounded_stream_and_rejects_overrun() {
         let bytes = b"bounded OSV archive";
-        let spool = spool_advisory_zip(Cursor::new(bytes), bytes.len()).expect("exact bound");
+        let mut spool = spool_advisory_zip(Cursor::new(bytes), bytes.len()).expect("exact bound");
         assert_eq!(spool.digest, *blake3::hash(bytes).as_bytes());
-        assert_eq!(fs::read(&spool.temp.path).expect("spooled bytes"), bytes);
+        spool.file.seek(SeekFrom::Start(0)).expect("rewind spool");
+        let mut contents = Vec::new();
+        spool.file.read_to_end(&mut contents).expect("read spool");
+        assert_eq!(contents, bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                spool
+                    .file
+                    .metadata()
+                    .expect("spool metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
         assert!(spool_advisory_zip(Cursor::new(bytes), bytes.len() - 1).is_err());
     }
 

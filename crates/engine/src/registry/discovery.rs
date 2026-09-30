@@ -7,6 +7,7 @@
 //! ordered event stream; crates.io's public crates listing is a mutable,
 //! paginated recent-updates view and is therefore always marked windowed.
 
+use backend_library::CargoPublishTime;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1799,7 +1800,7 @@ pub fn parse_crates_sparse_package(
         }
         let published_at = cargo_optional_string_facet(record, "pubtime", 128)?;
         if let DiscoveryFacet::Known(timestamp) = &published_at
-            && !valid_cargo_publish_time(timestamp)
+            && CargoPublishTime::parse(timestamp).is_none()
         {
             return Err(DiscoveryError::Protocol);
         }
@@ -2095,71 +2096,6 @@ fn cargo_optional_bool_facet(
         Some(serde_json::Value::Bool(value)) => Ok(DiscoveryFacet::Known(*value)),
         Some(_) => Err(DiscoveryError::Protocol),
     }
-}
-
-fn valid_cargo_publish_time(value: &str) -> bool {
-    let Some((date, time)) = value.split_once('T') else {
-        return false;
-    };
-    let Some(time) = time.strip_suffix('Z') else {
-        return false;
-    };
-    match time.split_once('.') {
-        Some((clock, fraction)) => {
-            !fraction.is_empty()
-                && fraction.len() <= 9
-                && fraction.bytes().all(|byte| byte.is_ascii_digit())
-                && valid_cargo_publish_clock(date, clock)
-        }
-        None => valid_cargo_publish_clock(date, time),
-    }
-}
-
-fn valid_cargo_publish_clock(date: &str, clock: &str) -> bool {
-    if date.len() != 10 || clock.len() != 8 {
-        return false;
-    }
-    let mut date_parts = date.split('-');
-    let (Some(year), Some(month), Some(day), None) = (
-        date_parts.next(),
-        date_parts.next(),
-        date_parts.next(),
-        date_parts.next(),
-    ) else {
-        return false;
-    };
-    let (Ok(year), Ok(month), Ok(day)) = (
-        year.parse::<u32>(),
-        month.parse::<u32>(),
-        day.parse::<u32>(),
-    ) else {
-        return false;
-    };
-    let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days_in_month = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap_year => 29,
-        2 => 28,
-        _ => return false,
-    };
-    let mut clock_parts = clock.split(':');
-    let (Some(hour), Some(minute), Some(second), None) = (
-        clock_parts.next(),
-        clock_parts.next(),
-        clock_parts.next(),
-        clock_parts.next(),
-    ) else {
-        return false;
-    };
-    let (Ok(hour), Ok(minute), Ok(second)) = (
-        hour.parse::<u32>(),
-        minute.parse::<u32>(),
-        second.parse::<u32>(),
-    ) else {
-        return false;
-    };
-    day > 0 && day <= days_in_month && hour <= 23 && minute <= 59 && second <= 59
 }
 
 fn parse_npm_cursor(cursor: &DiscoveryCursor) -> Result<u64, DiscoveryError> {
@@ -2623,6 +2559,35 @@ mod tests {
             DiscoveryFacet::Unknown,
             "the sparse row did not establish an MSRV"
         );
+    }
+
+    #[test]
+    fn cargo_sparse_publish_time_uses_strict_shared_calendar_parser() {
+        let valid = br#"{"name":"demo","vers":"1.0.0","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"2024-02-29T23:59:59Z"}"#;
+        let package = parse_crates_sparse_package(valid, "demo", 10).expect("leap-day row");
+        assert_eq!(
+            package.releases[0].metadata.published_at,
+            DiscoveryFacet::Known("2024-02-29T23:59:59Z".to_owned())
+        );
+
+        for invalid in [
+            "2023-02-29T23:59:59Z",
+            "2024-02-30T23:59:59Z",
+            "2024-2-09T23:59:59Z",
+            "2024-02-09T3:59:59Z",
+            "2024-02-09T23:59:59.1Z",
+        ] {
+            let row = format!(
+                r#"{{"name":"demo","vers":"1.0.0","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"{invalid}"}}"#
+            );
+            assert!(
+                matches!(
+                    parse_crates_sparse_package(row.as_bytes(), "demo", 10),
+                    Err(DiscoveryError::Protocol)
+                ),
+                "accepted {invalid}"
+            );
+        }
     }
 
     #[test]

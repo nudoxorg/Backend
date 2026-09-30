@@ -5382,7 +5382,7 @@ fn cargo_sparse_rows_retain_features_and_reject_typed_policy_shapes() {
         .expect("Cargo endpoint");
     let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
         .expect("adapter");
-    let row = br#"{"name":"demo","vers":"1.2.3","deps":[{"name":"serde","req":"^1","kind":"normal","optional":true,"features":["derive"]}],"cksum":"0000000000000000000000000000000000000000000000000000000000000000","features":{"default":["std","dep:serde"],"std":[]},"features2":{"default":["serde?/alloc"],"new":["dep:new"]},"pubtime":"2025-11-12T19:30:12Z","rust_version":"1.60","yanked":true,"links":"demo-sys"}
+    let row = br#"{"name":"demo","vers":"1.2.3","deps":[{"name":"serde","req":"^1","kind":"normal","optional":true,"features":["derive"]}],"cksum":"0000000000000000000000000000000000000000000000000000000000000000","features":{"default":["std","dep:serde"],"std":[]},"features2":{"default":["serde?/alloc"],"new":["dep:new"]},"pubtime":"2024-02-29T23:59:59Z","rust_version":"1.60","yanked":true,"links":"demo-sys"}
 "#;
     let releases = adapter.decode(row).expect("Cargo sparse row");
     assert_eq!(releases.len(), 1);
@@ -5405,7 +5405,7 @@ fn cargo_sparse_rows_retain_features_and_reject_typed_policy_shapes() {
     let backend_library::RegistryNativeDetails::Cargo(cargo) = &release.metadata().details else {
         panic!("Cargo adapter must retain typed Cargo metadata");
     };
-    assert_eq!(cargo.published_at.as_deref(), Some("2025-11-12T19:30:12Z"));
+    assert_eq!(cargo.published_at.as_deref(), Some("2024-02-29T23:59:59Z"));
     assert_eq!(cargo.rust_version.as_deref(), Some("1.60"));
     assert_eq!(cargo.features2.len(), 2);
     assert_eq!(cargo.features2[0].name, "default");
@@ -5420,7 +5420,7 @@ fn cargo_sparse_rows_retain_features_and_reject_typed_policy_shapes() {
         adapter.decode(malformed),
         Err(TransportFailure::Protocol)
     ));
-    let malformed_time = br#"{"name":"demo","vers":"1.2.3","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"not-a-time"}"#;
+    let malformed_time = br#"{"name":"demo","vers":"1.2.3","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"2024-02-30T23:59:59Z"}"#;
     assert!(matches!(
         adapter.decode(malformed_time),
         Err(TransportFailure::Protocol)

@@ -41,8 +41,10 @@ backend-version = { path = "../version" }
 blake3.workspace = true
 base64.workspace = true
 hmac.workspace = true
+httpdate.workspace = true
 hashlink = "=0.12.2"
 tantivy.workspace = true
+tempfile.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true
 flate2.workspace = true
