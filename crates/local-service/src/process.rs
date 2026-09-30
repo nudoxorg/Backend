@@ -94,6 +94,8 @@ pub const REGISTRY_DISCOVERY_OFFLINE_ENV: &str = "BACKEND_REGISTRY_DISCOVERY_OFF
 pub const REGISTRY_DISCOVERY_MAX_PAGES_ENV: &str = "BACKEND_REGISTRY_DISCOVERY_MAX_PAGES";
 /// Environment variable naming an OSV JSON/batch feed path or HTTPS URL.
 pub const ADVISORY_OSV_ENV: &str = "BACKEND_ADVISORY_OSV";
+/// Environment variable selecting `all` or one OSV ecosystem archive scope.
+pub const ADVISORY_OSV_SCOPE_ENV: &str = "BACKEND_ADVISORY_OSV_SCOPE";
 /// Environment variable naming a RustSec TOML/tree path or HTTPS URL.
 pub const ADVISORY_RUSTSEC_ENV: &str = "BACKEND_ADVISORY_RUSTSEC";
 /// Environment variable naming a GHSA JSON/batch feed path or HTTPS URL.
@@ -492,6 +494,9 @@ pub struct AdvisorySourceConfig {
 pub struct AdvisoryConfig {
     /// Configured authorities. Empty is a valid unknown-coverage state.
     pub sources: Vec<AdvisorySourceConfig>,
+    /// Coverage scope explicitly selected for an OSV ZIP source. JSON inputs
+    /// remain incomplete observations because they cannot prove a full dump.
+    pub osv_scope: Option<backend_engine::advisory::OsvFeedScope>,
     /// Maximum age of a source frontier before it becomes stale.
     pub max_age_secs: u64,
     /// Whether refresh network effects are disabled.
@@ -692,16 +697,34 @@ fn parse_source_spec(spec: &str) -> Result<(RegistryEcosystem, String), ProcessE
 impl AdvisoryConfig {
     fn from_options(
         osv: Option<String>,
+        osv_scope: Option<String>,
         rustsec: Option<String>,
         ghsa: Option<String>,
         offline: bool,
         max_age_secs: Option<usize>,
     ) -> Result<Self, ProcessError> {
+        let osv = osv.or_else(|| std::env::var(ADVISORY_OSV_ENV).ok());
+        let osv_scope = osv_scope.or_else(|| std::env::var(ADVISORY_OSV_SCOPE_ENV).ok());
+        let osv_scope = match osv_scope.as_deref() {
+            Some(value) => Some(
+                backend_engine::advisory::OsvFeedScope::parse(value).ok_or_else(|| {
+                    ProcessError::Usage(format!(
+                        "{ADVISORY_OSV_SCOPE_ENV} must be all, cargo, npm, pypi, maven, nuget, or go"
+                    ))
+                })?,
+            ),
+            None => None,
+        };
+        if osv_scope.is_some() && osv.is_none() {
+            return Err(ProcessError::Usage(
+                "an OSV scope requires an OSV source".to_owned(),
+            ));
+        }
         let mut sources = Vec::new();
         for (source, value, env) in [
             (
                 AdvisorySource::Osv,
-                osv.or_else(|| std::env::var(ADVISORY_OSV_ENV).ok()),
+                osv,
                 ADVISORY_OSV_ENV,
             ),
             (
@@ -737,6 +760,7 @@ impl AdvisoryConfig {
             .unwrap_or(86_400);
         Ok(Self {
             sources,
+            osv_scope,
             max_age_secs,
             offline: offline || env_flag(ADVISORY_OFFLINE_ENV),
             gate: advisory_gate_from_env()?,
@@ -841,6 +865,7 @@ impl ProcessConfig {
             registry_sources,
             registry_auth_scopes,
             advisory_osv,
+            advisory_osv_scope,
             advisory_rustsec,
             advisory_ghsa,
             advisory_offline,
@@ -937,6 +962,7 @@ impl ProcessConfig {
         )?;
         let advisory = AdvisoryConfig::from_options(
             advisory_osv,
+            advisory_osv_scope,
             advisory_rustsec,
             advisory_ghsa,
             advisory_offline,
@@ -995,6 +1021,7 @@ struct ParsedOptions {
     registry_sources: Vec<String>,
     registry_auth_scopes: Vec<String>,
     advisory_osv: Option<String>,
+    advisory_osv_scope: Option<String>,
     advisory_rustsec: Option<String>,
     advisory_ghsa: Option<String>,
     advisory_offline: bool,
@@ -1036,6 +1063,7 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
         registry_sources: Vec::new(),
         registry_auth_scopes: Vec::new(),
         advisory_osv: None,
+        advisory_osv_scope: None,
         advisory_rustsec: None,
         advisory_ghsa: None,
         advisory_offline: false,
@@ -1119,6 +1147,10 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
             }
             "--advisory-osv" => {
                 parsed.advisory_osv = Some(next_value(&mut args, "--advisory-osv")?);
+            }
+            "--advisory-osv-scope" => {
+                parsed.advisory_osv_scope =
+                    Some(next_value(&mut args, "--advisory-osv-scope")?);
             }
             "--advisory-rustsec" => {
                 parsed.advisory_rustsec = Some(next_value(&mut args, "--advisory-rustsec")?);
@@ -1311,7 +1343,7 @@ pub fn main_entry() -> ExitCode {
 
 fn print_help() {
     println!(
-        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-source ECO=URL]... [--registry-auth-for URL=TOKEN]... [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--advisory-osv PATH|URL] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--forge-offline] [--forge-auth-file PATH] [--forge-auth-file-for PROVIDER=PATH]... [--forge-max-archive-bytes BYTES] [--forge-max-metadata-bytes BYTES] [--forge-max-readme-bytes BYTES] [--forge-max-entries COUNT] [--forge-max-tree-bytes BYTES] [--forge-max-path-bytes BYTES] [--forge-max-entry-bytes BYTES] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
+        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-source ECO=URL]... [--registry-auth-for URL=TOKEN]... [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--advisory-osv PATH|URL] [--advisory-osv-scope all|cargo|npm|pypi|maven|nuget|go] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--forge-offline] [--forge-auth-file PATH] [--forge-auth-file-for PROVIDER=PATH]... [--forge-max-archive-bytes BYTES] [--forge-max-metadata-bytes BYTES] [--forge-max-readme-bytes BYTES] [--forge-max-entries COUNT] [--forge-max-tree-bytes BYTES] [--forge-max-path-bytes BYTES] [--forge-max-entry-bytes BYTES] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
     );
     println!(
         "without paths, locald opens this project's private per-user app-data root and derives a short local endpoint"
@@ -1698,6 +1730,8 @@ mod tests {
             "/tmp/backend-locald-advisory".to_owned(),
             "--advisory-osv".to_owned(),
             "/tmp/osv.json".to_owned(),
+            "--advisory-osv-scope".to_owned(),
+            "pypi".to_owned(),
             "--advisory-rustsec".to_owned(),
             "https://example.invalid/rustsec.json".to_owned(),
             "--advisory-offline".to_owned(),
@@ -1707,8 +1741,33 @@ mod tests {
         assert!(parsed.is_ok(), "advisory composition: {parsed:?}");
         let Ok(parsed) = parsed else { return };
         assert_eq!(parsed.advisory.sources.len(), 2);
+        assert_eq!(
+            parsed.advisory.osv_scope,
+            Some(backend_engine::advisory::OsvFeedScope::Ecosystem(
+                backend_engine::advisory::OsvEcosystem::Pypi
+            ))
+        );
         assert!(parsed.advisory.offline);
         assert_eq!(parsed.advisory.max_age_secs, 42);
         assert_eq!(parsed.advisory.max_feed_bytes, ADVISORY_MAX_FEED_BYTES);
+
+        let invalid_scope = AdvisoryConfig::from_options(
+            Some("/tmp/osv.zip".to_owned()),
+            Some("conan".to_owned()),
+            None,
+            None,
+            false,
+            None,
+        );
+        assert!(matches!(invalid_scope, Err(ProcessError::Usage(_))));
+        let orphan_scope = AdvisoryConfig::from_options(
+            None,
+            Some("cargo".to_owned()),
+            None,
+            None,
+            false,
+            None,
+        );
+        assert!(matches!(orphan_scope, Err(ProcessError::Usage(_))));
     }
 }

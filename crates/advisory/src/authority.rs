@@ -23,7 +23,7 @@ use super::{
     AdvisoryJournal, AdvisoryJournalError, AdvisoryObservation, AdvisorySource, AdvisorySync,
     AliasGraph, AliasGraphError, FeedFreshness, FreshnessState, GhsaParseError,
     MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, MalwareCoverage, PackageIdentity,
-    ParseError, RustSecParseError, SyncMode,
+    OsvEcosystem, OsvFeedScope, ParseError, RustSecParseError, SyncMode,
 };
 
 /// A configured authority feed. The bytes are supplied by the composition
@@ -264,6 +264,10 @@ pub enum AuthorityAvailability {
 pub struct AuthorityFrontier {
     /// Source authority.
     pub source: AdvisorySource,
+    /// OSV database partition represented by this frontier. Other authorities
+    /// do not use this scope.
+    #[serde(default)]
+    pub osv_scope: Option<OsvFeedScope>,
     /// Monotonic source-local journal sequence.
     pub sequence: u64,
     /// Active object/tombstone digest at this frontier.
@@ -296,6 +300,10 @@ pub struct AdvisoryAuthority {
     /// bodies remain auditable but do not silently become active again.
     #[serde(default)]
     configured: BTreeSet<AdvisorySource>,
+    /// Selected OSV partition. `None` means an old or unselected source whose
+    /// coverage must remain incomplete until a scoped snapshot is admitted.
+    #[serde(default)]
+    osv_scope: Option<OsvFeedScope>,
     /// Cross-authority alias graph.  Per-source journals retain their own source-local graph for
     /// transactional admission; this graph prevents OSV/RustSec/GHSA feeds from silently
     /// disagreeing about one shared CVE/GHSA identity.
@@ -316,6 +324,7 @@ impl AdvisoryAuthority {
             max_age_secs,
             offline: false,
             configured: BTreeSet::new(),
+            osv_scope: Some(OsvFeedScope::All),
             aliases: AliasGraph::default(),
             journals: BTreeMap::new(),
             frontiers: BTreeMap::new(),
@@ -326,6 +335,13 @@ impl AdvisoryAuthority {
     /// Cached bodies for removed sources are retained for audit/replay.
     pub fn configure_sources(&mut self, sources: impl IntoIterator<Item = AdvisorySource>) {
         self.configured = sources.into_iter().collect();
+    }
+
+    /// Selects the OSV dataset whose coverage is admitted by this authority.
+    /// A changed selection invalidates the old OSV frontier until that exact
+    /// partition has been refreshed.
+    pub const fn configure_osv_scope(&mut self, scope: Option<OsvFeedScope>) {
+        self.osv_scope = scope;
     }
 
     /// Updates the freshness window selected by the current process without
@@ -444,6 +460,21 @@ impl AdvisoryAuthority {
         if feed.freshness.not_modified && journal.checkpoint().is_none() {
             return Err(AuthorityApplyError::NotModifiedWithoutFrontier(source));
         }
+        let previous_frontier = self.frontiers.get(&source);
+        let complete = if feed.freshness.not_modified {
+            previous_frontier.is_some_and(|frontier| frontier.complete)
+        } else {
+            feed.complete
+        };
+        let osv_scope = if source == AdvisorySource::Osv {
+            if feed.freshness.not_modified {
+                previous_frontier.and_then(|frontier| frontier.osv_scope)
+            } else {
+                self.osv_scope
+            }
+        } else {
+            None
+        };
         let entries = feed
             .entries
             .into_iter()
@@ -452,7 +483,7 @@ impl AdvisoryAuthority {
         let checkpoint = journal
             .apply(AdvisorySync {
                 mode: feed.mode,
-                complete: feed.complete,
+                complete,
                 entries,
                 freshness: feed.freshness.clone(),
             })
@@ -460,12 +491,13 @@ impl AdvisoryAuthority {
             .clone();
         let frontier = AuthorityFrontier {
             source,
+            osv_scope,
             sequence: checkpoint.sequence,
             digest: checkpoint.digest,
             etag: checkpoint.freshness.etag.clone(),
             last_modified: checkpoint.freshness.last_modified.clone(),
             observed_at: checkpoint.freshness.observed_at,
-            complete: feed.complete,
+            complete,
             availability: AuthorityAvailability::Available,
             entries: u64::try_from(journal.iter().count()).unwrap_or(u64::MAX),
             not_modified: checkpoint.freshness.not_modified,
@@ -491,6 +523,9 @@ impl AdvisoryAuthority {
         let previous = self.frontiers.get(&source);
         let frontier = AuthorityFrontier {
             source,
+            osv_scope: previous
+                .and_then(|value| value.osv_scope)
+                .or(self.osv_scope.filter(|_| source == AdvisorySource::Osv)),
             sequence: previous.map_or(0, |value| value.sequence),
             digest: previous.map_or([0; 32], |value| value.digest),
             etag: previous.and_then(|value| value.etag.clone()),
@@ -557,6 +592,33 @@ impl AdvisoryAuthority {
                 missing = true;
                 continue;
             };
+            if *source == AdvisorySource::Osv {
+                let selected_scope = match (self.osv_scope, frontier.osv_scope) {
+                    (Some(configured), Some(observed)) if configured == observed => {
+                        Some(Some(configured))
+                    }
+                    (None, None) => Some(None),
+                    _ => None,
+                };
+                match selected_scope {
+                    Some(Some(OsvFeedScope::All)) => {}
+                    Some(Some(OsvFeedScope::Ecosystem(ecosystem)))
+                        if package.ecosystem == ecosystem.package_ecosystem() => {}
+                    Some(Some(OsvFeedScope::Ecosystem(_))) | None => {
+                        complete = false;
+                        partial = true;
+                        missing = true;
+                        continue;
+                    }
+                    Some(None) => {
+                        // An unselected JSON source can contribute positive
+                        // matches, but it cannot establish absence across any
+                        // ecosystem.
+                        complete = false;
+                        partial = true;
+                    }
+                }
+            }
             if frontier.availability == AuthorityAvailability::Unavailable {
                 unavailable = true;
             }
@@ -782,6 +844,13 @@ mod tests {
         br#"{"schema_version":"1.3.1","id":"OSV-AUTH-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#.to_vec()
     }
 
+    fn osv_for(id: &str, ecosystem: &str) -> Vec<u8> {
+        format!(
+            r#"{{"schema_version":"1.3.1","id":"{id}","modified":"2026-01-02T00:00:00Z","affected":[{{"package":{{"ecosystem":"{ecosystem}","name":"demo"}},"ranges":[{{"type":"SEMVER","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
+        )
+        .into_bytes()
+    }
+
     #[test]
     fn source_batches_are_durable_and_exact_versioned() {
         let feed = AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
@@ -795,6 +864,59 @@ mod tests {
         let clean = authority.observe(&package, "2.0.0", false, false, 10, false);
         assert!(clean.advisories.is_empty());
         assert_eq!(clean.coverage, AdvisoryCoverage::Complete);
+    }
+
+    #[test]
+    fn selected_osv_ecosystem_never_claims_global_clean_coverage() {
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(OsvFeedScope::Ecosystem(OsvEcosystem::Cargo)));
+        authority
+            .apply(
+                AuthorityFeed::parse(
+                    AdvisorySource::Osv,
+                    &osv_for("OSV-CARGO-1", "Cargo"),
+                    10,
+                    None,
+                    None,
+                )
+                .expect("Cargo OSV feed"),
+            )
+            .expect("admit Cargo OSV feed");
+
+        let cargo = super::super::normalize_package("cargo", "demo").expect("Cargo identity");
+        let cargo_observation = authority.observe(&cargo, "1.0.0", false, false, 10, false);
+        assert_eq!(cargo_observation.coverage, AdvisoryCoverage::Complete);
+        assert_eq!(cargo_observation.advisories.len(), 1);
+
+        let pypi = super::super::normalize_package("pypi", "demo").expect("PyPI identity");
+        let outside_scope = authority.observe(&pypi, "1.0.0", false, false, 10, false);
+        assert_eq!(outside_scope.coverage, AdvisoryCoverage::Partial);
+        assert!(outside_scope.advisories.is_empty());
+
+        authority.configure_osv_scope(Some(OsvFeedScope::Ecosystem(OsvEcosystem::Pypi)));
+        let old_frontier = authority.observe(&cargo, "1.0.0", false, false, 10, false);
+        assert_eq!(old_frontier.coverage, AdvisoryCoverage::Partial);
+        assert!(old_frontier.advisories.is_empty());
+        let not_yet_refreshed = authority.observe(&pypi, "1.0.0", false, false, 10, false);
+        assert_eq!(not_yet_refreshed.coverage, AdvisoryCoverage::Partial);
+        assert!(not_yet_refreshed.advisories.is_empty());
+
+        authority
+            .apply(
+                AuthorityFeed::parse(
+                    AdvisorySource::Osv,
+                    &osv_for("OSV-PYPI-1", "PyPI"),
+                    11,
+                    None,
+                    None,
+                )
+                .expect("PyPI OSV feed"),
+            )
+            .expect("admit PyPI OSV feed");
+        let pypi_observation = authority.observe(&pypi, "1.0.0", false, false, 11, false);
+        assert_eq!(pypi_observation.coverage, AdvisoryCoverage::Complete);
+        assert_eq!(pypi_observation.advisories.len(), 1);
     }
 
     #[test]

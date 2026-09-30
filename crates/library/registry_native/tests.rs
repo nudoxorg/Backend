@@ -48,9 +48,17 @@ fn recorded_metadata_round_trips_the_canonical_binary_shape() {
         .into_boxed_slice(),
         features: vec![RegistryNativeFeature {
             name: "default".to_owned(),
-            members: vec!["dep:serde".to_owned()].into_boxed_slice(),
+            members: vec!["dep:serde".to_owned(), "serde?/alloc".to_owned()]
+                .into_boxed_slice(),
         }]
         .into_boxed_slice(),
+        features2: vec![RegistryNativeFeature {
+            name: "default".to_owned(),
+            members: vec!["serde?/alloc".to_owned()].into_boxed_slice(),
+        }]
+        .into_boxed_slice(),
+        published_at: Some("2025-11-12T19:30:12Z".to_owned()),
+        rust_version: Some("1.60".to_owned()),
     }));
     let canonical = value.encode_canonical();
     assert_eq!(
@@ -80,6 +88,9 @@ fn cargo_features_must_be_lexically_sorted() {
             },
         ]
         .into_boxed_slice(),
+        features2: Box::new([]),
+        published_at: None,
+        rust_version: None,
     }));
     assert_eq!(value.admit(), Err(ProductAdmissionError::NativeMetadata));
 }

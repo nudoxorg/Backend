@@ -792,6 +792,10 @@ const fn weaker_freshness(left: FreshnessState, right: FreshnessState) -> Freshn
 pub struct AdvisorySourceState {
     /// `rustsec`, `osv` or `ghsa`.
     pub source: String,
+    /// Explicit OSV coverage scope (`all`, an ecosystem name, or
+    /// `unspecified`). Other authorities do not set this field.
+    #[serde(default)]
+    pub scope: Option<String>,
     /// Whether the source vouches for every package it does not name.
     pub complete: bool,
     /// Advisories the source holds.

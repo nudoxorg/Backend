@@ -186,6 +186,16 @@ pub struct RegistryCargoMetadata {
     pub artifacts: Box<[RegistryNativeArtifact]>,
     /// Canonically ordered Cargo features.
     pub features: Box<[RegistryNativeFeature]>,
+    /// Canonically ordered feature declarations from the Cargo `features2` field.
+    /// `features` contains the effective union for compatibility with existing consumers.
+    #[serde(default)]
+    pub features2: Box<[RegistryNativeFeature]>,
+    /// Original registry publish time from the Cargo sparse index row.
+    #[serde(default)]
+    pub published_at: Option<String>,
+    /// Declared minimum supported Rust version from the Cargo sparse index row.
+    #[serde(default)]
+    pub rust_version: Option<String>,
 }
 
 /// npm native details.

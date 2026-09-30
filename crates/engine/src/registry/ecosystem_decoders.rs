@@ -265,6 +265,11 @@ impl EcosystemAdapter {
             release.dependency_facts =
                 cargo_dependencies(&release.coordinate, &row, line.as_bytes())?;
             release.set_features(cargo_features(&row)?);
+            release.set_features2(cargo_features2(&row)?);
+            release.set_cargo_release_metadata(
+                cargo_optional_text(&row, "pubtime", 128, true)?,
+                cargo_optional_text(&row, "rust_version", 128, false)?,
+            );
             let archive_url = release.archive_url.clone();
             release.set_artifacts(vec![NativeArtifact {
                 filename: Arc::from(format!("{}-{}.crate", self.package_name(), version)),
@@ -2429,10 +2434,45 @@ fn strict_bool(value: &Value, name: &str) -> Result<Option<bool>, TransportFailu
 }
 
 fn cargo_features(row: &Value) -> Result<Vec<NativeFeature>, TransportFailure> {
-    let Some(raw_features) = row.get("features") else {
-        return Ok(Vec::new());
-    };
-    let features = raw_features.as_object().ok_or(TransportFailure::Protocol)?;
+    cargo_features_from_fields(row, &["features", "features2"])
+}
+
+fn cargo_features2(row: &Value) -> Result<Vec<NativeFeature>, TransportFailure> {
+    cargo_features_from_fields(row, &["features2"])
+}
+
+fn cargo_features_from_fields(
+    row: &Value,
+    field_names: &[&str],
+) -> Result<Vec<NativeFeature>, TransportFailure> {
+    let mut features = BTreeMap::<String, BTreeSet<String>>::new();
+    for field_name in field_names {
+        let Some(raw_features) = row.get(field_name) else {
+            continue;
+        };
+        let values = raw_features.as_object().ok_or(TransportFailure::Protocol)?;
+        if values.len() > super::MAX_NATIVE_RELEASES {
+            return Err(TransportFailure::Overrun {
+                measured: u64::try_from(values.len()).map_err(|_| TransportFailure::Bounds)?,
+                limit: u64::try_from(super::MAX_NATIVE_RELEASES)
+                    .map_err(|_| TransportFailure::Bounds)?,
+            });
+        }
+        for (name, members) in values {
+            if name.is_empty() || name.len() > 1024 {
+                return Err(TransportFailure::Protocol);
+            }
+            let members = members.as_array().ok_or(TransportFailure::Protocol)?;
+            let target = features.entry(name.clone()).or_default();
+            for member in members {
+                let member = member.as_str().ok_or(TransportFailure::Protocol)?;
+                if member.is_empty() || member.len() > 1024 {
+                    return Err(TransportFailure::Protocol);
+                }
+                target.insert(member.to_owned());
+            }
+        }
+    }
     if features.len() > super::MAX_NATIVE_RELEASES {
         return Err(TransportFailure::Overrun {
             measured: u64::try_from(features.len()).map_err(|_| TransportFailure::Bounds)?,
@@ -2440,31 +2480,55 @@ fn cargo_features(row: &Value) -> Result<Vec<NativeFeature>, TransportFailure> {
                 .map_err(|_| TransportFailure::Bounds)?,
         });
     }
-    let mut output = Vec::with_capacity(features.len());
-    for (name, members) in features {
-        if name.is_empty() || name.len() > 1024 {
-            return Err(TransportFailure::Protocol);
-        }
-        let members = members.as_array().ok_or(TransportFailure::Protocol)?;
-        let mut members = members
-            .iter()
-            .map(|member| {
-                let member = member.as_str().ok_or(TransportFailure::Protocol)?;
-                if member.is_empty() || member.len() > 1024 {
-                    return Err(TransportFailure::Protocol);
-                }
-                Ok(Arc::<str>::from(member))
-            })
-            .collect::<Result<Vec<_>, TransportFailure>>()?;
-        members.sort();
-        members.dedup();
-        output.push(NativeFeature {
-            name: Arc::from(name.as_str()),
-            members: members.into_boxed_slice(),
-        });
+    Ok(features
+        .into_iter()
+        .map(|(name, members)| NativeFeature {
+            name: Arc::from(name),
+            members: members
+                .into_iter()
+                .map(Arc::<str>::from)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        })
+        .collect())
+}
+
+fn cargo_optional_text(
+    row: &Value,
+    field_name: &str,
+    maximum_bytes: usize,
+    timestamp: bool,
+) -> Result<Option<Arc<str>>, TransportFailure> {
+    let value = match row.get(field_name) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(value)) => value,
+        Some(_) => return Err(TransportFailure::Protocol),
+    };
+    if value.is_empty()
+        || value.len() > maximum_bytes
+        || value.contains('\0')
+        || (timestamp && !valid_cargo_publish_time(value))
+        || (!timestamp && value.bytes().any(|byte| byte.is_ascii_whitespace()))
+    {
+        return Err(TransportFailure::Protocol);
     }
-    output.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(output)
+    Ok(Some(Arc::from(value.as_str())))
+}
+
+fn valid_cargo_publish_time(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 20
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'Z'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16 | 19) || byte.is_ascii_digit())
+}
 }
 
 fn npm_dist_tags(root: &Value) -> Result<Vec<NativeDistTag>, TransportFailure> {

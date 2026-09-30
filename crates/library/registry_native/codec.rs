@@ -23,7 +23,6 @@ mod decode;
 mod encode;
 
 const REGISTRY_NATIVE_CODEC_MAGIC: &[u8; 4] = b"RNMD";
-const REGISTRY_NATIVE_CODEC_VERSION: u8 = 1;
 
 /// Errors returned while decoding the canonical native metadata wire value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,11 +64,11 @@ impl RegistryNativeMetadata {
     pub fn encode_canonical(&self) -> Vec<u8> {
         let mut output = Vec::new();
         output.extend_from_slice(REGISTRY_NATIVE_CODEC_MAGIC);
-        output.push(REGISTRY_NATIVE_CODEC_VERSION);
+        output.push(u8::try_from(self.version).unwrap_or_default());
         encode::put_u16(&mut output, self.version);
         encode::write_availability(&mut output, &self.availability);
         encode::write_provenance(&mut output, &self.provenance);
-        encode::write_details(&mut output, &self.details);
+        encode::write_details(&mut output, &self.details, self.version);
         output
     }
 
@@ -82,16 +81,17 @@ impl RegistryNativeMetadata {
         if reader.take_exact(4)? != REGISTRY_NATIVE_CODEC_MAGIC {
             return Err(RegistryNativeMetadataCodecError::Tag);
         }
-        if reader.take_u8()? != REGISTRY_NATIVE_CODEC_VERSION {
+        let codec_version = u16::from(reader.take_u8()?);
+        if !matches!(codec_version, 1 | 2 | REGISTRY_NATIVE_METADATA_VERSION) {
             return Err(RegistryNativeMetadataCodecError::Tag);
         }
         let value = RegistryNativeMetadata {
             version: reader.take_u16()?,
             availability: decode::read_availability(&mut reader)?,
             provenance: decode::read_provenance(&mut reader)?,
-            details: decode::read_details(&mut reader)?,
+            details: decode::read_details(&mut reader, codec_version)?,
         };
-        if !reader.is_empty() {
+        if !reader.is_empty() || value.version != codec_version {
             return Err(RegistryNativeMetadataCodecError::Bounds);
         }
         value
@@ -105,7 +105,12 @@ impl RegistryNativeMetadata {
         self.admit()?;
         let encoded = self.encode_canonical();
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"nudox.registry.native-metadata.v1\0");
+        hasher.update(match self.version {
+            1 => b"nudox.registry.native-metadata.v1\0".as_slice(),
+            2 => b"nudox.registry.native-metadata.v2\0".as_slice(),
+            REGISTRY_NATIVE_METADATA_VERSION => b"nudox.registry.native-metadata.v3\0".as_slice(),
+            _ => return Err(ProductAdmissionError::NativeMetadata),
+        });
         hasher.update(&encoded);
         Ok(*hasher.finalize().as_bytes())
     }

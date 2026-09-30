@@ -4,7 +4,7 @@ use super::{
     MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS, REGISTRY_NATIVE_METADATA_VERSION,
     RegistryGoSourceFacts, RegistryMavenChecksum, RegistryNativeArtifact,
     RegistryNativeAvailability, RegistryNativeChecksum, RegistryNativeChecksumAlgorithm,
-    RegistryNativeDetails, RegistryNativeEvidenceClaim, RegistryNativeMetadata,
+    RegistryNativeDetails, RegistryNativeEvidenceClaim, RegistryNativeFeature, RegistryNativeMetadata,
     RegistryNativeObservation, RegistryNativeProvenance,
 };
 
@@ -23,7 +23,7 @@ impl RegistryNativeMetadata {
 
     /// Validates bounds, canonical ordering, and closed checksum widths.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
-        if self.version != REGISTRY_NATIVE_METADATA_VERSION {
+        if !matches!(self.version, 1 | 2 | REGISTRY_NATIVE_METADATA_VERSION) {
             return Err(ProductAdmissionError::NativeMetadata);
         }
         validate_availability(&self.availability)?;
@@ -50,7 +50,7 @@ impl RegistryNativeMetadata {
             ) => return Err(ProductAdmissionError::NativeMetadata),
             _ => {}
         }
-        validate_details(&self.details)?;
+        validate_details(&self.details, self.version)?;
         let encoded = self.encode_canonical();
         if encoded.len() > MAX_REGISTRY_NATIVE_METADATA_BYTES {
             return Err(ProductAdmissionError::NativeMetadata);
@@ -73,25 +73,25 @@ fn validate_provenance(value: &RegistryNativeProvenance) -> Result<(), ProductAd
     }
 }
 
-fn validate_details(value: &RegistryNativeDetails) -> Result<(), ProductAdmissionError> {
+fn validate_details(
+    value: &RegistryNativeDetails,
+    schema_version: u16,
+) -> Result<(), ProductAdmissionError> {
     match value {
         RegistryNativeDetails::Cargo(value) => {
             validate_artifacts(&value.artifacts)?;
-            if value.features.len() > MAX_REGISTRY_NATIVE_ROWS {
+            validate_optional_text(value.published_at.as_ref())?;
+            validate_optional_text(value.rust_version.as_ref())?;
+            if schema_version == 1
+                && (value.published_at.is_some() || value.rust_version.is_some())
+            {
                 return Err(ProductAdmissionError::NativeMetadata);
             }
-            let mut previous = None;
-            for feature in &value.features {
-                validate_text(&feature.name)?;
-                if previous.is_some_and(|previous| previous >= feature.name.as_str()) {
-                    return Err(ProductAdmissionError::NativeMetadata);
-                }
-                previous = Some(feature.name.as_str());
-                if feature.members.len() > MAX_REGISTRY_NATIVE_ROWS {
-                    return Err(ProductAdmissionError::NativeMetadata);
-                }
-                validate_sorted_texts(&feature.members)?;
+            if schema_version < 3 && !value.features2.is_empty() {
+                return Err(ProductAdmissionError::NativeMetadata);
             }
+            validate_cargo_features(&value.features)?;
+            validate_cargo_features(&value.features2)?;
         }
         RegistryNativeDetails::Npm(value) => {
             validate_artifacts(&value.artifacts)?;
@@ -166,6 +166,27 @@ fn validate_details(value: &RegistryNativeDetails) -> Result<(), ProductAdmissio
             validate_optional_text(value.source_url.as_ref())?;
         }
         RegistryNativeDetails::Unavailable { reason, .. } => validate_text(reason)?,
+    }
+    Ok(())
+}
+
+fn validate_cargo_features(
+    features: &[RegistryNativeFeature],
+) -> Result<(), ProductAdmissionError> {
+    if features.len() > MAX_REGISTRY_NATIVE_ROWS {
+        return Err(ProductAdmissionError::NativeMetadata);
+    }
+    let mut previous = None;
+    for feature in features {
+        validate_text(&feature.name)?;
+        if previous.is_some_and(|previous| previous >= feature.name.as_str()) {
+            return Err(ProductAdmissionError::NativeMetadata);
+        }
+        previous = Some(feature.name.as_str());
+        if feature.members.len() > MAX_REGISTRY_NATIVE_ROWS {
+            return Err(ProductAdmissionError::NativeMetadata);
+        }
+        validate_sorted_texts(&feature.members)?;
     }
     Ok(())
 }
