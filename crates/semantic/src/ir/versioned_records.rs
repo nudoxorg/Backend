@@ -1856,6 +1856,14 @@ pub enum SemanticPlaneRecordError {
     /// A jumbo object store rejected a leaf or interior write.
     #[error("jumbo semantic value object store failed: {0}")]
     JumboObjectStore(String),
+    /// A jumbo object store is temporarily unavailable while admitting an
+    /// object. Callers may retry after the store or its durability layer
+    /// recovers; this does not certify that any partial output is publishable.
+    #[error("jumbo semantic value object store is temporarily unavailable: {0}")]
+    JumboObjectStoreUnavailable(String),
+    /// The configured object-store bound cannot admit this object or plan.
+    #[error("jumbo semantic value object-store limit was exceeded: {0}")]
+    JumboObjectStoreLimit(String),
     /// A jumbo stream failed while serializing a canonical field.
     #[error("jumbo semantic value stream failed")]
     JumboStream,

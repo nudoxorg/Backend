@@ -876,12 +876,27 @@ impl FileSemanticRangeStore {
             tier,
             jumbo_limits,
         )
-        .map_err(|detail| {
-            refused(
-                SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
-                SelectedTypedV3HistoryRefusal::IntegrityFailure,
+        .map_err(|error| match error {
+            crate::ir_producer_store::SelectedTypedPlaneProductionError::RetryableAvailability(
                 detail,
-            )
+            ) => SelectedTypedV3HistoryError::RetryableAvailability {
+                operation: SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                detail,
+            },
+            crate::ir_producer_store::SelectedTypedPlaneProductionError::ResourceLimit(detail) => {
+                refused(
+                    SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                    SelectedTypedV3HistoryRefusal::ResourceLimit,
+                    detail,
+                )
+            }
+            crate::ir_producer_store::SelectedTypedPlaneProductionError::Refused(detail) => {
+                refused(
+                    SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                    SelectedTypedV3HistoryRefusal::IntegrityFailure,
+                    detail,
+                )
+            }
         })?;
         let admission =
             self.verify_selected_native_typed_history_v3(&pin, &produced, tier, jumbo_limits)?;

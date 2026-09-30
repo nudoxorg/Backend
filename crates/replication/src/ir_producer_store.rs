@@ -14,18 +14,18 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use backend_semantic::ir::{
-    CanonicalPlaneEncodingMetrics, CanonicalPlaneRowEncoder, CanonicalSemanticPlaneSegmentRef,
-    CanonicalSemanticPlaneSegmentSink, CoreDeclarationRows, DocumentationRows,
-    JUMBO_ROPE_MAX_LEAF_BYTES, JumboRopeLeafRef, JumboRopeLimits, JumboRopeNode, JumboRopeObjectId,
-    JumboRopeObjectSink, JumboRopeObjectSource, LanguageExtensionRows, OccurrenceRows,
-    ROPE_NODE_WIRE_BYTES, RelationRows, SemanticBuildIdentity, SemanticGenerationProofError,
-    SemanticImageFacts, SemanticInputClaimV2, SemanticInputWitness, SemanticIrPlane,
-    SemanticPlaneKind, SemanticPlaneRecordError, SemanticPlaneSegmentBoundaryPolicy,
-    SemanticReader, SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
-    SemanticTypedPlaneManifestV2Error, SemanticTypedPlaneSegmentClaimV2,
-    SemanticTypedPlaneVerificationTierV2, SemanticTypedPlaneWorkLimitsV2, SourceProvenanceRows,
-    TypedPlaneSegmentSourceV2, TypesRows, UntrustedSemanticContentRootV2,
-    UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId,
+    CanonicalPlaneEncodingMetrics, CanonicalPlaneRowEncoder, CanonicalPlaneStreamError,
+    CanonicalSemanticPlaneSegmentRef, CanonicalSemanticPlaneSegmentSink, CoreDeclarationRows,
+    DocumentationRows, JUMBO_ROPE_MAX_LEAF_BYTES, JumboRopeLeafRef, JumboRopeLimits, JumboRopeNode,
+    JumboRopeObjectId, JumboRopeObjectSink, JumboRopeObjectSource, LanguageExtensionRows,
+    OccurrenceRows, ROPE_NODE_WIRE_BYTES, RelationRows, SemanticBuildIdentity,
+    SemanticGenerationProofError, SemanticImageFacts, SemanticInputClaimV2, SemanticInputWitness,
+    SemanticIrPlane, SemanticPlaneKind, SemanticPlaneRecordError,
+    SemanticPlaneSegmentBoundaryPolicy, SemanticReader, SemanticTypedPlaneFamilyDescriptorV2,
+    SemanticTypedPlaneManifestV2, SemanticTypedPlaneManifestV2Error,
+    SemanticTypedPlaneSegmentClaimV2, SemanticTypedPlaneVerificationTierV2,
+    SemanticTypedPlaneWorkLimitsV2, SourceProvenanceRows, TypedPlaneSegmentSourceV2, TypesRows,
+    UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId,
     ValidatedCanonicalSemanticPlaneSegment, VerifiedTypedPlaneContentV2,
     VerifiedTypedPlaneHistoryContentV3, derive_typed_plane_content_v2_from_admitted_reader,
     derive_typed_plane_history_content_v3,
@@ -33,10 +33,78 @@ use backend_semantic::ir::{
     stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits,
     typed_plane_work_limits_v2,
 };
+use backend_store::StoreError;
 use backend_store::{FileStore, GcPinGuard, ObjectId, ObjectWriteReceipt, TypedObject};
 use backend_version::{ObjectKey, Schema, SchemaIdentity};
 
 use crate::ir_hydration_store::SemanticSegmentPayload;
+
+/// Closed error classification for the selected-native history producer.
+/// Opaque producer failures remain refusals; only typed object-store
+/// availability and explicit bounded-limit failures are retryable or
+/// resource-limited.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SelectedTypedPlaneProductionError {
+    /// A durable object-store operation may succeed after storage recovers.
+    RetryableAvailability(String),
+    /// A configured or protocol resource bound was exceeded.
+    ResourceLimit(String),
+    /// The selected image or its proposed typed output failed a closed check.
+    Refused(String),
+}
+
+impl std::fmt::Display for SelectedTypedPlaneProductionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RetryableAvailability(detail)
+            | Self::ResourceLimit(detail)
+            | Self::Refused(detail) => formatter.write_str(detail),
+        }
+    }
+}
+
+impl std::error::Error for SelectedTypedPlaneProductionError {}
+
+impl From<String> for SelectedTypedPlaneProductionError {
+    fn from(detail: String) -> Self {
+        Self::Refused(detail)
+    }
+}
+
+impl From<SemanticPlaneRecordError> for SelectedTypedPlaneProductionError {
+    fn from(error: SemanticPlaneRecordError) -> Self {
+        match error {
+            SemanticPlaneRecordError::JumboObjectStoreUnavailable(detail) => {
+                Self::RetryableAvailability(detail)
+            }
+            SemanticPlaneRecordError::JumboObjectStoreLimit(detail) => Self::ResourceLimit(detail),
+            error @ (SemanticPlaneRecordError::InvalidByteCeiling { .. }
+            | SemanticPlaneRecordError::OversizedRow { .. }
+            | SemanticPlaneRecordError::RowTooLarge
+            | SemanticPlaneRecordError::RowBudgetExceeded { .. }
+            | SemanticPlaneRecordError::ReferenceBudgetExceeded { .. }
+            | SemanticPlaneRecordError::JumboReferenceLimitExceeded) => {
+                Self::ResourceLimit(error.to_string())
+            }
+            _ => Self::Refused(error.to_string()),
+        }
+    }
+}
+
+fn classify_semantic_store_error(error: StoreError) -> SemanticPlaneRecordError {
+    match error {
+        StoreError::Io(_)
+        | StoreError::PublicationAuthorityBusy
+        | StoreError::PreparedWithSyncPending { .. }
+        | StoreError::PublishedWithSyncPending(_) => {
+            SemanticPlaneRecordError::JumboObjectStoreUnavailable(format!("{error:?}"))
+        }
+        StoreError::Bounds | StoreError::OversizedKey | StoreError::NeedsScopedRebuild => {
+            SemanticPlaneRecordError::JumboObjectStoreLimit(format!("{error:?}"))
+        }
+        _ => SemanticPlaneRecordError::JumboObjectStore(format!("{error:?}")),
+    }
+}
 
 /// A semantic identity plus the physical FileStore identity that durably
 /// admitted its exact payload.
@@ -914,11 +982,12 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
         store: &'store FileStore,
         receipts: &'receipts mut Receipts,
     ) -> Result<Self, String> {
-        Self::new_with_row_limit(
+        Self::try_new_with_row_limit(
             store,
             receipts,
             backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES,
         )
+        .map_err(|error| error.to_string())
     }
 
     /// Starts a segment sink with the manifest family's canonical inline-row
@@ -928,14 +997,26 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
         receipts: &'receipts mut Receipts,
         maximum_inline_row_bytes: usize,
     ) -> Result<Self, String> {
+        Self::try_new_with_row_limit(store, receipts, maximum_inline_row_bytes)
+            .map_err(|error| error.to_string())
+    }
+
+    fn try_new_with_row_limit(
+        store: &'store FileStore,
+        receipts: &'receipts mut Receipts,
+        maximum_inline_row_bytes: usize,
+    ) -> Result<Self, SemanticPlaneRecordError> {
         if maximum_inline_row_bytes == 0
             || maximum_inline_row_bytes > backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES
         {
-            return Err("semantic producer row limit is outside the supported range".to_owned());
+            return Err(SemanticPlaneRecordError::InvalidByteCeiling {
+                observed: maximum_inline_row_bytes,
+                maximum: backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+            });
         }
         let gc_pin = store
             .pin_garbage_collection()
-            .map_err(|error| format!("pin semantic producer segments against GC: {error:?}"))?;
+            .map_err(classify_semantic_store_error)?;
         Ok(Self {
             store,
             receipts,
@@ -988,7 +1069,7 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
             Ok(admitted) => admitted,
             Err(error) => {
                 self.receipts.cancel_admission();
-                return Err(SemanticPlaneRecordError::JumboObjectStore(error));
+                return Err(error);
             }
         };
         let receipt = DurableSemanticObjectAdmission {
@@ -1047,9 +1128,16 @@ impl<'store, 'receipts, Receipts: SemanticObjectAdmissionSink + ?Sized>
         store: &'store FileStore,
         receipts: &'receipts mut Receipts,
     ) -> Result<Self, String> {
+        Self::try_new(store, receipts).map_err(|error| error.to_string())
+    }
+
+    fn try_new(
+        store: &'store FileStore,
+        receipts: &'receipts mut Receipts,
+    ) -> Result<Self, SemanticPlaneRecordError> {
         let gc_pin = store
             .pin_garbage_collection()
-            .map_err(|error| format!("pin jumbo producer objects against GC: {error:?}"))?;
+            .map_err(classify_semantic_store_error)?;
         Ok(Self {
             store,
             receipts,
@@ -1099,7 +1187,7 @@ impl<Receipts: SemanticObjectAdmissionSink + ?Sized> JumboRopeObjectSink
             Ok(admitted) => admitted,
             Err(error) => {
                 self.receipts.cancel_admission();
-                return Err(SemanticPlaneRecordError::JumboObjectStore(error));
+                return Err(error);
             }
         };
         if let Err(error) = self
@@ -1145,7 +1233,7 @@ impl<Receipts: SemanticObjectAdmissionSink + ?Sized> JumboRopeObjectSink
             Ok(admitted) => admitted,
             Err(error) => {
                 self.receipts.cancel_admission();
-                return Err(SemanticPlaneRecordError::JumboObjectStore(error));
+                return Err(error);
             }
         };
         if let Err(error) = self
@@ -1477,7 +1565,8 @@ pub(crate) fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
         policies,
         tier,
         jumbo_limits,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     let input_claim = SemanticInputClaimV2::from_witness(&input_witness);
     let mut source = ProducedSegmentSource::new(store, &artifacts.segment_admissions)?;
     let mut jumbo_source = ProducedJumboSource::new(store, &artifacts.jumbo_admissions)?;
@@ -1541,7 +1630,7 @@ pub(crate) fn produce_selected_native_typed_plane_history_v3<Reader: SemanticRea
     policies: SemanticTypedPlaneBoundaryPoliciesV3,
     tier: SemanticTypedPlaneVerificationTierV2,
     jumbo_limits: JumboRopeLimits,
-) -> Result<ProducedSelectedNativeTypedPlaneHistoryV3, String> {
+) -> Result<ProducedSelectedNativeTypedPlaneHistoryV3, SelectedTypedPlaneProductionError> {
     let input_witness = input_claim.as_claimed_witness();
     let artifacts = produce_typed_plane_v3_artifacts(
         store,
@@ -1568,7 +1657,11 @@ pub(crate) fn produce_selected_native_typed_plane_history_v3<Reader: SemanticRea
         format!("verify selected-native typed V3 history output: {error}")
     })?;
     if jumbo_source.has_unreferenced_objects() {
-        return Err("typed V3 history producer emitted an unreferenced jumbo object".to_owned());
+        return Err(
+            "typed V3 history producer emitted an unreferenced jumbo object"
+                .to_owned()
+                .into(),
+        );
     }
     let verifier_io_metrics = source.io_metrics().checked_add(jumbo_source.io_metrics())?;
     drop(source);
@@ -1583,7 +1676,9 @@ pub(crate) fn produce_selected_native_typed_plane_history_v3<Reader: SemanticRea
     )?;
     if verified_content.input_claim() != input_claim {
         return Err(
-            "typed V3 history roots differ from the selected persisted input claim".to_owned(),
+            "typed V3 history roots differ from the selected persisted input claim"
+                .to_owned()
+                .into(),
         );
     }
     Ok(ProducedSelectedNativeTypedPlaneHistoryV3 {
@@ -1630,7 +1725,7 @@ fn produce_typed_plane_v3_artifacts<Reader: SemanticReader + ?Sized>(
     policies: SemanticTypedPlaneBoundaryPoliciesV3,
     tier: SemanticTypedPlaneVerificationTierV2,
     jumbo_limits: JumboRopeLimits,
-) -> Result<TypedV3ProducedArtifacts, String> {
+) -> Result<TypedV3ProducedArtifacts, SelectedTypedPlaneProductionError> {
     // This shared encoder only writes the rows it receives. Authorization is
     // checked by the complete producer or by the selected-history adapter.
     let budget = V3ProductionBudget::new(tier, jumbo_limits)?;
@@ -1655,7 +1750,7 @@ fn produce_typed_plane_v3_artifacts<Reader: SemanticReader + ?Sized>(
         .try_reserve_exact(TYPED_V2_FAMILY_COUNT)
         .map_err(|error| format!("reserve typed V2 storage metrics: {error}"))?;
 
-    let mut jumbo_sink = FileSemanticJumboRopeSink::new(store, &mut jumbo_admissions)?;
+    let mut jumbo_sink = FileSemanticJumboRopeSink::try_new(store, &mut jumbo_admissions)?;
     let mut pass = TypedPlaneProductionPass {
         store,
         reader,
@@ -1738,13 +1833,13 @@ impl<Reader: SemanticReader + ?Sized> TypedPlaneProductionPass<'_, '_, '_, Reade
         encoder: &Encoder,
         family: SemanticIrPlane,
         policy: SemanticPlaneSegmentBoundaryPolicy,
-    ) -> Result<(), String> {
+    ) -> Result<(), SelectedTypedPlaneProductionError> {
         if encoder.kind() != SemanticPlaneKind::Ir(family) {
-            return Err(format!("typed V2 encoder does not match {family:?}"));
+            return Err(format!("typed V2 encoder does not match {family:?}").into());
         }
         let first_receipt = self.segment_admissions.admissions().len();
         let remaining_rows = self.segment_admissions.remaining_rows();
-        let mut segment_sink = FileSemanticPlaneSegmentSink::new_with_row_limit(
+        let mut segment_sink = FileSemanticPlaneSegmentSink::try_new_with_row_limit(
             self.store,
             self.segment_admissions,
             policy.maximum_bytes(),
@@ -1761,7 +1856,11 @@ impl<Reader: SemanticReader + ?Sized> TypedPlaneProductionPass<'_, '_, '_, Reade
             self.jumbo_sink,
             &mut segment_sink,
         )
-        .map_err(|error| format!("stream typed V2 {family:?} family: {error:?}"))?;
+        .map_err(|error| match error {
+            CanonicalPlaneStreamError::Encoding(error) | CanonicalPlaneStreamError::Sink(error) => {
+                SelectedTypedPlaneProductionError::from(error)
+            }
+        })?;
         let store_metrics = segment_sink.metrics();
         self.segment_pins
             .try_reserve(1)
@@ -2117,21 +2216,23 @@ fn commit_and_read(
     store: &FileStore,
     object: &TypedObject,
     expected_payload: &[u8],
-) -> Result<ObjectWriteReceipt, String> {
+) -> Result<ObjectWriteReceipt, SemanticPlaneRecordError> {
     let receipt = store
         .write_object_with_receipt(object)
-        .map_err(|error| format!("durably write semantic producer object: {error:?}"))?;
+        .map_err(classify_semantic_store_error)?;
     if receipt.created() {
         let reopened = store
             .read_object(receipt.id())
-            .map_err(|error| format!("read back semantic producer object: {error:?}"))?;
+            .map_err(classify_semantic_store_error)?;
         if reopened.id() != receipt.id()
             || reopened.schema() != object.schema()
             || reopened.key() != object.key()
             || reopened.version() != object.version()
             || reopened.bytes() != expected_payload
         {
-            return Err("FileStore read-back differs from the producer object".to_owned());
+            return Err(SemanticPlaneRecordError::JumboObjectStore(
+                "FileStore read-back differs from the producer object".to_owned(),
+            ));
         }
     }
     // The CAS hit path has already opened and compared the complete encoded
@@ -2202,6 +2303,34 @@ mod tests {
     const FIXTURE_ROWS: usize = 768;
     const SEGMENT_BYTES: usize = 2 * 1024;
     const ORDINAL_V1_CHUNK_BYTES: usize = 16 * 1024;
+
+    #[test]
+    fn selected_history_producer_classifies_only_typed_store_failures_as_retryable() {
+        assert!(matches!(
+            SelectedTypedPlaneProductionError::from(classify_semantic_store_error(StoreError::Io(
+                "object read failed".to_owned()
+            ))),
+            SelectedTypedPlaneProductionError::RetryableAvailability(_)
+        ));
+        assert!(matches!(
+            SelectedTypedPlaneProductionError::from(classify_semantic_store_error(
+                StoreError::Bounds
+            )),
+            SelectedTypedPlaneProductionError::ResourceLimit(_)
+        ));
+        assert!(matches!(
+            SelectedTypedPlaneProductionError::from(classify_semantic_store_error(
+                StoreError::Corrupt
+            )),
+            SelectedTypedPlaneProductionError::Refused(_)
+        ));
+        assert!(matches!(
+            SelectedTypedPlaneProductionError::from(SemanticPlaneRecordError::JumboObjectStore(
+                "temporarily unavailable".to_owned()
+            )),
+            SelectedTypedPlaneProductionError::Refused(_)
+        ));
+    }
 
     fn boundary_policy() -> CanonicalPlaneSegmentBoundaryPolicy {
         CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
