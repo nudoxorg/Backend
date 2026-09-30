@@ -259,6 +259,11 @@ impl CommandAdapter {
         &mut self,
         daemon: &mut ProductDaemon,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        // Derived history is sidecar work: apply any completed status and
+        // reschedule selected markers before advancing the active index job.
+        // A history-store refusal must not stall product reads or an admitted
+        // index publication; selected-marker reconciliation retries it later.
+        let _ = self.semantic_authority.drain_native_history_completions();
         let mut ready = Vec::new();
         if let Some(indexing) = &self.indexing {
             let compiled = match indexing.compiled.try_recv() {
