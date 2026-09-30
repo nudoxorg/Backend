@@ -19,6 +19,8 @@ mod extension_pools;
 mod interner;
 /// Content-addressed chunked storage for jumbo documentation and source values.
 pub mod jumbo_rope;
+/// Conservative, unverified candidate evidence for declaration continuity.
+pub mod lineage_match;
 #[cfg(feature = "mmap")]
 mod mapping;
 mod model;
@@ -123,6 +125,13 @@ pub use jumbo_rope::{
     JumboValueEncoding, JumboValueFamily, MissingJumboLeafRanges, ROPE_NODE_WIRE_BYTES,
     UntrustedJumboValueDescriptor, VerifiedJumboRope, prove_jumbo_leaf, requires_jumbo_rope,
     write_jumbo_value, write_jumbo_value_from_reader,
+};
+pub use lineage_match::{
+    BodyReferenceOrderError, BodyReferenceOverlapBandV1, BodyReferenceOverlapV1,
+    CanonicalBodyReferences, LineageCandidateAmbiguityV1, LineageCandidateAnchorsV1,
+    LineageCandidateEvidenceV1, LineageCandidateSetV1, LineageEditKindV1, LineageEndpointSideV1,
+    LineageMatcherCostV1, LineageMatcherFailureKindV1, LineageMatcherFailureV1,
+    LineageMatcherLimitsV1, LineageObservation, match_lineage_candidates_v1,
 };
 #[cfg(feature = "mmap")]
 pub use mapping::{
