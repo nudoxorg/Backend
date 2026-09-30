@@ -4554,7 +4554,7 @@ fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver::lower::{AdmissionFault, admit};
+    use crate::driver::lower::{AdmissionFault, ResourcePlan, admit};
     use backend_frontend_rust::legacy::{RustAuthorityError, RustProject, RustToolchain};
     use backend_semantic::ir::{
         DocFactFault, DocFragmentInput, DocLinkTarget, EntityKind, FragmentError, FragmentView,
