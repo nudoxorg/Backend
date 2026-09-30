@@ -3223,8 +3223,8 @@ mod tests {
         let directory = scratch();
         let first = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory)
             .expect("initial body without validators");
-        assert_eq!(first.etag, None);
-        assert_eq!(first.last_modified, None);
+        assert_eq!(first.freshness.etag, None);
+        assert_eq!(first.freshness.last_modified, None);
         authority.apply(first).expect("select initial feed");
         assert_eq!(authority.frontier(source.source).unwrap().etag, None);
 
