@@ -1872,6 +1872,11 @@ mod tests {
             )),
             "fallback must request this selected closure member and exact bounded range"
         );
+        let path = fixture.path.clone();
+        drop(reader);
+        drop(publisher);
+        drop(fixture);
+        fs::remove_dir_all(path).expect("remove selected image range fixture");
     }
 
     struct FakeS3Hydrator {
