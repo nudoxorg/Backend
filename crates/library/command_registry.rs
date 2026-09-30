@@ -58,6 +58,7 @@ impl CommandSpec {
                 | CommandId::IndexStart
                 | CommandId::IndexAwait
                 | CommandId::IndexCancel
+                | CommandId::IndexProgress
                 | CommandId::AdvisoryRefresh
                 | CommandId::PackageGraphPage
         )
@@ -90,7 +91,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 46] = [
+pub const COMMANDS: [CommandSpec; 47] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -459,6 +460,14 @@ pub const COMMANDS: [CommandSpec; 46] = [
         mutation: CommandMutation::Write,
         domain: CommandDomain::Library,
     },
+    CommandSpec {
+        id: CommandId::IndexProgress,
+        name: "index_progress",
+        title: "Index Progress",
+        description: "Read the next bounded page of typed progress facts for one owner-issued package indexing job.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
 ];
 
 /// Finds one registry row.
@@ -510,6 +519,7 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::IndexStart => 43,
         CommandId::IndexAwait => 44,
         CommandId::IndexCancel => 45,
+        CommandId::IndexProgress => 46,
         CommandId::PackageGraphPage => 42,
     };
     COMMANDS[index]

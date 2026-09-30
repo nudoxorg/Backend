@@ -1,4 +1,5 @@
 use super::super::product_state::CatalogLookupIndex;
+use super::super::registry::{RegistryAddError, StagedProject};
 use super::super::{
     BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
     BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
@@ -9,11 +10,11 @@ use super::super::{
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    DeferredIndex, IndexScanFailure, IndexScanResult, PreparedIndex, PreparedProductSelection,
-    capture_index_scan, deferred_compile_was_cancelled, finish_deferred_index, finish_index_scan,
-    index_project_intent, index_project_intent_at, index_project_intent_with_cluster_and_intent,
-    remove_project_intent, run_deferred_compile, run_index_scan, semantic_version_record,
-    semantic_versions,
+    DeferredIndex, DeferredProfileTicket, IndexScanFailure, IndexScanResult, IndexScanWork,
+    PreparedIndex, PreparedProductSelection, capture_index_scan, deferred_compile_was_cancelled,
+    finish_deferred_index, finish_deferred_profile, finish_index_scan, index_project_intent,
+    index_project_intent_at, index_project_intent_with_cluster_and_intent, remove_project_intent,
+    run_deferred_compile, run_index_scan, semantic_version_record, semantic_versions,
 };
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
@@ -28,6 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_RETAINED_INDEX_TERMINALS: usize = 64;
+const MAX_RETAINED_INDEX_PROGRESS_EVENTS: usize = 256;
+const MAX_RETAINED_INDEX_PROGRESS_TICKETS: usize = MAX_RETAINED_INDEX_TERMINALS + 1;
 
 fn new_index_owner_epoch() -> [u8; 16] {
     let nanos = std::time::SystemTime::now()
@@ -45,6 +48,15 @@ fn new_index_owner_epoch() -> [u8; 16] {
 
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
 type AdmittedReply = (CommandReply, Option<WireCertificate>);
+type RegistryAcquisitionReceiver = std::sync::mpsc::Receiver<RegistryAcquisitionMessage>;
+
+enum RegistryAcquisitionMessage {
+    Staging,
+    Complete {
+        gateway: Option<RegistryGateway>,
+        result: Result<StagedProject, RegistryAddError>,
+    },
+}
 
 fn bounded_index_detail(value: impl std::fmt::Display) -> backend_library::ProductText {
     let mut value = value.to_string().replace('\0', " ");
@@ -107,6 +119,10 @@ pub(in crate::builtin) struct CommandAdapter {
     indexing: Option<IndexJob>,
     /// Recently completed owner-issued index tickets, for late await/cancel requests.
     index_terminals: std::collections::VecDeque<backend_library::IndexJobTerminal>,
+    /// Bounded typed progress stream retained across the active and recent index tickets.
+    index_progress: std::collections::VecDeque<backend_library::IndexJobProgressEvent>,
+    /// Latest emitted sequence for each retained ticket, including aged-out events.
+    index_progress_latest: std::collections::VecDeque<(backend_library::IndexJobTicket, u64)>,
     /// Next owner-local index job identity.
     next_index_ticket: u64,
     /// Process epoch included in every ticket so stale client tickets cannot match after restart.
@@ -125,21 +141,28 @@ struct IndexJob {
     awaiters: Vec<(u64, u64)>,
     /// Cancellation token registered to this exact compiler request only.
     cancelled: Arc<AtomicBool>,
+    /// Last sequence emitted for this exact job.
+    progress_sequence: u64,
+    /// Last stage emitted, used to avoid duplicate stage events.
+    progress_stage: Option<backend_library::IndexJobStage>,
     request_id: u64,
     requested_package: backend_engine::PackageKey,
+    execution_intent: CompileExecutionIntent,
+    /// Retains a verified registry tree through the full job lifetime.
+    _staged_project: Option<StagedProject>,
     work: IndexJobWork,
 }
 
 enum IndexJobWork {
+    Acquiring(RegistryAcquisitionReceiver),
     Scanning(std::sync::mpsc::Receiver<Result<IndexScanResult, IndexScanFailure>>),
     Compiling {
         job: DeferredIndex,
+        profile: DeferredProfileTicket,
         compiled: std::sync::mpsc::Receiver<
-            Vec<
-                Result<
-                    backend_engine::application::StagedSemanticPackage,
-                    backend_engine::application::PackageSemanticRuntimeError,
-                >,
+            Result<
+                backend_engine::application::StagedSemanticPackage,
+                backend_engine::application::PackageSemanticRuntimeError,
             >,
         >,
     },
@@ -189,6 +212,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::Tree
                 | S::ProjectTree { .. }
                 | S::IndexAwait { .. }
+                | S::IndexProgress { .. }
                 | S::IndexCancel { .. }
         ),
         Command::Add { .. } | Command::Remove { .. } => false,
@@ -268,6 +292,8 @@ impl CommandAdapter {
             browse: super::super::browse::BrowseCache::default(),
             indexing: None,
             index_terminals: std::collections::VecDeque::new(),
+            index_progress: std::collections::VecDeque::new(),
+            index_progress_latest: std::collections::VecDeque::new(),
             next_index_ticket: 1,
             index_owner_epoch: new_index_owner_epoch(),
             waiting: std::collections::VecDeque::new(),
@@ -297,6 +323,18 @@ impl CommandAdapter {
                 transport_ticket,
             );
         }
+        if let Command::Surface(backend_library::SurfaceCommand::IndexProgress {
+            ticket,
+            after_sequence,
+        }) = &request.command
+        {
+            return self.read_index_progress(
+                daemon,
+                ticket.clone(),
+                *after_sequence,
+                request.request_id,
+            );
+        }
         if let Command::Surface(backend_library::SurfaceCommand::IndexCancel { ticket }) =
             &request.command
         {
@@ -322,7 +360,6 @@ impl CommandAdapter {
             package,
             execution_intent,
         } = request.command
-            && self.owner_cluster.is_none()
         {
             let certificate = request.certificate().cloned();
             let label = certified_package_label(certificate.as_ref(), package)?;
@@ -361,17 +398,8 @@ impl CommandAdapter {
             id: backend_engine::encode_id(package_key.as_bytes()),
             value: package.as_str().to_owned(),
         });
-        let result = if self.owner_cluster.is_some() {
-            self.add(
-                daemon,
-                package_key,
-                execution_intent,
-                Some(&certificate),
-                request_id,
-            )
-            .map(|_| Some(()))
-        } else {
-            self.start_index_job(
+        let result = self
+            .start_index_job(
                 daemon,
                 package_key,
                 execution_intent,
@@ -380,8 +408,7 @@ impl CommandAdapter {
                 owner_ticket.clone(),
                 None,
             )
-            .map(|reply| reply.map(|_| ()))
-        };
+            .map(|reply| reply.map(|_| ()));
         let result = match result {
             Ok(Some(())) => {
                 let terminal = backend_library::IndexJobTerminal {
@@ -399,7 +426,11 @@ impl CommandAdapter {
                         CommandReply::Surface(backend_library::SurfaceReply::IndexStarted(
                             backend_library::IndexStartResult::Started {
                                 ticket: owner_ticket,
-                                stage: backend_library::IndexJobStage::Scanning,
+                                stage: self
+                                    .indexing
+                                    .as_ref()
+                                    .and_then(|indexing| indexing.progress_stage)
+                                    .unwrap_or(backend_library::IndexJobStage::Scanning),
                             },
                         )),
                         None,
@@ -411,7 +442,7 @@ impl CommandAdapter {
             Err(error) => {
                 let terminal = backend_library::IndexJobTerminal {
                     ticket: owner_ticket,
-                    outcome: backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
+                    outcome: backend_library::IndexJobOutcome::Refused(bounded_index_detail(error)),
                 };
                 self.retain_index_terminal(terminal.clone());
                 backend_library::IndexStartResult::Terminal(terminal)
@@ -447,8 +478,136 @@ impl CommandAdapter {
     fn retain_index_terminal(&mut self, terminal: backend_library::IndexJobTerminal) {
         self.index_terminals.push_back(terminal);
         while self.index_terminals.len() > MAX_RETAINED_INDEX_TERMINALS {
-            let _ = self.index_terminals.pop_front();
+            if let Some(expired) = self.index_terminals.pop_front() {
+                self.index_progress_latest
+                    .retain(|(ticket, _)| *ticket != expired.ticket);
+            }
         }
+    }
+
+    fn emit_index_progress(
+        &mut self,
+        indexing: &mut IndexJob,
+        kind: backend_library::IndexJobProgressKind,
+    ) {
+        let Some(sequence) = indexing.progress_sequence.checked_add(1) else {
+            return;
+        };
+        indexing.progress_sequence = sequence;
+        self.index_progress
+            .push_back(backend_library::IndexJobProgressEvent {
+                ticket: indexing.owner_ticket.clone(),
+                sequence,
+                kind,
+            });
+        while self.index_progress.len() > MAX_RETAINED_INDEX_PROGRESS_EVENTS {
+            let _ = self.index_progress.pop_front();
+        }
+        if let Some((_, latest)) = self
+            .index_progress_latest
+            .iter_mut()
+            .find(|(ticket, _)| *ticket == indexing.owner_ticket)
+        {
+            *latest = sequence;
+        } else {
+            self.index_progress_latest
+                .push_back((indexing.owner_ticket.clone(), sequence));
+            while self.index_progress_latest.len() > MAX_RETAINED_INDEX_PROGRESS_TICKETS {
+                let _ = self.index_progress_latest.pop_front();
+            }
+        }
+    }
+
+    fn set_index_progress_stage(
+        &mut self,
+        indexing: &mut IndexJob,
+        stage: backend_library::IndexJobStage,
+    ) {
+        if indexing.progress_stage == Some(stage) {
+            return;
+        }
+        indexing.progress_stage = Some(stage);
+        self.emit_index_progress(
+            indexing,
+            backend_library::IndexJobProgressKind::StageChanged { stage },
+        );
+    }
+
+    fn read_index_progress(
+        &self,
+        daemon: &ProductDaemon,
+        ticket: backend_library::IndexJobTicket,
+        after_sequence: u64,
+        request_id: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        let active = self
+            .indexing
+            .as_ref()
+            .is_some_and(|indexing| indexing.owner_ticket == ticket);
+        let terminal = self
+            .index_terminals
+            .iter()
+            .find(|terminal| terminal.ticket == ticket)
+            .cloned();
+        let observation = if let Some(terminal) = terminal {
+            backend_library::IndexJobObservation::Terminal(terminal)
+        } else if !active {
+            backend_library::IndexJobObservation::Unknown {
+                ticket,
+                current_owner_epoch: self.index_owner_epoch,
+            }
+        } else {
+            let latest_sequence = self
+                .indexing
+                .as_ref()
+                .filter(|indexing| indexing.owner_ticket == ticket)
+                .map(|indexing| indexing.progress_sequence)
+                .unwrap_or_default();
+            let retained = self
+                .index_progress
+                .iter()
+                .filter(|event| event.ticket == ticket && event.sequence > after_sequence)
+                .cloned()
+                .collect::<Vec<_>>();
+            let oldest_retained = self
+                .index_progress
+                .iter()
+                .find(|event| event.ticket == ticket)
+                .map(|event| event.sequence);
+            let truncated = after_sequence < latest_sequence
+                && oldest_retained.is_none_or(|oldest| after_sequence.saturating_add(1) < oldest);
+            let has_more = retained.len() > backend_library::MAX_INDEX_PROGRESS_EVENTS;
+            let events = retained
+                .into_iter()
+                .take(backend_library::MAX_INDEX_PROGRESS_EVENTS)
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            let next_sequence = events.last().map_or(after_sequence, |event| event.sequence);
+            let stage = self
+                .indexing
+                .as_ref()
+                .filter(|indexing| indexing.owner_ticket == ticket)
+                .and_then(|indexing| indexing.progress_stage)
+                .unwrap_or(backend_library::IndexJobStage::Scanning);
+            backend_library::IndexJobObservation::Pending(backend_library::IndexProgressPage {
+                ticket,
+                stage,
+                events,
+                next_sequence,
+                truncated,
+                has_more,
+            })
+        };
+        Self::encode(
+            daemon,
+            request_id,
+            (
+                CommandReply::Surface(backend_library::SurfaceReply::IndexProgress(observation)),
+                None,
+            ),
+            None,
+        )
+        .map(Executed::Reply)
     }
 
     fn await_index_job(
@@ -558,6 +717,93 @@ impl CommandAdapter {
         ready
     }
 
+    fn spawn_next_index_profile(
+        &mut self,
+        indexing: &mut IndexJob,
+        mut job: DeferredIndex,
+    ) -> Result<(), BuiltinModelError> {
+        let (profile, sources) = job.take_next_work().ok_or_else(|| {
+            BuiltinModelError("deferred index has no remaining compiler profile".to_owned())
+        })?;
+        self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Compiling);
+        self.emit_index_progress(
+            indexing,
+            backend_library::IndexJobProgressKind::ProfileStarted {
+                profile: backend_engine::SemanticLanguageProfile::new(profile.profile()),
+                ordinal: profile.ordinal(),
+                total: profile.total(),
+            },
+        );
+        let compiler = self.compiler.clone();
+        let cancelled = Arc::clone(&indexing.cancelled);
+        let (sender, compiled) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("locald-index-compile".to_owned())
+            .spawn(move || {
+                let _ = sender.send(run_deferred_compile(&compiler, sources, cancelled));
+            })
+            .map_err(|error| BuiltinModelError(format!("start the index compile: {error}")))?;
+        indexing.work = IndexJobWork::Compiling {
+            job,
+            profile,
+            compiled,
+        };
+        Ok(())
+    }
+
+    fn finish_prepared_index_selection(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        indexing: &mut IndexJob,
+        prepared: PreparedProductSelection,
+        legacy_reply: &mut Option<Result<Vec<u8>, BuiltinModelError>>,
+    ) -> backend_library::IndexJobOutcome {
+        self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Publishing);
+        match self.finish_add(
+            daemon,
+            prepared,
+            indexing.request_id,
+            indexing.requested_package,
+        ) {
+            Ok(reply) => {
+                if indexing.legacy_add.is_some() {
+                    *legacy_reply = Some(Self::encode(daemon, indexing.request_id, reply, None));
+                }
+                backend_library::IndexJobOutcome::Published
+            }
+            Err(error) => backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
+        }
+    }
+
+    fn start_staged_package_scan(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        indexing: &mut IndexJob,
+        staged: StagedProject,
+    ) -> Result<(), BuiltinModelError> {
+        let label = indexing.owner_ticket.package().as_str();
+        let coordinate = backend_engine::registry::PackageCoordinate::parse(label)
+            .map_err(|_| BuiltinModelError(ADD_TARGET_REQUIRED.to_owned()))?;
+        if coordinate.as_str() != label {
+            return Err(BuiltinModelError(
+                "package URL is not in canonical form".to_owned(),
+            ));
+        }
+        let work = capture_index_scan(
+            daemon,
+            indexing.requested_package,
+            label,
+            staged.path(),
+            Some(&coordinate),
+            indexing.request_id,
+            indexing.execution_intent,
+            self.owner_cluster.is_some(),
+            Arc::clone(&indexing.cancelled),
+        )?;
+        indexing._staged_project = Some(staged);
+        self.spawn_index_scan(indexing, work)
+    }
+
     /// Advances scan, compile, and publication stages without blocking the
     /// owner loop on filesystem traversal or compiler work. Reads continue to
     /// observe the last committed product root while either worker runs.
@@ -577,6 +823,66 @@ impl CommandAdapter {
             let mut legacy_reply = None;
             let work = std::mem::replace(&mut indexing.work, IndexJobWork::Transition);
             match work {
+                IndexJobWork::Acquiring(acquired) => match acquired.try_recv() {
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        indexing.work = IndexJobWork::Acquiring(acquired);
+                        self.indexing = Some(indexing);
+                        return ready;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        terminal = Some(backend_library::IndexJobOutcome::Failed(
+                            backend_library::ProductText::from_static(
+                                "registry acquisition worker ended without a terminal receipt",
+                            ),
+                        ));
+                    }
+                    Ok(RegistryAcquisitionMessage::Staging) => {
+                        self.set_index_progress_stage(
+                            &mut indexing,
+                            backend_library::IndexJobStage::Staging,
+                        );
+                        indexing.work = IndexJobWork::Acquiring(acquired);
+                        self.indexing = Some(indexing);
+                        return ready;
+                    }
+                    Ok(RegistryAcquisitionMessage::Complete { gateway, result }) => {
+                        if let Some(gateway) = gateway {
+                            self.registry = Some(gateway);
+                        }
+                        if indexing.cancelled.load(Ordering::Acquire) {
+                            terminal = Some(backend_library::IndexJobOutcome::Cancelled);
+                        } else {
+                            match result {
+                                Err(RegistryAddError::Cancelled) => {
+                                    terminal = Some(backend_library::IndexJobOutcome::Cancelled);
+                                }
+                                Err(refusal) => {
+                                    terminal = Some(backend_library::IndexJobOutcome::Refused(
+                                        bounded_index_detail(refusal),
+                                    ));
+                                }
+                                Ok(staged) => {
+                                    match self.start_staged_package_scan(
+                                        daemon,
+                                        &mut indexing,
+                                        staged,
+                                    ) {
+                                        Ok(()) => {
+                                            self.indexing = Some(indexing);
+                                            return ready;
+                                        }
+                                        Err(refusal) => {
+                                            terminal =
+                                                Some(backend_library::IndexJobOutcome::Refused(
+                                                    bounded_index_detail(refusal),
+                                                ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
                 IndexJobWork::Scanning(scanned) => match scanned.try_recv() {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         indexing.work = IndexJobWork::Scanning(scanned);
@@ -612,23 +918,18 @@ impl CommandAdapter {
                             true,
                         ) {
                             Ok(PreparedIndex::Ready(prepared)) => {
-                                match self.finish_add(
+                                terminal = Some(self.finish_prepared_index_selection(
                                     daemon,
+                                    &mut indexing,
                                     prepared,
-                                    indexing.request_id,
-                                    indexing.requested_package,
-                                ) {
-                                    Ok(reply) => {
-                                        if indexing.legacy_add.is_some() {
-                                            legacy_reply = Some(Self::encode(
-                                                daemon,
-                                                indexing.request_id,
-                                                reply,
-                                                None,
-                                            ));
-                                        }
-                                        terminal =
-                                            Some(backend_library::IndexJobOutcome::Published);
+                                    &mut legacy_reply,
+                                ));
+                            }
+                            Ok(PreparedIndex::Compile(job)) if job.has_pending_profiles() => {
+                                match self.spawn_next_index_profile(&mut indexing, job) {
+                                    Ok(()) => {
+                                        self.indexing = Some(indexing);
+                                        return ready;
                                     }
                                     Err(error) => {
                                         terminal = Some(backend_library::IndexJobOutcome::Failed(
@@ -637,34 +938,21 @@ impl CommandAdapter {
                                     }
                                 }
                             }
-                            Ok(PreparedIndex::Compile(mut job)) => {
-                                let work = job.take_work();
-                                let compiler = self.compiler.clone();
-                                let thread_cancelled = Arc::clone(&indexing.cancelled);
-                                let (sender, compiled) = std::sync::mpsc::sync_channel(1);
-                                match std::thread::Builder::new()
-                                    .name("locald-index-compile".to_owned())
-                                    .spawn(move || {
-                                        let _ = sender.send(run_deferred_compile(
-                                            &compiler,
-                                            work,
-                                            thread_cancelled,
-                                        ));
-                                    }) {
-                                    Ok(_) => {
-                                        indexing.work = IndexJobWork::Compiling { job, compiled };
-                                        self.indexing = Some(indexing);
-                                        return ready;
-                                    }
-                                    Err(error) => {
-                                        terminal = Some(backend_library::IndexJobOutcome::Failed(
-                                            bounded_index_detail(format!(
-                                                "start the index compile: {error}"
-                                            )),
-                                        ));
-                                    }
+                            Ok(PreparedIndex::Compile(job)) => match finish_deferred_index(job) {
+                                Ok(prepared) => {
+                                    terminal = Some(self.finish_prepared_index_selection(
+                                        daemon,
+                                        &mut indexing,
+                                        prepared,
+                                        &mut legacy_reply,
+                                    ));
                                 }
-                            }
+                                Err(refusal) => {
+                                    terminal = Some(backend_library::IndexJobOutcome::Refused(
+                                        bounded_index_detail(refusal),
+                                    ));
+                                }
+                            },
                             Err(refusal) => {
                                 terminal = Some(backend_library::IndexJobOutcome::Refused(
                                     bounded_index_detail(refusal),
@@ -673,9 +961,17 @@ impl CommandAdapter {
                         }
                     }
                 },
-                IndexJobWork::Compiling { job, compiled } => match compiled.try_recv() {
+                IndexJobWork::Compiling {
+                    mut job,
+                    profile,
+                    compiled,
+                } => match compiled.try_recv() {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        indexing.work = IndexJobWork::Compiling { job, compiled };
+                        indexing.work = IndexJobWork::Compiling {
+                            job,
+                            profile,
+                            compiled,
+                        };
                         self.indexing = Some(indexing);
                         return ready;
                     }
@@ -686,42 +982,66 @@ impl CommandAdapter {
                             ),
                         ));
                     }
-                    Ok(_results) if indexing.cancelled.load(Ordering::Acquire) => {
+                    Ok(_result) if indexing.cancelled.load(Ordering::Acquire) => {
                         terminal = Some(backend_library::IndexJobOutcome::Cancelled);
                     }
-                    Ok(results) if deferred_compile_was_cancelled(&results) => {
+                    Ok(result) if deferred_compile_was_cancelled(&result) => {
                         terminal = Some(backend_library::IndexJobOutcome::Cancelled);
                     }
-                    Ok(results) => {
-                        match finish_deferred_index(
+                    Ok(result) => {
+                        let progress = (
+                            backend_engine::SemanticLanguageProfile::new(profile.profile()),
+                            profile.ordinal(),
+                            profile.total(),
+                        );
+                        match finish_deferred_profile(
                             daemon,
                             &mut self.semantic_authority,
-                            job,
-                            results,
+                            &mut job,
+                            profile,
+                            result,
                         ) {
-                            Ok(prepared) => match self.finish_add(
-                                daemon,
-                                prepared,
-                                indexing.request_id,
-                                indexing.requested_package,
-                            ) {
-                                Ok(reply) => {
-                                    if indexing.legacy_add.is_some() {
-                                        legacy_reply = Some(Self::encode(
-                                            daemon,
-                                            indexing.request_id,
-                                            reply,
-                                            None,
-                                        ));
+                            Ok(()) => {
+                                self.emit_index_progress(
+                                    &mut indexing,
+                                    backend_library::IndexJobProgressKind::ProfileAdmitted {
+                                        profile: progress.0,
+                                        ordinal: progress.1,
+                                        total: progress.2,
+                                    },
+                                );
+                                if job.has_pending_profiles() {
+                                    match self.spawn_next_index_profile(&mut indexing, job) {
+                                        Ok(()) => {
+                                            self.indexing = Some(indexing);
+                                            return ready;
+                                        }
+                                        Err(error) => {
+                                            terminal =
+                                                Some(backend_library::IndexJobOutcome::Failed(
+                                                    bounded_index_detail(error),
+                                                ));
+                                        }
                                     }
-                                    terminal = Some(backend_library::IndexJobOutcome::Published);
+                                } else {
+                                    match finish_deferred_index(job) {
+                                        Ok(prepared) => {
+                                            terminal = Some(self.finish_prepared_index_selection(
+                                                daemon,
+                                                &mut indexing,
+                                                prepared,
+                                                &mut legacy_reply,
+                                            ));
+                                        }
+                                        Err(refusal) => {
+                                            terminal =
+                                                Some(backend_library::IndexJobOutcome::Refused(
+                                                    bounded_index_detail(refusal),
+                                                ));
+                                        }
+                                    }
                                 }
-                                Err(error) => {
-                                    terminal = Some(backend_library::IndexJobOutcome::Failed(
-                                        bounded_index_detail(error),
-                                    ));
-                                }
-                            },
+                            }
                             Err(refusal) => {
                                 terminal = Some(backend_library::IndexJobOutcome::Refused(
                                     bounded_index_detail(refusal),
@@ -770,29 +1090,59 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
-        if !matches!(classify_add_target(&label)?, AddTarget::LocalDirectory) {
-            return self
-                .add(
-                    daemon,
-                    requested_package,
-                    execution_intent,
-                    certificate,
-                    request_id,
-                )
-                .map(Some);
-        }
         let cancelled = Arc::new(AtomicBool::new(false));
-        let work = capture_index_scan(
-            daemon,
-            package,
-            &label,
-            Path::new(&label),
-            None,
+        let mut indexing = IndexJob {
+            owner_ticket,
+            legacy_add: legacy_add.map(|ticket| (ticket, request_id)),
+            awaiters: Vec::new(),
+            cancelled: Arc::clone(&cancelled),
+            progress_sequence: 0,
+            progress_stage: None,
             request_id,
+            requested_package,
             execution_intent,
-            self.owner_cluster.is_some(),
-            Arc::clone(&cancelled),
-        )?;
+            _staged_project: None,
+            work: IndexJobWork::Transition,
+        };
+        match classify_add_target(&label)? {
+            AddTarget::LocalDirectory => {
+                let work = capture_index_scan(
+                    daemon,
+                    package,
+                    &label,
+                    Path::new(&label),
+                    None,
+                    request_id,
+                    execution_intent,
+                    self.owner_cluster.is_some(),
+                    Arc::clone(&cancelled),
+                )?;
+                self.spawn_index_scan(&mut indexing, work)?;
+            }
+            AddTarget::PackageUrl => {
+                let coordinate = backend_engine::registry::PackageCoordinate::parse(&label)
+                    .map_err(|_| BuiltinModelError(ADD_TARGET_REQUIRED.to_owned()))?;
+                if coordinate.as_str() != label {
+                    return Err(BuiltinModelError(
+                        "package URL is not in canonical form".to_owned(),
+                    ));
+                }
+                self.set_index_progress_stage(
+                    &mut indexing,
+                    backend_library::IndexJobStage::Acquiring,
+                );
+                self.spawn_registry_acquisition(&mut indexing, coordinate)?;
+            }
+        }
+        self.indexing = Some(indexing);
+        Ok(None)
+    }
+
+    fn spawn_index_scan(
+        &mut self,
+        indexing: &mut IndexJob,
+        work: IndexScanWork,
+    ) -> Result<(), BuiltinModelError> {
         let (sender, scanned) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name("locald-index-scan".to_owned())
@@ -800,16 +1150,66 @@ impl CommandAdapter {
                 let _ = sender.send(run_index_scan(work));
             })
             .map_err(|error| BuiltinModelError(format!("start the index scan: {error}")))?;
-        self.indexing = Some(IndexJob {
-            owner_ticket,
-            legacy_add: legacy_add.map(|ticket| (ticket, request_id)),
-            awaiters: Vec::new(),
-            cancelled,
-            request_id,
-            requested_package,
-            work: IndexJobWork::Scanning(scanned),
-        });
-        Ok(None)
+        self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Scanning);
+        indexing.work = IndexJobWork::Scanning(scanned);
+        Ok(())
+    }
+
+    fn spawn_registry_acquisition(
+        &mut self,
+        indexing: &mut IndexJob,
+        coordinate: backend_engine::registry::PackageCoordinate,
+    ) -> Result<(), BuiltinModelError> {
+        let gateway = self.registry.take().ok_or_else(|| {
+            BuiltinModelError(
+                "no configured registry authority can acquire this package".to_owned(),
+            )
+        })?;
+        let gateway_slot = Arc::new(Mutex::new(Some(gateway)));
+        let worker_slot = Arc::clone(&gateway_slot);
+        let cancelled = Arc::clone(&indexing.cancelled);
+        let (sender, acquired) = std::sync::mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name("locald-index-acquire".to_owned())
+            .spawn(move || {
+                let Some(mut gateway) = worker_slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                else {
+                    return;
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let archive = gateway.acquire_cancellable(&coordinate, &cancelled)?;
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(RegistryAddError::Cancelled);
+                    }
+                    let _ = sender.send(RegistryAcquisitionMessage::Staging);
+                    gateway.stage_archive(&coordinate, &archive)
+                }));
+                let message = match result {
+                    Ok(result) => RegistryAcquisitionMessage::Complete {
+                        gateway: Some(gateway),
+                        result,
+                    },
+                    Err(_) => RegistryAcquisitionMessage::Complete {
+                        gateway: None,
+                        result: Err(RegistryAddError::WorkerPanicked),
+                    },
+                };
+                let _ = sender.send(message);
+            });
+        if let Err(error) = spawned {
+            self.registry = gateway_slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            return Err(BuiltinModelError(format!(
+                "start the registry acquisition: {error}"
+            )));
+        }
+        indexing.work = IndexJobWork::Acquiring(acquired);
+        Ok(())
     }
 
     /// Commits an index job's semantic intent and publishes the view: the

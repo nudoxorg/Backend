@@ -163,6 +163,8 @@ pub enum CommandId {
     IndexAwait,
     /// Cancel one owner-issued index job ticket.
     IndexCancel,
+    /// Read one bounded page of progress for an owner-issued index job ticket.
+    IndexProgress,
     /// Read one package graph page fenced to its selected root and facts witness.
     PackageGraphPage,
     /// Read engine health.

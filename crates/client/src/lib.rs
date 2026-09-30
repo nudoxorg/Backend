@@ -26,10 +26,10 @@ pub use subscription_local::LocalSubscriptionTransport;
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
     CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
-    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, NameQuery, OutlineQuery,
-    IndexCancelStatus, IndexJobTerminal, IndexJobTicket, IndexStartResult, PackageReference,
-    PageContinuation, PageRequest, PageTerminal, Query, QueryLimit,
-    ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
+    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelStatus,
+    IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexProgressPage, IndexStartResult,
+    NameQuery, OutlineQuery, PackageReference, PageContinuation, PageRequest, PageTerminal, Query,
+    QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
     SemanticLanguageProfile, SemanticVersionRecord, SurfaceCommand, SurfaceReply, SymbolAddress,
     SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim, WireSchema,
     encode_id, package_key, symbol_key,
@@ -927,7 +927,9 @@ impl Session {
             execution_intent,
         })? {
             SurfaceReply::IndexStarted(result) => Ok(result),
-            _ => Err(ClientError::Protocol("index start reply changed shape".to_owned())),
+            _ => Err(ClientError::Protocol(
+                "index start reply changed shape".to_owned(),
+            )),
         }
     }
 
@@ -942,7 +944,34 @@ impl Session {
     ) -> Result<IndexJobTerminal, ClientError> {
         match self.surface(SurfaceCommand::IndexAwait { ticket })? {
             SurfaceReply::IndexTerminal(terminal) => Ok(terminal),
-            _ => Err(ClientError::Protocol("index await reply changed shape".to_owned())),
+            _ => Err(ClientError::Protocol(
+                "index await reply changed shape".to_owned(),
+            )),
+        }
+    }
+
+    /// Reads the immediate observation and next bounded progress page for one exact index job.
+    ///
+    /// Pass the returned `next_sequence` on the next call. A `truncated` page means older
+    /// events aged out of the owner's bounded buffer before they were read. Terminal and
+    /// unknown-ticket states are returned directly and never inferred from an empty page.
+    ///
+    /// # Errors
+    /// Returns an error when request admission fails or the owner reply violates its typed
+    /// contract.
+    pub fn index_job_progress(
+        &mut self,
+        ticket: IndexJobTicket,
+        after_sequence: u64,
+    ) -> Result<IndexJobObservation, ClientError> {
+        match self.surface(SurfaceCommand::IndexProgress {
+            ticket,
+            after_sequence,
+        })? {
+            SurfaceReply::IndexProgress(page) => Ok(page),
+            _ => Err(ClientError::Protocol(
+                "index progress reply changed shape".to_owned(),
+            )),
         }
     }
 
@@ -956,7 +985,9 @@ impl Session {
     ) -> Result<IndexCancelStatus, ClientError> {
         match self.surface(SurfaceCommand::IndexCancel { ticket })? {
             SurfaceReply::IndexCancellation(status) => Ok(status),
-            _ => Err(ClientError::Protocol("index cancellation reply changed shape".to_owned())),
+            _ => Err(ClientError::Protocol(
+                "index cancellation reply changed shape".to_owned(),
+            )),
         }
     }
 
