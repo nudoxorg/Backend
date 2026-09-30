@@ -2605,12 +2605,66 @@ mod tests {
         HistoryCommitId::from_bytes(bytes)
     }
 
+    fn history_file_inventory(directory: &Path) -> Vec<(String, u64)> {
+        let mut files = fs::read_dir(directory)
+            .expect("enumerate history directory")
+            .map(|entry| {
+                let entry = entry.expect("read history directory entry");
+                let metadata = entry.metadata().expect("read history file metadata");
+                assert!(metadata.is_file(), "history inventory contains files only");
+                (
+                    entry
+                        .file_name()
+                        .into_string()
+                        .expect("history file names are UTF-8"),
+                    metadata.len(),
+                )
+            })
+            .collect::<Vec<_>>();
+        files.sort_unstable();
+        files
+    }
+
+    #[test]
+    fn history_gc_compaction_crash_child_process() {
+        let Ok(root) = std::env::var("BACKEND_TEST_HISTORY_GC_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let base = fixture(b"branch retention base", 1, 71);
+        let files = LocalSemanticGenerationFiles::open(&root)
+            .expect("open generation store in GC crash child");
+        arm_history_test_fault(HistoryTestFault::AfterHistoryIndexCompactRename);
+        loop {
+            match files.advance_history_gc(&base.target) {
+                Ok(progress) if progress.complete() => {
+                    panic!("the injected compaction interruption did not fire")
+                }
+                Ok(_) => {}
+                Err(error) if error.contains("AfterHistoryIndexCompactRename") => {
+                    // Exit without running Rust destructors or the test harness. The
+                    // parent reopens this exact durable state in a fresh process.
+                    std::process::exit(86);
+                }
+                Err(error) => panic!("unexpected GC crash-child error: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn two_processes_cannot_both_win_the_same_history_ref_cas() {
         let directory = TestDirectory::create();
         let cas_root = directory.0.join("cas");
         let file_store =
             FileStore::open(&cas_root, 16 * 1024 * 1024).expect("open FileStore for process CAS");
+        let range_store = FileSemanticRangeStore::open(
+            file_store.clone(),
+            TransportLimits {
+                max_chunk: 16 * 1024,
+                ..TransportLimits::default()
+            },
+        )
+        .expect("initialize the production semantic-hydration layout");
         let state_root = cas_root.join("semantic-hydration");
         let files = LocalSemanticGenerationFiles::open(&state_root)
             .expect("open generation store for process CAS");
@@ -2638,6 +2692,7 @@ mod tests {
             )
             .expect("create race ref");
         drop(files);
+        drop(range_store);
         drop(file_store);
 
         let executable = std::env::current_exe().expect("test executable path");
@@ -2681,7 +2736,6 @@ mod tests {
             left_result, right_result,
             "exactly one process wins the CAS"
         );
-
         let winner = if left_result == "won" {
             left.identity()
         } else {
@@ -2695,6 +2749,15 @@ mod tests {
             },
         )
         .expect("reopen semantic adapter");
+        for child in [left.identity(), right.identity()] {
+            assert_eq!(
+                reopened
+                    .history_commit(&base.target, child)
+                    .expect("each child remains a valid immutable commit after restart")
+                    .parents(),
+                &[local_cache]
+            );
+        }
         assert_eq!(
             reopened
                 .history_ref(
@@ -2706,6 +2769,13 @@ mod tests {
                 .expect("race ref remains")
                 .commit(),
             winner
+        );
+        assert_eq!(
+            reopened
+                .history_commit(&base.target, winner)
+                .expect("cold selected child keeps its parent binding")
+                .parents(),
+            &[local_cache]
         );
     }
 
@@ -4516,14 +4586,16 @@ mod tests {
             .expect_err("warm lookup rejects a moved ref tip")
             .contains("history reference moved"));
         cold_range_store
-            .compare_and_swap_history_ref(
+            .publish_typed_v2_history_ref_cold(
                 &generation.target,
                 HistoryRefKind::Branch,
                 branch.clone(),
                 None,
-                Some(second_commit_id),
+                second_commit_id,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                backend_semantic::ir::JumboRopeLimits::default(),
             )
-            .expect("restore branch tip after the warm-ref race");
+            .expect("cold-reverify before restoring the typed V2 branch tip");
 
         // A cache hit is bound to the exact previously verified locator bytes
         // and may remain usable if its sidecar is externally replaced. A cold
@@ -4557,7 +4629,10 @@ mod tests {
                 backend_semantic::ir::JumboRopeLimits::default(),
             )
             .expect_err("cold cache rejects a replaced locator sidecar");
-        assert!(cold_locator_error.contains("typed V2 history locator"));
+        assert!(
+            cold_locator_error.contains("checksum failed"),
+            "unexpected cold locator rejection: {cold_locator_error}"
+        );
         assert_eq!(history_replay_load_counts().locator_decodes, 1);
         reset_history_replay_load_counts();
         let warm_with_replaced_locator = cold_range_store
@@ -4583,13 +4658,26 @@ mod tests {
         // Verify the physical-byte boundary too. A live cache owns bytes that
         // were fully FileStore-verified on admission; a cold process must
         // re-read and reject later physical-file damage.
-        let first_object = positive.objects.first().expect("positive payload closure is nonempty");
-        let object_path = cas_root
-            .join("objects")
-            .join(format!("{}.object", super::hex(first_object.id().as_bytes())));
+        let first_object = positive
+            .objects
+            .first()
+            .expect("positive payload closure is nonempty");
+        let object_path = cas_root.join("objects").join(format!(
+            "{}.object",
+            super::hex(first_object.id().as_bytes())
+        ));
         let original_object = fs::read(&object_path).expect("read object before corruption");
+        let original_permissions = fs::metadata(&object_path)
+            .expect("read immutable object permissions")
+            .permissions();
+        let mut writable_permissions = original_permissions.clone();
+        writable_permissions.set_readonly(false);
+        fs::set_permissions(&object_path, writable_permissions)
+            .expect("temporarily make the private test object writable");
         let mut damaged_object = original_object.clone();
-        *damaged_object.last_mut().expect("object envelope is nonempty") ^= 0x80;
+        *damaged_object
+            .last_mut()
+            .expect("object envelope is nonempty") ^= 0x80;
         fs::write(&object_path, &damaged_object).expect("damage physical object bytes");
         reset_history_replay_load_counts();
         let warm_with_damaged_object = cold_range_store
@@ -4626,7 +4714,15 @@ mod tests {
             )
             .expect_err("cold replay revalidates physical bytes after restart");
         assert!(cold_object_error.contains("verify typed V2 history object"));
+        let mut restore_permissions = fs::metadata(&object_path)
+            .expect("read physical object permissions before restoration")
+            .permissions();
+        restore_permissions.set_readonly(false);
+        fs::set_permissions(&object_path, restore_permissions)
+            .expect("temporarily make the damaged test object writable again");
         fs::write(&object_path, &original_object).expect("restore physical object bytes");
+        fs::set_permissions(&object_path, original_permissions)
+            .expect("restore immutable object permissions");
 
         let pinned = cold_range_store
             .replay_typed_v2_history_with_residency(
@@ -5303,13 +5399,18 @@ mod tests {
             .expect("base history ref exists")
             .commit();
         let next_head = commit(&files, &next, [next.stamp, next.stamp]).expect("commit next");
+        let next_history_id = files
+            .history_ref(&next.target, HistoryRefKind::Branch, &selected_name)
+            .expect("read selected child history ref")
+            .expect("child history ref exists")
+            .commit();
         let target_root = files.target_root(&next.target);
         let next_record = record_path(&target_root, next_head.identity());
         let base_record = record_path(&target_root, base_head.identity());
         let next_commit_path = target_root
             .join("history")
             .join("commits")
-            .join(format!("{}.commit", hex(next_head.identity().as_bytes())));
+            .join(format!("{}.commit", hex(next_history_id.as_bytes())));
         let base_commit_path = target_root
             .join("history")
             .join("commits")
@@ -5317,6 +5418,10 @@ mod tests {
 
         let refs_path = target_root.join("history").join("refs.catalog");
         let refs = fs::read(&refs_path).expect("read refs catalog");
+        let commits_root = target_root.join("history").join("commits");
+        let records_root = target_root.join("records");
+        let commits_before_torn_refs = history_file_inventory(&commits_root);
+        let records_before_torn_refs = history_file_inventory(&records_root);
         fs::write(&refs_path, b"torn refs catalog").expect("truncate refs catalog");
         assert!(
             files
@@ -5328,18 +5433,55 @@ mod tests {
             next_record.exists(),
             "no generation was pruned after torn refs"
         );
-        fs::write(&refs_path, refs).expect("restore exact refs catalog");
+        assert_eq!(
+            history_file_inventory(&commits_root),
+            commits_before_torn_refs
+        );
+        assert_eq!(
+            history_file_inventory(&records_root),
+            records_before_torn_refs
+        );
+        fs::write(&refs_path, &refs).expect("restore exact refs catalog");
 
         fs::remove_file(&base_commit_path).expect("remove a referenced parent commit");
+        let commits_after_parent_damage = history_file_inventory(&commits_root);
+        let records_after_parent_damage = history_file_inventory(&records_root);
+        // The cache's selected HEAD remains independently readable; history
+        // operations must reject its now-incomplete ancestry before GC prunes.
         assert!(
             files
                 .current(&next.target)
-                .expect_err("missing parent fails closed")
+                .expect("cache read remains available while history is damaged")
+                .is_some()
+        );
+        assert!(
+            files
+                .history_ref(&next.target, HistoryRefKind::Branch, &selected_name)
+                .expect_err("history ref fails closed on a missing parent")
                 .contains("missing commit object")
         );
         assert!(
+            files
+                .advance_history_gc(&next.target)
+                .expect_err("history GC rejects a missing parent before sweeping")
+                .contains("missing commit object")
+        );
+        assert_eq!(
+            fs::read(&refs_path).expect("read refs after parent validation failures"),
+            refs,
+            "failed ancestry validation leaves the ref catalog unchanged"
+        );
+        assert_eq!(
+            history_file_inventory(&commits_root),
+            commits_after_parent_damage
+        );
+        assert_eq!(
+            history_file_inventory(&records_root),
+            records_after_parent_damage
+        );
+        assert!(
             next_commit_path.exists(),
-            "child commit is retained on failure"
+            "child commit is retained after failed ancestry validation"
         );
         assert!(base_record.exists(), "generation records remain on failure");
 
@@ -5355,6 +5497,10 @@ mod tests {
         let target_root = recovered_files.target_root(&next.target);
         let missing_generation = record_path(&target_root, base_head.identity());
         fs::remove_file(missing_generation).expect("remove a referenced generation snapshot");
+        let commits_root = target_root.join("history").join("commits");
+        let records_root = target_root.join("records");
+        let commits_before_generation_validation = history_file_inventory(&commits_root);
+        let records_before_generation_validation = history_file_inventory(&records_root);
         assert!(
             recovered_files
                 .current(&next.target)
@@ -5362,6 +5508,26 @@ mod tests {
                 .contains("missing record")
         );
         assert!(record_path(&target_root, next_head.identity()).exists());
+        assert!(
+            recovered_files
+                .history_ref(&next.target, HistoryRefKind::Branch, &selected_name)
+                .expect_err("history ref rejects the missing generation before GC")
+                .contains("missing record")
+        );
+        assert!(
+            recovered_files
+                .advance_history_gc(&next.target)
+                .expect_err("history GC rejects the missing generation before sweeping")
+                .contains("missing record")
+        );
+        assert_eq!(
+            history_file_inventory(&commits_root),
+            commits_before_generation_validation
+        );
+        assert_eq!(
+            history_file_inventory(&records_root),
+            records_before_generation_validation
+        );
     }
 
     #[test]
@@ -5385,6 +5551,26 @@ mod tests {
             .join("history")
             .join("commits")
             .join(format!("{}.commit", hex(scratch.identity().as_bytes())));
+        let commits_root = scratch_path
+            .parent()
+            .expect("history commits directory exists")
+            .to_path_buf();
+        let commits_before = history_file_inventory(&commits_root);
+        assert_eq!(
+            commits_before.len(),
+            2,
+            "base and scratch commits are durable"
+        );
+        let scratch_name = scratch_path
+            .file_name()
+            .expect("scratch commit file has a name")
+            .to_string_lossy()
+            .into_owned();
+        let expected_commits_after_gc = commits_before
+            .iter()
+            .filter(|(name, _)| name != &scratch_name)
+            .cloned()
+            .collect::<Vec<_>>();
         let scratch_bytes = fs::metadata(&scratch_path)
             .expect("read scratch commit size")
             .len();
@@ -5405,23 +5591,31 @@ mod tests {
             .current(&base.target)
             .expect("recover retained selected branch")
             .expect("selected local head remains");
-        arm_history_test_fault(HistoryTestFault::AfterHistoryIndexCompactRename);
-        let interruption = loop {
-            match after_ref_delete.advance_history_gc(&base.target) {
-                Ok(progress) if progress.complete() => {
-                    panic!("the injected compact-index interruption did not fire")
-                }
-                Ok(_) => {}
-                Err(error) if error.contains("AfterHistoryIndexCompactRename") => break error,
-                Err(error) => panic!("unexpected retention error: {error}"),
-            }
-        };
-        assert!(interruption.contains("injected semantic history interruption"));
+        drop(after_ref_delete);
+
+        let child_test = "ir_generation_store::tests::history_gc_compaction_crash_child_process";
+        let status = Command::new(std::env::current_exe().expect("test executable path"))
+            .arg("--exact")
+            .arg(child_test)
+            .env("BACKEND_TEST_HISTORY_GC_ROOT", &directory.0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn history GC crash process");
+        assert_eq!(
+            status.code(),
+            Some(86),
+            "child exits immediately after durable index replacement"
+        );
         assert!(
             !scratch_path.exists(),
-            "commit unlink precedes index publication"
+            "the unreachable commit is unlinked before the process dies"
         );
-        drop(after_ref_delete);
+        assert_eq!(
+            history_file_inventory(&commits_root),
+            expected_commits_after_gc,
+            "independent inventory finds exactly the selected commit after the crash"
+        );
 
         let reopened = LocalSemanticGenerationFiles::open(&directory.0).expect("cold reopen");
         let mut progress = reopened
@@ -5438,8 +5632,17 @@ mod tests {
         }
         assert!(progress.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS);
         assert!(!scratch_path.exists());
-        assert_eq!(progress.stats().reclaimed_commits(), 1);
-        assert_eq!(progress.stats().reclaimed_commit_bytes(), scratch_bytes);
+        let commits_after_restart = history_file_inventory(&commits_root);
+        assert_eq!(
+            commits_before.len() - commits_after_restart.len(),
+            1,
+            "cold directory inventory independently proves one physical commit was reclaimed"
+        );
+        assert_eq!(commits_after_restart, expected_commits_after_gc);
+        assert!(
+            scratch_bytes > 0,
+            "the reclaimed commit had real durable bytes"
+        );
 
         let history_root = reopened.target_root(&base.target).join("history");
         assert_eq!(
@@ -5582,7 +5785,24 @@ mod tests {
             .join("history")
             .join("segment-map")
             .join(format!("{}.map", hex(orphan_segment.as_bytes())));
-        fs::write(&map_path, b"corrupt bridge mapping").expect("corrupt exact map fixture");
+        let valid_mapping = fs::read(&map_path).expect("read complete persisted bridge mapping");
+        let _ = history::decode_history_segment_mapping(&valid_mapping, orphan_segment)
+            .expect("admit the complete bridge mapping before corruption");
+        let mut corrupt_mapping = valid_mapping;
+        let checksum_byte = corrupt_mapping
+            .last_mut()
+            .expect("bridge mapping includes its checksum");
+        *checksum_byte ^= 1;
+        fs::write(&map_path, &corrupt_mapping).expect("corrupt only the bridge checksum");
+
+        let target_root = files.target_root(&base.target);
+        let history_root = target_root.join("history");
+        let refs_before = fs::read(history_root.join("refs.catalog"))
+            .expect("snapshot refs before fail-closed collection");
+        let commits_before = history_file_inventory(&history_root.join("commits"));
+        let records_before = history_file_inventory(&target_root.join("records"));
+        let commit_index_before = fs::read(history_root.join("commit.index"))
+            .expect("snapshot the append-only commit index");
 
         let error = (0..64)
             .find_map(|_| match files.advance_history_gc(&base.target) {
@@ -5600,6 +5820,30 @@ mod tests {
         assert!(
             map_path.exists(),
             "fail-closed retention leaves corruption intact"
+        );
+        assert_eq!(
+            fs::read(&map_path).expect("read preserved corrupt bridge bytes"),
+            corrupt_mapping
+        );
+        assert_eq!(
+            fs::read(history_root.join("refs.catalog")).expect("read refs after failed GC"),
+            refs_before,
+            "a corrupt unreferenced bridge cannot alter references"
+        );
+        assert_eq!(
+            history_file_inventory(&history_root.join("commits")),
+            commits_before,
+            "a corrupt bridge cannot sweep commit records"
+        );
+        assert_eq!(
+            history_file_inventory(&target_root.join("records")),
+            records_before,
+            "a corrupt bridge cannot sweep generation records"
+        );
+        assert_eq!(
+            fs::read(history_root.join("commit.index")).expect("read index after failed GC"),
+            commit_index_before,
+            "a corrupt bridge cannot publish a compacted commit index"
         );
     }
 }
