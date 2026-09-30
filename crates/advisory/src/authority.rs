@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -18,13 +18,17 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::parse::{parse_ghsa_value, parse_osv_value};
+use super::osv_snapshot::OsvSnapshotRef;
 use super::{
     AcquisitionDecision, AcquisitionGate, Advisory, AdvisoryCoverage, AdvisoryDelta,
-    AdvisoryJournal, AdvisoryJournalError, AdvisoryObservation, AdvisorySource, AdvisorySync,
+    AdvisoryJournal, AdvisoryJournalError, AdvisoryObservation, AdvisorySource, AdvisorySync, Alias,
     AliasGraph, AliasGraphError, FeedFreshness, FreshnessState, GhsaParseError,
     MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, MalwareCoverage, PackageIdentity,
     OsvEcosystem, OsvFeedScope, ParseError, RustSecParseError, SyncMode,
 };
+
+/// Default hard ceiling for one persisted advisory authority JSON state file.
+pub const MAX_ADVISORY_AUTHORITY_STATE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// A configured authority feed. The bytes are supplied by the composition
 /// root so network policy remains outside the portable advisory crate.
@@ -39,6 +43,13 @@ pub struct AuthorityFeed {
     /// Exact OSV scope selected for this feed. A scoped frontier is complete
     /// only when this matches the source scope selected on the authority.
     pub osv_scope: Option<OsvFeedScope>,
+    /// Immutable package-keyed generation for a large complete OSV archive.
+    /// When present, `entries` must be empty and the source is read through
+    /// its package index at decision time.
+    pub osv_snapshot: Option<OsvSnapshotRef>,
+    /// Opaque digest binding validators to the configured source location and
+    /// selected scope. Raw endpoints and credentials are never persisted.
+    pub source_identity: Option<[u8; 32]>,
     /// Conditional response and observation evidence.
     pub freshness: FeedFreshness,
     /// Fully parsed source objects.
@@ -83,6 +94,8 @@ impl AuthorityFeed {
             // directory tree, admitted through [`Self::from_entries`].
             complete: source != AdvisorySource::RustSec,
             osv_scope: None,
+            osv_snapshot: None,
+            source_identity: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
@@ -116,6 +129,8 @@ impl AuthorityFeed {
             mode: SyncMode::Snapshot,
             complete: true,
             osv_scope: None,
+            osv_snapshot: None,
+            source_identity: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
@@ -140,12 +155,40 @@ impl AuthorityFeed {
             mode: SyncMode::Snapshot,
             complete: true,
             osv_scope: None,
+            osv_snapshot: None,
+            source_identity: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
                 observed_at,
                 expires_at: None,
                 not_modified: true,
+            },
+            entries: Vec::new(),
+        }
+    }
+
+    /// Builds a complete OSV feed backed by a sealed disk generation.
+    #[must_use]
+    pub fn from_osv_snapshot(
+        snapshot: OsvSnapshotRef,
+        observed_at: u64,
+        etag: Option<String>,
+        last_modified: Option<String>,
+    ) -> Self {
+        Self {
+            source: AdvisorySource::Osv,
+            mode: SyncMode::Snapshot,
+            complete: true,
+            osv_scope: Some(snapshot.scope()),
+            osv_snapshot: Some(snapshot),
+            source_identity: None,
+            freshness: FeedFreshness {
+                etag,
+                last_modified,
+                observed_at,
+                expires_at: None,
+                not_modified: false,
             },
             entries: Vec::new(),
         }
@@ -277,6 +320,9 @@ pub struct AuthorityFrontier {
     /// do not use this scope.
     #[serde(default)]
     pub osv_scope: Option<OsvFeedScope>,
+    /// Opaque location/scope identity used to prevent cross-source 304 reuse.
+    #[serde(default)]
+    pub source_identity: Option<[u8; 32]>,
     /// Monotonic source-local journal sequence.
     pub sequence: u64,
     /// Active object/tombstone digest at this frontier.
@@ -305,6 +351,15 @@ pub struct AuthorityFrontier {
 pub struct AdvisoryAuthority {
     /// Maximum age accepted as fresh evidence.
     pub max_age_secs: u64,
+    /// Process-local serialization ceiling; derived from source policy and
+    /// never trusted from a persisted state file.
+    #[serde(skip)]
+    maximum_state_bytes: u64,
+    /// Process-selected endpoint identities. Persisted frontiers are compared
+    /// against these after composition so an old endpoint cannot establish
+    /// current coverage before an explicit refresh.
+    #[serde(skip)]
+    selected_source_identities: BTreeMap<AdvisorySource, [u8; 32]>,
     /// Whether resolver calls are made under the offline product policy.
     #[serde(default)]
     offline: bool,
@@ -316,6 +371,9 @@ pub struct AdvisoryAuthority {
     /// coverage must remain incomplete until a scoped snapshot is admitted.
     #[serde(default)]
     osv_scope: Option<OsvFeedScope>,
+    /// Selected immutable OSV package index for a large streamed archive.
+    #[serde(default)]
+    osv_snapshot: Option<OsvSnapshotRef>,
     /// Cross-authority alias graph.  Per-source journals retain their own source-local graph for
     /// transactional admission; this graph prevents OSV/RustSec/GHSA feeds from silently
     /// disagreeing about one shared CVE/GHSA identity.
@@ -334,9 +392,12 @@ impl AdvisoryAuthority {
     pub fn new(max_age_secs: u64) -> Self {
         Self {
             max_age_secs,
+            maximum_state_bytes: MAX_ADVISORY_AUTHORITY_STATE_BYTES,
+            selected_source_identities: BTreeMap::new(),
             offline: false,
             configured: BTreeSet::new(),
             osv_scope: Some(OsvFeedScope::All),
+            osv_snapshot: None,
             aliases: AliasGraph::default(),
             journals: BTreeMap::new(),
             frontiers: BTreeMap::new(),
@@ -347,6 +408,16 @@ impl AdvisoryAuthority {
     /// Cached bodies for removed sources are retained for audit/replay.
     pub fn configure_sources(&mut self, sources: impl IntoIterator<Item = AdvisorySource>) {
         self.configured = sources.into_iter().collect();
+    }
+
+    /// Binds configured authorities to the opaque identities of their current
+    /// endpoint and scope. Old cached facts remain positive evidence, but do
+    /// not provide clean coverage for a newly selected source.
+    pub fn configure_source_identities(
+        &mut self,
+        identities: impl IntoIterator<Item = (AdvisorySource, [u8; 32])>,
+    ) {
+        self.selected_source_identities = identities.into_iter().collect();
     }
 
     /// Selects the OSV dataset whose coverage is admitted by this authority.
@@ -370,22 +441,72 @@ impl AdvisoryAuthority {
     /// Opens a durable authority state file, recovering to an empty frontier
     /// only when it does not exist.
     pub fn open(path: impl AsRef<Path>, max_age_secs: u64) -> Result<Self, AuthorityStorageError> {
+        Self::open_with_limit(path, max_age_secs, MAX_ADVISORY_AUTHORITY_STATE_BYTES)
+    }
+
+    /// Opens a durable authority state under the caller's state-file byte
+    /// ceiling. The limit is checked before allocation and one byte beyond it
+    /// is read to close the stat/read race.
+    pub fn open_with_limit(
+        path: impl AsRef<Path>,
+        max_age_secs: u64,
+        maximum_state_bytes: u64,
+    ) -> Result<Self, AuthorityStorageError> {
         let path = path.as_ref();
-        match fs::read(path) {
-            Ok(bytes) => {
-                let mut authority: Self =
-                    serde_json::from_slice(&bytes).map_err(AuthorityStorageError::Decode)?;
-                authority
-                    .rebuild_aliases()
-                    .map_err(AuthorityStorageError::AliasConflict)?;
-                authority.max_age_secs = max_age_secs;
-                Ok(authority)
-            }
+        let path_metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Self::new(max_age_secs))
+                let mut authority = Self::new(max_age_secs);
+                authority.maximum_state_bytes = maximum_state_bytes;
+                return Ok(authority);
             }
-            Err(error) => Err(AuthorityStorageError::Io(error)),
+            Err(error) => return Err(AuthorityStorageError::Io(error)),
+        };
+        if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+            return Err(AuthorityStorageError::InvalidStateFile);
         }
+        if path_metadata.len() > maximum_state_bytes {
+            return Err(AuthorityStorageError::BoundExceeded);
+        }
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) => return Err(AuthorityStorageError::Io(error)),
+        };
+        let opened_metadata = file.metadata().map_err(AuthorityStorageError::Io)?;
+        if !opened_metadata.is_file() {
+            return Err(AuthorityStorageError::InvalidStateFile);
+        }
+        if opened_metadata.len() > maximum_state_bytes {
+            return Err(AuthorityStorageError::BoundExceeded);
+        }
+        let mut bytes = Vec::new();
+        file.take(maximum_state_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(AuthorityStorageError::Io)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_state_bytes {
+            return Err(AuthorityStorageError::BoundExceeded);
+        }
+        let mut authority: Self =
+            serde_json::from_slice(&bytes).map_err(AuthorityStorageError::Decode)?;
+        authority
+            .rebuild_aliases()
+            .map_err(AuthorityStorageError::AliasConflict)?;
+        if let Some(snapshot) = authority.osv_snapshot.as_mut()
+            && snapshot.attach_root(osv_snapshot_root(path)).is_err()
+            && let Some(frontier) = authority.frontiers.get_mut(&AdvisorySource::Osv)
+        {
+            frontier.availability = AuthorityAvailability::Unavailable;
+        }
+        authority.max_age_secs = max_age_secs;
+        authority.maximum_state_bytes = maximum_state_bytes;
+        Ok(authority)
+    }
+
+    /// Returns the durable root for immutable OSV generations adjacent to an
+    /// advisory authority journal.
+    #[must_use]
+    pub fn osv_snapshot_root(path: impl AsRef<Path>) -> PathBuf {
+        osv_snapshot_root(path.as_ref())
     }
 
     /// Atomically persists the current source frontiers and journals.
@@ -399,6 +520,9 @@ impl AdvisoryAuthority {
         };
         fs::create_dir_all(parent).map_err(AuthorityStorageError::Io)?;
         let bytes = serde_json::to_vec(self).map_err(AuthorityStorageError::Encode)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > self.maximum_state_bytes {
+            return Err(AuthorityStorageError::BoundExceeded);
+        }
         // A fixed sibling name turns a crash left behind by a previous process into a permanent
         // persistence outage.  A process-local nonce keeps concurrent writers independent while
         // the final rename remains the single atomic publication point.
@@ -455,6 +579,40 @@ impl AdvisoryAuthority {
     ) -> Result<&AuthorityFrontier, AuthorityApplyError> {
         let source = feed.source;
         let feed_osv_scope = feed.osv_scope;
+        let feed_source_identity = feed.source_identity;
+        if self
+            .selected_source_identities
+            .get(&source)
+            .is_some_and(|identity| feed_source_identity != Some(*identity))
+        {
+            return Err(AuthorityApplyError::ConfiguredSourceMismatch(source));
+        }
+        if feed.freshness.not_modified
+            && feed_source_identity.is_some()
+            && self
+                .frontiers
+                .get(&source)
+                .is_some_and(|frontier| frontier.source_identity != feed_source_identity)
+        {
+            return Err(AuthorityApplyError::NotModifiedSourceMismatch(source));
+        }
+        let supplied_snapshot = feed.osv_snapshot.is_some();
+        let external_snapshot = feed.osv_snapshot.or_else(|| {
+            (source == AdvisorySource::Osv && feed.freshness.not_modified)
+                .then(|| self.osv_snapshot.clone())
+                .flatten()
+        });
+        if supplied_snapshot
+            && (source != AdvisorySource::Osv || !feed.entries.is_empty())
+        {
+            return Err(AuthorityApplyError::UnexpectedSnapshot);
+        }
+        if external_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.is_verified())
+        {
+            return Err(AuthorityApplyError::SnapshotUnavailable);
+        }
         for advisory in &feed.entries {
             if advisory.key.native.source != source {
                 return Err(AuthorityApplyError::SourceMismatch {
@@ -470,12 +628,19 @@ impl AdvisoryAuthority {
                 .map_err(AuthorityApplyError::AliasConflict)?;
         }
         let mut journal = self.journals.get(&source).cloned().unwrap_or_default();
-        if feed.freshness.not_modified && journal.checkpoint().is_none() {
+        if feed.freshness.not_modified
+            && journal.checkpoint().is_none()
+            && external_snapshot.is_none()
+        {
             return Err(AuthorityApplyError::NotModifiedWithoutFrontier(source));
         }
         let previous_frontier = self.frontiers.get(&source);
         let complete = if feed.freshness.not_modified {
             previous_frontier.is_some_and(|frontier| frontier.complete)
+        } else if let Some(snapshot) = external_snapshot.as_ref() {
+            feed.complete
+                && feed_osv_scope == Some(snapshot.scope())
+                && feed_osv_scope == self.osv_scope
         } else if source == AdvisorySource::Osv {
             feed.complete && feed_osv_scope.is_some() && feed_osv_scope == self.osv_scope
         } else {
@@ -490,23 +655,59 @@ impl AdvisoryAuthority {
         } else {
             None
         };
-        let entries = feed
-            .entries
-            .into_iter()
-            .map(AdvisoryDelta::Upsert)
-            .collect();
-        let checkpoint = journal
-            .apply(AdvisorySync {
-                mode: feed.mode,
-                complete,
-                entries,
+        let (checkpoint, active_entries) = if let Some(snapshot) = external_snapshot.as_ref() {
+            let sequence = previous_frontier
+                .map_or(0, |frontier| frontier.sequence)
+                .checked_add(1)
+                .ok_or(AuthorityApplyError::Journal(
+                    AdvisoryJournalError::SequenceOverflow,
+                ))?;
+            let digest = if feed.freshness.not_modified {
+                previous_frontier.map_or_else(|| snapshot.frontier_digest(), |frontier| frontier.digest)
+            } else {
+                snapshot.frontier_digest()
+            };
+            let checkpoint = Checkpoint {
+                sequence,
+                digest,
                 freshness: feed.freshness.clone(),
-            })
-            .map_err(AuthorityApplyError::Journal)?
-            .clone();
+            };
+            if supplied_snapshot {
+                self.journals.remove(&source);
+            }
+            self.osv_snapshot = Some(snapshot.clone());
+            (checkpoint, snapshot.advisory_objects())
+        } else {
+            if source == AdvisorySource::Osv
+                && feed.complete
+                && !feed.freshness.not_modified
+                && feed_osv_scope == self.osv_scope
+            {
+                self.osv_snapshot = None;
+            }
+            let entries = feed
+                .entries
+                .into_iter()
+                .map(AdvisoryDelta::Upsert)
+                .collect();
+            let checkpoint = journal
+                .apply(AdvisorySync {
+                    mode: feed.mode,
+                    complete,
+                    entries,
+                    freshness: feed.freshness.clone(),
+                })
+                .map_err(AuthorityApplyError::Journal)?
+                .clone();
+            (
+                checkpoint,
+                u64::try_from(journal.iter().count()).unwrap_or(u64::MAX),
+            )
+        };
         let frontier = AuthorityFrontier {
             source,
             osv_scope,
+            source_identity: feed_source_identity,
             sequence: checkpoint.sequence,
             digest: checkpoint.digest,
             etag: checkpoint.freshness.etag.clone(),
@@ -521,10 +722,12 @@ impl AdvisoryAuthority {
             },
             complete,
             availability: AuthorityAvailability::Available,
-            entries: u64::try_from(journal.iter().count()).unwrap_or(u64::MAX),
+            entries: active_entries,
             not_modified: checkpoint.freshness.not_modified,
         };
-        self.journals.insert(source, journal);
+        if !supplied_snapshot {
+            self.journals.insert(source, journal);
+        }
         self.frontiers.insert(source, frontier);
         self.aliases = aliases;
         self.configured.insert(source);
@@ -548,6 +751,7 @@ impl AdvisoryAuthority {
             osv_scope: previous
                 .and_then(|value| value.osv_scope)
                 .or(self.osv_scope.filter(|_| source == AdvisorySource::Osv)),
+            source_identity: previous.and_then(|value| value.source_identity),
             sequence: previous.map_or(0, |value| value.sequence),
             digest: previous.map_or([0; 32], |value| value.digest),
             etag: previous.and_then(|value| value.etag.clone()),
@@ -615,6 +819,18 @@ impl AdvisoryAuthority {
                 missing = true;
                 continue;
             };
+            if self
+                .selected_source_identities
+                .get(source)
+                .is_some_and(|identity| frontier.source_identity != Some(*identity))
+            {
+                complete = false;
+                partial = true;
+                missing = true;
+            }
+            let mut selected_osv_advisories =
+                (*source == AdvisorySource::Osv && self.osv_snapshot.is_some())
+                    .then(BTreeMap::new);
             if *source == AdvisorySource::Osv {
                 let selected_scope = match (self.osv_scope, frontier.osv_scope) {
                     (Some(configured), Some(observed)) if configured == observed => {
@@ -624,14 +840,22 @@ impl AdvisoryAuthority {
                     _ => None,
                 };
                 match selected_scope {
-                    Some(Some(OsvFeedScope::All)) => {}
+                    Some(Some(OsvFeedScope::All))
+                        if matches!(
+                            package.ecosystem.as_str(),
+                            "cargo" | "npm" | "pypi" | "maven" | "nuget" | "go"
+                        ) => {}
+                    Some(Some(OsvFeedScope::All)) => {
+                        complete = false;
+                        partial = true;
+                        missing = true;
+                    }
                     Some(Some(OsvFeedScope::Ecosystem(ecosystem)))
                         if package.ecosystem == ecosystem.package_ecosystem() => {}
                     Some(Some(OsvFeedScope::Ecosystem(_))) | None => {
                         complete = false;
                         partial = true;
                         missing = true;
-                        continue;
                     }
                     Some(None) => {
                         // An unselected JSON source can contribute positive
@@ -657,6 +881,37 @@ impl AdvisoryAuthority {
                 stale = true;
             }
             not_modified &= frontier.not_modified;
+            if *source == AdvisorySource::Osv
+                && let Some(snapshot) = self.osv_snapshot.as_ref()
+            {
+                match snapshot.matching(package, version) {
+                    Ok((matches, unresolved)) => {
+                        complete &= !unresolved;
+                        partial |= unresolved;
+                        let (matches, alias_conflict) =
+                            reconcile_snapshot_aliases(&self.aliases, matches);
+                        if alias_conflict {
+                            unavailable = true;
+                            complete = false;
+                            partial = true;
+                            missing = true;
+                        }
+                        if let Some(selected) = selected_osv_advisories.as_mut() {
+                            selected.extend(matches.into_iter().map(|advisory| {
+                                (advisory.key.canonical.clone(), advisory)
+                            }));
+                        } else {
+                            advisories.extend(matches);
+                        }
+                    }
+                    Err(_) => {
+                        unavailable = true;
+                        complete = false;
+                        partial = true;
+                        missing = true;
+                    }
+                }
+            }
             if let Some(journal) = self.journals.get(source) {
                 let (matches, unresolved) = AcquisitionGate::matching_with_coverage(
                     journal.iter().filter(|a| !a.is_withdrawn()),
@@ -665,7 +920,16 @@ impl AdvisoryAuthority {
                 );
                 complete &= !unresolved;
                 partial |= unresolved;
-                advisories.extend(matches.into_iter().cloned());
+                if let Some(selected) = selected_osv_advisories.as_mut() {
+                    selected.extend(matches.into_iter().cloned().map(|advisory| {
+                        (advisory.key.canonical.clone(), advisory)
+                    }));
+                } else {
+                    advisories.extend(matches.into_iter().cloned());
+                }
+            }
+            if let Some(selected) = selected_osv_advisories {
+                advisories.extend(selected.into_values());
             }
         }
         advisories.sort_by_key(|advisory| advisory.key.canonical.clone());
@@ -729,8 +993,8 @@ impl AdvisoryAuthority {
         (observation, decision)
     }
 
-    /// Returns every admitted object in source order for diagnostics and
-    /// deterministic fixture inspection.
+    /// Returns resident in-memory objects for diagnostics and deterministic
+    /// fixture inspection. Large OSV snapshots remain package-keyed on disk.
     pub fn iter(&self) -> impl Iterator<Item = &Advisory> {
         self.journals.values().flat_map(AdvisoryJournal::iter)
     }
@@ -747,6 +1011,58 @@ impl AdvisoryAuthority {
         self.aliases = aliases;
         Ok(())
     }
+}
+
+/// Resolves aliases from selected disk-backed advisories against the resident
+/// cross-source graph and one bounded query-local graph. This preserves the
+/// normal canonical IDs without cloning the potentially large durable graph
+/// for every package lookup.
+fn reconcile_snapshot_aliases(
+    existing: &AliasGraph,
+    advisories: Vec<Advisory>,
+) -> (Vec<Advisory>, bool) {
+    let mut query_aliases = AliasGraph::default();
+    let mut output = Vec::with_capacity(advisories.len());
+    let mut conflict = false;
+    for mut advisory in advisories {
+        let native = advisory.key.native.id.clone();
+        let mut roots = BTreeSet::new();
+        for alias in advisory
+            .aliases
+            .iter()
+            .map(|alias| alias.value.as_str())
+            .chain(std::iter::once(native.as_str()))
+        {
+            if let Some(root) = existing.resolve(alias) {
+                roots.insert(root.0);
+            }
+        }
+        if roots.len() > 1 {
+            conflict = true;
+            advisory.key.canonical = super::CanonicalAdvisoryId(native);
+            output.push(advisory);
+            continue;
+        }
+        if let Some(root) = roots.first() {
+            let mut aliases = advisory.aliases.into_vec();
+            aliases.push(Alias {
+                value: root.clone(),
+                source: AdvisorySource::Osv,
+            });
+            aliases.sort();
+            aliases.dedup();
+            advisory.aliases = aliases.into_boxed_slice();
+        }
+        match query_aliases.admit_identity(&advisory) {
+            Ok(canonical) => advisory.key.canonical = canonical,
+            Err(_) => {
+                conflict = true;
+                advisory.key.canonical = super::CanonicalAdvisoryId(native);
+            }
+        }
+        output.push(advisory);
+    }
+    (output, conflict)
 }
 
 impl AdvisoryResolver for AdvisoryAuthority {
@@ -793,6 +1109,10 @@ pub enum AuthorityStorageError {
     NoParent,
     /// Persisted source objects disagree about a shared alias.
     AliasConflict(AliasGraphError),
+    /// Persisted authority state exceeded the configured byte ceiling.
+    BoundExceeded,
+    /// Authority state path is not a regular non-symlink file.
+    InvalidStateFile,
 }
 impl std::fmt::Display for AuthorityStorageError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -804,8 +1124,14 @@ impl std::error::Error for AuthorityStorageError {}
 /// Authority state could not admit one complete source transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorityApplyError {
+    /// The supplied source body was not fetched from the currently selected
+    /// endpoint and scope.
+    ConfiguredSourceMismatch(AdvisorySource),
     /// A conditional validator was accepted before a body existed.
     NotModifiedWithoutFrontier(AdvisorySource),
+    /// A conditional response cannot reuse a frontier from another configured
+    /// endpoint or source scope.
+    NotModifiedSourceMismatch(AdvisorySource),
     /// A feed was labeled as one source but carried a native identity from another.
     SourceMismatch {
         /// Source selected by the transport/configuration.
@@ -819,6 +1145,11 @@ pub enum AuthorityApplyError {
     Journal(AdvisoryJournalError),
     /// Internal map insertion invariant failed.
     Invariant,
+    /// A disk-backed snapshot was attached to a different source or carried
+    /// unbounded in-memory entries at the same time.
+    UnexpectedSnapshot,
+    /// A disk-backed snapshot was not fully verified before selection.
+    SnapshotUnavailable,
 }
 
 impl std::fmt::Display for AuthorityApplyError {
@@ -833,6 +1164,14 @@ fn unix_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn osv_snapshot_root(authority_path: &Path) -> PathBuf {
+    let parent = authority_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    parent.join("advisory-snapshots")
 }
 
 /// Reads a bounded local authority body. Directory walking is intentionally
@@ -899,6 +1238,77 @@ mod tests {
         let clean = authority.observe(&package, "2.0.0", false, false, 10, false);
         assert!(clean.advisories.is_empty());
         assert_eq!(clean.coverage, AdvisoryCoverage::Complete);
+    }
+
+    #[test]
+    fn streamed_snapshot_matches_reuse_the_existing_alias_engine() {
+        let mut left = super::super::parse_osv(&osv_for("OSV-LEFT", "Cargo"), 10)
+            .expect("left OSV object");
+        let mut right = super::super::parse_osv(&osv_for("OSV-RIGHT", "Cargo"), 10)
+            .expect("right OSV object");
+        left.aliases = Box::new([Alias {
+            value: "CVE-2026-1234".into(),
+            source: AdvisorySource::Osv,
+        }]);
+        right.aliases = Box::new([Alias {
+            value: "CVE-2026-1234".into(),
+            source: AdvisorySource::Osv,
+        }]);
+        let (joined, conflict) =
+            reconcile_snapshot_aliases(&AliasGraph::default(), vec![left, right]);
+        assert!(!conflict);
+        assert_eq!(joined.len(), 2);
+        assert_eq!(joined[0].key.canonical, joined[1].key.canonical);
+        assert_eq!(joined[0].key.canonical.0, "OSV-LEFT");
+    }
+
+    #[test]
+    fn incomplete_osv_refresh_overlays_disk_snapshot_positive_facts() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let mut old = super::super::parse_osv(&osv(), 10).expect("old OSV object");
+        old.summary = Some("older selected advisory".into());
+        let mut builder = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("snapshot builder");
+        builder.push(&old).expect("stage old advisory");
+        let snapshot = builder
+            .finish(*blake3::hash(b"complete OSV export").as_bytes())
+            .expect("seal old snapshot");
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority
+            .apply(AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None))
+            .expect("admit complete snapshot");
+
+        let mut refreshed = super::super::parse_osv(&osv(), 11).expect("partial OSV object");
+        refreshed.summary = Some("new partial positive advisory".into());
+        let mut partial = AuthorityFeed::from_entries(
+            AdvisorySource::Osv,
+            vec![refreshed],
+            11,
+            None,
+            None,
+        );
+        partial.complete = false;
+        partial.osv_scope = Some(scope);
+        authority.apply(partial).expect("admit partial page");
+
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let observation = authority.observe(&package, "1.0.0", false, false, 11, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Partial);
+        assert_eq!(observation.advisories.len(), 1);
+        assert_eq!(
+            observation.advisories[0].summary.as_deref(),
+            Some("new partial positive advisory")
+        );
     }
 
     #[test]
@@ -1048,6 +1458,70 @@ mod tests {
     }
 
     #[test]
+    fn conditional_response_cannot_reuse_another_endpoint_frontier() {
+        let mut authority = AdvisoryAuthority::new(100);
+        let mut body = AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
+            .expect("OSV body");
+        body.source_identity = Some([1; 32]);
+        body.osv_scope = Some(OsvFeedScope::All);
+        authority.apply(body).expect("admit endpoint A body");
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(OsvFeedScope::All));
+        authority.configure_source_identities([(AdvisorySource::Osv, [2; 32])]);
+        let mut stale_body = AuthorityFeed::parse(
+            AdvisorySource::Osv,
+            &osv(),
+            11,
+            Some("b".into()),
+            None,
+        )
+        .expect("other endpoint body");
+        stale_body.osv_scope = Some(OsvFeedScope::All);
+        stale_body.source_identity = Some([1; 32]);
+        assert_eq!(
+            authority
+                .apply(stale_body)
+                .expect_err("reject stale source body"),
+            AuthorityApplyError::ConfiguredSourceMismatch(AdvisorySource::Osv)
+        );
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let endpoint_b = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(endpoint_b.coverage, AdvisoryCoverage::Partial);
+        assert_eq!(endpoint_b.advisories.len(), 1, "old positive evidence remains visible");
+
+        let mut endpoint_b = AuthorityFeed::not_modified(
+            AdvisorySource::Osv,
+            11,
+            Some("a".into()),
+            None,
+        );
+        endpoint_b.source_identity = Some([2; 32]);
+        assert_eq!(
+            authority.apply(endpoint_b).expect_err("reject cross-endpoint 304"),
+            AuthorityApplyError::NotModifiedSourceMismatch(AdvisorySource::Osv)
+        );
+
+        let mut endpoint_a = AuthorityFeed::not_modified(
+            AdvisorySource::Osv,
+            12,
+            Some("a".into()),
+            None,
+        );
+        endpoint_a.source_identity = Some([1; 32]);
+        authority
+            .apply(endpoint_a)
+            .expect("matching endpoint can reuse its cached body");
+        authority.configure_source_identities([(AdvisorySource::Osv, [1; 32])]);
+        assert_eq!(
+            authority
+                .frontier(AdvisorySource::Osv)
+                .expect("frontier")
+                .source_identity,
+            Some([1; 32])
+        );
+    }
+
+    #[test]
     fn first_refresh_outage_is_unavailable_not_unknown() {
         let mut authority = AdvisoryAuthority::new(100);
         authority.mark_unavailable(AdvisorySource::Osv, 1);
@@ -1055,6 +1529,31 @@ mod tests {
         let observation = authority.observe(&package, "1.0.0", false, false, 1, false);
         assert_eq!(observation.coverage, AdvisoryCoverage::Unavailable);
         assert_eq!(observation.freshness, FreshnessState::Fresh);
+    }
+
+    #[test]
+    fn authority_state_load_and_store_respect_the_configured_byte_ceiling() {
+        let directory = tempfile::tempdir().expect("authority directory");
+        let path = directory.path().join("authority.json");
+        let authority = AdvisoryAuthority::open_with_limit(&path, 10, 3)
+            .expect("missing authority is empty");
+        assert!(matches!(
+            authority.persist(&path),
+            Err(AuthorityStorageError::BoundExceeded)
+        ));
+        assert!(!path.exists(), "oversized state was not published");
+
+        fs::write(&path, b"1234").expect("write oversized authority");
+        assert!(matches!(
+            AdvisoryAuthority::open_with_limit(&path, 10, 3),
+            Err(AuthorityStorageError::BoundExceeded)
+        ));
+
+        fs::write(&path, b"").expect("write empty corrupt authority");
+        assert!(matches!(
+            AdvisoryAuthority::open_with_limit(&path, 10, 3),
+            Err(AuthorityStorageError::Decode(_))
+        ));
     }
 
     #[test]

@@ -8,6 +8,7 @@
 mod authority;
 mod journal;
 mod model;
+mod osv_snapshot;
 mod parse;
 mod policy;
 #[cfg(test)]
@@ -17,7 +18,8 @@ mod wire;
 
 pub use authority::{
     AdvisoryAuthority, AdvisoryResolver, AuthorityApplyError, AuthorityAvailability, AuthorityFeed,
-    AuthorityFrontier, AuthorityParseError, AuthorityStorageError, read_feed,
+    AuthorityFrontier, AuthorityParseError, AuthorityStorageError,
+    MAX_ADVISORY_AUTHORITY_STATE_BYTES, read_feed,
 };
 pub use journal::{
     AdvisoryDelta, AdvisoryJournal, AdvisoryJournalError, AdvisorySync, Checkpoint, FeedFreshness,
@@ -30,9 +32,14 @@ pub use model::{
     PackageIdentity, Reference, Severity, SeverityLevel, VersionEvent, VersionEventKind,
     VersionMatcher, VersionSyntax,
 };
+pub use osv_snapshot::{
+    MAX_OSV_SNAPSHOT_OBJECTS, MAX_OSV_SNAPSHOT_PACKAGES, MAX_OSV_SNAPSHOT_PACKAGE_ROWS,
+    MAX_OSV_SNAPSHOT_STORAGE_BYTES, OsvSnapshotBuilder, OsvSnapshotError, OsvSnapshotLimit,
+    OsvSnapshotRef,
+};
 pub use parse::{
     GhsaParseError, MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, ParseError,
-    RustSecParseError, parse_ghsa_global, parse_osv, parse_rustsec,
+    RustSecParseError, parse_ghsa_global, parse_osv, parse_osv_scoped, parse_rustsec,
 };
 pub use policy::{
     AcquisitionDecision, AcquisitionGate, AdvisoryCoverage, AdvisoryObservation, OfflinePolicy,
