@@ -14,6 +14,7 @@
 //! publishes to the probe ledger as `<id>-<channel>`.
 
 pub(crate) mod state;
+pub(crate) mod diamond;
 mod sweep;
 mod text;
 

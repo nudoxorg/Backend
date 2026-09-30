@@ -21,8 +21,8 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Palette, TypeRole, Voice, ty};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Bounds, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, canvas,
-    deferred, div, px,
+    App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
+    ParentElement, Pixels, Refineable, RenderOnce, SharedString, Style, StyleRefinement, Styled, Window, deferred, div, px,
 };
 use std::rc::Rc;
 
@@ -82,9 +82,38 @@ pub fn cell(id: &ElementId, label: &str, accent: Option<String>, note: Option<&s
 
 /// The seal: a ring in `ink` with `glyph` inside, `size` px.
 pub fn seal(g: Glyph, size: f32, ink: Hsla) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds: Bounds<Pixels>, (), window, _| {
+    SealElement { glyph: g, size, ink, style: StyleRefinement::default() }.flex_none().size(px(size))
+}
+
+struct SealElement { glyph: Glyph, size: f32, ink: Hsla, style: StyleRefinement }
+
+impl Styled for SealElement {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for SealElement {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for SealElement {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (glyph, ink) = (self.glyph, self.ink);
+        style.paint(bounds, window, cx, |window, _| {
             let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
             let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
             let (cx, cy, r) = (x + w * 0.5, y + h * 0.5, w.min(h) * 0.5 - 0.8);
@@ -93,17 +122,13 @@ pub fn seal(g: Glyph, size: f32, ink: Hsla) -> impl IntoElement {
                 pt(cx + r * t.cos(), cy + r * t.sin())
             }));
             let mut fill = Fill::new();
-            for quad in ring.offset(-0.8).stroke_ring(1.6) {
-                fill.poly(&quad);
-            }
+            for quad in ring.offset(-0.8).stroke_ring(1.6) { fill.poly(&quad); }
             fill.paint(window, ink);
             let inner = w.min(h) * 0.5;
             let at = Bounds::new(gpui::point(px(cx - inner * 0.5), px(cy - inner * 0.5)), gpui::size(px(inner), px(inner)));
-            glyph::paint(window, at, g, ink);
-        },
-    )
-    .flex_none()
-    .size(px(size))
+            glyph::paint(window, at, glyph, ink);
+        });
+    }
 }
 
 // ------------------------------------------------------------ the licence

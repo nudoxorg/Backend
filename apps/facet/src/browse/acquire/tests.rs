@@ -27,6 +27,16 @@ fn offer(place: Place) -> Offer {
 
 /// Draws `offer` in `state`; returns every painted text and what `add` got.
 fn drawn(offer: Offer, state: Adding, click: Option<&str>, cx: &mut TestAppContext) -> (Vec<(String, String)>, Vec<SharedString>) {
+    drawn_with_cancel(offer, state, click, None, cx)
+}
+
+fn drawn_with_cancel(
+    offer: Offer,
+    state: Adding,
+    click: Option<&str>,
+    cancel: Option<Rc<dyn Fn(SharedString, &mut Window, &mut App)>>,
+    cx: &mut TestAppContext,
+) -> (Vec<(String, String)>, Vec<SharedString>) {
     cx.update(|cx| {
         gpui_component::init(cx);
         set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx);
@@ -37,6 +47,7 @@ fn drawn(offer: Offer, state: Adding, click: Option<&str>, cx: &mut TestAppConte
     let actions = AddActions {
         state: Rc::new(move |_, _| state.clone()),
         add: Rc::new(move |release, _, _| sink.borrow_mut().push(release)),
+        cancel,
         open: Rc::new(|_, _, _| {}),
     };
     let (_host, cx): (_, &mut VisualTestContext) = cx.add_window_view(|_, _| Host { offer, actions });
@@ -84,6 +95,21 @@ fn adding_says_the_step_it_is_on(cx: &mut TestAppContext) {
     let unpacking = seam_stages(&Place::Archive, Step::Unpacking);
     assert_eq!(unpacking.iter().map(|stage| stage.state).collect::<Vec<_>>(), [StageState::Done, StageState::Now, StageState::Todo]);
     assert_eq!(seam_stages(&Place::Unpacked, Step::Indexing).len(), 2, "no unpack step when cargo unpacked it");
+}
+
+#[gpui::test]
+fn a_working_add_can_cancel_its_exact_release_ticket(cx: &mut TestAppContext) {
+    let cancelled = Rc::new(RefCell::new(Vec::new()));
+    let capture = Rc::clone(&cancelled);
+    let (texts, _) = drawn_with_cancel(
+        offer(Place::Archive),
+        Adding::Working(Step::Indexing),
+        Some("cancel"),
+        Some(Rc::new(move |release, _, _| capture.borrow_mut().push(release))),
+        cx,
+    );
+    assert!(said(&texts).contains(&"Indexing it with its compiler · anyhow 1.0.104"), "{texts:?}");
+    assert_eq!(&*cancelled.borrow(), &[SharedString::from("pkg:cargo/anyhow@1.0.104")]);
 }
 
 #[test]

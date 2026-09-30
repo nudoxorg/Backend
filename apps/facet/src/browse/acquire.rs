@@ -128,6 +128,9 @@ pub struct AddActions {
     pub state: Rc<dyn Fn(&SharedString, &mut App) -> Adding>,
     /// Adds `release`.
     pub add: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
+    /// Cancels the shell's exact in-flight ticket for `release`, when one is
+    /// available. `None` hides the control rather than offering a no-op.
+    pub cancel: Option<Rc<dyn Fn(SharedString, &mut Window, &mut App)>>,
     /// Opens an added package's page.
     pub open: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
 }
@@ -183,7 +186,20 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
             .flex()
             .flex_col()
             .gap(measure.space(Space::Tight))
-            .child(row.child(caption("step", format!("{} · {}", step.words(), offer.label).into())))
+            .child({
+                let mut status = row.child(caption("step", format!("{} · {}", step.words(), offer.label).into()));
+                if let Some(cancel) = &actions.cancel {
+                    let cancel = Rc::clone(cancel);
+                    let release = offer.release.clone();
+                    status = status.child(
+                        button(child(&id, "cancel"), "Cancel", measure)
+                            .ghost()
+                            .size(Control::Small)
+                            .on_click(move |window, cx| cancel(release.clone(), window, cx)),
+                    );
+                }
+                status
+            })
             .child(div().w_full().child(seam(child(&id, "seam"), seam_stages(&offer.place, step), measure)))
             .into_any_element(),
         Adding::Added { open: target } => {

@@ -14,8 +14,9 @@ use crate::semantics::types::Target;
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
-    App, Bounds, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement, PathBuilder,
-    Pixels, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
+    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
+    MouseButton, ParentElement, PathBuilder, Pixels, Refineable, RenderOnce, SharedString, Style, StyleRefinement, Styled,
+    Window, div, point, px,
 };
 use std::sync::Arc;
 
@@ -82,38 +83,15 @@ fn mark_of(kind: Option<Kind>) -> Mark {
     }
 }
 
-fn diamond(builder: &mut PathBuilder, c: gpui::Point<Pixels>, r: Pixels) {
-    builder.move_to(point(c.x, c.y - r));
-    builder.line_to(point(c.x + r, c.y));
-    builder.line_to(point(c.x, c.y + r));
-    builder.line_to(point(c.x - r, c.y));
-    builder.close();
-}
-
 fn row_mark(kind: Option<Kind>, measure: &Measure, color: gpui::Hsla) -> impl IntoElement {
     let s = measure.scale();
     let shape = mark_of(kind);
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let c = bounds.center();
-            match shape {
-                Mark::Square => {
-                    let h = px(3.0 * s);
-                    window.paint_quad(gpui::fill(Bounds::from_corners(point(c.x - h, c.y - h), point(c.x + h, c.y + h)), color));
-                }
-                Mark::Solid | Mark::Open => {
-                    let mut b = if shape == Mark::Open { PathBuilder::stroke(px(1.2)) } else { PathBuilder::fill() };
-                    diamond(&mut b, c, px(3.8 * s));
-                    if let Ok(path) = b.build() {
-                        window.paint_path(path, color);
-                    }
-                }
-            }
-        },
-    )
-    .flex_none()
-    .size(px(9.0 * s))
+    match shape {
+        Mark::Square => div().flex_none().size(px(9.0 * s)).flex().items_center().justify_center()
+            .child(div().size(px(6.0 * s)).bg(color)),
+        Mark::Solid => crate::controls::diamond::diamond().flex_none().size(px(9.0 * s)).inset(0.7 * s).fill(color),
+        Mark::Open => crate::controls::diamond::diamond().flex_none().size(px(9.0 * s)).inset(0.7 * s).outline(color, 1.2),
+    }
 }
 
 /// Row and head heights and the gap between groups, px at 100 %.
@@ -230,23 +208,72 @@ fn gem(measure: &Measure, palette: &Palette, small: bool) -> impl IntoElement {
     let s = measure.scale() * if small { 0.55 } else { 1.0 };
     let fill = palette.peri.base.hsla();
     let ring = palette.peri.base.alpha(0.45).hsla();
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let c = bounds.center();
-            let mut b = PathBuilder::fill();
-            diamond(&mut b, c, px(9.9 * s));
-            if let Ok(path) = b.build() {
-                window.paint_path(path, fill);
-            }
-            let mut b = PathBuilder::stroke(px(1.0));
-            diamond(&mut b, c, px(17.0 * s));
-            if let Ok(path) = b.build() {
-                window.paint_path(path, ring);
-            }
-        },
-    )
-    .size(px(36.0 * s))
+    div().relative().flex_none().size(px(36.0 * s))
+        .child(crate::controls::diamond::diamond().absolute().top_0().left_0().size_full().inset(8.1 * s).fill(fill))
+        .child(crate::controls::diamond::diamond().absolute().top_0().left_0().size_full().inset(1.0 * s).outline(ring, 1.0))
+}
+
+/// The prism's named cubic curves, positioned from this frame's row centers.
+struct PrismCurves {
+    scale: f32,
+    height: f32,
+    center_x: f32,
+    left_rows: Vec<f32>,
+    right_rows: Vec<f32>,
+    color: gpui::Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for PrismCurves {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl IntoElement for PrismCurves {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for PrismCurves {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (scale, height, center_x, left_rows, right_rows, color) = (
+            self.scale, self.height, self.center_x, &self.left_rows, &self.right_rows, self.color,
+        );
+        style.paint(bounds, window, cx, |window, _| {
+            let at = |x: f32, y: f32| point(bounds.left() + px(x * scale), bounds.top() + px(y * scale));
+            let mid = height / 2.0;
+            let mut draw = |x0: f32, y0: f32, x1: f32, y1: f32| {
+                let c = (x1 - x0) * 0.5;
+                let mut b = PathBuilder::stroke(px(1.0));
+                b.move_to(at(x0, y0));
+                b.cubic_bezier_to(at(x1, y1), at(x0 + c, y0), at(x1 - c, y1));
+                if let Ok(path) = b.build() {
+                    window.paint_path(path, color);
+                }
+            };
+            for &y in left_rows { draw(center_x - REACH + 6.0, y, center_x - 14.0, mid); }
+            for &y in right_rows { draw(center_x + 14.0, mid, center_x + REACH - 6.0, y); }
+        });
+    }
 }
 
 impl RenderOnce for PrismView {
@@ -305,31 +332,9 @@ impl RenderOnce for PrismView {
         };
         let yl: Vec<f32> = row_centres(&self.left).into_iter().map(|y| y + (h - hl) / 2.0).collect();
         let yr: Vec<f32> = row_centres(&self.right).into_iter().map(|y| y + (h - hr) / 2.0).collect();
-        let curve = palette.line3.hsla();
-        let curves = canvas(
-            |_, _, _| {},
-            move |bounds, (), window, _| {
-                let at = |x: f32, y: f32| point(bounds.left() + px(x * s), bounds.top() + px(y * s));
-                let mid = h / 2.0;
-                let mut draw = |x0: f32, y0: f32, x1: f32, y1: f32| {
-                    let c = (x1 - x0) * 0.5;
-                    let mut b = PathBuilder::stroke(px(1.0));
-                    b.move_to(at(x0, y0));
-                    b.cubic_bezier_to(at(x1, y1), at(x0 + c, y0), at(x1 - c, y1));
-                    if let Ok(path) = b.build() {
-                        window.paint_path(path, curve);
-                    }
-                };
-                for &y in &yl {
-                    draw(cx0 - REACH + 6.0, y, cx0 - 14.0, mid);
-                }
-                for &y in &yr {
-                    draw(cx0 + 14.0, mid, cx0 + REACH - 6.0, y);
-                }
-            },
-        )
-        .absolute()
-        .inset_0();
+        let curves = PrismCurves { scale: s, height: h, center_x: cx0, left_rows: yl, right_rows: yr, color: palette.line3.hsla(), style: StyleRefinement::default() }
+            .absolute()
+            .inset_0();
         let left = ctx
             .column("l", &self.left, true)
             .absolute()

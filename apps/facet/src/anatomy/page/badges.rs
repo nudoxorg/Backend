@@ -15,7 +15,10 @@ use crate::measure::{Measure, Set, Space};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::probe::{self, TextOverflow};
 use crate::tokens::{Palette, TypeRole, ty};
-use gpui::{AnyElement, ElementId, Hsla, IntoElement, ParentElement, PathBuilder, SharedString, Styled, canvas, div, point, px};
+use gpui::{
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
+    ParentElement, PathBuilder, Pixels, Refineable, SharedString, Style, StyleRefinement, Styled, Window, div, point, px,
+};
 
 /// The words on a badge.
 const WORD: TypeRole = TypeRole { weight: 520.0, ..ty::BUTTON };
@@ -264,12 +267,49 @@ fn cap_glyph(glyph: CapGlyph, size: f32, color: Hsla) -> AnyElement {
             (false, vec![(6.0, 4.0), (6.0, 8.0)]),
         ],
     };
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
+    CapabilityGlyph { prims, size, color, style: StyleRefinement::default() }
+        .flex_none()
+        .size(px(size))
+        .into_any_element()
+}
+
+struct CapabilityGlyph {
+    prims: Vec<(bool, Vec<(f32, f32)>)>,
+    size: f32,
+    color: Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for CapabilityGlyph {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for CapabilityGlyph {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for CapabilityGlyph {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (prims, size, color) = (&self.prims, self.size, self.color);
+        style.paint(bounds, window, cx, |window, _| {
             let k = size / 12.0;
             let at = |(x, y): (f32, f32)| point(bounds.origin.x + px(x * k), bounds.origin.y + px(y * k));
-            for (closed, points) in &prims {
+            for (closed, points) in prims {
                 let pts: Vec<_> = points.iter().copied().map(at).collect();
                 let mut path = PathBuilder::stroke(px(1.15 * k));
                 if *closed {
@@ -279,15 +319,10 @@ fn cap_glyph(glyph: CapGlyph, size: f32, color: Hsla) -> AnyElement {
                         if n == 0 { path.move_to(*p); } else { path.line_to(*p); }
                     }
                 }
-                if let Ok(path) = path.build() {
-                    window.paint_path(path, color);
-                }
+                if let Ok(path) = path.build() { window.paint_path(path, color); }
             }
-        },
-    )
-    .flex_none()
-    .size(px(size))
-    .into_any_element()
+        });
+    }
 }
 
 /// The palette's bevel edge for a plain plate, exposed so the can group and

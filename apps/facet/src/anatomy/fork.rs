@@ -11,10 +11,7 @@ use crate::measure::{Measure, Set};
 use crate::semantics::model::{Fork, Payload};
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
-use gpui::{
-    InteractiveElement,
-    AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px,
-};
+use gpui::{InteractiveElement, AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px};
 use std::sync::Arc;
 
 /// A fork. Build with [`fork`].
@@ -66,23 +63,7 @@ pub(crate) fn part_row(
 }
 
 fn diamond(size: f32, color: gpui::Hsla) -> impl IntoElement {
-    gpui::canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let c = bounds.center();
-            let r = px(size / 2.0);
-            let mut path = gpui::PathBuilder::stroke(px(1.0));
-            path.move_to(gpui::point(c.x, c.y - r));
-            path.line_to(gpui::point(c.x + r, c.y));
-            path.line_to(gpui::point(c.x, c.y + r));
-            path.line_to(gpui::point(c.x - r, c.y));
-            path.close();
-            if let Ok(path) = path.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .size(px(size + 2.0))
+    crate::controls::diamond::diamond().size(px(size + 2.0)).inset(1.0).outline(color, 1.0)
 }
 
 impl RenderOnce for ForkView {
