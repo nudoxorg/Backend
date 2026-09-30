@@ -18,8 +18,9 @@ use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AcquisitionGate, Advisory, AdvisorySource, CanonicalAdvisoryId, OsvEcosystem, OsvFeedScope,
-    PackageIdentity,
+    AcquisitionGate, Advisory, AdvisoryCategory, AdvisorySchema, AdvisorySource, Alias,
+    AffectedRange, Evidence, MalwareCoverage, OsvEcosystem, OsvFeedScope, PackageIdentity,
+    Reference, Severity,
 };
 
 const SNAPSHOT_SCHEMA: u16 = 1;
@@ -598,6 +599,57 @@ struct CappedRowWriter {
     exceeded: bool,
 }
 
+/// One package-scoped OSV posting borrowed from its source advisory.
+///
+/// Serializing a row directly from borrowed fields avoids cloning the full
+/// advisory's affected-package array once per package. The serialized shape
+/// and field order intentionally match [`Advisory`].
+#[derive(Serialize)]
+struct PackageAdvisoryRow<'a> {
+    schema: &'a AdvisorySchema,
+    key: PackageAdvisoryKey<'a>,
+    aliases: &'a [Alias],
+    affected: &'a [AffectedRange],
+    severity: &'a Severity,
+    categories: &'a [AdvisoryCategory],
+    published: &'a Option<String>,
+    modified: &'a Option<String>,
+    withdrawn: &'a Option<String>,
+    references: &'a [Reference],
+    summary: &'a Option<String>,
+    malware: &'a MalwareCoverage,
+    evidence: &'a Evidence,
+}
+
+#[derive(Serialize)]
+struct PackageAdvisoryKey<'a> {
+    canonical: &'a str,
+    native: &'a crate::NativeAdvisoryId,
+}
+
+impl<'a> PackageAdvisoryRow<'a> {
+    fn new(advisory: &'a Advisory, affected: &'a AffectedRange) -> Self {
+        Self {
+            schema: &advisory.schema,
+            key: PackageAdvisoryKey {
+                canonical: &advisory.key.native.id,
+                native: &advisory.key.native,
+            },
+            aliases: &advisory.aliases,
+            affected: std::slice::from_ref(affected),
+            severity: &advisory.severity,
+            categories: &advisory.categories,
+            published: &advisory.published,
+            modified: &advisory.modified,
+            withdrawn: &advisory.withdrawn,
+            references: &advisory.references,
+            summary: &advisory.summary,
+            malware: &advisory.malware,
+            evidence: &advisory.evidence,
+        }
+    }
+}
+
 impl CappedRowWriter {
     fn new(maximum: usize) -> Self {
         Self {
@@ -784,11 +836,10 @@ impl OsvSnapshotBuilder {
             if next_rows > self.maximum_package_rows {
                 return Err(OsvSnapshotError::Limit(OsvSnapshotLimit::PackageRows));
             }
-            let mut row = advisory.clone();
-            row.key.canonical = CanonicalAdvisoryId(row.key.native.id.clone());
-            row.affected = Box::new([affected.clone()]);
             let mut encoded = CappedRowWriter::new(MAX_OSV_SNAPSHOT_ROW_BYTES);
-            if let Err(error) = serde_json::to_writer(&mut encoded, &row) {
+            if let Err(error) =
+                serde_json::to_writer(&mut encoded, &PackageAdvisoryRow::new(advisory, affected))
+            {
                 if encoded.exceeded {
                     return Err(OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes));
                 }
