@@ -3982,6 +3982,18 @@ fn prune_search_projections(
         retained_bytes = retained_bytes
             .checked_add(bytes)
             .ok_or_else(|| "discovery search cache size overflow".to_owned())?;
+        if entry.path() != selected {
+            let lease = search_projection_lease(&entry.path())?;
+            match lease.try_lock() {
+                Ok(()) => {}
+                // A live reader's root is outside the retained-root count,
+                // while its bytes still count against the shared quota.
+                Err(std::fs::TryLockError::WouldBlock) => continue,
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(format!("classify discovery search root: {error}"));
+                }
+            }
+        }
         let marker = entry.path().join(".last-used");
         let modified = fs::symlink_metadata(&marker)
             .and_then(|metadata| metadata.modified())
@@ -5392,9 +5404,12 @@ fn combined_gram_stream<'a, const WIDTH: usize>(
 ) -> String {
     let mut stream = String::new();
     for field in fields {
+        if !stream.is_empty() {
+            stream.push(' ');
+            stream.push_str(BOUNDARY_TOKEN);
+        }
         let mut window = ['\0'; WIDTH];
         let mut seen = 0_usize;
-        let mut field_emitted = false;
         for character in field.chars() {
             window.rotate_left(1);
             window[WIDTH - 1] = character;
@@ -5402,13 +5417,6 @@ fn combined_gram_stream<'a, const WIDTH: usize>(
                 seen += 1;
             }
             if seen >= WIDTH {
-                if !field_emitted {
-                    if !stream.is_empty() {
-                        stream.push(' ');
-                        stream.push_str(BOUNDARY_TOKEN);
-                    }
-                    field_emitted = true;
-                }
                 if !stream.is_empty() {
                     stream.push(' ');
                 }
@@ -7870,6 +7878,13 @@ mod tests {
         assert!(
             initial_root.is_dir(),
             "an active selected reader pins its root"
+        );
+        assert_eq!(
+            fs::read_dir(cache.join(SEARCH_PROJECTION_DIRECTORY))
+                .expect("retained projection roots")
+                .count(),
+            MAX_RETAINED_SEARCH_PROJECTIONS + 1,
+            "a pinned old root does not displace recent reusable roots"
         );
         drop(initial);
 
