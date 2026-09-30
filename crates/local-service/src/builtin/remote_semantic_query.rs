@@ -1007,12 +1007,14 @@ mod tests {
         let owner = SecretKey::from_bytes(&[51; 32]);
         let client = SecretKey::from_bytes(&[52; 32]);
         let now = backend_engine::cluster_transport::remote_index_now().expect("current time");
+        let server = owner.public();
+        let client = client.public();
         RemoteIndexCapabilityIssuer::new(owner)
             .issue(
                 RemoteIndexCapabilityClaims {
                     version: 1,
-                    server: owner.public(),
-                    client: client.public(),
+                    server,
+                    client,
                     grant_id: [53; 16],
                     issued_at_unix_ms: now,
                     expires_at_unix_ms: now + 60_000,
