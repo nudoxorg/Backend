@@ -1733,7 +1733,7 @@ mod tests {
         });
 
         let io_timeout = Duration::from_millis(125);
-        let client =
+        let mut client =
             UnixCommandTransport::connect_with_timeouts(&path, Duration::from_secs(1), io_timeout)
                 .expect("connect and authenticate inside dial deadline");
         accepted_rx
