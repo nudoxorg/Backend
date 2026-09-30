@@ -29,10 +29,16 @@ const MAX_TYPED_V3_ADMISSION_OBJECTS: usize = 200_000;
 /// value from the same committed selection named by
 /// [`SelectedGenerationSource::current_selected_generation`].
 pub trait SelectedNativeImageSource: crate::SelectedGenerationSource {
+    /// Returns the exact target namespace associated with the committed
+    /// owner-selection key used by this source.
+    fn selected_semantic_target(
+        &mut self,
+    ) -> Result<crate::SemanticTargetKey, Self::Error>;
+
     /// Returns the authenticated full-image identity for one currently
     /// selected image. The history bridge recomputes this identity from the
     /// fully reopened image bytes before it produces or commits typed rows.
-    fn selected_image_identity(
+    fn selected_native_image_identity(
         &mut self,
         image: SemanticPlaneImageKey,
     ) -> Result<SemanticImageIdentity, Self::Error>;
@@ -42,6 +48,7 @@ pub trait SelectedNativeImageSource: crate::SelectedGenerationSource {
 /// compiler image. Construct this from the same marker-backed source that
 /// serves the workspace's selected semantic image.
 pub struct SelectedNativeHistoryImage<'bytes> {
+    target: crate::SemanticTargetKey,
     selection: crate::SelectedSemanticPlane,
     catalog: SemanticPlaneCatalog,
     manifest: SemanticPlaneManifest,
@@ -61,6 +68,9 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
         manifest: SemanticPlaneManifest,
         image: SemanticImageView<'bytes>,
     ) -> Result<Self, String> {
+        let target = source
+            .selected_semantic_target()
+            .map_err(|error| format!("resolve selected semantic history target: {error}"))?;
         let stamp = source
             .current_selected_generation()
             .map_err(|error| format!("read committed selection for typed V3 history: {error}"))?;
@@ -69,6 +79,7 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
             || image_key.manifest_root() != manifest.root()
             || image_key.semantic_generation() != manifest.semantic_generation()
             || manifest.build().profile() != stamp.profile()
+            || target.profile() != stamp.profile()
         {
             return Err("typed V3 history metadata differs from the committed selection".to_owned());
         }
@@ -90,7 +101,7 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
             return Err("typed V3 history image is no longer selected".to_owned());
         }
         let expected_identity = source
-            .selected_image_identity(image_key)
+            .selected_native_image_identity(image_key)
             .map_err(|error| format!("read committed image identity for typed V3 history: {error}"))?;
         let observed_identity = SemanticImageIdentity::from_encoded_bytes(image.as_ref());
         let observed_generation = GenerationId::from_canonical_bytes(image.as_ref());
@@ -112,6 +123,7 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
         }
         let input_claim = SemanticInputClaimV2::from_witness(&manifest.input());
         Ok(Self {
+            target,
             selection,
             catalog,
             manifest,
@@ -119,6 +131,12 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
             image_identity: observed_identity,
             input_claim,
         })
+    }
+
+    /// Returns the exact target namespace selected by the owner source.
+    #[must_use]
+    pub const fn target(&self) -> &crate::SemanticTargetKey {
+        &self.target
     }
 
     /// Returns the selected generation stamp captured by the nonconstructible
@@ -144,6 +162,19 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
     #[must_use]
     pub const fn manifest(&self) -> &SemanticPlaneManifest {
         &self.manifest
+    }
+
+    /// Returns the structurally reopened full semantic image bound to the
+    /// selected manifest.
+    #[must_use]
+    pub const fn image(&self) -> &SemanticImageView<'bytes> {
+        &self.image
+    }
+
+    /// Returns the exact catalog authenticated by the selected stamp.
+    #[must_use]
+    pub const fn catalog(&self) -> &SemanticPlaneCatalog {
+        &self.catalog
     }
 
     /// Returns the persisted input claim without recreating input authority.
