@@ -1,21 +1,19 @@
 //! Small process wrapper for the production GPUI cold-launch journeys.
 //!
-//! The wrapper exists so the restart test can start and reap a real desktop
-//! process.  It deliberately uses the same live capture adapter as the
-//! shipped GUI harness; there is no in-process fake store or seeded shelf.
+//! The restart test starts and reaps this process, while the production
+//! journey runner records real screenshots and semantic checks under the
+//! fixture root.
 
 #![deny(unsafe_code)]
 
 #[cfg(unix)]
-use backend_desktop::harness::capture_live;
+use backend_desktop::harness::journey as live_journey;
 #[cfg(unix)]
-use backend_gui_harness::{
-    CaptureConfig, GuiState, InputStep, PageState, Viewport, animation_frames_for_state,
-};
+use backend_desktop::harness::journey::{Options, Parts, Plan, Verdict};
 #[cfg(unix)]
 use serde_json::json;
 #[cfg(unix)]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[cfg(unix)]
 fn main() -> std::process::ExitCode {
@@ -36,125 +34,55 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(unix)]
 fn run(args: Vec<String>) -> Result<(), String> {
-    let journey = args.first().map(String::as_str).unwrap_or("first-launch");
-    let viewport = Viewport::new(640, 480, 1).map_err(|error| error.to_string())?;
-    let config = CaptureConfig::deterministic(viewport);
-
-    let (state, actions, expected_onboarding, minimum_shelf) = match journey {
-        "first-launch" => (
-            GuiState::new("onboarding", Some(PageState::Browse), None),
-            vec![InputStep::Wait { milliseconds: 32 }],
-            true,
-            0,
-        ),
-        "choose-project" => (
-            GuiState::new("onboarding", Some(PageState::Browse), None),
-            choose_project_steps(),
-            false,
-            1,
-        ),
-        other => return Err(format!("unknown GUI journey {other:?}")),
+    let name = args.first().map(String::as_str).unwrap_or("first-launch");
+    if args.len() > 1 {
+        return Err("usage: backend-journey-gui [first-launch|choose-project]".to_owned());
+    }
+    let parts = Parts::load(&Parts::dir())?;
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bin/gui.rs");
+    let plan = Plan::parse(name, &source, &script(name)?, &parts)?;
+    let root = std::env::current_dir().map_err(|error| error.to_string())?;
+    let evidence = root.join(".gui-journey-evidence").join(name);
+    let options = Options {
+        scale: 1,
+        ..Options::default()
     };
-    let frames = animation_frames_for_state(&config, &state);
-    let capture = capture_live(config, state, &actions, &frames)?;
-    let probe = capture
-        .semantic_probes
-        .last()
-        .ok_or_else(|| "live GUI capture emitted no semantic probes".to_owned())?;
-    if capture.frames.is_empty() {
-        return Err("live GUI capture emitted no frames".to_owned());
-    }
-    let status = probe
-        .nodes
-        .iter()
-        .find(|node| node.id == "status-bar")
-        .and_then(|node| node.value.as_deref())
-        .ok_or_else(|| "live GUI semantics omitted the versioned workspace status".to_owned())?;
-    let (data_revision, shelf_count) = parse_status(status)?;
-    let onboarding = shelf_count == 0;
-    if onboarding != expected_onboarding {
+    let outcome = live_journey::run(&plan, &evidence, &options)?;
+    if outcome.verdict != Verdict::Pass {
         return Err(format!(
-            "GUI journey ended with onboarding={}, expected {expected_onboarding}: {}",
-            onboarding,
-            serde_json::to_string(probe).unwrap_or_else(|_| "<unserializable>".to_owned())
+            "GUI journey {} failed:\n{}",
+            outcome.verdict, outcome.report
         ));
-    }
-    if shelf_count < minimum_shelf {
-        let trace = capture
-            .semantic_probes
-            .iter()
-            .map(|probe| {
-                format!(
-                    "frame={} time={} modal={:?} focus={:?} route={}",
-                    probe.frame, probe.time_ms, probe.modal_root, probe.focused, probe.route
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(format!(
-            "GUI journey admitted {} shelf projects, expected at least {minimum_shelf}; trace: {trace}",
-            shelf_count,
-        ));
-    }
-    if data_revision.trim().is_empty() {
-        return Err("GUI semantic probe omitted its admitted data revision".to_owned());
-    }
-    if probe.route.trim().is_empty() {
-        return Err("GUI replacement shell omitted its route contract".to_owned());
-    }
-    if probe.nodes.is_empty() {
-        return Err("GUI replacement shell omitted its published action tree".to_owned());
     }
     println!(
         "{}",
         json!({
-            "journey": journey,
-            "frames": capture.frames.len(),
-            "semantic_probes": capture.semantic_probes.len(),
-            "onboarding": onboarding,
-            "shelf_count": shelf_count,
-            "data_revision": data_revision,
-            "route": probe.route,
-            "screenshot_sha256": probe.screenshot_sha256,
+            "journey": name,
+            "verdict": outcome.verdict.to_string(),
+            "content": outcome.content,
+            "report": outcome.report,
+            "evidence": evidence,
         })
     );
     Ok(())
 }
 
 #[cfg(unix)]
-fn parse_status(value: &str) -> Result<(&str, u64), String> {
-    let revision = value
-        .strip_prefix("revision=")
-        .and_then(|value| value.split_once(";shelf="))
-        .ok_or_else(|| format!("invalid versioned workspace status {value:?}"))?;
-    let shelf = revision
-        .1
-        .parse::<u64>()
-        .map_err(|_| format!("invalid shelf count in workspace status {value:?}"))?;
-    Ok((revision.0, shelf))
-}
-
-#[cfg(unix)]
-fn choose_project_steps() -> Vec<InputStep> {
-    vec![
-        InputStep::key("cmd-n"),
-        InputStep::Text {
-            value: project_path("tests/journeys/fixtures/polyglot"),
-        },
-        InputStep::key("enter"),
-        InputStep::Wait { milliseconds: 32 },
-    ]
-}
-
-#[cfg(unix)]
-fn project_path(relative: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative);
-    canonical_or_original(&path).to_string_lossy().into_owned()
-}
-
-#[cfg(unix)]
-fn canonical_or_original(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+fn script(name: &str) -> Result<String, String> {
+    let common = "size 640x480\nstart clean\n";
+    match name {
+        "first-launch" => Ok(format!(
+            "{common}check empty-library\n  route like \"orbit\"\n  line \"0 projects · 0 packages\" in shelf\n  link \"Add a folder\" in reader\n"
+        )),
+        "choose-project" => {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/polyglot");
+            let project = std::fs::canonicalize(&project).unwrap_or(project);
+            let project = serde_json::to_string(&project.to_string_lossy().into_owned())
+                .map_err(|error| error.to_string())?;
+            Ok(format!(
+                "{common}check empty-library\n  line \"0 projects · 0 packages\" in shelf\nclick \"Add a folder\" in reader\ntype {project}\nawait text \"no project file here\" in reader within 20s\nkey enter\nawait text \"polyglot\" in shelf within 20s\ncheck project-on-shelf\n  route like \"orbit\"\n  text \"polyglot\" in shelf\nrestart\nawait text \"polyglot\" in shelf within 20s\ncheck project-restored\n  route like \"orbit\"\n  text \"polyglot\" in shelf\n"
+            ))
+        }
+        other => Err(format!("unknown GUI journey {other:?}")),
+    }
 }

@@ -794,6 +794,9 @@ fn run_gui(root: &Path, journey: &str) -> Value {
         .env("NO_COLOR", "1")
         .env("COLUMNS", "100");
     scrub(&mut command);
+    command
+        .env("NUDOX_JOURNEY_HOME", root.join(".gui-journey-home"))
+        .env("NUDOX_HARNESS_STATE", root.join(".gui-harness-state"));
     let output = bounded(command, &format!("GUI {journey}"), None);
     assert!(
         output.status.success(),
@@ -1075,8 +1078,21 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     let first_launch = run_gui(&fixture, "first-launch");
     assert_eq!(first_launch["journey"], "first-launch");
     assert_eq!(
-        first_launch["onboarding"], true,
-        "cold GUI launch skipped native onboarding"
+        first_launch["verdict"], "PASS",
+        "cold GUI launch failed its production journey: {}",
+        first_launch["report"]
+    );
+    assert!(
+        first_launch["report"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("0 projects · 0 packages")
+    );
+    assert!(
+        first_launch["report"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Add a folder")
     );
     note(&mut observations, "gui-first-launch", gui_started, None);
 
@@ -1158,8 +1174,23 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     let gui_project_started = Instant::now();
     let gui_project = run_gui(&fixture, "choose-project");
     assert_eq!(gui_project["journey"], "choose-project");
-    assert!(gui_project["shelf_count"].as_u64().unwrap_or(0) >= 1);
-    assert_eq!(gui_project["onboarding"], false);
+    assert_eq!(
+        gui_project["verdict"], "PASS",
+        "native project choice failed its production journey: {}",
+        gui_project["report"]
+    );
+    assert!(
+        gui_project["report"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("project-on-shelf")
+    );
+    assert!(
+        gui_project["report"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("project-restored")
+    );
     note(
         &mut observations,
         "gui-native-project-choice",
