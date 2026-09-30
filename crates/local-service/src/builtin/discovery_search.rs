@@ -3585,7 +3585,18 @@ fn verify_search_projection(
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(false),
-        Err(error) => return Err(format!("read discovery search manifest: {error}")),
+        Err(error) => match fs::symlink_metadata(&manifest_path) {
+            Ok(metadata) if !metadata.file_type().is_file() => return Ok(false),
+            Err(metadata_error) if metadata_error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(metadata_error) => {
+                return Err(format!(
+                    "inspect discovery search manifest after read refusal: {metadata_error}"
+                ));
+            }
+            Ok(_) => return Err(format!("read discovery search manifest: {error}")),
+        },
     };
     let manifest: DurableSearchManifest = match serde_json::from_slice(&bytes) {
         Ok(manifest) => manifest,
