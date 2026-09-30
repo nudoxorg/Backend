@@ -354,13 +354,12 @@ impl Element for Padlock {
 
 /// A static status mark; it is deliberately not a switch control.
 fn feature_mark(scale: f32, on: bool, locked: bool, palette: &'static Palette) -> impl IntoElement {
-    FeatureMark { scale, on, locked, palette, style: StyleRefinement::default() }
+    FeatureMark { on, locked, palette, style: StyleRefinement::default() }
         .flex_none()
         .size(px(10.0 * scale))
 }
 
 struct FeatureMark {
-    scale: f32,
     on: bool,
     locked: bool,
     palette: &'static Palette,
@@ -416,11 +415,12 @@ impl Element for FeatureMark {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (scale, on, locked, palette) = (self.scale, self.on, self.locked, self.palette);
+        let (on, locked, palette) = (self.on, self.locked, self.palette);
         style.paint(bounds, window, cx, |window, _| {
             let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-            let center = 5.0 * scale;
-            let radius = 3.8 * scale;
+            let size = f32::from(bounds.size.width.min(bounds.size.height));
+            let center = size * 0.5;
+            let radius = size * 0.38;
             let diamond = Poly::new([
                 pt(ox + center, oy + center - radius),
                 pt(ox + center + radius, oy + center),
