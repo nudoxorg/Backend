@@ -1488,7 +1488,7 @@ fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
         .maintain(&selected, OverlayLimits::default())
         .expect("second one-row revision");
     assert!(
-        crate::engine::test_support::deleted_document_count(source) > 0,
+        crate::engine::test_support::deleted_document_count(&source) > 0,
         "fixture retains tombstoned rows with terms absent from selected live state"
     );
 
@@ -1524,9 +1524,9 @@ fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
         !crate::engine::test_support::definitively_corrupt(&error),
         "resource refusal must preserve a potentially valid root"
     );
-    assert_eq!(term_hits(source, "finaltoken"), vec![id]);
-    assert!(term_hits(source, "initialtoken").is_empty());
-    assert!(term_hits(source, "retiredtoken").is_empty());
+    assert_eq!(term_hits(&source, "finaltoken"), vec![id]);
+    assert!(term_hits(&source, "initialtoken").is_empty());
+    assert!(term_hits(&source, "retiredtoken").is_empty());
 }
 
 #[test]
