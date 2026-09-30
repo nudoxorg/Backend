@@ -2001,7 +2001,7 @@ impl LocalCompilerClient {
         Progress: FnMut(PackageCompilePhase),
     {
         let facts = request.facts();
-        let lease = RequestLease::acquire(&self.shared, self.client_id, facts)?;
+        let mut lease = RequestLease::acquire(&self.shared, self.client_id, facts)?;
         self.wait_for_toolchain(facts, &lease.cancelled)?;
         let (response_tx, response_rx) = sync_channel(1);
         let command = RuntimeCommand::Compile {
@@ -2016,7 +2016,7 @@ impl LocalCompilerClient {
             .as_ref()
             .ok_or_else(|| facts.terminal(CompilerRuntimeCause::RequestOwnerStopped))?;
         match sender.try_send(command) {
-            Ok(()) => {}
+            Ok(()) => lease.mark_dispatched(),
             Err(TrySendError::Full(_)) => {
                 return Err(facts.terminal(CompilerRuntimeCause::CommandQueueFull {
                     capacity: u16::try_from(COMMAND_QUEUE_CAPACITY).unwrap_or(u16::MAX),
@@ -2029,7 +2029,9 @@ impl LocalCompilerClient {
         let result = loop {
             match response_rx.recv() {
                 Ok(RuntimeEvent::Phase(phase)) => progress(phase),
-                Ok(RuntimeEvent::Complete(result)) => break result,
+                Ok(RuntimeEvent::Complete(result)) => {
+                    break lease.complete(result);
+                }
                 Err(_) => {
                     break Err(facts.terminal(CompilerRuntimeCause::ResponseOwnerStopped));
                 }
@@ -2042,7 +2044,6 @@ impl LocalCompilerClient {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(image));
             generated
         });
-        drop(lease);
         result
     }
 
@@ -2116,7 +2117,7 @@ impl LocalCompilerClient {
         {
             return image.try_clone();
         }
-        let lease = RequestLease::acquire_snapshot(&self.shared, self.client_id, requested)?;
+        let mut lease = RequestLease::acquire_snapshot(&self.shared, self.client_id, requested)?;
         let (response, returned) = sync_channel(1);
         let sender = self
             .shared
@@ -2128,7 +2129,7 @@ impl LocalCompilerClient {
             response,
             cancelled: Arc::clone(&lease.cancelled),
         }) {
-            Ok(()) => {}
+            Ok(()) => lease.mark_dispatched(),
             Err(TrySendError::Full(_)) => {
                 return Err(SemanticImageAccessError::RequestInFlight { requested });
             }
@@ -2139,8 +2140,7 @@ impl LocalCompilerClient {
         let result = returned
             .recv()
             .map_err(|_| SemanticImageAccessError::OwnerStopped { requested })?;
-        drop(lease);
-        result
+        lease.complete(result)
     }
 
     /// Compiles and atomically publishes a complete package source frontier.
@@ -2154,7 +2154,7 @@ impl LocalCompilerClient {
         request: OwnedPackageSourceSet,
     ) -> Result<PublishedSemanticPackage, PackageSemanticRuntimeError> {
         let facts = request.facts();
-        let lease = RequestLease::acquire(&self.shared, self.client_id, facts)
+        let mut lease = RequestLease::acquire(&self.shared, self.client_id, facts)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
         self.wait_for_toolchain(facts, &lease.cancelled)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
@@ -2170,7 +2170,7 @@ impl LocalCompilerClient {
             request_id: lease.request_id,
             cancelled: Arc::clone(&lease.cancelled),
         }) {
-            Ok(()) => {}
+            Ok(()) => lease.mark_dispatched(),
             Err(TrySendError::Full(_)) => {
                 return Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
                     CompilerRuntimeCause::CommandQueueFull {
@@ -2189,8 +2189,7 @@ impl LocalCompilerClient {
                 facts.terminal(CompilerRuntimeCause::ResponseOwnerStopped),
             )
         })?;
-        drop(lease);
-        result
+        lease.complete(result)
     }
 
     /// Compiles a complete package frontier into canonical output bytes without selecting the
@@ -2222,7 +2221,7 @@ impl LocalCompilerClient {
         cancelled: Arc<AtomicBool>,
     ) -> Result<StagedSemanticPackage, PackageSemanticRuntimeError> {
         let facts = request.facts();
-        let lease =
+        let mut lease =
             RequestLease::acquire_with_cancelled(&self.shared, self.client_id, facts, cancelled)
                 .map_err(PackageSemanticRuntimeError::Runtime)?;
         self.wait_for_toolchain(facts, &lease.cancelled)
@@ -2239,7 +2238,7 @@ impl LocalCompilerClient {
             request_id: lease.request_id,
             cancelled: Arc::clone(&lease.cancelled),
         }) {
-            Ok(()) => {}
+            Ok(()) => lease.mark_dispatched(),
             Err(TrySendError::Full(_)) => {
                 return Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
                     CompilerRuntimeCause::CommandQueueFull {
@@ -2258,8 +2257,7 @@ impl LocalCompilerClient {
                 facts.terminal(CompilerRuntimeCause::ResponseOwnerStopped),
             )
         })?;
-        drop(lease);
-        result
+        lease.complete(result)
     }
 
     /// Reopens and verifies one exact immutable semantic generation in the compiler owner.
@@ -2279,7 +2277,7 @@ impl LocalCompilerClient {
             stage: Stage::LowerIr,
             target: None,
         };
-        let lease = RequestLease::acquire(&self.shared, self.client_id, facts)
+        let mut lease = RequestLease::acquire(&self.shared, self.client_id, facts)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
@@ -2294,7 +2292,7 @@ impl LocalCompilerClient {
             response,
             cancelled: Arc::clone(&lease.cancelled),
         }) {
-            Ok(()) => {}
+            Ok(()) => lease.mark_dispatched(),
             Err(TrySendError::Full(_)) => {
                 return Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
                     CompilerRuntimeCause::CommandQueueFull {
@@ -2313,8 +2311,7 @@ impl LocalCompilerClient {
                 facts.terminal(CompilerRuntimeCause::ResponseOwnerStopped),
             )
         })?;
-        drop(lease);
-        result
+        lease.complete(result)
     }
 }
 
@@ -2426,6 +2423,8 @@ struct RequestLease<'shared> {
     client_id: u64,
     request_id: u64,
     cancelled: Arc<AtomicBool>,
+    dispatched: bool,
+    completed: bool,
 }
 
 impl<'shared> RequestLease<'shared> {
@@ -2462,6 +2461,8 @@ impl<'shared> RequestLease<'shared> {
             client_id,
             request_id,
             cancelled,
+            dispatched: false,
+            completed: false,
         })
     }
 
@@ -2488,18 +2489,41 @@ impl<'shared> RequestLease<'shared> {
             client_id,
             request_id,
             cancelled,
+            dispatched: false,
+            completed: false,
         })
     }
-}
 
-impl Drop for RequestLease<'_> {
-    fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Release);
+    fn mark_dispatched(&mut self) {
+        self.dispatched = true;
+    }
+
+    /// Unregisters a request after its terminal response, whether that response
+    /// contains a value or a typed operation error. A finished request must not
+    /// turn a caller-owned cancellation token into a cancellation signal.
+    fn complete<T>(mut self, response: T) -> T {
+        self.completed = true;
         self.shared
             .requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&(self.client_id, self.request_id));
+        response
+    }
+}
+
+impl Drop for RequestLease<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            if self.dispatched {
+                self.cancelled.store(true, Ordering::Release);
+            }
+            self.shared
+                .requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&(self.client_id, self.request_id));
+        }
     }
 }
 
@@ -4328,5 +4352,163 @@ mod local_plane_identity_tests {
             *portable.as_ref(),
             "host-local recipe IDs are not portable worker recipe IDs"
         );
+    }
+}
+
+#[cfg(test)]
+mod request_lease_tests {
+    use super::*;
+
+    fn shared() -> RuntimeShared {
+        let root =
+            std::env::temp_dir().join(format!("backend-request-lease-test-{}", std::process::id()));
+        let paths = LocalCompilerRuntimePaths::new(
+            root.join("artifacts"),
+            root.join("journal"),
+            root.join("native"),
+        )
+        .expect("absolute runtime paths");
+        let configuration = LocalCompilerRuntimeConfiguration::new(
+            paths,
+            Box::new([]),
+            Box::new([]),
+            LocalRuntimePackageAuthority::default(),
+            LocalCompilerTimeout::new(Duration::from_secs(1)).expect("bounded timeout"),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
+                .expect("minimal publication limits"),
+            LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::MIN)
+                .expect("minimal compiler scratch"),
+        )
+        .expect("runtime configuration");
+        RuntimeShared {
+            command: None,
+            worker: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            requests: Mutex::new(HashMap::new()),
+            next_request: AtomicU64::new(1),
+            next_client: AtomicU64::new(1),
+            alive: Arc::new(AtomicBool::new(true)),
+            capabilities: Arc::new(RwLock::new(LocalCompilerCapabilities::from_configuration(
+                &configuration,
+            ))),
+            capability_signal: Arc::new(CapabilitySignal::new()),
+            input_witnesses: Arc::new(CompilerInputWitnessStore::new(root.join("witnesses"))),
+        }
+    }
+
+    fn facts() -> RequestFacts {
+        let profile = LanguageProfile::C(backend_semantic::vocabulary::CStandard::C23);
+        RequestFacts {
+            profile,
+            language: profile.language(),
+            stage: Stage::LowerIr,
+            target: None,
+        }
+    }
+
+    fn lease<'a>(shared: &'a RuntimeShared, cancelled: Arc<AtomicBool>) -> RequestLease<'a> {
+        RequestLease::acquire_with_cancelled(shared, 7, facts(), cancelled)
+            .expect("register one request")
+    }
+
+    #[test]
+    fn completed_values_and_typed_errors_preserve_the_caller_token_and_unregister() {
+        for response in [Ok(9_u8), Err("typed refusal")] {
+            let shared = shared();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let mut request = lease(&shared, Arc::clone(&cancelled));
+            let request_id = request.request_id;
+            request.mark_dispatched();
+
+            assert_eq!(
+                request.complete(response),
+                response,
+                "completion must return its exact success or typed error"
+            );
+            assert!(!cancelled.load(Ordering::Acquire));
+            assert!(
+                !shared
+                    .requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains_key(&(7, request_id)),
+                "terminal response must unregister the exact request"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_parent_cancellation_remains_set_after_terminal_response() {
+        let shared = shared();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut request = lease(&shared, Arc::clone(&cancelled));
+        let request_id = request.request_id;
+        request.mark_dispatched();
+        cancelled.store(true, Ordering::Release);
+
+        assert_eq!(request.complete(Err("cancelled")), Err("cancelled"));
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(
+            !shared
+                .requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&(7, request_id)),
+            "completed cancellation must unregister the request"
+        );
+    }
+
+    #[test]
+    fn pre_dispatch_refusal_does_not_cancel_or_leak_the_request() {
+        let shared = shared();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let request = lease(&shared, Arc::clone(&cancelled));
+        let request_id = request.request_id;
+        drop(request);
+
+        assert!(!cancelled.load(Ordering::Acquire));
+        assert!(
+            !shared
+                .requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&(7, request_id)),
+            "a request rejected before dispatch must unregister"
+        );
+    }
+
+    #[test]
+    fn abandoned_or_unwound_dispatched_request_cancels_and_unregisters() {
+        for unwind in [false, true] {
+            let shared = shared();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let request_id;
+            if unwind {
+                let captured_request_id = AtomicU64::new(0);
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let mut request = lease(&shared, Arc::clone(&cancelled));
+                    captured_request_id.store(request.request_id, Ordering::Relaxed);
+                    request.mark_dispatched();
+                    panic!("simulate abandoning an in-flight owner request");
+                }));
+                assert!(result.is_err(), "the in-flight request must unwind");
+                request_id = captured_request_id.load(Ordering::Relaxed);
+            } else {
+                let mut request = lease(&shared, Arc::clone(&cancelled));
+                request_id = request.request_id;
+                request.mark_dispatched();
+                drop(request);
+            }
+
+            assert!(cancelled.load(Ordering::Acquire));
+            assert!(
+                !shared
+                    .requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains_key(&(7, request_id)),
+                "abandonment must unregister the exact request"
+            );
+        }
     }
 }
