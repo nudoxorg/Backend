@@ -1724,12 +1724,18 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .expect("make listener owner-private");
         let (accepted, accepted_rx) = std::sync::mpsc::channel();
+        let (release_peers, release_peers_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
+            let mut peers = Vec::new();
             for _ in 0..2 {
                 let (peer, _) = listener.accept().expect("accept authenticated client");
                 accepted.send(()).expect("signal accepted client");
-                drop(peer);
+                peers.push(peer);
             }
+            release_peers_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("test releases authenticated peers after checking deadlines");
+            drop(peers);
         });
 
         let io_timeout = Duration::from_millis(125);
@@ -1774,6 +1780,9 @@ mod tests {
         );
 
         drop(client);
+        release_peers
+            .send(())
+            .expect("release authenticated test peers");
         server.join().expect("join authenticated owner");
         std::fs::remove_file(path).expect("remove test socket");
     }
