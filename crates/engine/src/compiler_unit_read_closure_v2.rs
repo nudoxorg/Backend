@@ -183,7 +183,7 @@ impl VerifiedUnitReadClosure {
 
     /// Returns whether this trace was closed under the supplied staged-attempt identity.
     #[must_use]
-    pub(crate) const fn matches_attempt(&self, attempt: CompilationAttemptId) -> bool {
+    pub(crate) fn matches_attempt(&self, attempt: CompilationAttemptId) -> bool {
         self.compilation_attempt_id == attempt
     }
 
