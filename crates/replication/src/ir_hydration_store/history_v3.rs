@@ -1871,6 +1871,13 @@ mod tests {
             },
         )
         .expect("cold reopen selected V3 range store");
+        assert_eq!(
+            cold_store
+                .selected_typed_v3_history_branch_current(&selected_metadata, &typed_branch)
+                .expect("reconcile exact selected V3 branch tip after cold reopen"),
+            Some(second_commit),
+            "cold retry discovers the existing selected lineage before image streaming"
+        );
         let cold_tag = crate::HistoryRefName::new("typed-v3-cold").expect("cold tag name");
         assert!(
             cold_store
