@@ -8,8 +8,9 @@
 use super::docs::{first_paragraph, first_sentence, items_cancellable};
 use super::manifest::{self, Enabled};
 use super::scan::{Literals, mask, scan, scan_cancellable, sloc};
-use super::{Entry, Reading, SOURCE_FACTS_CAPACITY, Service};
+use super::{Entry, Reading, SOURCE_FACTS_CAPACITY, Service, SourceAuthority, hint_identity};
 use crate::model::pages::PackageRef;
+use crate::host::registry::CompositionGeneration;
 use facet::folio::state::{Build, Library, Unsafe};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,7 +59,7 @@ fn source_reader_bounds_flights_and_discards_obsolete_completions() {
         let package =
             PackageRef::parse(&format!("pkg:cargo/pressure-{index}@1.0.0")).expect("exact package");
         let (flight, cancellation) = service
-            .begin(package.clone(), None, None)
+            .begin(package.clone(), None, None, Vec::new())
             .expect("within the flight bound");
         if index == 0 {
             first = Some((package, flight, cancellation));
@@ -67,7 +68,9 @@ fn source_reader_bounds_flights_and_discards_obsolete_completions() {
     assert_eq!(service.entries.len(), SOURCE_FACTS_CAPACITY);
 
     let waiting = PackageRef::parse("pkg:cargo/pressure-overflow@1.0.0").expect("package");
-    assert!(service.begin(waiting.clone(), None, None).is_none());
+    assert!(service
+        .begin(waiting.clone(), None, None, Vec::new())
+        .is_none());
     assert_eq!(service.entries.len(), SOURCE_FACTS_CAPACITY);
     let (obsolete, obsolete_flight, obsolete_cancel) = first.expect("first flight");
     assert!(obsolete_cancel.is_cancelled());
@@ -77,7 +80,7 @@ fn source_reader_bounds_flights_and_discards_obsolete_completions() {
     // in-flight entry.
     service.remove(&obsolete);
     let (replacement_flight, _) = service
-        .begin(obsolete.clone(), None, None)
+        .begin(obsolete.clone(), None, None, Vec::new())
         .expect("a canceled slot is reusable");
     assert_ne!(replacement_flight, obsolete_flight);
     service.complete(
@@ -90,6 +93,80 @@ fn source_reader_bounds_flights_and_discards_obsolete_completions() {
         Some(Entry::Reading(_))
     ));
     assert_eq!(service.entries.len(), SOURCE_FACTS_CAPACITY);
+}
+
+#[test]
+fn source_facts_cache_keys_bind_exact_hints_and_registry_composition_generation() {
+    let mut service = Service::default();
+    let package = PackageRef::parse("pkg:cargo/present@0.4.2").expect("package");
+    let mut hints = std::collections::HashMap::new();
+    hints.insert("serde".to_owned(), "1.0.220".to_owned());
+    hints.insert("syn".to_owned(), "2.0.99".to_owned());
+    let exact_hints = hint_identity(&hints);
+    let mut reordered_hints = std::collections::HashMap::new();
+    reordered_hints.insert("syn".to_owned(), "2.0.99".to_owned());
+    reordered_hints.insert("serde".to_owned(), "1.0.220".to_owned());
+    assert_eq!(
+        exact_hints,
+        hint_identity(&reordered_hints),
+        "input map order does not change resolver-hint identity"
+    );
+    let authority = Some(SourceAuthority {
+        endpoint: PathBuf::from("/owner.sock"),
+        key: "cargo-home|registry-a".into(),
+        generation: CompositionGeneration(7),
+    });
+    let (flight, _) = service
+        .begin(
+            package.clone(),
+            None,
+            authority.clone(),
+            exact_hints.clone(),
+        )
+        .expect("the source read starts");
+    service.complete(
+        &package,
+        flight,
+        Reading::Absent("fixture result".into()),
+    );
+    assert!(matches!(
+        service.get(&package, &None, &authority, &exact_hints),
+        Some(Reading::Absent(_))
+    ));
+
+    let mut changed_hints = hints.clone();
+    changed_hints.insert("serde".to_owned(), "1.0.221".to_owned());
+    assert!(
+        service
+            .get(&package, &None, &authority, &hint_identity(&changed_hints))
+            .is_none(),
+        "changed resolver choices cannot reuse the previous dependency facts"
+    );
+
+    let other_authority = Some(SourceAuthority {
+        key: "cargo-home|registry-b".into(),
+        ..authority.clone().expect("authority")
+    });
+    assert!(
+        service
+            .get(&package, &None, &other_authority, &exact_hints)
+            .is_none(),
+        "changed Cargo authority cannot reuse the previous source facts"
+    );
+
+    // A new RegistrySource instance may share the same endpoint and stable
+    // Cargo path authority; installation gives it a new generation so the
+    // old facts are not attributed to its provider.
+    let replacement = Some(SourceAuthority {
+        generation: CompositionGeneration(8),
+        ..authority.clone().expect("authority")
+    });
+    assert!(
+        service
+            .get(&package, &None, &replacement, &exact_hints)
+            .is_none(),
+        "replacing a source provider invalidates source facts without pointer identity"
+    );
 }
 
 #[test]

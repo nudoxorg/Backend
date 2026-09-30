@@ -174,6 +174,7 @@ fn a_release_only_the_registry_has_fails_in_words_and_is_never_fetched(cx: &mut 
         endpoint: PathBuf::from("/nonexistent/owner.sock"),
         source: Arc::new(Shelf),
         authority: Arc::from("shelf"),
+        generation: crate::host::registry::CompositionGeneration::default(),
         refusals: None,
     };
     cx.update(|cx| {
@@ -209,6 +210,7 @@ fn an_owner_that_does_not_answer_is_a_failure_with_its_words_and_can_be_tried_ag
             endpoint: PathBuf::from("/nonexistent/owner.sock"),
             source: Arc::new(Shelf),
             authority: Arc::from("shelf"),
+            generation: crate::host::registry::CompositionGeneration::default(),
             refusals: None,
         })
     };

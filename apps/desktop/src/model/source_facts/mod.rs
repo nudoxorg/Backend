@@ -13,15 +13,16 @@
 //! specific reason the source could not be resolved; nothing is invented.
 //!
 //! The read happens off the UI thread the first time a page asks
-//! ([`reading`]), is cached per package, workspace and registry authority
-//! for a short interval so changed source/index facts are re-read, and redraws
-//! the windows once when it lands.
+//! ([`reading`]), is cached per package, workspace, resolver hints and
+//! registry composition for a short interval so changed source/index facts
+//! are re-read, and redraws the windows once when it lands.
 
 pub mod docs;
 pub mod manifest;
 pub mod registry;
 pub mod scan;
 
+use crate::host::registry::CompositionGeneration;
 use crate::model::pages::PackageRef;
 use crate::runtime::offload::Cancellation;
 pub use facet::folio::berg::Basis;
@@ -589,10 +590,21 @@ enum Entry {
 /// installed by a test or capture harness, good for any project).
 struct Slot {
     project: Option<Option<PathBuf>>,
-    authority: Option<(PathBuf, Arc<str>, usize)>,
+    authority: Option<SourceAuthority>,
+    hints: Option<Vec<(String, String)>>,
     expires_at: Option<Instant>,
     flight: Option<u64>,
     entry: Entry,
+}
+
+/// Inputs from the active owner/registry composition that affect source facts.
+/// Generation distinguishes a replacement provider with the same endpoints
+/// and path key without using an allocation address as evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceAuthority {
+    endpoint: PathBuf,
+    key: Arc<str>,
+    generation: CompositionGeneration,
 }
 
 const SOURCE_FACTS_CAPACITY: usize = 24;
@@ -609,11 +621,15 @@ impl Service {
         &mut self,
         package: &PackageRef,
         project: &Option<PathBuf>,
-        authority: &Option<(PathBuf, Arc<str>, usize)>,
+        authority: &Option<SourceAuthority>,
+        hints: &[(String, String)],
     ) -> Option<Reading> {
         let slot = self.entries.get(package)?;
         if let Some(stored) = slot.project.as_ref() {
-            if stored != project || &slot.authority != authority {
+            if stored != project
+                || &slot.authority != authority
+                || slot.hints.as_deref() != Some(hints)
+            {
                 return None;
             }
             if matches!(&slot.entry, Entry::Done(_))
@@ -637,7 +653,8 @@ impl Service {
         &mut self,
         package: PackageRef,
         project: Option<PathBuf>,
-        authority: Option<(PathBuf, Arc<str>, usize)>,
+        authority: Option<SourceAuthority>,
+        hints: Vec<(String, String)>,
     ) -> Option<(u64, Cancellation)> {
         if let Some(slot) = self.entries.get(&package) {
             if let Entry::Reading(cancellation) = &slot.entry {
@@ -679,6 +696,7 @@ impl Service {
             Slot {
                 project: Some(project),
                 authority,
+                hints: Some(hints),
                 expires_at: None,
                 flight: Some(flight),
                 entry: Entry::Reading(cancellation.clone()),
@@ -786,21 +804,22 @@ pub fn reading(
     let wanted = project.map(Path::to_path_buf);
     let composition = crate::host::registry::composed();
     let authority = composition.as_ref().map(|composition| {
-        (
-            composition.endpoint.clone(),
-            composition.authority.clone(),
-            Arc::as_ptr(&composition.source) as *const () as usize,
-        )
+        SourceAuthority {
+            endpoint: composition.endpoint.clone(),
+            key: composition.authority.clone(),
+            generation: composition.generation,
+        }
     });
+    let hint_identity = hint_identity(hints);
     if let Some(reading) = cx
         .default_global::<Service>()
-        .get(package, &wanted, &authority)
+        .get(package, &wanted, &authority, &hint_identity)
     {
         return reading;
     }
     let Some((flight, cancellation)) =
         cx.default_global::<Service>()
-            .begin(package.clone(), wanted.clone(), authority)
+            .begin(package.clone(), wanted.clone(), authority, hint_identity)
     else {
         return Reading::Waiting;
     };
@@ -844,6 +863,15 @@ pub fn reading(
     Reading::Reading
 }
 
+fn hint_identity(hints: &HashMap<String, String>) -> Vec<(String, String)> {
+    let mut identity: Vec<(String, String)> = hints
+        .iter()
+        .map(|(name, version)| (name.clone(), version.clone()))
+        .collect();
+    identity.sort_unstable();
+    identity
+}
+
 /// Installs what a test or a capture harness has already read for a
 /// package, so the page draws it without starting a read.
 #[doc(hidden)]
@@ -853,6 +881,7 @@ pub fn install(package: &PackageRef, reading: Reading, cx: &mut App) {
         Slot {
             project: None,
             authority: None,
+            hints: None,
             expires_at: None,
             flight: None,
             entry: Entry::Done(reading),

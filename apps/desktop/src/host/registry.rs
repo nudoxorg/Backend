@@ -24,6 +24,7 @@ use facet::marks::semver;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
 mod archive;
@@ -136,6 +137,18 @@ impl CargoAuthorityKey {
 impl fmt::Display for CargoAuthorityKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
+    }
+}
+
+/// Identity of one installed registry composition. The authority key names
+/// its stable Cargo roots; this generation distinguishes a replacement
+/// provider even when it resolves from the same paths.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(crate) struct CompositionGeneration(pub(crate) u64);
+
+impl CompositionGeneration {
+    fn next() -> Self {
+        Self(NEXT_COMPOSITION_GENERATION.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -896,6 +909,8 @@ pub(crate) struct Composition {
     /// A new composition gets a new identity when the configured authority
     /// changes; local-index facts also refresh on a short bounded interval.
     pub(crate) authority: Arc<str>,
+    /// Changes whenever `install` replaces the active registry provider.
+    pub(crate) generation: CompositionGeneration,
     /// Where the owner's words are kept for releases it listed but could not
     /// compile (`runtime::acquire::work::Refusals`), beside its workspace so
     /// they go wherever the index goes. `None`: not kept (tests).
@@ -912,6 +927,7 @@ impl fmt::Debug for Composition {
 }
 
 static COMPOSED: RwLock<Option<Composition>> = RwLock::new(None);
+static NEXT_COMPOSITION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Composes the cargo cache for the owner at `endpoint` whose workspace is
 /// `data` (archives unpack into `data/registry-sources`).
@@ -925,12 +941,14 @@ pub(crate) fn publish(endpoint: &Path, data: &Path) {
         endpoint: endpoint.to_path_buf(),
         source: Arc::new(source),
         authority,
+        generation: CompositionGeneration::default(),
         refusals,
     });
 }
 
 /// Installs a composition (tests compose their own).
-pub(crate) fn install(composition: Composition) {
+pub(crate) fn install(mut composition: Composition) {
+    composition.generation = CompositionGeneration::next();
     *COMPOSED.write().unwrap_or_else(PoisonError::into_inner) = Some(composition);
 }
 
