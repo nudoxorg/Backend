@@ -13,7 +13,8 @@ use std::io::{self, Write};
 use crate::Answer;
 use crate::dto::{
     CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, OutlineDto, OutlineNodeDto, PageDto,
-    ProductDto, ProductRecordDto, RecordDto, RecordListDto, ShelfDto, ShelfEntryDto, StatusDto,
+    ProductDto, ProductIndexSearchPageDto, ProductRecordDto, RecordDto, RecordListDto, ShelfDto,
+    ShelfEntryDto, StatusDto,
 };
 use crate::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 
@@ -273,6 +274,7 @@ pub fn encode_answer(
                         records: product.records,
                         note: product.note,
                         fault: product.fault,
+                        index_search_page: product.index_search_page,
                     },
                     budget,
                 )
@@ -574,6 +576,8 @@ struct SummaryProductDto {
     note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<FaultDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_search_page: Option<ProductIndexSearchPageDto>,
 }
 
 #[derive(Default)]
