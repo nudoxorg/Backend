@@ -2475,6 +2475,80 @@ fn an_edit_past_the_budget_leaves_the_projection_unchanged() {
 }
 
 #[test]
+fn byte_over_budget_edits_preserve_the_selected_projection() {
+    const ROWS: usize = 512;
+    const TOKEN_BYTES: usize = 12 * 1024;
+    let original = (1..=ROWS)
+        .map(|row| {
+            (
+                document(row as u64),
+                vec![("name".into(), "oldkeepermarker".into())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let current = state_for(original, [0x84; 32]);
+    let mut source = TantivySource::build(&current, Limits::default()).expect("projection");
+    let postings_before = source.indexed_postings();
+    let table_before = crate::engine::test_support::resident_table_addresses(&source);
+    let large_token = "x".repeat(TOKEN_BYTES);
+    let replacement = (1..=ROWS)
+        .map(|row| {
+            (
+                document(row as u64),
+                vec![("name".into(), large_token.clone())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let next = state_for(replacement, [0x85; 32]);
+    let default_budget = OverlayLimits::default();
+    assert!(
+        ROWS * TOKEN_BYTES * 4 > default_budget.max_bytes,
+        "independent four-term posting estimate should exceed the default byte budget"
+    );
+
+    let outcome = source
+        .maintain(&next, default_budget)
+        .expect("maintenance admission");
+    assert_eq!(outcome, MaintainOutcome::RebuildRequired);
+    assert_eq!(source.indexed_postings(), postings_before);
+    assert_eq!(
+        crate::engine::test_support::resident_table_addresses(&source),
+        table_before,
+        "a byte refusal leaves the selected resident projection untouched"
+    );
+    let hits = term_hits(&source, "oldkeepermarker");
+    assert_eq!(hits.len(), ROWS);
+    for row in 1..=ROWS {
+        assert!(hits.contains(&document(row as u64)));
+    }
+    let old_page = LexicalSource::fetch(
+        &source,
+        &QueryRequest {
+            binding: current.binding(),
+            query: Query::new(vec!["oldkeepermarker".into()], Limits::default())
+                .expect("old query"),
+            cursor: None,
+            limit: 8,
+        },
+    )
+    .expect("old selected root still serves");
+    assert_eq!(old_page.total, ROWS);
+    assert_eq!(old_page.hits.len(), 8);
+    assert!(matches!(
+        LexicalSource::fetch(
+            &source,
+            &QueryRequest {
+                binding: next.binding(),
+                query: Query::new(vec!["x".into()], Limits::default()).expect("query"),
+                cursor: None,
+                limit: 8,
+            }
+        ),
+        Err(TantivySourceError::Contract(Error::StaleRoot))
+    ));
+}
+
+#[test]
 fn a_different_workspace_requires_a_rebuild() {
     let documents = vec![(document(1), vec![("name".into(), "alpha".into())])];
     let current = state_for(documents.clone(), [1; 32]);

@@ -1176,6 +1176,7 @@ impl TantivySource {
         let mut slot_count = self.documents.slot_count;
         let mut next_document_count = 0usize;
         let mut term_count = 0usize;
+        let mut estimated_bytes = 0usize;
         for (id, fields) in next.iter() {
             next_document_count = next_document_count.checked_add(1).ok_or(Error::SizeLimit)?;
             if let Some(ordinal) = self
@@ -1203,6 +1204,12 @@ impl TantivySource {
                     if term_count > budget.max_terms {
                         return Ok(None);
                     }
+                    estimated_bytes = estimated_bytes
+                        .checked_add(revision_document_bytes(fields)?)
+                        .ok_or(Error::SizeLimit)?;
+                    if estimated_bytes > budget.max_bytes {
+                        return Ok(None);
+                    }
                     rewritten.try_reserve(1).map_err(|_| Error::SizeLimit)?;
                     rewritten.push((id, ordinal));
                     rewritten_slots[index / 64] |= 1_u64 << (index % 64);
@@ -1217,6 +1224,12 @@ impl TantivySource {
                     )
                     .ok_or(Error::SizeLimit)?;
                 if term_count > budget.max_terms {
+                    return Ok(None);
+                }
+                estimated_bytes = estimated_bytes
+                    .checked_add(revision_document_bytes(fields)?)
+                    .ok_or(Error::SizeLimit)?;
+                if estimated_bytes > budget.max_bytes {
                     return Ok(None);
                 }
                 added.try_reserve(1).map_err(|_| Error::SizeLimit)?;
@@ -1235,6 +1248,12 @@ impl TantivySource {
             }
             if !is_present {
                 removed_documents = removed_documents.checked_add(1).ok_or(Error::SizeLimit)?;
+                estimated_bytes = estimated_bytes
+                    .checked_add(std::mem::size_of::<EntityId>())
+                    .ok_or(Error::SizeLimit)?;
+                if estimated_bytes > budget.max_bytes {
+                    return Ok(None);
+                }
                 if rewritten
                     .len()
                     .saturating_add(added.len())
@@ -3497,6 +3516,51 @@ fn posting_count(fields: &[(String, String)]) -> Result<u32, Error> {
         postings = postings.checked_add(count).ok_or(Error::SizeLimit)?;
     }
     Ok(postings)
+}
+
+fn revision_document_bytes(fields: &[(String, String)]) -> Result<usize, Error> {
+    let mut bytes = std::mem::size_of::<EntityId>();
+    for (field, text) in fields {
+        let qualified_prefix = field
+            .len()
+            .checked_add(decimal_digits(field.len()))
+            .and_then(|bytes| bytes.checked_add(1))
+            .ok_or(Error::SizeLimit)?;
+        for token in searchable_tokens(text) {
+            // The Tantivy schema stores raw/folded and field-qualified
+            // raw/folded terms for every canonical token. Include their
+            // encoded term bytes and four row associations in the same
+            // transition estimate used before writer creation.
+            let term_bytes = token
+                .searchable
+                .len()
+                .checked_mul(4)
+                .and_then(|bytes| {
+                    qualified_prefix
+                        .checked_mul(2)
+                        .and_then(|qualified| bytes.checked_add(qualified))
+                })
+                .ok_or(Error::SizeLimit)?;
+            let posting_bytes = term_bytes
+                .checked_add(
+                    std::mem::size_of::<EntityId>()
+                        .checked_mul(4)
+                        .ok_or(Error::SizeLimit)?,
+                )
+                .ok_or(Error::SizeLimit)?;
+            bytes = bytes.checked_add(posting_bytes).ok_or(Error::SizeLimit)?;
+        }
+    }
+    Ok(bytes)
+}
+
+fn decimal_digits(mut value: usize) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
 }
 
 fn rank_material_limit(limits: Limits) -> usize {
