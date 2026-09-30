@@ -24,7 +24,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -325,6 +325,10 @@ struct RegistrySlot {
 /// Typed terminal state returned while satisfying a remote package add.
 #[derive(Debug)]
 pub(super) enum RegistryAddError {
+    /// The owner observed cancellation between bounded acquisition stages.
+    Cancelled,
+    /// A registry acquisition worker panicked before it could return a receipt.
+    WorkerPanicked,
     /// The endpoint policy explicitly forbids network effects.
     Offline,
     /// The endpoint could not be reached within its configured deadline.
@@ -346,6 +350,10 @@ pub(super) enum RegistryAddError {
 impl fmt::Display for RegistryAddError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => formatter.write_str("registry acquisition was cancelled"),
+            Self::WorkerPanicked => {
+                formatter.write_str("registry acquisition worker ended unexpectedly")
+            }
             Self::Offline => formatter.write_str("registry acquisition is offline"),
             Self::Unavailable => formatter.write_str("registry is unavailable"),
             Self::RetryAfter(delay) => {
@@ -820,6 +828,29 @@ impl RegistryGateway {
         &mut self,
         coordinate: &PackageCoordinate,
     ) -> Result<Vec<u8>, RegistryAddError> {
+        self.acquire_with_cancellation(coordinate, None)
+    }
+
+    /// Acquires one exact coordinate while checking the ticket cancellation
+    /// between configured registry source requests. An HTTP request already in
+    /// flight is not forcibly interrupted: the transport's configured
+    /// connect/read deadlines bound when this method can observe cancellation.
+    pub(super) fn acquire_cancellable(
+        &mut self,
+        coordinate: &PackageCoordinate,
+        cancellation: &AtomicBool,
+    ) -> Result<Vec<u8>, RegistryAddError> {
+        self.acquire_with_cancellation(coordinate, Some(cancellation))
+    }
+
+    fn acquire_with_cancellation(
+        &mut self,
+        coordinate: &PackageCoordinate,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<Vec<u8>, RegistryAddError> {
+        if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+            return Err(RegistryAddError::Cancelled);
+        }
         self.prune_expired_package_facts(current_millis());
         let route = self
             .sources
@@ -827,7 +858,13 @@ impl RegistryGateway {
             .map_err(RegistryAddError::Acquisition)?;
         let mut last_fallback = None;
         for source in route.candidates().iter().cloned() {
+            if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+                return Err(RegistryAddError::Cancelled);
+            }
             let outcome = self.acquire_from_source(&source, coordinate)?;
+            if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+                return Err(RegistryAddError::Cancelled);
+            }
             match outcome {
                 CandidateOutcome::Done(bytes) => return Ok(bytes),
                 CandidateOutcome::Fallback(error) => last_fallback = Some(error),
@@ -2927,6 +2964,25 @@ mod tests {
                 offline: backend_engine::advisory::OfflinePolicy::Warn,
             },
         }
+    }
+
+    #[test]
+    fn a_pre_cancelled_registry_job_never_starts_acquisition() {
+        let root = scratch();
+        let config = registry_config("http://127.0.0.1:9".to_owned());
+        let mut gateway = RegistryGateway::open(&config, &root, &advisory_config(None))
+            .expect("open registry gateway")
+            .expect("configured registry gateway");
+        let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0")
+            .expect("valid exact package coordinate");
+        let cancelled = AtomicBool::new(true);
+
+        assert!(matches!(
+            gateway.acquire_cancellable(&coordinate, &cancelled),
+            Err(RegistryAddError::Cancelled)
+        ));
+        drop(gateway);
+        let _ = fs::remove_dir_all(root);
     }
 
     fn local_registry_server(

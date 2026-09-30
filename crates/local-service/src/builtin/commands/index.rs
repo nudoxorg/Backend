@@ -12,9 +12,9 @@ use backend_engine::application::{
     CompilerPackageTargetV2, CompilerResourceCredits, CompilerSessionLineage, CompilerWorkIdentity,
     CompilerWorkspaceEntryV2, ExactInputWitness, FullWorkspaceInputClaim, FullWorkspaceInputError,
     FullWorkspaceInputVerifier, LocalCompilerAvailability, LocalCompilerClient, OwnedPackageSource,
-    OwnedPackageSourceSet, PackageLineageId, StagedSemanticPackage, VerifiedCompilerInput,
-    VerifiedCompilerInputAdmission, VerifierAcceptedFullWorkspaceInput,
-    capture_full_workspace_v2_with_prior,
+    OwnedPackageSourceSet, PackageLineageId, PackageSemanticError, PackageSemanticRuntimeError,
+    StagedSemanticPackage, VerifiedCompilerInput, VerifiedCompilerInputAdmission,
+    VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
     PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
@@ -23,7 +23,8 @@ use backend_engine::builtin::{
 use backend_extension_turso::SourceObservationReceipt;
 use backend_library::CompileExecutionIntent;
 use backend_library::interface::{
-    CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+    CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompileRequest,
+    PackageUrl,
 };
 use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::{Language, LanguageProfile};
@@ -861,10 +862,25 @@ fn prepare_deferred_compile(
 pub(super) fn run_deferred_compile(
     compiler: &LocalCompilerClient,
     sources: OwnedPackageSourceSet,
-) -> Result<StagedSemanticPackage, String> {
-    compiler
-        .compile_package_sources_staged(sources)
-        .map_err(|error| error.to_string())
+    cancelled: Arc<AtomicBool>,
+) -> Result<StagedSemanticPackage, PackageSemanticRuntimeError> {
+    compiler.compile_package_sources_staged_cancellable(sources, cancelled)
+}
+
+pub(super) fn deferred_compile_was_cancelled(
+    result: &Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+) -> bool {
+    match result {
+        Err(PackageSemanticRuntimeError::Runtime(CompilerTerminal::Runtime {
+            cause: CompilerRuntimeCause::RequestCancelled,
+            ..
+        })) => true,
+        Err(PackageSemanticRuntimeError::Package(PackageSemanticError::Compile {
+            terminal,
+            ..
+        })) => matches!(terminal.as_ref(), CompilerTerminal::PackageCancelled { .. }),
+        _ => false,
+    }
 }
 
 /// Admits exactly one profile candidate on the owner loop and then drops its
