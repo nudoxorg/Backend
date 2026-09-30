@@ -2,7 +2,7 @@
 //! target and every other occurrence of its subject in the frame that
 //! answers it, and nothing else.
 
-use super::{FocusTarget, Lit, Subject, hoverable_target, ink};
+use super::{FocusTarget, InteractionMode, Lit, Subject, hoverable_target, ink, interaction_mode, visible_target};
 use crate::overlay::float;
 use crate::theme::{ActiveFacet, Facet, set_facet};
 use gpui::{
@@ -14,6 +14,32 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 type Seen = Rc<RefCell<HashMap<&'static str, Lit>>>;
+
+#[test]
+fn semantic_selection_beats_a_stationary_pointer_until_a_real_pointer_move() {
+    let pointer = Some("old-pointer-target");
+    let observed_rest = None;
+    let mut rest = None;
+
+    assert_eq!(interaction_mode(observed_rest, rest), InteractionMode::Pointer);
+    assert_eq!(visible_target(pointer, observed_rest, rest), pointer);
+
+    // A keyboard walk changes the semantic target. Repeated layout syncs leave
+    // that target visible instead of reviving the pointer's remembered hit.
+    rest = Some("keyboard-target");
+    assert_eq!(interaction_mode(observed_rest, rest), InteractionMode::Keyboard);
+    for _ in 0..3 {
+        assert_eq!(visible_target(pointer, observed_rest, rest), rest);
+    }
+
+    // A real pointer move records the current semantic target and lets the
+    // pointer take over. If keyboard navigation changes it again, the same
+    // stationary pointer is stale until its next move.
+    let observed_rest = rest;
+    assert_eq!(visible_target(pointer, observed_rest, rest), pointer);
+    rest = Some("new-keyboard-target");
+    assert_eq!(visible_target(pointer, observed_rest, rest), rest);
+}
 
 /// Three words: two occurrences of one symbol and one of another.
 struct Words {
