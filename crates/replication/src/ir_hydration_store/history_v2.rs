@@ -172,20 +172,9 @@ impl FileSemanticRangeStore {
         if decoded_manifest != *manifest {
             return Err("typed V2 history manifest changed during canonical encoding".to_owned());
         }
-        let closure = self
-            .store
-            .open_closure_claim(closure_claim)
-            .map_err(|error| format!("open typed V2 history closure: {error:?}"))?;
-        let spool = spool_typed_v2_history_closure(
+        let (verified, durable_closure_id, _, _) = verify_typed_v2_history_payload_closure(
             &self.store,
             closure_claim,
-            &closure,
-            &locator,
-            &decoded_manifest,
-            tier,
-        )?;
-        let verified = verify_typed_v2_history_content(
-            &spool,
             &locator,
             &decoded_manifest,
             tier,
@@ -220,7 +209,7 @@ impl FileSemanticRangeStore {
         let receipt = match self.generations.admit_typed_v2_history_proposal(
             proposal,
             crate::ir_generation_store::AdmittedHistoryPayloadRoot {
-                closure: closure.id(),
+                closure: durable_closure_id,
             },
             source,
         ) {
@@ -845,6 +834,33 @@ fn verify_typed_v2_history_content(
         return Err("typed V2 history locator contains an unreferenced rope object".to_owned());
     }
     Ok(verified)
+}
+
+/// Reopens an exact claim through the existing bounded V2 payload spool and
+/// aggregate verifier. V3 local admission reuses this verifier because its
+/// producer emits the same c007 revision-3 manifest and physical object
+/// schemas; the V3 locator/root discriminator remains separate.
+pub(super) fn verify_typed_v2_history_payload_closure(
+    store: &FileStore,
+    closure_claim: ArtifactClosureClaim,
+    locator: &crate::ir_generation_store::TypedV2HistoryLocator,
+    manifest: &SemanticTypedPlaneManifestV2,
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+) -> Result<(VerifiedTypedPlaneContentV2, backend_store::ClosureId, usize, u64), String> {
+    let closure = store
+        .open_closure_claim(closure_claim)
+        .map_err(|error| format!("open typed history payload closure: {error:?}"))?;
+    let spool = spool_typed_v2_history_closure(
+        store,
+        closure_claim,
+        &closure,
+        locator,
+        manifest,
+        tier,
+    )?;
+    let verified = verify_typed_v2_history_content(&spool, locator, manifest, tier, jumbo_limits)?;
+    Ok((verified, closure.id(), spool.members.len(), spool.bytes_written))
 }
 
 struct HistoryJumboSource<'a> {

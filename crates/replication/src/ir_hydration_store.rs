@@ -44,6 +44,10 @@ use super::ir_hydration_wire::{
 };
 
 mod history_v2;
+mod history_v3;
+pub(crate) use history_v3::{
+    TypedV3HistoryAdmission, TypedV3HistoryAdmissionMetrics, TypedV3HistoryGcPin,
+};
 #[cfg(test)]
 pub(crate) use history_v2::{PositiveV2HistoryFixture, positive_v2_history_fixture_for_test};
 

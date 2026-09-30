@@ -37,6 +37,7 @@ mod provenance;
 mod replay;
 mod retention;
 mod v2;
+mod v3;
 
 pub(super) use catalog::{
     may_prune_generation_records, read_history_catalog_snapshot, validate_commit_generation,
@@ -58,6 +59,8 @@ pub(super) use gc::{
 };
 pub(super) use provenance::decode_hex_digest;
 pub(crate) use v2::{TypedV2HistoryLocator, TypedV2HistoryPublicationSnapshot};
+pub(crate) use v3::TypedV3HistoryLocator;
+pub use v3::{HistoryTypedV3LocatorId, HistoryTypedV3RootClaim};
 pub use lineage::{
     BorrowedTypedLineageEdgeSetV1, LineageAttestationId, LineageAttestationVerifierV1,
     LineageConfirmationStatementV1,

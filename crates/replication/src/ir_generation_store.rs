@@ -112,6 +112,7 @@ pub(super) fn trip_history_test_fault(point: HistoryTestFault) -> Result<(), Str
 
 mod history;
 pub(crate) use history::TypedV2HistoryLocator;
+pub(crate) use history::TypedV3HistoryLocator;
 pub(crate) use history::TypedV2HistoryPublicationAdmission;
 pub(crate) use history::TypedV2HistoryPublicationSnapshot;
 pub use history::{
@@ -120,6 +121,7 @@ pub use history::{
     HistoryRefAncestryProof, HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt,
     HistoryReplay, HistoryReplayCursor, HistoryReplayEntry, HistorySegmentDeltas,
     HistoryTypedV2JumboObject, HistoryTypedV2LocatorId, HistoryTypedV2RootClaim,
+    HistoryTypedV3LocatorId, HistoryTypedV3RootClaim,
     HistoryTypedV2SegmentObject, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
     LineageAttestationId, LineageAttestationVerifierV1, LineageCandidateGroupIdV1,
     LineageConfirmationStatementV1,
