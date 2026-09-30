@@ -119,7 +119,7 @@ pub enum InteractionMode {
 /// The current interaction mode for a component whose keyboard target is
 /// `rest` and whose last pointer event observed `observed_rest`.
 #[must_use]
-pub fn interaction_mode<T: PartialEq>(observed_rest: Option<T>, rest: Option<T>) -> InteractionMode {
+pub fn interaction_mode<T: PartialEq>(observed_rest: Option<&T>, rest: Option<&T>) -> InteractionMode {
     if observed_rest == rest { InteractionMode::Pointer } else { InteractionMode::Keyboard }
 }
 
@@ -128,9 +128,23 @@ pub fn interaction_mode<T: PartialEq>(observed_rest: Option<T>, rest: Option<T>)
 /// and refresh it on a genuine pointer move.
 #[must_use]
 pub fn visible_target<T: Copy + PartialEq>(pointer: Option<T>, observed_rest: Option<T>, rest: Option<T>) -> Option<T> {
-    match interaction_mode(observed_rest, rest) {
-        InteractionMode::Pointer => pointer.or(rest),
-        InteractionMode::Keyboard => rest,
+    visible_target_by(pointer, observed_rest.as_ref(), rest.as_ref(), rest)
+}
+
+/// Chooses a painted target using a separate identity for the keyboard and
+/// pointer observations. This is useful when the painted target is an index
+/// into a changing snapshot: compare its stable semantic identity, then return
+/// the current index.
+#[must_use]
+pub fn visible_target_by<T: Copy, I: PartialEq>(
+    pointer: Option<T>,
+    observed_rest: Option<&I>,
+    rest_identity: Option<&I>,
+    rest_target: Option<T>,
+) -> Option<T> {
+    match interaction_mode(observed_rest, rest_identity) {
+        InteractionMode::Pointer => pointer.or(rest_target),
+        InteractionMode::Keyboard => rest_target,
     }
 }
 

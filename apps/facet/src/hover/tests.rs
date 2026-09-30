@@ -21,13 +21,13 @@ fn semantic_selection_beats_a_stationary_pointer_until_a_real_pointer_move() {
     let observed_rest = None;
     let mut rest = None;
 
-    assert_eq!(interaction_mode(observed_rest, rest), InteractionMode::Pointer);
+    assert_eq!(interaction_mode(observed_rest.as_ref(), rest.as_ref()), InteractionMode::Pointer);
     assert_eq!(visible_target(pointer, observed_rest, rest), pointer);
 
     // A keyboard walk changes the semantic target. Repeated layout syncs leave
     // that target visible instead of reviving the pointer's remembered hit.
     rest = Some("keyboard-target");
-    assert_eq!(interaction_mode(observed_rest, rest), InteractionMode::Keyboard);
+    assert_eq!(interaction_mode(observed_rest.as_ref(), rest.as_ref()), InteractionMode::Keyboard);
     for _ in 0..3 {
         assert_eq!(visible_target(pointer, observed_rest, rest), rest);
     }
