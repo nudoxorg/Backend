@@ -2586,7 +2586,7 @@ for identity in items:
         let coordinator = QueryCoordinator::new(
             workspace,
             view.clone(),
-            view.capability().cloned().expect("view capability"),
+            view.capability().expect("view capability"),
             coverage,
             evidence,
         )
@@ -2670,7 +2670,7 @@ for identity in items:
         let next = QueryCoordinator::new(
             workspace,
             next_view.clone(),
-            next_view.capability().cloned().expect("view capability"),
+            next_view.capability().expect("view capability"),
             coverage,
             next_evidence,
         )
@@ -2933,7 +2933,7 @@ for identity in items:
         let next = QueryCoordinator::new(
             workspace,
             next_view.clone(),
-            next_view.capability().cloned().expect("view capability"),
+            next_view.capability().expect("view capability"),
             coverage,
             next_evidence,
         )
@@ -3020,7 +3020,7 @@ for identity in items:
         let next = QueryCoordinator::new(
             workspace,
             next_view.clone(),
-            next_view.capability().cloned().expect("view capability"),
+            next_view.capability().expect("view capability"),
             coverage,
             next_evidence,
         )
@@ -3059,7 +3059,7 @@ for identity in items:
         let coordinator = QueryCoordinator::new(
             workspace,
             view.clone(),
-            view.capability().cloned().expect("view capability"),
+            view.capability().expect("view capability"),
             coverage,
             evidence,
         )
@@ -3116,7 +3116,7 @@ for identity in items:
         let coordinator = QueryCoordinator::new(
             workspace,
             view.clone(),
-            view.capability().cloned().expect("view capability"),
+            view.capability().expect("view capability"),
             coverage,
             evidence,
         )
