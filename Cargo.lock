@@ -785,9 +785,9 @@ dependencies = [
 name = "backend-advisory"
 version = "0.1.0"
 dependencies = [
+ "backend-platform",
  "blake3",
  "fs4",
- "libc",
  "serde",
  "serde_json",
  "tempfile",

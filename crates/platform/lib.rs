@@ -15,6 +15,7 @@
 
 pub mod durable;
 pub mod durability;
+pub mod directory;
 pub mod local;
 mod native_path;
 #[cfg(windows)]
