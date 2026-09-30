@@ -199,6 +199,12 @@ fn validate_rows(rows: &[String]) -> io::Result<Vec<String>> {
     validate_rows_with_limit(rows, MAX_ROWS)
 }
 
+fn timestamp(time: std::time::SystemTime) -> u128 {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
+
 fn validate_staged_rows(rows: &[String]) -> io::Result<Vec<String>> {
     validate_rows_with_limit(rows, MAX_STAGED_ROWS)
 }
