@@ -920,6 +920,24 @@ fn blocking_owner_await_is_not_exposed_over_mcp() {
         response["error"]["message"],
         "Use backend.index_progress for bounded polling"
     );
+
+    let command = SurfaceCommand::IndexAwait {
+        ticket: index_job_ticket(),
+    };
+    let generic = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": SURFACE_TOOL,
+            "arguments": { "command": serde_json::to_value(command).expect("await command") }
+        }),
+    );
+    assert_eq!(generic["error"]["code"], -32602);
+    assert!(
+        generic["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("immediate bounded polling"))
+    );
     assert!(server.product.surface_commands.is_empty());
 }
 

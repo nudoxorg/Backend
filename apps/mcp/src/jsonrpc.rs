@@ -702,6 +702,11 @@ impl<P: Product> Server<P> {
             .ok_or_else(|| RpcError::invalid("command must be a tagged surface object"))?;
         let mut command = serde_json::from_value::<SurfaceCommand>(encoded)
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        if matches!(&command, SurfaceCommand::IndexAwait { .. }) {
+            return Err(RpcError::invalid(
+                "IndexAwait can block on owner work; use IndexProgress for immediate bounded polling",
+            ));
+        }
         if let SurfaceCommand::IndexSearch {
             cursor: Some(cursor),
             ..
