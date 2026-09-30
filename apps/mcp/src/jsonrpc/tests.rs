@@ -44,6 +44,8 @@ struct Fake {
     surface_reply: Option<SurfaceReply>,
     /// Exercise the opaque owner cursor family behind `backend.surface`.
     surface_index_search_pages: bool,
+    /// Override the opaque owner cursor for size-boundary cases.
+    surface_index_search_owner_cursor: Option<String>,
     /// Make the owner reject an index-search cursor as stale.
     surface_index_search_stale: bool,
     /// Owner cursors that reached the durable index-search surface.
@@ -228,16 +230,20 @@ impl Engine for Fake {
                 if cursor.is_some() && self.surface_index_search_stale {
                     return Err(ClientError::StaleCursor);
                 }
+                let expected_cursor = self
+                    .surface_index_search_owner_cursor
+                    .as_deref()
+                    .unwrap_or("maven-owner-v4");
                 if let Some(cursor) = &cursor
-                    && cursor.as_str() != "maven-owner-v4"
+                    && cursor.as_str() != expected_cursor
                 {
                     return Err(ClientError::Protocol(
                         "fixture received a non-owner index-search cursor".to_owned(),
                     ));
                 }
-                let next_cursor = cursor
-                    .is_none()
-                    .then(|| IndexSearchCursor::new("maven-owner-v4").expect("owner cursor"));
+                let next_cursor = cursor.is_none().then(|| {
+                    IndexSearchCursor::new(expected_cursor.to_owned()).expect("owner cursor")
+                });
                 Ok(SurfaceReply::IndexSearchPage(IndexSearchPage {
                     snapshot: [42; 32],
                     evaluated_at_millis: 17,
@@ -1612,7 +1618,59 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
         );
         assert!(second["structuredContent"].get("nextCursor").is_none());
         assert!(!text_of(&second).contains("next cursor"));
+
+        // The MCP authority signature survives a process reconstruction when
+        // the persisted secret and selected project are unchanged.
+        let mut restarted = ready(Fake {
+            surface_index_search_pages: true,
+            ..Fake::default()
+        });
+        let after_restart = call(
+            &mut restarted,
+            "backend.index_search",
+            &json!({
+                "query":"maven",
+                "limit":1,
+                "detail":detail,
+                "cursor":cursor
+            }),
+        );
+        assert_eq!(after_restart["isError"], false, "detail={detail}");
+        assert_eq!(
+            restarted.product.surface_index_search_seen,
+            vec![Some("maven-owner-v4".to_owned())]
+        );
+        assert!(
+            after_restart["structuredContent"]
+                .get("nextCursor")
+                .is_none()
+        );
     }
+}
+
+#[test]
+fn oversized_signed_index_search_cursor_projection_is_refused_without_truncation() {
+    let owner_cursor = "x".repeat(26 * 1024);
+    let mut server = ready(Fake {
+        surface_index_search_pages: true,
+        surface_index_search_owner_cursor: Some(owner_cursor.clone()),
+        ..Fake::default()
+    });
+    let response = call(
+        &mut server,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1,"detail":"summary"}),
+    );
+    assert_context_bounded(&response);
+    assert_eq!(response["isError"], true);
+    assert_eq!(response["structuredContent"]["answer"], "fault");
+    assert_eq!(response["structuredContent"]["cause"], "oversized");
+    assert!(
+        !serde_json::to_string(&response)
+            .expect("refusal JSON")
+            .contains(&owner_cursor)
+    );
+    assert!(!text_of(&response).contains(&owner_cursor));
 }
 
 #[test]
