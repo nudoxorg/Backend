@@ -586,6 +586,7 @@ fn exercise_remote_s3_range_interrupt(
         1,
         1024 * 1024,
     );
+    let low_budget_grant_id = hex(&low_budget_capability.grant_id());
     let capability = issue_semantic_capability(
         endpoint,
         workspace,
@@ -596,6 +597,7 @@ fn exercise_remote_s3_range_interrupt(
         10_000,
         64 * 1024 * 1024,
     );
+    let grant_id = hex(&capability.grant_id());
     let scope = capability
         .claims
         .semantic
@@ -615,7 +617,7 @@ fn exercise_remote_s3_range_interrupt(
         SecretKey::from_bytes(&client_secret_bytes),
         owner_peer,
         owner_address,
-        low_budget_capability,
+        low_budget_capability.clone(),
         target.clone(),
     )
     .expect("connect remote client with a bounded quota grant");
@@ -733,9 +735,14 @@ fn exercise_remote_s3_range_interrupt(
         other => panic!("remote selected segment did not request bytes: {other:?}"),
     };
     let range_gets_before = s3.stats().range_gets;
+    let first_range_bytes = client
+        .requested_bytes(&request)
+        .expect("account exact first remote range length");
+    assert!(first_range_bytes > 0 && first_range_bytes <= 16 * 1024);
     let first_progress = client
         .request_and_accept(&mut cursor, &request, &mut range_store, limits)
         .expect("fetch and verify first remote S3-backed range");
+    let mut verified_range_bytes = first_range_bytes;
     let checkpoint = match first_progress {
         SemanticRangeClientProgress::Staged {
             coverage,
@@ -775,6 +782,23 @@ fn exercise_remote_s3_range_interrupt(
         *selected,
         "cold owner restart changed the selected native generation during transfer"
     );
+
+    let mut restarted_quota_client = LocalSemanticIndexClient::connect_remote(
+        SecretKey::from_bytes(&client_secret_bytes),
+        owner_peer,
+        owner_address,
+        low_budget_capability,
+        target.clone(),
+    )
+    .expect("reconnect exhausted grant after owner restart");
+    let restarted_quota_failure = restarted_quota_client
+        .fetch_selected_catalog()
+        .expect_err("cold owner must retain the exhausted request budget");
+    assert!(
+        format!("{restarted_quota_failure:?}").contains("ReplayOrBudget"),
+        "cold owner forgot the exhausted request budget: {restarted_quota_failure:?}"
+    );
+    drop(restarted_quota_client);
 
     let mut resumed_client = LocalSemanticIndexClient::connect_remote(
         SecretKey::from_bytes(&client_secret_bytes),
@@ -828,6 +852,13 @@ fn exercise_remote_s3_range_interrupt(
         match poll {
             IrHydrationPoll::Request(request) => {
                 resumed_ranges = resumed_ranges.saturating_add(1);
+                let requested_bytes = resumed_client
+                    .requested_bytes(&request)
+                    .expect("account exact resumed range length");
+                assert!(requested_bytes > 0 && requested_bytes <= 16 * 1024);
+                verified_range_bytes = verified_range_bytes
+                    .checked_add(requested_bytes)
+                    .expect("remote range byte total fits its typed budget");
                 match resumed_client
                     .request_and_accept(&mut resumed_cursor, &request, &mut range_store, limits)
                     .expect("fetch remaining bounded selected ranges after reconnect")
@@ -875,6 +906,10 @@ fn exercise_remote_s3_range_interrupt(
         resumed_ranges > 0,
         "reconnected client did not fetch remaining ranges"
     );
+    assert!(
+        verified_range_bytes <= 64 * 1024 * 1024,
+        "verified remote range payload exceeds the high grant's response-byte budget"
+    );
     assert_eq!(
         verified.id().as_bytes(),
         checkpoint.range_request().segment_id.as_bytes()
@@ -889,6 +924,46 @@ fn exercise_remote_s3_range_interrupt(
         s3.stats().range_gets >= range_gets_before.saturating_add(2),
         "interrupted remote hydration did not issue actual S3 range requests before and after restart: {:?}",
         s3.stats()
+    );
+    let grants = cli_json(
+        endpoint,
+        workspace,
+        project,
+        &["cluster", "owner", "grant", "list"],
+    );
+    let grants = grants.as_array().expect("grant list is a JSON array");
+    let high_usage = grants
+        .iter()
+        .find(|grant| grant["grantId"].as_str() == Some(grant_id.as_str()))
+        .expect("high-budget semantic grant remains listed");
+    let high_requests = high_usage["requests"]
+        .as_u64()
+        .expect("metered request count");
+    let high_request_budget = high_usage["requestBudget"]
+        .as_u64()
+        .expect("signed request budget");
+    let high_response_bytes = high_usage["responseBytes"]
+        .as_u64()
+        .expect("persisted response byte total");
+    let high_byte_budget = high_usage["byteBudget"]
+        .as_u64()
+        .expect("signed byte budget");
+    assert!(high_requests > 0 && high_requests <= high_request_budget);
+    assert!(high_response_bytes > 0 && high_response_bytes <= high_byte_budget);
+    let low_usage = grants
+        .iter()
+        .find(|grant| grant["grantId"].as_str() == Some(low_budget_grant_id.as_str()))
+        .expect("exhausted low-budget grant remains listed");
+    assert_eq!(low_usage["requests"].as_u64(), Some(1));
+    let low_response_bytes = low_usage["responseBytes"]
+        .as_u64()
+        .expect("persisted quota-refusal response bytes");
+    let low_byte_budget = low_usage["byteBudget"]
+        .as_u64()
+        .expect("signed low response-byte budget");
+    assert!(
+        low_response_bytes > 0 && low_response_bytes <= low_byte_budget,
+        "quota refusal response was not durably byte-metered within its grant"
     );
     assert!(
         locald.running(),
