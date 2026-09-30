@@ -17,14 +17,13 @@ use super::{clear, muted};
 use crate::Set;
 use crate::measure::{Control, Measure, Space};
 use crate::motion::{BOUNCY, Spec, spec};
-use crate::paint::geom::{Fill, Poly, pt};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use crate::tokens::motion::{BOUNCE, QUICK};
 use crate::tokens::{Palette, ty};
 use gpui::{
-    AnyElement, App, Bounds, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement,
-    PathBuilder, Pixels, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
+    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 use std::rc::Rc;
 
@@ -38,29 +37,6 @@ pub enum Tri {
     On,
     /// Periwinkle with a bar: some of what it stands for is on.
     Mixed,
-}
-
-/// A diamond centred at `(cx, cy)` with half-diagonals `rx` × `ry`.
-fn diamond(cx: f32, cy: f32, rx: f32, ry: f32) -> Poly {
-    Poly::new([pt(cx, cy - ry), pt(cx + rx, cy), pt(cx, cy + ry), pt(cx - rx, cy)])
-}
-
-fn fill_diamond(window: &mut Window, poly: &Poly, color: Hsla) {
-    if color.alpha > 0.0 {
-        let mut fill = Fill::new();
-        fill.poly(poly);
-        fill.paint(window, color);
-    }
-}
-
-fn ring_diamond(window: &mut Window, poly: &Poly, width: f32, color: Hsla) {
-    if color.alpha > 0.0 && width > 0.0 {
-        let mut fill = Fill::new();
-        for ring in poly.stroke_ring(width) {
-            fill.poly(&ring);
-        }
-        fill.paint(window, color);
-    }
 }
 
 /// Which toggle a row holds.
@@ -185,38 +161,44 @@ fn switch_mark(paint: Paint, palette: &'static Palette) -> AnyElement {
     let s = paint.scale;
     let (w, h) = (32.0 * s, 16.0 * s);
     let rest = Edge::of(Bevel::Rest, palette);
-    let edge = rest
+    let track_edge = rest
         .mix(sunk(rest), paint.press * 0.6)
         .mix(Edge::of(Bevel::Focus, palette), paint.focus);
     let fill = mix(palette.plate2.into(), palette.plate3.into(), paint.hover);
-    let bead = canvas(
-        |_, _, _| {},
-        move |bounds: Bounds<Pixels>, (), window, _| {
-            let (table, ink2, ink0, mint, _, _) = tones(palette);
-            let x0 = f32::from(bounds.origin.x);
-            let cy = f32::from(bounds.origin.y) + f32::from(bounds.size.height) * 0.5;
-            // `.dsw .bead`: a 10 px square turned 45°, its box 3 px in from
-            // the left, travelling 17 px.
-            let r = 7.07 * s;
-            let inset = 8.0 * s;
-            let travel = 17.0 * s;
-            // Anticipation: pressed, the bead leans toward where it will go.
-            let lean = paint.press * 2.0 * s * if paint.on > 0.5 { -1.0 } else { 1.0 };
-            let cx = x0 + inset + travel * paint.x + lean;
-            // Stretch along the travel while far from home.
-            let far = (paint.x - paint.on).abs().min(1.0);
-            let stretch = 1.0 + 0.32 * far;
-            let poly = diamond(cx, cy, r * stretch, r / stretch.sqrt());
-            let body = mix(table, mint, paint.on);
-            fill_diamond(window, &poly, body);
-            let line = mix(ink2, ink0, paint.hover);
-            ring_diamond(window, &poly.offset(-0.8 * s), 1.6 * s, mix(line, clear(mint), paint.on));
-        },
-    )
-    .size_full();
+    let (table, ink2, ink0, mint, _, _) = tones(palette);
+    let r = 7.07 * s;
+    let inset = 8.0 * s;
+    let travel = 17.0 * s;
+    let lean = paint.press * 2.0 * s * if paint.on > 0.5 { -1.0 } else { 1.0 };
+    let center_x = inset + travel * paint.x + lean;
+    let stretch = 1.0 + 0.32 * (paint.x - paint.on).abs().min(1.0);
+    let rx = r * stretch;
+    let ry = r / stretch.sqrt();
+    let body = mix(table, mint, paint.on);
+    let line = mix(ink2, ink0, paint.hover);
+    let bead_edge = mix(line, clear(mint), paint.on);
+    let bead = div()
+        .absolute()
+        .left(px(center_x - rx))
+        .top(px((h - 2.0 * ry) * 0.5))
+        .w(px(2.0 * rx))
+        .h(px(2.0 * ry))
+        .child(
+            crate::controls::diamond::diamond()
+                .fill(body)
+                .size(px(2.0 * rx))
+                .h(px(2.0 * ry)),
+        )
+        .child(
+            crate::controls::diamond::diamond()
+                .inset(0.8 * s)
+                .outline(bead_edge, 1.6 * s)
+                .size(px(2.0 * rx))
+                .h(px(2.0 * ry)),
+        );
     cut()
         .chamfer(Chamfer::Px(3.0 * s))
-        .edge(edge)
+        .edge(track_edge)
         .plate(Plate::Flat)
         .fill(fill)
         .relative()
@@ -230,65 +212,115 @@ fn switch_mark(paint: Paint, palette: &'static Palette) -> AnyElement {
 /// The check and the radio: a standing diamond (and its tick or heart).
 fn standing_mark(radio: bool, paint: Paint, palette: &'static Palette) -> AnyElement {
     let s = paint.scale;
-    canvas(
-        |_, _, _| {},
-        move |bounds: Bounds<Pixels>, (), window, _| {
-            let (table, ink2, ink0, mint, peri, peri_hi) = tones(palette);
-            let c = bounds.center();
-            let (cx, cy) = (f32::from(c.x), f32::from(c.y));
-            // `.dchk .fill`: a 12 px square turned 45° (half-diagonal 8.5).
-            let r = 8.49 * s * (1.0 - 0.06 * paint.press);
-            let outer = diamond(cx, cy, r, r);
-            let line = mix(ink2, ink0, paint.hover);
-            if radio {
-                fill_diamond(window, &outer, table);
-                ring_diamond(window, &outer.offset(-0.8 * s), 1.6 * s, mix(line, mint, paint.on));
-                let heart = r * 0.52 * paint.tick;
-                if heart > 0.2 {
-                    fill_diamond(window, &diamond(cx, cy, heart, heart), mint);
-                }
-            } else {
-                let voice = mix(mint, peri, paint.mixed);
-                let lit = paint.on.max(paint.mixed);
-                fill_diamond(window, &outer, mix(table, voice, lit));
-                ring_diamond(window, &outer.offset(-0.8 * s), 1.6 * s, mix(line, clear(voice), lit));
-                let ink: Hsla = palette.mint_ink.into();
-                if paint.tick > 0.02 && paint.mixed < 0.5 {
-                    // The tick: `m5 12.5 4.5 4.5L13.5 8` in a 10 px box.
-                    let k = 10.0 / 24.0 * s * paint.tick;
-                    let ox = cx - 9.25 * k;
-                    let oy = cy - 12.5 * k;
-                    let at = |x: f32, y: f32| point(px(ox + x * k), px(oy + y * k));
-                    let mut path = PathBuilder::stroke(px(1.7 * s));
-                    path.move_to(at(5.0, 12.5));
-                    path.line_to(at(9.5, 17.0));
-                    path.line_to(at(13.5, 8.0));
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, ink);
-                    }
-                }
-                if paint.mixed > 0.02 {
-                    let half = 3.6 * s * paint.mixed;
-                    let bar = Poly::rect(cx - half, cy - 0.9 * s, half * 2.0, 1.8 * s);
-                    fill_diamond(window, &bar, palette.table.into());
-                }
-            }
-            if paint.focus > 0.0 {
-                // Doubled periwinkle, drawn as the mark's own outer ring.
-                let ring = diamond(cx, cy, r + 2.6 * s, r + 2.6 * s);
-                ring_diamond(window, &ring, 1.2 * s, mix(clear(peri_hi), peri_hi, paint.focus));
-                ring_diamond(
-                    window,
-                    &diamond(cx, cy, r + 4.2 * s, r + 4.2 * s),
-                    1.0 * s,
-                    mix(clear(peri), peri, paint.focus * 0.7),
-                );
-            }
-        },
-    )
-    .flex_none()
-    .size(px(20.0 * s))
-    .into_any_element()
+    let (table, ink2, ink0, mint, peri, peri_hi) = tones(palette);
+    let mark_size = 20.0 * s;
+    let r = 8.49 * s * (1.0 - 0.06 * paint.press);
+    let diameter = 2.0 * r;
+    let edge = mix(ink2, ink0, paint.hover);
+    let (fill, outline) = if radio {
+        (table, mix(edge, mint, paint.on))
+    } else {
+        let voice = mix(mint, peri, paint.mixed);
+        let lit = paint.on.max(paint.mixed);
+        (mix(table, voice, lit), mix(edge, clear(voice), lit))
+    };
+    let left = (mark_size - diameter) * 0.5;
+    let top = (mark_size - diameter) * 0.5;
+    let mut mark = div()
+        .relative()
+        .flex_none()
+        .size(px(mark_size))
+        .child(
+            crate::controls::diamond::diamond()
+                .fill(fill)
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(diameter))
+                .h(px(diameter)),
+        )
+        .child(
+            crate::controls::diamond::diamond()
+                .inset(0.8 * s)
+                .outline(outline, 1.6 * s)
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(diameter))
+                .h(px(diameter)),
+        );
+    if radio {
+        let heart = r * 0.52 * paint.tick;
+        if heart > 0.2 {
+            let d = 2.0 * heart;
+            mark = mark.child(
+                crate::controls::diamond::diamond()
+                    .fill(mint)
+                    .absolute()
+                    .left(px((mark_size - d) * 0.5))
+                    .top(px((mark_size - d) * 0.5))
+                    .w(px(d))
+                    .h(px(d)),
+            );
+        }
+    } else {
+        if paint.tick > 0.02 && paint.mixed < 0.5 {
+            let k = 10.0 / 24.0 * s * paint.tick;
+            let center = mark_size * 0.5;
+            let tick: Hsla = palette.mint_ink.into();
+            mark = mark.child(
+                crate::controls::native::native_paths(mark_size, mark_size)
+                    .stroke(
+                        &[
+                            (center - 4.25 * k, center),
+                            (center + 0.25 * k, center + 4.5 * k),
+                            (center + 4.25 * k, center - 4.5 * k),
+                        ],
+                        1.7 * s,
+                        false,
+                        tick,
+                    )
+                    .absolute()
+                    .inset_0(),
+            );
+        }
+        if paint.mixed > 0.02 {
+            let half = 3.6 * s * paint.mixed;
+            mark = mark.child(
+                div()
+                    .absolute()
+                    .left(px(mark_size * 0.5 - half))
+                    .top(px(mark_size * 0.5 - 0.9 * s))
+                    .w(px(half * 2.0))
+                    .h(px(1.8 * s))
+                    .bg(palette.table),
+            );
+        }
+    }
+    if paint.focus > 0.0 {
+        let first = 2.0 * (r + 2.6 * s);
+        let second = 2.0 * (r + 4.2 * s);
+        mark = mark
+            .child(
+                crate::controls::diamond::diamond()
+                    .outline(mix(clear(peri_hi), peri_hi, paint.focus), 1.2 * s)
+                    .absolute()
+                    .left(px((mark_size - first) * 0.5))
+                    .top(px((mark_size - first) * 0.5))
+                    .w(px(first))
+                    .h(px(first)),
+            )
+            .child(
+                crate::controls::diamond::diamond()
+                    .outline(mix(clear(peri), peri, paint.focus * 0.7), 1.0 * s)
+                    .absolute()
+                    .left(px((mark_size - second) * 0.5))
+                    .top(px((mark_size - second) * 0.5))
+                    .w(px(second))
+                    .h(px(second)),
+            );
+    }
+    mark.into_any_element()
 }
 
 impl RenderOnce for Toggle {
@@ -327,7 +359,13 @@ impl RenderOnce for Toggle {
             window,
             cx,
         );
-        let on_t = motion.animate(track(&id, "on"), if on { 1.0 } else { 0.0 }, spec::REVEAL, window, cx);
+        let on_t = motion.animate(
+            track(&id, "on"),
+            if on { 1.0 } else { 0.0 },
+            spec::REVEAL,
+            window,
+            cx,
+        );
         let mixed_t = motion.animate(
             track(&id, "mixed"),
             if mixed { 1.0 } else { 0.0 },
@@ -343,7 +381,13 @@ impl RenderOnce for Toggle {
             cx,
         );
         let x = if matches!(self.kind, Kind::Switch(_)) {
-            motion.animate(track(&id, "x"), if on { 1.0 } else { 0.0 }, BOUNCY, window, cx)
+            motion.animate(
+                track(&id, "x"),
+                if on { 1.0 } else { 0.0 },
+                BOUNCY,
+                window,
+                cx,
+            )
         } else {
             0.0
         };
@@ -392,9 +436,7 @@ impl RenderOnce for Toggle {
                     .child(note),
             );
         }
-        let row = row
-            .id(id)
-            .opacity(if self.disabled { 0.4 } else { 1.0 });
+        let row = row.id(id).opacity(if self.disabled { 0.4 } else { 1.0 });
         let row = if active {
             wire(row, &touch, self.on_toggle).into_any_element()
         } else {

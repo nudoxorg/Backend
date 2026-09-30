@@ -46,21 +46,21 @@
 //! versions your tree holds) and cards for the number and each tooth.
 
 use super::GRIP;
-use super::state::{pointer_away, track, watch_pointer};
 use super::kbd::{KbdSize, KbdVoice, kbd};
+use super::state::{pointer_away, track, watch_pointer};
 use crate::Set;
 use crate::measure::Measure;
 use crate::motion::{Motion, SNAPPY, Spec, spec};
 use crate::overlay::float::{self, FloatKind, FloatRequest, Side};
-use crate::paint::geom::{Fill, Poly};
 use crate::paint::mix;
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    AnyElement, App, Bounds, DispatchPhase, ElementId, FocusHandle, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
-    canvas, div, point, px, size,
+    AnyElement, App, Bounds, DispatchPhase, Element, ElementId, Entity, FocusHandle,
+    GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent,
+    LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Refineable, RenderOnce, SharedString, StatefulInteractiveElement, Style,
+    StyleRefinement, Styled, Window, div, point, px, size,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -269,13 +269,19 @@ impl VersionComb {
     /// each with its card.
     #[must_use]
     pub fn also(mut self, teeth: impl IntoIterator<Item = AlsoTooth>) -> Self {
-        self.also = teeth.into_iter().filter(|t| t.index < self.releases.len()).collect();
+        self.also = teeth
+            .into_iter()
+            .filter(|t| t.index < self.releases.len())
+            .collect();
         self
     }
 
     /// The number's card (its semver reading), for the styled combs.
     #[must_use]
-    pub fn number_card(mut self, card: impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static) -> Self {
+    pub fn number_card(
+        mut self,
+        card: impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
         self.number_card = Some(Rc::new(card));
         self
     }
@@ -455,7 +461,11 @@ impl Layout {
         // lens is centred on it).
         let give_left = x + inner * (x / p).clamp(0.0, 1.0);
         let give_right = x - inner * ((self.width - x) / p).clamp(0.0, 1.0);
-        lens.centre = lens.centre.min(give_left).max(give_right).clamp(0.0, self.width);
+        lens.centre = lens
+            .centre
+            .min(give_left)
+            .max(give_right)
+            .clamp(0.0, self.width);
         lens
     }
 }
@@ -467,9 +477,11 @@ pub(crate) fn nearest(positions: &[f32], x: f32) -> Option<usize> {
     }
     let at = positions.partition_point(|p| *p < x);
     let candidates = [at.saturating_sub(1), at.min(positions.len() - 1)];
-    candidates
-        .into_iter()
-        .min_by(|a, b| (positions[*a] - x).abs().total_cmp(&(positions[*b] - x).abs()))
+    candidates.into_iter().min_by(|a, b| {
+        (positions[*a] - x)
+            .abs()
+            .total_cmp(&(positions[*b] - x).abs())
+    })
 }
 
 /// A move along a release history (the comb's keys, and `[` / `]` from
@@ -536,7 +548,7 @@ pub(crate) fn step_key(releases: &[Release], from: usize, key: &str) -> Option<u
 
 // ------------------------------------------------------------------- state
 
-struct CombState {
+pub(super) struct CombState {
     focus: FocusHandle,
     lens: Option<Lens>,
     hot: Option<usize>,
@@ -590,14 +602,17 @@ const TIP_MONO: TypeRole = TypeRole {
 
 /// Whether the comb shows anything the pointer put there (a hovered tick,
 /// the lens, a hover tip) outside a drag.
-fn live_hover(state: &gpui::Entity<CombState>, cx: &App) -> bool {
+fn live_hover(state: &Entity<CombState>, cx: &App) -> bool {
     let st = state.read(cx);
-    !st.dragging && (st.hot.is_some() || st.lens.is_some() || st.tip.as_ref().is_some_and(|_| !st.tip_keyboard))
+    !st.dragging
+        && (st.hot.is_some()
+            || st.lens.is_some()
+            || st.tip.as_ref().is_some_and(|_| !st.tip_keyboard))
 }
 
 /// The pointer is gone: the hovered tick, the lens and a hover tip let go;
 /// a tip keys opened stays unless `all` (the pointer moved off the comb).
-fn let_go(state: &gpui::Entity<CombState>, all: bool, window: &mut Window, cx: &mut App) {
+fn let_go(state: &Entity<CombState>, all: bool, window: &mut Window, cx: &mut App) {
     let (tip, keyboard) = {
         let st = state.read(cx);
         (st.tip.clone(), st.tip_keyboard)
@@ -642,6 +657,352 @@ struct Frame {
     touches: Rc<[bool]>,
 }
 
+/// Geometry needed by the comb's pointer logic. Paint is a separate native
+/// Element; keeping this frame typed lets the same interaction Element serve
+/// the plain and styled combs without turning Canvas callbacks into an API.
+pub(super) enum EventGeometry {
+    Plain {
+        layout: Layout,
+        positions: Rc<[f32]>,
+    },
+    Styled {
+        geometry: styled::Geometry,
+        positions: Rc<[f32]>,
+        head_x: f32,
+        also: Rc<[usize]>,
+    },
+}
+
+/// The card opened by a styled-comb state-sheet probe.
+pub(super) struct CardAnchor {
+    pub key: ElementId,
+    pub card: CardContent,
+    pub x: f32,
+    pub width: f32,
+    pub scale: f32,
+    pub opened: Rc<Cell<bool>>,
+}
+
+/// Owns the comb's global pointer tracking and popover anchors. It paints no
+/// pixels; the tick artwork is a separate typed Element and the hit surface
+/// remains the same full-width, keyboard-focusable Div.
+pub(super) struct CombEvents {
+    style: StyleRefinement,
+    size: (f32, f32),
+    geometry: EventGeometry,
+    state: Entity<CombState>,
+    releases: Rc<[Release]>,
+    on_select: Option<OnSelect>,
+    id: ElementId,
+    painted: Rc<Cell<Bounds<Pixels>>>,
+    claim: Option<(ElementId, crate::probe::Target)>,
+    sheet_tip: Option<usize>,
+    sheet_opened: Rc<Cell<bool>>,
+    card_anchor: Option<CardAnchor>,
+    below: f32,
+}
+
+impl CombEvents {
+    pub(super) fn new(
+        width: f32,
+        height: f32,
+        geometry: EventGeometry,
+        state: Entity<CombState>,
+        releases: Rc<[Release]>,
+        on_select: Option<OnSelect>,
+        id: ElementId,
+        painted: Rc<Cell<Bounds<Pixels>>>,
+        claim: Option<(ElementId, crate::probe::Target)>,
+        sheet_tip: Option<usize>,
+        sheet_opened: Rc<Cell<bool>>,
+        card_anchor: Option<CardAnchor>,
+        below: f32,
+    ) -> Self {
+        Self {
+            style: StyleRefinement::default(),
+            size: (width.max(0.0), height.max(0.0)),
+            geometry,
+            state,
+            releases,
+            on_select,
+            id,
+            painted,
+            claim,
+            sheet_tip,
+            sheet_opened,
+            card_anchor,
+            below,
+        }
+    }
+}
+
+impl Styled for CombEvents {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl IntoElement for CombEvents {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for CombEvents {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        style.size.width = px(self.size.0).into();
+        style.size.height = px(self.size.1).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.painted.set(bounds);
+        if let Some((key, target)) = &self.claim {
+            crate::probe::record_target_in(cx, key, bounds, *target, window);
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let x0 = f32::from(bounds.origin.x);
+        let (positions, head_x, also) = match &self.geometry {
+            EventGeometry::Plain { positions, .. } => {
+                (positions.clone(), 0.0, Rc::<[usize]>::from([]))
+            }
+            EventGeometry::Styled {
+                positions,
+                head_x,
+                also,
+                ..
+            } => (positions.clone(), *head_x, also.clone()),
+        };
+        let open = {
+            let st = self.state.read(cx);
+            st.tip.clone().zip(st.tip_at)
+        };
+        if let Some((key, i)) = open.filter(|(_, i)| *i < positions.len()) {
+            float::anchor(
+                &key,
+                tip_anchor(bounds, positions[i], self.below),
+                window,
+                cx,
+            );
+        }
+        if let Some(i) = self.sheet_tip {
+            let key = ElementId::NamedChild(Arc::new(self.id.clone()), format!("t{i}").into());
+            let anchor = tip_anchor(bounds, positions[i], self.below);
+            float::anchor(&key, anchor, window, cx);
+            if !self.sheet_opened.replace(true) {
+                let request =
+                    FloatRequest::new(key, anchor, FloatKind::Tip, tip_content(&self.releases[i]))
+                        .side(Side::Below);
+                window.defer(cx, move |window, cx| float::open(request, window, cx));
+            }
+        }
+        if let Some(card) = &self.card_anchor
+            && !card.opened.replace(true)
+        {
+            let anchor = Bounds::new(
+                point(
+                    bounds.origin.x + px(card.x),
+                    bounds.origin.y + bounds.size.height - px(20.0 * card.scale),
+                ),
+                size(px(card.width), px(17.0 * card.scale)),
+            );
+            let key = card.key.clone();
+            let content = card.card.clone();
+            let request = FloatRequest::new(key, anchor, FloatKind::Peek, move |m, w, cx| {
+                content(m, w, cx)
+            })
+            .unfurl()
+            .hang_from_start();
+            window.defer(cx, move |window, cx| float::rest(request, window, cx));
+        }
+
+        watch_pointer(window);
+        let pointer_gone = pointer_away(window, cx) || !bounds.contains(&window.mouse_position());
+        if pointer_gone && live_hover(&self.state, cx) {
+            let state = self.state.clone();
+            window.defer(cx, move |window, cx| let_go(&state, false, window, cx));
+        }
+        let left = self.state.clone();
+        window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && live_hover(&left, cx) {
+                let_go(&left, false, window, cx);
+            }
+        });
+
+        let moved = self.state.clone();
+        let releases = self.releases.clone();
+        let select = self.on_select.clone();
+        let id = self.id.clone();
+        let move_geometry = match &self.geometry {
+            EventGeometry::Plain { layout, .. } => MoveGeometry::Plain(layout.clone()),
+            EventGeometry::Styled { geometry, .. } => {
+                MoveGeometry::Styled(geometry.clone(), head_x, also.clone())
+            }
+        };
+        let base_positions = positions.clone();
+        let below = self.below;
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let inside = bounds.contains(&event.position);
+            let st = moved.read(cx);
+            if !inside && !st.dragging {
+                if st.hot.is_some() || st.lens.is_some() || st.tip.is_some() {
+                    let_go(&moved, true, window, cx);
+                }
+                return;
+            }
+            let x = f32::from(event.position.x) - x0;
+            let (lens, targets, hot, quiet) = match &move_geometry {
+                MoveGeometry::Plain(layout) => {
+                    let lens = layout.needs_lens().then(|| layout.follow(st.lens, x));
+                    let targets = lens.map_or_else(
+                        || base_positions.to_vec(),
+                        |l| layout.positions(Some(&l), 1.0),
+                    );
+                    let hot = nearest(&targets, x);
+                    (lens, targets, hot, false)
+                }
+                MoveGeometry::Styled(geometry, head_x, also) => {
+                    let lens = geometry.layout.needs_lens().then(|| {
+                        geometry
+                            .layout
+                            .follow(st.lens, geometry.to_layout(x, *head_x))
+                    });
+                    let targets = lens
+                        .map_or_else(|| base_positions.to_vec(), |l| geometry.xs(Some(&l), 1.0));
+                    let hot = geometry.hit(&targets, *head_x, x);
+                    let on_number =
+                        geometry.gap > 0.0 && x >= *head_x && x <= *head_x + geometry.gap
+                            || geometry.offset > 0.0 && x < geometry.offset;
+                    let on_tooth = also.iter().any(|&t| {
+                        (targets.get(t).copied().unwrap_or(-1e9) - x).abs()
+                            < 5.0 * geometry.layout.scale
+                    });
+                    (lens, targets, hot, on_number || on_tooth)
+                }
+            };
+            let (was, dragging, old_tip, old_keyboard) =
+                (st.hot, st.dragging, st.tip.clone(), st.tip_keyboard);
+            let tip_key =
+                hot.map(|i| ElementId::NamedChild(Arc::new(id.clone()), format!("t{i}").into()));
+            moved.update(cx, |st, cx| {
+                st.lens = lens;
+                st.hot = hot;
+                st.tip = tip_key.clone().filter(|_| !dragging && !quiet);
+                st.tip_at = hot.filter(|_| !dragging && !quiet);
+                st.tip_keyboard = false;
+                cx.notify();
+            });
+            if was != hot || quiet {
+                if let Some(old) = old_tip {
+                    drop_tip(&old, old_keyboard, window, cx);
+                }
+                if let (Some(i), Some(key), false, false) = (hot, tip_key, dragging, quiet) {
+                    let anchor = tip_anchor(bounds, targets[i], below);
+                    float::rest(
+                        FloatRequest::new(key, anchor, FloatKind::Tip, tip_content(&releases[i]))
+                            .side(Side::Below),
+                        window,
+                        cx,
+                    );
+                }
+                if dragging
+                    && was != hot
+                    && let (Some(i), Some(select)) = (hot, &select)
+                {
+                    select(&VersionSelected(releases[i].id.clone()), window, cx);
+                }
+            }
+        });
+
+        let released = self.state.clone();
+        let up_releases = self.releases.clone();
+        let up_select = self.on_select.clone();
+        let up_geometry = match &self.geometry {
+            EventGeometry::Plain { layout, .. } => UpGeometry::Plain(layout.clone()),
+            EventGeometry::Styled {
+                geometry, head_x, ..
+            } => UpGeometry::Styled(geometry.clone(), *head_x, positions),
+        };
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble || !released.read(cx).dragging {
+                return;
+            }
+            let x = f32::from(event.position.x) - x0;
+            let at = match &up_geometry {
+                UpGeometry::Plain(layout) => {
+                    let lens = layout
+                        .needs_lens()
+                        .then(|| layout.follow(released.read(cx).lens, x));
+                    nearest(&layout.positions(lens.as_ref(), 1.0), x)
+                }
+                UpGeometry::Styled(geometry, head_x, positions) => {
+                    geometry.hit(positions, *head_x, x)
+                }
+            };
+            released.update(cx, |st, cx| {
+                st.dragging = false;
+                cx.notify();
+            });
+            if let (Some(i), Some(select)) = (at, &up_select) {
+                select(&VersionSelected(up_releases[i].id.clone()), window, cx);
+            }
+        });
+    }
+}
+
+enum MoveGeometry {
+    Plain(Layout),
+    Styled(styled::Geometry, f32, Rc<[usize]>),
+}
+
+enum UpGeometry {
+    Plain(Layout),
+    Styled(styled::Geometry, f32, Rc<[f32]>),
+}
+
 fn tick_height(step: Step) -> f32 {
     match step {
         Step::Major => 18.0,
@@ -656,10 +1017,83 @@ fn alpha(color: Hsla, a: f32) -> Hsla {
     color
 }
 
-fn paint_comb(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: &mut Window) -> Vec<f32> {
+fn rectangle(left: f32, top: f32, width: f32, height: f32) -> [(f32, f32); 4] {
+    [
+        (left, top),
+        (left + width, top),
+        (left + width, top + height),
+        (left, top + height),
+    ]
+}
+
+fn add_rectangle(
+    art: &mut crate::controls::native::NativePaths,
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    color: Hsla,
+) {
+    if width > 0.0 && height > 0.0 {
+        art.add_fill(&rectangle(left, top, width, height), color);
+    }
+}
+
+fn add_rectangle_ring(
+    art: &mut crate::controls::native::NativePaths,
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    thickness: f32,
+    color: Hsla,
+) {
+    let thickness = thickness.max(0.0).min(width * 0.5).min(height * 0.5);
+    add_rectangle(art, left, top, width, thickness, color);
+    add_rectangle(art, left, top + height - thickness, width, thickness, color);
+    add_rectangle(
+        art,
+        left,
+        top + thickness,
+        thickness,
+        height - 2.0 * thickness,
+        color,
+    );
+    add_rectangle(
+        art,
+        left + width - thickness,
+        top + thickness,
+        thickness,
+        height - 2.0 * thickness,
+        color,
+    );
+}
+
+fn capsule_points(cx: f32, top: f32, bottom: f32, width: f32) -> Vec<(f32, f32)> {
+    let radius = (width * 0.5).min((bottom - top) * 0.5).max(0.0);
+    let mut points = Vec::with_capacity(18);
+    for step in 0..=8_u8 {
+        let angle = std::f32::consts::PI * (1.0 + f32::from(step) / 8.0);
+        points.push((
+            cx + radius * angle.cos(),
+            top + radius + radius * angle.sin(),
+        ));
+    }
+    for step in 0..=8_u8 {
+        let angle = std::f32::consts::PI * (f32::from(step) / 8.0);
+        points.push((
+            cx + radius * angle.cos(),
+            bottom - radius + radius * angle.sin(),
+        ));
+    }
+    points
+}
+
+fn comb_art(frame: &Frame, palette: &Palette) -> (crate::controls::native::NativePaths, Vec<f32>) {
     let s = frame.layout.scale;
-    let x0 = f32::from(bounds.origin.x);
-    let base = f32::from(bounds.origin.y + bounds.size.height);
+    // The art viewbox is shifted up three pixels and extended below the
+    // baseline, matching the original overdraw without clipping the pin halo.
+    let (width, height, base) = (frame.layout.width, 30.0 * s, 27.0 * s);
     let positions = frame.layout.positions(frame.lens.as_ref(), frame.strength);
     let n = positions.len();
     let ink4: Hsla = palette.ink4.into();
@@ -667,8 +1101,16 @@ fn paint_comb(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: 
     let hair = s.max(1.0);
     let band_h = tick_height(Step::Patch) * s;
     let close = |i: usize| {
-        let left = if i > 0 { positions[i] - positions[i - 1] } else { f32::MAX };
-        let right = if i + 1 < n { positions[i + 1] - positions[i] } else { f32::MAX };
+        let left = if i > 0 {
+            positions[i] - positions[i - 1]
+        } else {
+            f32::MAX
+        };
+        let right = if i + 1 < n {
+            positions[i + 1] - positions[i]
+        } else {
+            f32::MAX
+        };
         left.min(right) < BAND * s
     };
 
@@ -677,20 +1119,35 @@ fn paint_comb(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: 
     // lens only moves ticks above it: the comb stays one object. In a
     // sparser comb, patches the lens's rim crowds run together locally.
     let banded = frame.layout.banded();
-    let mut band = Fill::new();
-    let mut ticks = Fill::new();
-    let mut lifted = Fill::new();
-    let mut touched = Fill::new();
+    let mut art = crate::controls::native::native_paths(width, height);
     if banded && n > 1 {
         let (from, to) = (positions[0], positions[n - 1]);
-        band.poly(&Poly::rect(x0 + from - hair * 0.5, base - band_h, to - from + hair, band_h));
+        add_rectangle(
+            &mut art,
+            from - hair * 0.5,
+            base - band_h,
+            to - from + hair,
+            band_h,
+            alpha(ink4, 0.85),
+        );
     }
     let mut run: Option<(f32, f32)> = None;
-    let flush = |run: &mut Option<(f32, f32)>, band: &mut Fill| {
+    let flush = |run: &mut Option<(f32, f32)>, art: &mut crate::controls::native::NativePaths| {
         if let Some((from, to)) = run.take() {
-            band.poly(&Poly::rect(x0 + from - hair * 0.5, base - band_h, to - from + hair, band_h));
+            add_rectangle(
+                art,
+                from - hair * 0.5,
+                base - band_h,
+                to - from + hair,
+                band_h,
+                alpha(ink4, 0.85),
+            );
         }
     };
+    // Split color batches explicitly so each family becomes one GPU path.
+    let mut tick_shapes = Vec::new();
+    let mut lifted_shapes = Vec::new();
+    let mut touched_shapes = Vec::new();
     for (i, x) in positions.iter().copied().enumerate() {
         let step = frame.releases[i].step;
         let crowded = close(i);
@@ -701,24 +1158,29 @@ fn paint_comb(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: 
             }
             continue;
         }
-        flush(&mut run, &mut band);
+        flush(&mut run, &mut art);
         let h = tick_height(step) * s;
-        let bar = Poly::rect(x0 + x - hair * 0.5, base - h, hair, h);
+        let bar = rectangle(x - hair * 0.5, base - h, hair, h);
         if touches {
-            touched.poly(&bar);
+            touched_shapes.push(bar);
         } else if banded && step == Step::Patch {
             // A patch the lens spread, standing on the band.
-            lifted.poly(&bar);
+            lifted_shapes.push(bar);
         } else {
-            ticks.poly(&bar);
+            tick_shapes.push(bar);
         }
     }
-    flush(&mut run, &mut band);
-    band.paint(window, alpha(ink4, 0.85));
-    ticks.paint(window, ink4);
-    lifted.paint(window, Hsla::from(palette.ink3));
+    flush(&mut run, &mut art);
+    for bar in tick_shapes {
+        art.add_fill(&bar, ink4);
+    }
+    for bar in lifted_shapes {
+        art.add_fill(&bar, Hsla::from(palette.ink3));
+    }
     // Releases whose changes reach your code: mint, quieter than the pin.
-    touched.paint(window, alpha(palette.mint.base.into(), 0.55));
+    for bar in touched_shapes {
+        art.add_fill(&bar, alpha(palette.mint.base.into(), 0.55));
+    }
 
     // The tick under the pointer, over the band if it is in it.
     if let Some(hot) = frame.hot
@@ -726,21 +1188,28 @@ fn paint_comb(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: 
         && Some(hot) != frame.pinned
     {
         let h = tick_height(frame.releases[hot].step) * s;
-        let mut lit = Fill::new();
-        lit.poly(&Poly::rect(x0 + positions[hot] - hair * 0.5, base - h, hair, h));
-        lit.paint(window, mix(ink4, ink0, frame.hot_t));
+        add_rectangle(
+            &mut art,
+            positions[hot] - hair * 0.5,
+            base - h,
+            hair,
+            h,
+            mix(ink4, ink0, frame.hot_t),
+        );
     }
     // Your pin, the one "you are here" mark: a mint capsule, 2 px by
     // 20 px, in a soft mint halo.
     if let Some(pin) = frame.pinned {
-        let x = x0 + positions[pin];
+        let x = positions[pin];
         let (w, h) = (2.0 * s, 20.0 * s);
-        let mut halo = Fill::new();
-        halo.poly(&capsule(x, base - h - 3.0 * s, base + 3.0 * s, w + 6.0 * s));
-        halo.paint(window, alpha(palette.mint.base.into(), 0.14));
-        let mut fill = Fill::new();
-        fill.poly(&capsule(x, base - h, base, w));
-        fill.paint(window, Hsla::from(palette.mint.base));
+        art.add_fill(
+            &capsule_points(x, base - h - 3.0 * s, base + 3.0 * s, w + 6.0 * s),
+            alpha(palette.mint.base.into(), 0.14),
+        );
+        art.add_fill(
+            &capsule_points(x, base - h, base, w),
+            Hsla::from(palette.mint.base),
+        );
     }
     // The release being read: periwinkle, 2 px, 22 px, in a soft 2 px ring;
     // keyboard focus adds a crisp periwinkle outline around the ring.
@@ -748,41 +1217,34 @@ fn paint_comb(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: 
     if shown > 0.001 {
         let x = interpolate(&positions, frame.ring);
         let (w, h) = (2.0 * s, 22.0 * s);
-        let ring = Poly::rect(x0 + x - w * 0.5 - 2.0 * s, base - h - 2.0 * s, w + 4.0 * s, h + 2.0 * s);
+        let ring_left = x - w * 0.5 - 2.0 * s;
+        let ring_top = base - h - 2.0 * s;
+        let ring_w = w + 4.0 * s;
+        let ring_h = h + 2.0 * s;
         let peri: Hsla = palette.peri.base.into();
-        let mut soft = Fill::new();
-        for piece in ring.offset(-s).stroke_ring(2.0 * s) {
-            soft.poly(&piece);
-        }
-        soft.paint(window, alpha(peri, 0.18 * shown));
+        add_rectangle_ring(
+            &mut art,
+            ring_left - s,
+            ring_top - s,
+            ring_w + 2.0 * s,
+            ring_h + 2.0 * s,
+            2.0 * s,
+            alpha(peri, 0.18 * shown),
+        );
         if frame.focus_t > 0.0 {
-            let mut crisp = Fill::new();
-            for piece in ring.offset(0.5 * s).stroke_ring(s) {
-                crisp.poly(&piece);
-            }
-            crisp.paint(window, alpha(palette.peri_hi.into(), frame.focus_t));
+            add_rectangle_ring(
+                &mut art,
+                ring_left - 0.5 * s,
+                ring_top - 0.5 * s,
+                ring_w + s,
+                ring_h + s,
+                s,
+                alpha(palette.peri_hi.into(), frame.focus_t),
+            );
         }
-        let mut fill = Fill::new();
-        fill.poly(&Poly::rect(x0 + x - w * 0.5, base - h, w, h));
-        fill.paint(window, alpha(peri, shown));
+        add_rectangle(&mut art, x - w * 0.5, base - h, w, h, alpha(peri, shown));
     }
-    positions
-}
-
-/// A capsule (a stadium): `width` wide from `top` to `bottom`, round ends.
-fn capsule(cx: f32, top: f32, bottom: f32, width: f32) -> Poly {
-    let r = (width * 0.5).min((bottom - top) * 0.5).max(0.0);
-    let mut points = Vec::with_capacity(20);
-    // Clockwise on screen: the top arc left to right, then the bottom arc.
-    for k in 0..=8_u8 {
-        let a = std::f32::consts::PI * (1.0 + f32::from(k) / 8.0);
-        points.push(crate::paint::geom::pt(cx + r * a.cos(), top + r + r * a.sin()));
-    }
-    for k in 0..=8_u8 {
-        let a = std::f32::consts::PI * (f32::from(k) / 8.0);
-        points.push(crate::paint::geom::pt(cx + r * a.cos(), bottom - r + r * a.sin()));
-    }
-    Poly::new(points)
+    (art.w(px(width)).h(px(height)), positions)
 }
 
 /// The position of fractional release `at` among `positions`.
@@ -821,7 +1283,9 @@ fn drop_tip(key: &ElementId, keyboard: bool, window: &mut Window, cx: &mut App) 
 }
 
 /// The tip's content: the version in mono, then its age.
-fn tip_content(release: &Release) -> impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static {
+fn tip_content(
+    release: &Release,
+) -> impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static {
     let version = release.version.clone();
     let age = release.age.clone();
     move |measure: &Measure, _window: &mut Window, cx: &mut App| {
@@ -834,9 +1298,24 @@ fn tip_content(release: &Release) -> impl Fn(&Measure, &mut Window, &mut App) ->
             .px(px(9.0 * s))
             .py(px(5.0 * s))
             .whitespace_nowrap()
-            .child(div().set(TIP_MONO, measure).text_color(palette.ink0.hsla()).child(version.clone()))
-            .child(div().set(TIP_TEXT, measure).text_color(palette.ink4.hsla()).child("·"))
-            .child(div().set(TIP_TEXT, measure).text_color(palette.ink2.hsla()).child(age.clone()))
+            .child(
+                div()
+                    .set(TIP_MONO, measure)
+                    .text_color(palette.ink0.hsla())
+                    .child(version.clone()),
+            )
+            .child(
+                div()
+                    .set(TIP_TEXT, measure)
+                    .text_color(palette.ink4.hsla())
+                    .child("·"),
+            )
+            .child(
+                div()
+                    .set(TIP_TEXT, measure)
+                    .text_color(palette.ink2.hsla())
+                    .child(age.clone()),
+            )
             .into_any_element()
     }
 }
@@ -882,24 +1361,32 @@ impl RenderOnce for VersionComb {
             .or(pinned)
             .unwrap_or(n.saturating_sub(1))
             .min(n.saturating_sub(1));
-        let focused = self.focus_look || (focus.is_focused(window) && window.last_input_was_keyboard());
+        let focused =
+            self.focus_look || (focus.is_focused(window) && window.last_input_was_keyboard());
         // A live comb (no pinned look) tells the probe what it shows.
         let live = !self.focus_look && self.hover_look.is_none() && self.lens_look.is_none();
         let claim = live.then(|| {
-            (id.clone(), crate::probe::Target {
-                // A drag scrubs wherever the pointer goes: that is the
-                // press, not a hover.
-                hovered: hot.is_some() && !dragging,
-                pressed: dragging,
-                focused,
-                focusable: true,
-                clickable: true,
-            })
+            (
+                id.clone(),
+                crate::probe::Target {
+                    // A drag scrubs wherever the pointer goes: that is the
+                    // press, not a hover.
+                    hovered: hot.is_some() && !dragging,
+                    pressed: dragging,
+                    focused,
+                    focusable: true,
+                    clickable: true,
+                },
+            )
         });
         let layout = Layout::new(n, f32::from(measure.width()), s);
         let strength = motion.animate(
             track(&id, "lens"),
-            if layout.needs_lens() && lens.is_some() { 1.0 } else { 0.0 },
+            if layout.needs_lens() && lens.is_some() {
+                1.0
+            } else {
+                0.0
+            },
             Spec::Spring(SNAPPY),
             window,
             cx,
@@ -910,17 +1397,36 @@ impl RenderOnce for VersionComb {
             selected as f32,
             // Following a drag it is a spring; stepping by keys or landing
             // after a click it glides and stops exactly on its tick.
-            if dragging { Spec::Spring(GRIP) } else { spec::REVEAL },
+            if dragging {
+                Spec::Spring(GRIP)
+            } else {
+                spec::REVEAL
+            },
             window,
             cx,
         );
         let hot_t = motion.animate(
-            track(&id, "hot"), if hot.is_some() { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
+            track(&id, "hot"),
+            if hot.is_some() { 1.0 } else { 0.0 },
+            spec::HOVER,
+            window,
+            cx,
+        );
         let focus_t = motion.animate(
-            track(&id, "focus"), if focused { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
+            track(&id, "focus"),
+            if focused { 1.0 } else { 0.0 },
+            spec::HOVER,
+            window,
+            cx,
+        );
         let is_away = pinned.is_some_and(|pin| pin != selected);
         let away = motion.animate(
-            track(&id, "away"), if is_away { 1.0 } else { 0.0 }, spec::REVEAL, window, cx);
+            track(&id, "away"),
+            if is_away { 1.0 } else { 0.0 },
+            spec::REVEAL,
+            window,
+            cx,
+        );
 
         let frame = Frame {
             releases: releases.clone(),
@@ -944,10 +1450,12 @@ impl RenderOnce for VersionComb {
         let on_select: Option<OnSelect> = self.on_select.clone().map(|handler| {
             let chose = chose.clone();
             let releases = releases.clone();
-            Rc::new(move |event: &VersionSelected, window: &mut Window, cx: &mut App| {
-                chose.set(releases.iter().position(|r| r.id == event.0));
-                handler(event, window, cx);
-            }) as OnSelect
+            Rc::new(
+                move |event: &VersionSelected, window: &mut Window, cx: &mut App| {
+                    chose.set(releases.iter().position(|r| r.id == event.0));
+                    handler(event, window, cx);
+                },
+            ) as OnSelect
         });
         let sheet_tip = self.hover_look.filter(|i| *i < n);
         let sheet_opened = state.read(cx).sheet_tip.clone();
@@ -965,7 +1473,11 @@ impl RenderOnce for VersionComb {
             let layout = Layout::new(n, f32::from(bounds.size.width), s);
             #[allow(clippy::cast_precision_loss)]
             let x = layout.uniform(selected as f32);
-            let below = if pinned.is_some_and(|pin| pin != selected) { NOTE_HEIGHT * s } else { 0.0 };
+            let below = if pinned.is_some_and(|pin| pin != selected) {
+                NOTE_HEIGHT * s
+            } else {
+                0.0
+            };
             window.defer(cx, move |window, cx| {
                 let old = {
                     let st = echo_state.read(cx);
@@ -981,8 +1493,13 @@ impl RenderOnce for VersionComb {
                     cx.notify();
                 });
                 float::open(
-                    FloatRequest::new(key.clone(), tip_anchor(bounds, x, below), FloatKind::Tip, tip_content(&release))
-                        .side(Side::Below),
+                    FloatRequest::new(
+                        key.clone(),
+                        tip_anchor(bounds, x, below),
+                        FloatKind::Tip,
+                        tip_content(&release),
+                    )
+                    .side(Side::Below),
                     window,
                     cx,
                 );
@@ -993,7 +1510,9 @@ impl RenderOnce for VersionComb {
                     .spawn(cx, async move |cx| {
                         timer.await;
                         let _ = cx.update(|window, cx| {
-                            let Some(state) = closing.upgrade() else { return };
+                            let Some(state) = closing.upgrade() else {
+                                return;
+                            };
                             let current = state.read(cx).tip.clone();
                             if current.as_ref() == Some(&key) && state.read(cx).hot.is_none() {
                                 drop_tip(&key, true, window, cx);
@@ -1008,150 +1527,31 @@ impl RenderOnce for VersionComb {
                     .detach();
             });
         }
-        let comb = canvas(
-            {
-                let painted = painted.clone();
-                move |bounds, _, cx| {
-                    painted.set(bounds);
-                    if let Some((key, target)) = &claim {
-                        crate::probe::record_target(cx, key, bounds, *target);
-                    }
-                }
+        let (art, positions) = comb_art(&frame, palette);
+        let events = CombEvents::new(
+            frame.layout.width,
+            24.0 * s,
+            EventGeometry::Plain {
+                layout: frame.layout.clone(),
+                positions: positions.clone().into(),
             },
-            {
-                let state = state.clone();
-                let releases = releases.clone();
-                let on_select = on_select.clone();
-                let id = id.clone();
-                move |bounds, (), window, cx| {
-                    let positions = Rc::new(paint_comb(&frame, bounds, palette, window));
-                    let x0 = f32::from(bounds.origin.x);
-                    let below = NOTE_HEIGHT * frame.layout.scale * frame.away;
-                    // Keep an open tip hanging from its tick as the comb and
-                    // the line under it move.
-                    let open = {
-                        let st = state.read(cx);
-                        st.tip.clone().zip(st.tip_at)
-                    };
-                    if let Some((key, i)) = open.filter(|(_, i)| *i < positions.len()) {
-                        float::anchor(&key, tip_anchor(bounds, positions[i], below), window, cx);
-                    }
-                    if let Some(i) = sheet_tip {
-                        // A state sheet shows the hovered state with its tip.
-                        let key = ElementId::NamedChild(Arc::new(id.clone()), format!("t{i}").into());
-                        let anchor = tip_anchor(bounds, positions[i], below);
-                        float::anchor(&key, anchor, window, cx);
-                        if !sheet_opened.replace(true) {
-                            let request =
-                                FloatRequest::new(key, anchor, FloatKind::Tip, tip_content(&releases[i]))
-                                    .side(Side::Below);
-                            window.defer(cx, move |window, cx| float::open(request, window, cx));
-                        }
-                    }
-                    // Hover is reconciled, not only event-driven: when the
-                    // comb moved from under a still pointer (a resize, a
-                    // scroll) or the pointer left the window, let go.
-                    watch_pointer(window);
-                    let pointer_gone = pointer_away(window, cx) || !bounds.contains(&window.mouse_position());
-                    if pointer_gone && live_hover(&state, cx) {
-                        let state = state.clone();
-                        window.defer(cx, move |window, cx| let_go(&state, false, window, cx));
-                    }
-                    let left = state.clone();
-                    window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
-                        if phase == DispatchPhase::Bubble && live_hover(&left, cx) {
-                            let_go(&left, false, window, cx);
-                        }
-                    });
-                    let up_positions = positions.clone();
-                    let moved = state.clone();
-                    let rel = releases.clone();
-                    let select = on_select.clone();
-                    let comb_id = id.clone();
-                    let layout = frame.layout.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble {
-                            return;
-                        }
-                        let inside = bounds.contains(&event.position);
-                        let st = moved.read(cx);
-                        if !inside && !st.dragging {
-                            if st.hot.is_some() || st.lens.is_some() || st.tip.is_some() {
-                                let_go(&moved, true, window, cx);
-                            }
-                            return;
-                        }
-                        let x = f32::from(event.position.x) - x0;
-                        let lens = layout.needs_lens().then(|| layout.follow(st.lens, x));
-                        // Hit against where the ticks stand under the lens
-                        // as it now is (fully open).
-                        let targets = lens.map(|lens| layout.positions(Some(&lens), 1.0));
-                        let hot = nearest(targets.as_deref().unwrap_or(&positions), x);
-                        let (was, dragging, old_tip, old_keyboard) =
-                            (st.hot, st.dragging, st.tip.clone(), st.tip_keyboard);
-                        let tip_key = hot.map(|i| {
-                            ElementId::NamedChild(Arc::new(comb_id.clone()), format!("t{i}").into())
-                        });
-                        moved.update(cx, |st, cx| {
-                            st.lens = lens;
-                            st.hot = hot;
-                            st.tip = tip_key.clone().filter(|_| !dragging);
-                            st.tip_at = hot.filter(|_| !dragging);
-                            st.tip_keyboard = false;
-                            cx.notify();
-                        });
-                        if was != hot {
-                            if let Some(old) = old_tip {
-                                drop_tip(&old, old_keyboard, window, cx);
-                            }
-                            // While dragging the header and the "viewing" line
-                            // already name the release: no tip over them.
-                            if let (Some(i), Some(key), false) = (hot, tip_key, dragging) {
-                                let at = targets.as_ref().map_or(positions[i], |t| t[i]);
-                                let anchor = tip_anchor(bounds, at, below);
-                                float::rest(
-                                    FloatRequest::new(key, anchor, FloatKind::Tip, tip_content(&rel[i]))
-                                        .side(Side::Below),
-                                    window,
-                                    cx,
-                                );
-                            }
-                            if dragging
-                                && let (Some(i), Some(select)) = (hot, &select)
-                            {
-                                select(&VersionSelected(rel[i].id.clone()), window, cx);
-                            }
-                        }
-                    });
-                    // A drag ends where the button comes up: the release
-                    // under it is the choice, whatever path led there.
-                    let released = state.clone();
-                    let up_releases = releases.clone();
-                    let up_select = on_select.clone();
-                    let up_layout = frame.layout.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble || !released.read(cx).dragging {
-                            return;
-                        }
-                        let x = f32::from(event.position.x) - x0;
-                        let lens = up_layout.needs_lens().then(|| up_layout.follow(released.read(cx).lens, x));
-                        let at = match lens {
-                            Some(lens) => nearest(&up_layout.positions(Some(&lens), 1.0), x),
-                            None => nearest(&up_positions, x),
-                        };
-                        released.update(cx, |st, cx| {
-                            st.dragging = false;
-                            cx.notify();
-                        });
-                        if let (Some(i), Some(select)) = (at, &up_select) {
-                            select(&VersionSelected(up_releases[i].id.clone()), window, cx);
-                        }
-                    });
-                }
-            },
-        )
-        .w_full()
-        .h(px(24.0 * s));
+            state.clone(),
+            releases.clone(),
+            on_select.clone(),
+            id.clone(),
+            painted.clone(),
+            claim,
+            sheet_tip,
+            sheet_opened,
+            None,
+            NOTE_HEIGHT * s * frame.away,
+        );
+        let comb = div()
+            .relative()
+            .w_full()
+            .h(px(24.0 * s))
+            .child(art.absolute().left_0().top(px(-3.0 * s)))
+            .child(events);
 
         // The quiet line while you read a release you do not pin.
         let note = pinned.filter(|_| away > 0.001).map(|pin| {
@@ -1168,14 +1568,24 @@ impl RenderOnce for VersionComb {
                 .h(px((NOTE_HEIGHT - 10.0) * s * away))
                 .overflow_hidden()
                 .opacity(away)
-                .child(div().set(NOTE, &measure).text_color(palette.ink3.hsla()).child("viewing"))
+                .child(
+                    div()
+                        .set(NOTE, &measure)
+                        .text_color(palette.ink3.hsla())
+                        .child("viewing"),
+                )
                 .child(
                     div()
                         .set(NOTE_MONO, &measure)
                         .text_color(palette.peri_hi.hsla())
                         .child(viewing),
                 )
-                .child(div().set(NOTE, &measure).text_color(palette.ink4.hsla()).child("·"))
+                .child(
+                    div()
+                        .set(NOTE, &measure)
+                        .text_color(palette.ink4.hsla())
+                        .child("·"),
+                )
                 .child(
                     div()
                         .id("pin")
@@ -1183,7 +1593,12 @@ impl RenderOnce for VersionComb {
                         .items_center()
                         .gap(px(6.0 * s))
                         .cursor_pointer()
-                        .child(div().set(NOTE, &measure).text_color(palette.ink3.hsla()).child("you pin"))
+                        .child(
+                            div()
+                                .set(NOTE, &measure)
+                                .text_color(palette.ink3.hsla())
+                                .child("you pin"),
+                        )
                         .child(
                             div()
                                 .set(NOTE_MONO, &measure)
@@ -1197,7 +1612,11 @@ impl RenderOnce for VersionComb {
                         }),
                 )
                 .child(div().flex_1())
-                .child(kbd("esc", &measure).voice(KbdVoice::Quiet).size(KbdSize::Small))
+                .child(
+                    kbd("esc", &measure)
+                        .voice(KbdVoice::Quiet)
+                        .size(KbdSize::Small),
+                )
         });
 
         let down_state = state.clone();
@@ -1222,30 +1641,34 @@ impl RenderOnce for VersionComb {
                     .w_full()
                     .cursor_pointer()
                     .child(comb)
-                    .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, window, cx| {
-                        let bounds = down_painted.get();
-                        let x = f32::from(event.position.x - bounds.origin.x);
-                        let layout = Layout::new(down_releases.len(), f32::from(bounds.size.width), s);
-                        let lens = down_state.read(cx).lens.filter(|_| layout.needs_lens());
-                        let at = nearest(&layout.positions(lens.as_ref(), 1.0), x);
-                        let (tip, keyboard) = {
-                            let st = down_state.read(cx);
-                            (st.tip.clone(), st.tip_keyboard)
-                        };
-                        if let Some(tip) = tip {
-                            drop_tip(&tip, keyboard, window, cx);
-                        }
-                        down_state.update(cx, |st, cx| {
-                            st.dragging = true;
-                            st.hot = at;
-                            st.tip = None;
-                            st.tip_at = None;
-                            cx.notify();
-                        });
-                        if let (Some(i), Some(select)) = (at, &down_select) {
-                            select(&VersionSelected(down_releases[i].id.clone()), window, cx);
-                        }
-                    }),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        move |event: &MouseDownEvent, window, cx| {
+                            let bounds = down_painted.get();
+                            let x = f32::from(event.position.x - bounds.origin.x);
+                            let layout =
+                                Layout::new(down_releases.len(), f32::from(bounds.size.width), s);
+                            let lens = down_state.read(cx).lens.filter(|_| layout.needs_lens());
+                            let at = nearest(&layout.positions(lens.as_ref(), 1.0), x);
+                            let (tip, keyboard) = {
+                                let st = down_state.read(cx);
+                                (st.tip.clone(), st.tip_keyboard)
+                            };
+                            if let Some(tip) = tip {
+                                drop_tip(&tip, keyboard, window, cx);
+                            }
+                            down_state.update(cx, |st, cx| {
+                                st.dragging = true;
+                                st.hot = at;
+                                st.tip = None;
+                                st.tip_at = None;
+                                cx.notify();
+                            });
+                            if let (Some(i), Some(select)) = (at, &down_select) {
+                                select(&VersionSelected(down_releases[i].id.clone()), window, cx);
+                            }
+                        },
+                    ),
             )
             .children(note)
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -1286,7 +1709,8 @@ impl RenderOnce for VersionComb {
                     let x = layout.uniform(next as f32);
                     let away = pinned.is_some_and(|pin| pin != next);
                     let below = if away { NOTE_HEIGHT * s } else { 0.0 };
-                    let tip = ElementId::NamedChild(Arc::new(key_id.clone()), format!("t{next}").into());
+                    let tip =
+                        ElementId::NamedChild(Arc::new(key_id.clone()), format!("t{next}").into());
                     let (old, old_keyboard) = {
                         let st = key_state.read(cx);
                         (st.tip.clone(), st.tip_keyboard)
@@ -1303,8 +1727,13 @@ impl RenderOnce for VersionComb {
                         cx.notify();
                     });
                     float::open(
-                        FloatRequest::new(tip, tip_anchor(bounds, x, below), FloatKind::Tip, tip_content(&key_releases[next]))
-                            .side(Side::Below),
+                        FloatRequest::new(
+                            tip,
+                            tip_anchor(bounds, x, below),
+                            FloatKind::Tip,
+                            tip_content(&key_releases[next]),
+                        )
+                        .side(Side::Below),
                         window,
                         cx,
                     );
@@ -1345,7 +1774,9 @@ pub(crate) fn unreachable(layout: &Layout) -> Vec<usize> {
         }
         false
     };
-    (0..layout.n).filter(|&r| !reach(r, true) || !reach(r, false)).collect()
+    (0..layout.n)
+        .filter(|&r| !reach(r, true) || !reach(r, false))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1357,7 +1788,11 @@ mod tests {
             .map(|i| Release {
                 id: ReleaseId(format!("r{i}").into()),
                 version: format!("1.{}.{}", i / 10, i % 10).into(),
-                step: if i % 10 == 0 { Step::Minor } else { Step::Patch },
+                step: if i % 10 == 0 {
+                    Step::Minor
+                } else {
+                    Step::Patch
+                },
                 age: "".into(),
             })
             .collect()
@@ -1382,7 +1817,11 @@ mod tests {
     #[test]
     fn four_hundred_releases_band_and_every_one_is_reachable_through_the_lens() {
         let layout = Layout::new(400, 236.0, 1.0);
-        assert!(layout.banded() && layout.needs_lens(), "pitch {}", layout.pitch);
+        assert!(
+            layout.banded() && layout.needs_lens(),
+            "pitch {}",
+            layout.pitch
+        );
         let missed = super::unreachable(&layout);
         assert!(missed.is_empty(), "unreachable releases: {missed:?}");
     }
@@ -1392,11 +1831,17 @@ mod tests {
         let layout = Layout::new(400, 236.0, 1.0);
         let lens = layout.follow(None, 118.0);
         let positions = layout.positions(Some(&lens), 1.0);
-        assert!(positions.windows(2).all(|w| w[1] >= w[0] - 1e-3), "not monotonic");
+        assert!(
+            positions.windows(2).all(|w| w[1] >= w[0] - 1e-3),
+            "not monotonic"
+        );
         let at = nearest(&positions, 118.0).expect("lens plateau has a nearest position");
         let gap = positions[at + 1] - positions[at];
         assert!(gap >= 5.0, "plateau pitch {gap}");
-        assert!(positions[0].abs() < 1e-3 && (positions[399] - 236.0).abs() < 1e-3, "ends moved");
+        assert!(
+            positions[0].abs() < 1e-3 && (positions[399] - 236.0).abs() < 1e-3,
+            "ends moved"
+        );
         // Outside the lens's reach nothing moves.
         let flat = layout.positions(None, 0.0);
         assert!((positions[5] - flat[5]).abs() < 1e-3);
@@ -1411,13 +1856,21 @@ mod tests {
         assert_eq!(step_key(&rs, 12, "pagedown"), Some(10), "previous minor");
         assert_eq!(step_key(&rs, 12, "home"), Some(0));
         assert_eq!(step_key(&rs, 12, "end"), Some(34));
-        assert_eq!(step_key(&rs, 31, "pageup"), Some(34), "no minor ahead: newest");
+        assert_eq!(
+            step_key(&rs, 31, "pageup"),
+            Some(34),
+            "no minor ahead: newest"
+        );
         assert_eq!(step_key(&[], 0, "right"), None);
         // The page's `[` / `]` are the same steps as the comb's arrows.
         assert_eq!(step_key(&rs, 12, "["), Some(11));
         assert_eq!(step_key(&rs, 12, "]"), Some(13));
         assert_eq!(step_key(&rs, 34, "]"), Some(34), "newest stays newest");
         assert_eq!(step_key(&rs, 12, "x"), None, "other keys pass through");
-        assert_eq!(step_release(&rs, 99, ReleaseStep::Older), Some(33), "a stale index clamps first");
+        assert_eq!(
+            step_release(&rs, 99, ReleaseStep::Older),
+            Some(33),
+            "a stale index clamps first"
+        );
     }
 }
