@@ -347,6 +347,10 @@ impl CommandGrammar {
             | CommandId::Revision
             | CommandId::ProjectTree
             | CommandId::AdvisoryRefresh
+            | CommandId::IndexStart
+            | CommandId::IndexAwait
+            | CommandId::IndexCancel
+            | CommandId::IndexProgress
             | CommandId::PackageGraphPage => false,
         }
     }
