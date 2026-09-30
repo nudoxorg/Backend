@@ -5,6 +5,8 @@
 //! document coordinates. A missing or invalid optional configuration remains
 //! an observable unavailable state and never prevents local lexical queries.
 
+use super::embedding_cache::EmbeddingCacheFile;
+use super::projection_state::ProjectionState;
 use super::{LocalAnswer, QueryCoordinator, QueryResult, SemanticAcceleration, SemanticDocument};
 use backend_compile::{
     EmbeddingArtifact, EmbeddingBatchProtocol, EmbeddingExecutable, EmbeddingExecutableError,
@@ -54,6 +56,8 @@ pub const EMBEDDING_QUERY_TREATMENT_ENV: &str = "BACKEND_EMBEDDING_QUERY_TREATME
 pub const EMBEDDING_DOCUMENT_TREATMENT_ENV: &str = "BACKEND_EMBEDDING_DOCUMENT_TREATMENT";
 /// Embedding worker protocol: `json-v1` (compatibility default) or shared supervised `bem2`.
 pub const EMBEDDING_PROTOCOL_ENV: &str = "BACKEND_EMBEDDING_PROTOCOL";
+/// Device requested from BEM2 workers: `metal` or portable `cpu`.
+pub const EMBEDDING_DEVICE_ENV: &str = "BACKEND_EMBEDDING_DEVICE";
 
 const MAX_CONFIG_VALUE_BYTES: usize = 4096;
 const MAX_EMBEDDING_DIMENSIONS: u32 = 16_384;
@@ -244,7 +248,9 @@ impl RemoteSemantic {
             ),
             Self::Configured(configured) => {
                 let active_matches = configured.active.as_ref().is_some_and(|active| {
-                    active.matches(coordinator) && active.coverage() == coverage
+                    !configured.projection_uncertain
+                        && active.matches(coordinator)
+                        && active.coverage() == coverage
                 });
                 let fallback = if configured.producer.is_none() {
                     SemanticSearchStatus::Unavailable {
@@ -389,9 +395,14 @@ impl fmt::Debug for RemoteSemantic {
 pub struct ConfiguredQdrant {
     client: qdrant::QdrantHttpClient,
     recipe: qdrant::EmbeddingRecipe,
+    projection_scope: [u8; 32],
     producer: Option<EmbeddingProducer>,
     producer_health: ProducerHealth,
     document_embeddings: BTreeMap<DocumentEmbeddingId, Arc<[f32]>>,
+    embedding_cache: Option<EmbeddingCacheFile>,
+    projection_state: Option<ProjectionState>,
+    projection_uncertain: bool,
+    active_embedding_identities: BTreeMap<String, DocumentEmbeddingId>,
     active: Option<ActiveQdrant>,
     retired: Option<RetiredQdrant>,
 }
@@ -445,6 +456,7 @@ impl ConfiguredQdrant {
             return Ok(None);
         };
         let collection = required(QDRANT_COLLECTION_ENV)?;
+        let projection_scope = qdrant_projection_scope(&endpoint, &collection);
         let model_revision = required(EMBEDDING_MODEL_ENV)?;
         let tokenizer_revision = required(EMBEDDING_TOKENIZER_ENV)?;
         let dimensions = NonZeroU32::new(parse::<u32>(EMBEDDING_DIMENSIONS_ENV)?)
@@ -496,12 +508,19 @@ impl ConfiguredQdrant {
         };
         let client = qdrant::QdrantHttpClient::new(transport, recipe)
             .map_err(RemoteConfigError::Provider)?;
+        let embedding_cache =
+            EmbeddingCacheFile::open(*recipe.version().as_bytes(), dimensions.get());
         Ok(Some(Self {
             client,
             recipe,
+            projection_scope,
             producer: Some(producer),
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         }))
@@ -538,6 +557,7 @@ impl ConfiguredQdrant {
             .iter()
             .map(|document| document.row)
             .collect::<Vec<_>>();
+        let row_keys = rows.iter().map(|row| row.stable_key()).collect::<Vec<_>>();
         let vectors = self.admit_documents(coordinator, documents)?;
         let (binding, facts) =
             vector_facts(coordinator, coverage, self.recipe, &vectors, envelope)?;
@@ -584,6 +604,7 @@ impl ConfiguredQdrant {
             recipe: self.recipe,
             index,
             residences: residences.into_boxed_slice(),
+            row_keys: row_keys.into_boxed_slice(),
         })
     }
 
@@ -592,10 +613,19 @@ impl ConfiguredQdrant {
         coordinator: &QueryCoordinator,
         coverage: CoverageWitness,
     ) -> Result<(), RemoteConfigError> {
+        let workspace = coordinator.workspace_root();
+        let recipe = self.recipe.version();
+        if self
+            .projection_state
+            .as_ref()
+            .is_none_or(|state| state.workspace() != workspace || state.recipe() != recipe)
+        {
+            self.projection_state = ProjectionState::open(workspace, recipe, self.projection_scope);
+        }
         if self
             .active
             .as_ref()
-            .is_some_and(|active| active.matches(coordinator))
+            .is_some_and(|active| !self.projection_uncertain && active.matches(coordinator))
         {
             return self.retire_pending();
         }
@@ -605,35 +635,79 @@ impl ConfiguredQdrant {
         self.retire_pending()?;
         ProjectionEnvelope::for_recipe(self.recipe)?
             .admit(coordinator.semantic_document_count())?;
-        let documents = self.embed_documents(coordinator.semantic_documents())?;
+        let (documents, target_inputs) =
+            self.embed_documents_with_input_identities(coordinator.semantic_documents())?;
+        let target_rows = documents
+            .iter()
+            .map(|document| document.row.stable_key())
+            .collect::<Vec<_>>();
+        if let Some(state) = self.projection_state.as_mut() {
+            state
+                .stage(&target_rows)
+                .map_err(RemoteConfigError::ProjectionStateIo)?;
+        }
+        // A failed upsert can leave a mixed remote projection. Keep the last
+        // active source unavailable until a later complete verification.
+        self.projection_uncertain = true;
         let replacement = self.activate(coordinator, coverage, documents)?;
         if let Some(previous) = self.active.replace(replacement) {
             debug_assert!(self.retired.is_none());
             self.retired = Some(previous.into_retired());
         }
+        self.active_embedding_identities = target_inputs;
+        self.projection_uncertain = false;
         self.retire_pending()
     }
 
     fn retire_pending(&mut self) -> Result<(), RemoteConfigError> {
-        let Some(retired) = self.retired.as_ref() else {
-            return Ok(());
-        };
         let live = self
             .active
             .as_ref()
             .map(|active| active.residences.iter().copied().collect::<BTreeSet<_>>());
-        let stale = retired
-            .residences
-            .iter()
-            .copied()
-            .filter(|residence| live.as_ref().is_none_or(|live| !live.contains(residence)))
-            .collect::<Vec<_>>();
-        if !stale.is_empty() {
-            self.client
-                .delete_residences(retired.workspace, retired.recipe, &stale)
-                .map_err(RemoteConfigError::Provider)?;
+        if let Some(retired) = self.retired.as_ref() {
+            let stale = retired
+                .residences
+                .iter()
+                .copied()
+                .filter(|residence| live.as_ref().is_none_or(|live| !live.contains(residence)))
+                .collect::<Vec<_>>();
+            if !stale.is_empty() {
+                self.client
+                    .delete_residences(retired.workspace, retired.recipe, &stale)
+                    .map_err(RemoteConfigError::Provider)?;
+            }
+            self.retired = None;
         }
-        self.retired = None;
+
+        let active_state = self.active.as_ref().map(|active| {
+            let binding = active.index.binding();
+            (
+                binding.workspace,
+                binding.recipe,
+                active.residences.iter().copied().collect::<BTreeSet<_>>(),
+                active.row_keys.to_vec(),
+            )
+        });
+        if let (Some(state), Some((workspace, recipe, live, row_keys))) =
+            (self.projection_state.as_mut(), active_state)
+            && state.workspace() == workspace
+            && state.recipe() == recipe
+        {
+            let stale = state
+                .residences()
+                .map_err(RemoteConfigError::Provider)?
+                .into_iter()
+                .filter(|residence| !live.contains(residence))
+                .collect::<Vec<_>>();
+            if !stale.is_empty() {
+                self.client
+                    .delete_residences(workspace, recipe, &stale)
+                    .map_err(RemoteConfigError::Provider)?;
+            }
+            state
+                .commit(&row_keys)
+                .map_err(RemoteConfigError::ProjectionStateIo)?;
+        }
         Ok(())
     }
 
@@ -641,6 +715,15 @@ impl ConfiguredQdrant {
         &mut self,
         documents: &[SemanticDocument],
     ) -> Result<Vec<QdrantDocument>, RemoteConfigError> {
+        self.embed_documents_with_input_identities(documents)
+            .map(|(documents, _)| documents)
+    }
+
+    fn embed_documents_with_input_identities(
+        &mut self,
+        documents: &[SemanticDocument],
+    ) -> Result<(Vec<QdrantDocument>, BTreeMap<String, DocumentEmbeddingId>), RemoteConfigError>
+    {
         let producer = self
             .producer
             .as_ref()
@@ -656,10 +739,30 @@ impl ConfiguredQdrant {
                 (document, DocumentEmbeddingId(identity.as_bytes()))
             })
             .collect::<Vec<_>>();
+        let projection_uncertain = self.projection_uncertain;
+        let active_inputs = &self.active_embedding_identities;
+        let target_inputs = planned
+            .iter()
+            .map(|(document, identity)| (document.row.stable_key(), *identity))
+            .collect::<BTreeMap<_, _>>();
         let live = planned
             .iter()
             .map(|(_, identity)| *identity)
             .collect::<BTreeSet<_>>();
+        // The previous view may be large. Drop its dead entries before staging
+        // new misses so retained cache vectors plus pending vectors remain
+        // within the admitted live projection's byte envelope.
+        self.document_embeddings
+            .retain(|identity, _| live.contains(identity));
+        if let Some(cache) = self.embedding_cache.as_mut() {
+            for (_, identity) in &planned {
+                if !self.document_embeddings.contains_key(identity)
+                    && let Some(coordinates) = cache.load(identity.0)
+                {
+                    self.document_embeddings.insert(*identity, coordinates);
+                }
+            }
+        }
         let mut misses = Vec::new();
         let mut requested = BTreeSet::new();
         for (document, identity) in &planned {
@@ -689,21 +792,27 @@ impl ConfiguredQdrant {
                 .or_else(|| pending.get(&identity))
                 .cloned()
                 .ok_or(RemoteConfigError::ProducerProtocol)?;
-            let write = if self.document_embeddings.contains_key(&identity) {
-                qdrant::CoordinateWrite::Hold
-            } else {
-                qdrant::CoordinateWrite::Replace
-            };
+            let write = coordinate_write_for_input(
+                active_inputs,
+                document.row,
+                identity,
+                projection_uncertain,
+            );
             embedded.push(QdrantDocument {
                 row: document.row,
                 coordinates,
                 write,
             });
         }
-        self.document_embeddings
-            .retain(|identity, _| live.contains(identity));
+        if let Some(cache) = self.embedding_cache.as_mut() {
+            let entries = pending
+                .iter()
+                .map(|(identity, coordinates)| (identity.0, coordinates.as_ref()))
+                .collect::<Vec<_>>();
+            let _ = cache.store_batch(&entries);
+        }
         self.document_embeddings.extend(pending);
-        Ok(embedded)
+        Ok((embedded, target_inputs))
     }
 
     fn search(
@@ -719,11 +828,11 @@ impl ConfiguredQdrant {
         if !self.producer_health.can_attempt(Instant::now()) {
             return local.finish();
         }
-        let Some(active) = self
-            .active
-            .as_ref()
-            .filter(|active| active.matches(coordinator) && active.coverage() == coverage)
-        else {
+        let Some(active) = self.active.as_ref().filter(|active| {
+            !self.projection_uncertain
+                && active.matches(coordinator)
+                && active.coverage() == coverage
+        }) else {
             return local.finish();
         };
         let Ok(coordinates) = producer.embed(EmbeddingTreatment::Query, text) else {
@@ -778,6 +887,17 @@ fn vector_facts(
     Ok((binding, facts))
 }
 
+fn qdrant_projection_scope(endpoint: &str, collection: &str) -> [u8; 32] {
+    let mut hasher =
+        blake3::Hasher::new_derive_key("backend.local-service.qdrant-projection-scope.v1");
+    for value in [endpoint.as_bytes(), collection.as_bytes()] {
+        let length = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        hasher.update(&length.to_be_bytes());
+        hasher.update(value);
+    }
+    *hasher.finalize().as_bytes()
+}
+
 impl fmt::Debug for ConfiguredQdrant {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -812,6 +932,19 @@ impl DocumentEmbeddingId {
             },
         );
         Ok(Self(identity.as_bytes()))
+    }
+}
+
+fn coordinate_write_for_input(
+    active_inputs: &BTreeMap<String, DocumentEmbeddingId>,
+    row: RowId,
+    identity: DocumentEmbeddingId,
+    projection_uncertain: bool,
+) -> qdrant::CoordinateWrite {
+    if !projection_uncertain && active_inputs.get(&row.stable_key()) == Some(&identity) {
+        qdrant::CoordinateWrite::Hold
+    } else {
+        qdrant::CoordinateWrite::Replace
     }
 }
 
@@ -1035,8 +1168,12 @@ impl EmbeddingProducer {
             return Err(RemoteConfigError::ProjectionLimit);
         }
         let limits = bounded_embedding_process_limits(resource_bound)?;
-        let environment = ProcessEnvironment::new(vec![("LC_ALL".into(), "C".into())])
-            .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+        let device = selected_embedding_device()?;
+        let environment = ProcessEnvironment::new(vec![
+            ("BACKEND_EMBEDDING_DEVICE".into(), device.into()),
+            ("LC_ALL".into(), "C".into()),
+        ])
+        .map_err(|_| RemoteConfigError::ProducerProtocol)?;
         let workspace = EmbeddingRuntimeWorkspace::create()?;
         let runtime = EmbeddingExecutable::activate_with_spec(
             spec,
@@ -1424,6 +1561,7 @@ pub struct ActiveQdrant {
     recipe: qdrant::EmbeddingRecipe,
     index: qdrant::VectorIndex<qdrant::QdrantHttpSource>,
     residences: Box<[qdrant::PointResidence]>,
+    row_keys: Box<[String]>,
 }
 
 impl ActiveQdrant {
@@ -1488,6 +1626,16 @@ fn required(name: &'static str) -> Result<String, RemoteConfigError> {
     optional(name)?.ok_or(RemoteConfigError::MissingValue(name))
 }
 
+fn selected_embedding_device() -> Result<&'static str, RemoteConfigError> {
+    match optional(EMBEDDING_DEVICE_ENV)?.as_deref() {
+        Some("cpu") => Ok("cpu"),
+        Some("metal") if cfg!(target_os = "macos") => Ok("metal"),
+        None if cfg!(target_os = "macos") => Ok("metal"),
+        None => Ok("cpu"),
+        Some(_) => Err(RemoteConfigError::InvalidValue(EMBEDDING_DEVICE_ENV)),
+    }
+}
+
 fn parse<T: std::str::FromStr>(name: &'static str) -> Result<T, RemoteConfigError> {
     required(name)?
         .parse()
@@ -1512,6 +1660,8 @@ pub enum RemoteConfigError {
     StaleRow,
     /// Projection activation requires owner-authorized complete coverage.
     IncompleteCoverage,
+    /// Durable membership could not be committed around the projection mutation.
+    ProjectionStateIo(std::io::Error),
     /// Candidate relation construction failed.
     InvalidRelation,
     /// Capability inventory replacement violated its bounded canonical form.
@@ -1559,6 +1709,9 @@ impl fmt::Display for RemoteConfigError {
             }
             Self::IncompleteCoverage => {
                 formatter.write_str("Qdrant activation requires complete owner coverage")
+            }
+            Self::ProjectionStateIo(error) => {
+                write!(formatter, "Qdrant projection state I/O failed: {error}")
             }
             Self::InvalidRelation => formatter.write_str("Qdrant candidate relation is invalid"),
             Self::InvalidInventory => {
@@ -1611,6 +1764,108 @@ mod tests {
     #[test]
     fn bem2_producer_process_limits_are_explicit() {
         test_bounded_embedding_process_limits();
+    }
+
+    #[test]
+    fn qdrant_projection_state_is_scoped_by_endpoint_and_collection() {
+        let configured = qdrant_projection_scope("https://qdrant.example", "semantic");
+        assert_eq!(
+            configured,
+            qdrant_projection_scope("https://qdrant.example", "semantic")
+        );
+        assert_ne!(
+            configured,
+            qdrant_projection_scope("https://other.example", "semantic")
+        );
+        assert_ne!(
+            qdrant_projection_scope("ab", "c"),
+            qdrant_projection_scope("a", "bc")
+        );
+    }
+
+    #[test]
+    fn remote_hold_requires_same_verified_row_input_and_certain_projection() {
+        let recipe = test_recipe();
+        let row = RowId::Symbol(backend_engine::symbol_key("coordinate::stable"));
+        let identity = DocumentEmbeddingId::new(recipe.version(), [8; 32], "unchanged text")
+            .expect("input identity");
+        let active = BTreeMap::from([(row.stable_key(), identity)]);
+        assert_eq!(
+            coordinate_write_for_input(&active, row, identity, false),
+            qdrant::CoordinateWrite::Hold
+        );
+        assert_eq!(
+            coordinate_write_for_input(
+                &active,
+                row,
+                DocumentEmbeddingId::new(recipe.version(), [8; 32], "changed text")
+                    .expect("changed input identity"),
+                false,
+            ),
+            qdrant::CoordinateWrite::Replace
+        );
+        assert_eq!(
+            coordinate_write_for_input(&active, row, identity, true),
+            qdrant::CoordinateWrite::Replace
+        );
+        assert_eq!(
+            coordinate_write_for_input(&BTreeMap::new(), row, identity, false),
+            qdrant::CoordinateWrite::Replace
+        );
+    }
+
+    #[test]
+    fn projection_membership_recovers_staged_union_then_commits_changed_view() {
+        let (coordinator, _, documents, _, recipe) = http_projection_inputs();
+        let workspace = coordinator.workspace_root();
+        let mut target = documents
+            .iter()
+            .map(|document| document.row.stable_key())
+            .collect::<Vec<_>>();
+        target.sort_unstable();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("fixture clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "backend-qdrant-membership-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("fixture directory");
+        let scope = qdrant_projection_scope("https://qdrant.example", "semantic");
+        let mut state =
+            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), scope)
+                .expect("open membership state");
+        assert!(state.row_keys().is_empty());
+        state.stage(&target).expect("stage complete target");
+        drop(state);
+
+        let mut recovered =
+            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), scope)
+                .expect("recover staged membership");
+        assert_eq!(recovered.row_keys().len(), target.len());
+        assert_eq!(
+            recovered.residences().expect("typed residences").len(),
+            target.len()
+        );
+
+        let changed = target.iter().take(1).cloned().collect::<Vec<_>>();
+        recovered
+            .stage(&changed)
+            .expect("persist old and changed rows before upsert");
+        assert_eq!(recovered.row_keys().len(), target.len());
+        recovered
+            .commit(&changed)
+            .expect("commit verified current membership");
+        assert_eq!(recovered.row_keys(), changed.as_slice());
+        drop(recovered);
+
+        let other_scope =
+            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), [0xA5; 32])
+                .expect("open distinct collection scope");
+        assert!(other_scope.row_keys().is_empty());
+        drop(other_scope);
+        fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
     #[cfg(unix)]
@@ -1679,9 +1934,14 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
         let mut configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: Some(producer),
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -1730,7 +1990,7 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
         assert!(Arc::ptr_eq(&cold[0].coordinates, &warm[0].coordinates));
         assert!(
             warm.iter()
-                .all(|document| document.write == qdrant::CoordinateWrite::Hold)
+                .all(|document| document.write == qdrant::CoordinateWrite::Replace)
         );
         drop(configured);
         fs::remove_dir_all(directory).expect("remove fixture directory");
@@ -1840,9 +2100,14 @@ for identity in items:
         let mut configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: Some(producer),
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -1881,7 +2146,7 @@ for identity in items:
         );
         assert!(
             warm.iter()
-                .all(|document| document.write == qdrant::CoordinateWrite::Hold)
+                .all(|document| document.write == qdrant::CoordinateWrite::Replace)
         );
 
         drop(configured);
@@ -2112,9 +2377,14 @@ for identity in items:
         let mut configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: Some(producer),
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -2189,9 +2459,14 @@ for identity in items:
         let configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: None,
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -2290,9 +2565,14 @@ for identity in items:
         let configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: None,
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -2332,9 +2612,14 @@ for identity in items:
         let configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: None,
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -2374,9 +2659,14 @@ for identity in items:
         let configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: None,
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -2412,9 +2702,14 @@ for identity in items:
         let configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: None,
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -2449,9 +2744,14 @@ for identity in items:
         let configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: None,
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -2516,9 +2816,14 @@ for identity in items:
         let mut configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: None,
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: None,
         };
@@ -2642,9 +2947,14 @@ for identity in items:
         let mut configured = ConfiguredQdrant {
             client,
             recipe,
+            projection_scope: [0; 32],
             producer: None,
             producer_health: ProducerHealth::Ready,
             document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
             active: None,
             retired: Some(RetiredQdrant {
                 workspace,
