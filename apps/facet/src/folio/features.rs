@@ -6,7 +6,6 @@ use super::berg::lines;
 use super::text::{key, one};
 use crate::measure::{Measure, Space};
 use crate::paint::geom::{Fill, Poly, pt};
-use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
@@ -451,16 +450,6 @@ impl RenderOnce for Chip {
         let palette = cx.palette();
         let measure = self.measure;
         let scale = measure.scale();
-        let mut edge = Edge::of(Bevel::Rest, palette);
-        edge.hi = palette.line3.into();
-        edge.lo = palette.line2.into();
-        let tint = if self.locked {
-            mix(palette.plate.into(), palette.peri.base.into(), 0.08)
-        } else if self.on {
-            mix(palette.plate.into(), palette.mint.base.into(), 0.08)
-        } else {
-            palette.plate.into()
-        };
         let ink = if self.on { palette.ink0 } else { palette.ink2 };
         let mut row = div()
             .flex()
@@ -483,13 +472,7 @@ impl RenderOnce for Chip {
         if self.enables > 0 {
             row = row.child(one(key(&self.id, "enables"), format!("+{}", self.enables), SMALL, palette.ink3, &measure));
         }
-        cut()
-            .chamfer(Chamfer::Px(4.0 * scale))
-            .edge(edge)
-            .plate(Plate::Flat)
-            .fill(tint)
-            .child(row)
-            .id(self.id.clone())
+        row.id(self.id.clone())
     }
 }
 

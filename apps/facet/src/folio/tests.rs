@@ -477,6 +477,7 @@ fn feature_preview_is_read_only_and_names_its_manifest_profile(cx: &mut TestAppC
     });
     let before = said(cx);
     assert!(before.iter().any(|t| t == "read only · manifest defaults"), "the profile and disabled action are explicit: {before:?}");
+    assert!(before.iter().any(|t| t == "not default"), "each unselected item has a text status: {before:?}");
     assert!(before.iter().any(|t| t == "0") && before.iter().any(|t| t == "of 25 on"), "the empty manifest default remains off: {before:?}");
     let frame = ledger(cx);
     let target_keys: Vec<&str> = frame.targets.iter().map(|target| target.key.as_str()).collect();
