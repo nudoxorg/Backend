@@ -3,6 +3,16 @@ cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 cache_root="${NUDOX_BUILD_CACHE_ROOT:-$cache_home/nudox/cargo-1.97}"
 slot_count="${NUDOX_CARGO_BUILD_SLOTS:-4}"
 explicit_target_dir="${CARGO_TARGET_DIR:-}"
+default_target_dir="$workspace_root/.local/target"
+# The Nix shell exports this exact path before invoking Cargo. Treat that
+# canonical in-worktree location as the wrapper-managed default even though it
+# arrives through the environment; role-specific or caller-chosen paths remain
+# explicit and must already be empty or stamped for this worktree.
+if [ "$explicit_target_dir" = "$default_target_dir" ] \
+  && [ ! -L "$workspace_root/.local" ] \
+  && [ ! -L "$default_target_dir" ]; then
+  explicit_target_dir=""
+fi
 
 case "$slot_count" in
   ""|*[!0-9]*)

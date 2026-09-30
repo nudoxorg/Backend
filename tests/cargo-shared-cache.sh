@@ -162,6 +162,22 @@ assert_eq "$cargo_in_root" "$(cat "$cargo_in_build/.nudox-worktree-root")"
 assert_eq "$cargo_in_root" "$(cat "$cargo_in_target/.nudox-worktree-root")"
 assert_eq "$test_root/rustc-cache-wrapper" "$(cut -d '|' -f 6 "$cargo_in_log")"
 
+# The development shell exports this exact in-worktree default target before
+# the Cargo wrapper runs. It remains usable when populated, while receiving a
+# root stamp that cannot authorize another worktree.
+default_target_root="$test_root/roots/default"
+default_target="$default_target_root/.local/target"
+mkdir -p "$default_target/debug"
+printf 'existing final artifact\n' > "$default_target/debug/keep.bin"
+default_target_log="$test_root/default-target.log"
+NUDOX_TEST_WORKTREE="$default_target_root" NUDOX_TEST_LOG="$default_target_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/default-target-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_TARGET_DIR="$default_target" SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build
+assert_eq "$default_target" "$(cut -d '|' -f 3 "$default_target_log")"
+assert_eq "$default_target_root" "$(cat "$default_target/.nudox-worktree-root")"
+assert_eq 'existing final artifact' "$(cat "$default_target/debug/keep.bin")"
+
 cargo_in_explicit_log="$test_root/cargo-in-explicit.log"
 cargo_in_explicit_build="$test_root/cargo-in-explicit-build"
 cargo_in_explicit_target="$test_root/cargo-in-explicit-target"
@@ -383,6 +399,21 @@ if NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$explicit_log" \
 fi
 assert_eq "$before_lines" "$(wc -l < "$explicit_log" | tr -d ' ')"
 assert_eq 'unowned content' "$(cat "$refused_child/keep.txt")"
+
+# Caller-selected target directories with content but no ownership stamp are
+# refused and preserved; only the exact standard worktree target is adopted.
+unmarked_target_root="$test_root/unmarked-target"
+mkdir -p "$unmarked_target_root"
+printf 'caller artifact\n' > "$unmarked_target_root/keep.bin"
+if NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$explicit_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/cache-explicit" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$explicit_build_root" CARGO_TARGET_DIR="$unmarked_target_root" \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build; then
+  fail "unmarked custom target directory was adopted"
+fi
+assert_eq "$before_lines" "$(wc -l < "$explicit_log" | tr -d ' ')"
+assert_eq 'caller artifact' "$(cat "$unmarked_target_root/keep.bin")"
 
 # A contradictory target-root stamp is refused with all prior data retained.
 conflicted_target_root="$test_root/conflicted-target"

@@ -67,11 +67,14 @@ An explicitly supplied `RUSTC_WRAPPER` is preserved and bypasses this gate.
 The `sccache` cache key still controls whether an external compilation can be
 reused; unsupported rustc modes compile normally.
 
-Legacy build/target directories without a matching `.nudox-worktree-root`
-stamp are never relabeled or imported automatically. Use an empty target path
-per worktree for the first build with this wrapper. The old path remains
-available for read-only comparison until its owner has reviewed and retired
-it; existing mixed graphs cannot be promoted by adding a stamp.
+Legacy `.local/build/<role>` and `.local/target-<role>` directories are never
+imported or stamped automatically. The exact standard target path
+`<worktree>/.local/target` is treated as worktree-owned even when the Nix shell
+pre-exports it; the wrapper stamps that path without deleting its final
+artifacts. Any other explicit target path must be empty or already stamped for
+the current root. Keep old role directories available for read-only comparison
+until their owners review and retire them; mixed build graphs cannot be
+promoted by adding a stamp.
 
 Each compiling invocation writes a private JSON provenance record beneath
 `CARGO_TARGET_DIR/.nudox-provenance/`. It includes the canonical root, HEAD and
