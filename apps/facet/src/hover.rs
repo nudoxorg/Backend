@@ -53,23 +53,35 @@ impl Subject {
     }
 }
 
-/// The hoverable that represents a keyboard target, paired with the same
-/// subject its pointer hitbox uses. The shell mirrors its focused target
-/// through this value; Facet does not infer focus from layout or pointer
-/// position.
+/// The identity shared by a pointer hoverable and its semantic keyboard
+/// target. Build the hoverable from this value and pass the same value to the
+/// shell's target registration; Facet never guesses keyboard focus from the
+/// pointer or layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FocusTarget {
-    /// The element id used by [`hoverable`].
-    pub id: ElementId,
-    /// The identity shared by related hoverables.
-    pub subject: Subject,
+    id: ElementId,
+    subject: Subject,
 }
 
 impl FocusTarget {
-    /// A focused hoverable with the same identity as its pointer target.
+    /// The identity for a custom hoverable whose pointer and keyboard target
+    /// are maintained outside [`Hoverable`]. Prefer [`hoverable_target`] when
+    /// both inputs use the standard hover element.
     #[must_use]
     pub fn new(id: impl Into<ElementId>, subject: Subject) -> Self {
         Self { id: id.into(), subject }
+    }
+
+    /// The stable element id shared with the pointer hit target.
+    #[must_use]
+    pub fn id(&self) -> &ElementId {
+        &self.id
+    }
+
+    /// The semantic identity shared with related hoverables.
+    #[must_use]
+    pub fn subject(&self) -> &Subject {
+        &self.subject
     }
 }
 
@@ -267,7 +279,7 @@ pub fn focus(target: Option<FocusTarget>, window: &mut Window, cx: &mut App) {
             }
         }
         (state.held(), state.is_empty())
-    }
+    };
     if empty { field.windows.remove(&id); }
     if before != after { window.refresh(); }
 }
@@ -306,9 +318,19 @@ pub fn hoverable(
     hue: Hsla,
     build: impl FnOnce(Lit) -> AnyElement + 'static,
 ) -> Hoverable {
+    hoverable_target(FocusTarget::new(id, subject), hue, build)
+}
+
+/// A hoverable built from the exact identity the shell can register as its
+/// semantic keyboard target. Keeping the identity in one value prevents the
+/// pointer id or subject from drifting away from the shell's focus mirror.
+pub fn hoverable_target(
+    target: FocusTarget,
+    hue: Hsla,
+    build: impl FnOnce(Lit) -> AnyElement + 'static,
+) -> Hoverable {
     Hoverable {
-        id: id.into(),
-        subject,
+        target,
         hue,
         shape: Shape::Rect,
         build: Some(Box::new(build)),
@@ -320,8 +342,7 @@ pub fn hoverable(
 
 /// See [`hoverable`].
 pub struct Hoverable {
-    id: ElementId,
-    subject: Subject,
+    target: FocusTarget,
     hue: Hsla,
     shape: Shape,
     build: Option<Box<dyn FnOnce(Lit) -> AnyElement>>,
@@ -379,12 +400,12 @@ impl gpui::Element for Hoverable {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        self.lit = lit_as(&self.id, &self.subject, window, cx);
+        self.lit = lit_as(&self.target.id, &self.target.subject, window, cx);
         let built = self.build.take().map_or_else(|| gpui::Empty.into_any_element(), |build| build(self.lit));
         let mut child = match &self.peek {
             Some(request) => {
                 let request = Rc::clone(request);
-                float::trigger(self.id.clone(), move |bounds| request(bounds), built).into_any_element()
+                float::trigger(self.target.id.clone(), move |bounds| request(bounds), built).into_any_element()
             }
             None => built,
         };
@@ -435,7 +456,7 @@ impl gpui::Element for Hoverable {
         let Some(hitbox) = hitbox.clone() else {
             return;
         };
-        let (id, subject) = (self.id.clone(), self.subject.clone());
+        let (id, subject) = (self.target.id.clone(), self.target.subject.clone());
         // The pointer is still but the content moved (a scroll, a reflow, a
         // page that changed): the target follows the layout, not the last move.
         if pointer_held(window, cx).is_some_and(|held| held.id == id)

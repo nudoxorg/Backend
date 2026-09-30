@@ -2,7 +2,7 @@
 //! target and every other occurrence of its subject in the frame that
 //! answers it, and nothing else.
 
-use super::{FocusTarget, Lit, Subject, hoverable, ink};
+use super::{FocusTarget, Lit, Subject, hoverable_target, ink};
 use crate::overlay::float;
 use crate::theme::{ActiveFacet, Facet, set_facet};
 use gpui::{
@@ -28,7 +28,7 @@ impl Render for Words {
         let palette = cx.facet().palette();
         let hue = palette.peri.base.hsla();
         let word = |id: &'static str, subject: &'static str, seen: Seen| {
-            hoverable(id, Subject::new(subject), hue, move |lit| {
+            hoverable_target(FocusTarget::new(id, Subject::new(subject)), hue, move |lit| {
                 seen.borrow_mut().insert(id, lit);
                 div()
                     .w(px(120.0))

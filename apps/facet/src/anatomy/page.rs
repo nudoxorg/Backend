@@ -319,6 +319,10 @@ pub trait Doors {
     fn fold(&self, key: &'static str) -> Option<Fold>;
     /// `element` as a keyboard target labelled `label`, opening `door`.
     fn track(&self, key: SharedString, label: SharedString, door: Option<&Door>, element: AnyElement) -> AnyElement;
+    /// A name that is both a pointer hover target and a semantic keyboard
+    /// target. Hosts must store this exact immutable identity with the target;
+    /// reconstructing it separately can make pointer and keyboard focus drift.
+    fn track_hoverable(&self, key: SharedString, label: SharedString, door: &Door, focus: crate::hover::FocusTarget, element: AnyElement) -> AnyElement;
     /// Records a string the page puts on screen.
     fn say(&self, text: &str);
     /// One level up from this page (its package, folding the page back into
@@ -344,6 +348,9 @@ impl Doors for Still {
         None
     }
     fn track(&self, _: SharedString, _: SharedString, _: Option<&Door>, element: AnyElement) -> AnyElement {
+        element
+    }
+    fn track_hoverable(&self, _: SharedString, _: SharedString, _: &Door, _: crate::hover::FocusTarget, element: AnyElement) -> AnyElement {
         element
     }
     fn say(&self, _: &str) {}
@@ -381,7 +388,8 @@ pub fn named_as(
     // A row that opens a declaration carries its title's key: its name
     // becomes that page's title.
     let shared_key = title_key(door.subject.0.as_ref());
-    let mut lit = hover::hoverable(hover_id(&key), door.subject.clone(), hue, move |lit| {
+    let focus = door.focus_target(&key);
+    let mut lit = hover::hoverable_target(focus.clone(), hue, move |lit| {
         if share {
             crate::motion::shared::shared(shared_key, build(lit)).into_any_element()
         } else {
@@ -400,7 +408,7 @@ pub fn named_as(
     if let Some(open) = door.open.clone() {
         hit = hit.on_click(move |_, window, cx| open(window, cx));
     }
-    doors.track(key, SharedString::from(label.to_owned()), Some(&door), hit.into_any_element())
+    doors.track_hoverable(key, SharedString::from(label.to_owned()), &door, focus, hit.into_any_element())
 }
 
 /// A dashed chamfered ring around what it sits in, with the word "from" on
