@@ -20,6 +20,7 @@ required-features = ["visual-harness"]
 
 [dependencies]
 anyhow.workspace = true
+async-channel.workspace = true
 # Unpacks a registry archive from the local cargo cache (`host::registry`).
 flate2.workspace = true
 backend-client = { path = "../../crates/client" }
@@ -63,12 +64,16 @@ rustix = { version = "1.1.4", default-features = false, features = ["fs", "proce
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"] }
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSWorkspace"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSNotification", "NSOperation", "NSString", "NSObject", "block2"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_platform = { workspace = true, features = ["x11", "wayland"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_platform = { workspace = true, features = ["wgpu"] }
+windows = { version = "=0.61.3", features = ["Foundation", "UI_ViewManagement"] }
 
 [dev-dependencies]
 backend-gui-harness = { path = "../../tools/gui-harness" }
