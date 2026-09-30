@@ -59,7 +59,7 @@ struct Options {
     repeats: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct OwnedSource {
     file: Vec<u8>,
     start: u32,
@@ -239,11 +239,19 @@ fn run_scenario(scenario: &str, options: Options) -> Result<(), Box<dyn Error>> 
         after_generation,
     );
     assert_eq!(
-        oracle_entity_changes, diff_entity_changes,
+        oracle_entity_changes
+            .iter()
+            .map(|key| **key)
+            .collect::<BTreeSet<_>>(),
+        diff_entity_changes,
         "owned entity oracle and SemanticDiff disagree in {scenario}"
     );
     assert_eq!(
-        oracle_link_changes, diff_link_changes,
+        oracle_link_changes
+            .iter()
+            .map(|key| **key)
+            .collect::<BTreeSet<_>>(),
+        diff_link_changes,
         "owned link oracle and SemanticDiff disagree in {scenario}"
     );
 
@@ -752,17 +760,16 @@ fn stable_link_key<Reader: SemanticReader + ?Sized>(reader: &Reader, link: Link)
     }
 }
 
-fn changed_map_keys<K: Copy + Ord, V: Eq>(
-    before: &BTreeMap<K, V>,
-    after: &BTreeMap<K, V>,
-) -> BTreeSet<K> {
+fn changed_map_keys<'maps, K: Ord, V: Eq>(
+    before: &'maps BTreeMap<K, V>,
+    after: &'maps BTreeMap<K, V>,
+) -> BTreeSet<&'maps K> {
     before
         .keys()
         .chain(after.keys())
-        .copied()
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter(|key| before.get(key) != after.get(key))
+        .filter(|key| before.get(*key) != after.get(*key))
         .collect()
 }
 
