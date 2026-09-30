@@ -3495,7 +3495,7 @@ mod tests {
         .expect("Rust profile matches Cargo package");
         let target = CompilerPackageTargetV2::for_package(package.as_ref().clone()).target();
         let toolchain = ResolvedToolchain::from_version(
-            NativeTool::RustCompiler,
+            NativeTool::Rustc,
             Path::new("/toolchain/bin/rustc"),
             b"rustc 1.90.0",
         )
