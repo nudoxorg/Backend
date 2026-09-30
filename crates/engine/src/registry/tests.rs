@@ -2080,13 +2080,20 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
         ) -> Result<TransportResult<FeedPage>, TransportFailure> {
             self.page = self.page.saturating_add(1);
             let advisory = (self.page > 1).then(|| {
-                let mut advisory = backend_advisory::AdvisoryPackageDto::unknown();
-                let reasons = Box::new([backend_advisory::PolicyReason::Advisory(
-                    backend_advisory::AdvisoryStatus::Vulnerable,
-                )]);
-                advisory.reasons = reasons.clone();
-                advisory.decision = backend_advisory::AcquisitionDecision::Deny(reasons);
-                advisory
+                let advisory = backend_advisory::parse_osv(
+                    br#"{"schema_version":"1.3.1","id":"OSV-SECURITY-REFRESH","modified":"2026-09-29T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"security-refresh"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#,
+                    2,
+                )
+                .expect("valid matching advisory fact");
+                backend_advisory::AdvisoryObservation {
+                    advisories: Box::new([advisory]),
+                    coverage: backend_advisory::AdvisoryCoverage::Complete,
+                    freshness: backend_advisory::FreshnessState::Fresh,
+                    offline: false,
+                    yanked: false,
+                    unlisted: false,
+                    malware: backend_advisory::MalwareCoverage::NotCovered,
+                }
             });
             Ok(TransportResult::Available(FeedPage {
                 base: request.cursor,
@@ -2120,8 +2127,11 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
         .expect("endpoint");
     let root = temporary("service-advisory-fact-refresh");
-    let (owner, _) =
-        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("owner")
+        .with_advisory_gate(backend_advisory::AcquisitionGate {
+            offline: backend_advisory::OfflinePolicy::Warn,
+        });
     let service = crate::acquisition::AcquisitionService::from_owner(
         owner,
         root.join("coordination"),
@@ -5372,18 +5382,34 @@ fn cargo_sparse_rows_retain_features_and_reject_typed_policy_shapes() {
         .expect("Cargo endpoint");
     let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
         .expect("adapter");
-    let row = br#"{"name":"demo","vers":"1.2.3","deps":[{"name":"serde","req":"^1","kind":"normal","optional":true,"features":["derive"]}],"cksum":"0000000000000000000000000000000000000000000000000000000000000000","features":{"default":["std","dep:serde"],"std":[]},"yanked":true,"links":"demo-sys"}
+    let row = br#"{"name":"demo","vers":"1.2.3","deps":[{"name":"serde","req":"^1","kind":"normal","optional":true,"features":["derive"]}],"cksum":"0000000000000000000000000000000000000000000000000000000000000000","features":{"default":["std","dep:serde"],"std":[]},"features2":{"default":["serde?/alloc"],"new":["dep:new"]},"pubtime":"2025-11-12T19:30:12Z","rust_version":"1.60","yanked":true,"links":"demo-sys"}
 "#;
     let releases = adapter.decode(row).expect("Cargo sparse row");
     assert_eq!(releases.len(), 1);
     let release = &releases[0];
     assert_eq!(release.facts.standing(), ReleaseStanding::Yanked);
-    assert_eq!(release.features().len(), 2);
+    assert_eq!(release.features().len(), 3);
     assert_eq!(release.features()[0].name(), "default");
     assert_eq!(
         release.features()[0].members(),
-        [Arc::from("dep:serde"), Arc::from("std")]
+        [
+            Arc::from("dep:serde"),
+            Arc::from("serde?/alloc"),
+            Arc::from("std")
+        ]
     );
+    assert_eq!(
+        release.features()[1].members(),
+        [Arc::from("dep:new")]
+    );
+    let backend_library::RegistryNativeDetails::Cargo(cargo) = &release.metadata().details else {
+        panic!("Cargo adapter must retain typed Cargo metadata");
+    };
+    assert_eq!(cargo.published_at.as_deref(), Some("2025-11-12T19:30:12Z"));
+    assert_eq!(cargo.rust_version.as_deref(), Some("1.60"));
+    assert_eq!(cargo.features2.len(), 2);
+    assert_eq!(cargo.features2[0].name, "default");
+    assert_eq!(cargo.features2[0].members.as_ref(), ["serde?/alloc"]);
     assert_eq!(release.artifacts().len(), 1);
     assert_eq!(
         release.artifacts()[0].kind(),
@@ -5392,6 +5418,11 @@ fn cargo_sparse_rows_retain_features_and_reject_typed_policy_shapes() {
     let malformed = br#"{"name":"demo","vers":"1.2.3","cksum":"0000000000000000000000000000000000000000000000000000000000000000","yanked":"true"}"#;
     assert!(matches!(
         adapter.decode(malformed),
+        Err(TransportFailure::Protocol)
+    ));
+    let malformed_time = br#"{"name":"demo","vers":"1.2.3","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"not-a-time"}"#;
+    assert!(matches!(
+        adapter.decode(malformed_time),
         Err(TransportFailure::Protocol)
     ));
 }
