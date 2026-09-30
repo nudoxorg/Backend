@@ -1762,6 +1762,10 @@ mod tests {
             .expect("make history fixture private");
         super::super::super::set_private_directory(&map_root)
             .expect("make segment-map fixture private");
+        let gc_root = history_root.join("gc");
+        fs::create_dir(&gc_root).expect("create retention GC root");
+        super::super::super::set_private_directory(&gc_root)
+            .expect("make retention GC root private");
         let name = format!("{}.map", "ab".repeat(32));
         if include_map {
             fs::write(map_root.join(&name), b"checked map fixture")
