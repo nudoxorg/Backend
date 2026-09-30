@@ -3508,6 +3508,8 @@ mod tests {
             ToolchainSelection::ResolvedNative(toolchain),
             PackageAuthorityError::RustProject(RustAuthorityError::DetachedSource {
                 path: Path::new("/cache/toml-0.8.23/examples/decode.rs").to_path_buf(),
+                active_hir_roots:
+                    backend_frontend_rust::legacy::RustActiveHirRootInventory::default(),
             }),
         );
         let CompilerTerminal::Compile {

@@ -52,6 +52,9 @@ const MAX_RUST_DOCUMENTATION_INPUTS: usize = 1024;
 /// Maximum combined bytes read for Rustdoc `include_str!` inputs in one operation.
 const MAX_RUST_DOCUMENTATION_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
+/// Maximum package-relative active HIR roots retained on a detached-source error.
+const MAX_DETACHED_HIR_ROOT_SAMPLE: usize = 16;
+
 /// Maximum retained stdout or stderr from one metadata subprocess.
 const MAX_CARGO_METADATA_STREAM_BYTES: usize = 64 * 1024 * 1024;
 
@@ -328,6 +331,51 @@ pub struct RustWorkspace {
     vfs: Vfs,
     /// Package-relative selected paths mapped to their lexical RA VFS paths.
     selected_source_paths: HashMap<PathBuf, PathBuf>,
+}
+
+/// Bounded evidence about package crate roots visible to HIR when one source
+/// cannot be assigned to an active target.
+///
+/// Paths are relative to the admitted package root. The count includes every
+/// active package crate observed; the root list retains only the first bounded
+/// sample in rust-analyzer's deterministic crate order.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RustActiveHirRootInventory {
+    /// Exact number of active HIR crates whose roots are inside this package.
+    pub package_crate_count: usize,
+    /// Bounded package-relative root sample.
+    pub package_relative_roots: Box<[PathBuf]>,
+    /// Number of package crate entries omitted after filling the sample.
+    pub omitted_package_crates: usize,
+}
+
+impl RustWorkspace {
+    fn active_hir_root_inventory(&self) -> RustActiveHirRootInventory {
+        let package_root = AbsPathBuf::assert_utf8(self.root.clone());
+        let mut package_crate_count = 0_usize;
+        let mut package_relative_roots = Vec::with_capacity(MAX_DETACHED_HIR_ROOT_SAMPLE);
+        for crate_id in all_crates(&self.database).iter().copied() {
+            let krate = ra_ap_hir::Crate::from(crate_id);
+            let root_file = krate.root_file(&self.database);
+            let Some(root_path) = self.vfs.file_path(root_file).as_path() else {
+                continue;
+            };
+            let Some(relative) = root_path.strip_prefix(package_root.as_path()) else {
+                continue;
+            };
+            package_crate_count = package_crate_count.saturating_add(1);
+            if package_relative_roots.len() < MAX_DETACHED_HIR_ROOT_SAMPLE {
+                package_relative_roots.push(PathBuf::from(relative.as_str()));
+            }
+        }
+        let omitted_package_crates =
+            package_crate_count.saturating_sub(package_relative_roots.len());
+        RustActiveHirRootInventory {
+            package_crate_count,
+            package_relative_roots: package_relative_roots.into_boxed_slice(),
+            omitted_package_crates,
+        }
+    }
 }
 
 impl fmt::Debug for RustWorkspace {
@@ -1691,6 +1739,7 @@ impl RustWorkspace {
             })
             .ok_or_else(|| RustAuthorityError::DetachedSource {
                 path: source_path.clone(),
+                active_hir_roots: self.active_hir_root_inventory(),
             })?;
         let source_scope = if owner.root_file(&self.database) == file_id {
             RustSourceScope::CargoTargetRoot
@@ -1792,6 +1841,7 @@ impl RustWorkspace {
                 })
                 .ok_or_else(|| RustAuthorityError::DetachedSource {
                     path: selected.path.to_path_buf(),
+                    active_hir_roots: self.active_hir_root_inventory(),
                 })?;
             let edition = owner.edition(&self.database);
             let source_file = EditionedFileId::new(&self.database, selected_file_id, edition);
@@ -4466,11 +4516,13 @@ pub enum RustAuthorityError {
     },
     /// The selected file exists in the package VFS but is outside all active Cargo targets.
     #[error(
-        "selected Rust source is cfg-inactive or detached from every active Cargo target: {path}"
+        "selected Rust source is cfg-inactive or detached from every active Cargo target: {path}; active package HIR roots: {active_hir_roots:?}"
     )]
     DetachedSource {
         /// Exact selected package source without active Cargo HIR ownership.
         path: PathBuf,
+        /// Bounded exact HIR root evidence from the loaded package graph.
+        active_hir_roots: RustActiveHirRootInventory,
     },
     /// The compiler request bytes differ from the exact source text in the Cargo VFS.
     #[error(
