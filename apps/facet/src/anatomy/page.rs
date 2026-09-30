@@ -20,6 +20,7 @@ mod fork;
 mod history;
 mod ink;
 mod lazy;
+mod plate;
 mod pipe;
 mod rails;
 mod socket;

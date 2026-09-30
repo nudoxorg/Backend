@@ -7,14 +7,14 @@
 //! The strip shows the window of chips around the current one that fits its
 //! room, and says how many more there are on each side.
 
+use super::plate::plate;
 use super::{Doors, Geometry, named_as, said, title_key};
 use crate::anatomy::plan::{DeclKind, Fam, PagePlan, Sibling};
 use crate::anatomy::sigil::{Form, Sigil, sigil};
 use crate::hover;
 use crate::measure::Measure;
-use crate::paint::{Chamfer, Edge, cut};
 use crate::tokens::{Palette, scale};
-use gpui::{AnyElement, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, StatefulInteractiveElement, Styled, div, px};
+use gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Pixels, StatefulInteractiveElement, Styled, div, px};
 
 /// The chip's kind word.
 const fn word(kind: DeclKind) -> &'static str {
@@ -85,12 +85,6 @@ fn window(strip: &[Sibling], room: f32, s: f32) -> (usize, usize) {
     (from, to)
 }
 
-/// A chamfered chip plate: fill and a ring.
-fn plate(fill: Hsla, ring: Hsla, _width: f32, thick: f32) -> AnyElement {
-    let edge = Edge { hi: ring, lo: ring, rim: thick, run: 0.0, light: ring, ghost: 0.0, hatch: ring };
-    cut().chamfer(Chamfer::Px(5.0)).edge(edge).fill(fill).absolute().top_0().left_0().size_full().into_any_element()
-}
-
 /// The strip, when the module has more than the symbol itself.
 #[must_use]
 pub fn strip(plan: &PagePlan, room: Pixels, geo: &Geometry, m: &Measure, palette: &Palette, doors: &dyn Doors) -> Option<AnyElement> {
@@ -108,7 +102,7 @@ pub fn strip(plan: &PagePlan, room: Pixels, geo: &Geometry, m: &Measure, palette
     let lead = lead_text;
     doors.say(&lead);
     let mut lead_chip = div().id("page-strip-up").relative().h(px(28.0 * s)).flex_none().px(px(10.0 * s)).flex().items_center()
-        .child(plate(palette.g1.hsla(), palette.line2.hsla(), 0.0, 1.0))
+        .child(plate(palette.g1.hsla(), palette.line2.hsla(), 5.0, 1.0))
         .child(said("page-strip-scope", lead, scale::LABEL_MONO, palette.ink3, m));
     if let Some(up) = doors.up() {
         lead_chip = lead_chip.cursor_pointer().on_click(move |_, window, cx| up(window, cx));
@@ -140,7 +134,7 @@ pub fn strip(plan: &PagePlan, room: Pixels, geo: &Geometry, m: &Measure, palette
                 .child(plate(
                     if current { pal.plate2.hsla() } else { pal.plate.hsla() },
                     if current { pal.peri.base.hsla() } else { pal.line2.hsla() },
-                    width_,
+                    5.0,
                     if current { 1.5 } else { 1.0 },
                 ))
                 .child(mark)

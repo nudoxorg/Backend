@@ -21,11 +21,11 @@
 //! lazily, inside layout, where the window is at hand.
 
 use super::lazy::lazy;
+use super::plate::plate;
 use super::{Doors, Geometry, said};
 use crate::anatomy::reach::{CrateUse, Instead, Line, Reach, Scope, Segment, SegmentKind};
 use crate::hover::{self, Lit, Subject};
 use crate::measure::{Measure, Set};
-use crate::paint::{Chamfer, Edge, cut};
 use crate::probe::{self, TextOverflow};
 use crate::tokens::{Palette, rhythm, scale};
 use gpui::{
@@ -296,17 +296,11 @@ fn bar(segments: &[Segment], active: Option<&str>, geo: &Geometry, m: &Measure, 
         let _ = id;
         row = row.child(
             div().w(px(w)).h(px(30.0 * s)).flex_none().relative()
-                .child(plate(fill, ring, 5.0 * s))
+                .child(plate(fill, ring, 5.0 * s, 1.0))
                 .child(cell),
         );
     }
     row.into_any_element()
-}
-
-/// A chamfered plate behind its parent's content: fill and a 1 px ring.
-fn plate(fill: Hsla, ring: Hsla, chamfer: f32) -> AnyElement {
-    let edge = Edge { hi: ring, lo: ring, rim: 1.0, run: 0.0, light: ring, ghost: 0.0, hatch: ring };
-    cut().chamfer(Chamfer::Px(chamfer)).edge(edge).fill(fill).absolute().top_0().left_0().size_full().into_any_element()
 }
 
 // ------------------------------------------------------------------ a crate
@@ -467,7 +461,7 @@ fn deck(key: &str, used: &CrateUse, itself: &str, active: Option<&str>, width: P
             // Behind: the layers peek out below and to the right.
             for layer in (1..=n_layers).rev() {
                 let off = px(4.0 * s) * layer as f32;
-                column = column.child(div().absolute().top(off).left(off).w(card_w).h(px(CARD * s)).child(plate(pal.plate.hsla(), pal.line2.hsla().opacity(0.8 - 0.12 * layer as f32), 5.0 * s)));
+                column = column.child(div().absolute().top(off).left(off).w(card_w).h(px(CARD * s)).child(plate(pal.plate.hsla(), pal.line2.hsla().opacity(0.8 - 0.12 * layer as f32), 5.0 * s, 1.0)));
             }
         }
         for (i, line) in lines_owned.iter().take(shown).enumerate() {
@@ -517,7 +511,7 @@ fn card(key: &str, line: &Line, itself: &str, width: Pixels, place_w: Pixels, pl
     );
     let ring = if lit { palette.line3.hsla() } else { palette.line1.hsla() };
     div().relative().w(width).h(px(CARD * s)).flex_none()
-        .child(plate(palette.plate.hsla(), ring, 5.0 * s))
+        .child(plate(palette.plate.hsla(), ring, 5.0 * s, 1.0))
         .child(
             div().absolute().top_0().left_0().size_full().flex().items_center().gap(px(10.0 * s)).px(px(9.0 * s)).overflow_hidden()
                 .child(div().w(place_w).flex_none().overflow_hidden().child(said(format!("{key}-place"), place_fit(line, place_chars), scale::LABEL_MONO, palette.ink3, m)))
