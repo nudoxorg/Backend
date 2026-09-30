@@ -173,7 +173,7 @@ pub struct Version {
 }
 
 /// What a registry fact says when it is absent or conflicts across sources.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum RegistryFact<T> {
     /// One exact value is known.
     Known(T),
@@ -181,6 +181,12 @@ pub enum RegistryFact<T> {
     Missing,
     /// Sources disagree, so no value can be chosen honestly.
     Ambiguous,
+}
+
+impl<T> Default for RegistryFact<T> {
+    fn default() -> Self {
+        Self::Missing
+    }
 }
 
 /// Whether a release's source is present in the current owner's cache.
