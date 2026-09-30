@@ -496,6 +496,9 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         backend_frontend_rust::legacy::RustAuthorityError::SourceBinding { .. } => {
             AuthorityPhase::Parse
         }
+        backend_frontend_rust::legacy::RustAuthorityError::UnsupportedDocumentationExpression {
+            ..
+        } => AuthorityPhase::Parse,
         backend_frontend_rust::legacy::RustAuthorityError::Cancelled
         | backend_frontend_rust::legacy::RustAuthorityError::DeadlineExceeded
         | backend_frontend_rust::legacy::RustAuthorityError::Toolchain(_)
@@ -506,6 +509,11 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotFile { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceBudget { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceRead { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputMissing { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputRead { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputBudget { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputUtf8 { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputLimit { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SessionFrontierMismatch
         | backend_frontend_rust::legacy::RustAuthorityError::SessionSourceRootAmbiguous
         | backend_frontend_rust::legacy::RustAuthorityError::SessionSourceRootLimit { .. }

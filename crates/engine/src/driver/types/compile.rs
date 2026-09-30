@@ -1035,6 +1035,27 @@ fn rust_authority_diagnostic<'diagnostic>(
         RustError::SourceRead { .. } => {
             let _ = message.write_str("Rust authority could not read the selected source.");
         }
+        RustError::DocumentationInputMissing { .. } => {
+            let _ = message.write_str("Rustdoc include file was missing.");
+        }
+        RustError::DocumentationInputRead { .. } => {
+            let _ = message.write_str("Rustdoc include file could not be inspected or read.");
+        }
+        RustError::DocumentationInputBudget { .. } => {
+            let _ = message.write_str("Rustdoc include file exceeded its admitted byte limit.");
+        }
+        RustError::DocumentationInputUtf8 { .. } => {
+            let _ = message.write_str("Rustdoc include file was not valid UTF-8.");
+        }
+        RustError::DocumentationInputLimit { .. } => {
+            let _ = message
+                .write_str("Rustdoc include inputs exceeded the bounded count or byte limit.");
+        }
+        RustError::UnsupportedDocumentationExpression { .. } => {
+            let _ = message.write_str(
+                "Rustdoc include expression could not be admitted by the bounded preloader.",
+            );
+        }
         RustError::SessionFrontierMismatch
         | RustError::SessionSourcePath { .. }
         | RustError::SessionSourceCardinality { .. }
