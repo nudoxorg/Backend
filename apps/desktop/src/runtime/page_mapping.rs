@@ -1904,8 +1904,12 @@ pub fn search_rows(
     next: Option<backend_library::PageContinuation>,
     worker: usize,
 ) -> SearchPage {
-    let rows = rows
-        .iter()
+    // A snapshot holds its rows in key order; the owner's ranking is each
+    // row's score (higher first). Rows without one keep their order, after.
+    let mut ranked = rows.iter().collect::<Vec<_>>();
+    ranked.sort_by_key(|row| std::cmp::Reverse(row.score));
+    let rows = ranked
+        .into_iter()
         .enumerate()
         .filter_map(|(rank, row)| {
             let decl = DeclRef::from_row(row)?;

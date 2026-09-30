@@ -24,7 +24,7 @@ use backend_engine::application::{
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticUnavailableReason};
 use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, product_source_file_key};
 use backend_semantic::ir::{
-    DeclarationIdentity, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
+    DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
     SemanticImageView, SemanticReader as _,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -1018,8 +1018,10 @@ pub(super) struct SemanticRowContent {
     pub(super) document: Vec<Fragment>,
     pub(super) signature: Option<String>,
     encoded_bytes: usize,
-    /// The external declarations the documentation links to (`[`f64::NAN`]`).
-    documentation_targets: Vec<ExternalTargetIdentity>,
+    /// The external declarations the documentation links to (`[`f64::NAN`]`),
+    /// each with its handle in the image. The view gives each an external
+    /// row, so the search corpus must give each an external fact.
+    pub(super) documentation_targets: Vec<(ExternalTargetIdentity, ExternalId)>,
 }
 
 /// Projects one semantic image into rows whose basis is stamped on admission.
@@ -1157,7 +1159,7 @@ pub(super) fn project_image_rows(
         // the link dangles: its target has no claim in the view's
         // certificate, and the owner could not reopen its own view journal
         // ("snapshot row document: missing producer key commitment").
-        external.extend(content.documentation_targets.iter().copied());
+        external.extend(content.documentation_targets.iter().map(|(identity, _)| *identity));
         for identity in external {
             let symbol = external_semantic_symbol(project.package, image_identity, identity);
             let label = "external semantic target";
@@ -1398,7 +1400,7 @@ fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>
     package: backend_engine::PackageKey,
     image: [u8; 32],
     fragment: DocumentationFragment<'_>,
-) -> Result<(Fragment, Option<ExternalTargetIdentity>), BuiltinModelError> {
+) -> Result<(Fragment, Option<(ExternalTargetIdentity, ExternalId)>), BuiltinModelError> {
     Ok(match fragment {
         DocumentationFragment::Text(text) => (Fragment::Text(text.to_owned()), None),
         DocumentationFragment::Code(code) => (Fragment::Code(code.to_owned()), None),
@@ -1417,7 +1419,7 @@ fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>
                                 "identify documentation external target: {error}"
                             ))
                         })?;
-                    (external_semantic_symbol(package, image, identity), Some(identity))
+                    (external_semantic_symbol(package, image, identity), Some((identity, id)))
                 }
             };
             (
