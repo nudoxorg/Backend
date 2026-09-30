@@ -56,7 +56,8 @@ pub use history_v2::{
 };
 pub use history_v3::{
     SelectedNativeHistoryBinding, SelectedNativeHistoryImage, SelectedNativeImagePublicationFence,
-    SelectedNativeImageSource,
+    SelectedNativeImageSource, SelectedNativeImageSourceFailure, SelectedTypedV3HistoryError,
+    SelectedTypedV3HistoryOperation, SelectedTypedV3HistoryRefusal,
 };
 pub(crate) use history_v3::{
     TypedV3HistoryAdmission, TypedV3HistoryAdmissionMetrics, TypedV3HistoryGcPin,

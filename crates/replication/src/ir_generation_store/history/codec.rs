@@ -113,9 +113,22 @@ pub(super) fn decode_history_commit(bytes: &[u8]) -> Result<HistoryCommitRecord,
 }
 
 pub(super) fn prepare_history_layout(target_root: &Path) -> Result<PathBuf, String> {
+    prepare_history_layout_with::<String>(target_root)
+}
+
+pub(super) fn prepare_history_layout_typed(
+    target_root: &Path,
+) -> Result<PathBuf, HistoryMutationError> {
+    prepare_history_layout_with::<HistoryMutationError>(target_root)
+}
+
+fn prepare_history_layout_with<E: HistoryMutationFailure>(
+    target_root: &Path,
+) -> Result<PathBuf, E> {
     create_private_directory(target_root)?;
     set_private_directory(target_root)?;
-    backend_platform::durable::sync_parent(target_root).map_err(display_io)?;
+    backend_platform::durable::sync_parent(target_root)
+        .map_err(|error| E::retryable_io(display_io(error)))?;
     let history_root = target_root.join("history");
     let created = match fs::create_dir(&history_root) {
         Ok(()) => true,
@@ -123,11 +136,12 @@ pub(super) fn prepare_history_layout(target_root: &Path) -> Result<PathBuf, Stri
             ensure_directory(&history_root)?;
             false
         }
-        Err(error) => return Err(display_io(error)),
+        Err(error) => return Err(E::retryable_io(display_io(error))),
     };
     set_private_directory(&history_root)?;
     if created {
-        backend_platform::durable::sync_parent(&history_root).map_err(display_io)?;
+        backend_platform::durable::sync_parent(&history_root)
+            .map_err(|error| E::retryable_io(display_io(error)))?;
     }
     let commits_root = history_root.join("commits");
     create_private_directory(&commits_root)?;
@@ -144,14 +158,14 @@ pub(super) fn prepare_history_layout(target_root: &Path) -> Result<PathBuf, Stri
             &refs_path,
             &encode_ref_catalog(&HistoryRefCatalog::empty())?,
         )
-        .map_err(display_io)?;
+        .map_err(|error| E::retryable_io(display_io(error)))?;
         backend_platform::durable::write_private_atomic(&history_root.join("commit.index"), &[])
-            .map_err(display_io)?;
+            .map_err(|error| E::retryable_io(display_io(error)))?;
         backend_platform::durable::write_private_atomic(
             &history_root.join("tombstones.index"),
             &[],
         )
-        .map_err(display_io)?;
+        .map_err(|error| E::retryable_io(display_io(error)))?;
     } else if read_optional_bounded(&refs_path, MAX_HISTORY_REFS_BYTES)?.is_none() {
         return Err("semantic history refs catalog is missing".to_owned());
     } else {

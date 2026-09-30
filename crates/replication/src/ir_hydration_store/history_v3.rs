@@ -24,6 +24,134 @@ use std::path::PathBuf;
 
 const MAX_TYPED_V3_ADMISSION_OBJECTS: usize = 200_000;
 
+/// Pipeline operation associated with a typed V3 history publication error.
+/// This lets the owner decide whether to retry availability failures without
+/// inspecting diagnostic text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectedTypedV3HistoryOperation {
+    /// Resolve the product namespace for the committed selection.
+    ResolveSelectionTarget,
+    /// Read the current committed generation stamp.
+    ReadSelectedGeneration,
+    /// Check selected-image membership in the committed generation.
+    CheckSelectedImage,
+    /// Read the selected image's authenticated identity.
+    ReadSelectedImageIdentity,
+    /// Acquire the marker-backed publication lease.
+    AcquirePublicationFence,
+    /// Acquire a FileStore collection pin.
+    PinFileStore,
+    /// Compose the exact immutable payload closure.
+    ComposePayloadClosure,
+    /// Reopen and verify the typed payload closure.
+    VerifyPayloadClosure,
+    /// Persist the selected-generation history snapshot.
+    PersistSelectedSnapshot,
+    /// Reconcile durable pending V3 locator state.
+    ReconcileLocator,
+    /// Stage the V3 locator and its recoverable intent.
+    StageLocator,
+    /// Propose an immutable history commit.
+    ProposeCommit,
+    /// Persist the immutable commit and index entry.
+    PersistCommit,
+    /// Read a named history ref before publication.
+    ReadHistoryRef,
+    /// Compare-and-swap the named history ref.
+    CompareAndSwapRef,
+}
+
+/// Closed reason category for a V3 history refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectedTypedV3HistoryRefusal {
+    /// Selected metadata or its native image does not satisfy the binding.
+    InvalidSelection,
+    /// Typed rows, manifest, locator, or closure failed independent checks.
+    IntegrityFailure,
+    /// The caller lacks the required nonconstructible authority proof.
+    CapabilityMismatch,
+    /// The request is outside a supported protocol operation.
+    UnsupportedOperation,
+    /// A bounded resource or configured limit was exceeded.
+    ResourceLimit,
+    /// Durable history state contradicts the proposed immutable record.
+    HistoryStateMismatch,
+    /// A lower layer returned an opaque failure that cannot safely be retried.
+    UnclassifiedFailure,
+}
+
+/// Typed failure from selected native-image history publication.
+///
+/// `StaleSelection` is produced only after a successful read proves that the
+/// committed target/stamp/image tuple moved. Failed reads keep their own
+/// availability or refusal classification and are never reported as stale.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SelectedTypedV3HistoryError {
+    /// A successfully observed committed selection no longer matches the
+    /// exact tuple being published.
+    StaleSelection,
+    /// The operation may succeed after the unavailable store/source recovers.
+    RetryableAvailability {
+        /// Operation which encountered unavailable state.
+        operation: SelectedTypedV3HistoryOperation,
+        /// Diagnostic cause, retained for logging only.
+        detail: String,
+    },
+    /// The request failed a closed authority, integrity, protocol, or limit
+    /// check and must not be retried as if the selection had moved.
+    Refused {
+        /// Operation which refused the request.
+        operation: SelectedTypedV3HistoryOperation,
+        /// Closed refusal category.
+        cause: SelectedTypedV3HistoryRefusal,
+        /// Diagnostic detail, never used for classification.
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for SelectedTypedV3HistoryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaleSelection => formatter.write_str(
+                "the committed selected native image changed during V3 history publication",
+            ),
+            Self::RetryableAvailability { operation, detail } => {
+                write!(
+                    formatter,
+                    "{operation:?} is temporarily unavailable: {detail}"
+                )
+            }
+            Self::Refused {
+                operation,
+                cause,
+                detail,
+            } => write!(formatter, "{operation:?} refused ({cause:?}): {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for SelectedTypedV3HistoryError {}
+
+impl From<String> for SelectedTypedV3HistoryError {
+    fn from(detail: String) -> Self {
+        refused(
+            SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+            SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+            detail,
+        )
+    }
+}
+
+/// Classification supplied by the exact selected-generation authority for
+/// errors it returns while resolving the committed selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectedNativeImageSourceFailure {
+    /// The source is temporarily unavailable and the owner may retry later.
+    RetryableAvailability,
+    /// The source rejected the request or reported invalid authority/state.
+    Refused,
+}
+
 /// Extends the selected-generation authority with the full image identity
 /// recorded in its committed catalog. Implementations must resolve this
 /// value from the same committed selection named by
@@ -35,6 +163,13 @@ pub trait SelectedNativeImageSource: crate::SelectedGenerationSource {
     type PublicationFence<'fence>: SelectedNativeImagePublicationFence
     where
         Self: 'fence;
+
+    /// Classifies an authority read error without parsing its display text.
+    /// The conservative default is refusal; production sources should return
+    /// `RetryableAvailability` only for typed transient storage/read failures.
+    fn classify_selection_error(&self, _error: &Self::Error) -> SelectedNativeImageSourceFailure {
+        SelectedNativeImageSourceFailure::Refused
+    }
 
     /// Returns the exact target namespace associated with the committed
     /// owner-selection key used by this source.
@@ -457,6 +592,19 @@ impl FileSemanticRangeStore {
         })
     }
 
+    fn pin_typed_v3_history_admission_typed(
+        &self,
+    ) -> Result<TypedV3HistoryGcPin, SelectedTypedV3HistoryError> {
+        let guard = self
+            .store
+            .pin_garbage_collection()
+            .map_err(|error| store_failure(SelectedTypedV3HistoryOperation::PinFileStore, error))?;
+        Ok(TypedV3HistoryGcPin {
+            store_root: self.store.root().to_path_buf(),
+            _guard: guard,
+        })
+    }
+
     /// Composes the exact unique FileStore object set named by a complete V3
     /// producer receipt, reopens every member through the existing bounded
     /// history spool, then independently verifies the whole c007 manifest.
@@ -474,7 +622,9 @@ impl FileSemanticRangeStore {
         {
             return Err("typed V3 producer receipt lacks complete input coverage".to_owned());
         }
-        let admission = self.verify_typed_v3_history_producer(pin, produced, tier, jumbo_limits)?;
+        let admission = self
+            .verify_typed_v3_history_producer(pin, produced, tier, jumbo_limits)
+            .map_err(|error| error.to_string())?;
         if admission.content().input_claim() != produced.verified_content().input_claim()
             || admission.content().content_root() != produced.verified_content().content_root()
             || admission.content().generation_root()
@@ -491,13 +641,15 @@ impl FileSemanticRangeStore {
         produced: &'pin ProducedSelectedNativeTypedPlaneHistoryV3,
         tier: SemanticTypedPlaneVerificationTierV2,
         jumbo_limits: JumboRopeLimits,
-    ) -> Result<TypedV3HistoryAdmission<'pin>, String> {
+    ) -> Result<TypedV3HistoryAdmission<'pin>, SelectedTypedV3HistoryError> {
         if produced.manifest().input_claim() != produced.input_claim()
             || produced.verified_content().input_claim() != produced.input_claim()
         {
-            return Err(
-                "selected-native V3 history receipt has a mismatched input claim".to_owned(),
-            );
+            return Err(refused(
+                SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                SelectedTypedV3HistoryRefusal::IntegrityFailure,
+                "selected-native V3 history receipt has a mismatched input claim",
+            ));
         }
         self.verify_typed_v3_history_producer(pin, produced, tier, jumbo_limits)
     }
@@ -508,7 +660,7 @@ impl FileSemanticRangeStore {
         produced: &'pin dyn TypedV3HistoryProducer,
         tier: SemanticTypedPlaneVerificationTierV2,
         jumbo_limits: JumboRopeLimits,
-    ) -> Result<TypedV3HistoryAdmission<'pin>, String> {
+    ) -> Result<TypedV3HistoryAdmission<'pin>, SelectedTypedV3HistoryError> {
         require_pin_for_store(pin, self.store.root())?;
         let locator = TypedV3HistoryLocator::from_receipts(
             produced.manifest(),
@@ -543,7 +695,12 @@ impl FileSemanticRangeStore {
         let closure_receipt = self
             .store
             .compose_closure_index(None, &changes, budget)
-            .map_err(|error| format!("compose exact typed V3 payload closure: {error:?}"))?;
+            .map_err(|error| {
+                store_failure(
+                    SelectedTypedV3HistoryOperation::ComposePayloadClosure,
+                    error,
+                )
+            })?;
         if closure_receipt.receipt().object_count()
             != u64::try_from(inventory.len())
                 .map_err(|error| format!("typed V3 closure object count: {error}"))?
@@ -663,15 +820,15 @@ impl FileSemanticRangeStore {
         jumbo_limits: JumboRopeLimits,
         source: &'source mut S,
         after_admission: F,
-    ) -> Result<R, String>
+    ) -> Result<R, SelectedTypedV3HistoryError>
     where
         S: SelectedNativeImageSource,
         F: FnOnce(
             crate::HistoryAdmissionReceipt,
             &S::PublicationFence<'source>,
-        ) -> Result<R, String>,
+        ) -> Result<R, SelectedTypedV3HistoryError>,
     {
-        let pin = self.pin_typed_v3_history_admission()?;
+        let pin = self.pin_typed_v3_history_admission_typed()?;
         let target = selected.target();
         let selected_stamp = selected.selected_stamp();
         let selected_image = selected.image_key();
@@ -679,14 +836,15 @@ impl FileSemanticRangeStore {
         let selected_manifest_root = selected.manifest().root();
         let selected_build = selected.manifest().build();
         let selected_input_claim = selected.input_claim();
-        if source
-            .selected_semantic_target()
-            .map_err(|error| format!("resolve current semantic history target: {error}"))?
-            != *target
+        if source.selected_semantic_target().map_err(|error| {
+            source_failure(
+                source,
+                SelectedTypedV3HistoryOperation::ResolveSelectionTarget,
+                &error,
+            )
+        })? != *target
         {
-            return Err(
-                "typed V3 history target differs from its current owner selection".to_owned(),
-            );
+            return Err(SelectedTypedV3HistoryError::StaleSelection);
         }
         require_live_selected_native_image(
             source,
@@ -703,15 +861,24 @@ impl FileSemanticRangeStore {
             policies,
             tier,
             jumbo_limits,
-        )?;
+        )
+        .map_err(|detail| {
+            refused(
+                SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                SelectedTypedV3HistoryRefusal::IntegrityFailure,
+                detail,
+            )
+        })?;
         let admission =
             self.verify_selected_native_typed_history_v3(&pin, &produced, tier, jumbo_limits)?;
         if produced.manifest().build() != selected_build
             || produced.manifest().input_claim() != selected_input_claim
         {
-            return Err(
-                "typed V3 producer manifest differs from the selected image input".to_owned(),
-            );
+            return Err(refused(
+                SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                SelectedTypedV3HistoryRefusal::IntegrityFailure,
+                "typed V3 producer manifest differs from the selected image input",
+            ));
         }
         require_live_selected_native_image(
             source,
@@ -723,30 +890,72 @@ impl FileSemanticRangeStore {
 
         let selection_fence = source
             .acquire_publication_fence(selected)
-            .map_err(|error| format!("fence committed selection for typed V3 history: {error}"))?;
+            .map_err(|error| {
+                source_failure(
+                    source,
+                    SelectedTypedV3HistoryOperation::AcquirePublicationFence,
+                    &error,
+                )
+            })?;
         require_fence_matches_selected(selected, &selection_fence)?;
-        let _state_lock = self.acquire_state_lock()?;
-        let selected_generation = self.generations.persist_selected_history_snapshot(
-            target,
-            selected_stamp,
-            selected.catalog(),
-            selected_image,
-            selected_image_identity,
-            selected.manifest(),
-            &selection_fence,
-        )?;
+        let _state_lock = self.acquire_state_lock().map_err(|detail| {
+            refused(
+                SelectedTypedV3HistoryOperation::PersistSelectedSnapshot,
+                SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                detail,
+            )
+        })?;
+        let selected_generation = self
+            .generations
+            .persist_selected_history_snapshot(
+                target,
+                selected_stamp,
+                selected.catalog(),
+                selected_image,
+                selected_image_identity,
+                selected.manifest(),
+                &selection_fence,
+            )
+            .map_err(|detail| {
+                refused(
+                    SelectedTypedV3HistoryOperation::PersistSelectedSnapshot,
+                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                    detail,
+                )
+            })?;
         if selected_generation.manifest().root() != selected_manifest_root {
-            return Err("persisted history snapshot differs from the selected manifest".to_owned());
+            return Err(refused(
+                SelectedTypedV3HistoryOperation::PersistSelectedSnapshot,
+                SelectedTypedV3HistoryRefusal::IntegrityFailure,
+                "persisted history snapshot differs from the selected manifest",
+            ));
         }
         let (_, pending_locators_remain) = self
             .generations
-            .reconcile_pending_typed_v3_locators(target)?;
+            .reconcile_pending_typed_v3_locators(target)
+            .map_err(|detail| {
+                refused(
+                    SelectedTypedV3HistoryOperation::ReconcileLocator,
+                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                    detail,
+                )
+            })?;
         if pending_locators_remain {
-            return Err("typed V3 locator recovery remains bounded and must be retried".to_owned());
+            return Err(SelectedTypedV3HistoryError::RetryableAvailability {
+                operation: SelectedTypedV3HistoryOperation::ReconcileLocator,
+                detail: "pending locator reconciliation reached its bounded batch limit".to_owned(),
+            });
         }
         let locator_id = self
             .generations
-            .typed_v3_locator_identity(admission.locator())?;
+            .typed_v3_locator_identity(admission.locator())
+            .map_err(|detail| {
+                refused(
+                    SelectedTypedV3HistoryOperation::ProposeCommit,
+                    SelectedTypedV3HistoryRefusal::IntegrityFailure,
+                    detail,
+                )
+            })?;
         let closure_id = admission.closure();
         let closure = backend_store::ArtifactClosureClaim::from_id(closure_id);
         let proposal = self
@@ -761,10 +970,34 @@ impl FileSemanticRangeStore {
                 closure,
                 locator_id,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| match error {
+                crate::HistoryProposalError::UnsupportedMergePayloadClosure => refused(
+                    SelectedTypedV3HistoryOperation::ProposeCommit,
+                    SelectedTypedV3HistoryRefusal::UnsupportedOperation,
+                    "two-parent semantic history publication is unsupported",
+                ),
+                crate::HistoryProposalError::RetryableStorage(detail) => {
+                    SelectedTypedV3HistoryError::RetryableAvailability {
+                        operation: SelectedTypedV3HistoryOperation::ProposeCommit,
+                        detail,
+                    }
+                }
+                crate::HistoryProposalError::Storage(detail) => refused(
+                    SelectedTypedV3HistoryOperation::ProposeCommit,
+                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                    detail,
+                ),
+            })?;
         let commit = proposal.identity();
         self.generations
-            .stage_typed_v3_locator(target, commit, admission.locator())?;
+            .stage_typed_v3_locator(target, commit, admission.locator())
+            .map_err(|detail| {
+                refused(
+                    SelectedTypedV3HistoryOperation::StageLocator,
+                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                    detail,
+                )
+            })?;
         let receipt = match self.generations.admit_typed_v3_history_proposal(
             proposal,
             crate::ir_generation_store::AdmittedHistoryPayloadRoot {
@@ -777,13 +1010,28 @@ impl FileSemanticRangeStore {
                 self.generations
                     .reconcile_typed_v3_locator_admission(target, commit)
                     .map_err(|recovery| {
-                        format!("{error}; typed V3 locator recovery failed: {recovery}")
+                        refused(
+                            SelectedTypedV3HistoryOperation::ReconcileLocator,
+                            SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                            format!("{error}; typed V3 locator recovery failed: {recovery}"),
+                        )
                     })?;
-                return Err(error);
+                return Err(refused(
+                    SelectedTypedV3HistoryOperation::PersistCommit,
+                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                    error,
+                ));
             }
         };
         self.generations
-            .finish_typed_v3_locator_admission(target, commit)?;
+            .finish_typed_v3_locator_admission(target, commit)
+            .map_err(|detail| {
+                refused(
+                    SelectedTypedV3HistoryOperation::ReconcileLocator,
+                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                    detail,
+                )
+            })?;
 
         let content = *admission.content();
         let closure_claim = closure;
@@ -798,7 +1046,14 @@ impl FileSemanticRangeStore {
                 closure_claim,
                 locator_id,
                 self.store.root().to_path_buf(),
-            )?;
+            )
+            .map_err(|detail| {
+                refused(
+                    SelectedTypedV3HistoryOperation::PersistCommit,
+                    SelectedTypedV3HistoryRefusal::CapabilityMismatch,
+                    detail,
+                )
+            })?;
         after_admission(receipt, &selection_fence)
     }
 
@@ -817,9 +1072,14 @@ impl FileSemanticRangeStore {
         tier: SemanticTypedPlaneVerificationTierV2,
         jumbo_limits: JumboRopeLimits,
         source: &mut S,
-    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+    ) -> Result<crate::HistoryRefUpdateReceipt, SelectedTypedV3HistoryError> {
         let target = selected.target();
-        let current = self.history_ref(target, crate::HistoryRefKind::Branch, &branch)?;
+        let current = self
+            .generations
+            .history_ref_typed(target, crate::HistoryRefKind::Branch, &branch)
+            .map_err(|error| {
+                history_mutation_failure(SelectedTypedV3HistoryOperation::ReadHistoryRef, error)
+            })?;
         let expected = current.as_ref().map(crate::SelectedHistoryRef::commit);
         let parents = expected.into_iter().collect::<Vec<_>>();
         self.admit_selected_typed_v3_history_commit_then(
@@ -840,7 +1100,11 @@ impl FileSemanticRangeStore {
                     selection_fence,
                 )?;
                 if receipt.current() != Some(admission.commit().identity()) {
-                    return Err("typed V3 branch CAS returned another selected commit".to_owned());
+                    return Err(refused(
+                        SelectedTypedV3HistoryOperation::CompareAndSwapRef,
+                        SelectedTypedV3HistoryRefusal::HistoryStateMismatch,
+                        "typed V3 branch CAS returned another selected commit",
+                    ));
                 }
                 Ok(receipt)
             },
@@ -855,16 +1119,27 @@ impl FileSemanticRangeStore {
         expected: Option<crate::HistoryCommitId>,
         admission: &crate::HistoryAdmissionReceipt,
         selection_fence: &impl SelectedNativeImagePublicationFence,
-    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+    ) -> Result<crate::HistoryRefUpdateReceipt, SelectedTypedV3HistoryError> {
         let proof = admission
             .typed_v3_publication_admission(self.store.root())
             .ok_or_else(|| {
-                "typed V3 publication requires a live same-store verifier receipt".to_owned()
+                refused(
+                    SelectedTypedV3HistoryOperation::CompareAndSwapRef,
+                    SelectedTypedV3HistoryRefusal::CapabilityMismatch,
+                    "typed V3 publication requires a live same-store verifier receipt",
+                )
             })?;
         let commit = admission.commit();
         let current = self
             .generations
-            .typed_v3_history_generation(target, commit.identity())?;
+            .typed_v3_history_generation(target, commit.identity())
+            .map_err(|detail| {
+                refused(
+                    SelectedTypedV3HistoryOperation::CompareAndSwapRef,
+                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                    detail,
+                )
+            })?;
         if selection_fence.selected_target() != target
             || selection_fence.selected_stamp() != current.selected_stamp()
             || selection_fence.selected_image() != current.image()
@@ -873,18 +1148,21 @@ impl FileSemanticRangeStore {
             || current.selected_stamp() != commit.selected_stamp()
             || current.manifest().root() != commit.manifest_root()
         {
-            return Err(
-                "typed V3 commit no longer names the current selected generation".to_owned(),
-            );
+            return Err(SelectedTypedV3HistoryError::StaleSelection);
         }
-        let receipt = self.generations.compare_and_swap_typed_v3_history_ref(
-            target,
-            kind,
-            name,
-            expected,
-            proof.identity(),
-            &proof,
-        )?;
+        let receipt = self
+            .generations
+            .compare_and_swap_typed_v3_history_ref_typed(
+                target,
+                kind,
+                name,
+                expected,
+                proof.identity(),
+                &proof,
+            )
+            .map_err(|error| {
+                history_mutation_failure(SelectedTypedV3HistoryOperation::CompareAndSwapRef, error)
+            })?;
         Ok(receipt)
     }
 
@@ -986,32 +1264,50 @@ fn require_live_selected_native_image<S: SelectedNativeImageSource>(
     stamp: crate::SelectedGenerationStamp,
     image: backend_semantic::ir::SemanticPlaneImageKey,
     identity: SemanticImageIdentity,
-) -> Result<(), String> {
-    let selected_target = source
-        .selected_semantic_target()
-        .map_err(|error| format!("read current semantic history target: {error}"))?;
+) -> Result<(), SelectedTypedV3HistoryError> {
+    let selected_target = source.selected_semantic_target().map_err(|error| {
+        source_failure(
+            source,
+            SelectedTypedV3HistoryOperation::ResolveSelectionTarget,
+            &error,
+        )
+    })?;
     if &selected_target != target {
-        return Err("typed V3 history target differs from the current owner selection".to_owned());
+        return Err(SelectedTypedV3HistoryError::StaleSelection);
     }
-    let observed = source
-        .current_selected_generation()
-        .map_err(|error| format!("read current selection for typed V3 history: {error}"))?;
+    let observed = source.current_selected_generation().map_err(|error| {
+        source_failure(
+            source,
+            SelectedTypedV3HistoryOperation::ReadSelectedGeneration,
+            &error,
+        )
+    })?;
     if observed != stamp {
-        return Err("typed V3 history selected-generation stamp is stale".to_owned());
+        return Err(SelectedTypedV3HistoryError::StaleSelection);
     }
     if !source
         .selected_image_is_current(stamp, image)
-        .map_err(|error| format!("verify current image for typed V3 history: {error}"))?
+        .map_err(|error| {
+            source_failure(
+                source,
+                SelectedTypedV3HistoryOperation::CheckSelectedImage,
+                &error,
+            )
+        })?
     {
-        return Err("typed V3 history image is no longer selected".to_owned());
+        return Err(SelectedTypedV3HistoryError::StaleSelection);
     }
     let observed_identity = source
         .selected_native_image_identity(image)
         .map_err(|error| {
-            format!("read current selected image identity for typed V3 history: {error}")
+            source_failure(
+                source,
+                SelectedTypedV3HistoryOperation::ReadSelectedImageIdentity,
+                &error,
+            )
         })?;
     if observed_identity != identity {
-        return Err("typed V3 history image identity differs from current selection".to_owned());
+        return Err(SelectedTypedV3HistoryError::StaleSelection);
     }
     Ok(())
 }
@@ -1019,15 +1315,111 @@ fn require_live_selected_native_image<S: SelectedNativeImageSource>(
 fn require_fence_matches_selected(
     selected: &SelectedNativeHistoryImage<'_>,
     fence: &impl SelectedNativeImagePublicationFence,
-) -> Result<(), String> {
+) -> Result<(), SelectedTypedV3HistoryError> {
     if fence.selected_target() != selected.target()
         || fence.selected_stamp() != selected.selected_stamp()
         || fence.selected_image() != selected.image_key()
         || fence.selected_image_identity() != selected.image_identity()
     {
-        return Err("typed V3 selected image differs from the live publication fence".to_owned());
+        return Err(SelectedTypedV3HistoryError::StaleSelection);
     }
     Ok(())
+}
+
+fn source_failure<S: SelectedNativeImageSource>(
+    source: &S,
+    operation: SelectedTypedV3HistoryOperation,
+    error: &S::Error,
+) -> SelectedTypedV3HistoryError {
+    match source.classify_selection_error(error) {
+        SelectedNativeImageSourceFailure::RetryableAvailability => {
+            SelectedTypedV3HistoryError::RetryableAvailability {
+                operation,
+                detail: error.to_string(),
+            }
+        }
+        SelectedNativeImageSourceFailure::Refused => refused(
+            operation,
+            SelectedTypedV3HistoryRefusal::InvalidSelection,
+            error.to_string(),
+        ),
+    }
+}
+
+fn history_mutation_failure(
+    operation: SelectedTypedV3HistoryOperation,
+    error: crate::ir_generation_store::HistoryMutationError,
+) -> SelectedTypedV3HistoryError {
+    match error {
+        crate::ir_generation_store::HistoryMutationError::RetryableAvailability(detail) => {
+            SelectedTypedV3HistoryError::RetryableAvailability { operation, detail }
+        }
+        crate::ir_generation_store::HistoryMutationError::CompareAndSwapMismatch => {
+            SelectedTypedV3HistoryError::RetryableAvailability {
+                operation,
+                detail: "another history publisher advanced the branch tip".to_owned(),
+            }
+        }
+        crate::ir_generation_store::HistoryMutationError::Refused(detail) => refused(
+            operation,
+            SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+            detail,
+        ),
+    }
+}
+
+fn refused(
+    operation: SelectedTypedV3HistoryOperation,
+    cause: SelectedTypedV3HistoryRefusal,
+    detail: impl Into<String>,
+) -> SelectedTypedV3HistoryError {
+    SelectedTypedV3HistoryError::Refused {
+        operation,
+        cause,
+        detail: detail.into(),
+    }
+}
+
+fn store_failure(
+    operation: SelectedTypedV3HistoryOperation,
+    error: backend_store::StoreError,
+) -> SelectedTypedV3HistoryError {
+    use backend_store::StoreError;
+
+    let detail = format!("{error:?}");
+    match error {
+        StoreError::Io(_) | StoreError::PublicationAuthorityBusy => {
+            SelectedTypedV3HistoryError::RetryableAvailability { operation, detail }
+        }
+        StoreError::PreparedWithSyncPending { .. } | StoreError::PublishedWithSyncPending(_) => {
+            SelectedTypedV3HistoryError::RetryableAvailability { operation, detail }
+        }
+        StoreError::Bounds | StoreError::OversizedKey => refused(
+            operation,
+            SelectedTypedV3HistoryRefusal::ResourceLimit,
+            detail,
+        ),
+        StoreError::Corrupt | StoreError::UnsafePath => refused(
+            operation,
+            SelectedTypedV3HistoryRefusal::IntegrityFailure,
+            detail,
+        ),
+        StoreError::IncompleteCoverage => refused(
+            operation,
+            SelectedTypedV3HistoryRefusal::CapabilityMismatch,
+            detail,
+        ),
+        StoreError::StaleHead => refused(
+            operation,
+            SelectedTypedV3HistoryRefusal::HistoryStateMismatch,
+            detail,
+        ),
+        _ => refused(
+            operation,
+            SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+            detail,
+        ),
+    }
 }
 
 fn verify_cold_v3_snapshot(
@@ -1331,6 +1723,8 @@ mod tests {
         identity: SemanticImageIdentity,
         target: crate::SemanticTargetKey,
         move_on_fence: bool,
+        fail_stamp_read: bool,
+        failure_class: SelectedNativeImageSourceFailure,
     }
 
     struct TestPublicationFence {
@@ -1364,6 +1758,9 @@ mod tests {
         fn current_selected_generation(
             &mut self,
         ) -> Result<crate::SelectedGenerationStamp, Self::Error> {
+            if self.fail_stamp_read {
+                return Err("selected generation read failed");
+            }
             Ok(self.stamp)
         }
 
@@ -1381,6 +1778,13 @@ mod tests {
             = TestPublicationFence
         where
             Self: 'fence;
+
+        fn classify_selection_error(
+            &self,
+            _error: &Self::Error,
+        ) -> SelectedNativeImageSourceFailure {
+            self.failure_class
+        }
 
         fn selected_semantic_target(&mut self) -> Result<crate::SemanticTargetKey, Self::Error> {
             Ok(self.target.clone())
@@ -1524,6 +1928,8 @@ mod tests {
             identity: image_identity,
             target: target.clone(),
             move_on_fence: false,
+            fail_stamp_read: false,
+            failure_class: SelectedNativeImageSourceFailure::Refused,
         };
         let store = FileStore::open(directory.0.join("selected-cas"), 64 * 1024 * 1024)
             .expect("open selected V3 FileStore");
@@ -1608,6 +2014,8 @@ mod tests {
             identity: source.identity,
             target: source.target.clone(),
             move_on_fence: source.move_on_fence,
+            fail_stamp_read: source.fail_stamp_read,
+            failure_class: source.failure_class,
         }
     }
 
@@ -1617,6 +2025,74 @@ mod tests {
         SemanticTypedPlaneBoundaryPoliciesV3::new(
             policy, policy, policy, policy, policy, policy, policy,
         )
+    }
+
+    #[test]
+    fn selected_history_read_failure_is_retryable_but_observed_tuple_move_is_stale() {
+        let directory = TestDirectory::create();
+        let (_store, source, target) = selected_native_fixture(&directory);
+        let mut unavailable = source_copy(&source);
+        unavailable.fail_stamp_read = true;
+        unavailable.failure_class = SelectedNativeImageSourceFailure::RetryableAvailability;
+        let read_failure = require_live_selected_native_image(
+            &mut unavailable,
+            &target,
+            source.stamp,
+            source.image,
+            source.identity,
+        )
+        .expect_err("a failed selected-generation read is not a successful stale observation");
+        assert!(matches!(
+            read_failure,
+            SelectedTypedV3HistoryError::RetryableAvailability {
+                operation: SelectedTypedV3HistoryOperation::ReadSelectedGeneration,
+                ..
+            }
+        ));
+
+        let mut invalid = source_copy(&source);
+        invalid.fail_stamp_read = true;
+        invalid.failure_class = SelectedNativeImageSourceFailure::Refused;
+        let refused_read = require_live_selected_native_image(
+            &mut invalid,
+            &target,
+            source.stamp,
+            source.image,
+            source.identity,
+        )
+        .expect_err("a classified authority refusal must not be retried");
+        assert!(matches!(
+            refused_read,
+            SelectedTypedV3HistoryError::Refused {
+                operation: SelectedTypedV3HistoryOperation::ReadSelectedGeneration,
+                cause: SelectedTypedV3HistoryRefusal::InvalidSelection,
+                ..
+            }
+        ));
+
+        let mut moved = source_copy(&source);
+        let selected_stamp = moved.stamp;
+        let mut selected_root = *selected_stamp.selected_root();
+        selected_root[0] ^= 0x80;
+        moved.stamp = crate::SelectedGenerationStamp::checked(
+            *selected_stamp.namespace(),
+            selected_stamp.profile(),
+            *selected_stamp.source_coordinate(),
+            selected_stamp.selection_revision() + 1,
+            selected_root,
+            *selected_stamp.closure_id(),
+            selected_stamp.catalog_root(),
+        )
+        .expect("moved selection stamp remains structurally valid");
+        let movement = require_live_selected_native_image(
+            &mut moved,
+            &target,
+            source.stamp,
+            source.image,
+            source.identity,
+        )
+        .expect_err("a successfully read, different selection tuple is stale");
+        assert_eq!(movement, SelectedTypedV3HistoryError::StaleSelection);
     }
 
     #[test]

@@ -52,6 +52,56 @@ pub(crate) fn read_history_catalog_snapshot(
     Ok((decode_ref_catalog(&bytes)?, digest))
 }
 
+pub(crate) fn read_history_catalog_snapshot_typed(
+    target_root: &Path,
+) -> Result<(HistoryRefCatalog, [u8; 32]), HistoryMutationError> {
+    let history_root = target_root.join("history");
+    let history_metadata = match fs::symlink_metadata(&history_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((HistoryRefCatalog::empty(), *blake3::hash(&[]).as_bytes()));
+        }
+        Err(error) => {
+            return Err(HistoryMutationError::RetryableAvailability(display_io(
+                error,
+            )));
+        }
+    };
+    if !history_metadata.is_dir() || history_metadata.file_type().is_symlink() {
+        return Err(HistoryMutationError::Refused(
+            "semantic history path is not a directory".to_owned(),
+        ));
+    }
+
+    let catalog_path = history_root.join("refs.catalog");
+    let metadata = match fs::symlink_metadata(&catalog_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(HistoryMutationError::Refused(
+                "semantic history refs catalog is missing".to_owned(),
+            ));
+        }
+        Err(error) => {
+            return Err(HistoryMutationError::RetryableAvailability(display_io(
+                error,
+            )));
+        }
+    };
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_HISTORY_REFS_BYTES as u64
+    {
+        return Err(HistoryMutationError::Refused(
+            "semantic history refs catalog is not a bounded regular file".to_owned(),
+        ));
+    }
+    let bytes = fs::read(&catalog_path)
+        .map_err(|error| HistoryMutationError::RetryableAvailability(display_io(error)))?;
+    let digest = *blake3::hash(&bytes).as_bytes();
+    let catalog = decode_ref_catalog(&bytes).map_err(HistoryMutationError::Refused)?;
+    Ok((catalog, digest))
+}
+
 pub(super) fn validate_history_commit_node(
     target_root: &Path,
     target: &SemanticTargetKey,
@@ -460,6 +510,30 @@ impl LocalSemanticGenerationFiles {
         }))
     }
 
+    pub(crate) fn history_ref_typed(
+        &self,
+        target: &SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: &HistoryRefName,
+    ) -> Result<Option<SelectedHistoryRef>, HistoryMutationError> {
+        let target_root = self.target_root(target);
+        let (catalog, _) = read_history_catalog_snapshot_typed(&target_root)?;
+        let Some(commit) = catalog.get(kind, name) else {
+            return Ok(None);
+        };
+        let _ = validate_history_commit_node(
+            &target_root,
+            target,
+            &target_root.join("history").join("commits"),
+            commit,
+        )?;
+        Ok(Some(SelectedHistoryRef {
+            kind,
+            name: name.clone(),
+            commit,
+        }))
+    }
+
     /// Reads the current named-ref tip without reopening its commit graph.
     ///
     /// This deliberately narrow operation is for a live, process-local
@@ -548,7 +622,9 @@ impl LocalSemanticGenerationFiles {
         expected: Option<HistoryCommitId>,
         next: Option<HistoryCommitId>,
     ) -> Result<HistoryRefUpdateReceipt, String> {
-        self.compare_and_swap_history_ref_inner(target, kind, name, expected, next, None, None)
+        self.compare_and_swap_history_ref_inner::<String>(
+            target, kind, name, expected, next, None, None,
+        )
     }
 
     pub(crate) fn compare_and_swap_typed_v2_history_ref(
@@ -563,7 +639,7 @@ impl LocalSemanticGenerationFiles {
         if admission.identity() != next {
             return Err("typed V2 publication receipt names another commit".to_owned());
         }
-        self.compare_and_swap_history_ref_inner(
+        self.compare_and_swap_history_ref_inner::<String>(
             target,
             kind,
             name,
@@ -583,10 +659,27 @@ impl LocalSemanticGenerationFiles {
         next: HistoryCommitId,
         admission: &TypedV3HistoryPublicationAdmission<'_>,
     ) -> Result<HistoryRefUpdateReceipt, String> {
+        self.compare_and_swap_typed_v3_history_ref_typed(
+            target, kind, name, expected, next, admission,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn compare_and_swap_typed_v3_history_ref_typed(
+        &self,
+        target: &SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: HistoryRefName,
+        expected: Option<HistoryCommitId>,
+        next: HistoryCommitId,
+        admission: &TypedV3HistoryPublicationAdmission<'_>,
+    ) -> Result<HistoryRefUpdateReceipt, HistoryMutationError> {
         if admission.identity() != next {
-            return Err("typed V3 publication receipt names another commit".to_owned());
+            return Err(HistoryMutationError::Refused(
+                "typed V3 publication receipt names another commit".to_owned(),
+            ));
         }
-        self.compare_and_swap_history_ref_inner(
+        self.compare_and_swap_history_ref_inner::<HistoryMutationError>(
             target,
             kind,
             name,
@@ -597,7 +690,7 @@ impl LocalSemanticGenerationFiles {
         )
     }
 
-    fn compare_and_swap_history_ref_inner(
+    fn compare_and_swap_history_ref_inner<E: HistoryMutationFailure>(
         &self,
         target: &SemanticTargetKey,
         kind: HistoryRefKind,
@@ -606,11 +699,12 @@ impl LocalSemanticGenerationFiles {
         next: Option<HistoryCommitId>,
         typed_v2_admission: Option<&TypedV2HistoryPublicationAdmission<'_>>,
         typed_v3_admission: Option<&TypedV3HistoryPublicationAdmission<'_>>,
-    ) -> Result<HistoryRefUpdateReceipt, String> {
+    ) -> Result<HistoryRefUpdateReceipt, E> {
         let target_root = self.target_root(target);
         super::retention::recover_pending_delete(&target_root)?;
         let commits_root = prepare_history_layout(&target_root)?;
-        let (mut catalog, _) = read_history_catalog_snapshot(&target_root)?;
+        let (mut catalog, _) =
+            read_history_catalog_snapshot_typed(&target_root).map_err(E::from_typed)?;
         validate_catalog_tips(&target_root, target, &catalog)?;
         let actual = catalog.get(kind, &name);
         if let Some(identity) = next {
@@ -625,7 +719,8 @@ impl LocalSemanticGenerationFiles {
             {
                 return Err(
                     "typed history cannot be published as the production local-cache ref"
-                        .to_owned(),
+                        .to_owned()
+                        .into(),
                 );
             }
             match record.generation_root {
@@ -635,9 +730,9 @@ impl LocalSemanticGenerationFiles {
                             .to_owned()
                     })?;
                     if typed_v3_admission.is_some() {
-                        return Err(
-                            "typed V3 publication receipt cannot publish a V2 commit".to_owned()
-                        );
+                        return Err("typed V3 publication receipt cannot publish a V2 commit"
+                            .to_owned()
+                            .into());
                     }
                     let content = admission.content();
                     if admission.identity() != identity
@@ -650,7 +745,8 @@ impl LocalSemanticGenerationFiles {
                     {
                         return Err(
                             "typed V2 ref publication receipt differs from the immutable commit"
-                                .to_owned(),
+                                .to_owned()
+                                .into(),
                         );
                     }
                     let payload =
@@ -660,7 +756,8 @@ impl LocalSemanticGenerationFiles {
                     if payload.closure.as_bytes() != claim.closure().as_bytes() {
                         return Err(
                             "typed V2 history payload closure differs from its commit root"
-                                .to_owned(),
+                                .to_owned()
+                                .into(),
                         );
                     }
                 }
@@ -670,9 +767,9 @@ impl LocalSemanticGenerationFiles {
                             .to_owned()
                     })?;
                     if typed_v2_admission.is_some() {
-                        return Err(
-                            "typed V2 publication receipt cannot publish a V3 commit".to_owned()
-                        );
+                        return Err("typed V2 publication receipt cannot publish a V3 commit"
+                            .to_owned()
+                            .into());
                     }
                     let content = admission.content();
                     if admission.identity() != identity
@@ -685,16 +782,17 @@ impl LocalSemanticGenerationFiles {
                     {
                         return Err(
                             "typed V3 publication receipt differs from the immutable commit"
-                                .to_owned(),
+                                .to_owned()
+                                .into(),
                         );
                     }
                     let locator =
                         load_typed_v3_history_locator(&target_root, identity, claim.locator())?;
                     let manifest = locator.validate()?;
                     if manifest.input_claim() != admission.input_claim() {
-                        return Err(
-                            "typed V3 publication input claim differs from its locator".to_owned()
-                        );
+                        return Err("typed V3 publication input claim differs from its locator"
+                            .to_owned()
+                            .into());
                     }
                     let generation = load_record(&target_root, record.generation, target)?;
                     let selected_input = backend_semantic::ir::SemanticInputClaimV2::from_witness(
@@ -705,7 +803,8 @@ impl LocalSemanticGenerationFiles {
                     {
                         return Err(
                             "typed V3 publication no longer matches the selected native generation"
-                                .to_owned(),
+                                .to_owned()
+                                .into(),
                         );
                     }
                     let payload =
@@ -715,7 +814,8 @@ impl LocalSemanticGenerationFiles {
                     if payload.closure.as_bytes() != claim.closure().as_bytes() {
                         return Err(
                             "typed V3 history payload closure differs from its commit root"
-                                .to_owned(),
+                                .to_owned()
+                                .into(),
                         );
                     }
                 }
@@ -723,7 +823,8 @@ impl LocalSemanticGenerationFiles {
                     if typed_v2_admission.is_some() || typed_v3_admission.is_some() {
                         return Err(
                             "typed publication receipt cannot publish a V1 history commit"
-                                .to_owned(),
+                                .to_owned()
+                                .into(),
                         );
                     }
                 }
@@ -736,7 +837,7 @@ impl LocalSemanticGenerationFiles {
             });
         }
         if actual != expected {
-            return Err("semantic history reference compare-and-swap failed".to_owned());
+            return Err(E::ref_tip_mismatch());
         }
         if let Some(previous) = actual {
             if Some(previous) != next {
@@ -749,7 +850,7 @@ impl LocalSemanticGenerationFiles {
             &target_root.join("history").join("refs.catalog"),
             &encoded,
         )
-        .map_err(display_io)?;
+        .map_err(|error| E::retryable_io(display_io(error)))?;
         #[cfg(test)]
         super::trip_history_test_fault(super::HistoryTestFault::AfterRefsCatalog)?;
         Ok(HistoryRefUpdateReceipt {

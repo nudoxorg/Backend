@@ -40,6 +40,9 @@ pub enum HistoryProposalError {
     /// The current publisher only carries the first-parent closure forward;
     /// it cannot safely advertise a merge with second-parent-only segments.
     UnsupportedMergePayloadClosure,
+    /// A typed durable history operation failed with a retryable availability
+    /// error such as a filesystem write or directory-sync failure.
+    RetryableStorage(String),
     /// A storage, authority, or validation failure while building the proposal.
     Storage(String),
 }
@@ -50,6 +53,9 @@ impl std::fmt::Display for HistoryProposalError {
             Self::UnsupportedMergePayloadClosure => formatter.write_str(
                 "two-parent semantic history publication is unsupported until payload closures are unioned",
             ),
+            Self::RetryableStorage(message) => {
+                write!(formatter, "semantic history storage is temporarily unavailable: {message}")
+            }
             Self::Storage(message) => formatter.write_str(message),
         }
     }
@@ -60,6 +66,84 @@ impl std::error::Error for HistoryProposalError {}
 impl From<String> for HistoryProposalError {
     fn from(message: String) -> Self {
         Self::Storage(message)
+    }
+}
+
+/// Failure classification retained by typed V3 history mutation paths.
+/// Legacy history APIs stringify this value, while the V3 owner bridge maps
+/// availability and compare failures to explicit retry outcomes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HistoryMutationError {
+    /// A durable write failed with an I/O or sync error.
+    RetryableAvailability(String),
+    /// Another publisher changed the ref away from the expected tip.
+    CompareAndSwapMismatch,
+    /// Validation, authority, or an opaque legacy helper refused the change.
+    Refused(String),
+}
+
+impl std::fmt::Display for HistoryMutationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RetryableAvailability(detail) => {
+                write!(
+                    formatter,
+                    "history storage is temporarily unavailable: {detail}"
+                )
+            }
+            Self::CompareAndSwapMismatch => {
+                formatter.write_str("semantic history reference compare-and-swap failed")
+            }
+            Self::Refused(detail) => formatter.write_str(detail),
+        }
+    }
+}
+
+impl std::error::Error for HistoryMutationError {}
+
+impl From<String> for HistoryMutationError {
+    fn from(detail: String) -> Self {
+        Self::Refused(detail)
+    }
+}
+
+/// Error construction shared by legacy string APIs and typed V3 history CAS.
+pub(crate) trait HistoryMutationFailure: From<String> + std::fmt::Display {
+    /// Marks a directly observed durable I/O failure.
+    fn retryable_io(detail: String) -> Self;
+
+    /// Marks a ref-tip mismatch observed by the final atomic CAS.
+    fn ref_tip_mismatch() -> Self;
+
+    /// Preserves a typed lower history failure through generic mutation code.
+    fn from_typed(error: HistoryMutationError) -> Self;
+}
+
+impl HistoryMutationFailure for String {
+    fn retryable_io(detail: String) -> Self {
+        detail
+    }
+
+    fn ref_tip_mismatch() -> Self {
+        "semantic history reference compare-and-swap failed".to_owned()
+    }
+
+    fn from_typed(error: HistoryMutationError) -> Self {
+        error.to_string()
+    }
+}
+
+impl HistoryMutationFailure for HistoryMutationError {
+    fn retryable_io(detail: String) -> Self {
+        Self::RetryableAvailability(detail)
+    }
+
+    fn ref_tip_mismatch() -> Self {
+        Self::CompareAndSwapMismatch
+    }
+
+    fn from_typed(error: HistoryMutationError) -> Self {
+        error
     }
 }
 

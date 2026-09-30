@@ -8,7 +8,10 @@
 //! selected input witness.
 
 use super::catalog::validate_history_commit_node;
-use super::codec::{append_commit_index, identify_history_record, prepare_history_layout};
+use super::codec::{
+    append_commit_index, identify_history_record, prepare_history_layout,
+    prepare_history_layout_typed,
+};
 use super::v2::{create_typed_v2_locator, decode_typed_v2_locator};
 use super::*;
 use backend_semantic::ir::SemanticPlaneImageKey;
@@ -810,7 +813,16 @@ impl LocalSemanticGenerationFiles {
         }
         let target_root = self.target_root(target);
         let commits_root =
-            prepare_history_layout(&target_root).map_err(HistoryProposalError::Storage)?;
+            prepare_history_layout_typed(&target_root).map_err(|error| match error {
+                HistoryMutationError::RetryableAvailability(detail) => {
+                    HistoryProposalError::RetryableStorage(detail)
+                }
+                HistoryMutationError::CompareAndSwapMismatch => HistoryProposalError::Storage(
+                    "unexpected ref-tip mismatch while preparing a typed history proposal"
+                        .to_owned(),
+                ),
+                HistoryMutationError::Refused(detail) => HistoryProposalError::Storage(detail),
+            })?;
         let mut depth = 0_u32;
         for (index, parent) in parents.iter().enumerate() {
             let record = validate_history_commit_node(&target_root, target, &commits_root, *parent)

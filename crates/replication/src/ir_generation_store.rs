@@ -137,6 +137,7 @@ pub(super) fn trip_history_test_fault(point: HistoryTestFault) -> Result<(), Str
 }
 
 mod history;
+pub(crate) use history::HistoryMutationError;
 pub(crate) use history::TypedV2HistoryLocator;
 pub(crate) use history::TypedV2HistoryPublicationAdmission;
 pub(crate) use history::TypedV2HistoryPublicationSnapshot;
