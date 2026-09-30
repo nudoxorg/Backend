@@ -104,15 +104,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             .len();
 
             let first_start = Instant::now();
-            run_once(mode, &fixture.store, fixture.id, fixture.pin.as_ref())?;
+            run_once(mode, &fixture.store, fixture.id, fixture.pin.as_ref())
+                .map_err(store_io_error)?;
             let first_read_ns = first_start.elapsed().as_nanos();
 
             for _ in 0..WARMUP_COUNT {
-                run_once(mode, &fixture.store, fixture.id, fixture.pin.as_ref())?;
+                run_once(mode, &fixture.store, fixture.id, fixture.pin.as_ref())
+                    .map_err(store_io_error)?;
             }
-            let allocation = allocation_sample(mode, &fixture)?;
-            let latencies = latency_samples(mode, &fixture, samples)?;
-            let (rss_before, rss_peak, rss_after) = sampled_rss(mode, &fixture)?;
+            let allocation = allocation_sample(mode, &fixture).map_err(store_io_error)?;
+            let latencies = latency_samples(mode, &fixture, samples).map_err(store_io_error)?;
+            let (rss_before, rss_peak, rss_after) =
+                sampled_rss(mode, &fixture).map_err(store_io_error)?;
             report(
                 size,
                 envelope_bytes,
@@ -143,15 +146,15 @@ fn make_fixture(size: usize, mode: ReadMode) -> Result<Fixture, Box<dyn Error>> 
         mode.label()
     ));
     let _ = fs::remove_dir_all(&root);
-    let store = FileStore::open(&root, 2 * 1024 * 1024)?;
+    let store = FileStore::open(&root, 2 * 1024 * 1024).map_err(store_io_error)?;
     let value = vec![0x5a; size];
     let key = ObjectKey::<BytesSchema>::from_value(&value);
     let object = TypedObject::from_value(&key, &value);
-    let id = store.write_object(&object)?;
+    let id = store.write_object(&object).map_err(store_io_error)?;
     drop(object);
     drop(value);
     let pin = if matches!(mode, ReadMode::BorrowedPinned) {
-        Some(store.pin_garbage_collection()?)
+        Some(store.pin_garbage_collection().map_err(store_io_error)?)
     } else {
         None
     };
@@ -232,12 +235,15 @@ fn sampled_rss(
     let before = current_rss_bytes();
     let stop = Arc::new(AtomicBool::new(false));
     let peak = Arc::new(AtomicU64::new(before.unwrap_or_default()));
+    let observed = Arc::new(AtomicBool::new(before.is_some()));
     let sampler_stop = Arc::clone(&stop);
     let sampler_peak = Arc::clone(&peak);
+    let sampler_observed = Arc::clone(&observed);
     let sampler = thread::spawn(move || {
         while !sampler_stop.load(Ordering::Relaxed) {
             if let Some(current) = current_rss_bytes() {
                 sampler_peak.fetch_max(current, Ordering::Relaxed);
+                sampler_observed.store(true, Ordering::Relaxed);
             }
             thread::sleep(Duration::from_millis(5));
         }
@@ -256,7 +262,9 @@ fn sampled_rss(
     result?;
     Ok((
         before,
-        Some(peak.load(Ordering::Relaxed)),
+        observed
+            .load(Ordering::Relaxed)
+            .then(|| peak.load(Ordering::Relaxed)),
         current_rss_bytes(),
     ))
 }
@@ -274,8 +282,13 @@ fn current_rss_bytes() -> Option<u64> {
         .ok()?
         .split_whitespace()
         .next()?
-        .parse::<u64>()?;
+        .parse::<u64>()
+        .ok()?;
     kibibytes.checked_mul(1024)
+}
+
+fn store_io_error(error: StoreError) -> std::io::Error {
+    std::io::Error::other(format!("FileStore benchmark failed: {error:?}"))
 }
 
 fn report(
