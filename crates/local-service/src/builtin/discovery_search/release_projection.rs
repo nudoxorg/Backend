@@ -1,21 +1,24 @@
 use super::super::product_state::normalized_version_key;
 use super::{
     LineageKey, LineageReleaseDocument, MAX_SEARCH_PAGE_SIZE, SEARCH_TIERS, SearchTier,
-    fuzzy_term_matches, gram_tokens, lineage_search_name, normalize, release_search_evidence,
+    fuzzy_term_matches, gram_tokens, lineage_search_name, normalize, release_gram_field,
+    release_search_evidence,
 };
 use backend_engine::registry::RegistryEcosystem;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::Bound;
+use std::sync::Arc;
 
-const VERSION_RANK_STRIDE: u128 = 1_u128 << 64;
+const VERSION_RANK_STRIDE: u64 = 1_u64 << 32;
+type ReleaseOrdinal = u32;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ReleaseVersionOrderKey {
     // Typed releases sort after tags that the ecosystem grammar cannot prove.
     // Since pages read ranks in reverse, this presents typed versions first
     // and leaves unknown tags in deterministic lexical order at the end.
-    Unorderable(String),
+    Unorderable(Arc<str>),
     Orderable(backend_engine::advisory::NormalizedVersion),
 }
 
@@ -24,12 +27,12 @@ struct VersionedReleaseKey {
     version: ReleaseVersionOrderKey,
     // Descending stable key at equal versions gives ascending display order
     // when the posting rank is read from newest to oldest.
-    stable_sort_key: Reverse<String>,
-    identity: String,
+    stable_sort_key: Reverse<Arc<str>>,
+    identity: Arc<str>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum ReleasePostingField {
+pub(super) enum ReleasePostingField {
     Coordinate,
     AliasValue,
     AliasToken,
@@ -43,13 +46,85 @@ enum ReleasePostingField {
 }
 
 #[derive(Default)]
+enum OrdinalPosting {
+    #[default]
+    Empty,
+    One(ReleaseOrdinal),
+    Many(Vec<ReleaseOrdinal>),
+}
+
+impl OrdinalPosting {
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::One(_) => 1,
+            Self::Many(ordinals) => ordinals.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    fn insert(&mut self, ordinal: ReleaseOrdinal, rank: u64, entries: &[Option<ProjectionEntry>]) {
+        match self {
+            Self::Empty => *self = Self::One(ordinal),
+            Self::One(previous) => {
+                let previous_rank = entry_rank(entries, *previous);
+                let ordinals = if previous_rank < rank {
+                    vec![*previous, ordinal]
+                } else {
+                    vec![ordinal, *previous]
+                };
+                *self = Self::Many(ordinals);
+            }
+            Self::Many(ordinals) => {
+                let position = ordinals
+                    .binary_search_by_key(&rank, |candidate| entry_rank(entries, *candidate))
+                    .expect_err("release ranks are unique within a lineage");
+                ordinals.insert(position, ordinal);
+            }
+        }
+    }
+
+    fn remove(&mut self, ordinal: ReleaseOrdinal, rank: u64, entries: &[Option<ProjectionEntry>]) {
+        match self {
+            Self::Empty => {}
+            Self::One(current) if *current == ordinal => *self = Self::Empty,
+            Self::One(_) => {}
+            Self::Many(ordinals) => {
+                if let Ok(position) = ordinals
+                    .binary_search_by_key(&rank, |candidate| entry_rank(entries, *candidate))
+                {
+                    debug_assert_eq!(ordinals[position], ordinal);
+                    ordinals.remove(position);
+                }
+                if ordinals.len() == 1 {
+                    *self = Self::One(ordinals[0]);
+                } else if ordinals.is_empty() {
+                    *self = Self::Empty;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProjectionEntry {
+    identity: Arc<str>,
+    rank: u64,
+}
+
+#[derive(Default)]
 pub(super) struct VersionedReleaseProjection {
-    order: BTreeMap<VersionedReleaseKey, String>,
-    ranks_by_identity: BTreeMap<String, u128>,
-    identities_by_rank: BTreeMap<u128, String>,
-    all_ranks: BTreeSet<u128>,
-    postings: BTreeMap<ReleasePostingField, BTreeMap<String, BTreeSet<u128>>>,
-    memberships: BTreeMap<String, Vec<(ReleasePostingField, String)>>,
+    // The arena gives every release a compact stable ordinal. Order keys and
+    // identity lookup share Arc string storage; posting lists keep ordinals,
+    // not copied identities or wide rank labels.
+    order: BTreeMap<VersionedReleaseKey, ReleaseOrdinal>,
+    ordinals_by_identity: BTreeMap<Arc<str>, ReleaseOrdinal>,
+    entries: Vec<Option<ProjectionEntry>>,
+    free_ordinals: Vec<ReleaseOrdinal>,
+    postings: BTreeMap<ReleasePostingField, BTreeMap<String, OrdinalPosting>>,
     #[cfg(test)]
     rebalance_count: usize,
 }
@@ -62,75 +137,91 @@ pub(super) struct ReleasePostingPage {
 }
 
 struct PostingSources<'a> {
-    postings: Vec<&'a BTreeSet<u128>>,
+    postings: Vec<PostingSource<'a>>,
     term_keys_scanned: usize,
 }
 
+#[derive(Clone, Copy)]
+enum PostingSource<'a> {
+    All,
+    Term(&'a OrdinalPosting),
+}
+
+enum PostingIterator<'a> {
+    All(
+        std::iter::Rev<
+            std::collections::btree_map::Values<'a, VersionedReleaseKey, ReleaseOrdinal>,
+        >,
+    ),
+    One(Option<ReleaseOrdinal>),
+    Many(std::iter::Rev<std::slice::Iter<'a, ReleaseOrdinal>>),
+}
+
+impl PostingIterator<'_> {
+    fn next(&mut self) -> Option<ReleaseOrdinal> {
+        match self {
+            Self::All(values) => values.next().copied(),
+            Self::One(value) => value.take(),
+            Self::Many(values) => values.next().copied(),
+        }
+    }
+}
+
+fn entry_rank(entries: &[Option<ProjectionEntry>], ordinal: ReleaseOrdinal) -> u64 {
+    entries
+        .get(ordinal as usize)
+        .and_then(Option::as_ref)
+        .expect("posting ordinal resolves to an active release")
+        .rank
+}
+
 impl VersionedReleaseProjection {
+    pub(super) fn release_count(&self) -> usize {
+        self.ordinals_by_identity.len()
+    }
+
     pub(super) fn estimated_logical_payload_bytes(&self) -> usize {
         use std::mem::size_of;
 
         let ordered = self
             .order
             .iter()
-            .map(|(key, identity)| {
+            .map(|(key, _)| {
                 size_of::<VersionedReleaseKey>()
                     .saturating_add(match &key.version {
-                        ReleaseVersionOrderKey::Orderable(version) => version
-                            .canonical
-                            .len()
-                            .saturating_add(format!("{version:?}").len()),
+                        ReleaseVersionOrderKey::Orderable(version) => {
+                            version.canonical.len().max(format!("{version:?}").len())
+                        }
                         ReleaseVersionOrderKey::Unorderable(version) => version.len(),
                     })
                     .saturating_add(key.stable_sort_key.0.len())
-                    .saturating_add(key.identity.len())
-                    .saturating_add(size_of::<String>())
-                    .saturating_add(identity.len())
             })
             .sum::<usize>();
-        let identity_ranks = self
-            .ranks_by_identity
-            .keys()
-            .map(|identity| size_of::<(String, u128)>().saturating_add(identity.len()))
-            .sum::<usize>();
-        let reverse_ranks = self
-            .identities_by_rank
+        let identities = self
+            .ordinals_by_identity
             .values()
-            .map(|identity| size_of::<(u128, String)>().saturating_add(identity.len()))
+            .map(|_| size_of::<(Arc<str>, ReleaseOrdinal)>())
+            .sum::<usize>();
+        let entries = self
+            .entries
+            .iter()
+            .flatten()
+            .map(|entry| size_of::<ProjectionEntry>().saturating_add(entry.identity.len()))
             .sum::<usize>();
         let posting_bytes = self
             .postings
             .values()
             .flat_map(|values| values.iter())
-            .map(|(value, ranks)| {
-                size_of::<(String, BTreeSet<u128>)>()
+            .map(|(value, posting)| {
+                size_of::<(String, OrdinalPosting)>()
                     .saturating_add(value.len())
-                    .saturating_add(ranks.len().saturating_mul(size_of::<u128>()))
-            })
-            .sum::<usize>();
-        let membership_bytes = self
-            .memberships
-            .iter()
-            .map(|(identity, memberships)| {
-                size_of::<(String, Vec<(ReleasePostingField, String)>)>()
-                    .saturating_add(identity.len())
-                    .saturating_add(
-                        memberships
-                            .iter()
-                            .map(|(_, value)| {
-                                size_of::<(ReleasePostingField, String)>()
-                                    .saturating_add(value.len())
-                            })
-                            .sum::<usize>(),
-                    )
+                    .saturating_add(posting.len().saturating_mul(size_of::<ReleaseOrdinal>()))
             })
             .sum::<usize>();
         ordered
-            .saturating_add(identity_ranks)
-            .saturating_add(reverse_ranks)
-            .saturating_add(self.all_ranks.len().saturating_mul(size_of::<u128>()))
+            .saturating_add(identities)
+            .saturating_add(entries)
             .saturating_add(posting_bytes)
-            .saturating_add(membership_bytes)
     }
 
     pub(super) fn insert(
@@ -139,36 +230,45 @@ impl VersionedReleaseProjection {
         document: &LineageReleaseDocument,
         ecosystem: RegistryEcosystem,
     ) {
+        let identity: Arc<str> = Arc::from(identity);
         let order_key = VersionedReleaseKey {
             version: release_version_order_key(ecosystem, &document.version),
-            stable_sort_key: Reverse(document.order_sort_key.clone()),
-            identity: identity.to_owned(),
+            stable_sort_key: Reverse(Arc::from(document.order_sort_key.as_str())),
+            identity: Arc::clone(&identity),
         };
-        self.order.insert(order_key.clone(), identity.to_owned());
-        let rank = self.rank_between_neighbors(&order_key);
-        let rank = if let Some(rank) = rank {
-            rank
+        let ordinal = if let Some(ordinal) = self.free_ordinals.pop() {
+            ordinal
+        } else {
+            let ordinal = ReleaseOrdinal::try_from(self.entries.len())
+                .expect("a lineage cannot contain more releases than fit in u32 ordinals");
+            self.entries.push(None);
+            ordinal
+        };
+        self.entries[ordinal as usize] = Some(ProjectionEntry {
+            identity: Arc::clone(&identity),
+            rank: 0,
+        });
+        self.order.insert(order_key.clone(), ordinal);
+        self.ordinals_by_identity
+            .insert(Arc::clone(&identity), ordinal);
+        if let Some(rank) = self.rank_between_neighbors(&order_key) {
+            self.entries[ordinal as usize]
+                .as_mut()
+                .expect("new ordinal is active")
+                .rank = rank;
         } else {
             self.rebalance_ranks();
-            *self
-                .ranks_by_identity
-                .get(identity)
-                .expect("rebalance includes the inserted release")
-        };
-        self.ranks_by_identity.insert(identity.to_owned(), rank);
-        self.identities_by_rank.insert(rank, identity.to_owned());
-        self.all_ranks.insert(rank);
-
-        let memberships = release_posting_values(document);
-        for (field, value) in &memberships {
-            self.postings
-                .entry(*field)
-                .or_default()
-                .entry(value.clone())
-                .or_default()
-                .insert(rank);
         }
-        self.memberships.insert(identity.to_owned(), memberships);
+        let rank = entry_rank(&self.entries, ordinal);
+
+        for (field, value) in release_posting_values(document) {
+            self.postings
+                .entry(field)
+                .or_default()
+                .entry(value)
+                .or_default()
+                .insert(ordinal, rank, &self.entries);
+        }
     }
 
     pub(super) fn remove(
@@ -177,52 +277,49 @@ impl VersionedReleaseProjection {
         document: &LineageReleaseDocument,
         ecosystem: RegistryEcosystem,
     ) {
-        let Some(rank) = self.ranks_by_identity.remove(identity) else {
+        let Some(ordinal) = self.ordinals_by_identity.remove(identity) else {
             return;
         };
+        let rank = entry_rank(&self.entries, ordinal);
         self.order.remove(&VersionedReleaseKey {
             version: release_version_order_key(ecosystem, &document.version),
-            stable_sort_key: Reverse(document.order_sort_key.clone()),
-            identity: identity.to_owned(),
+            stable_sort_key: Reverse(Arc::from(document.order_sort_key.as_str())),
+            identity: Arc::from(identity),
         });
-        self.identities_by_rank.remove(&rank);
-        self.all_ranks.remove(&rank);
-        if let Some(memberships) = self.memberships.remove(identity) {
-            for (field, value) in memberships {
-                let remove_value = if let Some(values) = self.postings.get_mut(&field) {
-                    let remove_posting = if let Some(ranks) = values.get_mut(&value) {
-                        ranks.remove(&rank);
-                        ranks.is_empty()
-                    } else {
-                        false
-                    };
-                    if remove_posting {
-                        values.remove(&value);
-                    }
-                    values.is_empty()
+        for (field, value) in release_posting_values(document) {
+            let remove_field = if let Some(values) = self.postings.get_mut(&field) {
+                let remove_value = if let Some(posting) = values.get_mut(&value) {
+                    posting.remove(ordinal, rank, &self.entries);
+                    posting.is_empty()
                 } else {
                     false
                 };
                 if remove_value {
-                    self.postings.remove(&field);
+                    values.remove(&value);
                 }
+                values.is_empty()
+            } else {
+                false
+            };
+            if remove_field {
+                self.postings.remove(&field);
             }
         }
+        self.entries[ordinal as usize] = None;
+        self.free_ordinals.push(ordinal);
     }
 
-    fn rank_between_neighbors(&self, key: &VersionedReleaseKey) -> Option<u128> {
+    fn rank_between_neighbors(&self, key: &VersionedReleaseKey) -> Option<u64> {
         let lower = self
             .order
             .range(..key.clone())
             .next_back()
-            .and_then(|(_, identity)| self.ranks_by_identity.get(identity))
-            .copied();
+            .map(|(_, ordinal)| entry_rank(&self.entries, *ordinal));
         let upper = self
             .order
             .range((Bound::Excluded(key.clone()), Bound::Unbounded))
             .next()
-            .and_then(|(_, identity)| self.ranks_by_identity.get(identity))
-            .copied();
+            .map(|(_, ordinal)| entry_rank(&self.entries, *ordinal));
         match (lower, upper) {
             (None, None) => Some(VERSION_RANK_STRIDE),
             (Some(lower), None) => lower.checked_add(VERSION_RANK_STRIDE),
@@ -239,36 +336,18 @@ impl VersionedReleaseProjection {
         {
             self.rebalance_count = self.rebalance_count.saturating_add(1);
         }
-        self.ranks_by_identity.clear();
-        self.identities_by_rank.clear();
-        self.all_ranks.clear();
-        for (offset, identity) in self.order.values().enumerate() {
-            let rank = u128::try_from(offset)
-                .expect("a release lineage cannot contain more than u128::MAX entries")
+        for (offset, ordinal) in self.order.values().enumerate() {
+            let rank = u64::try_from(offset)
+                .expect("a release lineage cannot contain more releases than fit in u32 ordinals")
                 .saturating_add(1)
                 .saturating_mul(VERSION_RANK_STRIDE);
-            self.ranks_by_identity.insert(identity.clone(), rank);
-            self.identities_by_rank.insert(rank, identity.clone());
-            self.all_ranks.insert(rank);
+            self.entries[*ordinal as usize]
+                .as_mut()
+                .expect("ordered ordinal is active")
+                .rank = rank;
         }
-        for values in self.postings.values_mut() {
-            for ranks in values.values_mut() {
-                ranks.clear();
-            }
-        }
-        for (identity, memberships) in &self.memberships {
-            let Some(rank) = self.ranks_by_identity.get(identity).copied() else {
-                continue;
-            };
-            for (field, value) in memberships {
-                self.postings
-                    .entry(*field)
-                    .or_default()
-                    .entry(value.clone())
-                    .or_default()
-                    .insert(rank);
-            }
-        }
+        // Existing posting vectors remain sorted because rebalance preserves
+        // the semantic order and only replaces rank labels.
     }
 
     pub(super) fn top_matches(
@@ -279,7 +358,7 @@ impl VersionedReleaseProjection {
         limit: usize,
     ) -> ReleasePostingPage {
         let limit = limit.min(MAX_SEARCH_PAGE_SIZE);
-        if limit == 0 || self.all_ranks.is_empty() {
+        if limit == 0 || self.order.is_empty() {
             return ReleasePostingPage {
                 identities: Vec::new(),
                 posting_entries_examined: 0,
@@ -290,7 +369,7 @@ impl VersionedReleaseProjection {
         let query = normalize(query);
         if query.is_empty() {
             let (examined, identities) = self.collect_posting_page(
-                &[&self.all_ranks],
+                &[PostingSource::All],
                 key,
                 releases,
                 &query,
@@ -357,7 +436,7 @@ impl VersionedReleaseProjection {
                 let postings = if name == query
                     || (matches!(tier, SearchTier::PrefixName) && name.starts_with(query))
                 {
-                    vec![&self.all_ranks]
+                    vec![PostingSource::All]
                 } else {
                     Vec::new()
                 };
@@ -374,7 +453,7 @@ impl VersionedReleaseProjection {
             SearchTier::Substring => {
                 if name.contains(query) {
                     return PostingSources {
-                        postings: vec![&self.all_ranks],
+                        postings: vec![PostingSource::All],
                         term_keys_scanned: 0,
                     };
                 }
@@ -424,7 +503,7 @@ impl VersionedReleaseProjection {
             }
             SearchTier::FuzzyName => {
                 let postings = if fuzzy_term_matches(&name, query) {
-                    vec![&self.all_ranks]
+                    vec![PostingSource::All]
                 } else {
                     Vec::new()
                 };
@@ -443,7 +522,8 @@ impl VersionedReleaseProjection {
             .postings
             .get(&field)
             .and_then(|values| values.get(value))
-            .map_or_else(Vec::new, |posting| vec![posting]);
+            .filter(|posting| !posting.is_empty())
+            .map_or_else(Vec::new, |posting| vec![PostingSource::Term(posting)]);
         PostingSources {
             postings,
             term_keys_scanned: 0,
@@ -464,7 +544,7 @@ impl VersionedReleaseProjection {
             if !value.starts_with(prefix) {
                 break;
             }
-            postings.push(posting);
+            postings.push(PostingSource::Term(posting));
         }
         PostingSources {
             postings,
@@ -497,9 +577,12 @@ impl VersionedReleaseProjection {
                     term_keys_scanned: 0,
                 };
             };
-            postings.push(posting);
+            postings.push(PostingSource::Term(posting));
         }
-        postings.sort_by_key(|posting| posting.len());
+        postings.sort_by_key(|posting| match posting {
+            PostingSource::All => usize::MAX,
+            PostingSource::Term(posting) => posting.len(),
+        });
         postings.truncate(1);
         PostingSources {
             postings,
@@ -519,7 +602,7 @@ impl VersionedReleaseProjection {
         for (alias, posting) in values {
             term_keys_scanned = term_keys_scanned.saturating_add(1);
             if fuzzy_term_matches(alias, query) {
-                postings.push(posting);
+                postings.push(PostingSource::Term(posting));
             }
         }
         PostingSources {
@@ -530,7 +613,7 @@ impl VersionedReleaseProjection {
 
     fn collect_posting_page(
         &self,
-        postings: &[&BTreeSet<u128>],
+        postings: &[PostingSource<'_>],
         key: &LineageKey,
         releases: &BTreeMap<String, LineageReleaseDocument>,
         query: &str,
@@ -542,42 +625,50 @@ impl VersionedReleaseProjection {
         }
         let mut iterators = postings
             .iter()
-            .map(|posting| posting.iter().rev())
+            .map(|posting| match posting {
+                PostingSource::All => PostingIterator::All(self.order.values().rev()),
+                PostingSource::Term(OrdinalPosting::Empty) => PostingIterator::One(None),
+                PostingSource::Term(OrdinalPosting::One(ordinal)) => {
+                    PostingIterator::One(Some(*ordinal))
+                }
+                PostingSource::Term(OrdinalPosting::Many(ordinals)) => {
+                    PostingIterator::Many(ordinals.iter().rev())
+                }
+            })
             .collect::<Vec<_>>();
         let mut frontier = BinaryHeap::with_capacity(iterators.len());
         let mut examined = 0_usize;
-        for (iterator_index, posting) in iterators.iter_mut().enumerate() {
-            if let Some(rank) = posting.next() {
+        for (iterator_index, iterator) in iterators.iter_mut().enumerate() {
+            if let Some(ordinal) = iterator.next() {
                 examined = examined.saturating_add(1);
-                frontier.push((*rank, iterator_index));
+                frontier.push((entry_rank(&self.entries, ordinal), ordinal, iterator_index));
             }
         }
         let mut selected = Vec::with_capacity(limit);
         let mut last_rank = None;
-        while let Some((rank, iterator_index)) = frontier.pop() {
+        while let Some((rank, ordinal, iterator_index)) = frontier.pop() {
             if last_rank != Some(rank) {
                 last_rank = Some(rank);
-                if let (Some(tier), Some(identity)) = (tier, self.identities_by_rank.get(&rank))
-                    && releases.get(identity).is_some_and(|document| {
-                        release_search_evidence(key, document, query) == Some(tier.evidence())
-                    })
+                let Some(entry) = self.entries[ordinal as usize].as_ref() else {
+                    continue;
+                };
+                if let (Some(tier), Some(document)) = (tier, releases.get(entry.identity.as_ref()))
+                    && release_search_evidence(key, document, query) == Some(tier.evidence())
                 {
-                    selected.push(identity.clone());
+                    selected.push(entry.identity.to_string());
                     if selected.len() == limit {
                         break;
                     }
-                } else if tier.is_none()
-                    && let Some(identity) = self.identities_by_rank.get(&rank)
-                {
-                    selected.push(identity.clone());
+                } else if tier.is_none() {
+                    selected.push(entry.identity.to_string());
                     if selected.len() == limit {
                         break;
                     }
                 }
             }
-            if let Some(rank) = iterators[iterator_index].next() {
+            if let Some(ordinal) = iterators[iterator_index].next() {
                 examined = examined.saturating_add(1);
-                frontier.push((*rank, iterator_index));
+                frontier.push((entry_rank(&self.entries, ordinal), ordinal, iterator_index));
             }
         }
         (examined, selected)
@@ -624,7 +715,7 @@ fn release_version_order_key(
     version: &str,
 ) -> ReleaseVersionOrderKey {
     normalized_version_key(ecosystem, version).map_or_else(
-        || ReleaseVersionOrderKey::Unorderable(normalize(version)),
+        || ReleaseVersionOrderKey::Unorderable(Arc::from(normalize(version))),
         ReleaseVersionOrderKey::Orderable,
     )
 }
@@ -697,22 +788,50 @@ mod tests {
             .identities
     }
 
-    fn assert_postings_are_current(projection: &VersionedReleaseProjection) {
+    fn assert_postings_are_current(
+        projection: &VersionedReleaseProjection,
+        releases: &BTreeMap<String, LineageReleaseDocument>,
+    ) {
         assert_eq!(
-            projection.all_ranks,
-            projection.identities_by_rank.keys().copied().collect()
+            projection.order.len(),
+            projection.ordinals_by_identity.len()
         );
-        for (identity, rank) in &projection.ranks_by_identity {
-            assert_eq!(projection.identities_by_rank.get(rank), Some(identity));
+        let ordered_ranks = projection
+            .order
+            .values()
+            .map(|ordinal| entry_rank(&projection.entries, *ordinal))
+            .collect::<Vec<_>>();
+        assert!(ordered_ranks.windows(2).all(|pair| pair[0] < pair[1]));
+        for (identity, ordinal) in &projection.ordinals_by_identity {
+            let entry = projection.entries[*ordinal as usize]
+                .as_ref()
+                .expect("identity ordinal is active");
+            assert_eq!(entry.identity.as_ref(), identity.as_ref());
+            assert!(
+                projection
+                    .order
+                    .values()
+                    .any(|candidate| candidate == ordinal)
+            );
         }
         for (field, values) in &projection.postings {
-            for (value, ranks) in values {
-                for rank in ranks {
-                    let identity = projection
-                        .identities_by_rank
-                        .get(rank)
-                        .expect("posting rank resolves to one current identity");
-                    assert!(projection.memberships[identity].contains(&(*field, value.clone())));
+            for (value, posting) in values {
+                let ordinals = match posting {
+                    OrdinalPosting::Empty => Vec::new(),
+                    OrdinalPosting::One(ordinal) => vec![*ordinal],
+                    OrdinalPosting::Many(ordinals) => ordinals.clone(),
+                };
+                let mut previous_rank = None;
+                for ordinal in ordinals {
+                    let entry = projection.entries[ordinal as usize]
+                        .as_ref()
+                        .expect("posting ordinal resolves to one current identity");
+                    assert!(previous_rank.is_none_or(|rank| rank < entry.rank));
+                    previous_rank = Some(entry.rank);
+                    let document = releases
+                        .get(entry.identity.as_ref())
+                        .expect("posting identity resolves to its source row");
+                    assert!(release_posting_values(document).contains(&(*field, value.clone())));
                 }
             }
         }
@@ -742,9 +861,9 @@ mod tests {
         for version in &versions {
             let identity = format!("release:{version}");
             let aliases = if version == "1.0.1-alpha.69" {
-                &["olduniquealias"][..]
+                &["shared", "olduniquealias"][..]
             } else {
-                &[]
+                &["shared"][..]
             };
             insert_release(
                 &mut forward,
@@ -763,9 +882,9 @@ mod tests {
         for version in versions.iter().rev() {
             let identity = format!("release:{version}");
             let aliases = if version == "1.0.1-alpha.69" {
-                &["olduniquealias"][..]
+                &["shared", "olduniquealias"][..]
             } else {
-                &[]
+                &["shared"][..]
             };
             insert_release(
                 &mut reverse,
@@ -794,11 +913,15 @@ mod tests {
             "the old alias exists before the update"
         );
         forward.remove(identity, &previous, RegistryEcosystem::Cargo);
-        let updated = release_document(identity, "1.0.1-alpha.71", &["newuniquealias"]);
+        let updated = release_document(identity, "1.0.1-alpha.71", &["shared", "newuniquealias"]);
         forward.insert(identity, &updated, RegistryEcosystem::Cargo);
         forward_releases.insert(identity.to_owned(), updated);
         let new_alias_page = forward.top_matches(&key, &forward_releases, "newuniquealias", 16);
         assert_eq!(new_alias_page.identities, vec![identity.to_owned()]);
+        let ordered = ordered_identities(&forward, &key, &forward_releases);
+        let shared_alias_page = forward.top_matches(&key, &forward_releases, "shared", 16);
+        assert_eq!(shared_alias_page.identities, ordered[..16].to_vec());
+        assert_eq!(shared_alias_page.posting_entries_examined, 17);
         assert!(
             forward
                 .exact_posting(ReleasePostingField::AliasValue, "olduniquealias")
@@ -806,7 +929,7 @@ mod tests {
                 .is_empty(),
             "replaced alias membership must not survive the update"
         );
-        assert_postings_are_current(&forward);
+        assert_postings_are_current(&forward, &forward_releases);
 
         // Rebuild from the persisted post-update rows in a deliberately
         // different order, as a cold restart would.
@@ -815,6 +938,7 @@ mod tests {
         for (identity, document) in forward_releases.iter().rev() {
             insert_release(&mut cold, &mut cold_releases, identity, document.clone());
         }
+        assert!(cold.rebalance_count > 0);
         assert_eq!(
             ordered_identities(&forward, &key, &forward_releases),
             ordered_identities(&cold, &key, &cold_releases)
@@ -824,7 +948,57 @@ mod tests {
                 .identities,
             vec![identity.to_owned()]
         );
-        assert_postings_are_current(&cold);
+        assert_postings_are_current(&cold, &cold_releases);
+
+        let rebalances_before_extreme_inserts = cold.rebalance_count;
+        for (identity, version) in [
+            ("release:added-oldest-0.7.0", "0.7.0"),
+            ("release:added-old-0.8.0", "0.8.0"),
+            ("release:added-newest-3.0.0", "3.0.0"),
+        ] {
+            insert_release(
+                &mut cold,
+                &mut cold_releases,
+                identity,
+                release_document(identity, version, &["shared"]),
+            );
+        }
+        for ordinal in 72..212 {
+            let identity = format!("release:after-cold-reopen:{ordinal}");
+            let version = format!("1.0.1-alpha.{ordinal}");
+            insert_release(
+                &mut cold,
+                &mut cold_releases,
+                &identity,
+                release_document(&identity, &version, &["shared"]),
+            );
+        }
+        assert!(
+            cold.rebalance_count >= rebalances_before_extreme_inserts + 3,
+            "end inserts and repeated between-neighbor inserts rebalance after cold reopen"
+        );
+        assert_postings_are_current(&cold, &cold_releases);
+
+        let mut second_cold = VersionedReleaseProjection::default();
+        let mut second_cold_releases = BTreeMap::new();
+        for (identity, document) in cold_releases.iter().rev() {
+            insert_release(
+                &mut second_cold,
+                &mut second_cold_releases,
+                identity,
+                document.clone(),
+            );
+        }
+        assert_eq!(
+            ordered_identities(&cold, &key, &cold_releases),
+            ordered_identities(&second_cold, &key, &second_cold_releases),
+            "a second cold rebuild produces the same order despite different rank labels"
+        );
+        let ordered = ordered_identities(&cold, &key, &cold_releases);
+        let shared_page = cold.top_matches(&key, &cold_releases, "shared", 16);
+        assert_eq!(shared_page.identities, ordered[..16].to_vec());
+        assert_eq!(shared_page.posting_entries_examined, 17);
+        assert_postings_are_current(&second_cold, &second_cold_releases);
     }
 
     #[test]
@@ -902,9 +1076,8 @@ mod tests {
         const SAMPLES: usize = 51;
         let rss_before = resident_set_kib();
         let key = lineage_key();
-        let mut projection = VersionedReleaseProjection::default();
         let mut releases = BTreeMap::new();
-        let build_started = std::time::Instant::now();
+        let documents_build_started = std::time::Instant::now();
         for ordinal in 0..RELEASES {
             let identity = format!("release:{ordinal:04}");
             let version = format!("1.0.{ordinal}");
@@ -913,10 +1086,21 @@ mod tests {
                 .collect::<Vec<_>>();
             let aliases = aliases.iter().map(String::as_str).collect::<Vec<_>>();
             let document = release_document(&identity, &version, &aliases);
-            insert_release(&mut projection, &mut releases, &identity, document);
+            releases.insert(identity, document);
         }
-        let build_elapsed = build_started.elapsed();
-        let rss_after_build = resident_set_kib();
+        let documents_build_elapsed = documents_build_started.elapsed();
+        let rss_after_source_documents = resident_set_kib();
+
+        // This is the pre-projection control: the existing identity-to-release
+        // map remains resident while the new per-lineage posting projection is
+        // rebuilt from the same 320 release rows.
+        let mut projection = VersionedReleaseProjection::default();
+        let projection_build_started = std::time::Instant::now();
+        for (identity, document) in &releases {
+            projection.insert(identity, document, RegistryEcosystem::Cargo);
+        }
+        let projection_build_elapsed = projection_build_started.elapsed();
+        let rss_after_projection = resident_set_kib();
         let page = projection.top_matches(&key, &releases, "widget", 16);
         assert_eq!(page.identities.len(), 16);
         assert!(page.more);
@@ -960,10 +1144,17 @@ mod tests {
         let p50_us = fuzzy_samples[SAMPLES * 50 / 100].as_micros();
         let p95_us = fuzzy_samples[SAMPLES * 95 / 100].as_micros();
         eprintln!(
-            "release projection scale: releases={RELEASES} unique_aliases={} build_ms={} estimate_logical_bytes={} rss_before_kib={rss_before:?} rss_after_build_kib={rss_after_build:?} rss_after_queries_kib={rss_after_queries:?} broad_prefix_p50_us={prefix_p50_us} broad_prefix_p95_us={prefix_p95_us} broad_prefix_term_keys_scanned={} broad_prefix_posting_entries_examined={} fuzzy_query_p50_us={p50_us} fuzzy_query_p95_us={p95_us} fuzzy_term_keys_scanned={} fuzzy_posting_entries_examined={} bounded_name_posting_entries_examined={}",
+            "release projection scale: releases={RELEASES} unique_aliases={} source_documents_build_ms={} projection_rebuild_ms={} estimate_logical_bytes={} rss_before_kib={rss_before:?} rss_after_source_documents_kib={rss_after_source_documents:?} rss_after_projection_kib={rss_after_projection:?} rss_after_queries_kib={rss_after_queries:?} source_documents_rss_delta_kib={:?} projection_incremental_rss_delta_kib={:?} broad_prefix_p50_us={prefix_p50_us} broad_prefix_p95_us={prefix_p95_us} broad_prefix_term_keys_scanned={} broad_prefix_posting_entries_examined={} fuzzy_query_p50_us={p50_us} fuzzy_query_p95_us={p95_us} fuzzy_term_keys_scanned={} fuzzy_posting_entries_examined={} bounded_name_posting_entries_examined={}",
             RELEASES * ALIASES_PER_RELEASE,
-            build_elapsed.as_millis(),
+            documents_build_elapsed.as_millis(),
+            projection_build_elapsed.as_millis(),
             projection.estimated_logical_payload_bytes(),
+            rss_before
+                .zip(rss_after_source_documents)
+                .map(|(before, after)| after.saturating_sub(before)),
+            rss_after_source_documents
+                .zip(rss_after_projection)
+                .map(|(before, after)| after.saturating_sub(before)),
             prefix_page.term_keys_scanned,
             prefix_page.posting_entries_examined,
             fuzzy_page.term_keys_scanned,
@@ -979,21 +1170,22 @@ mod tests {
         const SAMPLES: usize = 101;
         let rss_before = resident_set_kib();
         let key = lineage_key();
-        let mut projection = VersionedReleaseProjection::default();
         let mut releases = BTreeMap::new();
-        let build_started = std::time::Instant::now();
+        let documents_build_started = std::time::Instant::now();
         for ordinal in 0..RELEASES {
             let identity = format!("release:{ordinal:05}");
             let version = format!("1.0.{ordinal}");
-            insert_release(
-                &mut projection,
-                &mut releases,
-                &identity,
-                release_document(&identity, &version, &[]),
-            );
+            releases.insert(identity.clone(), release_document(&identity, &version, &[]));
         }
-        let build_elapsed = build_started.elapsed();
-        let rss_after_build = resident_set_kib();
+        let documents_build_elapsed = documents_build_started.elapsed();
+        let rss_after_source_documents = resident_set_kib();
+        let mut projection = VersionedReleaseProjection::default();
+        let projection_build_started = std::time::Instant::now();
+        for (identity, document) in &releases {
+            projection.insert(identity, document, RegistryEcosystem::Cargo);
+        }
+        let projection_build_elapsed = projection_build_started.elapsed();
+        let rss_after_projection = resident_set_kib();
         let mut samples = Vec::with_capacity(SAMPLES);
         let mut last_page = None;
         for _ in 0..SAMPLES {
@@ -1011,9 +1203,16 @@ mod tests {
         let p50_us = samples[SAMPLES * 50 / 100].as_micros();
         let p95_us = samples[SAMPLES * 95 / 100].as_micros();
         eprintln!(
-            "release projection scale: releases={RELEASES} unique_aliases=0 build_ms={} estimate_logical_bytes={} rss_before_kib={rss_before:?} rss_after_build_kib={rss_after_build:?} name_page_p50_us={p50_us} name_page_p95_us={p95_us} term_keys_scanned={} posting_entries_examined={}",
-            build_elapsed.as_millis(),
+            "release projection scale: releases={RELEASES} unique_aliases=0 source_documents_build_ms={} projection_rebuild_ms={} estimate_logical_bytes={} rss_before_kib={rss_before:?} rss_after_source_documents_kib={rss_after_source_documents:?} rss_after_projection_kib={rss_after_projection:?} source_documents_rss_delta_kib={:?} projection_incremental_rss_delta_kib={:?} name_page_p50_us={p50_us} name_page_p95_us={p95_us} term_keys_scanned={} posting_entries_examined={}",
+            documents_build_elapsed.as_millis(),
+            projection_build_elapsed.as_millis(),
             projection.estimated_logical_payload_bytes(),
+            rss_before
+                .zip(rss_after_source_documents)
+                .map(|(before, after)| after.saturating_sub(before)),
+            rss_after_source_documents
+                .zip(rss_after_projection)
+                .map(|(before, after)| after.saturating_sub(before)),
             page.term_keys_scanned,
             page.posting_entries_examined,
         );

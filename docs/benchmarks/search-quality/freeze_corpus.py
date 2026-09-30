@@ -71,6 +71,7 @@ SOURCE_PATHS = [
     "crates/engine/src/forge/mod.rs",
     "crates/engine/src/registry/discovery.rs",
     "crates/local-service/src/builtin/discovery_search.rs",
+    "crates/local-service/src/builtin/discovery_search/release_projection.rs",
     "crates/local-service/src/builtin/discovery_search/benchmark.rs",
     "crates/local-service/src/discovery.rs",
     "crates/local-service/Cargo.toml",

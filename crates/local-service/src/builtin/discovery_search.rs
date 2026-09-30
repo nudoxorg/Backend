@@ -24,8 +24,9 @@ use tantivy::query::{
 use tantivy::schema::{FAST, Field, IndexRecordOption, STRING, Schema, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, Order, TantivyDocument, Term};
 
+#[path = "discovery_search/release_projection.rs"]
 mod release_projection;
-use release_projection::{ReleasePostingPage, VersionedReleaseProjection};
+use release_projection::{ReleasePostingField, ReleasePostingPage, VersionedReleaseProjection};
 
 #[cfg(feature = "search-bench")]
 #[path = "discovery_search/benchmark.rs"]
@@ -1208,7 +1209,7 @@ impl LineageSearchIndex {
         let release_count = self
             .versioned_releases
             .values()
-            .map(|projection| projection.all_ranks.len())
+            .map(VersionedReleaseProjection::release_count)
             .sum();
         let estimated_logical_payload_bytes = self
             .versioned_releases

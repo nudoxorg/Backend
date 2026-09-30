@@ -36,8 +36,13 @@
     },
     {
       "path": "crates/local-service/src/builtin/discovery_search.rs",
-      "sha256": "33161b351aac5d1d6d1bdf67e0ba00cc531b0997ec71ccb42ec60b6fc06f6321",
-      "snapshot_id": "workspace-file:sha256:33161b351aac5d1d6d1bdf67e0ba00cc531b0997ec71ccb42ec60b6fc06f6321"
+      "sha256": "ca3050a771f8f7f8429e1435f640b057a1a13382ec9db37e375ec1b25b65bcf7",
+      "snapshot_id": "workspace-file:sha256:ca3050a771f8f7f8429e1435f640b057a1a13382ec9db37e375ec1b25b65bcf7"
+    },
+    {
+      "path": "crates/local-service/src/builtin/discovery_search/release_projection.rs",
+      "sha256": "a17d4d55574a343838f350b53c8f72bda75f9ce4b69e3db8b5d83e7ed148acb4",
+      "snapshot_id": "workspace-file:sha256:a17d4d55574a343838f350b53c8f72bda75f9ce4b69e3db8b5d83e7ed148acb4"
     },
     {
       "path": "crates/local-service/src/builtin/discovery_search/benchmark.rs",
@@ -81,8 +86,8 @@
     },
     {
       "path": "docs/benchmarks/search-quality/freeze_corpus.py",
-      "sha256": "3bb75694aab9eec2cfe6e396a301a49edda2bc8c57bb1a8161cb2317d97e1cc2",
-      "snapshot_id": "workspace-file:sha256:3bb75694aab9eec2cfe6e396a301a49edda2bc8c57bb1a8161cb2317d97e1cc2"
+      "sha256": "23952629c332c80f16395c81e3452e5c8d6bd488b9df1e1198160fccfb1be13e",
+      "snapshot_id": "workspace-file:sha256:23952629c332c80f16395c81e3452e5c8d6bd488b9df1e1198160fccfb1be13e"
     },
     {
       "path": "docs/benchmarks/search-quality/lib_rs_adapter.py",
@@ -126,8 +131,8 @@
     },
     {
       "path": "docs/benchmarks/search-quality/README.md",
-      "sha256": "d948c2e27e19d41f9d0ac2d29b8007bba10c60cc7fe5a4f02b8ce4c5ffdfa7e4",
-      "snapshot_id": "workspace-file:sha256:d948c2e27e19d41f9d0ac2d29b8007bba10c60cc7fe5a4f02b8ce4c5ffdfa7e4"
+      "sha256": "3f2d58bf7c565a8fbb477e5e1c48b6016284b3d6fd43c0e726d1568f9d86c5c7",
+      "snapshot_id": "workspace-file:sha256:3f2d58bf7c565a8fbb477e5e1c48b6016284b3d6fd43c0e726d1568f9d86c5c7"
     },
     {
       "path": "docs/benchmarks/search-quality/report_common_partial.py",
@@ -223,7 +228,7 @@
     {
       "note": "Fixture source; fixture values are not claims about current live registry metadata.",
       "path": "crates/local-service/src/builtin/discovery_search.rs",
-      "sha256": "33161b351aac5d1d6d1bdf67e0ba00cc531b0997ec71ccb42ec60b6fc06f6321",
+      "sha256": "ca3050a771f8f7f8429e1435f640b057a1a13382ec9db37e375ec1b25b65bcf7",
       "snapshot_id": "workspace-fixture:discovery-search-typed-facets"
     },
     {
