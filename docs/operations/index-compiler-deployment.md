@@ -40,6 +40,10 @@ file stays private to that machine; the command prints only its public peer ID.
 Share that ID with the index owner. The owner must have locald running to read
 the current product root or semantic selection before signing a grant.
 
+This release uses remote-index protocol and capability version 2. Reissue
+existing grant files after updating the owner; an older capability cannot be
+upgraded or broadened in place.
+
 ```sh
 backend --workspace "$CLIENT_DATA" cluster client init --key-file "$CLIENT_DATA/remote-index-client.v1"
 ```
