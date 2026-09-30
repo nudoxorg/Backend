@@ -477,7 +477,10 @@ impl RenderOnce for Chip {
                 .child(one(key(&self.id, "required"), "required", SMALL, palette.peri_hi, &measure));
         } else if self.default {
             row = row.child(one(key(&self.id, "default"), "default", SMALL, palette.ink3, &measure));
-        } else if self.enables > 0 {
+        } else {
+            row = row.child(one(key(&self.id, "not-default"), "not default", SMALL, palette.ink3, &measure));
+        }
+        if self.enables > 0 {
             row = row.child(one(key(&self.id, "enables"), format!("+{}", self.enables), SMALL, palette.ink3, &measure));
         }
         cut()
