@@ -614,11 +614,80 @@ impl LocalSemanticGenerationFiles {
         })
     }
 
+    /// Persists immutable metadata for one exact external selected image
+    /// without moving the local transfer-cache `HEAD`. Typed V3 history uses
+    /// this record as a commit snapshot; only the supplied owner selector can
+    /// authorize its publication.
+    pub(super) fn persist_selected_history_snapshot<S: crate::SelectedNativeImageSource>(
+        &self,
+        target: &SemanticTargetKey,
+        stamp: SelectedGenerationStamp,
+        catalog: &SemanticPlaneCatalog,
+        image: SemanticPlaneImageKey,
+        image_identity: SemanticImageIdentity,
+        manifest: &SemanticPlaneManifest,
+        source: &mut S,
+    ) -> Result<LocalSemanticGeneration, String> {
+        let record_bytes =
+            encode_generation_record(target, catalog, image, image_identity, manifest)?;
+        let record = decode_generation_record(&record_bytes)?;
+        validate_record_selection(&record, stamp)?;
+        if &record.target != target {
+            return Err("selected history snapshot names another semantic target".to_owned());
+        }
+
+        let target_root = self.target_root(target);
+        history::recover_pending_retention_delete(&target_root)?;
+        let records_root = target_root.join("records");
+        create_private_directory(&target_root)?;
+        create_private_directory(&records_root)?;
+        set_private_directory(&target_root)?;
+        set_private_directory(&records_root)?;
+
+        require_current(source, stamp, image)?;
+        if source
+            .selected_native_image_identity(image)
+            .map_err(|error| {
+                format!("read selected image identity before history snapshot: {error}")
+            })?
+            != image_identity
+        {
+            return Err("selected history snapshot image identity is stale".to_owned());
+        }
+        let immutable_path = record_path(&target_root, record.identity);
+        match fs::read(&immutable_path) {
+            Ok(existing) if existing == record_bytes => {}
+            Ok(_) => return Err("immutable semantic generation identity collision".to_owned()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                bump_generation_records_epoch(&target_root)?;
+                backend_platform::durable::write_private_atomic(&immutable_path, &record_bytes)
+                    .map_err(display_io)?;
+            }
+            Err(error) => return Err(display_io(error)),
+        }
+        require_current(source, stamp, image)?;
+        if source
+            .selected_native_image_identity(image)
+            .map_err(|error| {
+                format!("recheck selected image identity after history snapshot: {error}")
+            })?
+            != image_identity
+        {
+            return Err("selected history snapshot image changed while persisting".to_owned());
+        }
+        history::generation_from_record(record, stamp)
+    }
+
     fn target_root(&self, target: &SemanticTargetKey) -> PathBuf {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"backend.semantic.local-generation-target.v1\0");
         hash_target(&mut hasher, target);
         self.root.join(hex(hasher.finalize().as_bytes()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_head_for_test(&self, target: &SemanticTargetKey) -> Result<(), String> {
+        fs::remove_file(self.target_root(target).join("HEAD")).map_err(display_io)
     }
 }
 

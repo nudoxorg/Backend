@@ -711,6 +711,21 @@ impl LocalSemanticGenerationFiles {
         })
     }
 
+    /// Reopens the immutable generation metadata bound by one history commit.
+    /// This snapshot is history evidence only; no local transfer-cache HEAD
+    /// participates in selection.
+    pub(crate) fn typed_v3_history_generation(
+        &self,
+        target: &SemanticTargetKey,
+        identity: HistoryCommitId,
+    ) -> Result<LocalSemanticGeneration, String> {
+        let commit = self.history_commit(target, identity)?;
+        let target_root = self.target_root(target);
+        let record = super::super::load_record(&target_root, commit.generation(), target)?;
+        super::catalog::validate_commit_generation(&commit.record, &record)?;
+        super::catalog::generation_from_record(record, commit.selected_stamp())
+    }
+
     pub(crate) fn revalidate_typed_v3_publication_snapshot(
         &self,
         target: &SemanticTargetKey,
@@ -728,6 +743,7 @@ impl LocalSemanticGenerationFiles {
     pub(crate) fn propose_typed_v3_history_commit(
         &self,
         target: &SemanticTargetKey,
+        generation: &LocalSemanticGeneration,
         parents: &[HistoryCommitId],
         provenance: [u8; 32],
         content: &backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
@@ -743,18 +759,16 @@ impl LocalSemanticGenerationFiles {
         if parents.len() == 2 {
             return Err(HistoryProposalError::UnsupportedMergePayloadClosure);
         }
-        let generation = self
-            .current(target)
-            .map_err(HistoryProposalError::Storage)?
-            .ok_or_else(|| {
-                HistoryProposalError::Storage(
-                    "no admitted current generation is available for typed V3 history".to_owned(),
-                )
-            })?;
+        if generation.target() != target {
+            return Err(HistoryProposalError::Storage(
+                "typed V3 history snapshot belongs to another target".to_owned(),
+            ));
+        }
         let manifest = locator.validate().map_err(HistoryProposalError::Storage)?;
-        let selected_input =
-            backend_semantic::ir::SemanticInputClaimV2::from_witness(&generation.manifest.input());
-        if manifest.build() != generation.manifest.build()
+        let selected_input = backend_semantic::ir::SemanticInputClaimV2::from_witness(
+            &generation.manifest().input(),
+        );
+        if manifest.build() != generation.manifest().build()
             || manifest.input_claim() != selected_input
             || !manifest
                 .content_root_claim()
@@ -791,10 +805,10 @@ impl LocalSemanticGenerationFiles {
             identity: HistoryCommitId([0; 32]),
             target: target.clone(),
             parents: parents.to_vec(),
-            generation: generation.identity,
+            generation: generation.identity(),
             generation_root: HistoryGenerationRoot::TypedV3(root_claim),
-            manifest_root: generation.manifest.root(),
-            stamp: generation.selected_stamp,
+            manifest_root: generation.manifest().root(),
+            stamp: generation.selected_stamp(),
             provenance,
             first_parent_depth: depth,
             checkpoint: parents.is_empty() || depth % HISTORY_CHECKPOINT_INTERVAL == 0,
