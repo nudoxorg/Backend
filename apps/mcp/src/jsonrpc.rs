@@ -947,9 +947,10 @@ impl<P: Product> Server<P> {
     }
 }
 
-const INSTRUCTIONS: &str = "Index the repository before you answer questions about its code. \
-backend.index adds a project: pass its absolute path. Then call backend.packages. An empty shelf \
-means you have not indexed yet, and a lane that is not configured is not an empty codebase. Find \
+const INSTRUCTIONS: &str = "This server attaches to the current index without changing it. Index or \
+reindex a repository explicitly with backend.index and its absolute path, then call \
+backend.packages. An empty shelf means no project has been indexed yet, and a lane that is not \
+configured is not an empty codebase. Find \
 a coordinate with backend.search, or with backend.outline when you do not know the names. Copy \
 that coordinate verbatim into backend.document for the signature and docs, backend.source for \
 the body, backend.references for uses, and backend.graph for calls. Do not invent coordinates \
