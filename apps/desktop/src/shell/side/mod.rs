@@ -273,6 +273,7 @@ impl Shelf {
                 ) {
                     crate::runtime::releases::Read::Ready(data) => Some(data),
                     crate::runtime::releases::Read::Reading
+                    | crate::runtime::releases::Read::Waiting
                     | crate::runtime::releases::Read::Unavailable(_) => None,
                 }
             });

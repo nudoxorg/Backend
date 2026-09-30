@@ -343,14 +343,12 @@ fn hero(
             };
             // `min_w_0` lets a long repository path wrap inside the column
             // instead of forcing the flex row past the reader's right edge.
-            // Keep the full manifest value in the accessibility name too.
             let full_value = part.clone();
             line = line.child(
                 div()
                     .min_w_0()
                     .max_w_full()
                     .when(stacked, |this| this.w_full())
-                    .aria_label(full_value.clone())
                     .child(
                         text(ty::SMALL, measure, ink)
                             .min_w_0()

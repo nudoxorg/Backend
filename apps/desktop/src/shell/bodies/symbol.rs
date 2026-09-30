@@ -165,6 +165,12 @@ fn history_of(
                 "Checking exact local release comparisons…",
             )),
         ),
+        crate::runtime::releases::Read::Waiting => (
+            facet::anatomy::history::History::default(),
+            Some(std::sync::Arc::from(
+                "Waiting for an available release-read slot…",
+            )),
+        ),
         crate::runtime::releases::Read::Unavailable(reason) => {
             (facet::anatomy::history::History::default(), Some(reason))
         }
@@ -283,6 +289,9 @@ fn upgrade(route: &SymbolRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> 
     match crate::runtime::releases::get(&pinned, root, Some(at.as_str()), cx) {
         crate::runtime::releases::Read::Reading => {
             Some(release_note("Checking the exact release comparison…", ctx))
+        }
+        crate::runtime::releases::Read::Waiting => {
+            Some(release_note("Waiting for an available release-read slot…", ctx))
         }
         crate::runtime::releases::Read::Unavailable(reason) => Some(release_note(&reason, ctx)),
         crate::runtime::releases::Read::Ready(data) => {
