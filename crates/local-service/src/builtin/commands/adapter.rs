@@ -383,20 +383,18 @@ impl CommandAdapter {
         requested_package: backend_engine::PackageKey,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let PreparedProductSelection { intent, selected } = prepared;
-        self.semantic_authority
-            .validate_product_selections(&selected)?;
-        let committed = if let Some(intent) = intent {
-            commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
-                BuiltinModelError(format!("commit product source intent: {error}"))
+        let committed = self
+            .semantic_authority
+            .commit_product_selection_transaction(selected, || {
+                intent
+                    .map(|intent| {
+                        commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                            BuiltinModelError(format!("commit product source intent: {error}"))
+                        })?;
+                        Ok(intent)
+                    })
+                    .transpose()
             })?;
-            Some(intent)
-        } else {
-            None
-        };
-        // The durable workspace root is the product selection marker. Update
-        // the process-local selector only after it has committed.
-        self.semantic_authority
-            .commit_product_selections(selected)?;
         self.publish_view(daemon, committed.as_ref())?;
         Ok(added_reply(requested_package))
     }
@@ -837,18 +835,19 @@ impl CommandAdapter {
                     selected: Vec::new(),
                 }),
         };
-        self.semantic_authority
-            .validate_product_selections(&prepared.selected)?;
-        let committed = if let Some(intent) = prepared.intent {
-            commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
-                BuiltinModelError(format!("commit product source intent: {error}"))
+        let PreparedProductSelection { intent, selected } = prepared;
+        let committed = self
+            .semantic_authority
+            .commit_product_selection_transaction(selected, || {
+                intent
+                    .map(|intent| {
+                        commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                            BuiltinModelError(format!("commit product source intent: {error}"))
+                        })?;
+                        Ok(intent)
+                    })
+                    .transpose()
             })?;
-            Some(intent)
-        } else {
-            None
-        };
-        self.semantic_authority
-            .commit_product_selections(prepared.selected)?;
         self.publish_view(daemon, committed.as_ref())?;
         Ok(added_reply(requested_package))
     }

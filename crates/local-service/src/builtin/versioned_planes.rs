@@ -12,10 +12,13 @@ use backend_extension_turso::{
 };
 use backend_replication::{
     ByteRange, IrHydrationRequest, SelectedGenerationSource, SelectedGenerationStamp,
-    SelectedNativeImageSource, SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk,
-    SemanticManifestGet, SemanticTargetKey,
+    SelectedNativeHistoryImage, SelectedNativeImagePublicationFence, SelectedNativeImageSource,
+    SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet,
+    SemanticTargetKey,
 };
-use backend_semantic::ir::{SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest};
+use backend_semantic::ir::{
+    SemanticImageIdentity, SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest,
+};
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
 use core::fmt;
 use hashlink::LruCache;
@@ -268,6 +271,11 @@ impl SelectedGenerationSource for SemanticAuthoritySelectionSource<'_> {
 }
 
 impl SelectedNativeImageSource for SemanticAuthoritySelectionSource<'_> {
+    type PublicationFence<'fence>
+        = SemanticAuthorityPublicationFence<'fence>
+    where
+        Self: 'fence;
+
     fn selected_semantic_target(&mut self) -> Result<SemanticTargetKey, Self::Error> {
         self.target()
     }
@@ -278,6 +286,68 @@ impl SelectedNativeImageSource for SemanticAuthoritySelectionSource<'_> {
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, Self::Error> {
         self.authority
             .selected_native_image_identity(&self.key, image)
+    }
+
+    fn acquire_publication_fence<'fence>(
+        &'fence mut self,
+        selected: &SelectedNativeHistoryImage<'_>,
+    ) -> Result<Self::PublicationFence<'fence>, Self::Error> {
+        let target = self.target()?;
+        if selected.target() != &target {
+            return Err(BuiltinModelError(
+                "typed V3 history target differs from its committed product key".to_owned(),
+            ));
+        }
+        let lease = self.authority.committed_selection_lease(&self.key)?;
+        let publication = lease.selected_plane()?;
+        let image = selected.image_key();
+        if publication.stamp() != selected.selected_stamp()
+            || publication.metadata().artifact_for_image(image).is_none()
+        {
+            return Err(BuiltinModelError(
+                "typed V3 history image is no longer the committed product selection".to_owned(),
+            ));
+        }
+        let image_identity = lease.selected_native_image_identity(image)?;
+        if image_identity != selected.image_identity() {
+            return Err(BuiltinModelError(
+                "typed V3 history image identity differs from the committed product selection"
+                    .to_owned(),
+            ));
+        }
+        Ok(SemanticAuthorityPublicationFence {
+            _lease: lease,
+            target,
+            stamp: publication.stamp(),
+            image,
+            image_identity,
+        })
+    }
+}
+
+struct SemanticAuthorityPublicationFence<'a> {
+    _lease: super::semantic_authority::CommittedSemanticSelectionLease<'a>,
+    target: SemanticTargetKey,
+    stamp: SelectedGenerationStamp,
+    image: SemanticPlaneImageKey,
+    image_identity: SemanticImageIdentity,
+}
+
+impl SelectedNativeImagePublicationFence for SemanticAuthorityPublicationFence<'_> {
+    fn selected_target(&self) -> &SemanticTargetKey {
+        &self.target
+    }
+
+    fn selected_stamp(&self) -> SelectedGenerationStamp {
+        self.stamp
+    }
+
+    fn selected_image(&self) -> SemanticPlaneImageKey {
+        self.image
+    }
+
+    fn selected_image_identity(&self) -> SemanticImageIdentity {
+        self.image_identity
     }
 }
 
