@@ -206,6 +206,8 @@ git_source="$rustc_cache_home/git/checkouts/example-1/commit/src/lib.rs"
 workspace_source="$rustc_cache_workspace/src/lib.rs"
 vendor_source="$rustc_cache_workspace/vendor/example/src/lib.rs"
 for source in "$registry_source" "$git_source" "$workspace_source" "$vendor_source"; do : > "$source"; done
+registry_workspace_symlink="$rustc_cache_home/registry/src/index.crates.io-1/serde-1/src/workspace-link.rs"
+ln -s "$workspace_source" "$registry_workspace_symlink"
 rustc_cache_log="$test_root/rustc-cache.log"
 rustc_direct_log="$test_root/rustc-direct.log"
 : > "$rustc_cache_log"
@@ -263,8 +265,13 @@ run_rustc_cache_case build_script_build bin "$registry_source"
 run_rustc_cache_case serde_derive proc-macro "$registry_source"
 run_rustc_cache_case vendor_crate lib "$vendor_source"
 run_rustc_cache_case ambiguous "" "$registry_source"
+run_rustc_cache_case symlinked_workspace lib "$registry_workspace_symlink"
 assert_file_lines "$rustc_cache_log" 2
-assert_file_lines "$rustc_direct_log" 5
+assert_file_lines "$rustc_direct_log" 6
+case "$(tail -n 1 "$rustc_direct_log")" in
+  *"$registry_workspace_symlink"*) ;;
+  *) fail "symlinked workspace source was not passed directly to rustc" ;;
+esac
 
 # Metadata and formatting remain unrestricted and do not require a socket or
 # a mutable build directory.
@@ -352,6 +359,19 @@ if NUDOX_TEST_WORKTREE="$test_root/roots/g" NUDOX_TEST_LOG="$four_log" \
 fi
 assert_file_lines "$four_log" 4
 for four_pid in $four_pids; do wait "$four_pid"; done
+
+# A caller cannot raise the host-wide cap beyond four, even by setting the
+# wrapper's configurable slot count directly.
+five_cache="$test_root/five-cache"
+five_log="$test_root/five.log"
+if NUDOX_TEST_WORKTREE="$test_root/roots/g" NUDOX_TEST_LOG="$five_log" \
+  NUDOX_BUILD_CACHE_ROOT="$five_cache" NUDOX_CARGO_BUILD_SLOTS=5 \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build; then
+  fail "five-slot override bypassed the hard machine-wide cap"
+else
+  assert_eq 64 "$?"
+fi
+[ ! -e "$five_log" ] || fail "invalid five-slot override reached Cargo"
 
 # An explicit build-dir is a role root. Its leased child is stamped, isolated
 # between worktrees, and the caller's parent directory remains intact.

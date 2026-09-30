@@ -79,11 +79,17 @@ if [ "$crate_type_count" -eq 1 ] \
   source_file="${source##*/}"
   source_dir="$(CDPATH= cd -P "$source_dir" 2>/dev/null && pwd -P || true)"
   source="$source_dir/$source_file"
-  case "$source" in
-    "$cargo_home"/registry/src/*|"$cargo_home"/git/checkouts/*)
-      exec @sccache@ "$compiler" "$@"
-      ;;
-  esac
+  # Canonicalizing only the parent avoids path-spelling tricks, but the final
+  # entry can itself be a symlink that points from the registry into a mutable
+  # workspace. Keep such sources on direct rustc so sccache never treats a
+  # workspace input as an immutable external crate.
+  if [ ! -L "$source" ]; then
+    case "$source" in
+      "$cargo_home"/registry/src/*|"$cargo_home"/git/checkouts/*)
+        exec @sccache@ "$compiler" "$@"
+        ;;
+    esac
+  fi
 fi
 
 exec "$compiler" "$@"
