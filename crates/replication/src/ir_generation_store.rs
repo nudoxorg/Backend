@@ -618,7 +618,9 @@ impl LocalSemanticGenerationFiles {
     /// without moving the local transfer-cache `HEAD`. Typed V3 history uses
     /// this record as a commit snapshot; only the supplied owner selector can
     /// authorize its publication.
-    pub(super) fn persist_selected_history_snapshot<S: crate::SelectedNativeImageSource>(
+    pub(super) fn persist_selected_history_snapshot<
+        F: crate::SelectedNativeImagePublicationFence,
+    >(
         &self,
         target: &SemanticTargetKey,
         stamp: SelectedGenerationStamp,
@@ -626,7 +628,7 @@ impl LocalSemanticGenerationFiles {
         image: SemanticPlaneImageKey,
         image_identity: SemanticImageIdentity,
         manifest: &SemanticPlaneManifest,
-        source: &mut S,
+        selection_fence: &F,
     ) -> Result<LocalSemanticGeneration, String> {
         let record_bytes =
             encode_generation_record(target, catalog, image, image_identity, manifest)?;
@@ -644,15 +646,14 @@ impl LocalSemanticGenerationFiles {
         set_private_directory(&target_root)?;
         set_private_directory(&records_root)?;
 
-        require_current(source, stamp, image)?;
-        if source
-            .selected_native_image_identity(image)
-            .map_err(|error| {
-                format!("read selected image identity before history snapshot: {error}")
-            })?
-            != image_identity
+        if selection_fence.selected_target() != target
+            || selection_fence.selected_stamp() != stamp
+            || selection_fence.selected_image() != image
+            || selection_fence.selected_image_identity() != image_identity
         {
-            return Err("selected history snapshot image identity is stale".to_owned());
+            return Err(
+                "selected history snapshot differs from its owner publication fence".to_owned(),
+            );
         }
         let immutable_path = record_path(&target_root, record.identity);
         match fs::read(&immutable_path) {
@@ -665,15 +666,12 @@ impl LocalSemanticGenerationFiles {
             }
             Err(error) => return Err(display_io(error)),
         }
-        require_current(source, stamp, image)?;
-        if source
-            .selected_native_image_identity(image)
-            .map_err(|error| {
-                format!("recheck selected image identity after history snapshot: {error}")
-            })?
-            != image_identity
+        if selection_fence.selected_target() != target
+            || selection_fence.selected_stamp() != stamp
+            || selection_fence.selected_image() != image
+            || selection_fence.selected_image_identity() != image_identity
         {
-            return Err("selected history snapshot image changed while persisting".to_owned());
+            return Err("selected history snapshot fence changed while persisting".to_owned());
         }
         history::generation_from_record(record, stamp)
     }
