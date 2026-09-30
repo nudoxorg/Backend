@@ -289,6 +289,7 @@ fn acquisition_service_reuses_a_cached_release_after_not_modified() {
     assert_eq!(transport.archives, 1, "304 must reuse the durable archive");
 
     let before_lineage_epoch = service.policy_epoch();
+    let before_lineage_facts = service.facts_frontier();
     let published = service
         .published_packages()
         .into_iter()
@@ -310,7 +311,7 @@ fn acquisition_service_reuses_a_cached_release_after_not_modified() {
             vec![association.clone()].into_boxed_slice(),
         )
         .expect("link forge lineage");
-    assert_ne!(service.policy_epoch(), before_lineage_epoch);
+    assert_eq!(service.policy_epoch(), before_lineage_epoch);
     let linked = service
         .published_packages()
         .into_iter()
@@ -321,6 +322,7 @@ fn acquisition_service_reuses_a_cached_release_after_not_modified() {
         .expect("joined forge lineage");
     assert_eq!(joined.as_ref(), &[association.clone()]);
     let linked_facts_root = service.facts_frontier();
+    assert_ne!(linked_facts_root, before_lineage_facts);
 
     drop(service);
     let (recovered_owner, _) = RegistryOwner::open(
@@ -1887,11 +1889,11 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
             self.pages += 1;
             self.page = self.page.saturating_add(1);
             let coordinate = PackageCoordinate::parse("pkg:cargo/demo@2.0.0").expect("coordinate");
-            let advisory = (self.page > 1).then(|| {
-                let mut advisory = backend_advisory::AdvisoryPackageDto::unknown();
-                advisory.decision = backend_advisory::AcquisitionDecision::Deny(Box::new([]));
-                advisory
-            });
+            let standing = if self.page == 1 {
+                ReleaseStanding::Available
+            } else {
+                ReleaseStanding::Yanked
+            };
             Ok(TransportResult::Available(FeedPage {
                 base: request.cursor,
                 next_token: [self.page; 32],
@@ -1901,9 +1903,9 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
                         *CapabilityArtifactId::from_value(&self.archive).as_bytes(),
                     ),
                     provenance: ProvenanceDigest::from_authenticated_feed([self.page; 32]),
-                    facts: test_facts_for(ReleaseStanding::Available),
+                    facts: test_facts_for(standing),
                     native_metadata: test_native_metadata(),
-                    advisory,
+                    advisory: None,
                     dependency_facts: unavailable_dependency_facts(),
                     archive_url: Arc::from("https://registry.example.test/demo.crate"),
                 }],
@@ -1989,7 +1991,7 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     assert!(matches!(
         second,
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
-            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+            kind: crate::acquisition::NegativeFactKind::Yanked,
             ..
         })
     ));
@@ -1998,14 +2000,14 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     assert_ne!(updated_facts_frontier, first_facts_frontier);
     let updated_record = service
         .recover_product_record(&request)
-        .expect("recover advisory-blocked product receipt")
-        .expect("advisory denial must be durably recorded");
+        .expect("recover yanked product receipt")
+        .expect("yank must be durably recorded");
     assert_eq!(updated_record.facts_frontier, updated_facts_frontier);
     assert!(matches!(
         updated_record.terminal,
         crate::acquisition::AcquisitionProductTerminal::NegativeFact(
             crate::acquisition::NegativeFact {
-                kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+                kind: crate::acquisition::NegativeFactKind::Yanked,
                 ..
             }
         )
@@ -2027,14 +2029,14 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
             &mut self,
             _: FeedRequest,
         ) -> Result<TransportResult<FeedPage>, TransportFailure> {
-            panic!("durable advisory denial must recover without a metadata request")
+            panic!("durable yanked fact must recover without a metadata request")
         }
 
         fn fetch_archive(
             &mut self,
             _: &RemotePackage,
         ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
-            panic!("durable advisory denial must not fetch an archive")
+            panic!("durable yanked fact must not fetch an archive")
         }
     }
     let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
@@ -2045,14 +2047,14 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     assert!(matches!(
         service.acquire(&request, &mut NoNetwork),
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
-            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+            kind: crate::acquisition::NegativeFactKind::Yanked,
             ..
         })
     ));
     let durable = service
         .recover_product_record(&request)
-        .expect("recover advisory-blocked product record")
-        .expect("durable advisory-blocked product record");
+        .expect("recover yanked product record")
+        .expect("durable yanked product record");
     let admitted = service
         .published_package(&coordinate)
         .expect("recovered owner metadata");
@@ -2061,6 +2063,117 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
         Some(admitted.metadata_evidence_digest())
     );
     assert!(durable.raw_object.is_some());
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() {
+    struct MutableAdvisory {
+        page: u8,
+        archive: Vec<u8>,
+    }
+
+    impl RegistryTransport for MutableAdvisory {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            self.page = self.page.saturating_add(1);
+            let advisory = (self.page > 1).then(|| {
+                let mut advisory = backend_advisory::AdvisoryPackageDto::unknown();
+                let reasons = Box::new([backend_advisory::PolicyReason::Advisory(
+                    backend_advisory::AdvisoryStatus::Vulnerable,
+                )]);
+                advisory.reasons = reasons.clone();
+                advisory.decision = backend_advisory::AcquisitionDecision::Deny(reasons);
+                advisory
+            });
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [self.page; 32],
+                packages: vec![RemotePackage {
+                    coordinate: PackageCoordinate::parse("pkg:cargo/security-refresh@1.0.0")
+                        .expect("coordinate"),
+                    integrity: transport::ArchiveIntegrity::Canonical(
+                        *CapabilityArtifactId::from_value(&self.archive).as_bytes(),
+                    ),
+                    provenance: ProvenanceDigest::from_authenticated_feed([self.page; 32]),
+                    facts: test_facts(),
+                    native_metadata: test_native_metadata(),
+                    advisory,
+                    dependency_facts: unavailable_dependency_facts(),
+                    archive_url: Arc::from("https://registry.example.test/security-refresh.crate"),
+                }],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("service-advisory-fact-refresh");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+    let service = crate::acquisition::AcquisitionService::from_owner(
+        owner,
+        root.join("coordination"),
+    )
+    .expect("service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        "pkg:cargo/security-refresh@1.0.0",
+        1,
+        0,
+    )
+    .expect("request");
+    let mut transport = MutableAdvisory {
+        page: 0,
+        archive: b"security advisory fact transition".to_vec(),
+    };
+    let crate::acquisition::AcquisitionOutcome::Hit(first) =
+        service.acquire(&request, &mut transport)
+    else {
+        panic!("initial clean advisory observation must publish");
+    };
+    let first_epoch = first.receipt.policy_epoch;
+    let first_facts_frontier = service.facts_frontier();
+    assert!(service
+        .recover_product_record(&request)
+        .expect("recover initial product receipt")
+        .is_some());
+
+    assert!(matches!(
+        service.acquire(&request, &mut transport),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+            ..
+        })
+    ));
+    assert_eq!(service.policy_epoch(), first_epoch);
+    let updated_facts_frontier = service.facts_frontier();
+    assert_ne!(updated_facts_frontier, first_facts_frontier);
+    let updated = service
+        .recover_product_record(&request)
+        .expect("recover advisory-denial product receipt")
+        .expect("advisory denial must be durably recorded");
+    assert_eq!(updated.facts_frontier, updated_facts_frontier);
+    assert!(matches!(
+        updated.terminal,
+        crate::acquisition::AcquisitionProductTerminal::NegativeFact(
+            crate::acquisition::NegativeFact {
+                kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+                ..
+            }
+        )
+    ));
     fs::remove_dir_all(root).expect("cleanup");
 }
 
