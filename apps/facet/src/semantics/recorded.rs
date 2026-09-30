@@ -162,7 +162,17 @@ fn c_pipe(signature: &str, expected: &str) -> Option<Pipe> {
 
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&tree_sitter_c::LANGUAGE.into()).ok()?;
-    let tree = parser.parse(signature, None)?;
+    let mut tree = parser.parse(signature, None)?;
+    // The source-signature producer keeps a function definition's header and
+    // strips its body. That leaves a declaration header without C's
+    // terminating semicolon. Retry with that grammar delimiter only when the
+    // original input is a syntax error and has no terminator; all projected
+    // names and types still come from byte ranges into the unchanged recorded
+    // source below.
+    if tree.root_node().has_error() && !signature.trim_end().ends_with(';') {
+        let parser_input = format!("{signature};");
+        tree = parser.parse(parser_input.as_str(), None)?;
+    }
     let root = tree.root_node();
     if root.has_error() || root.kind() != "translation_unit" { return None; }
 
@@ -538,6 +548,15 @@ mod tests {
         assert!(callable("int (*not_callable)(int);", "not_callable", Language::C).is_none());
         assert!(callable("int broken(int value", "broken", Language::C).is_none());
         assert!(callable("/* expected */ int other(void);", "expected", Language::C).is_none());
+    }
+
+    #[test]
+    fn c_accepts_the_bodyless_definition_header_kept_by_the_signature_producer() {
+        let pipe = callable("static int count(const char *text)", "count", Language::C).unwrap();
+        assert_eq!(pipe.inputs[0].name.as_ref(), "text");
+        assert_eq!(pipe.inputs[0].ty.as_ref().unwrap().source.as_ref(), "const char *");
+        assert_eq!(pipe.output.as_ref().unwrap().source.as_ref(), "int");
+        assert!(callable("int count(const char *text", "count", Language::C).is_none());
     }
 
     #[test]
