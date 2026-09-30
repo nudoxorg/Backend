@@ -1989,7 +1989,7 @@ status: data FIXED (tests); GUI unverified
 real data: fixture
 sources: TS/VERSIONS.md; RF/REVIEW.md:110
 
-### TIS-10 · TIMING.md: wall-clock assertions replaced by operation counts in four local-service/library tests; three flaky timing tests named earlier (borrowed_row_claims..., package_row_changes..., borrowed_file_splice...) 
+### TIS-10 · TIMING.md: wall-clock assertions replaced by operation counts in four local-service/library tests; three flaky timing tests named earlier (borrowed_row_claims..., package_row_changes..., borrowed_file_splice...)
 surface: harness/journeys/lints
 problem: The remaining GUI tests that assert wall-clock or virtual-time budgets under load (hover rest, animation settle budgets, perf budgets in debug) were not audited for the same flake class.
 evidence: TS/TIMING.md:1-360
