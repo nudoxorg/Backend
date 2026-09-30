@@ -1130,7 +1130,7 @@ fn malformed_selected_root_and_interrupted_stage_rebuild_from_authoritative_stat
     let key = hex_fingerprint(projection_fingerprint(state.binding()));
     let version_root = root.join(DURABLE_ROOTS_DIRECTORY);
     let selected = version_root.join(key);
-    let incomplete = version_root.join(".interrupted-generation.building-1");
+    let incomplete = version_root.join(format!(".{}.building-1-1", "0".repeat(64)));
     std::fs::create_dir(&incomplete).expect("incomplete staging directory");
     std::fs::write(selected.join(BINDING_FILE), b"truncated authority stamp")
         .expect("corrupt generation marker");
@@ -1149,6 +1149,178 @@ fn malformed_selected_root_and_interrupted_stage_rebuild_from_authoritative_stat
     assert_eq!(term_hits(&recovered, "survivor"), vec![document(9)]);
     assert_eq!(term_hits(&recovered, "impostor"), Vec::<EntityId>::new());
     assert!(!incomplete.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn durable_root_pin_survives_cross_process_pruning_then_releases_for_eviction() {
+    const CHILD_ROOT: &str = "BACKEND_TANTIVY_PIN_TEST_ROOT";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = std::path::PathBuf::from(root);
+        let initial = state_for(
+            vec![(document(1), vec![("name".into(), "pinnedroot".into())])],
+            [61; 32],
+        );
+        let source = TantivySource::open_or_build_in_dir(&initial, Limits::default(), &root)
+            .expect("child opens and pins selected root");
+        assert_eq!(term_hits(&source, "pinnedroot"), vec![document(1)]);
+        println!("PINNED");
+        std::io::Write::flush(&mut std::io::stdout()).expect("flush child readiness");
+        let mut release = [0_u8; 1];
+        std::io::Read::read_exact(&mut std::io::stdin(), &mut release)
+            .expect("wait for parent release");
+        drop(source);
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-reader-pin-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let executable = std::env::current_exe().expect("test executable");
+    let mut child = std::process::Command::new(executable)
+        .arg("--exact")
+        .arg("tests::durable_root_pin_survives_cross_process_pruning_then_releases_for_eviction")
+        .arg("--nocapture")
+        .env(CHILD_ROOT, &root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("spawn independent reader process");
+    let mut child_output = std::io::BufReader::new(child.stdout.take().expect("child stdout"));
+    let mut line = String::new();
+    loop {
+        line.clear();
+        std::io::BufRead::read_line(&mut child_output, &mut line)
+            .expect("read child readiness");
+        if line.trim() == "PINNED" {
+            break;
+        }
+        assert!(!line.is_empty(), "child exited before pinning its root");
+    }
+
+    let initial = state_for(
+        vec![(document(1), vec![("name".into(), "pinnedroot".into())])],
+        [61; 32],
+    );
+    let old_key = hex_fingerprint(projection_fingerprint(initial.binding()));
+    let old_root = root.join(DURABLE_ROOTS_DIRECTORY).join(old_key);
+    for ordinal in 2..=8 {
+        let next = state_for(
+            vec![(document(ordinal), vec![("name".into(), format!("revision{ordinal}"))])],
+            [ordinal as u8; 32],
+        );
+        let source = TantivySource::open_or_build_in_dir(&next, Limits::default(), &root)
+            .expect("publish newer immutable root");
+        drop(source);
+    }
+    assert!(old_root.is_dir(), "active cross-process root must stay on disk");
+
+    let mut child_stdin = child.stdin.take().expect("child stdin");
+    std::io::Write::write_all(&mut child_stdin, b"x").expect("release child root lease");
+    assert!(child.wait().expect("wait for child").success());
+
+    let latest = state_for(
+        vec![(document(8), vec![("name".into(), "revision8".into())])],
+        [8; 32],
+    );
+    let reopened = TantivySource::open_or_build_in_dir(&latest, Limits::default(), &root)
+        .expect("prune released old root");
+    assert_eq!(term_hits(&reopened, "revision8"), vec![document(8)]);
+    assert!(!old_root.exists(), "released old root should be evicted");
+    drop(reopened);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn durable_manifest_reads_do_not_follow_symlinks_or_allocate_unbounded_bytes() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-manifest-bounds-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let state = state_for(
+        vec![(document(7), vec![("name".into(), "recoverable".into())])],
+        [71; 32],
+    );
+    let source = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("initial selected root");
+    drop(source);
+    let key = hex_fingerprint(projection_fingerprint(state.binding()));
+    let selected = root.join(DURABLE_ROOTS_DIRECTORY).join(key);
+
+    let external = root.join("external-manifest-target");
+    std::fs::write(&external, b"outside bytes stay unchanged").expect("external sentinel");
+    std::fs::remove_file(selected.join(INTEGRITY_FILE)).expect("remove manifest");
+    std::os::unix::fs::symlink(&external, selected.join(INTEGRITY_FILE))
+        .expect("insert final-component symlink");
+    let recovered = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("rebuild root with symlink manifest");
+    assert_eq!(term_hits(&recovered, "recoverable"), vec![document(7)]);
+    drop(recovered);
+    assert_eq!(std::fs::read(&external).expect("external target"), b"outside bytes stay unchanged");
+
+    std::fs::write(
+        selected.join(INTEGRITY_FILE),
+        vec![0_u8; usize::try_from(MAX_PROJECTION_MANIFEST_BYTES).expect("bound") + 1],
+    )
+    .expect("write oversized manifest");
+    let recovered_again = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("recover from oversized manifest");
+    assert_eq!(term_hits(&recovered_again, "recoverable"), vec![document(7)]);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn transient_selected_root_io_failure_preserves_the_durable_generation() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-transient-root-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let state = state_for(
+        vec![(document(9), vec![("name".into(), "keepoldroot".into())])],
+        [91; 32],
+    );
+    let source = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("publish selected root");
+    drop(source);
+    let key = hex_fingerprint(projection_fingerprint(state.binding()));
+    let selected = root.join(DURABLE_ROOTS_DIRECTORY).join(key);
+    let original_manifest = std::fs::read(selected.join(INTEGRITY_FILE)).expect("manifest bytes");
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o000))
+        .expect("make root unreadable where permissions are enforced");
+    let reopened = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root);
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o700))
+        .expect("restore root permissions");
+
+    match reopened {
+        Err(TantivySourceError::Io(error)) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            assert!(selected.is_dir(), "transient read failure must retain the old root");
+            assert_eq!(
+                std::fs::read(selected.join(INTEGRITY_FILE)).expect("retained manifest"),
+                original_manifest
+            );
+        }
+        Ok(source) => drop(source), // Some test runners can bypass mode-bit permissions.
+        Err(error) => panic!("unexpected selected-root recovery error: {error}"),
+    }
     let _ = std::fs::remove_dir_all(root);
 }
 
