@@ -266,10 +266,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "backend-mcp-owner-outage-{}-{nonce}",
-            std::process::id()
-        ));
+        // Nix's TMPDIR can itself exceed macOS's Unix-socket path budget.
+        // Keep the entire private fixture under the short Unix temporary root.
+        let root =
+            PathBuf::from("/tmp").join(format!("bmcp-outage-{}-{nonce:x}", std::process::id()));
         let project = root.join("project");
         let data = root.join("state");
         fs::create_dir_all(&project).expect("fixture project");
@@ -356,10 +356,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "backend-mcp-fresh-workspace-{}-{nonce}",
-            std::process::id()
-        ));
+        let root =
+            PathBuf::from("/tmp").join(format!("bmcp-fresh-{}-{nonce:x}", std::process::id()));
         let project = root.join("project");
         fs::create_dir_all(&project).expect("fixture project");
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))

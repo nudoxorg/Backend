@@ -458,7 +458,7 @@ fn state_data_error() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_version::{ClosedRelationScope, CoverageWitness, ScopeRoot, WorkspaceManifest};
+    use backend_version::WorkspaceManifest;
 
     #[test]
     fn projection_membership_accepts_only_canonical_typed_row_keys() {
@@ -478,9 +478,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             qdrant::Authority::from_value(&[1; 32]),
-            CoverageWitness::closed_relation(ClosedRelationScope::from_scope_root(
-                ScopeRoot::from_u64(1),
-            )),
+            crate::builtin::admitted_coverage().expect("admitted test coverage"),
         )
         .expect("workspace")
         .root();

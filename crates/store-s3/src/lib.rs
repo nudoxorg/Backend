@@ -627,7 +627,7 @@ fn map_remote_admission_error(error: StoreError) -> RemoteStoreError {
     match error {
         StoreError::Corrupt => RemoteStoreError::Identity,
         StoreError::Bounds => RemoteStoreError::Bounds,
-        StoreError::Io(_) => RemoteStoreError::Unavailable,
+        StoreError::Io(_) | StoreError::TemporaryIo(_) => RemoteStoreError::Unavailable,
         error => RemoteStoreError::Store(error),
     }
 }

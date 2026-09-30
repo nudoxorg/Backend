@@ -7,6 +7,7 @@ use crate::{
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::num::NonZeroU64;
 
 /// Largest user-authored operand retained by the product service.
@@ -17,6 +18,8 @@ pub const MAX_PRODUCT_ROWS: usize = 256;
 pub const MAX_INDEX_SEARCH_CURSOR_BYTES: usize = 64 * 1024;
 /// Maximum number of owner progress events returned by one index progress read.
 pub const MAX_INDEX_PROGRESS_EVENTS: usize = 16;
+/// Maximum human-readable detail retained in one derived-history status.
+pub const MAX_SEMANTIC_HISTORY_STATUS_DETAIL_BYTES: usize = 1024;
 
 /// Nonempty, bounded, NUL-free product text.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -373,6 +376,71 @@ pub struct SemanticVersionRecord {
     pub history_status: SemanticHistoryPublicationStatus,
 }
 
+/// Exact selected-generation stamp captured by native history publication.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticHistorySelectionStamp {
+    /// Turso authority namespace bytes.
+    pub namespace: [u8; 16],
+    /// Selected language profile.
+    pub profile: SemanticLanguageProfile,
+    /// Digest of the selected source coordinate.
+    pub source_coordinate: [u8; 32],
+    /// Monotonic committed selection revision.
+    pub selection_revision: u64,
+    /// Exact workspace-selected semantic root.
+    pub selected_root: [u8; 32],
+    /// Immutable selected closure identity.
+    pub closure_id: [u8; 32],
+    /// Root of the selected semantic image catalog.
+    pub catalog_root: [u8; 32],
+}
+
+/// Exact native image authenticated by the selected catalog and manifest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticHistoryImageIdentity {
+    /// Ordinal in the selected image catalog.
+    pub artifact_ordinal: u32,
+    /// Canonical semantic generation identity of the full image.
+    pub semantic_generation: [u8; 32],
+    /// Exact manifest root named by the selected image key.
+    pub manifest_root: [u8; 32],
+    /// Identity hash of the complete encoded semantic image.
+    pub image_identity: [u8; 32],
+}
+
+/// Authority recoverable from the durable typed V3 input claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticHistoryInputReplayStatus {
+    /// The opaque persisted input claim does not recreate a read frontier.
+    Unproven,
+}
+
+/// Bounded public summary of the successful typed V3 branch publication.
+///
+/// It contains the exact owner selection, native image, ref CAS result, and
+/// parent lineage needed to investigate a published generation. The input
+/// field deliberately states `Unproven`; this summary does not recreate the
+/// compiler's source read frontier.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticHistoryPublicationProof {
+    /// Exact committed product selection used by the publication fence.
+    pub selection: SemanticHistorySelectionStamp,
+    /// Full-image identity bound to that selection.
+    pub image: SemanticHistoryImageIdentity,
+    /// Branch tip at the successful CAS or validated ancestry read.
+    pub reference_tip: [u8; 32],
+    /// Commit proven reachable from `reference_tip`; equals the status commit.
+    pub reachable_commit: [u8; 32],
+    /// First-parent lineage recorded by the admitted history commit (at most 2).
+    pub parent_commits: Box<[[u8; 32]]>,
+    /// Exact persisted input authority level.
+    pub input_replay_status: SemanticHistoryInputReplayStatus,
+}
+
 /// Typed status for derived native-image history publication.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -394,6 +462,8 @@ pub enum SemanticHistoryPublicationStatus {
         selection_id: [u8; 32],
         commit: [u8; 32],
         reference: String,
+        /// Exact, bounded proof summary for this branch commit.
+        proof: SemanticHistoryPublicationProof,
     },
     /// History could not be produced or admitted for this selected image.
     Refused {
@@ -439,6 +509,28 @@ impl SemanticVersionRecord {
         if self.coordinate.package_type().language() != self.profile.profile()?.language()
             || self.artifacts == 0
         {
+            return Err(ProductAdmissionError::SemanticVersionShape);
+        }
+        if let SemanticHistoryPublicationStatus::Published {
+            commit,
+            reference,
+            proof,
+            ..
+        } = &self.history_status
+            && (reference != "selected-native-v3"
+                || proof.reachable_commit != *commit
+                || proof.parent_commits.len() > 2
+                || proof.selection.profile != self.profile)
+        {
+            return Err(ProductAdmissionError::SemanticVersionShape);
+        }
+        if match &self.history_status {
+            SemanticHistoryPublicationStatus::Deferred { reason, .. }
+            | SemanticHistoryPublicationStatus::Refused { reason, .. } => {
+                reason.len() > MAX_SEMANTIC_HISTORY_STATUS_DETAIL_BYTES
+            }
+            _ => false,
+        } {
             return Err(ProductAdmissionError::SemanticVersionShape);
         }
         Ok(())
@@ -2549,10 +2641,12 @@ impl SurfaceReply {
                     .saturating_add(fixed_record_bound())
                     .saturating_add(package_reference_bound(&record.package))
                     .saturating_add(record.coordinate.as_str().len())
+                    .saturating_add(serialized_json_size(&record.history_status))
             }),
             Self::SemanticVersionSelected(record) => fixed_record_bound()
                 .saturating_add(package_reference_bound(&record.package))
-                .saturating_add(record.coordinate.as_str().len()),
+                .saturating_add(record.coordinate.as_str().len())
+                .saturating_add(serialized_json_size(&record.history_status)),
             Self::IndexStarted(result) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(result).map_or(0, |bytes| bytes.len())),
             Self::IndexTerminal(terminal) => fixed_record_bound()
@@ -2612,6 +2706,30 @@ impl SurfaceReply {
 
 const fn fixed_record_bound() -> usize {
     512
+}
+
+#[derive(Default)]
+struct JsonSizeCounter(usize);
+
+impl Write for JsonSizeCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Counts the encoded size without allocating a temporary serialized copy.
+fn serialized_json_size(value: &impl Serialize) -> usize {
+    let mut counter = JsonSizeCounter::default();
+    if serde_json::to_writer(&mut counter, value).is_ok() {
+        counter.0
+    } else {
+        usize::MAX
+    }
 }
 
 fn text_bound(text: &ProductText) -> usize {
@@ -2862,6 +2980,31 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_status_budget_counts_encoded_bytes_without_underestimating() {
+        let statuses = [
+            SemanticHistoryPublicationStatus::NotSelected,
+            SemanticHistoryPublicationStatus::Deferred {
+                selection_id: [3; 32],
+                reason: "line\n\u{1}".repeat(150),
+            },
+            SemanticHistoryPublicationStatus::Refused {
+                selection_id: [9; 32],
+                reason: "x".repeat(MAX_SEMANTIC_HISTORY_STATUS_DETAIL_BYTES),
+            },
+            SemanticHistoryPublicationStatus::Superseded {
+                selection_id: [7; 32],
+            },
+        ];
+
+        for status in statuses {
+            let expected = serde_json::to_vec(&status)
+                .expect("status serializes")
+                .len();
+            assert_eq!(serialized_json_size(&status), expected);
+        }
+    }
 
     #[test]
     fn owner_index_job_contract_round_trips_with_project_bound_terminal() {

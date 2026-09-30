@@ -390,9 +390,19 @@ pub(super) struct NativeHistoryPublicationWork {
     pub(super) selection_id: [u8; 32],
 }
 
+#[cfg(test)]
+struct NativeHistoryFenceGate {
+    reached: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
 pub(super) struct SelectedClosureImageLoader {
     store: FileStore,
     pub(super) selections: RwLock<SelectedClosureSnapshot>,
+    #[cfg(test)]
+    native_history_fence_gate: Mutex<Option<NativeHistoryFenceGate>>,
+    #[cfg(test)]
+    native_history_writer_probe: Mutex<Option<std::sync::mpsc::SyncSender<bool>>>,
 }
 
 /// Holds the serving-selector write lock from validation through the durable
@@ -477,6 +487,55 @@ impl CommittedSemanticSelectionLease<'_> {
 }
 
 impl SelectedClosureImageLoader {
+    #[cfg(test)]
+    pub(super) fn install_native_history_fence_gate(
+        &self,
+        reached: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self
+            .native_history_fence_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(NativeHistoryFenceGate { reached, release });
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_at_native_history_fence_gate(&self) {
+        let gate = self
+            .native_history_fence_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(gate) = gate {
+            gate.reached
+                .send(())
+                .expect("native-history fence test is listening");
+            gate.release
+                .recv_timeout(Duration::from_secs(60))
+                .expect("native-history fence test releases the publisher");
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn native_history_reader_holds_selector(&self) -> bool {
+        matches!(
+            self.selections.try_write(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_native_history_writer_probe(
+        &self,
+        sender: std::sync::mpsc::SyncSender<bool>,
+    ) {
+        *self
+            .native_history_writer_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender);
+    }
+
     fn remember(
         &self,
         key: ProductSemanticPublicationKey,
@@ -626,9 +685,22 @@ impl SelectedClosureImageLoader {
         selections: &SelectedClosureSnapshot,
         key: &ProductSemanticPublicationKey,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
-        let claim = selections.by_product.get(key).copied().ok_or_else(|| {
+        Self::committed_pair_optional_in(selections, key)?.ok_or_else(|| {
             BuiltinModelError("product has no committed semantic selection".to_owned())
-        })?;
+        })
+    }
+
+    /// Looks up the product marker while preserving the distinction between
+    /// a successfully observed absent selection and a broken in-memory
+    /// projection. History publication uses the former as typed staleness;
+    /// it must not infer marker movement from a generic read error.
+    pub(super) fn committed_pair_optional_in(
+        selections: &SelectedClosureSnapshot,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<Option<(SemanticPublicationClaim, SelectedGeneration)>, BuiltinModelError> {
+        let Some(claim) = selections.by_product.get(key).copied() else {
+            return Ok(None);
+        };
         let selected = selections
             .by_binding
             .get(&(key.clone(), *claim.binding().identity.as_ref()))
@@ -638,7 +710,7 @@ impl SelectedClosureImageLoader {
                     "semantic projection names a generation absent from Turso history".to_owned(),
                 )
             })?;
-        Ok((claim, selected))
+        Ok(Some((claim, selected)))
     }
 
     pub(super) fn acquire_publication_read(
@@ -686,6 +758,19 @@ impl SelectedClosureImageLoader {
     fn acquire_publication_write(
         &self,
     ) -> Result<RwLockWriteGuard<'_, SelectedClosureSnapshot>, BuiltinModelError> {
+        #[cfg(test)]
+        if let Some(sender) = self
+            .native_history_writer_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let blocked_by_publication_fence = matches!(
+                self.selections.try_write(),
+                Err(std::sync::TryLockError::WouldBlock)
+            );
+            let _ = sender.send(blocked_by_publication_fence);
+        }
         self.selections.write().map_err(|_| {
             BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
         })
@@ -1078,6 +1163,10 @@ impl SemanticAuthority {
         let image_loader = Arc::new(SelectedClosureImageLoader {
             store: store.clone(),
             selections: RwLock::new(SelectedClosureSnapshot::default()),
+            #[cfg(test)]
+            native_history_fence_gate: Mutex::new(None),
+            #[cfg(test)]
+            native_history_writer_probe: Mutex::new(None),
         });
         let native_history_state = NativeHistoryOwnerState::default();
         let (native_history_sender, receiver) =
@@ -1194,6 +1283,26 @@ impl SemanticAuthority {
             self.store.clone(),
             key,
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_native_history_fence_gate(
+        &self,
+        reached: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        self.image_loader
+            .install_native_history_fence_gate(reached, release);
+    }
+
+    #[cfg(test)]
+    pub(super) fn native_history_reader_holds_selector(&self) -> bool {
+        self.image_loader.native_history_reader_holds_selector()
+    }
+
+    #[cfg(test)]
+    pub(super) fn native_history_loader_for_test(&self) -> Arc<SelectedClosureImageLoader> {
+        Arc::clone(&self.image_loader)
     }
 
     /// Returns the sidecar status only for the exact generation still named

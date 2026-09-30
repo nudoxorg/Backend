@@ -8,23 +8,31 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
+    fs,
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 use serde::{Deserialize, Serialize};
 
+use super::osv_snapshot::{OsvSnapshotError, OsvSnapshotRef};
 use super::parse::{parse_ghsa_value, parse_osv_value};
 use super::{
     AcquisitionDecision, AcquisitionGate, Advisory, AdvisoryCoverage, AdvisoryDelta,
     AdvisoryJournal, AdvisoryJournalError, AdvisoryObservation, AdvisorySource, AdvisorySync,
-    AliasGraph, AliasGraphError, FeedFreshness, FreshnessState, GhsaParseError,
-    MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, MalwareCoverage, PackageIdentity,
-    OsvEcosystem, OsvFeedScope, ParseError, RustSecParseError, SyncMode,
+    Alias, AliasGraph, AliasGraphError, Checkpoint, FeedFreshness, FreshnessState, GhsaParseError,
+    MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, MalwareCoverage, OsvFeedScope,
+    PackageIdentity, ParseError, RustSecParseError, SyncMode,
 };
+
+#[cfg(test)]
+use super::OsvEcosystem;
+
+/// Default hard ceiling for one persisted advisory authority JSON state file.
+pub const MAX_ADVISORY_AUTHORITY_STATE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// A configured authority feed. The bytes are supplied by the composition
 /// root so network policy remains outside the portable advisory crate.
@@ -39,6 +47,13 @@ pub struct AuthorityFeed {
     /// Exact OSV scope selected for this feed. A scoped frontier is complete
     /// only when this matches the source scope selected on the authority.
     pub osv_scope: Option<OsvFeedScope>,
+    /// Immutable package-keyed generation for a large complete OSV archive.
+    /// When present, `entries` must be empty and the source is read through
+    /// its package index at decision time.
+    pub osv_snapshot: Option<OsvSnapshotRef>,
+    /// Opaque digest binding validators to the configured source location and
+    /// selected scope. Raw endpoints and credentials are never persisted.
+    pub source_identity: Option<[u8; 32]>,
     /// Conditional response and observation evidence.
     pub freshness: FeedFreshness,
     /// Fully parsed source objects.
@@ -83,6 +98,8 @@ impl AuthorityFeed {
             // directory tree, admitted through [`Self::from_entries`].
             complete: source != AdvisorySource::RustSec,
             osv_scope: None,
+            osv_snapshot: None,
+            source_identity: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
@@ -116,6 +133,8 @@ impl AuthorityFeed {
             mode: SyncMode::Snapshot,
             complete: true,
             osv_scope: None,
+            osv_snapshot: None,
+            source_identity: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
@@ -140,12 +159,40 @@ impl AuthorityFeed {
             mode: SyncMode::Snapshot,
             complete: true,
             osv_scope: None,
+            osv_snapshot: None,
+            source_identity: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
                 observed_at,
                 expires_at: None,
                 not_modified: true,
+            },
+            entries: Vec::new(),
+        }
+    }
+
+    /// Builds a complete OSV feed backed by a sealed disk generation.
+    #[must_use]
+    pub fn from_osv_snapshot(
+        snapshot: OsvSnapshotRef,
+        observed_at: u64,
+        etag: Option<String>,
+        last_modified: Option<String>,
+    ) -> Self {
+        Self {
+            source: AdvisorySource::Osv,
+            mode: SyncMode::Snapshot,
+            complete: true,
+            osv_scope: Some(snapshot.scope()),
+            osv_snapshot: Some(snapshot),
+            source_identity: None,
+            freshness: FeedFreshness {
+                etag,
+                last_modified,
+                observed_at,
+                expires_at: None,
+                not_modified: false,
             },
             entries: Vec::new(),
         }
@@ -277,6 +324,9 @@ pub struct AuthorityFrontier {
     /// do not use this scope.
     #[serde(default)]
     pub osv_scope: Option<OsvFeedScope>,
+    /// Opaque location/scope identity used to prevent cross-source 304 reuse.
+    #[serde(default)]
+    pub source_identity: Option<[u8; 32]>,
     /// Monotonic source-local journal sequence.
     pub sequence: u64,
     /// Active object/tombstone digest at this frontier.
@@ -305,6 +355,20 @@ pub struct AuthorityFrontier {
 pub struct AdvisoryAuthority {
     /// Maximum age accepted as fresh evidence.
     pub max_age_secs: u64,
+    /// Process-local serialization ceiling; derived from source policy and
+    /// never trusted from a persisted state file.
+    #[serde(skip)]
+    maximum_state_bytes: u64,
+    /// A namespace replacement committed but its parent flush failed in this
+    /// process. A cold open resolves which selected journal survived; until
+    /// then observations must not claim fresh, complete authority state.
+    #[serde(skip)]
+    persistence_uncertain: bool,
+    /// Process-selected endpoint identities. Persisted frontiers are compared
+    /// against these after composition so an old endpoint cannot establish
+    /// current coverage before an explicit refresh.
+    #[serde(skip)]
+    selected_source_identities: BTreeMap<AdvisorySource, [u8; 32]>,
     /// Whether resolver calls are made under the offline product policy.
     #[serde(default)]
     offline: bool,
@@ -316,6 +380,12 @@ pub struct AdvisoryAuthority {
     /// coverage must remain incomplete until a scoped snapshot is admitted.
     #[serde(default)]
     osv_scope: Option<OsvFeedScope>,
+    /// Selected immutable OSV package index for a large streamed archive.
+    #[serde(default)]
+    osv_snapshot: Option<OsvSnapshotRef>,
+    /// Previous durable OSV generation retained as a rollback/audit point.
+    #[serde(default)]
+    osv_previous_snapshot: Option<OsvSnapshotRef>,
     /// Cross-authority alias graph.  Per-source journals retain their own source-local graph for
     /// transactional admission; this graph prevents OSV/RustSec/GHSA feeds from silently
     /// disagreeing about one shared CVE/GHSA identity.
@@ -334,9 +404,14 @@ impl AdvisoryAuthority {
     pub fn new(max_age_secs: u64) -> Self {
         Self {
             max_age_secs,
+            maximum_state_bytes: MAX_ADVISORY_AUTHORITY_STATE_BYTES,
+            persistence_uncertain: false,
+            selected_source_identities: BTreeMap::new(),
             offline: false,
             configured: BTreeSet::new(),
             osv_scope: Some(OsvFeedScope::All),
+            osv_snapshot: None,
+            osv_previous_snapshot: None,
             aliases: AliasGraph::default(),
             journals: BTreeMap::new(),
             frontiers: BTreeMap::new(),
@@ -347,6 +422,16 @@ impl AdvisoryAuthority {
     /// Cached bodies for removed sources are retained for audit/replay.
     pub fn configure_sources(&mut self, sources: impl IntoIterator<Item = AdvisorySource>) {
         self.configured = sources.into_iter().collect();
+    }
+
+    /// Binds configured authorities to the opaque identities of their current
+    /// endpoint and scope. Old cached facts remain positive evidence, but do
+    /// not provide clean coverage for a newly selected source.
+    pub fn configure_source_identities(
+        &mut self,
+        identities: impl IntoIterator<Item = (AdvisorySource, [u8; 32])>,
+    ) {
+        self.selected_source_identities = identities.into_iter().collect();
     }
 
     /// Selects the OSV dataset whose coverage is admitted by this authority.
@@ -367,29 +452,174 @@ impl AdvisoryAuthority {
         self.offline = offline;
     }
 
+    /// Marks this in-memory authority as visible but not confirmed durable.
+    /// This state is process-local and is cleared by cold recovery or by a
+    /// successful subsequent persistence.
+    pub fn mark_persistence_uncertain(&mut self) {
+        self.persistence_uncertain = true;
+    }
+
+    /// Clears process-local persistence uncertainty after a successful retry.
+    pub fn clear_persistence_uncertain(&mut self) {
+        self.persistence_uncertain = false;
+    }
+
+    /// Whether the in-memory selected state awaits a cold or successful-write
+    /// durability check.
+    #[must_use]
+    pub const fn persistence_is_uncertain(&self) -> bool {
+        self.persistence_uncertain
+    }
+
     /// Opens a durable authority state file, recovering to an empty frontier
     /// only when it does not exist.
     pub fn open(path: impl AsRef<Path>, max_age_secs: u64) -> Result<Self, AuthorityStorageError> {
+        Self::open_with_limit(path, max_age_secs, MAX_ADVISORY_AUTHORITY_STATE_BYTES)
+    }
+
+    /// Opens a durable authority state under the caller's state-file byte
+    /// ceiling. The limit is checked before allocation and one byte beyond it
+    /// is read to close the stat/read race.
+    pub fn open_with_limit(
+        path: impl AsRef<Path>,
+        max_age_secs: u64,
+        maximum_state_bytes: u64,
+    ) -> Result<Self, AuthorityStorageError> {
         let path = path.as_ref();
-        match fs::read(path) {
-            Ok(bytes) => {
-                let mut authority: Self =
-                    serde_json::from_slice(&bytes).map_err(AuthorityStorageError::Decode)?;
-                authority
-                    .rebuild_aliases()
-                    .map_err(AuthorityStorageError::AliasConflict)?;
-                authority.max_age_secs = max_age_secs;
-                Ok(authority)
-            }
+        let parent = path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(AuthorityStorageError::InvalidStateFile)?;
+        let directory = match DirectoryCapability::open(parent) {
+            Ok(directory) => directory,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Self::new(max_age_secs))
+                let mut authority = Self::new(max_age_secs);
+                authority.maximum_state_bytes = maximum_state_bytes;
+                authority.prune_unselected_snapshot_generations(path)?;
+                return Ok(authority);
             }
-            Err(error) => Err(AuthorityStorageError::Io(error)),
+            Err(error) => return Err(AuthorityStorageError::Io(error)),
+        };
+        let file = match directory.open_private_file(name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut authority = Self::new(max_age_secs);
+                authority.maximum_state_bytes = maximum_state_bytes;
+                authority.prune_unselected_snapshot_generations(path)?;
+                return Ok(authority);
+            }
+            Err(error) => return Err(AuthorityStorageError::Io(error)),
+        };
+        let opened_metadata = file.metadata().map_err(AuthorityStorageError::Io)?;
+        if !opened_metadata.is_file() {
+            return Err(AuthorityStorageError::InvalidStateFile);
         }
+        if opened_metadata.len() > maximum_state_bytes {
+            return Err(AuthorityStorageError::BoundExceeded);
+        }
+        let mut bytes = Vec::new();
+        file.take(maximum_state_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(AuthorityStorageError::Io)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_state_bytes {
+            return Err(AuthorityStorageError::BoundExceeded);
+        }
+        let mut authority: Self =
+            serde_json::from_slice(&bytes).map_err(AuthorityStorageError::Decode)?;
+        authority
+            .rebuild_aliases()
+            .map_err(AuthorityStorageError::AliasConflict)?;
+        let selected_snapshot_error = authority
+            .osv_snapshot
+            .as_mut()
+            .and_then(|snapshot| snapshot.attach_root(osv_snapshot_root(path)).err());
+        if let Some(error) = selected_snapshot_error {
+            if matches!(&error, OsvSnapshotError::Busy) {
+                // A competing refresh may be between sealing and durable
+                // authority publication. Preserve the exact persisted
+                // selection and let the caller retry after its owner lease is
+                // released; treating this transient lock as corruption would
+                // overwrite known positive facts with an empty authority.
+                return Err(AuthorityStorageError::Snapshot(error));
+            }
+            authority.osv_snapshot = None;
+            if let Some(frontier) = authority.frontiers.get_mut(&AdvisorySource::Osv) {
+                frontier.availability = AuthorityAvailability::Unavailable;
+            }
+        }
+        let previous_snapshot_error = authority
+            .osv_previous_snapshot
+            .as_mut()
+            .and_then(|snapshot| snapshot.attach_root(osv_snapshot_root(path)).err());
+        if let Some(error) = previous_snapshot_error {
+            if matches!(&error, OsvSnapshotError::Busy) {
+                return Err(AuthorityStorageError::Snapshot(error));
+            }
+            authority.osv_previous_snapshot = None;
+        }
+        authority.max_age_secs = max_age_secs;
+        authority.maximum_state_bytes = maximum_state_bytes;
+        authority.prune_unselected_snapshot_generations(path)?;
+        Ok(authority)
+    }
+
+    fn prune_unselected_snapshot_generations(
+        &self,
+        authority_path: &Path,
+    ) -> Result<(), AuthorityStorageError> {
+        let mut retained = BTreeSet::new();
+        if let Some(snapshot) = self.osv_snapshot.as_ref() {
+            retained.insert(snapshot.generation_id().to_owned());
+        }
+        if let Some(snapshot) = self.osv_previous_snapshot.as_ref() {
+            retained.insert(snapshot.generation_id().to_owned());
+        }
+        OsvSnapshotRef::prune_unreferenced_generations(
+            osv_snapshot_root(authority_path),
+            &retained,
+        )
+        .map_err(AuthorityStorageError::Snapshot)?;
+        Ok(())
+    }
+
+    /// Returns the durable root for immutable OSV generations adjacent to an
+    /// advisory authority journal.
+    #[must_use]
+    pub fn osv_snapshot_root(path: impl AsRef<Path>) -> PathBuf {
+        osv_snapshot_root(path.as_ref())
     }
 
     /// Atomically persists the current source frontiers and journals.
     pub fn persist(&self, path: impl AsRef<Path>) -> Result<(), AuthorityStorageError> {
+        self.persist_with_rename(path, |directory, source, destination, replace| {
+            directory.rename_with_outcome(source, destination, replace)
+        })
+    }
+
+    fn persist_with_rename(
+        &self,
+        path: impl AsRef<Path>,
+        rename: impl FnOnce(&DirectoryCapability, &str, &str, bool) -> Result<(), DirectoryRenameError>,
+    ) -> Result<(), AuthorityStorageError> {
+        self.persist_with_postcommit(
+            path,
+            rename,
+            |snapshot| snapshot.commit_persisted(),
+            |root, retained| OsvSnapshotRef::prune_unreferenced_generations(root, retained),
+        )
+    }
+
+    fn persist_with_postcommit(
+        &self,
+        path: impl AsRef<Path>,
+        rename: impl FnOnce(&DirectoryCapability, &str, &str, bool) -> Result<(), DirectoryRenameError>,
+        mut commit_snapshot: impl FnMut(&OsvSnapshotRef) -> Result<(), OsvSnapshotError>,
+        mut prune_snapshots: impl FnMut(&Path, &BTreeSet<String>) -> Result<bool, OsvSnapshotError>,
+    ) -> Result<(), AuthorityStorageError> {
         let path = path.as_ref();
         let parent = path.parent().ok_or(AuthorityStorageError::NoParent)?;
         let parent = if parent.as_os_str().is_empty() {
@@ -397,55 +627,106 @@ impl AdvisoryAuthority {
         } else {
             parent
         };
-        fs::create_dir_all(parent).map_err(AuthorityStorageError::Io)?;
-        let bytes = serde_json::to_vec(self).map_err(AuthorityStorageError::Encode)?;
+        // State parents are established by the product owner before durable
+        // publication. Creating path components here would resolve them by
+        // pathname and could mutate a target behind a replaced symlink before
+        // the capability walk rejects it.
+        let directory = DirectoryCapability::open(parent).map_err(AuthorityStorageError::Io)?;
         // A fixed sibling name turns a crash left behind by a previous process into a permanent
         // persistence outage.  A process-local nonce keeps concurrent writers independent while
         // the final rename remains the single atomic publication point.
         static PERSIST_NONCE: AtomicU64 = AtomicU64::new(0);
-        let temporary = path.with_file_name(format!(
+        let temporary = format!(
             ".{}.{}.{}.tmp",
             path.file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("advisory-authority"),
             std::process::id(),
             PERSIST_NONCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
+        );
+        let mut file = directory
+            .create_file_exclusive(&temporary)
             .map_err(AuthorityStorageError::Io)?;
-        file.write_all(&bytes).map_err(AuthorityStorageError::Io)?;
-        file.sync_all().map_err(AuthorityStorageError::Io)?;
-        drop(file);
-        fs::rename(temporary, path).map_err(AuthorityStorageError::Io)?;
-        // The file is durable before the rename; syncing the directory makes the name update
-        // durable as well on filesystems which otherwise allow a power loss between the two.
-        match OpenOptions::new().read(true).open(parent) {
-            Ok(directory) => directory.sync_all().or_else(|error| {
-                // Windows and a few network filesystems do not expose directory fsync.  The
-                // atomic file rename still gives readers a complete old-or-new state there.
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
-                ) {
-                    Ok(())
-                } else {
-                    Err(error)
-                }
-            }),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
-                ) =>
-            {
-                Ok(())
-            }
-            Err(error) => Err(error),
+        let (encoded, exceeded, write_error) = {
+            let mut writer = BoundedStateWriter {
+                file: &mut file,
+                written: 0,
+                maximum: self.maximum_state_bytes,
+                exceeded: false,
+                write_error: None,
+            };
+            let encoded = serde_json::to_writer(&mut writer, self);
+            (encoded, writer.exceeded, writer.write_error)
+        };
+        if exceeded {
+            drop(file);
+            let _ = directory.remove_file(&temporary);
+            return Err(AuthorityStorageError::BoundExceeded);
         }
-        .map_err(AuthorityStorageError::Io)
+        if let Some(kind) = write_error {
+            drop(file);
+            let _ = directory.remove_file(&temporary);
+            return Err(AuthorityStorageError::Io(std::io::Error::new(
+                kind,
+                "authority state write failed",
+            )));
+        }
+        if let Err(error) = encoded {
+            drop(file);
+            let _ = directory.remove_file(&temporary);
+            return Err(AuthorityStorageError::Encode(error));
+        }
+        if let Err(error) = file.sync_all() {
+            drop(file);
+            let _ = directory.remove_file(&temporary);
+            return Err(AuthorityStorageError::Io(error));
+        }
+        drop(file);
+        let destination = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(AuthorityStorageError::InvalidStateFile)?;
+        match rename(&directory, &temporary, destination, true) {
+            Ok(()) => {}
+            Err(DirectoryRenameError::NotCommitted(error)) => {
+                let _ = directory.remove_file(&temporary);
+                return Err(AuthorityStorageError::Io(error));
+            }
+            Err(DirectoryRenameError::CommittedButNotDurable(error)) => {
+                return Err(AuthorityStorageError::CommittedButNotDurable(error));
+            }
+        }
+        if let Some(snapshot) = self.osv_snapshot.as_ref() {
+            commit_snapshot(snapshot)
+                .map_err(AuthorityStorageError::CommittedSnapshotLeaseTransition)?;
+        }
+        if let Some(snapshot) = self.osv_previous_snapshot.as_ref() {
+            commit_snapshot(snapshot)
+                .map_err(AuthorityStorageError::CommittedSnapshotLeaseTransition)?;
+        }
+        if self.osv_snapshot.is_some() || self.osv_previous_snapshot.is_some() {
+            let mut keep = BTreeSet::new();
+            if let Some(snapshot) = self.osv_snapshot.as_ref() {
+                keep.insert(snapshot.generation_id().to_owned());
+            }
+            if let Some(snapshot) = self.osv_previous_snapshot.as_ref() {
+                keep.insert(snapshot.generation_id().to_owned());
+            }
+            let snapshot_root = self
+                .osv_snapshot
+                .as_ref()
+                .and_then(OsvSnapshotRef::root_path)
+                .or_else(|| {
+                    self.osv_previous_snapshot
+                        .as_ref()
+                        .and_then(OsvSnapshotRef::root_path)
+                })
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| osv_snapshot_root(path));
+            prune_snapshots(&snapshot_root, &keep)
+                .map_err(AuthorityStorageError::CommittedSnapshotRetention)?;
+        }
+        Ok(())
     }
 
     /// Applies one source body transactionally and advances its frontier.
@@ -455,6 +736,50 @@ impl AdvisoryAuthority {
     ) -> Result<&AuthorityFrontier, AuthorityApplyError> {
         let source = feed.source;
         let feed_osv_scope = feed.osv_scope;
+        let feed_source_identity = feed.source_identity;
+        if self
+            .selected_source_identities
+            .get(&source)
+            .is_some_and(|identity| feed_source_identity != Some(*identity))
+        {
+            return Err(AuthorityApplyError::ConfiguredSourceMismatch(source));
+        }
+        if feed.freshness.not_modified
+            && feed_source_identity.is_some()
+            && self
+                .frontiers
+                .get(&source)
+                .is_some_and(|frontier| frontier.source_identity != feed_source_identity)
+        {
+            return Err(AuthorityApplyError::NotModifiedSourceMismatch(source));
+        }
+        let supplied_snapshot = feed.osv_snapshot.is_some();
+        // Journals and package generations are source-local. When a registry
+        // endpoint or selected OSV partition changes, an incomplete response
+        // from the new source cannot inherit positive rows from the old one.
+        // Keep the old immutable generation as the previous audit/rollback
+        // point, but stop presenting it as evidence from the newly selected
+        // source.
+        let source_identity_changed = self.frontiers.get(&source).is_some_and(|frontier| {
+            frontier.source_identity != feed_source_identity
+                || (frontier.source_identity.is_none()
+                    && source == AdvisorySource::Osv
+                    && feed_osv_scope.is_some_and(|scope| frontier.osv_scope != Some(scope)))
+        });
+        let external_snapshot = feed.osv_snapshot.or_else(|| {
+            (source == AdvisorySource::Osv && feed.freshness.not_modified)
+                .then(|| self.osv_snapshot.clone())
+                .flatten()
+        });
+        if supplied_snapshot && (source != AdvisorySource::Osv || !feed.entries.is_empty()) {
+            return Err(AuthorityApplyError::UnexpectedSnapshot);
+        }
+        if external_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.is_verified())
+        {
+            return Err(AuthorityApplyError::SnapshotUnavailable);
+        }
         for advisory in &feed.entries {
             if advisory.key.native.source != source {
                 return Err(AuthorityApplyError::SourceMismatch {
@@ -469,13 +794,24 @@ impl AdvisoryAuthority {
                 .admit_identity(advisory)
                 .map_err(AuthorityApplyError::AliasConflict)?;
         }
-        let mut journal = self.journals.get(&source).cloned().unwrap_or_default();
-        if feed.freshness.not_modified && journal.checkpoint().is_none() {
+        let mut journal = if source_identity_changed {
+            AdvisoryJournal::default()
+        } else {
+            self.journals.get(&source).cloned().unwrap_or_default()
+        };
+        if feed.freshness.not_modified
+            && journal.checkpoint().is_none()
+            && external_snapshot.is_none()
+        {
             return Err(AuthorityApplyError::NotModifiedWithoutFrontier(source));
         }
         let previous_frontier = self.frontiers.get(&source);
         let complete = if feed.freshness.not_modified {
             previous_frontier.is_some_and(|frontier| frontier.complete)
+        } else if let Some(snapshot) = external_snapshot.as_ref() {
+            feed.complete
+                && feed_osv_scope == Some(snapshot.scope())
+                && feed_osv_scope == self.osv_scope
         } else if source == AdvisorySource::Osv {
             feed.complete && feed_osv_scope.is_some() && feed_osv_scope == self.osv_scope
         } else {
@@ -490,23 +826,76 @@ impl AdvisoryAuthority {
         } else {
             None
         };
-        let entries = feed
-            .entries
-            .into_iter()
-            .map(AdvisoryDelta::Upsert)
-            .collect();
-        let checkpoint = journal
-            .apply(AdvisorySync {
-                mode: feed.mode,
-                complete,
-                entries,
-                freshness: feed.freshness.clone(),
-            })
-            .map_err(AuthorityApplyError::Journal)?
-            .clone();
+        let (checkpoint, active_entries) =
+            if let Some(snapshot) = external_snapshot.as_ref() {
+                let sequence = previous_frontier
+                    .map_or(0, |frontier| frontier.sequence)
+                    .checked_add(1)
+                    .ok_or(AuthorityApplyError::Journal(
+                        AdvisoryJournalError::SequenceOverflow,
+                    ))?;
+                let digest = if feed.freshness.not_modified {
+                    previous_frontier
+                        .map_or_else(|| snapshot.frontier_digest(), |frontier| frontier.digest)
+                } else {
+                    snapshot.frontier_digest()
+                };
+                let checkpoint = Checkpoint {
+                    sequence,
+                    digest,
+                    freshness: feed.freshness.clone(),
+                };
+                if supplied_snapshot {
+                    self.journals.remove(&source);
+                    if self.osv_snapshot.as_ref().is_some_and(|selected| {
+                        selected.generation_id() != snapshot.generation_id()
+                    }) && let Some(previous) = self.osv_snapshot.take()
+                    {
+                        self.osv_previous_snapshot = Some(previous);
+                    }
+                }
+                self.osv_snapshot = Some(snapshot.clone());
+                (checkpoint, snapshot.advisory_objects())
+            } else {
+                if source_identity_changed
+                    && source == AdvisorySource::Osv
+                    && !feed.freshness.not_modified
+                    && let Some(previous) = self.osv_snapshot.take()
+                {
+                    self.osv_previous_snapshot = Some(previous);
+                }
+                if source == AdvisorySource::Osv
+                    && feed.complete
+                    && !feed.freshness.not_modified
+                    && feed_osv_scope == self.osv_scope
+                {
+                    if let Some(previous) = self.osv_snapshot.take() {
+                        self.osv_previous_snapshot = Some(previous);
+                    }
+                }
+                let entries = feed
+                    .entries
+                    .into_iter()
+                    .map(AdvisoryDelta::Upsert)
+                    .collect();
+                let checkpoint = journal
+                    .apply(AdvisorySync {
+                        mode: feed.mode,
+                        complete,
+                        entries,
+                        freshness: feed.freshness.clone(),
+                    })
+                    .map_err(AuthorityApplyError::Journal)?
+                    .clone();
+                (
+                    checkpoint,
+                    u64::try_from(journal.iter().count()).unwrap_or(u64::MAX),
+                )
+            };
         let frontier = AuthorityFrontier {
             source,
             osv_scope,
+            source_identity: feed_source_identity,
             sequence: checkpoint.sequence,
             digest: checkpoint.digest,
             etag: checkpoint.freshness.etag.clone(),
@@ -521,10 +910,12 @@ impl AdvisoryAuthority {
             },
             complete,
             availability: AuthorityAvailability::Available,
-            entries: u64::try_from(journal.iter().count()).unwrap_or(u64::MAX),
+            entries: active_entries,
             not_modified: checkpoint.freshness.not_modified,
         };
-        self.journals.insert(source, journal);
+        if !supplied_snapshot {
+            self.journals.insert(source, journal);
+        }
         self.frontiers.insert(source, frontier);
         self.aliases = aliases;
         self.configured.insert(source);
@@ -548,6 +939,7 @@ impl AdvisoryAuthority {
             osv_scope: previous
                 .and_then(|value| value.osv_scope)
                 .or(self.osv_scope.filter(|_| source == AdvisorySource::Osv)),
+            source_identity: previous.and_then(|value| value.source_identity),
             sequence: previous.map_or(0, |value| value.sequence),
             digest: previous.map_or([0; 32], |value| value.digest),
             etag: previous.and_then(|value| value.etag.clone()),
@@ -602,10 +994,10 @@ impl AdvisoryAuthority {
             };
         }
         let mut advisories = Vec::new();
-        let mut complete = true;
-        let mut partial = false;
-        let mut unavailable = false;
-        let mut missing = false;
+        let mut complete = !self.persistence_uncertain;
+        let mut partial = self.persistence_uncertain;
+        let mut unavailable = self.persistence_uncertain;
+        let mut missing = self.persistence_uncertain;
         let mut stale = false;
         let mut not_modified = true;
         for source in &self.configured {
@@ -615,6 +1007,16 @@ impl AdvisoryAuthority {
                 missing = true;
                 continue;
             };
+            let identity_mismatch = self
+                .selected_source_identities
+                .get(source)
+                .is_some_and(|identity| frontier.source_identity != Some(*identity));
+            if identity_mismatch {
+                complete = false;
+                partial = true;
+                missing = true;
+            }
+            let mut scope_matches = true;
             if *source == AdvisorySource::Osv {
                 let selected_scope = match (self.osv_scope, frontier.osv_scope) {
                     (Some(configured), Some(observed)) if configured == observed => {
@@ -624,14 +1026,22 @@ impl AdvisoryAuthority {
                     _ => None,
                 };
                 match selected_scope {
-                    Some(Some(OsvFeedScope::All)) => {}
+                    Some(Some(OsvFeedScope::All))
+                        if matches!(
+                            package.ecosystem.as_str(),
+                            "cargo" | "npm" | "pypi" | "maven" | "nuget" | "go"
+                        ) => {}
+                    Some(Some(OsvFeedScope::All)) => {
+                        scope_matches = false;
+                        complete = false;
+                        partial = true;
+                    }
                     Some(Some(OsvFeedScope::Ecosystem(ecosystem)))
                         if package.ecosystem == ecosystem.package_ecosystem() => {}
                     Some(Some(OsvFeedScope::Ecosystem(_))) | None => {
+                        scope_matches = false;
                         complete = false;
                         partial = true;
-                        missing = true;
-                        continue;
                     }
                     Some(None) => {
                         // An unselected JSON source can contribute positive
@@ -642,6 +1052,21 @@ impl AdvisoryAuthority {
                     }
                 }
             }
+            // Positive rows remain useful when the configured identity still
+            // proves they came from the selected endpoint/scope, even when an
+            // individual response covers only part of that source. If identity
+            // is unknown and a known scope conflicts, withhold the rows rather
+            // than presenting old-source evidence under the new selection.
+            let selected_identity_proven = self
+                .selected_source_identities
+                .get(source)
+                .is_some_and(|identity| frontier.source_identity == Some(*identity));
+            let may_use_positive_facts = !identity_mismatch
+                && (selected_identity_proven || scope_matches || frontier.osv_scope.is_none());
+            let mut selected_osv_advisories = (*source == AdvisorySource::Osv
+                && may_use_positive_facts
+                && self.osv_snapshot.is_some())
+            .then(BTreeMap::new);
             if frontier.availability == AuthorityAvailability::Unavailable {
                 unavailable = true;
             }
@@ -650,14 +1075,48 @@ impl AdvisoryAuthority {
                 partial = true;
             }
             let policy_expiry = frontier.observed_at.saturating_add(self.max_age_secs);
-            let expires_at = frontier.expires_at.map_or(policy_expiry, |source| {
-                source.min(policy_expiry)
-            });
+            let expires_at = frontier
+                .expires_at
+                .map_or(policy_expiry, |source| source.min(policy_expiry));
             if now >= expires_at {
                 stale = true;
             }
             not_modified &= frontier.not_modified;
-            if let Some(journal) = self.journals.get(source) {
+            if *source == AdvisorySource::Osv
+                && may_use_positive_facts
+                && let Some(snapshot) = self.osv_snapshot.as_ref()
+            {
+                match snapshot.matching(package, version) {
+                    Ok((matches, unresolved)) => {
+                        complete &= !unresolved;
+                        partial |= unresolved;
+                        let (matches, alias_conflict) =
+                            reconcile_snapshot_aliases(&self.aliases, matches);
+                        if alias_conflict {
+                            unavailable = true;
+                            complete = false;
+                            partial = true;
+                            missing = true;
+                        }
+                        if let Some(selected) = selected_osv_advisories.as_mut() {
+                            selected.extend(
+                                matches
+                                    .into_iter()
+                                    .map(|advisory| (advisory.key.canonical.clone(), advisory)),
+                            );
+                        } else {
+                            advisories.extend(matches);
+                        }
+                    }
+                    Err(_) => {
+                        unavailable = true;
+                        complete = false;
+                        partial = true;
+                        missing = true;
+                    }
+                }
+            }
+            if may_use_positive_facts && let Some(journal) = self.journals.get(source) {
                 let (matches, unresolved) = AcquisitionGate::matching_with_coverage(
                     journal.iter().filter(|a| !a.is_withdrawn()),
                     package,
@@ -665,7 +1124,19 @@ impl AdvisoryAuthority {
                 );
                 complete &= !unresolved;
                 partial |= unresolved;
-                advisories.extend(matches.into_iter().cloned());
+                if let Some(selected) = selected_osv_advisories.as_mut() {
+                    selected.extend(
+                        matches
+                            .into_iter()
+                            .cloned()
+                            .map(|advisory| (advisory.key.canonical.clone(), advisory)),
+                    );
+                } else {
+                    advisories.extend(matches.into_iter().cloned());
+                }
+            }
+            if let Some(selected) = selected_osv_advisories {
+                advisories.extend(selected.into_values());
             }
         }
         advisories.sort_by_key(|advisory| advisory.key.canonical.clone());
@@ -691,7 +1162,8 @@ impl AdvisoryAuthority {
         // GHSA's global feed carries an explicit malware statement for every object. Other
         // authorities remain advisory-only, so a complete OSV/RustSec frontier never masquerades
         // as malware coverage.
-        let malware = if self.configured.contains(&AdvisorySource::Ghsa)
+        let malware = if !self.persistence_uncertain
+            && self.configured.contains(&AdvisorySource::Ghsa)
             && self
                 .frontiers
                 .get(&AdvisorySource::Ghsa)
@@ -729,8 +1201,8 @@ impl AdvisoryAuthority {
         (observation, decision)
     }
 
-    /// Returns every admitted object in source order for diagnostics and
-    /// deterministic fixture inspection.
+    /// Returns resident in-memory objects for diagnostics and deterministic
+    /// fixture inspection. Large OSV snapshots remain package-keyed on disk.
     pub fn iter(&self) -> impl Iterator<Item = &Advisory> {
         self.journals.values().flat_map(AdvisoryJournal::iter)
     }
@@ -747,6 +1219,58 @@ impl AdvisoryAuthority {
         self.aliases = aliases;
         Ok(())
     }
+}
+
+/// Resolves aliases from selected disk-backed advisories against the resident
+/// cross-source graph and one bounded query-local graph. This preserves the
+/// normal canonical IDs without cloning the potentially large durable graph
+/// for every package lookup.
+fn reconcile_snapshot_aliases(
+    existing: &AliasGraph,
+    advisories: Vec<Advisory>,
+) -> (Vec<Advisory>, bool) {
+    let mut query_aliases = AliasGraph::default();
+    let mut output = Vec::with_capacity(advisories.len());
+    let mut conflict = false;
+    for mut advisory in advisories {
+        let native = advisory.key.native.id.clone();
+        let mut roots = BTreeSet::new();
+        for alias in advisory
+            .aliases
+            .iter()
+            .map(|alias| alias.value.as_str())
+            .chain(std::iter::once(native.as_str()))
+        {
+            if let Some(root) = existing.resolve(alias) {
+                roots.insert(root.0);
+            }
+        }
+        if roots.len() > 1 {
+            conflict = true;
+            advisory.key.canonical = super::CanonicalAdvisoryId(native);
+            output.push(advisory);
+            continue;
+        }
+        if let Some(root) = roots.first() {
+            let mut aliases = advisory.aliases.into_vec();
+            aliases.push(Alias {
+                value: root.clone(),
+                source: AdvisorySource::Osv,
+            });
+            aliases.sort();
+            aliases.dedup();
+            advisory.aliases = aliases.into_boxed_slice();
+        }
+        match query_aliases.admit_identity(&advisory) {
+            Ok(canonical) => advisory.key.canonical = canonical,
+            Err(_) => {
+                conflict = true;
+                advisory.key.canonical = super::CanonicalAdvisoryId(native);
+            }
+        }
+        output.push(advisory);
+    }
+    (output, conflict)
 }
 
 impl AdvisoryResolver for AdvisoryAuthority {
@@ -785,6 +1309,19 @@ pub trait AdvisoryResolver: Send + Sync {
 pub enum AuthorityStorageError {
     /// Filesystem operation failed.
     Io(std::io::Error),
+    /// The selected state name changed, but its directory flush failed. The
+    /// new file may be visible now and must be resolved from disk on retry.
+    CommittedButNotDurable(std::io::Error),
+    /// The authority file was committed, but an immutable snapshot lease could
+    /// not be transitioned to its selected-reader state. Keep this authority
+    /// and its generations alive until retry or cold recovery.
+    CommittedSnapshotLeaseTransition(OsvSnapshotError),
+    /// The authority file was committed, but post-publication snapshot
+    /// retention failed. Keep its selected generations alive and retry
+    /// maintenance or recover from the durable file before collection.
+    CommittedSnapshotRetention(OsvSnapshotError),
+    /// Immutable OSV generation validation or retention failed.
+    Snapshot(OsvSnapshotError),
     /// Persisted state was not valid JSON.
     Decode(serde_json::Error),
     /// State could not be encoded.
@@ -793,6 +1330,10 @@ pub enum AuthorityStorageError {
     NoParent,
     /// Persisted source objects disagree about a shared alias.
     AliasConflict(AliasGraphError),
+    /// Persisted authority state exceeded the configured byte ceiling.
+    BoundExceeded,
+    /// Authority state path is not a regular non-symlink file.
+    InvalidStateFile,
 }
 impl std::fmt::Display for AuthorityStorageError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -801,11 +1342,77 @@ impl std::fmt::Display for AuthorityStorageError {
 }
 impl std::error::Error for AuthorityStorageError {}
 
+impl AuthorityStorageError {
+    /// Whether the authority pathname was replaced before this error arose.
+    #[must_use]
+    pub const fn publication_committed(&self) -> bool {
+        matches!(
+            self,
+            Self::CommittedButNotDurable(_)
+                | Self::CommittedSnapshotLeaseTransition(_)
+                | Self::CommittedSnapshotRetention(_)
+        )
+    }
+}
+
+struct BoundedStateWriter<'a> {
+    file: &'a mut fs::File,
+    written: u64,
+    maximum: u64,
+    exceeded: bool,
+    write_error: Option<std::io::ErrorKind>,
+}
+
+impl Write for BoundedStateWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let length = u64::try_from(buffer.len()).unwrap_or(u64::MAX);
+        if self
+            .written
+            .checked_add(length)
+            .is_none_or(|next| next > self.maximum)
+        {
+            self.exceeded = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                "advisory authority state exceeds its byte limit",
+            ));
+        }
+        match self.file.write(buffer) {
+            Ok(written) => {
+                self.written = self
+                    .written
+                    .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+                Ok(written)
+            }
+            Err(error) => {
+                self.write_error = Some(error.kind());
+                Err(error)
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.file.flush() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.write_error = Some(error.kind());
+                Err(error)
+            }
+        }
+    }
+}
+
 /// Authority state could not admit one complete source transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorityApplyError {
+    /// The supplied source body was not fetched from the currently selected
+    /// endpoint and scope.
+    ConfiguredSourceMismatch(AdvisorySource),
     /// A conditional validator was accepted before a body existed.
     NotModifiedWithoutFrontier(AdvisorySource),
+    /// A conditional response cannot reuse a frontier from another configured
+    /// endpoint or source scope.
+    NotModifiedSourceMismatch(AdvisorySource),
     /// A feed was labeled as one source but carried a native identity from another.
     SourceMismatch {
         /// Source selected by the transport/configuration.
@@ -819,6 +1426,11 @@ pub enum AuthorityApplyError {
     Journal(AdvisoryJournalError),
     /// Internal map insertion invariant failed.
     Invariant,
+    /// A disk-backed snapshot was attached to a different source or carried
+    /// unbounded in-memory entries at the same time.
+    UnexpectedSnapshot,
+    /// A disk-backed snapshot was not fully verified before selection.
+    SnapshotUnavailable,
 }
 
 impl std::fmt::Display for AuthorityApplyError {
@@ -833,6 +1445,14 @@ fn unix_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn osv_snapshot_root(authority_path: &Path) -> PathBuf {
+    let parent = authority_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    parent.join("advisory-snapshots")
 }
 
 /// Reads a bounded local authority body. Directory walking is intentionally
@@ -872,22 +1492,22 @@ mod tests {
     }
 
     fn osv_for(id: &str, ecosystem: &str) -> Vec<u8> {
+        let range_type = if ecosystem == "Cargo" {
+            "SEMVER"
+        } else {
+            "ECOSYSTEM"
+        };
         format!(
-            r#"{{"schema_version":"1.3.1","id":"{id}","modified":"2026-01-02T00:00:00Z","affected":[{{"package":{{"ecosystem":"{ecosystem}","name":"demo"}},"ranges":[{{"type":"SEMVER","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
+            r#"{{"schema_version":"1.3.1","id":"{id}","modified":"2026-01-02T00:00:00Z","affected":[{{"package":{{"ecosystem":"{ecosystem}","name":"demo"}},"ranges":[{{"type":"{range_type}","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
         )
         .into_bytes()
     }
 
     #[test]
     fn source_batches_are_durable_and_exact_versioned() {
-        let mut feed = AuthorityFeed::parse(
-            AdvisorySource::Osv,
-            &osv(),
-            10,
-            Some("a".into()),
-            None,
-        )
-        .expect("OSV fixture");
+        let mut feed =
+            AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
+                .expect("OSV fixture");
         feed.osv_scope = Some(OsvFeedScope::All);
         let mut authority = AdvisoryAuthority::new(100);
         authority.configure_osv_scope(Some(OsvFeedScope::All));
@@ -899,6 +1519,548 @@ mod tests {
         let clean = authority.observe(&package, "2.0.0", false, false, 10, false);
         assert!(clean.advisories.is_empty());
         assert_eq!(clean.coverage, AdvisoryCoverage::Complete);
+    }
+
+    #[test]
+    fn persistence_uncertainty_keeps_positive_rows_but_never_claims_fresh_coverage() {
+        let source_identity = [4; 32];
+        let mut feed =
+            AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, None, None).expect("OSV fixture");
+        feed.complete = false;
+        feed.osv_scope = Some(OsvFeedScope::All);
+        feed.source_identity = Some(source_identity);
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(OsvFeedScope::All));
+        authority.configure_source_identities([(AdvisorySource::Osv, source_identity)]);
+        authority
+            .apply(feed)
+            .expect("admit same-source partial positive");
+
+        let package = super::super::normalize_package("cargo", "demo").expect("identity");
+        let selected = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(selected.coverage, AdvisoryCoverage::Partial);
+        assert_eq!(selected.freshness, FreshnessState::Fresh);
+        assert_eq!(selected.advisories.len(), 1);
+
+        authority.mark_persistence_uncertain();
+        let uncertain = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(uncertain.coverage, AdvisoryCoverage::Unavailable);
+        assert_eq!(uncertain.freshness, FreshnessState::Unknown);
+        assert_eq!(uncertain.advisories.len(), 1);
+        assert_eq!(uncertain.advisories[0].key.canonical.0, "OSV-AUTH-1");
+        assert!(matches!(
+            authority.decide(
+                &package,
+                "1.0.0",
+                AcquisitionGate {
+                    offline: super::OfflinePolicy::Warn,
+                },
+                10,
+                false,
+            ),
+            (_, AcquisitionDecision::Deny(_))
+        ));
+
+        let recovered: AdvisoryAuthority =
+            serde_json::from_slice(&serde_json::to_vec(&authority).expect("encode authority"))
+                .expect("cold-decode authority");
+        assert!(
+            !recovered.persistence_is_uncertain(),
+            "a cold open resolves the selected file rather than inheriting process-local doubt"
+        );
+        authority.clear_persistence_uncertain();
+        assert!(!authority.persistence_is_uncertain());
+    }
+
+    #[test]
+    fn streamed_snapshot_matches_reuse_the_existing_alias_engine() {
+        let mut left =
+            super::super::parse_osv(&osv_for("OSV-LEFT", "Cargo"), 10).expect("left OSV object");
+        let mut right =
+            super::super::parse_osv(&osv_for("OSV-RIGHT", "Cargo"), 10).expect("right OSV object");
+        left.aliases = Box::new([Alias {
+            value: "CVE-2026-1234".into(),
+            source: AdvisorySource::Osv,
+        }]);
+        right.aliases = Box::new([Alias {
+            value: "CVE-2026-1234".into(),
+            source: AdvisorySource::Osv,
+        }]);
+        let (joined, conflict) =
+            reconcile_snapshot_aliases(&AliasGraph::default(), vec![left, right]);
+        assert!(!conflict);
+        assert_eq!(joined.len(), 2);
+        assert_eq!(joined[0].key.canonical, joined[1].key.canonical);
+        assert_eq!(joined[0].key.canonical.0, "OSV-LEFT");
+    }
+
+    #[test]
+    fn incomplete_osv_refresh_overlays_disk_snapshot_positive_facts() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let mut old = super::super::parse_osv(&osv(), 10).expect("old OSV object");
+        old.summary = Some("older selected advisory".into());
+        let mut builder = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("snapshot builder");
+        builder.push(&old).expect("stage old advisory");
+        let snapshot = builder
+            .finish(*blake3::hash(b"complete OSV export").as_bytes())
+            .expect("seal old snapshot");
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority
+            .apply(AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None))
+            .expect("admit complete snapshot");
+
+        let mut refreshed = super::super::parse_osv(&osv(), 11).expect("partial OSV object");
+        refreshed.summary = Some("new partial positive advisory".into());
+        let mut partial =
+            AuthorityFeed::from_entries(AdvisorySource::Osv, vec![refreshed], 11, None, None);
+        partial.complete = false;
+        partial.osv_scope = Some(scope);
+        authority.apply(partial).expect("admit partial page");
+
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let observation = authority.observe(&package, "1.0.0", false, false, 11, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Partial);
+        assert_eq!(observation.advisories.len(), 1);
+        assert_eq!(
+            observation.advisories[0].summary.as_deref(),
+            Some("new partial positive advisory")
+        );
+    }
+
+    #[test]
+    fn snapshot_retention_keeps_selected_previous_and_live_readers_only() {
+        fn stage(root: &Path, scope: OsvFeedScope, id: &str) -> (AuthorityFeed, String) {
+            let advisory = super::super::parse_osv(&osv_for(id, "Cargo"), 10).expect("OSV object");
+            let mut builder =
+                super::super::OsvSnapshotBuilder::create(root, scope, 10, 10, 10, 1024 * 1024)
+                    .expect("snapshot builder");
+            builder.push(&advisory).expect("stage advisory");
+            let snapshot = builder
+                .finish(*blake3::hash(id.as_bytes()).as_bytes())
+                .expect("seal snapshot");
+            let generation = snapshot.generation_id().to_owned();
+            (
+                AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None),
+                generation,
+            )
+        }
+
+        let directory = tempfile::tempdir().expect("authority directory");
+        let authority_path = directory.path().join("authority.json");
+        let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+
+        let (first_feed, first) = stage(&snapshot_root, scope, "OSV-RETENTION-1");
+        authority.apply(first_feed).expect("select first snapshot");
+        authority
+            .persist(&authority_path)
+            .expect("persist first selection");
+
+        let (second_feed, second) = stage(&snapshot_root, scope, "OSV-RETENTION-2");
+        authority
+            .apply(second_feed)
+            .expect("select second snapshot");
+        authority
+            .persist(&authority_path)
+            .expect("persist second selection");
+        assert_eq!(
+            authority
+                .osv_previous_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(first.as_str())
+        );
+        let reopened = AdvisoryAuthority::open(&authority_path, 100)
+            .expect("reopen current and previous generations");
+        assert_eq!(
+            reopened
+                .osv_previous_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(first.as_str())
+        );
+        drop(reopened);
+
+        let live_reader = authority.osv_previous_snapshot.clone();
+        let (third_feed, third) = stage(&snapshot_root, scope, "OSV-RETENTION-3");
+        authority.apply(third_feed).expect("select third snapshot");
+        authority
+            .persist(&authority_path)
+            .expect("persist third selection");
+        assert!(snapshot_root.join(&first).is_dir());
+        assert!(snapshot_root.join(&second).is_dir());
+        assert!(snapshot_root.join(&third).is_dir());
+
+        drop(live_reader);
+        authority
+            .persist(&authority_path)
+            .expect("collect after live reader closes");
+        assert!(!snapshot_root.join(first).exists());
+        assert!(snapshot_root.join(second).is_dir());
+        assert!(snapshot_root.join(third).is_dir());
+    }
+
+    #[test]
+    fn uncertain_authority_replace_keeps_selected_generations_retryable() {
+        fn stage(root: &Path, scope: OsvFeedScope, id: &str) -> (AuthorityFeed, String) {
+            let advisory = super::super::parse_osv(&osv_for(id, "Cargo"), 10).expect("OSV object");
+            let mut builder =
+                super::super::OsvSnapshotBuilder::create(root, scope, 10, 10, 10, 1024 * 1024)
+                    .expect("snapshot builder");
+            builder.push(&advisory).expect("stage advisory");
+            let snapshot = builder
+                .finish(*blake3::hash(id.as_bytes()).as_bytes())
+                .expect("seal snapshot");
+            let generation = snapshot.generation_id().to_owned();
+            (
+                AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None),
+                generation,
+            )
+        }
+
+        let directory = tempfile::tempdir().expect("authority directory");
+        let authority_path = directory.path().join("authority.json");
+        let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+
+        let (first_feed, first) = stage(&snapshot_root, scope, "OSV-PUBLISH-OLD");
+        authority
+            .apply(first_feed)
+            .expect("select first generation");
+        authority
+            .persist(&authority_path)
+            .expect("persist old authority");
+        let old_state = fs::read(&authority_path).expect("read old selected authority");
+
+        let (second_feed, second) = stage(&snapshot_root, scope, "OSV-PUBLISH-NEW");
+        authority
+            .apply(second_feed)
+            .expect("select candidate generation");
+        let post_commit = authority.persist_with_rename(
+            &authority_path,
+            |directory, source, destination, replace| {
+                // The namespace operation is real and held-relative. Inject
+                // only the upper-layer post-commit outcome so this test can
+                // exercise authority handling on every filesystem; the
+                // platform suite separately fails the flush callback itself.
+                directory
+                    .rename_with_outcome(source, destination, replace)
+                    .and_then(|()| {
+                        Err(DirectoryRenameError::CommittedButNotDurable(
+                            std::io::Error::other("injected post-rename flush failure"),
+                        ))
+                    })
+            },
+        );
+        assert!(matches!(
+            post_commit,
+            Err(AuthorityStorageError::CommittedButNotDurable(_))
+        ));
+        let visible_state = fs::read(&authority_path).expect("read visible committed journal");
+        assert_ne!(visible_state, old_state);
+        let visible_json: serde_json::Value =
+            serde_json::from_slice(&visible_state).expect("decode visible journal");
+        assert_eq!(
+            visible_json["osv_snapshot"]["generation"],
+            serde_json::Value::String(second.clone())
+        );
+        assert!(snapshot_root.join(&first).is_dir());
+        assert!(snapshot_root.join(&second).is_dir());
+        assert!(
+            !OsvSnapshotRef::prune_unreferenced_generations(&snapshot_root, &BTreeSet::new())
+                .expect("collection observes the pending owner lease"),
+            "a maybe-selected generation cannot be collected before recovery"
+        );
+
+        authority.mark_persistence_uncertain();
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let uncertain = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(uncertain.coverage, AdvisoryCoverage::Unavailable);
+        assert_eq!(uncertain.freshness, FreshnessState::Unknown);
+        assert_eq!(uncertain.advisories.len(), 1);
+        assert_eq!(uncertain.advisories[0].key.canonical.0, "OSV-PUBLISH-NEW");
+
+        authority
+            .persist(&authority_path)
+            .expect("idempotent durable retry");
+        authority.clear_persistence_uncertain();
+        assert_eq!(
+            fs::read(&authority_path).expect("read retried authority"),
+            visible_state,
+            "retry selects the same exact journal bytes"
+        );
+        let reopened = AdvisoryAuthority::open(&authority_path, 100)
+            .expect("cold replay validates new current and old previous generation");
+        assert_eq!(
+            reopened
+                .osv_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(second.as_str())
+        );
+        assert_eq!(
+            reopened
+                .osv_previous_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(first.as_str())
+        );
+
+        let (third_feed, third) = stage(&snapshot_root, scope, "OSV-PUBLISH-NOT-COMMITTED");
+        let mut precommit = reopened.clone();
+        precommit
+            .apply(third_feed)
+            .expect("stage pre-commit candidate");
+        let state_before_precommit = fs::read(&authority_path).expect("selected state before");
+        let precommit_result = precommit.persist_with_rename(
+            &authority_path,
+            |_directory, _source, _destination, _replace| {
+                Err(DirectoryRenameError::NotCommitted(std::io::Error::other(
+                    "injected pre-commit failure",
+                )))
+            },
+        );
+        assert!(matches!(
+            precommit_result,
+            Err(AuthorityStorageError::Io(_))
+        ));
+        assert_eq!(
+            fs::read(&authority_path).expect("old selection remains visible"),
+            state_before_precommit,
+            "a pre-commit failure leaves the prior authority bytes selected"
+        );
+        drop(precommit);
+        assert!(
+            OsvSnapshotRef::prune_unreferenced_generations(&snapshot_root, &BTreeSet::new())
+                .expect("collect unselected pre-commit candidate")
+        );
+        assert!(!snapshot_root.join(third).exists());
+    }
+
+    #[test]
+    fn committed_lease_transition_error_keeps_candidate_and_old_selection_retryable() {
+        fn stage(root: &Path, scope: OsvFeedScope, id: &str) -> (AuthorityFeed, String) {
+            let advisory = super::super::parse_osv(&osv_for(id, "Cargo"), 10).expect("OSV object");
+            let mut builder =
+                super::super::OsvSnapshotBuilder::create(root, scope, 10, 10, 10, 1024 * 1024)
+                    .expect("snapshot builder");
+            builder.push(&advisory).expect("stage advisory");
+            let snapshot = builder
+                .finish(*blake3::hash(id.as_bytes()).as_bytes())
+                .expect("seal snapshot");
+            let generation = snapshot.generation_id().to_owned();
+            (
+                AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None),
+                generation,
+            )
+        }
+
+        let directory = tempfile::tempdir().expect("authority directory");
+        let authority_path = directory.path().join("authority.json");
+        let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        let (old_feed, old_generation) = stage(&snapshot_root, scope, "OSV-LEASE-OLD");
+        authority.apply(old_feed).expect("select old generation");
+        authority
+            .persist(&authority_path)
+            .expect("persist old authority");
+
+        let (new_feed, new_generation) = stage(&snapshot_root, scope, "OSV-LEASE-NEW");
+        authority.apply(new_feed).expect("select new generation");
+        let result = authority.persist_with_postcommit(
+            &authority_path,
+            |directory, source, destination, replace| {
+                directory.rename_with_outcome(source, destination, replace)
+            },
+            |snapshot| {
+                // Exercise the real exclusive-to-shared transition after the
+                // authority rename, then inject the reported transition error.
+                snapshot.commit_persisted()?;
+                Err(OsvSnapshotError::Io(std::io::Error::other(
+                    "injected lease-transition report failure",
+                )))
+            },
+            |root, retained| OsvSnapshotRef::prune_unreferenced_generations(root, retained),
+        );
+        assert!(matches!(
+            &result,
+            Err(AuthorityStorageError::CommittedSnapshotLeaseTransition(
+                OsvSnapshotError::Io(_)
+            ))
+        ));
+        assert!(
+            result
+                .as_ref()
+                .expect_err("post-commit lease error")
+                .publication_committed()
+        );
+
+        let selected_bytes = fs::read(&authority_path).expect("read replaced authority");
+        let selected: serde_json::Value =
+            serde_json::from_slice(&selected_bytes).expect("decode replaced authority");
+        assert_eq!(
+            selected["osv_snapshot"]["generation"],
+            serde_json::Value::String(new_generation.clone())
+        );
+        assert!(snapshot_root.join(&old_generation).is_dir());
+        assert!(snapshot_root.join(&new_generation).is_dir());
+        OsvSnapshotRef::prune_unreferenced_generations(&snapshot_root, &BTreeSet::new())
+            .expect("live selected readers protect both generations");
+        assert!(snapshot_root.join(&old_generation).is_dir());
+        assert!(snapshot_root.join(&new_generation).is_dir());
+
+        authority.mark_persistence_uncertain();
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let observation = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Unavailable);
+        assert_eq!(observation.advisories.len(), 1);
+        assert_eq!(observation.advisories[0].key.canonical.0, "OSV-LEASE-NEW");
+
+        let retention_result = authority.persist_with_postcommit(
+            &authority_path,
+            |directory, source, destination, replace| {
+                directory.rename_with_outcome(source, destination, replace)
+            },
+            |snapshot| snapshot.commit_persisted(),
+            |root, retained| {
+                OsvSnapshotRef::prune_unreferenced_generations(root, retained)?;
+                Err(OsvSnapshotError::Io(std::io::Error::other(
+                    "injected retention report failure",
+                )))
+            },
+        );
+        assert!(matches!(
+            &retention_result,
+            Err(AuthorityStorageError::CommittedSnapshotRetention(
+                OsvSnapshotError::Io(_)
+            ))
+        ));
+        assert!(
+            retention_result
+                .as_ref()
+                .expect_err("post-commit retention error")
+                .publication_committed()
+        );
+        assert_eq!(
+            fs::read(&authority_path).expect("read authority after maintenance error"),
+            selected_bytes
+        );
+        assert!(snapshot_root.join(&old_generation).is_dir());
+        assert!(snapshot_root.join(&new_generation).is_dir());
+
+        authority
+            .persist(&authority_path)
+            .expect("retry snapshot lease transition");
+        authority.clear_persistence_uncertain();
+        assert_eq!(
+            fs::read(&authority_path).expect("read retried authority"),
+            selected_bytes
+        );
+        let reopened = AdvisoryAuthority::open(&authority_path, 100)
+            .expect("cold replay verifies selected and previous generations");
+        assert_eq!(
+            reopened
+                .osv_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(new_generation.as_str())
+        );
+        assert_eq!(
+            reopened
+                .osv_previous_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(old_generation.as_str())
+        );
+    }
+
+    #[test]
+    fn active_snapshot_builder_holds_owner_lease_against_collection() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let builder = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            OsvFeedScope::Ecosystem(OsvEcosystem::Cargo),
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("snapshot builder");
+        assert_eq!(
+            OsvSnapshotRef::prune_unreferenced_generations(directory.path(), &BTreeSet::new())
+                .expect("bounded collection attempt"),
+            false
+        );
+        assert!(matches!(
+            super::super::OsvSnapshotBuilder::create(
+                directory.path(),
+                OsvFeedScope::Ecosystem(OsvEcosystem::Cargo),
+                10,
+                10,
+                10,
+                1024 * 1024,
+            ),
+            Err(OsvSnapshotError::Busy)
+        ));
+        drop(builder);
+    }
+
+    #[test]
+    fn attached_osv_index_mutation_cannot_change_a_lookup_to_clean() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
+        let mut builder = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("snapshot builder");
+        builder.push(&advisory).expect("stage advisory");
+        let snapshot = builder
+            .finish(*blake3::hash(b"index mutation regression").as_bytes())
+            .expect("seal snapshot");
+        let generation = snapshot.generation_id().to_owned();
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority
+            .apply(AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None))
+            .expect("select snapshot");
+
+        let index_path = directory.path().join(generation).join("package-index.bin");
+        let mut bytes = fs::read(&index_path).expect("read package index");
+        bytes[0] ^= 1;
+        fs::write(index_path, bytes).expect("mutate on-disk package index");
+
+        let package = super::super::normalize_package("cargo", "demo").expect("identity");
+        let observation = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Complete);
+        assert_eq!(observation.advisories.len(), 1);
     }
 
     #[test]
@@ -915,9 +2077,7 @@ mod tests {
         )
         .expect("Cargo OSV feed");
         cargo_feed.osv_scope = Some(OsvFeedScope::Ecosystem(OsvEcosystem::Cargo));
-        authority
-            .apply(cargo_feed)
-            .expect("admit Cargo OSV feed");
+        authority.apply(cargo_feed).expect("admit Cargo OSV feed");
 
         let cargo = super::super::normalize_package("cargo", "demo").expect("Cargo identity");
         let cargo_observation = authority.observe(&cargo, "1.0.0", false, false, 10, false);
@@ -946,9 +2106,7 @@ mod tests {
         )
         .expect("PyPI OSV feed");
         pypi_feed.osv_scope = Some(OsvFeedScope::Ecosystem(OsvEcosystem::Pypi));
-        authority
-            .apply(pypi_feed)
-            .expect("admit PyPI OSV feed");
+        authority.apply(pypi_feed).expect("admit PyPI OSV feed");
         let pypi_observation = authority.observe(&pypi, "1.0.0", false, false, 11, false);
         assert_eq!(pypi_observation.coverage, AdvisoryCoverage::Complete);
         assert_eq!(pypi_observation.advisories.len(), 1);
@@ -956,13 +2114,7 @@ mod tests {
 
     #[test]
     fn osv_feed_scope_must_match_the_selected_source_policy() {
-        let mut feed = AuthorityFeed::from_entries(
-            AdvisorySource::Osv,
-            Vec::new(),
-            10,
-            None,
-            None,
-        );
+        let mut feed = AuthorityFeed::from_entries(AdvisorySource::Osv, Vec::new(), 10, None, None);
         feed.osv_scope = Some(OsvFeedScope::Ecosystem(OsvEcosystem::Cargo));
         let mut authority = AdvisoryAuthority::new(100);
         authority.configure_sources([AdvisorySource::Osv]);
@@ -971,7 +2123,9 @@ mod tests {
         assert!(!frontier.complete);
         let pypi = super::super::normalize_package("pypi", "demo").expect("PyPI identity");
         assert_eq!(
-            authority.observe(&pypi, "1.0.0", false, false, 10, false).coverage,
+            authority
+                .observe(&pypi, "1.0.0", false, false, 10, false)
+                .coverage,
             AdvisoryCoverage::Partial
         );
     }
@@ -1048,6 +2202,114 @@ mod tests {
     }
 
     #[test]
+    fn conditional_response_cannot_reuse_another_endpoint_frontier() {
+        let mut authority = AdvisoryAuthority::new(100);
+        let mut body =
+            AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
+                .expect("OSV body");
+        body.source_identity = Some([1; 32]);
+        body.osv_scope = Some(OsvFeedScope::All);
+        authority.apply(body).expect("admit endpoint A body");
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(OsvFeedScope::All));
+        authority.configure_source_identities([(AdvisorySource::Osv, [2; 32])]);
+        let mut stale_body =
+            AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 11, Some("b".into()), None)
+                .expect("other endpoint body");
+        stale_body.osv_scope = Some(OsvFeedScope::All);
+        stale_body.source_identity = Some([1; 32]);
+        assert_eq!(
+            authority
+                .apply(stale_body)
+                .expect_err("reject stale source body"),
+            AuthorityApplyError::ConfiguredSourceMismatch(AdvisorySource::Osv)
+        );
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let endpoint_b = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(endpoint_b.coverage, AdvisoryCoverage::Partial);
+        assert!(
+            endpoint_b.advisories.is_empty(),
+            "endpoint A facts must not be attributed to selected endpoint B"
+        );
+
+        let mut endpoint_b =
+            AuthorityFeed::not_modified(AdvisorySource::Osv, 11, Some("a".into()), None);
+        endpoint_b.source_identity = Some([2; 32]);
+        assert_eq!(
+            authority
+                .apply(endpoint_b)
+                .expect_err("reject cross-endpoint 304"),
+            AuthorityApplyError::NotModifiedSourceMismatch(AdvisorySource::Osv)
+        );
+
+        let mut endpoint_a =
+            AuthorityFeed::not_modified(AdvisorySource::Osv, 12, Some("a".into()), None);
+        endpoint_a.source_identity = Some([1; 32]);
+        authority.configure_source_identities([(AdvisorySource::Osv, [1; 32])]);
+        authority
+            .apply(endpoint_a)
+            .expect("matching endpoint can reuse its cached body");
+        authority.configure_source_identities([(AdvisorySource::Osv, [1; 32])]);
+        assert_eq!(
+            authority
+                .frontier(AdvisorySource::Osv)
+                .expect("frontier")
+                .source_identity,
+            Some([1; 32])
+        );
+    }
+
+    #[test]
+    fn partial_osv_refresh_from_new_endpoint_cannot_relabel_old_snapshot() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let scope_a = OsvFeedScope::All;
+        let scope_b = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let old = super::super::parse_osv(&osv(), 10).expect("old OSV object");
+        let mut builder = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope_a,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("snapshot builder");
+        builder.push(&old).expect("stage old advisory");
+        let snapshot = builder
+            .finish(*blake3::hash(b"endpoint A complete export").as_bytes())
+            .expect("seal old snapshot");
+
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope_a));
+        authority.configure_source_identities([(AdvisorySource::Osv, [1; 32])]);
+        let mut feed = AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None);
+        feed.source_identity = Some([1; 32]);
+        authority.apply(feed).expect("admit endpoint A snapshot");
+
+        authority.configure_osv_scope(Some(scope_b));
+        authority.configure_source_identities([(AdvisorySource::Osv, [2; 32])]);
+        let mut partial = AuthorityFeed::parse(AdvisorySource::Osv, b"[]", 11, None, None)
+            .expect("endpoint B partial page");
+        partial.complete = false;
+        partial.osv_scope = Some(scope_b);
+        partial.source_identity = Some([2; 32]);
+        authority
+            .apply(partial)
+            .expect("admit endpoint B partial page");
+
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let observation = authority.observe(&package, "1.0.0", false, false, 11, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Partial);
+        assert!(
+            observation.advisories.is_empty(),
+            "endpoint A rows must not be presented as endpoint B facts"
+        );
+        assert!(authority.osv_snapshot.is_none());
+        assert!(authority.osv_previous_snapshot.is_some());
+    }
+
+    #[test]
     fn first_refresh_outage_is_unavailable_not_unknown() {
         let mut authority = AdvisoryAuthority::new(100);
         authority.mark_unavailable(AdvisorySource::Osv, 1);
@@ -1055,6 +2317,163 @@ mod tests {
         let observation = authority.observe(&package, "1.0.0", false, false, 1, false);
         assert_eq!(observation.coverage, AdvisoryCoverage::Unavailable);
         assert_eq!(observation.freshness, FreshnessState::Fresh);
+    }
+
+    #[test]
+    fn authority_state_load_and_store_respect_the_configured_byte_ceiling() {
+        let directory = tempfile::tempdir().expect("authority directory");
+        let path = directory.path().join("authority.json");
+        let authority =
+            AdvisoryAuthority::open_with_limit(&path, 10, 3).expect("missing authority is empty");
+        assert!(matches!(
+            authority.persist(&path),
+            Err(AuthorityStorageError::BoundExceeded)
+        ));
+        assert!(!path.exists(), "oversized state was not published");
+
+        fs::write(&path, b"1234").expect("write oversized authority");
+        assert!(matches!(
+            AdvisoryAuthority::open_with_limit(&path, 10, 3),
+            Err(AuthorityStorageError::BoundExceeded)
+        ));
+
+        fs::write(&path, b"").expect("write empty corrupt authority");
+        assert!(matches!(
+            AdvisoryAuthority::open_with_limit(&path, 10, 3),
+            Err(AuthorityStorageError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn missing_authority_prunes_complete_generation_left_before_selection() {
+        let directory = tempfile::tempdir().expect("authority directory");
+        let authority_path = directory.path().join("authority.json");
+        let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
+        let mut builder = super::super::OsvSnapshotBuilder::create(
+            &snapshot_root,
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("snapshot builder");
+        builder.push(&advisory).expect("stage advisory");
+        let snapshot = builder
+            .finish(*blake3::hash(b"finished before authority selection").as_bytes())
+            .expect("seal generation");
+        let orphan = snapshot_root.join(snapshot.generation_id());
+        drop(snapshot);
+        assert!(
+            orphan.is_dir(),
+            "complete generation exists before recovery"
+        );
+
+        AdvisoryAuthority::open(&authority_path, 100).expect("recover empty authority");
+        assert!(
+            !orphan.exists(),
+            "unselected complete generation is reclaimed before the next quota calculation"
+        );
+    }
+
+    #[test]
+    fn next_snapshot_builder_reclaims_same_process_unselected_generation() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
+        let mut first = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("first builder");
+        first.push(&advisory).expect("stage advisory");
+        let orphan = first
+            .finish(*blake3::hash(b"finished before failed selection").as_bytes())
+            .expect("seal unselected generation");
+        let orphan_path = directory.path().join(orphan.generation_id());
+        drop(orphan);
+        assert!(
+            orphan_path.is_dir(),
+            "finished generation is initially present"
+        );
+
+        let _next = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("next refresh starts after cleanup");
+        assert!(
+            !orphan_path.exists(),
+            "unselected generation is removed before quota accounting"
+        );
+    }
+
+    #[test]
+    fn busy_snapshot_root_does_not_downgrade_a_durable_selection() {
+        let directory = tempfile::tempdir().expect("authority directory");
+        let authority_path = directory.path().join("authority.json");
+        let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
+        let mut builder = super::super::OsvSnapshotBuilder::create(
+            &snapshot_root,
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("initial builder");
+        builder.push(&advisory).expect("stage advisory");
+        let snapshot = builder
+            .finish(*blake3::hash(b"selected durable generation").as_bytes())
+            .expect("seal selected generation");
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority
+            .apply(AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None))
+            .expect("select generation");
+        authority
+            .persist(&authority_path)
+            .expect("persist selection");
+        let original_state = fs::read(&authority_path).expect("read durable selection");
+
+        let _refresh = super::super::OsvSnapshotBuilder::create(
+            &snapshot_root,
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("concurrent refresh holds the root lease");
+        assert!(matches!(
+            AdvisoryAuthority::open(&authority_path, 100),
+            Err(AuthorityStorageError::Snapshot(OsvSnapshotError::Busy))
+        ));
+        assert_eq!(
+            fs::read(&authority_path).expect("selection remains readable"),
+            original_state,
+            "busy readers cannot rewrite the selected authority as unavailable"
+        );
+
+        drop(_refresh);
+        let reopened = AdvisoryAuthority::open(&authority_path, 100).expect("retry after refresh");
+        let package = super::super::normalize_package("cargo", "demo").expect("identity");
+        let observed = reopened.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(observed.coverage, AdvisoryCoverage::Complete);
+        assert_eq!(observed.advisories.len(), 1);
     }
 
     #[test]
@@ -1081,49 +2500,47 @@ mod tests {
 
     #[test]
     fn source_expiry_is_honored_and_capped_by_configured_max_age() {
-        let mut source_limited = AuthorityFeed::parse(
-            AdvisorySource::Osv,
-            &osv(),
-            10,
-            None,
-            None,
-        )
-        .expect("OSV fixture");
+        let mut source_limited =
+            AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, None, None).expect("OSV fixture");
         source_limited.freshness.expires_at = Some(20);
         let mut authority = AdvisoryAuthority::new(100);
         authority.apply(source_limited).expect("admit source");
         let package = super::super::normalize_package("cargo", "demo").expect("identity");
         assert_eq!(
-            authority.observe(&package, "1.0.0", false, false, 19, false).freshness,
+            authority
+                .observe(&package, "1.0.0", false, false, 19, false)
+                .freshness,
             FreshnessState::Fresh
         );
         authority.mark_unavailable(AdvisorySource::Osv, 19);
         assert_eq!(
-            authority.observe(&package, "1.0.0", false, false, 20, false).coverage,
+            authority
+                .observe(&package, "1.0.0", false, false, 20, false)
+                .coverage,
             AdvisoryCoverage::Unavailable
         );
         assert_eq!(
-            authority.observe(&package, "1.0.0", false, false, 20, false).freshness,
+            authority
+                .observe(&package, "1.0.0", false, false, 20, false)
+                .freshness,
             FreshnessState::Stale
         );
 
-        let mut policy_limited = AuthorityFeed::parse(
-            AdvisorySource::Osv,
-            &osv(),
-            30,
-            None,
-            None,
-        )
-        .expect("second OSV fixture");
+        let mut policy_limited = AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 30, None, None)
+            .expect("second OSV fixture");
         policy_limited.freshness.expires_at = Some(300);
         authority.set_max_age_secs(5);
         authority.apply(policy_limited).expect("refresh source");
         assert_eq!(
-            authority.observe(&package, "1.0.0", false, false, 34, false).freshness,
+            authority
+                .observe(&package, "1.0.0", false, false, 34, false)
+                .freshness,
             FreshnessState::Fresh
         );
         assert_eq!(
-            authority.observe(&package, "1.0.0", false, false, 35, false).freshness,
+            authority
+                .observe(&package, "1.0.0", false, false, 35, false)
+                .freshness,
             FreshnessState::Stale
         );
     }
@@ -1141,14 +2558,16 @@ mod tests {
             AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
                 .expect("OSV fixture");
         initial.osv_scope = Some(OsvFeedScope::All);
-        authority
-            .apply(initial)
-            .expect("admit source");
-        let mut empty = AuthorityFeed::from_entries(AdvisorySource::Osv, Vec::new(), 11, Some("b".into()), None);
+        authority.apply(initial).expect("admit source");
+        let mut empty = AuthorityFeed::from_entries(
+            AdvisorySource::Osv,
+            Vec::new(),
+            11,
+            Some("b".into()),
+            None,
+        );
         empty.osv_scope = Some(OsvFeedScope::All);
-        authority
-            .apply(empty)
-            .expect("complete empty snapshot");
+        authority.apply(empty).expect("complete empty snapshot");
         authority.persist(&path).expect("persist");
 
         let restored = AdvisoryAuthority::open(&path, 7).expect("cold open");

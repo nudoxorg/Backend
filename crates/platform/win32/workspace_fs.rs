@@ -10,6 +10,7 @@
 
 use super::identity::{current_user, is_owned_by_current_user, owner_of};
 use super::security::restrict_handle_to_current_user;
+use crate::directory::DirectoryRenameError;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
@@ -111,6 +112,13 @@ struct FileAttributeTagInfo {
 struct DirectoryNode {
     handle: OwnedHandle,
     _parent: Option<Arc<DirectoryNode>>,
+    name: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspacePurpose {
+    PrivateState,
+    ReadOnlySource,
 }
 
 /// A pinned private directory. Its ancestor handles stay open for its lifetime,
@@ -141,8 +149,23 @@ impl WorkspaceRoot {
     /// root without following any reparse point. Relative paths, UNC paths,
     /// device namespaces, and `.`/`..` components are rejected.
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_with_purpose(path, WorkspacePurpose::PrivateState)
+    }
+
+    /// Opens an ordinary read-only source tree without requiring its inherited
+    /// DACL to be private. Reparse points and malformed directory handles are
+    /// still refused, and all descendants stay relative to held handles.
+    pub fn open_read_only_source(path: &Path) -> io::Result<Self> {
+        Self::open_with_purpose(path, WorkspacePurpose::ReadOnlySource)
+    }
+
+    fn open_with_purpose(path: &Path, purpose: WorkspacePurpose) -> io::Result<Self> {
         let (drive_root, parts) = absolute_drive_components(path)?;
-        let mut current = open_drive_root(&drive_root)?;
+        let mut current = if purpose == WorkspacePurpose::ReadOnlySource {
+            open_drive_root_source(&drive_root)?
+        } else {
+            open_drive_root(&drive_root)?
+        };
         if parts.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -158,8 +181,14 @@ impl WorkspaceRoot {
                 "workspace root cannot be the drive root",
             )
         })?;
-        current = open_directory_child_writable(&current, final_part)?;
-        ensure_private_handle(current.handle.as_raw_handle())?;
+        current = if purpose == WorkspacePurpose::ReadOnlySource {
+            open_directory_child_unchecked(&current, final_part)?
+        } else {
+            open_directory_child_writable(&current, final_part)?
+        };
+        if purpose == WorkspacePurpose::PrivateState {
+            ensure_private_handle(current.handle.as_raw_handle())?;
+        }
         Ok(Self(current))
     }
 
@@ -287,6 +316,7 @@ impl WorkspaceRoot {
         Ok(Self(Arc::new(DirectoryNode {
             handle,
             _parent: Some(Arc::clone(&self.0)),
+            name: Some(name.to_owned()),
         })))
     }
 
@@ -299,6 +329,16 @@ impl WorkspaceRoot {
             current = open_directory_child(&current, component)?;
         }
         ensure_private_handle(current.handle.as_raw_handle())?;
+        Ok(Self(current))
+    }
+
+    /// Opens read-only source descendants without imposing a private DACL.
+    pub fn open_dir_source_checked(&self, path: &[&str]) -> io::Result<Self> {
+        let mut current = Arc::clone(&self.0);
+        for component in path {
+            validate_component(component)?;
+            current = open_directory_child_unchecked(&current, component)?;
+        }
         Ok(Self(current))
     }
 
@@ -341,6 +381,48 @@ impl WorkspaceRoot {
         file_from_handle(handle)
     }
 
+    /// Opens a regular source file without requiring a private DACL.
+    pub fn open_file_read_source_checked(&self, path: &[&str]) -> io::Result<File> {
+        let (parent, leaf) = self.parent_and_leaf_source(path)?;
+        let handle = open_relative_with_share(
+            parent.handle.as_raw_handle().cast(),
+            leaf,
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_NON_DIRECTORY_FILE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )?;
+        ensure_regular_file_handle(handle.as_raw_handle())?;
+        file_from_handle(handle)
+    }
+
+    /// Opens an existing regular private file for reading and writing, or
+    /// creates it exclusively when requested.
+    pub fn open_file_read_write_checked(&self, path: &[&str], create: bool) -> io::Result<File> {
+        let (parent, leaf) = self.parent_and_leaf(path)?;
+        let handle = match open_relative_with_share(
+            parent.handle.as_raw_handle().cast(),
+            leaf,
+            FILE_READ_ATTRIBUTES
+                | FILE_READ_DATA
+                | FILE_WRITE_DATA
+                | READ_CONTROL
+                | WRITE_DAC
+                | DELETE
+                | SYNCHRONIZE,
+            FILE_NON_DIRECTORY_FILE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        ) {
+            Ok(handle) => handle,
+            Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
+                return self.create_file_exclusive(path);
+            }
+            Err(error) => return Err(error),
+        };
+        ensure_regular_file_handle(handle.as_raw_handle())?;
+        ensure_private_handle(handle.as_raw_handle())?;
+        file_from_handle(handle)
+    }
+
     /// Atomically renames one checked regular file beneath this root. The
     /// destination's parent is opened component-by-component and the leaf is
     /// resolved by the kernel relative to that handle.
@@ -350,22 +432,117 @@ impl WorkspaceRoot {
         destination: &[&str],
         replace: bool,
     ) -> io::Result<()> {
-        let (source_parent, source_leaf) = self.parent_and_leaf(source)?;
-        let (destination_parent, destination_leaf) = self.parent_and_leaf(destination)?;
+        self.rename_relative_with_outcome(source, destination, replace)
+            .map_err(DirectoryRenameError::into_io_error)
+    }
+
+    /// Atomically renames a regular file while preserving whether parent
+    /// flushing failed before or after the native rename committed.
+    pub fn rename_relative_with_outcome(
+        &self,
+        source: &[&str],
+        destination: &[&str],
+        replace: bool,
+    ) -> Result<(), DirectoryRenameError> {
+        self.rename_checked_entry_with_outcome(source, destination, replace, false)
+    }
+
+    /// Atomically renames one checked private directory beneath this root.
+    pub fn rename_directory_relative(
+        &self,
+        source: &[&str],
+        destination: &[&str],
+    ) -> io::Result<()> {
+        self.rename_directory_relative_with_outcome(source, destination)
+            .map_err(DirectoryRenameError::into_io_error)
+    }
+
+    /// Atomically renames a private directory with an explicit commit result.
+    pub fn rename_directory_relative_with_outcome(
+        &self,
+        source: &[&str],
+        destination: &[&str],
+    ) -> Result<(), DirectoryRenameError> {
+        self.rename_checked_entry_with_outcome(source, destination, false, true)
+    }
+
+    /// Returns whether a checked direct child is a directory.
+    pub fn child_is_directory(&self, path: &[&str]) -> io::Result<bool> {
+        let (parent, leaf) = self.parent_and_leaf(path)?;
+        let handle = open_relative(
+            parent.handle.as_raw_handle().cast(),
+            leaf,
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
+            0,
+        )?;
+        let attributes = attributes(handle.as_raw_handle())?;
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(invalid_data("workspace child is a reparse point"));
+        }
+        let standard = standard_info(handle.as_raw_handle())?;
+        if standard.NumberOfLinks != 1 {
+            return Err(invalid_data("workspace child has multiple links"));
+        }
+        ensure_private_handle(handle.as_raw_handle())?;
+        Ok(standard.Directory)
+    }
+
+    fn rename_checked_entry_with_outcome(
+        &self,
+        source: &[&str],
+        destination: &[&str],
+        replace: bool,
+        directory: bool,
+    ) -> Result<(), DirectoryRenameError> {
+        self.rename_checked_entry_with_flush(source, destination, replace, directory, flush_handle)
+    }
+
+    fn rename_checked_entry_with_flush(
+        &self,
+        source: &[&str],
+        destination: &[&str],
+        replace: bool,
+        directory: bool,
+        mut flush: impl FnMut(*mut c_void) -> io::Result<()>,
+    ) -> Result<(), DirectoryRenameError> {
+        let precommit = DirectoryRenameError::NotCommitted;
+        let (source_parent, source_leaf) = self.parent_and_leaf(source).map_err(precommit)?;
+        let (destination_parent, destination_leaf) = self
+            .parent_and_leaf(destination)
+            .map_err(DirectoryRenameError::NotCommitted)?;
         let source_handle = open_relative(
             source_parent.handle.as_raw_handle().cast(),
             source_leaf,
             FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
-            FILE_NON_DIRECTORY_FILE,
-        )?;
-        ensure_regular_file_handle(source_handle.as_raw_handle())?;
-        ensure_private_handle(source_handle.as_raw_handle())?;
-        check_replace_destination(&destination_parent, destination_leaf, replace)?;
-        let name = wide_component(destination_leaf)?;
+            if directory {
+                FILE_DIRECTORY_FILE
+            } else {
+                FILE_NON_DIRECTORY_FILE
+            },
+        )
+        .map_err(DirectoryRenameError::NotCommitted)?;
+        if directory {
+            ensure_directory_handle(source_handle.as_raw_handle())
+                .map_err(DirectoryRenameError::NotCommitted)?;
+        } else {
+            ensure_regular_file_handle(source_handle.as_raw_handle())
+                .map_err(DirectoryRenameError::NotCommitted)?;
+        }
+        ensure_private_handle(source_handle.as_raw_handle())
+            .map_err(DirectoryRenameError::NotCommitted)?;
+        check_replace_destination(&destination_parent, destination_leaf, replace)
+            .map_err(DirectoryRenameError::NotCommitted)?;
+        let name = wide_component(destination_leaf).map_err(DirectoryRenameError::NotCommitted)?;
         let header_size = offset_of!(FILE_RENAME_INFO, FileName);
         let total_size = header_size
-            .checked_add(name.len().checked_mul(2).ok_or_else(invalid_name)?)
-            .ok_or_else(invalid_name)?;
+            .checked_add(
+                name.len()
+                    .checked_mul(2)
+                    .ok_or_else(invalid_name)
+                    .map_err(DirectoryRenameError::NotCommitted)?,
+            )
+            .ok_or_else(invalid_name)
+            .map_err(DirectoryRenameError::NotCommitted)?;
         let mut storage = vec![0_u64; total_size.div_ceil(mem::size_of::<u64>())];
         // SAFETY: `storage` is aligned and sized for the fixed header plus all
         // UTF-16 name bytes; the source and destination handles remain alive.
@@ -379,8 +556,11 @@ impl WorkspaceRoot {
             });
             ptr::addr_of_mut!((*rename).RootDirectory)
                 .write(destination_parent.handle.as_raw_handle().cast());
-            ptr::addr_of_mut!((*rename).FileNameLength)
-                .write(u32::try_from(name.len() * 2).map_err(|_| invalid_name())?);
+            ptr::addr_of_mut!((*rename).FileNameLength).write(
+                u32::try_from(name.len() * 2)
+                    .map_err(|_| invalid_name())
+                    .map_err(DirectoryRenameError::NotCommitted)?,
+            );
             ptr::copy_nonoverlapping(
                 name.as_ptr(),
                 ptr::addr_of_mut!((*rename).FileName).cast::<u16>(),
@@ -394,15 +574,21 @@ impl WorkspaceRoot {
                 source_handle.as_raw_handle().cast(),
                 FileRenameInfo,
                 rename.cast(),
-                u32::try_from(total_size).map_err(|_| invalid_name())?,
+                u32::try_from(total_size)
+                    .map_err(|_| invalid_name())
+                    .map_err(DirectoryRenameError::NotCommitted)?,
             )
         };
         if moved == 0 {
-            return Err(io::Error::last_os_error());
+            return Err(DirectoryRenameError::NotCommitted(
+                io::Error::last_os_error(),
+            ));
         }
-        flush_handle(destination_parent.handle.as_raw_handle())?;
+        flush(destination_parent.handle.as_raw_handle())
+            .map_err(DirectoryRenameError::CommittedButNotDurable)?;
         if !Arc::ptr_eq(&source_parent, &destination_parent) {
-            flush_handle(source_parent.handle.as_raw_handle())?;
+            flush(source_parent.handle.as_raw_handle())
+                .map_err(DirectoryRenameError::CommittedButNotDurable)?;
         }
         Ok(())
     }
@@ -426,15 +612,49 @@ impl WorkspaceRoot {
     /// Checks every direct child through an open, reparse-point handle and
     /// rejects links, foreign owners, special files, and non-private DACLs.
     pub fn read_dir_checked(&self, path: &[&str]) -> io::Result<Vec<DirEntry>> {
+        self.read_dir_checked_limited(path, usize::MAX)
+    }
+
+    /// Checks direct children through open handles with a cardinality ceiling.
+    pub fn read_dir_checked_limited(
+        &self,
+        path: &[&str],
+        maximum: usize,
+    ) -> io::Result<Vec<DirEntry>> {
         let directory = self.open_dir_checked(path)?;
-        let names = enumerate_names(directory.handle())?;
+        directory.read_open_directory_limited(maximum, WorkspacePurpose::PrivateState)
+    }
+
+    /// Lists a source directory without imposing workspace-private ACLs.
+    pub fn read_dir_source_checked_limited(
+        &self,
+        path: &[&str],
+        maximum: usize,
+    ) -> io::Result<Vec<DirEntry>> {
+        let directory = self.open_dir_source_checked(path)?;
+        directory.read_open_directory_limited(maximum, WorkspacePurpose::ReadOnlySource)
+    }
+
+    fn read_open_directory_limited(
+        &self,
+        maximum: usize,
+        purpose: WorkspacePurpose,
+    ) -> io::Result<Vec<DirEntry>> {
+        let directory = self.reopen_current_directory(purpose)?;
+        let names = enumerate_names(directory.handle(), maximum)?;
         let mut entries = Vec::with_capacity(names.len());
         for (name, enumerated_file_id) in names {
             validate_component(&name)?;
             let handle = open_relative(
                 directory.handle(),
                 &name,
-                FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
+                FILE_READ_ATTRIBUTES
+                    | SYNCHRONIZE
+                    | if purpose == WorkspacePurpose::PrivateState {
+                        READ_CONTROL | DELETE
+                    } else {
+                        0
+                    },
                 0,
             )?;
             let attributes = attributes(handle.as_raw_handle())?;
@@ -452,7 +672,9 @@ impl WorkspaceRoot {
                     "workspace entry changed during directory enumeration",
                 ));
             }
-            ensure_private_handle(handle.as_raw_handle())?;
+            if purpose == WorkspacePurpose::PrivateState {
+                ensure_private_handle(handle.as_raw_handle())?;
+            }
             let kind = if standard.Directory {
                 EntryKind::Directory
             } else if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
@@ -467,17 +689,62 @@ impl WorkspaceRoot {
         Ok(entries)
     }
 
+    fn reopen_current_directory(&self, purpose: WorkspacePurpose) -> io::Result<Self> {
+        let parent = self.0._parent.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "independent enumeration handle requires a named directory child",
+            )
+        })?;
+        let name = self.0.name.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "independent enumeration handle has no held child name",
+            )
+        })?;
+        let reopened = if purpose == WorkspacePurpose::PrivateState {
+            open_directory_child(parent, name)?
+        } else {
+            open_directory_child_unchecked(parent, name)?
+        };
+        let original_id = identity_info(self.0.handle.as_raw_handle())?;
+        let reopened_id = identity_info(reopened.handle.as_raw_handle())?;
+        if original_id.VolumeSerialNumber != reopened_id.VolumeSerialNumber
+            || original_id.FileId.Identifier[..] != reopened_id.FileId.Identifier[..]
+        {
+            return Err(invalid_data(
+                "directory changed before independent enumeration opened",
+            ));
+        }
+        Ok(Self(reopened))
+    }
+
     /// Removes a private directory tree by recursively opening and deleting
     /// each child through pinned directory handles. Any unexpected entry or
     /// race fails closed; the directory itself is removed only when empty.
     pub fn remove_dir_tree(&self, path: &[&str]) -> io::Result<()> {
+        self.remove_dir_tree_limited(path, 1_000_000)
+    }
+
+    /// Removes a private directory tree under an explicit total-entry ceiling.
+    pub fn remove_dir_tree_limited(&self, path: &[&str], maximum_entries: usize) -> io::Result<()> {
         let (parent, leaf) = self.parent_and_leaf(path)?;
         let directory = match open_directory_child_with_delete(&parent, leaf) {
             Ok(directory) => directory,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
-        remove_tree_contents(&directory)?;
+        let mut visited = 0_usize;
+        remove_tree_contents(&directory, &mut visited, maximum_entries)?;
+        mark_delete(directory.handle.as_raw_handle())?;
+        flush_handle(parent.handle.as_raw_handle())
+    }
+
+    /// Removes one empty private child directory without following reparses.
+    pub fn remove_empty_dir(&self, path: &[&str]) -> io::Result<()> {
+        let (parent, leaf) = self.parent_and_leaf(path)?;
+        let directory = open_directory_child_with_delete(&parent, leaf)?;
+        let _ = enumerate_names(directory.handle.as_raw_handle().cast(), 0)?;
         mark_delete(directory.handle.as_raw_handle())?;
         flush_handle(parent.handle.as_raw_handle())
     }
@@ -511,6 +778,22 @@ impl WorkspaceRoot {
         for part in parent_path {
             validate_component(part)?;
             parent = open_directory_child(&parent, part)?;
+        }
+        Ok((parent, leaf))
+    }
+
+    fn parent_and_leaf_source(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+        let (leaf, parent_path) = path.split_last().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relative path must contain a file name",
+            )
+        })?;
+        validate_component(leaf)?;
+        let mut parent = Arc::clone(&self.0);
+        for part in parent_path {
+            validate_component(part)?;
+            parent = open_directory_child_unchecked(&parent, part)?;
         }
         Ok((parent, leaf))
     }
@@ -576,6 +859,13 @@ fn open_drive_root(name: &[u16]) -> io::Result<Arc<DirectoryNode>> {
     )
 }
 
+fn open_drive_root_source(name: &[u16]) -> io::Result<Arc<DirectoryNode>> {
+    open_drive_root_with_access(
+        name,
+        FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+    )
+}
+
 fn open_drive_root_writable(name: &[u16]) -> io::Result<Arc<DirectoryNode>> {
     open_drive_root_with_access(
         name,
@@ -604,6 +894,7 @@ fn open_drive_root_with_access(name: &[u16], access: u32) -> io::Result<Arc<Dire
     Ok(Arc::new(DirectoryNode {
         handle,
         _parent: None,
+        name: None,
     }))
 }
 
@@ -620,13 +911,14 @@ fn open_directory_child_unchecked(
     let handle = open_relative(
         parent.handle.as_raw_handle().cast(),
         name,
-        FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_DIRECTORY_FILE,
     )?;
     ensure_directory_handle(handle.as_raw_handle())?;
     Ok(Arc::new(DirectoryNode {
         handle,
         _parent: Some(Arc::clone(parent)),
+        name: Some(name.to_owned()),
     }))
 }
 
@@ -653,6 +945,7 @@ fn open_directory_child_writable(
     Ok(Arc::new(DirectoryNode {
         handle,
         _parent: Some(Arc::clone(parent)),
+        name: Some(name.to_owned()),
     }))
 }
 
@@ -679,6 +972,7 @@ fn open_directory_child_with_delete(
     Ok(Arc::new(DirectoryNode {
         handle,
         _parent: Some(Arc::clone(parent)),
+        name: Some(name.to_owned()),
     }))
 }
 
@@ -1136,7 +1430,7 @@ fn identity_info(handle: *mut c_void) -> io::Result<FILE_ID_INFO> {
     }
 }
 
-fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
+fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<(String, i64)>> {
     let mut buffer = vec![0_u64; 8192];
     let mut restart = true;
     let mut names = Vec::new();
@@ -1211,6 +1505,12 @@ fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
             let name = String::from_utf16(wide)
                 .map_err(|_| invalid_data("workspace child name is not valid UTF-16"))?;
             if name != "." && name != ".." {
+                if names.len() >= maximum {
+                    return Err(io::Error::new(
+                        io::ErrorKind::FileTooLarge,
+                        "workspace directory entry limit exceeded",
+                    ));
+                }
                 names.push((name, entry.FileId));
             }
             if entry.NextEntryOffset == 0 {
@@ -1230,9 +1530,25 @@ fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
     Ok(names)
 }
 
-fn remove_tree_contents(directory: &Arc<DirectoryNode>) -> io::Result<()> {
-    let names = enumerate_names(directory.handle.as_raw_handle().cast())?;
+fn remove_tree_contents(
+    directory: &Arc<DirectoryNode>,
+    visited: &mut usize,
+    maximum_entries: usize,
+) -> io::Result<()> {
+    let names = enumerate_names(
+        directory.handle.as_raw_handle().cast(),
+        maximum_entries.saturating_sub(*visited),
+    )?;
     for (name, enumerated_file_id) in names {
+        *visited = (*visited)
+            .checked_add(1)
+            .filter(|count| *count <= maximum_entries)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "workspace directory tree entry limit exceeded",
+                )
+            })?;
         validate_component(&name)?;
         let handle = open_relative(
             directory.handle.as_raw_handle().cast(),
@@ -1269,8 +1585,9 @@ fn remove_tree_contents(directory: &Arc<DirectoryNode>) -> io::Result<()> {
             let child = Arc::new(DirectoryNode {
                 handle,
                 _parent: Some(Arc::clone(directory)),
+                name: Some(name.clone()),
             });
-            remove_tree_contents(&child)?;
+            remove_tree_contents(&child, visited, maximum_entries)?;
             mark_delete(child.handle.as_raw_handle())?;
         } else {
             mark_delete(handle.as_raw_handle())?;
@@ -1575,5 +1892,45 @@ mod tests {
         }
         fs::remove_dir_all(path).expect("remove workspace root");
         fs::remove_file(outside).expect("remove outside victim");
+    }
+
+    #[test]
+    fn rename_outcome_keeps_native_commit_stage_when_parent_flush_fails() {
+        use super::DirectoryRenameError;
+
+        let path = fresh_path("rename-flush-failure");
+        let root = WorkspaceRoot::create(&path).expect("create private root");
+        let mut source = root
+            .create_file_exclusive(&["staged"])
+            .expect("create staged file");
+        source
+            .write_all(b"new selected bytes")
+            .expect("write staged file");
+        source.sync_all().expect("flush staged file");
+        drop(source);
+
+        let outcome =
+            root.rename_checked_entry_with_flush(&["staged"], &["selected"], false, false, |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected parent flush failure after native rename",
+                ))
+            });
+        let Err(DirectoryRenameError::CommittedButNotDurable(error)) = outcome else {
+            panic!("native post-rename flush failure lost commit state: {outcome:?}");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(root.open_file_read_checked(&["staged"]).is_err());
+        let mut selected = root
+            .open_file_read_checked(&["selected"])
+            .expect("read committed selected file");
+        let mut bytes = Vec::new();
+        selected
+            .read_to_end(&mut bytes)
+            .expect("read selected bytes");
+        assert_eq!(bytes, b"new selected bytes");
+        drop(selected);
+        drop(root);
+        fs::remove_dir_all(path).expect("test cleanup");
     }
 }
