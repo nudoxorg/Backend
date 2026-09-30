@@ -1181,7 +1181,7 @@ fn write_ordinal_map(
         return Err(Error::SizeLimit.into());
     }
     let live_count = documents.iter().filter(|document| document.is_some()).count();
-    let record_bytes = live_count.checked_mul(8 + 32 + 32 + 4).ok_or(Error::SizeLimit)?;
+    let record_bytes = live_count.checked_mul(8 + 32 + 32 + 4 + 32).ok_or(Error::SizeLimit)?;
     let total_bytes = ORDINAL_MAP_MAGIC
         .len()
         .checked_add(32 + 8 + 8)
@@ -1197,10 +1197,12 @@ fn write_ordinal_map(
     bytes.extend_from_slice(&u64::try_from(live_count).map_err(|_| Error::SizeLimit)?.to_le_bytes());
     for (ordinal, document) in documents.iter().enumerate() {
         let Some(document) = document else { continue };
-        bytes.extend_from_slice(&u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?.to_le_bytes());
+        let ordinal = u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?;
+        bytes.extend_from_slice(&ordinal.to_le_bytes());
         bytes.extend_from_slice(document.id.as_bytes());
         bytes.extend_from_slice(&document.fields_digest);
         bytes.extend_from_slice(&document.postings.to_le_bytes());
+        bytes.extend_from_slice(&ordinal_witness(fingerprint, ordinal, document));
     }
     debug_assert_eq!(bytes.len(), total_bytes);
     let staging = directory.join(format!(".{ORDINAL_MAP_FILE}.tmp"));
@@ -1210,6 +1212,17 @@ fn write_ordinal_map(
     backend_platform::durable::replace_file(&staging, &directory.join(ORDINAL_MAP_FILE))?;
     sync_directory(directory)?;
     Ok(())
+}
+
+fn ordinal_witness(fingerprint: [u8; 32], ordinal: u64, document: &LiveDocument) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend-tantivy-ordinal-witness-v1\0");
+    hasher.update(&fingerprint);
+    hasher.update(&ordinal.to_le_bytes());
+    hasher.update(document.id.as_bytes());
+    hasher.update(&document.fields_digest);
+    hasher.update(&document.postings.to_le_bytes());
+    *hasher.finalize().as_bytes()
 }
 
 fn read_ordinal_map(
@@ -1242,7 +1255,7 @@ fn read_ordinal_map(
         return Err(TantivySource::corrupt("durable projection ordinal map has an invalid live count"));
     };
     let Some(expected_bytes) = live_count
-        .checked_mul(8 + 32 + 32 + 4)
+        .checked_mul(8 + 32 + 32 + 4 + 32)
         .and_then(|records| offset.checked_add(records))
     else {
         return Err(TantivySource::corrupt("durable projection ordinal map size overflows"));
@@ -1268,6 +1281,9 @@ fn read_ordinal_map(
         let Some(postings) = take_u32(&bytes, &mut offset) else {
             return Err(TantivySource::corrupt("durable projection ordinal posting count is truncated"));
         };
+        let Some(witness) = take_bytes::<32>(&bytes, &mut offset) else {
+            return Err(TantivySource::corrupt("durable projection ordinal witness is truncated"));
+        };
         if ordinal >= slot_count || documents[ordinal].is_some() {
             return Err(TantivySource::corrupt("durable projection ordinal is duplicated or outside the map"));
         }
@@ -1282,8 +1298,12 @@ fn read_ordinal_map(
         if fields_digest != expected_digest || postings != expected_postings {
             return Err(TantivySource::corrupt("durable projection ordinal does not match its bound document"));
         }
+        let live = LiveDocument { id, fields_digest, postings };
+        if witness != ordinal_witness(fingerprint, u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?, &live) {
+            return Err(TantivySource::corrupt("durable projection ordinal witness does not match its slot"));
+        }
         seen[expected_index] = true;
-        documents[ordinal] = Some(LiveDocument { id, fields_digest, postings });
+        documents[ordinal] = Some(live);
     }
     if offset != bytes.len() || seen.iter().any(|admitted| !admitted) {
         return Err(TantivySource::corrupt("durable projection ordinal map omits a bound document"));
