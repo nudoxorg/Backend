@@ -1143,7 +1143,8 @@ fn owner_index_job_cli_ticket_and_progress_operands_are_validated() {
                 } if observed == &ticket)
     ));
 
-    let malformed = serde_json::json!({ "ticket": { "id": 0, "owner_epoch": [9; 16], "package": { "kind": "local", "value": "/workspace/project" } } });
+    let owner_epoch = [9_u8; 16];
+    let malformed = serde_json::json!({ "ticket": { "id": 0, "owner_epoch": owner_epoch, "package": { "kind": "local", "value": "/workspace/project" } } });
     let invalid = Invocation::from_json(
         grammar,
         malformed.as_object().expect("malformed ticket object"),
