@@ -2000,6 +2000,87 @@ fn rebinding_a_view_keeps_every_posting_and_rejects_the_old_binding() {
 }
 
 #[test]
+fn large_unchanged_corpus_rebind_keeps_exact_results_under_the_new_root() {
+    const ROWS: u64 = 2_048;
+    let documents = (1..=ROWS)
+        .map(|ordinal| {
+            (
+                document(ordinal),
+                vec![("name".into(), "stable shared-corpus-token".into())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = {
+        let mut ids = documents
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    };
+    let current = state_for(documents.clone(), [0x31; 32]);
+    let mut source = TantivySource::build(&current, Limits::default()).expect("projection");
+    let postings_before = source.indexed_postings();
+    let next = state_for(documents, [0x32; 32]);
+
+    let outcome = source
+        .maintain(&next, OverlayLimits::default())
+        .expect("rebind the unchanged corpus");
+    assert_eq!(
+        outcome,
+        MaintainOutcome::Applied(ProjectionRevision {
+            kind: ProjectionKind::Rebound,
+            rewritten_documents: 0,
+            retired_postings: 0,
+            added_postings: 0,
+        })
+    );
+    assert_eq!(source.indexed_postings(), postings_before);
+    assert_eq!(
+        source
+            .search(&Query::new(vec!["stable".into()], Limits::default()).expect("query"))
+            .expect("search rebound corpus")
+            .into_iter()
+            .map(|hit| hit.document)
+            .collect::<Vec<_>>(),
+        expected
+    );
+
+    let stale_query = Query::new(vec!["stable".into()], Limits::default()).expect("query");
+    assert!(matches!(
+        LexicalSource::fetch(
+            &source,
+            &QueryRequest {
+                binding: current.binding(),
+                query: stale_query.clone(),
+                cursor: None,
+                limit: 8,
+            }
+        ),
+        Err(TantivySourceError::Contract(Error::StaleRoot))
+    ));
+    let first_page = LexicalSource::fetch(
+        &source,
+        &QueryRequest {
+            binding: next.binding(),
+            query: stale_query,
+            cursor: None,
+            limit: 8,
+        },
+    )
+    .expect("new binding is admitted");
+    assert_eq!(first_page.total, ROWS as usize);
+    assert_eq!(
+        first_page
+            .hits
+            .iter()
+            .map(|hit| hit.document)
+            .collect::<Vec<_>>(),
+        expected[..8]
+    );
+}
+
+#[test]
 fn one_document_revision_deletes_only_that_documents_postings() {
     let original = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
