@@ -911,7 +911,7 @@ fn bar_ink(facts: &TickerFacts, i: usize, hot: bool, palette: &Palette) -> Hsla 
 
 #[cfg(test)]
 mod tests {
-    use super::{Release, TickerFacts, TickerNavigation, civil_year, door, fisheye, ticker};
+    use super::{Release, ReleaseIdentity, TickerFacts, TickerNavigation, civil_year, door, fisheye, release_identity, ticker};
     use crate::data::release::{RegistryFact, SourceAvailability};
     use crate::measure::Measure;
     use crate::theme::Facet;
