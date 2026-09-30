@@ -9,9 +9,10 @@ use super::super::{
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    DeferredIndex, PreparedIndex, finish_deferred_index, index_project_intent,
-    index_project_intent_at, index_project_intent_with_cluster_and_intent, prepare_index_project,
-    remove_project_intent, run_deferred_compile, semantic_version_record, semantic_versions,
+    DeferredIndex, PreparedIndex, PreparedProductSelection, finish_deferred_index,
+    index_project_intent, index_project_intent_at, index_project_intent_with_cluster_and_intent,
+    prepare_index_project, remove_project_intent, run_deferred_compile, semantic_version_record,
+    semantic_versions,
 };
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
@@ -243,7 +244,8 @@ impl CommandAdapter {
                 request.request_id,
                 ticket,
             )? {
-                return Self::encode(daemon, request.request_id, started, None).map(Executed::Reply);
+                return Self::encode(daemon, request.request_id, started, None)
+                    .map(Executed::Reply);
             }
             return Ok(Executed::Deferred);
         }
@@ -320,7 +322,13 @@ impl CommandAdapter {
         let (package, label) = canonical_local_package(package, label)?;
         if !matches!(classify_add_target(&label)?, AddTarget::LocalDirectory) {
             return self
-                .add(daemon, requested_package, execution_intent, certificate, request_id)
+                .add(
+                    daemon,
+                    requested_package,
+                    execution_intent,
+                    certificate,
+                    request_id,
+                )
                 .map(Some);
         }
         let prepared = match prepare_index_project(
@@ -334,14 +342,13 @@ impl CommandAdapter {
         ) {
             Ok(prepared) => prepared,
             Err(refusal) => {
-                let _ = self.publish_view(daemon, None);
                 return Err(refusal);
             }
         };
         match prepared {
-            PreparedIndex::Ready(intent) => {
-                self.finish_add(daemon, intent, request_id, requested_package).map(Some)
-            }
+            PreparedIndex::Ready(prepared) => self
+                .finish_add(daemon, prepared, request_id, requested_package)
+                .map(Some),
             PreparedIndex::Compile(mut job) => {
                 let work = job.take_work();
                 let compiler = self.compiler.clone();
@@ -351,7 +358,9 @@ impl CommandAdapter {
                     .spawn(move || {
                         let _ = sender.send(run_deferred_compile(&compiler, work));
                     })
-                    .map_err(|error| BuiltinModelError(format!("start the index compile: {error}")))?;
+                    .map_err(|error| {
+                        BuiltinModelError(format!("start the index compile: {error}"))
+                    })?;
                 self.indexing = Some(IndexJob {
                     ticket,
                     request_id,
@@ -369,10 +378,13 @@ impl CommandAdapter {
     fn finish_add(
         &mut self,
         daemon: &mut ProductDaemon,
-        intent: Option<BuiltinIntent>,
+        prepared: PreparedProductSelection,
         request_id: u64,
         requested_package: backend_engine::PackageKey,
     ) -> Result<AdmittedReply, BuiltinModelError> {
+        let PreparedProductSelection { intent, selected } = prepared;
+        self.semantic_authority
+            .validate_product_selections(&selected)?;
         let committed = if let Some(intent) = intent {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                 BuiltinModelError(format!("commit product source intent: {error}"))
@@ -381,6 +393,10 @@ impl CommandAdapter {
         } else {
             None
         };
+        // The durable workspace root is the product selection marker. Update
+        // the process-local selector only after it has committed.
+        self.semantic_authority
+            .commit_product_selections(selected)?;
         self.publish_view(daemon, committed.as_ref())?;
         Ok(added_reply(requested_package))
     }
@@ -796,7 +812,7 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
-        let intent = match classify_add_target(&label)? {
+        let prepared = match classify_add_target(&label)? {
             AddTarget::LocalDirectory => match index_project_intent_with_cluster_and_intent(
                 daemon,
                 package,
@@ -808,20 +824,22 @@ impl CommandAdapter {
                 self.owner_cluster.as_deref(),
                 self.pending_stored_acks.as_ref(),
             ) {
-                Ok(intent) => intent,
-                Err(refusal) => {
-                    // The source frontier commits before the compiler runs, so a
-                    // refused compile leaves that frontier durable. Publish it now:
-                    // the project is listed, on its structural rows, in the same
-                    // boot that names why it was refused, instead of staying out of
-                    // the view until the next command or restart.
-                    let _ = self.publish_view(daemon, None);
-                    return Err(refusal);
-                }
+                Ok(prepared) => prepared.unwrap_or(PreparedProductSelection {
+                    intent: None,
+                    selected: Vec::new(),
+                }),
+                Err(refusal) => return Err(refusal),
             },
-            AddTarget::PackageUrl => self.registry_intent(daemon, package, &label, request_id)?,
+            AddTarget::PackageUrl => self
+                .registry_intent(daemon, package, &label, request_id)?
+                .unwrap_or(PreparedProductSelection {
+                    intent: None,
+                    selected: Vec::new(),
+                }),
         };
-        let committed = if let Some(intent) = intent {
+        self.semantic_authority
+            .validate_product_selections(&prepared.selected)?;
+        let committed = if let Some(intent) = prepared.intent {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                 BuiltinModelError(format!("commit product source intent: {error}"))
             })?;
@@ -829,6 +847,8 @@ impl CommandAdapter {
         } else {
             None
         };
+        self.semantic_authority
+            .commit_product_selections(prepared.selected)?;
         self.publish_view(daemon, committed.as_ref())?;
         Ok(added_reply(requested_package))
     }
@@ -839,7 +859,7 @@ impl CommandAdapter {
         package: backend_engine::PackageKey,
         label: &str,
         request_id: u64,
-    ) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+    ) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
         let coordinate = backend_engine::registry::PackageCoordinate::parse(label)
             .map_err(|_| BuiltinModelError(ADD_TARGET_REQUIRED.to_owned()))?;
         if coordinate.as_str() != label {
@@ -854,7 +874,12 @@ impl CommandAdapter {
             // semantic plane and no source-shaped placeholder is presented as
             // compiler truth. A configured registry continues through the
             // acquisition and compiler-authority path below.
-            return BuiltinIntent::add(package, label.to_owned()).map(Some);
+            return BuiltinIntent::add(package, label.to_owned()).map(|intent| {
+                Some(PreparedProductSelection {
+                    intent: Some(intent),
+                    selected: Vec::new(),
+                })
+            });
         };
         let archive = gateway
             .acquire(&coordinate)

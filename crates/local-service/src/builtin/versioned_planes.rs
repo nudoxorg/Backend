@@ -1,7 +1,7 @@
-//! Current-head selection and bounded CAS reads for versioned semantic planes.
+//! Committed product selection and bounded CAS reads for versioned semantic planes.
 //!
-//! Turso's selected frontier is re-read for every request and once more before
-//! bytes are exposed. Logical semantic segment IDs stay separate from physical
+//! The workspace root selects the served generation. Turso's selected frontier
+//! is a repairable projection and cannot override that root. Logical semantic segment IDs stay separate from physical
 //! FileStore object IDs, so the same cursor works across storage layouts.
 
 use super::{BuiltinModelError, SemanticAuthority};
@@ -13,6 +13,7 @@ use backend_extension_turso::{
 use backend_replication::{
     ByteRange, IrHydrationRequest, SelectedGenerationSource, SelectedGenerationStamp,
     SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet,
+    SemanticTargetKey,
 };
 use backend_semantic::ir::{SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest};
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
@@ -32,8 +33,9 @@ const OBJECT_READ_CHUNK_BYTES: usize = 16 * 1024;
 /// Bounded process-local cache of bytes admitted from immutable CAS objects.
 ///
 /// The physical object ID is the reuse key: identical content is useful across
-/// selected generations. A hit is still checked against the *current* Turso
-/// selection and its exact logical segment identity before any bytes escape.
+/// selected generations. A hit is still checked against the *current committed
+/// product* selection and its exact logical segment identity before any bytes
+/// escape.
 #[derive(Debug, Default)]
 pub(super) struct VerifiedSegmentCache {
     state: Mutex<VerifiedSegmentCacheState>,
@@ -103,7 +105,7 @@ impl VerifiedSegmentCache {
     }
 }
 
-/// Metadata-only view of one exact Turso-selected compiler generation.
+/// Metadata-only view of one exact product-selected compiler generation.
 #[derive(Clone, Debug)]
 pub(super) struct SelectedVersionedPlanePublication {
     stamp: SelectedGenerationStamp,
@@ -179,7 +181,7 @@ impl SelectedVersionedPlanePublication {
         })
     }
 
-    /// Exact current-head stamp built from one Turso selected frontier.
+    /// Exact stamp built from the committed product selection.
     #[must_use]
     pub(super) const fn stamp(&self) -> SelectedGenerationStamp {
         self.stamp
@@ -214,7 +216,7 @@ impl SelectedVersionedPlanePublication {
 /// Live resolver for the selected semantic generation and its closure-backed
 /// plane inventory.
 pub(super) trait VersionedPlaneSelectionResolver: SelectedGenerationSource {
-    /// Re-reads Turso's current selected frontier and its exact metadata.
+    /// Re-reads the committed product selection and its exact metadata.
     fn current_selected_plane(&mut self) -> Result<SelectedVersionedPlanePublication, Self::Error>;
 }
 
@@ -233,6 +235,16 @@ impl<'authority> SemanticAuthoritySelectionSource<'authority> {
         key: ProductSemanticPublicationKey,
     ) -> Self {
         Self { authority, key }
+    }
+
+    /// Returns the canonical product target bound by this selected source.
+    pub(super) fn target(&self) -> Result<SemanticTargetKey, BuiltinModelError> {
+        SemanticTargetKey::new(
+            self.key.package().as_str(),
+            self.key.coordinate().as_str(),
+            self.key.profile(),
+        )
+        .map_err(|error| BuiltinModelError(format!("admit semantic target: {error}")))
     }
 }
 
@@ -495,8 +507,8 @@ impl<'hydrator> VersionedPlaneService<'hydrator> {
     /// Serves one decoded wire range after rebinding it to current authority.
     ///
     /// This is the local RPC entry point. The wire's selected stamp is only a
-    /// claim: the resolver reconstructs the selected frontier and exact
-    /// manifest from Turso before the request is admitted.
+    /// claim: the resolver reconstructs the committed selection and exact
+    /// manifest before the request is admitted.
     pub(super) fn serve_range_claim<R: VersionedPlaneSelectionResolver>(
         &self,
         resolver: &mut R,
