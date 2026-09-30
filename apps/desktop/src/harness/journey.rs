@@ -864,11 +864,16 @@ fn judge_one(runner: &Runner, seen: &Seen, image: &RgbaImage, route: Option<&Rou
             let names = focused.iter().map(|target| format!("`{}`", short(&target.key))).collect::<Vec<_>>().join(", ");
             vec![match runner.left_by.get(&here) {
                 None => Err(format!("focus restored: this route (`{}`) was never left, so nothing can come back", short(&here))),
-                Some(Leave { key: None, how }) => Err(format!(
+                Some(Leave { key: None, how, .. }) => Err(format!(
                     "focus restored: this route was left by `{how}`, not by a click on a target, so there is no focus to restore; focused: [{names}]"
                 )),
-                Some(Leave { key: Some(key), how }) => match focused.as_slice() {
+                Some(Leave { key: Some(key), bounds, how }) => match focused.as_slice() {
                     [target] if &target.key == key => Ok(format!("focus restored: `{}` (left by `{how}`)", short(key))),
+                    [target] if bounds.as_ref().is_some_and(|clicked| same_box(clicked, &target.bounds)) => Ok(format!(
+                        "focus restored: `{}`, the door over `{}` (left by `{how}`)",
+                        short(&target.key),
+                        short(key)
+                    )),
                     _ => Err(format!(
                         "focus restored: left by `{how}` on `{}`, but focused: [{names}]",
                         short(key)
@@ -988,7 +993,8 @@ fn judge(
         }
     }
     let mut passed = content;
-    let mut linted = lint::lint(image, &seen.ledger, seen.drawn.viewport);
+    // Words under a dialog's opaque plate are not on screen: not linted.
+    let mut linted = lint::lint(image, &look::unoccluded(&seen.ledger), seen.drawn.viewport);
     // While a dialog is up, the page under its scrim is not content: its
     // dimmed words are not held to text contrast (every other rule holds).
     let dialogs = seen
@@ -1059,9 +1065,18 @@ fn save(image: &RgbaImage, path: &Path) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// How a route was left: the target clicked (if any) and the step.
+/// Two published targets that frame one thing: every edge within 2 px.
+fn same_box(a: &facet::probe::BoundsSample, b: &facet::probe::BoundsSample) -> bool {
+    [(a.x, b.x), (a.y, b.y), (a.x + a.width, b.x + b.width), (a.y + a.height, b.y + b.height)].iter().all(|(p, q)| (p - q).abs() <= 2.0)
+}
+
+/// How a route was left: the target clicked (if any), its box, and the step.
 struct Leave {
     key: Option<String>,
+    /// The clicked target's box: a control and the keyboard door laid over it
+    /// are published as two targets of one box (a module's card is facet's
+    /// control and the page's door), and focus on either is focus on it.
+    bounds: Option<facet::probe::BoundsSample>,
     how: String,
 }
 
@@ -1114,6 +1129,10 @@ fn perform(runner: &mut Runner, kind: &StepKind, label: &str, origin: &str, repo
             return Err(format!("{origin}: `{label}` is not an act"));
         }
     };
+    let bounds = match &key {
+        Some(key) => runner.seen()?.ledger.targets.iter().find(|target| &target.key == key).map(|target| target.bounds.clone()),
+        None => None,
+    };
     runner.deliver(&acts, label)?;
     let words = acts.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
     let _ = writeln!(
@@ -1128,6 +1147,7 @@ fn perform(runner: &mut Runner, kind: &StepKind, label: &str, origin: &str, repo
             before,
             Leave {
                 key,
+                bounds,
                 how: label.to_owned(),
             },
         );

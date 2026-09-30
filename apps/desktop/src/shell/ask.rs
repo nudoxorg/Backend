@@ -350,6 +350,16 @@ fn semantic_search_label(status: backend_library::SemanticSearchStatus) -> Strin
 
 impl Render for Ask {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Ask's words are its own region: its plate covers the shelf's (and
+        // part of the page's), whose words under it are not on screen and
+        // are neither its neighbours nor linted (the harness reads a
+        // dialog's region from its stack key, `ask-…`).
+        facet::probe::region("ask", || self.draw(window, cx))
+    }
+}
+
+impl Ask {
+    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         self.renders = self.renders.saturating_add(1);
         let facet = cx.facet();
         let palette = facet.palette();
@@ -421,10 +431,9 @@ impl Render for Ask {
             .border_r_1()
             .border_color(palette.line2.hsla())
             .child(list)
+            .into_any_element()
     }
-}
 
-impl Ask {
     fn row(&self, index: usize, choice: &Choice, measure: &Measure, palette: &facet::Palette) -> AnyElement {
         let on = index == self.selected && (self.walked || index == 0);
         let has_place = choice.route.is_some();
@@ -546,10 +555,26 @@ mod tests {
         let pool = ReadPool::start(2, |_| NoPlaceSearch).expect("pool");
         let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0, pool);
         rig.keys("cmd-k");
+        // Open with nothing typed, Ask is its field: no plate is drawn, and
+        // none is said to be (the page under the veil is what shows).
+        let dialogs = |ledger: &facet::probe::Ledger| -> Vec<String> {
+            ledger.stacks.iter().flat_map(|stack| &stack.entries).filter(|entry| entry.kind == "dialog").map(|entry| entry.key.clone()).collect()
+        };
+        rig.cx.update(|_, cx| facet::probe::enable(cx));
+        rig.repaint();
+        let empty = rig.cx.update(|_, cx| facet::probe::take(cx));
+        assert_eq!(dialogs(&empty), ["ask-field"], "no query, no plate");
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         rig.cx.update(|_, cx| ask.update(cx, |ask, cx| ask.typed("mystery".to_owned(), cx)));
         rig.frame(120);
         rig.settle();
+        // Ask's words are its own region (its plate hides the shelf's words
+        // under it: the harness neither reads nor lints those).
+        rig.repaint();
+        let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+        assert_eq!(dialogs(&ledger), ["ask-field", "ask-plate"], "a query draws the plate");
+        let mystery = ledger.texts.iter().find(|text| text.content == "Mystery").unwrap_or_else(|| panic!("the row is painted: {:?}", ledger.texts.iter().map(|t| &t.content).collect::<Vec<_>>()));
+        assert_eq!(mystery.region.as_deref(), Some("ask"), "Ask's row is in Ask's region");
         let route_before = rig.route();
         rig.cx.update(|window, cx| ask.update(cx, |ask, cx| ask.choose(window, cx)));
         assert_eq!(rig.route(), route_before, "a row with no place does not move the page");

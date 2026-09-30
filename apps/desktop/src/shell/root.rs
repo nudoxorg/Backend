@@ -1529,10 +1529,15 @@ impl Render for Shell {
                 width: f32::from(width),
                 height: f32::from(height),
             };
-            vec![
-                sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar),
-                sample("ask-plate", px(0.0), frame.titlebar, ask_width, (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))),
-            ]
+            let mut parts = vec![sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar)];
+            // The plate is drawn once there is a query for it to answer
+            // (`ask_layer`): before that the page under the veil is all
+            // there is (J9's ask-open frame held the shelf's words to text
+            // contrast under a plate that was not there).
+            if self.ask.read(cx).shows() {
+                parts.push(sample("ask-plate", px(0.0), frame.titlebar, ask_width, (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))));
+            }
+            parts
         });
         self.publish_stack(ask_bounds, cx);
         let float = float::layer(window, cx);

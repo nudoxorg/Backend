@@ -43,6 +43,7 @@ pub struct Crawl {
 struct Spot {
     key: String,
     at: (f32, f32),
+    bounds: facet::probe::BoundsSample,
 }
 
 /// What the crawl saw: every problem, and how much it covered.
@@ -67,7 +68,7 @@ fn page_problems(seen: &Seen, image: &image::RgbaImage) -> Vec<String> {
             problems.push(format!("a fault plate: \"{}\"", text.content));
         }
     }
-    let linted = lint::lint(image, &seen.ledger, seen.drawn.viewport);
+    let linted = lint::lint(image, &super::look::unoccluded(&seen.ledger), seen.drawn.viewport);
     for item in linted.lints.iter().take(6) {
         problems.push(format!("lint {} {}: {}", item.rule.name(), super::look::short(&item.key), super::look::short(&item.detail)));
     }
@@ -86,6 +87,7 @@ fn spots(seen: &Seen) -> Vec<Spot> {
         .map(|target| Spot {
             key: target.key.clone(),
             at: ((target.bounds.x + target.bounds.width / 2.0).round(), (target.bounds.y + target.bounds.height / 2.0).round()),
+            bounds: target.bounds.clone(),
         })
         .collect()
 }
@@ -161,8 +163,12 @@ impl Runner {
                 // Find the way home before going on.
                 return Ok(());
             }
-            let focused: Vec<String> = self.seen()?.focused().iter().map(|target| target.key.clone()).collect();
-            if !focused.contains(&spot.key) {
+            // The keyboard stands on it: on its own target, or on the door
+            // laid over it (one box, two published targets).
+            let seen = self.seen()?;
+            let on_it = seen.focused().iter().any(|target| target.key == spot.key || super::same_box(&target.bounds, &spot.bounds));
+            let focused: Vec<String> = seen.focused().iter().map(|target| target.key.clone()).collect();
+            if !on_it {
                 crawled.problems.push(format!("{at}: back did not restore the focus to it (focused: {focused:?})"));
             }
         }

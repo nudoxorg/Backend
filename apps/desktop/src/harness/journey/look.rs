@@ -134,6 +134,36 @@ fn contains(bounds: &BoundsSample, (x, y): (f32, f32)) -> bool {
     x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height
 }
 
+/// The opaque plates a dialog lays over the page, each with the region its
+/// own words are built in: a dialog stack entry keyed `REGION-plate` (Ask's
+/// `ask-plate`) whose region has words on screen (an empty plate is not
+/// drawn).
+fn plates(ledger: &Ledger) -> Vec<(&str, &BoundsSample)> {
+    ledger
+        .stacks
+        .iter()
+        .flat_map(|stack| &stack.entries)
+        .filter(|entry| entry.kind == "dialog" && entry.phase != facet::probe::StackPhase::Leaving)
+        .filter_map(|entry| Some((entry.key.strip_suffix("-plate")?, entry.bounds.as_ref()?)))
+        .filter(|(region, _)| ledger.texts.iter().any(|text| text.region.as_deref() == Some(*region)))
+        .collect()
+}
+
+/// Whether `text` lies under a dialog's opaque plate (its centre on the
+/// plate, and not one of the dialog's own words): it is not on screen.
+pub(super) fn occluded(plates: &[(&str, &BoundsSample)], text: &TextSample) -> bool {
+    plates.iter().any(|(region, plate)| text.region.as_deref() != Some(*region) && contains(plate, centre(&text.bounds)))
+}
+
+/// The ledger as a person sees it: without the words a dialog's plate
+/// covers (they are neither read nor linted).
+pub(super) fn unoccluded(ledger: &Ledger) -> Ledger {
+    let plates = plates(ledger);
+    let mut seen = ledger.clone();
+    seen.texts.retain(|text| !occluded(&plates, text));
+    seen
+}
+
 impl Seen {
     fn viewport(&self) -> Viewport {
         self.drawn.viewport
@@ -151,12 +181,15 @@ impl Seen {
         })
     }
 
-    /// The visible texts in `area`, in paint order.
+    /// The visible texts in `area`, in paint order (a dialog's plate hides
+    /// the words under it).
     pub(super) fn texts(&self, area: Option<Area>) -> Vec<&TextSample> {
+        let plates = plates(&self.ledger);
         self.ledger
             .texts
             .iter()
             .chain(self.painted.iter())
+            .filter(|text| !occluded(&plates, text))
             // Exact text assertions may only name a string that is completely
             // visible. A partially clipped sample proves only that some glyphs
             // painted, not that the whole semantic string was readable.
@@ -541,5 +574,71 @@ pub(super) fn describe(route: &Route) -> String {
             at(symbol.at.as_ref()),
             symbol.line.map_or_else(String::new, |line| format!(" line={line}"))
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unoccluded;
+    use facet::probe::{BoundsSample, Ledger, StackEntry, StackPhase, StackSample, TextOverflow, TextSample};
+
+    fn at(key: &str, x: f32, y: f32, width: f32, height: f32) -> BoundsSample {
+        BoundsSample { key: key.to_owned(), x, y, width, height }
+    }
+
+    fn text(content: &str, x: f32, y: f32, region: Option<&str>) -> TextSample {
+        TextSample {
+            key: format!("text:{content}"),
+            bounds: at(content, x, y, 80.0, 16.0),
+            paint_clip: None,
+            natural_width: 80.0,
+            overflow: TextOverflow::Clip,
+            content: content.to_owned(),
+            min_width: 40.0,
+            line_height: 16.0,
+            size: 13.0,
+            weight: 400.0,
+            region: region.map(ToOwned::to_owned),
+        }
+    }
+
+    fn ledger(texts: Vec<TextSample>) -> Ledger {
+        let dialog = |key: &str, bounds: BoundsSample| StackEntry {
+            key: key.to_owned(),
+            kind: "dialog".to_owned(),
+            parent: None,
+            phase: StackPhase::Open,
+            pinned: false,
+            bounds: Some(bounds),
+        };
+        Ledger {
+            texts,
+            stacks: vec![StackSample {
+                layer: "shell".to_owned(),
+                entries: vec![dialog("ask-field", at("ask-field", 0.0, 0.0, 1440.0, 50.0)), dialog("ask-plate", at("ask-plate", 0.0, 50.0, 440.0, 824.0))],
+            }],
+            ..Ledger::default()
+        }
+    }
+
+    fn words(ledger: &Ledger) -> Vec<&str> {
+        ledger.texts.iter().map(|text| text.content.as_str()).collect()
+    }
+
+    /// Ask's plate covers the shelf: the shelf's words under it are not on
+    /// screen, Ask's own words and the query in the titlebar are, and so is
+    /// the page beside the plate.
+    #[test]
+    fn a_dialogs_plate_hides_the_words_under_it_and_only_those() {
+        let open = ledger(vec![
+            text("Library", 20.0, 90.0, None),
+            text("Searching the library…", 20.0, 90.0, Some("ask")),
+            text("toml Value", 560.0, 16.0, None),
+            text("toml_pin", 800.0, 300.0, None),
+        ]);
+        assert_eq!(words(&unoccluded(&open)), ["Searching the library…", "toml Value", "toml_pin"]);
+        // No words of Ask's own: the plate is not drawn, nothing is hidden.
+        let empty = ledger(vec![text("Library", 20.0, 90.0, None), text("toml_pin", 800.0, 300.0, None)]);
+        assert_eq!(words(&unoccluded(&empty)), ["Library", "toml_pin"]);
     }
 }

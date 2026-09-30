@@ -194,6 +194,18 @@ fn await_install(enough: Option<usize>, root: &gpui::Entity<UiRootEntity>, cx: &
     }
 }
 
+/// Holds the instant until the read pool has nothing in flight.
+fn await_reads(store: &gpui::Entity<DataStore>, cx: &mut App) {
+    let started = std::time::Instant::now();
+    loop {
+        store.update(cx, |store, cx| store.drain(cx));
+        if store.read(cx).pool_load() == (0, 0) || started.elapsed() > INSTALL_DEADLINE {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Whether the window has nothing left to wait for.
 fn quiet(cx: &mut App) -> bool {
     let Some(installed) = cx.try_global::<Installed>() else {
@@ -235,19 +247,46 @@ const INSTALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(40 
 /// instant for the owner's real work instead:
 /// - `route await install`: every project on the shelf is answered for and
 ///   every package they build with is added (or refused in words);
-/// - `route await packages N`: at least N of those packages have landed.
+/// - `route await packages N`: at least N of those packages have landed;
+/// - `route await reads`: every read the window asked for has landed (a
+///   search over a whole library can take the owner seconds);
+/// - `route open PATH`: the package page of the root at `PATH` (a click in
+///   the Library, without its coordinates);
+/// - `route release VERSION`: the release the page views (the comb's own
+///   intent, `SetRelease`).
 fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
     let Some(installed) = cx.try_global::<Installed>() else {
         return;
     };
-    let (root, shell) = (installed.graph.root.clone(), installed.shell.clone());
+    let (root, shell, store) = (installed.graph.root.clone(), installed.shell.clone(), installed.graph.store.clone());
     let intent = match act {
         Act::Route { target } => {
             let words = target.split_whitespace().collect::<Vec<_>>();
+            if words.as_slice() == ["await", "reads"] {
+                await_reads(&store, cx);
+                return;
+            }
+            if let ["open", path] = words.as_slice() {
+                let package = crate::core::PackageId::new(path).unwrap_or_else(|error| panic!("route {target}: {error:?}"));
+                let route = crate::navigation::Route::Package(crate::navigation::PackageRoute {
+                    project: None,
+                    package,
+                    lane: crate::navigation::PackageLane::Overview,
+                    selected: None,
+                    at: None,
+                });
+                root.update(cx, |root, cx| root.dispatch(Intent::Navigate(route), cx));
+                return;
+            }
+            if let ["release", version] = words.as_slice() {
+                let at = crate::navigation::ReleaseId::new(version).unwrap_or_else(|error| panic!("route {target}: {error:?}"));
+                root.update(cx, |root, cx| root.dispatch(Intent::SetRelease(Some(at)), cx));
+                return;
+            }
             let enough = match words.as_slice() {
                 ["await", "install"] => None,
                 ["await", "packages", count] => Some(count.parse::<usize>().unwrap_or_else(|_| panic!("route {target}: not a count"))),
-                _ => panic!("route {target}: the install scene serves `await install` and `await packages N`"),
+                _ => panic!("route {target}: the install scene serves `await install`, `await packages N` and `await reads`"),
             };
             await_install(enough, &root, cx);
             return;
