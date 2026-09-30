@@ -170,6 +170,10 @@ pub struct Version {
     pub yanked: RegistryFact<bool>,
     /// Whether its source is physically available on this machine.
     pub source: SourceAvailability,
+    /// Whether the exact version is present in the selected owner's index.
+    /// This is distinct from local source availability: a downloaded archive
+    /// can be present without the index containing any names for it.
+    pub indexed: RegistryFact<bool>,
 }
 
 /// What a registry fact says when it is absent or conflicts across sources.

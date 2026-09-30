@@ -146,6 +146,10 @@ fn krate(name: &str, c: &Json) -> Crate {
             } else {
                 SourceAvailability::Unavailable
             },
+            indexed: fact(v.get("indexed"), |value| match value {
+                Json::Bool(indexed) => Some(*indexed),
+                _ => None,
+            }),
         })
         .collect();
     // Every public path of every local release → its declared path (itself,
