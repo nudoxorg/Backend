@@ -1673,6 +1673,8 @@ mod tests {
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir(&path).expect("create unique retention fixture");
+            super::super::super::set_private_directory(&path)
+                .expect("make retention fixture private");
             Self(path)
         }
     }
@@ -1756,6 +1758,10 @@ mod tests {
         let history_root = directory.0.join("history");
         let map_root = history_root.join("segment-map");
         fs::create_dir_all(&map_root).expect("create segment-map directory");
+        super::super::super::set_private_directory(&history_root)
+            .expect("make history fixture private");
+        super::super::super::set_private_directory(&map_root)
+            .expect("make segment-map fixture private");
         let name = format!("{}.map", "ab".repeat(32));
         if include_map {
             fs::write(map_root.join(&name), b"checked map fixture")
