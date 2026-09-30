@@ -4493,10 +4493,10 @@ mod tests {
         assert_eq!(reopened.advisories.len(), 1);
         let generation = fs::read_dir(&snapshot_root)
             .expect("snapshot root")
-            .next()
-            .expect("published generation")
-            .expect("generation entry")
-            .path();
+            .map(|entry| entry.expect("snapshot root entry"))
+            .find(|entry| entry.file_type().expect("snapshot entry type").is_dir())
+            .map(|entry| entry.path())
+            .expect("published generation directory");
         let index_path = generation.join("package-index.bin");
         let mut index = fs::read(&index_path).expect("package index");
         index[0] ^= 1;
@@ -4639,11 +4639,14 @@ mod tests {
             .is_err(),
             "corrupt ignored ZIP members are still source corruption"
         );
-        assert_eq!(
-            fs::read_dir(&snapshot_root).expect("staging root").count(),
-            0,
-            "failed feeds leave no partially selected generation"
-        );
+        for entry in fs::read_dir(&snapshot_root).expect("staging root") {
+            let entry = entry.expect("snapshot root entry");
+            assert!(
+                !entry.file_type().expect("snapshot entry type").is_dir(),
+                "failed feeds leave no staging or published generation directories: {:?}",
+                entry.file_name()
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 

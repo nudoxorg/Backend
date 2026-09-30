@@ -116,7 +116,11 @@ impl DirectoryCapability {
             let handle = openat(
                 self.handle.as_ref(),
                 name,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY
+                    | OFlags::DIRECTORY
+                    | OFlags::NOFOLLOW
+                    | OFlags::NONBLOCK
+                    | OFlags::CLOEXEC,
                 Mode::empty(),
             )?;
             let handle = File::from(handle);
@@ -182,6 +186,15 @@ impl DirectoryCapability {
     pub fn restrict_private(&self) -> io::Result<()> {
         #[cfg(unix)]
         {
+            use rustix::process::geteuid;
+            use std::os::unix::fs::MetadataExt;
+            let metadata = self.handle.metadata()?;
+            if !metadata.is_dir() || metadata.uid() != geteuid().as_raw() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "directory is not owned by the current user",
+                ));
+            }
             set_unix_private_directory(self.handle.as_ref())?;
             return Ok(());
         }
@@ -235,7 +248,7 @@ impl DirectoryCapability {
             let file = openat(
                 self.handle.as_ref(),
                 name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                 Mode::empty(),
             )?;
             let file = File::from(file);
@@ -269,7 +282,7 @@ impl DirectoryCapability {
         #[cfg(unix)]
         {
             use rustix::fs::{Mode, OFlags, openat};
-            let mut flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let mut flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
             if create {
                 flags |= OFlags::CREATE;
             }
@@ -358,18 +371,11 @@ impl DirectoryCapability {
                     target_os = "redox"
                 )))]
                 {
-                    use rustix::fs::{AtFlags, statat};
-                    match statat(self.handle.as_ref(), destination, AtFlags::SYMLINK_NOFOLLOW) {
-                        Ok(_) => return Err(io::Error::from(io::ErrorKind::AlreadyExists)),
-                        Err(error) if error == rustix::io::Errno::NOENT => {}
-                        Err(error) => return Err(io::Error::other(error.to_string())),
-                    }
-                    renameat(
-                        self.handle.as_ref(),
-                        source,
-                        self.handle.as_ref(),
-                        destination,
-                    )?;
+                    let _ = (source, destination);
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "atomic no-replace rename is unavailable on this platform",
+                    ));
                 }
             }
             return self.sync_all();
@@ -577,77 +583,96 @@ impl DirectoryCapability {
 fn open_unix_path(path: &Path) -> io::Result<File> {
     use rustix::fs::{CWD, Mode, OFlags, open, openat};
     use std::path::Component;
-
+    let names = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(Ok(name.to_os_string())),
+            Component::RootDir | Component::CurDir => None,
+            Component::ParentDir | Component::Prefix(_) => Some(Err(invalid("unsafe root path"))),
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let ancestor_flags = unix_search_directory_flags();
+    let final_flags =
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     let mut current = if path.is_absolute() {
-        File::from(open(
-            "/",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?)
+        let flags = if names.is_empty() {
+            final_flags
+        } else {
+            ancestor_flags
+        };
+        File::from(open("/", flags, Mode::empty())?)
     } else {
-        File::from(openat(
-            CWD,
-            ".",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?)
+        let flags = if names.is_empty() {
+            final_flags
+        } else {
+            ancestor_flags
+        };
+        File::from(openat(CWD, ".", flags, Mode::empty())?)
     };
     #[cfg(target_os = "macos")]
     let mut at_system_root = path.is_absolute();
-    for component in path.components() {
-        match component {
-            Component::RootDir => {
-                #[cfg(target_os = "macos")]
-                {
-                    at_system_root = true;
-                }
+    for (index, name) in names.iter().enumerate() {
+        let flags = if index + 1 == names.len() {
+            final_flags
+        } else {
+            ancestor_flags
+        };
+        let child = openat(&current, name, flags, Mode::empty()).or_else(|error| {
+            #[cfg(target_os = "macos")]
+            if at_system_root
+                && matches!(name.to_str(), Some("var" | "tmp"))
+                && error.kind() == io::ErrorKind::NotADirectory
+            {
+                // macOS exposes these stable system paths as symlinks at
+                // `/var` and `/tmp`. Resolve only these fixed aliases through
+                // the already-held root; arbitrary symlinks stay rejected.
+                let private = openat(&current, "private", ancestor_flags, Mode::empty())?;
+                let private = File::from(private);
+                let private_name_flags = if index + 1 == names.len() {
+                    final_flags
+                } else {
+                    ancestor_flags
+                };
+                return openat(&private, name, private_name_flags, Mode::empty());
             }
-            Component::CurDir => {}
-            Component::Normal(name) => {
-                let child = openat(
-                    &current,
-                    name,
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .or_else(|error| {
-                    #[cfg(target_os = "macos")]
-                    if at_system_root
-                        && matches!(name.to_str(), Some("var" | "tmp"))
-                        && error.kind() == io::ErrorKind::NotADirectory
-                    {
-                        // macOS exposes these stable system paths as symlinks
-                        // at `/var` and `/tmp`. Resolve only these two fixed
-                        // aliases through the held root handle; arbitrary
-                        // caller-controlled symlink components stay rejected.
-                        let private = openat(
-                            &current,
-                            "private",
-                            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                            Mode::empty(),
-                        )?;
-                        return openat(
-                            &private,
-                            name,
-                            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                            Mode::empty(),
-                        );
-                    }
-                    Err(error)
-                })?;
-                current = File::from(child);
-                #[cfg(target_os = "macos")]
-                {
-                    at_system_root = false;
-                }
-            }
-            Component::ParentDir | Component::Prefix(_) => return Err(invalid("unsafe root path")),
+            Err(error)
+        })?;
+        current = File::from(child);
+        #[cfg(target_os = "macos")]
+        {
+            at_system_root = false;
         }
     }
     if !current.metadata()?.is_dir() {
         return Err(invalid("capability root is not a directory"));
     }
     Ok(current)
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+fn unix_search_directory_flags() -> rustix::fs::OFlags {
+    use rustix::fs::OFlags;
+    // macOS SDK sys/fcntl.h defines O_SEARCH as (O_EXEC | O_DIRECTORY);
+    // rustix 1.1 does not expose the platform flag by name. This descriptor
+    // is only used as an openat parent, never for reading or flushing.
+    const O_EXEC: u32 = 0x4000_0000;
+    OFlags::from_bits_retain(O_EXEC)
+        | OFlags::DIRECTORY
+        | OFlags::NOFOLLOW
+        | OFlags::NONBLOCK
+        | OFlags::CLOEXEC
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn unix_search_directory_flags() -> rustix::fs::OFlags {
+    use rustix::fs::OFlags;
+    OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn unix_search_directory_flags() -> rustix::fs::OFlags {
+    use rustix::fs::OFlags;
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC
 }
 
 #[cfg(unix)]
@@ -750,6 +775,92 @@ mod tests {
             "refused creation has no side effect through the symlink"
         );
 
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    #[test]
+    fn opening_fifo_as_regular_child_returns_without_blocking() {
+        use rustix::fs::{Mode, mkfifoat};
+
+        let root = scratch();
+        let directory = DirectoryCapability::open(&root).expect("pin fixture");
+        mkfifoat(
+            directory.handle.as_ref(),
+            "fifo",
+            Mode::from_bits_truncate(0o600),
+        )
+        .expect("create FIFO");
+        let error = directory
+            .open_file_read("fifo")
+            .expect_err("FIFO is not a regular file");
+        assert_ne!(error.kind(), std::io::ErrorKind::WouldBlock);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_walk_uses_search_only_ancestor_handles() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = scratch();
+        let ancestor = root.join("search-only");
+        let child = ancestor.join("workspace");
+        fs::create_dir(&ancestor).expect("create search-only ancestor");
+        fs::create_dir(&child).expect("create accessible child");
+        let original = fs::metadata(&ancestor)
+            .expect("ancestor metadata")
+            .permissions();
+        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o300))
+            .expect("allow search without enumeration");
+
+        let capability = DirectoryCapability::open(&child)
+            .expect("open child using held search-only ancestor handles");
+        let mut file = capability
+            .create_file_exclusive("known-child")
+            .expect("create relative to pinned child");
+        use std::io::Write as _;
+        file.write_all(b"held").expect("write known child");
+        file.sync_all().expect("sync known child");
+        drop(file);
+        fs::set_permissions(&ancestor, original).expect("restore ancestor permissions");
+        assert_eq!(
+            fs::read(child.join("known-child")).expect("read known child"),
+            b"held"
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_child_operations_survive_ancestor_rename_and_replacement() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::fs::symlink;
+
+        let root = scratch();
+        let workspace = root.join("workspace");
+        fs::create_dir(&workspace).expect("create workspace");
+        let capability = DirectoryCapability::open(&workspace).expect("pin workspace");
+        let mut file = capability
+            .create_file_exclusive("fact")
+            .expect("create relative fact");
+        file.write_all(b"pinned").expect("write fact");
+        file.sync_all().expect("sync fact");
+        drop(file);
+
+        let moved = root.join("workspace-real");
+        fs::rename(&workspace, &moved).expect("move opened workspace");
+        let outside = root.join("outside");
+        fs::create_dir(&outside).expect("create outside directory");
+        fs::write(outside.join("fact"), b"redirected").expect("write outside fact");
+        symlink(&outside, &workspace).expect("replace original path with symlink");
+
+        let mut file = capability
+            .open_file_read("fact")
+            .expect("read remains relative to held directory");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("read held bytes");
+        assert_eq!(bytes, b"pinned");
         fs::remove_dir_all(root).expect("remove fixture");
     }
 }
