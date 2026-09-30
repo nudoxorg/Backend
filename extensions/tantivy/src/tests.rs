@@ -1059,16 +1059,40 @@ fn oversized_query_scratch_is_refused_before_scorer_compilation() {
     )
     .expect("admitted no-hit query");
 
-    let error = source
-        .for_each_ranked_hit(&query, |_| {})
-        .expect_err("query setup must fit the explicit scratch budget");
-    assert!(matches!(
-        error,
-        TantivySourceError::RankSnapshotBudgetExceeded {
-            budget_bytes: 2_048,
-            required_bytes
-        } if required_bytes > 2_048
-    ));
+    let refused = |error: TantivySourceError| {
+        assert!(matches!(
+            error,
+            TantivySourceError::RankSnapshotBudgetExceeded {
+                budget_bytes: 2_048,
+                required_bytes
+            } if required_bytes > 2_048
+        ));
+    };
+    refused(
+        source
+            .for_each_ranked_hit(&query, |_| {})
+            .expect_err("query setup must fit the explicit scratch budget"),
+    );
+    refused(
+        source
+            .search(&query)
+            .expect_err("all-results query setup must fit the scratch budget"),
+    );
+    refused(
+        source
+            .relevance_for_candidates(&query, &[document(1)])
+            .expect_err("candidate scoring must fit the scratch budget"),
+    );
+    refused(
+        source
+            .fetch(&QueryRequest {
+                binding,
+                query,
+                cursor: None,
+                limit: 1,
+            })
+            .expect_err("page query setup must fit the scratch budget"),
+    );
     assert_eq!(source.rank_evaluations(), 0);
     assert_eq!(source.rank_docs_visited(), 0);
 }
