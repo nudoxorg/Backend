@@ -422,7 +422,9 @@ mod tests {
         let write_project = |version: &str| {
             std::fs::write(
                 &manifest,
-                format!("[package]\nname = \"gapfix\"\nversion = \"{version}\"\nedition = \"2021\"\n"),
+                format!(
+                    "[package]\nname = \"gapfix\"\nversion = \"{version}\"\nedition = \"2021\"\n"
+                ),
             )
             .expect("manifest");
             std::fs::write(
@@ -447,14 +449,21 @@ mod tests {
         // recomputes (never caches) cannot pass.
         let watched = vec![root.join("Cargo.lock"), root.join("Cargo.toml")];
         let sentinel = TreeInput {
-            source: TreeSource::Lockfile { reason: "planted by the test, never a real read".to_owned() },
+            source: TreeSource::Lockfile {
+                reason: "planted by the test, never a real read".to_owned(),
+            },
             root: "sentinel-root".to_owned(),
             packages: Vec::new(),
             edges: Vec::new(),
             other_platforms: 0,
         };
         let mut cache = BrowseCache::default();
-        cache.entry = Some(CacheEntry { workspace: root.clone(), witness: witness(&watched), watched: watched.clone(), input: sentinel.clone() });
+        cache.entry = Some(CacheEntry {
+            workspace: root.clone(),
+            witness: witness(&watched),
+            watched: watched.clone(),
+            input: sentinel.clone(),
+        });
 
         let untouched = cache.project_tree(&root, None).expect("untouched read");
         assert_eq!(
@@ -466,7 +475,11 @@ mod tests {
         // manifest stays byte-for-byte identical, so watching only manifests
         // cannot pass this assertion.
         let initial_lock = std::fs::read_to_string(&lockfile).expect("initial lockfile");
-        std::fs::write(&lockfile, format!("{initial_lock}\n# lockfile changed alone\n")).expect("changed lockfile");
+        std::fs::write(
+            &lockfile,
+            format!("{initial_lock}\n# lockfile changed alone\n"),
+        )
+        .expect("changed lockfile");
         let touched = cache.project_tree(&root, None).expect("lockfile-only read");
         assert_ne!(
             touched.root, "sentinel-root",
@@ -475,9 +488,21 @@ mod tests {
 
         // Replant the sentinel against the new lockfile, then change only
         // Cargo.toml. Both inputs to Cargo's answer have independent guards.
-        cache.entry = Some(CacheEntry { workspace: root.clone(), witness: witness(&watched), watched, input: sentinel });
-        std::fs::write(&manifest, "[package]\nname = \"gapfix\"\nversion = \"0.2.0\"\nedition = \"2021\"\n").expect("changed manifest");
+        cache.entry = Some(CacheEntry {
+            workspace: root.clone(),
+            witness: witness(&watched),
+            watched,
+            input: sentinel,
+        });
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"gapfix\"\nversion = \"0.2.0\"\nedition = \"2021\"\n",
+        )
+        .expect("changed manifest");
         let touched = cache.project_tree(&root, None).expect("manifest-only read");
-        assert_ne!(touched.root, "sentinel-root", "a changed manifest alone must force a real read");
+        assert_ne!(
+            touched.root, "sentinel-root",
+            "a changed manifest alone must force a real read"
+        );
     }
 }

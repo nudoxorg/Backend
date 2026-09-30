@@ -105,13 +105,24 @@ mod tests {
 
         let one = snapshot_of_projects(&[label(&first), "pkg:cargo/serde@1.0.0".to_owned()])
             .expect("one local project");
-        let two = snapshot_of_projects(&[label(&first), label(&second)]).expect("two local projects");
+        let two =
+            snapshot_of_projects(&[label(&first), label(&second)]).expect("two local projects");
 
         let mut residence = ProjectRootResidence::default();
-        assert_eq!(set(&residence.roots(&one).expect("roots")), set(&[first.clone()]));
+        assert_eq!(
+            set(&residence.roots(&one).expect("roots")),
+            set(&[first.clone()])
+        );
         assert_eq!(residence.reads(), 1);
-        assert_eq!(set(&residence.roots(&one).expect("roots")), set(&[first.clone()]));
-        assert_eq!(residence.reads(), 1, "an unchanged relation root pages nothing");
+        assert_eq!(
+            set(&residence.roots(&one).expect("roots")),
+            set(&[first.clone()])
+        );
+        assert_eq!(
+            residence.reads(),
+            1,
+            "an unchanged relation root pages nothing"
+        );
 
         assert_eq!(
             set(&residence.roots(&two).expect("roots")),
@@ -129,6 +140,10 @@ mod tests {
         assert_eq!(residence.reads(), 2);
 
         assert_eq!(set(&residence.roots(&one).expect("roots")), set(&[first]));
-        assert_eq!(residence.reads(), 3, "returning to an older root reads it again");
+        assert_eq!(
+            residence.reads(),
+            3,
+            "returning to an older root reads it again"
+        );
     }
 }

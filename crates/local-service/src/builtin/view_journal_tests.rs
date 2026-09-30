@@ -696,7 +696,10 @@ mod stale_generation {
         let path = journal_path("superseded-undecoded");
         let mut journal = ViewJournal::open(&path).expect("open view journal");
         journal
-            .append(SNAPSHOT, b"a superseded generation: checksummed, never decoded")
+            .append(
+                SNAPSHOT,
+                b"a superseded generation: checksummed, never decoded",
+            )
             .expect("append a superseded frame");
         journal
             .persist(

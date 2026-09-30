@@ -1225,7 +1225,8 @@ mod tests {
         let seed_clones = ROW_BODY_CLONES.with(|count| count.get());
         assert_eq!(seeds.len(), ROWS + 2);
         assert_eq!(
-            seed_clones, 0,
+            seed_clones,
+            0,
             "row_claim_seed cloned {seed_clones} row bodies while seeding {} rows",
             seeds.len()
         );
