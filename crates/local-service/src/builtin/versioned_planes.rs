@@ -760,6 +760,11 @@ fn map_typed_history_publication_error(
     }
 }
 
+struct NativeHistoryPublicationReceipt {
+    commit: HistoryCommitId,
+    proof: backend_engine::SemanticHistoryPublicationProof,
+}
+
 pub(super) fn publish_native_history(
     work: super::semantic_authority::NativeHistoryPublicationWork,
 ) -> backend_engine::SemanticHistoryPublicationStatus {
@@ -767,8 +772,9 @@ pub(super) fn publish_native_history(
     match publish_native_history_commit(work) {
         Ok(commit) => backend_engine::SemanticHistoryPublicationStatus::Published {
             selection_id,
-            commit: *commit.as_bytes(),
+            commit: *commit.commit.as_bytes(),
             reference: "selected-native-v3".to_owned(),
+            proof: commit.proof,
         },
         Err(NativeHistoryPublicationError::Superseded) => {
             backend_engine::SemanticHistoryPublicationStatus::Superseded { selection_id }
@@ -790,7 +796,7 @@ pub(super) fn publish_native_history(
 
 fn publish_native_history_commit(
     work: super::semantic_authority::NativeHistoryPublicationWork,
-) -> Result<HistoryCommitId, NativeHistoryPublicationError> {
+) -> Result<NativeHistoryPublicationReceipt, NativeHistoryPublicationError> {
     let (claim, selected) = match work.loader.committed_pair(&work.key) {
         Ok(pair) => pair,
         Err(_) => return Err(NativeHistoryPublicationError::Superseded),
@@ -903,6 +909,7 @@ fn publish_native_history_commit(
         if replay.commit().identity() != commit
             || replay.input_replay_status()
                 != backend_replication::TypedV3HistoryInputReplayStatus::Unproven
+            || ancestry.ancestor() != commit
         {
             return Err(NativeHistoryPublicationError::Refused(
                 "cold typed V3 replay did not verify the exact selected commit as unproven input"
@@ -915,7 +922,15 @@ fn publish_native_history_commit(
         {
             return Err(NativeHistoryPublicationError::Superseded);
         }
-        return Ok(commit);
+        let proof = native_history_publication_proof(
+            binding.selected_stamp(),
+            binding.image_key(),
+            binding.image_identity(),
+            ancestry.ref_tip(),
+            ancestry.ancestor(),
+            replay.commit().parents(),
+        )?;
+        return Ok(NativeHistoryPublicationReceipt { commit, proof });
     }
     let plan = SemanticAuthority::selected_full_image_plan_for_store(
         &work.store,
@@ -1059,10 +1074,80 @@ fn publish_native_history_commit(
     {
         return Err(NativeHistoryPublicationError::Superseded);
     }
-    receipt.current().ok_or_else(|| {
+    let commit = receipt.current().ok_or_else(|| {
         NativeHistoryPublicationError::Refused(
             "typed V3 branch publication returned no current commit".to_owned(),
         )
+    })?;
+    let ancestry = history
+        .history_ref_ancestry_proof(
+            selected_image.target(),
+            backend_replication::HistoryRefKind::Branch,
+            &HistoryRefName::new("selected-native-v3")
+                .map_err(NativeHistoryPublicationError::Refused)?,
+            commit,
+        )
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if ancestry.ancestor() != commit {
+        return Err(NativeHistoryPublicationError::Refused(
+            "typed V3 branch ancestry did not prove its CAS commit".to_owned(),
+        ));
+    }
+    if !work
+        .loader
+        .matches_committed_selection(&work.key, claim, work.stamp)
+    {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let parent_commits = receipt.previous().into_iter().collect::<Vec<_>>();
+    let proof = native_history_publication_proof(
+        selected_image.selected_stamp(),
+        selected_image.image_key(),
+        selected_image.image_identity(),
+        ancestry.ref_tip(),
+        ancestry.ancestor(),
+        &parent_commits,
+    )?;
+    Ok(NativeHistoryPublicationReceipt { commit, proof })
+}
+
+fn native_history_publication_proof(
+    stamp: SelectedGenerationStamp,
+    image: SemanticPlaneImageKey,
+    image_identity: SemanticImageIdentity,
+    reference_tip: HistoryCommitId,
+    reachable_commit: HistoryCommitId,
+    parent_commits: &[HistoryCommitId],
+) -> Result<backend_engine::SemanticHistoryPublicationProof, NativeHistoryPublicationError> {
+    if parent_commits.len() > 2 {
+        return Err(NativeHistoryPublicationError::Refused(
+            "typed V3 history commit exceeds the bounded parent count".to_owned(),
+        ));
+    }
+    Ok(backend_engine::SemanticHistoryPublicationProof {
+        selection: backend_engine::SemanticHistorySelectionStamp {
+            namespace: *stamp.namespace(),
+            profile: backend_engine::SemanticLanguageProfile::new(stamp.profile()),
+            source_coordinate: *stamp.source_coordinate(),
+            selection_revision: stamp.selection_revision(),
+            selected_root: *stamp.selected_root(),
+            closure_id: *stamp.closure_id(),
+            catalog_root: *stamp.catalog_root().as_bytes(),
+        },
+        image: backend_engine::SemanticHistoryImageIdentity {
+            artifact_ordinal: image.artifact_ordinal(),
+            semantic_generation: *image.semantic_generation().as_bytes(),
+            manifest_root: *image.manifest_root().as_bytes(),
+            image_identity: *image_identity.as_bytes(),
+        },
+        reference_tip: *reference_tip.as_bytes(),
+        reachable_commit: *reachable_commit.as_bytes(),
+        parent_commits: parent_commits
+            .iter()
+            .map(|commit| *commit.as_bytes())
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        input_replay_status: backend_engine::SemanticHistoryInputReplayStatus::Unproven,
     })
 }
 
