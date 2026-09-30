@@ -60,9 +60,13 @@ pub(crate) fn install(cx: &mut App) {
         ]),
         Menu::new("File").items([MenuItem::action("Close Window", CloseWindow)]),
         Menu::new("Edit").items([
+            MenuItem::os_action("Undo", gpui_component::input::Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", gpui_component::input::Redo, OsAction::Redo),
+            MenuItem::separator(),
             MenuItem::os_action("Cut", gpui_component::input::Cut, OsAction::Cut),
             MenuItem::os_action("Copy", gpui_component::input::Copy, OsAction::Copy),
             MenuItem::os_action("Paste", gpui_component::input::Paste, OsAction::Paste),
+            MenuItem::separator(),
             MenuItem::os_action(
                 "Select All",
                 gpui_component::input::SelectAll,
