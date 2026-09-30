@@ -6924,6 +6924,8 @@ mod tests {
             source_pin_fingerprint: [0; 32],
             forge_documents: BTreeMap::new(),
             source_pin_documents: BTreeMap::new(),
+            durable_cache_root: None,
+            _durable_root_lease: None,
         };
         let build_millis = build_started.elapsed().as_millis();
         let index_bytes = [
@@ -7596,7 +7598,6 @@ mod tests {
             DiscoveryFacet::Known("updated readme".to_owned()),
             vec!["ambercachemarker92".to_owned()],
         );
-        updated.metadata.cargo_sparse.checksum = DiscoveryFacet::Known("checksum-v2".to_owned());
         let mut index = DiscoverySearchIndex::open_forge_only_with_source_pins_at(
             &cache,
             std::slice::from_ref(&v1),

@@ -766,7 +766,7 @@ impl QueryCoordinator {
                     },
                 },
             }
-        }
+        };
         corpus.workspace = prepared.workspace;
         corpus.view = prepared.view;
         corpus.coverage = prepared.coverage;
