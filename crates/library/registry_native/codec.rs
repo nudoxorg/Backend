@@ -1,7 +1,7 @@
 pub(super) use crate::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductAdmissionError,
-    ProductText, RegistryEcosystem, REGISTRY_NATIVE_METADATA_VERSION,
+    ProductText, RegistryEcosystem,
 };
 use std::fmt;
 
