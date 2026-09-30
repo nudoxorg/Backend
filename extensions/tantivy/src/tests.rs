@@ -1110,6 +1110,108 @@ fn durable_selected_roots_reopen_update_and_roll_back_against_fixed_answers() {
 }
 
 #[test]
+fn durable_delta_reopen_uses_the_persisted_sparse_ordinal_map() {
+    static NEXT_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-ordinal-map-{}-{}",
+        std::process::id(),
+        NEXT_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let first = state_for(
+        vec![
+            (document(1), vec![("name".into(), "first-entry".into())]),
+            (document(2), vec![("name".into(), "deleted-middle".into())]),
+            (document(3), vec![("name".into(), "survivor-entry".into())]),
+        ],
+        [61; 32],
+    );
+    let source = TantivySource::open_or_build_in_dir(&first, Limits::default(), &root)
+        .expect("build first durable root");
+    assert_eq!(term_hits(&source, "first-entry"), vec![document(1)]);
+    drop(source);
+
+    let minimum_existing = [document(1), document(2), document(3)]
+        .into_iter()
+        .min()
+        .expect("existing identity");
+    let inserted = (4..100_000)
+        .map(document)
+        .find(|candidate| *candidate < minimum_existing)
+        .expect("find an identity that sorts before the existing rows");
+    let second = state_for(
+        vec![
+            (document(1), vec![("name".into(), "first-entry".into())]),
+            (document(3), vec![("name".into(), "survivor-entry".into())]),
+            (inserted, vec![("name".into(), "inserted-entry".into())]),
+        ],
+        [62; 32],
+    );
+    let (source, revision) = TantivySource::open_or_advance_in_dir(
+        &first,
+        &second,
+        Limits::default(),
+        OverlayLimits::default(),
+        &root,
+    )
+    .expect("delete middle row and append a lower-sorting identity");
+    assert_eq!(revision.map(|revision| revision.kind), Some(ProjectionKind::Revised));
+    assert_eq!(term_hits(&source, "first-entry"), vec![document(1)]);
+    assert_eq!(term_hits(&source, "deleted-middle"), Vec::<EntityId>::new());
+    assert_eq!(term_hits(&source, "survivor-entry"), vec![document(3)]);
+    assert_eq!(term_hits(&source, "inserted-entry"), vec![inserted]);
+    drop(source);
+
+    let cold_second = TantivySource::open_or_build_in_dir(&second, Limits::default(), &root)
+        .expect("reopen sparse second generation");
+    assert_eq!(term_hits(&cold_second, "first-entry"), vec![document(1)]);
+    assert_eq!(term_hits(&cold_second, "deleted-middle"), Vec::<EntityId>::new());
+    assert_eq!(term_hits(&cold_second, "survivor-entry"), vec![document(3)]);
+    assert_eq!(term_hits(&cold_second, "inserted-entry"), vec![inserted]);
+    drop(cold_second);
+
+    let third = state_for(
+        vec![
+            (document(3), vec![("name".into(), "survivor-revised".into())]),
+            (inserted, vec![("name".into(), "inserted-entry".into())]),
+        ],
+        [63; 32],
+    );
+    let (source, revision) = TantivySource::open_or_advance_in_dir(
+        &second,
+        &third,
+        Limits::default(),
+        OverlayLimits::default(),
+        &root,
+    )
+    .expect("apply a second durable delta");
+    assert_eq!(revision.map(|revision| revision.kind), Some(ProjectionKind::Revised));
+    drop(source);
+
+    let cold_third = TantivySource::open_or_build_in_dir(&third, Limits::default(), &root)
+        .expect("reopen second sparse generation");
+    assert_eq!(term_hits(&cold_third, "first-entry"), Vec::<EntityId>::new());
+    assert_eq!(term_hits(&cold_third, "deleted-middle"), Vec::<EntityId>::new());
+    assert_eq!(term_hits(&cold_third, "survivor-entry"), Vec::<EntityId>::new());
+    assert_eq!(term_hits(&cold_third, "survivor-revised"), vec![document(3)]);
+    assert_eq!(term_hits(&cold_third, "inserted-entry"), vec![inserted]);
+    drop(cold_third);
+
+    let fingerprint = projection_fingerprint(third.binding());
+    let selected = root.join(DURABLE_ROOTS_DIRECTORY).join(hex_fingerprint(fingerprint));
+    let ordinal_path = selected.join(ORDINAL_MAP_FILE);
+    let mut ordinal_map = std::fs::read(&ordinal_path).expect("read ordinal map");
+    let first_identity = ORDINAL_MAP_MAGIC.len() + 32 + 8 + 8 + 8;
+    ordinal_map[first_identity] ^= 0x80;
+    std::fs::write(&ordinal_path, ordinal_map).expect("damage ordinal identity");
+    write_projection_manifest(&selected, fingerprint).expect("refresh integrity manifest");
+    assert!(matches!(
+        TantivySource::open_in_dir(&third, Limits::default(), &selected),
+        Err(TantivySourceError::Corrupt(_))
+    ));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn malformed_selected_root_and_interrupted_stage_rebuild_from_authoritative_state() {
     static NEXT_ROOT: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
