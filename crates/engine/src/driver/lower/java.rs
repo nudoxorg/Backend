@@ -28,10 +28,10 @@ use backend_frontend_java::legacy::{
     ResolvedUse, SectionError, SymbolRef, TypeFact, TypeKind, TypeRef, UseTag,
 };
 use backend_semantic::ir::{
-    DocFactInput, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
-    ForeignKeyFault, ForeignOrigin, JavaFacts, NominalRef, Occurrence, OccurrenceConfidence,
-    OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor,
-    SemanticTypeRecord, SemanticTypeTag, TypeReason, TypeWidth,
+    DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignKeyFault,
+    ForeignOrigin, JavaFacts, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
+    ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
+    SemanticTypeTag, TypeReason, TypeWidth,
 };
 use backend_semantic::vocabulary::{
     JavaForeignKeyFault, JavaImageAtomFault, JavaImageFault, JavaImageHeaderFault, JavaImagePlane,
@@ -463,7 +463,7 @@ pub(crate) fn collect<'source>(
     // lane is pre-sized to the exact fragment count this image will project
     // rather than truncating at the selected source's small fixed cap.
     let documentation = documentation_fragments(image)?;
-    reserve_documentation(facts, documentation);
+    reserve_documentation(facts, documentation)?;
 
     let mut names = NameIndex::new();
     let mut ordinals = DeclarationOrdinals::new();
@@ -2333,21 +2333,25 @@ fn documentation_fragments(image: JavaImage<'_>) -> Result<usize, JavaCollectErr
     Ok(total)
 }
 
-/// Grows the shared documentation lane to hold at least `minimum` fragments.
-/// The lane is transaction-local and starts empty, so only the recorded prefix
-/// is preserved across the reallocation.
-fn reserve_documentation<'source>(facts: &mut FactSet<'source>, minimum: usize) {
+/// Reserves the shared documentation lane for at least `minimum` fragments.
+fn reserve_documentation<'source>(
+    facts: &mut FactSet<'source>,
+    minimum: usize,
+) -> Result<(), JavaCollectError> {
+    let minimum = minimum.max(facts.doc_len);
     if facts.plan.docs >= minimum {
-        return;
+        return Ok(());
     }
-    let placeholder = DocFactInput {
-        owner: EntityId::new(0),
-        fragment: DocFragmentInput::SoftBreak,
-    };
-    let mut grown = vec![placeholder; minimum].into_boxed_slice();
-    grown[..facts.doc_len].copy_from_slice(&facts.doc_facts[..facts.doc_len]);
-    facts.doc_facts = grown;
+    facts
+        .doc_facts
+        .try_reserve_exact(minimum.saturating_sub(facts.doc_facts.len()))
+        .map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::Documentation,
+            })
+        })?;
     facts.plan.docs = minimum;
+    Ok(())
 }
 
 /// Counts one declaration's documentation fragments exactly as [`push_docs`]
