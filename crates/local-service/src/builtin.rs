@@ -1585,7 +1585,9 @@ pub(crate) fn compose_owner(
                 ProcessError::Profile(format!("start pending compiler ACK retry: {error}"))
             })?;
     }
-    let search_snapshots = query::SearchSnapshotOwner::default();
+    let search_snapshots = query::SearchSnapshotOwner::with_durable_root(
+        config.workspace.join("search-index-v2"),
+    );
     let worker_secret = match profile.kind {
         BuiltinProfile::Product => product_secret.ok_or_else(|| {
             ProcessError::Profile("product authority credential disappeared".to_owned())
