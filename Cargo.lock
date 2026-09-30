@@ -910,6 +910,7 @@ name = "backend-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "backend-client",
  "backend-facet",
  "backend-gui-harness",
@@ -920,11 +921,14 @@ dependencies = [
  "backend-replication",
  "backend-runtime",
  "blake3",
+ "block2 0.6.2",
  "flate2",
  "gpui-ce",
  "gpui_ce_components",
  "gpui_ce_platform",
  "image",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "proptest",
  "rustix 1.1.4",
  "serde",
@@ -932,6 +936,7 @@ dependencies = [
  "semver",
  "sha2 0.10.9",
  "toml 0.8.23",
+ "windows 0.61.3",
 ]
 
 [[package]]
