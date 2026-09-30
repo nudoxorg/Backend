@@ -1378,7 +1378,7 @@ dependencies = [
  "toml 0.8.23",
  "unicode-normalization",
  "ureq",
- "zip",
+ "zip 4.6.1",
 ]
 
 [[package]]
