@@ -3628,7 +3628,7 @@ pub(super) fn semantic_versions(
                     generations.push((
                         target,
                         selected_key,
-                        *claim,
+                        claim,
                         semantic_version_record(
                             key,
                             coverage,
