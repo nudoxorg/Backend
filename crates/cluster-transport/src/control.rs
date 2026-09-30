@@ -1354,7 +1354,9 @@ impl ControlChannel {
         let scope_matches = match self.scope {
             Some(scope) => message_scope == scope,
             None => match self.role {
-                ControlRole::Worker => self.worker_bootstrap_message_allowed(&message),
+                ControlRole::Worker => {
+                    Self::worker_bootstrap_message_allowed(self.worker_namespace, &message)
+                }
                 // The peer allowlist, role/direction, bounded framing, and message shape are
                 // checked below. The owner then delegates the adopted fence to its durable
                 // scheduler before it grants access to any artifact catalog.
@@ -1384,17 +1386,19 @@ impl ControlChannel {
         Ok(message)
     }
 
-    fn worker_bootstrap_message_allowed(&self, message: &ControlMessage) -> bool {
+    fn worker_bootstrap_message_allowed(
+        worker_namespace: Option<[u8; 16]>,
+        message: &ControlMessage,
+    ) -> bool {
         match message {
-            ControlMessage::Offer(offer) => self
-                .worker_namespace
-                .is_none_or(|namespace_id| offer.scope.namespace_id == namespace_id),
+            ControlMessage::Offer(offer) => {
+                worker_namespace.is_none_or(|namespace_id| offer.scope.namespace_id == namespace_id)
+            }
             ControlMessage::NoResultRetireThrough(request) => {
-                self.worker_namespace
-                    .is_some_and(|namespace_id| {
-                        request.terminal_scope.namespace_id == namespace_id
-                            && request.scope.namespace_id == namespace_id
-                    })
+                worker_namespace.is_some_and(|namespace_id| {
+                    request.terminal_scope.namespace_id == namespace_id
+                        && request.scope.namespace_id == namespace_id
+                })
             }
             _ => false,
         }
@@ -1962,7 +1966,10 @@ mod tests {
             ControlNoResultRetireThrough::new(terminal, anchor, 4, coordinator)
                 .expect("valid idle maintenance command"),
         );
-        assert!(policy.worker_bootstrap_message_allowed(&exact));
+        assert!(ControlChannel::worker_bootstrap_message_allowed(
+            policy.worker_namespace,
+            &exact,
+        ));
         assert!(policy.allows_peer(coordinator));
         assert!(!policy.allows_peer(untrusted));
         assert!(exact.sender_identity_matches(coordinator));
@@ -1976,7 +1983,10 @@ mod tests {
             ControlNoResultRetireThrough::new(foreign_terminal, foreign_anchor, 4, coordinator)
                 .expect("valid but foreign namespace command"),
         );
-        assert!(!policy.worker_bootstrap_message_allowed(&foreign));
+        assert!(!ControlChannel::worker_bootstrap_message_allowed(
+            policy.worker_namespace,
+            &foreign,
+        ));
     }
 
     #[test]
