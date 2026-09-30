@@ -2,6 +2,7 @@
 
 use crate::options::{Format, Options};
 use backend_client::{ClientError, LocalSemanticIndexClient};
+use backend_engine::cluster_transport::remote_index_now;
 use backend_engine::{FileStore, PackageReference};
 use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 use backend_replication::{
@@ -33,6 +34,10 @@ struct Arguments {
     checkpoint: PathBuf,
     max_bytes: u64,
     max_ranges: usize,
+    client_key_file: Option<PathBuf>,
+    owner_peer: Option<String>,
+    owner_address: Option<String>,
+    capability_file: Option<PathBuf>,
 }
 
 /// Runs the explicit local selected-semantic hydration command.
@@ -46,17 +51,67 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
     }
     let args = parse(words)?;
     let target = target(&args)?;
-    let workspace = backend_runtime::WorkspacePaths::discover(
-        options.project().cloned(),
-        options.workspace().cloned(),
-        options.endpoint().cloned(),
-    )
-    .map_err(|error| endpoint_fault(&workspace_operand(options), error.to_string()))?;
-    let endpoint = backend_runtime::ensure_locald(&workspace).map_err(|error| {
-        endpoint_fault(&workspace.endpoint().to_string_lossy(), error.to_string())
-    })?;
-    let mut client = LocalSemanticIndexClient::connect(&endpoint, target)
-        .map_err(|error| client_fault(&error, &args.package))?;
+    let mut client = match (
+        args.client_key_file.as_ref(),
+        args.owner_peer.as_deref(),
+        args.owner_address.as_deref(),
+        args.capability_file.as_ref(),
+    ) {
+        (Some(key_file), Some(owner_peer), Some(owner_address), Some(capability_file)) => {
+            let secret = crate::cluster::load_client_secret(key_file)?;
+            let owner = crate::cluster::endpoint_id(owner_peer)?;
+            let address = crate::cluster::socket_address(owner_address, "--owner-address")?;
+            let capability = crate::cluster::load_remote_capability(capability_file)?;
+            capability
+                .verify(
+                    owner,
+                    secret.public(),
+                    remote_index_now().map_err(|error| {
+                        usage(
+                            "semantic-hydrate",
+                            format!("system clock unavailable: {error}"),
+                        )
+                    })?,
+                )
+                .map_err(|error| usage("--capability-file", error.to_string()))?;
+            let scope = capability.claims.semantic.as_ref().ok_or_else(|| {
+                usage(
+                    "--capability-file",
+                    "semantic-hydrate needs a semantic hydration capability",
+                )
+            })?;
+            if scope.package != args.package
+                || scope.coordinate != args.coordinate
+                || scope.profile != <[u8; 2]>::from(args.profile)
+            {
+                return Err(usage(
+                    "--capability-file",
+                    "capability target does not match this hydration request",
+                ));
+            }
+            LocalSemanticIndexClient::connect_remote(secret, owner, address, capability, target)
+                .map_err(|error| client_fault(&error, &args.package))?
+        }
+        (None, None, None, None) => {
+            let workspace = backend_runtime::WorkspacePaths::discover(
+                options.project().cloned(),
+                options.workspace().cloned(),
+                options.endpoint().cloned(),
+            )
+            .map_err(|error| endpoint_fault(&workspace_operand(options), error.to_string()))?;
+            let endpoint = backend_runtime::ensure_locald(&workspace).map_err(|error| {
+                endpoint_fault(&workspace.endpoint().to_string_lossy(), error.to_string())
+            })?;
+            LocalSemanticIndexClient::connect(&endpoint, target)
+                .map_err(|error| client_fault(&error, &args.package))?
+        }
+        _ => {
+            return Err(usage(
+                "semantic-hydrate",
+                "remote mode requires --key-file, --owner-peer, --owner-address, and --capability-file together",
+            ));
+        }
+    };
     let snapshot = client
         .fetch_selected_catalog()
         .map_err(|error| client_fault(&error, &args.package))?;
@@ -286,9 +341,9 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
 }
 
 pub(crate) const fn help_text() -> &'static str {
-    "Usage: backend [OPTIONS] semantic-hydrate --package REF --coordinate PKGURL --profile PROFILE --image-ordinal N --plane core|types|relations|occurrences|documentation|source-provenance|language-extensions|embeddings --store PATH [--checkpoint PATH] [--max-bytes N] [--max-ranges N]\n\n\
+    "Usage: backend [OPTIONS] semantic-hydrate --package REF --coordinate PKGURL --profile PROFILE --image-ordinal N --plane core|types|relations|occurrences|documentation|source-provenance|language-extensions|embeddings --store PATH [--checkpoint PATH] [--max-bytes N] [--max-ranges N] [--key-file PATH --owner-peer HEX --owner-address IP:PORT --capability-file PATH]\n\n\
      Embeddings additionally require --model HEX --model-version HEX --tokenizer HEX --dimension N --normalization none|l2|mean-centered-l2|custom:HEX --toolchain HEX --recipe HEX.\n\
-     The command binds to the current selected generation, reuses verified content-addressed segments already in the local CAS, and commits an atomic local generation head after the selected plane is complete. A checkpoint is exact-generation bound."
+     The command binds to the current selected generation, reuses verified content-addressed segments already in the local CAS, and commits an atomic local generation head after the selected plane is complete. A checkpoint is exact-generation bound. Remote mode uses an owner-signed semantic capability and the same bounded range-resume path."
 }
 
 fn parse(words: &[String]) -> Result<Arguments, Fault> {
@@ -324,6 +379,10 @@ fn parse(words: &[String]) -> Result<Arguments, Fault> {
         "normalization",
         "toolchain",
         "recipe",
+        "key-file",
+        "owner-peer",
+        "owner-address",
+        "capability-file",
     ];
     if let Some(unknown) = flags.keys().find(|key| !known.contains(&key.as_str())) {
         return Err(usage(unknown.as_str(), "is not a semantic-hydrate option"));
@@ -352,6 +411,17 @@ fn parse(words: &[String]) -> Result<Arguments, Fault> {
     if store.as_os_str().is_empty() || checkpoint.as_os_str().is_empty() {
         return Err(usage("--store/--checkpoint", "paths must not be empty"));
     }
+    let remote_fields = ["key-file", "owner-peer", "owner-address", "capability-file"];
+    let remote_count = remote_fields
+        .iter()
+        .filter(|name| flags.contains_key(**name))
+        .count();
+    if remote_count != 0 && remote_count != remote_fields.len() {
+        return Err(usage(
+            "semantic-hydrate",
+            "remote mode requires --key-file, --owner-peer, --owner-address, and --capability-file together",
+        ));
+    }
     if max_bytes == 0 || max_ranges == 0 || max_ranges > MAX_RANGE_BUDGET {
         return Err(usage(
             "--max-bytes/--max-ranges",
@@ -368,6 +438,10 @@ fn parse(words: &[String]) -> Result<Arguments, Fault> {
         checkpoint,
         max_bytes,
         max_ranges,
+        client_key_file: flags.get("key-file").map(PathBuf::from),
+        owner_peer: flags.get("owner-peer").cloned(),
+        owner_address: flags.get("owner-address").cloned(),
+        capability_file: flags.get("capability-file").map(PathBuf::from),
     })
 }
 

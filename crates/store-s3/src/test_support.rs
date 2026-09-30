@@ -45,6 +45,8 @@ pub struct LoopbackS3Stats {
     pub started_range_gets: usize,
     /// Parsed range requests whose response did not finish writing.
     pub failed_range_gets: usize,
+    /// Range responses deliberately corrupted by a test fault injection.
+    pub corrupted_range_gets: usize,
     /// Total response bytes returned by the server.
     pub response_bytes: usize,
     /// Range header on the most recently started request.
@@ -65,6 +67,7 @@ pub struct LoopbackS3 {
     origin: String,
     objects: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     stats: Arc<Mutex<LoopbackS3Stats>>,
+    corrupt_next_range: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
@@ -80,6 +83,8 @@ impl LoopbackS3 {
         let server_objects = Arc::clone(&objects);
         let stats = Arc::new(Mutex::new(LoopbackS3Stats::default()));
         let server_stats = Arc::clone(&stats);
+        let corrupt_next_range = Arc::new(AtomicBool::new(false));
+        let server_corrupt_next_range = Arc::clone(&corrupt_next_range);
         let stopped = Arc::new(AtomicBool::new(false));
         let server_stopped = Arc::clone(&stopped);
         let join = thread::Builder::new()
@@ -102,7 +107,12 @@ impl LoopbackS3 {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .last_range = None;
-                            if let Err(error) = serve_one(stream, &server_objects, &server_stats) {
+                            if let Err(error) = serve_one(
+                                stream,
+                                &server_objects,
+                                &server_stats,
+                                &server_corrupt_next_range,
+                            ) {
                                 let mut counters = server_stats
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -125,6 +135,7 @@ impl LoopbackS3 {
             origin,
             objects,
             stats,
+            corrupt_next_range,
             stopped,
             join: Some(join),
         })
@@ -151,6 +162,14 @@ impl LoopbackS3 {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// Corrupts one byte in the next successful HTTP range response.
+    ///
+    /// The immutable stored object is unchanged. This exercises integrity
+    /// verification by a production remote reader over the real HTTP path.
+    pub fn corrupt_next_range_response(&self) {
+        self.corrupt_next_range.store(true, Ordering::Release);
     }
 
     /// Returns a copy of the immutable object currently held by the server.
@@ -308,6 +327,7 @@ fn serve_one(
     stream: TcpStream,
     objects: &Mutex<BTreeMap<String, Vec<u8>>>,
     stats: &Mutex<LoopbackS3Stats>,
+    corrupt_next_range: &AtomicBool,
 ) -> std::io::Result<()> {
     let mut request = read_request(stream)?;
     {
@@ -394,6 +414,18 @@ fn serve_one(
     };
     let is_put = request.method == "PUT";
     let is_range = request.headers.contains_key("range");
+    let corrupted_range = is_range
+        && response.status == 206
+        && !response.body.is_empty()
+        && corrupt_next_range.swap(false, Ordering::AcqRel);
+    if corrupted_range {
+        let middle = response.body.len() / 2;
+        response.body[middle] ^= 0x80;
+        stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .corrupted_range_gets += 1;
+    }
     let response_bytes = response.body.len();
     stats
         .lock()

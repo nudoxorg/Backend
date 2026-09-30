@@ -1,19 +1,19 @@
 //! Persisted direct-only identity and addressing for the local compiler owner.
 
-use backend_engine::cluster_transport::{EndpointId, ScopedClusterInvite, SecretKey};
-use std::fs::{self, File, OpenOptions};
+use backend_engine::cluster_transport::{
+    EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims, RemoteIndexCapabilityError,
+    RemoteIndexCapabilityIssuer, ScopedClusterInvite, SecretKey,
+};
+use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
+use std::fs::File;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const OWNER_MAGIC: &[u8; 8] = b"BKCOOW01";
 const MAX_OWNER_CONFIG_BYTES: usize = 320;
 const MAX_ADDRESS_BYTES: usize = 128;
-const PRIVATE_FILE_MODE: u32 = 0o600;
-const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Durable local Iroh identity and the direct address advertised to workers.
@@ -37,25 +37,28 @@ impl ClusterOwnerConfig {
     ) -> Result<Self, ClusterOwnerConfigError> {
         validate_addresses(bind_address, advertised_address)?;
         let path = path.as_ref();
-        ensure_parent(path)?;
-        match fs::symlink_metadata(path) {
-            Ok(_) => return Err(ClusterOwnerConfigError::AlreadyExists),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(ClusterOwnerConfigError::Io(error.to_string())),
+        if !path.is_absolute() {
+            return Err(ClusterOwnerConfigError::InvalidFile);
         }
+        let (directory, name) = config_location(path)?;
         let config = Self {
             secret_key: SecretKey::generate().to_bytes(),
             bind_address,
             advertised_address,
         };
-        write_private_atomic(path, &config.encode()?)?;
+        write_private_new(&directory, &name, &config.encode()?)?;
         Self::load(path)
     }
 
     /// Opens and validates one cold-start owner configuration.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ClusterOwnerConfigError> {
         let path = path.as_ref();
-        let bytes = read_private(path)?;
+        let (directory, name) = config_location(path)?;
+        let mut file = directory.open_private_file(&name).map_err(io_error)?;
+        if file.metadata().map_err(io_error)?.len() > MAX_OWNER_CONFIG_BYTES as u64 {
+            return Err(ClusterOwnerConfigError::InvalidFile);
+        }
+        let bytes = read_bounded(&mut file)?;
         let config = Self::decode(&bytes)?;
         if config.encode()?.as_slice() != bytes {
             return Err(ClusterOwnerConfigError::InvalidFile);
@@ -113,6 +116,15 @@ impl ClusterOwnerConfig {
             backend_engine::cluster_transport::ClusterExecutionClass::TrustedCoordinatorHostExecution,
         )
         .map_err(|_| ClusterOwnerConfigError::InvalidInvite)
+    }
+
+    /// Issues a read-only remote index grant without exposing the signing key.
+    pub fn issue_remote_index_capability(
+        &self,
+        claims: RemoteIndexCapabilityClaims,
+        now_ms: u64,
+    ) -> Result<RemoteIndexCapability, RemoteIndexCapabilityError> {
+        RemoteIndexCapabilityIssuer::new(self.secret_key()).issue(claims, now_ms)
     }
 
     fn encode(&self) -> Result<Vec<u8>, ClusterOwnerConfigError> {
@@ -180,6 +192,8 @@ pub enum ClusterOwnerConfigError {
     InvalidInvite,
     /// The host cannot prove owner-only persistence for this platform.
     Permissions,
+    /// The owner identity name was published, but directory durability was not confirmed.
+    CommittedButNotDurable(String),
     /// A filesystem operation failed.
     Io(String),
 }
@@ -196,6 +210,10 @@ impl std::fmt::Display for ClusterOwnerConfigError {
             Self::Permissions => {
                 formatter.write_str("owner-only cluster config storage is unavailable")
             }
+            Self::CommittedButNotDurable(error) => write!(
+                formatter,
+                "cluster owner identity was published but directory durability could not be confirmed: {error}"
+            ),
             Self::Io(error) => write!(formatter, "cluster owner config I/O failed: {error}"),
         }
     }
@@ -281,81 +299,19 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn ensure_parent(path: &Path) -> Result<(), ClusterOwnerConfigError> {
-    if !path.is_absolute() || path.file_name().is_none() {
-        return Err(ClusterOwnerConfigError::InvalidFile);
-    }
-    let parent = path.parent().ok_or(ClusterOwnerConfigError::InvalidFile)?;
-    let existed = parent.exists();
-    fs::create_dir_all(parent).map_err(io_error)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::symlink_metadata(parent).map_err(io_error)?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(ClusterOwnerConfigError::InvalidFile);
-        }
-        if !existed {
-            fs::set_permissions(parent, fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE))
-                .map_err(io_error)?;
-        }
-    }
-    #[cfg(windows)]
-    {
-        let metadata = fs::symlink_metadata(parent).map_err(io_error)?;
-        if !metadata.is_dir() || backend_platform::win32::security::is_endpoint_metadata(&metadata)
-        {
-            return Err(ClusterOwnerConfigError::InvalidFile);
-        }
-    }
-    Ok(())
-}
-
-fn read_private(path: &Path) -> Result<Vec<u8>, ClusterOwnerConfigError> {
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > MAX_OWNER_CONFIG_BYTES as u64
-    {
-        return Err(ClusterOwnerConfigError::InvalidFile);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-        if metadata.permissions().mode() & 0o077 != 0 || metadata.nlink() != 1 {
-            return Err(ClusterOwnerConfigError::Permissions);
-        }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(path)
-            .map_err(io_error)?;
-        read_bounded(&mut file)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        backend_platform::win32::security::restrict_to_current_user(path).map_err(io_error)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(0x0020_0000) // FILE_FLAG_OPEN_REPARSE_POINT
-            .open(path)
-            .map_err(io_error)?;
-        let opened = file.metadata().map_err(io_error)?;
-        if backend_platform::win32::security::is_endpoint_metadata(&opened) {
-            return Err(ClusterOwnerConfigError::InvalidFile);
-        }
-        let owner = backend_platform::win32::identity::owner_of(&file).map_err(io_error)?;
-        if !backend_platform::win32::identity::is_owned_by_current_user(&owner).map_err(io_error)? {
-            return Err(ClusterOwnerConfigError::Permissions);
-        }
-        read_bounded(&mut file)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = metadata;
-        Err(ClusterOwnerConfigError::Permissions)
-    }
+fn config_location(path: &Path) -> Result<(DirectoryCapability, String), ClusterOwnerConfigError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or(ClusterOwnerConfigError::InvalidFile)?;
+    let directory = DirectoryCapability::open(parent).map_err(io_error)?;
+    directory.validate_private().map_err(io_error)?;
+    Ok((directory, name.to_owned()))
 }
 
 fn read_bounded(file: &mut File) -> Result<Vec<u8>, ClusterOwnerConfigError> {
@@ -369,84 +325,63 @@ fn read_bounded(file: &mut File) -> Result<Vec<u8>, ClusterOwnerConfigError> {
     Ok(bytes)
 }
 
-fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), ClusterOwnerConfigError> {
+fn write_private_new(
+    directory: &DirectoryCapability,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), ClusterOwnerConfigError> {
     if bytes.len() > MAX_OWNER_CONFIG_BYTES {
         return Err(ClusterOwnerConfigError::InvalidFile);
     }
-    ensure_parent(path)?;
-    if let Ok(metadata) = fs::symlink_metadata(path)
-        && (!metadata.is_file() || metadata.file_type().is_symlink())
-    {
-        return Err(ClusterOwnerConfigError::InvalidFile);
-    }
-    let parent = path.parent().ok_or(ClusterOwnerConfigError::InvalidFile)?;
-    let name = path
-        .file_name()
-        .ok_or(ClusterOwnerConfigError::InvalidFile)?
-        .to_string_lossy();
-    loop {
+    for _ in 0..128 {
         let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let temporary = parent.join(format!(".{name}.tmp-{}-{sequence}", std::process::id()));
-        match create_private_temp(&temporary) {
-            Ok(mut file) => {
-                let result = (|| {
-                    file.write_all(bytes).map_err(io_error)?;
-                    file.sync_all().map_err(io_error)?;
-                    drop(file);
-                    fs::rename(&temporary, path).map_err(io_error)?;
-                    backend_platform::durable::sync_parent(path).map_err(io_error)?;
-                    Ok(())
-                })();
-                if result.is_err() {
-                    let _ = fs::remove_file(&temporary);
-                }
-                return result;
-            }
+        let temporary = format!(".{name}.tmp-{}-{sequence}", std::process::id());
+        let mut file = match directory.create_file_exclusive(&temporary) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error(error)),
+        };
+        let write_result = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = directory.remove_file(&temporary);
+            return Err(io_error(error));
+        }
+        match directory.rename_with_outcome(&temporary, name, false) {
+            Ok(()) => return Ok(()),
+            Err(DirectoryRenameError::NotCommitted(error)) => {
+                let _ = directory.remove_file(&temporary);
+                return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    ClusterOwnerConfigError::AlreadyExists
+                } else {
+                    io_error(error)
+                });
+            }
+            Err(DirectoryRenameError::CommittedButNotDurable(error)) => {
+                return Err(ClusterOwnerConfigError::CommittedButNotDurable(
+                    error.to_string(),
+                ));
+            }
         }
     }
-}
-
-fn create_private_temp(path: &Path) -> std::io::Result<File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(PRIVATE_FILE_MODE)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(path)
-    }
-    #[cfg(windows)]
-    {
-        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        if let Err(error) = backend_platform::win32::security::restrict_to_current_user(path) {
-            drop(file);
-            let _ = fs::remove_file(path);
-            return Err(error);
-        }
-        Ok(file)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = path;
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "owner-only persistence is unavailable on this platform",
-        ))
-    }
+    Err(ClusterOwnerConfigError::Io(
+        "could not allocate a unique owner-config temporary".to_owned(),
+    ))
 }
 
 fn io_error(error: std::io::Error) -> ClusterOwnerConfigError {
-    ClusterOwnerConfigError::Io(error.to_string())
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        ClusterOwnerConfigError::Permissions
+    } else {
+        ClusterOwnerConfigError::Io(error.to_string())
+    }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
+    use std::fs;
     use std::path::PathBuf;
 
     struct Scratch(PathBuf);
@@ -463,7 +398,7 @@ mod tests {
                 std::process::id()
             ));
             fs::create_dir(&root).expect("create scratch root");
-            fs::set_permissions(&root, fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE))
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
                 .expect("restrict scratch root");
             Self(root)
         }
@@ -532,5 +467,85 @@ mod tests {
                 .endpoint_id(),
             first.endpoint_id()
         );
+    }
+
+    #[test]
+    fn concurrent_owner_initialization_never_replaces_the_winning_identity() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("cluster-owner.v1");
+        let bind = "127.0.0.1:40123".parse().expect("bind address");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let handles = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    ClusterOwnerConfig::create(&path, bind, bind)
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("join owner initialization"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| {
+                    result.as_ref().err() == Some(&ClusterOwnerConfigError::AlreadyExists)
+                })
+                .count(),
+            1
+        );
+        let persisted = ClusterOwnerConfig::load(&path).expect("load winning owner identity");
+        assert!(
+            results
+                .iter()
+                .filter_map(|result| result.as_ref().ok())
+                .any(|created| created.endpoint_id() == persisted.endpoint_id())
+        );
+        let remaining_names = std::fs::read_dir(&scratch.0)
+            .expect("list private owner directory")
+            .map(|entry| {
+                entry
+                    .expect("read owner directory entry")
+                    .file_name()
+                    .into_string()
+                    .expect("owner entry name is UTF-8")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_names, vec!["cluster-owner.v1".to_owned()]);
+    }
+
+    #[test]
+    fn owner_config_rejects_symlinked_ancestor_without_writing_through_it() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let scratch = Scratch::new();
+        let outside = scratch.0.join("outside");
+        fs::create_dir(&outside).expect("create outside directory");
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o700))
+            .expect("restrict outside directory");
+        let alias = scratch.0.join("owner-alias");
+        symlink(&outside, &alias).expect("create ancestor symlink");
+        let path = alias.join("cluster-owner.v1");
+        let bind = "127.0.0.1:40123".parse().expect("bind address");
+        assert!(ClusterOwnerConfig::create(&path, bind, bind).is_err());
+        assert!(!outside.join("cluster-owner.v1").exists());
+        assert!(ClusterOwnerConfig::load(&path).is_err());
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    #[test]
+    fn owner_config_fifo_refusal_does_not_wait_for_a_writer() {
+        use rustix::fs::{CWD, Mode, mkfifoat};
+
+        let scratch = Scratch::new();
+        let path = scratch.0.join("owner-fifo");
+        mkfifoat(CWD, &path, Mode::from_bits_truncate(0o600)).expect("create owner FIFO");
+        assert!(ClusterOwnerConfig::load(path).is_err());
     }
 }

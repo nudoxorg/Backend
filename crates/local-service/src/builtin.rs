@@ -81,6 +81,9 @@ mod worker;
 use worker::connect_worker;
 #[path = "builtin/cluster_dispatch.rs"]
 mod cluster_dispatch;
+#[path = "builtin/remote_semantic_query.rs"]
+mod remote_semantic_query;
+pub use remote_semantic_query::{RemoteIndexGrantSummary, RemoteIndexUsage};
 #[path = "builtin/compiler_scope.rs"]
 mod compiler_scope;
 #[path = "builtin/embedded_host.rs"]
@@ -1511,9 +1514,7 @@ pub(crate) fn compose_owner(
         &mut image_rows,
         &mut generations,
     )
-    .map_err(|error| {
-        embedded_host::view_refusal(&daemon, &error, "repair product view: ")
-    })?;
+    .map_err(|error| embedded_host::view_refusal(&daemon, &error, "repair product view: "))?;
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -1555,6 +1556,7 @@ pub(crate) fn compose_owner(
     let owner_cluster = cluster_dispatch::OwnerCompilerClusterRuntime::open_if_configured(
         &config.workspace,
         semantic_authority.store(),
+        config.endpoint.as_path(),
     )
     .map_err(|error| ProcessError::Profile(format!("open compiler cluster owner: {error}")))?
     .map(Arc::new);

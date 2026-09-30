@@ -10,9 +10,12 @@ use backend_cluster_transport::{
     AcceptedClusterConnection, AdmissionPolicy, AssignmentScope, BlobHash, Capability,
     CapabilityClaims, CapabilityIssuer, ChunkRange, ClusterListener, ControlAdmissionPolicy,
     ControlChannel, ControlMessage, ControlResultReceipt, ControlRole, MAX_RANGE_CHUNKS,
-    MAX_RESPONSE_BYTES, ResumeState, ServerState, StoreBlobCatalog, StoreObjectMapping,
-    TransferScope, TransportError, bind_direct, connect_control, fetch_range, now_unix_ms,
-    serve_one, serve_one_measured, verify_admission,
+    MAX_REMOTE_INDEX_AUTH_BYTES, MAX_RESPONSE_BYTES, REMOTE_INDEX_ALPN,
+    RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexChannel,
+    RemoteIndexOutcome, RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
+    RemoteIndexResponse, ResumeState, ServerState, StoreBlobCatalog, StoreObjectMapping,
+    TransferScope, TransportError, accept_remote_index, bind_direct, connect_control, fetch_range,
+    now_unix_ms, remote_index_now, serve_one, serve_one_measured, verify_admission,
 };
 use backend_store::{
     ArtifactBudget, ArtifactClosureClaim, ArtifactPlan, ClosureManifest, FileStore, TypedObject,
@@ -58,6 +61,252 @@ fn temp_dir(label: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&path).expect("temporary directory");
     path
+}
+
+#[test]
+fn remote_index_search_grants_require_an_exact_composite_snapshot() {
+    let owner = secret(177);
+    let client = secret(178);
+    let issuer = RemoteIndexCapabilityIssuer::new(owner.clone());
+    let now = remote_index_now().expect("remote-index clock");
+    let claims = |operations, index_search_snapshot| RemoteIndexCapabilityClaims {
+        version: 2,
+        server: owner.public(),
+        client: client.public(),
+        grant_id: [179; 16],
+        issued_at_unix_ms: now,
+        expires_at_unix_ms: now + 60_000,
+        request_budget: 1,
+        byte_budget: 1024,
+        permissions: vec![RemoteIndexPermission::ProductRead],
+        product: Some(RemoteIndexProductScope {
+            view_root: [180; 32],
+            operations,
+            index_search_snapshot,
+        }),
+        semantic: None,
+    };
+
+    let valid = issuer
+        .issue(
+            claims(
+                vec![RemoteIndexQueryOperation::IndexSearch],
+                Some([181; 32]),
+            ),
+            now,
+        )
+        .expect("index-search capability with an exact composite snapshot");
+    let encoded = valid.encode().expect("bounded capability encoding");
+    assert_eq!(
+        RemoteIndexCapability::decode(&encoded).expect("canonical decode"),
+        valid
+    );
+    assert!(
+        issuer
+            .issue(
+                claims(vec![RemoteIndexQueryOperation::IndexSearch], None),
+                now,
+            )
+            .is_err()
+    );
+    assert!(
+        issuer
+            .issue(
+                claims(vec![RemoteIndexQueryOperation::Search], Some([181; 32]),),
+                now,
+            )
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn remote_index_capability_echo_works_from_an_independent_client_process() {
+    let owner_secret = secret(133);
+    let client_secret = secret(134);
+    let endpoint = bind_direct(
+        owner_secret.clone(),
+        "127.0.0.1:0"
+            .parse::<SocketAddr>()
+            .expect("loopback address"),
+    )
+    .await
+    .expect("bind remote-index test owner");
+    let directory = temp_dir("remote-index-peer");
+    let (artifact_store, _, artifact_closure) =
+        prepare_store(&directory.join("artifact-store"), b"fixture");
+    let artifact_scope = TransferScope::from_store_closure(
+        AssignmentScope::new([137; 16], [138; 16], 1, [139; 32]).expect("artifact assignment"),
+        artifact_closure,
+    )
+    .expect("artifact transfer scope");
+    let artifact_issuer = CapabilityIssuer::new(secret(140));
+    let artifact_state = ServerState::new(
+        AdmissionPolicy::new(
+            endpoint.id(),
+            artifact_issuer.public_key(),
+            [client_secret.public()],
+            artifact_scope,
+        ),
+        std::sync::Arc::new(StoreBlobCatalog::new(
+            artifact_store.artifact_sink(artifact_budget()),
+            directory.join("outboard"),
+        )),
+    );
+    let control_policy =
+        ControlAdmissionPolicy::coordinator_ingress(endpoint.id(), [client_secret.public()]);
+    let mut listener = ClusterListener::spawn(endpoint.clone(), control_policy, artifact_state, 2)
+        .expect("spawn shared authenticated ALPN listener");
+    let address = endpoint
+        .bound_sockets()
+        .into_iter()
+        .next()
+        .expect("owner direct socket address");
+    let now = remote_index_now().expect("current remote-index time");
+    let issuer = RemoteIndexCapabilityIssuer::new(owner_secret);
+    let capability = issuer
+        .issue(
+            RemoteIndexCapabilityClaims {
+                version: 2,
+                server: endpoint.id(),
+                client: client_secret.public(),
+                grant_id: [135; 16],
+                issued_at_unix_ms: now,
+                expires_at_unix_ms: now + 60_000,
+                request_budget: 4,
+                byte_budget: 128 * 1024,
+                permissions: vec![RemoteIndexPermission::ProductRead],
+                product: Some(RemoteIndexProductScope {
+                    view_root: [136; 32],
+                    operations: vec![RemoteIndexQueryOperation::Search],
+                    index_search_snapshot: None,
+                }),
+                semantic: None,
+            },
+            now,
+        )
+        .expect("owner-signed read capability");
+    let body = (0_usize..64 * 1024)
+        .map(|index| (index.wrapping_mul(31) % 251) as u8)
+        .collect::<Vec<_>>();
+    let serving = tokio::spawn(async move {
+        let event = timeout(Duration::from_secs(20), listener.recv())
+            .await
+            .expect("owner accept timeout")
+            .expect("owner listener still open")
+            .expect("owner listener event");
+        let connection = match event {
+            AcceptedClusterConnection::RemoteIndex(connection) => connection,
+            _ => panic!("shared listener routed the wrong ALPN"),
+        };
+        let mut session = connection
+            .accept()
+            .await
+            .expect("admit signed remote-index session");
+        assert_eq!(session.channel(), RemoteIndexChannel::ProductQuery);
+        let request = session
+            .receive_request()
+            .await
+            .expect("receive query frame");
+        session
+            .send_response(&RemoteIndexResponse {
+                request_id: request.request_id,
+                outcome: RemoteIndexOutcome::Payload(request.body),
+            })
+            .await
+            .expect("send bounded echo response");
+        let _ = timeout(Duration::from_secs(5), session.receive_request()).await;
+        listener
+            .shutdown()
+            .await
+            .expect("close owner ALPN listener");
+    });
+    let input = serde_json::json!({
+        "owner": endpoint.id(),
+        "address": address,
+        "bind": "127.0.0.1:0",
+        "secret": client_secret.to_bytes(),
+        "capability": capability,
+        "body": body,
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_remote-index-peer"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn independent remote-index client process");
+    child
+        .stdin
+        .take()
+        .expect("client stdin")
+        .write_all(&serde_json::to_vec(&input).expect("encode child input"))
+        .await
+        .expect("write child input");
+    let output = timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
+        .expect("remote-index client process timeout")
+        .expect("wait for remote-index client process");
+    serving
+        .await
+        .unwrap_or_else(|error| panic!("remote-index owner task failed: {error:?}"));
+    assert!(
+        output.status.success(),
+        "remote-index client failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("remote-index-echo-bytes=65536"));
+    endpoint.close().await;
+    std::fs::remove_dir_all(directory).expect("remove remote-index test state");
+}
+
+#[tokio::test]
+async fn remote_index_oversized_hello_is_rejected_before_payload_read() {
+    let owner = bind_direct(secret(201), "127.0.0.1:0".parse().expect("owner bind"))
+        .await
+        .expect("bind owner");
+    let client = bind_direct(secret(202), "127.0.0.1:0".parse().expect("client bind"))
+        .await
+        .expect("bind client");
+    let owner_id = owner.id();
+    let owner_address = owner
+        .bound_sockets()
+        .into_iter()
+        .next()
+        .expect("owner socket");
+    let owner_acceptor = owner.clone();
+    let serving = tokio::spawn(async move {
+        let incoming = timeout(Duration::from_secs(10), owner_acceptor.accept())
+            .await
+            .expect("incoming connection timeout")
+            .expect("owner endpoint remains open");
+        let connecting = incoming.accept().expect("accept incoming connection");
+        let connection = connecting.await.expect("finish Iroh handshake");
+        accept_remote_index(connection, owner_id).await
+    });
+
+    let connection = client
+        .connect(
+            EndpointAddr::new(owner_id).with_ip_addr(owner_address),
+            REMOTE_INDEX_ALPN,
+        )
+        .await
+        .expect("connect to remote-index ALPN");
+    let (mut send, _receive) = connection.open_bi().await.expect("open untrusted stream");
+    let too_large =
+        u32::try_from(MAX_REMOTE_INDEX_AUTH_BYTES + 1).expect("auth bound fits frame prefix");
+    send.write_all(&too_large.to_be_bytes())
+        .await
+        .expect("write oversized frame length only");
+    send.finish().expect("finish oversized header stream");
+
+    let error = timeout(Duration::from_secs(10), serving)
+        .await
+        .expect("owner hello admission timeout")
+        .expect("owner task completes")
+        .expect_err("oversized hello must fail before payload decode");
+    assert!(matches!(error, TransportError::Frame(_)));
+    client.close().await;
+    owner.close().await;
 }
 
 async fn run_child(
@@ -1239,6 +1488,9 @@ async fn one_cluster_listener_demultiplexes_alternating_control_and_artifact_con
             }
             AcceptedClusterConnection::Probe(_) => {
                 panic!("unexpected probe connection in artifact/control test");
+            }
+            AcceptedClusterConnection::RemoteIndex(_) => {
+                panic!("unexpected remote index connection in artifact/control test");
             }
         }
     }

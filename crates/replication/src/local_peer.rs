@@ -9,6 +9,8 @@
 #[cfg(any(unix, windows))]
 use backend_platform::local::LocalStream as UnixStream;
 #[cfg(any(unix, windows))]
+pub use backend_platform::local::connect_timeout as connect_local_timeout;
+#[cfg(any(unix, windows))]
 pub use backend_platform::local::{LocalAddr, LocalListener, LocalStream};
 #[cfg(windows)]
 use backend_platform::win32::identity::UserSid;

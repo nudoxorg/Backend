@@ -1554,7 +1554,7 @@ mod tests {
                 &package,
                 "1.0.0",
                 AcquisitionGate {
-                    offline: super::OfflinePolicy::Warn,
+                    offline: crate::OfflinePolicy::Warn,
                 },
                 10,
                 false,
@@ -2331,7 +2331,12 @@ mod tests {
         ));
         assert!(!path.exists(), "oversized state was not published");
 
-        fs::write(&path, b"1234").expect("write oversized authority");
+        DirectoryCapability::open(directory.path())
+            .expect("hold authority directory")
+            .create_file_exclusive("authority.json")
+            .expect("create private authority")
+            .write_all(b"1234")
+            .expect("write oversized authority");
         assert!(matches!(
             AdvisoryAuthority::open_with_limit(&path, 10, 3),
             Err(AuthorityStorageError::BoundExceeded)

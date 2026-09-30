@@ -54,12 +54,15 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 ///
 /// On Windows this rejects reparse points throughout the path chain and on
 /// the opened file, verifies its owner, single-link identity, and protected
-/// current-user-only DACL on that handle. Unix requires a regular file and
-/// parent owned by this user, with owner-only permissions and one file link.
+/// current-user-only DACL on that handle. Unix opens and holds the private
+/// parent directory, opens the final component relative to that handle without
+/// following links, then checks the file's owner, type, permissions, and link
+/// count on the opened handle.
 ///
 /// # Errors
 /// Returns an I/O error if the file is missing, is not a regular private file,
-/// or cannot be checked and opened without following its final link.
+/// or cannot be checked and opened relative to a held parent without following
+/// the final link.
 pub fn open_private_read(path: &Path) -> io::Result<File> {
     open_private_read_platform(path)
 }
@@ -199,14 +202,47 @@ fn write_private_atomic_platform(_path: &Path, _bytes: &[u8]) -> io::Result<()> 
 
 #[cfg(unix)]
 fn open_private_read_platform(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
+    use rustix::fs::{Mode, OFlags, open, openat};
 
-    validate_unix_parent(parent(path))?;
-    reject_unix_symlink_destination(path)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(path)?;
+    let parent_path = parent(path).canonicalize()?;
+    let mut parent_handle = open(
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(rustix_io)?;
+    for component in parent_path.components() {
+        let std::path::Component::Normal(component) = component else {
+            continue;
+        };
+        parent_handle = openat(
+            &parent_handle,
+            component,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(rustix_io)?;
+    }
+    validate_unix_private_directory(&parent_handle)?;
+    let name = path
+        .file_name()
+        .filter(|name| *name != "." && *name != "..")
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "private state path needs a final file name",
+            )
+        })?;
+    let file = openat(
+        &parent_handle,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(rustix_io)?;
     validate_unix_private_file(&file.metadata()?)?;
     Ok(file)
 }

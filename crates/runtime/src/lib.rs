@@ -223,13 +223,27 @@ impl WorkspacePaths {
     /// Returns an error for directory, randomness, permission, or credential
     /// admission failures.
     pub fn initialize(&self) -> Result<(), RuntimeError> {
+        self.initialize_data_directory()?;
+        ensure_authority_secret(&self.authority_secret)
+    }
+
+    /// Creates or verifies this workspace's private data directories without
+    /// creating a local-owner authority credential.
+    ///
+    /// This is useful for local client-only state such as a remote-index
+    /// identity, which needs a private workspace but does not start locald.
+    ///
+    /// # Errors
+    /// Returns an error when the workspace directories cannot be admitted as
+    /// private state.
+    pub fn initialize_data_directory(&self) -> Result<(), RuntimeError> {
         if let Some(application_root) = self.private_application_root.as_deref() {
             initialize_default_state(application_root, &self.data).map_err(RuntimeError::Io)?;
         } else {
             backend_platform::durable::ensure_private_directory(&self.data)
                 .map_err(RuntimeError::Io)?;
         }
-        ensure_authority_secret(&self.authority_secret)
+        Ok(())
     }
 }
 
@@ -1196,6 +1210,34 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove app-data fixture");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn remote_client_data_initialization_does_not_create_owner_authority() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_directory("client-only-data");
+        fs::create_dir(&root).expect("create private fixture root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("set private fixture root");
+        let data = root.join("client-data");
+        let paths = WorkspacePaths::discover(
+            Some(root.clone()),
+            Some(data.clone()),
+            Some(root.join("locald.sock")),
+        )
+        .expect("discover client-only workspace");
+
+        paths
+            .initialize_data_directory()
+            .expect("initialize private client data");
+        assert!(data.is_dir());
+        assert!(
+            !paths.authority_secret().exists(),
+            "client-only setup must not create a local-owner authority credential"
+        );
+        fs::remove_dir_all(root).expect("remove client-only fixture");
     }
 
     #[test]
