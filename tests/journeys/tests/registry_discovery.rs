@@ -643,6 +643,7 @@ fn discovered(reply: SurfaceReply) -> Vec<backend_library::RegistryDiscoveryCand
             }
             RegistrySearchHit::Acquired(_)
             | RegistrySearchHit::ForgeDiscovered(_)
+            | RegistrySearchHit::ForgeSourcePin(_)
             | RegistrySearchHit::LocalDeclaration(_) => None,
         })
         .collect()
