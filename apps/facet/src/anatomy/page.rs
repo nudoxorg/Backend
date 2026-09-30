@@ -88,9 +88,8 @@ impl Geometry {
         let spine_off = if narrow { rhythm::SPINE_NARROW } else { rhythm::SPINE } * scale;
         let gem = if narrow { rhythm::GEM_NARROW } else { rhythm::GEM } * scale;
         let lead = spine_off + gem / 2.0;
-        let col_w = (f32::from(width) - lead * 2.0).clamp(240.0, rhythm::COLUMN * scale);
+        let col_w = (f32::from(width) - lead * 2.0).max(0.0).min(rhythm::COLUMN * scale);
         let col = (f32::from(width) - col_w) / 2.0;
-        let col = col.max(lead);
         let reach = (f32::from(width) - col - col_w + f32::from(margin)).max(0.0);
         Self { spine: px(col - spine_off), col: px(col), col_w: px(col_w), gem, reach: px(reach), scale }
     }
@@ -936,5 +935,9 @@ mod tests {
         let narrow = Geometry::new(px(640.0), px(20.0), 1.0);
         assert_eq!(narrow.col - narrow.spine, px(36.0), "the narrow spine sits 36 px left of the column");
         assert!(!narrow.margins(), "a narrow reader keeps its counts in the column");
+
+        let large_text_phone = Geometry::new(px(320.0), px(0.0), 2.0);
+        assert_eq!((large_text_phone.col, large_text_phone.col_w), (px(112.0), px(96.0)));
+        assert!(large_text_phone.col + large_text_phone.col_w <= px(320.0), "200% text keeps the column inside the reader");
     }
 }
