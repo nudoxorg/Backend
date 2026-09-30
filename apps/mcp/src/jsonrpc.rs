@@ -585,6 +585,12 @@ impl<P: Product> Server<P> {
             let context = continuation_context(&self.project, name, arguments, detail);
             return self.index_job_tool(name, arguments, detail, &context);
         }
+        if name == "backend.index_await" {
+            return Err(RpcError::new(
+                -32602,
+                "Use backend.index_progress for bounded polling",
+            ));
+        }
         let context = continuation_context(&self.project, name, arguments, detail);
         let index_search_tool =
             grammar_for_tool(name).is_some_and(|grammar| grammar.name() == "index-search");

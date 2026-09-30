@@ -1,6 +1,6 @@
 //! The one argument grammar behind every surface's command vocabulary.
 //!
-//! [`backend_library::COMMANDS`] says what the 35 product commands *are*; it
+//! [`backend_library::COMMANDS`] says what the product commands *are*; it
 //! does not say what they take. Without a shared answer to that, the CLI grows
 //! one hand-written parser per verb and the MCP grows one hand-written
 //! `inputSchema` per tool, and the two drift the first time an operand is
@@ -57,6 +57,10 @@ pub enum ArgumentKind {
     Cursor,
     /// A boolean switch that is absent or present.
     Flag,
+    /// The exact JSON object returned by an owner-issued indexing job.
+    IndexJobTicket,
+    /// A non-negative progress event sequence.
+    Sequence,
 }
 
 impl ArgumentKind {
@@ -77,6 +81,8 @@ impl ArgumentKind {
             Self::SubjectKind => "SUBJECT",
             Self::LanguageProfile => "PROFILE",
             Self::ExecutionIntent => "INTENT",
+            Self::IndexJobTicket => "TICKET",
+            Self::Sequence => "SEQUENCE",
             Self::Generation => "GENERATION",
             Self::GraphDirection => "DIRECTION",
             Self::Limit => "COUNT",
@@ -89,8 +95,9 @@ impl ArgumentKind {
     #[must_use]
     pub const fn json_type(self) -> &'static str {
         match self {
-            Self::NodeId | Self::Limit => "integer",
+            Self::NodeId | Self::Limit | Self::Sequence => "integer",
             Self::Flag => "boolean",
+            Self::IndexJobTicket => "object",
             _ => "string",
         }
     }
@@ -461,7 +468,7 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 43] = [
+pub const GRAMMARS: [CommandGrammar; 47] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -1058,5 +1065,63 @@ pub const GRAMMARS: [CommandGrammar; 43] = [
             ),
         ],
         when: "Use for a package's exact dependency or dependent edges, with each source authority, ecosystem, resolver scope, version requirement, and selected graph snapshot preserved.",
+    },
+    CommandGrammar {
+        name: "index_start",
+        tool: "backend.index_start",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "package",
+            ArgumentKind::PackageReference,
+            "Local package path or exact version-pinned package URL.",
+        )],
+        options: &[ArgumentSpec::optional_with_json_name(
+            "execution-intent",
+            "execution_intent",
+            ArgumentKind::ExecutionIntent,
+            "Compilation class; defaults to interactive.",
+        )],
+        when: "Use to start owner-managed indexing without holding this client open; keep the exact returned ticket for progress or cancellation.",
+    },
+    CommandGrammar {
+        name: "index_await",
+        tool: "backend.index_await",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "ticket",
+            ArgumentKind::IndexJobTicket,
+            "Exact JSON ticket returned by index_start; do not edit its id, epoch, or package.",
+        )],
+        options: &[],
+        when: "Use from a command-line client when you want to wait for the exact job's terminal receipt instead of polling.",
+    },
+    CommandGrammar {
+        name: "index_cancel",
+        tool: "backend.index_cancel",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "ticket",
+            ArgumentKind::IndexJobTicket,
+            "Exact JSON ticket returned by index_start; do not edit its id, epoch, or package.",
+        )],
+        options: &[],
+        when: "Use to request cancellation of one exact job; a requested status is not terminal, so keep polling its ticket.",
+    },
+    CommandGrammar {
+        name: "index_progress",
+        tool: "backend.index_progress",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "ticket",
+            ArgumentKind::IndexJobTicket,
+            "Exact JSON ticket returned by index_start; do not edit its id, epoch, or package.",
+        )],
+        options: &[ArgumentSpec::optional_with_json_name(
+            "after-sequence",
+            "after_sequence",
+            ArgumentKind::Sequence,
+            "Return events after this sequence; use next_sequence from the previous observation.",
+        )],
+        when: "Use for one immediate bounded observation; unknown means the ticket is outside the current owner's active or retained set.",
     },
 ];

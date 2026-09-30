@@ -1057,3 +1057,107 @@ fn mcp_add_without_execution_intent_lowers_to_interactive_default() {
         Request::Index(path) if path == PROJECT
     ));
 }
+
+#[test]
+fn owner_index_job_grammars_lower_exact_ticket_operands_to_typed_surface_commands() {
+    let ticket = backend_library::IndexJobTicket::new(
+        std::num::NonZeroU64::new(73).expect("nonzero job id"),
+        [0x5a; 16],
+        backend_library::PackageReference::parse("pkg:cargo/serde@1.0.228")
+            .expect("pinned package"),
+    );
+    let ticket_value = serde_json::to_value(&ticket).expect("exact owner ticket");
+    let lower_job = |name: &str, arguments: serde_json::Value| {
+        let grammar = grammar_for(name).expect("job command has a grammar");
+        assert_eq!(grammar_for_tool(grammar.tool()), Some(grammar));
+        let invocation = Invocation::from_json(
+            grammar,
+            arguments.as_object().expect("job arguments object"),
+        )
+        .expect("well-shaped invocation");
+        lower(&invocation, PROJECT).expect("typed owner job command")
+    };
+
+    assert!(matches!(
+        lower_job(
+            "index_start",
+            serde_json::json!({
+                "package": "pkg:cargo/serde@1.0.228",
+                "execution_intent": "background"
+            })
+        ),
+        Request::Surface(command)
+            if matches!(*command,
+                backend_library::SurfaceCommand::IndexStart {
+                    package: backend_library::PackageReference::Purl(ref package),
+                    execution_intent: backend_library::CompileExecutionIntent::Background,
+                } if package.as_str() == "pkg:cargo/serde@1.0.228")
+    ));
+    assert!(matches!(
+        lower_job(
+            "index_progress",
+            serde_json::json!({ "ticket": ticket_value, "after_sequence": 19 })
+        ),
+        Request::Surface(command)
+            if matches!(*command,
+                backend_library::SurfaceCommand::IndexProgress {
+                    ticket: ref observed,
+                    after_sequence: 19,
+                } if observed == &ticket)
+    ));
+    assert!(matches!(
+        lower_job("index_await", serde_json::json!({ "ticket": ticket_value })),
+        Request::Surface(command)
+            if matches!(*command,
+                backend_library::SurfaceCommand::IndexAwait { ticket: ref observed }
+                if observed == &ticket)
+    ));
+    assert!(matches!(
+        lower_job("index_cancel", serde_json::json!({ "ticket": ticket_value })),
+        Request::Surface(command)
+            if matches!(*command,
+                backend_library::SurfaceCommand::IndexCancel { ticket: ref observed }
+                if observed == &ticket)
+    ));
+}
+
+#[test]
+fn owner_index_job_cli_ticket_and_progress_operands_are_validated() {
+    let ticket = backend_library::IndexJobTicket::new(
+        std::num::NonZeroU64::new(5).expect("nonzero job id"),
+        [9; 16],
+        backend_library::PackageReference::parse("/workspace/project").expect("local package"),
+    );
+    let ticket_json = serde_json::to_string(&ticket).expect("ticket JSON operand");
+    let grammar = grammar_for("index_progress").expect("progress grammar");
+    let mut invocation = Invocation::new(grammar);
+    invocation.push(ticket_json);
+    invocation.check().expect("single exact ticket operand");
+    assert!(matches!(
+        lower(&invocation, PROJECT),
+        Ok(Request::Surface(command))
+            if matches!(*command,
+                backend_library::SurfaceCommand::IndexProgress {
+                    ticket: ref observed,
+                    after_sequence: 0,
+                } if observed == &ticket)
+    ));
+
+    let malformed = serde_json::json!({ "ticket": { "id": 0, "owner_epoch": [9; 16], "package": { "kind": "local", "value": "/workspace/project" } } });
+    let invalid = Invocation::from_json(
+        grammar,
+        malformed.as_object().expect("malformed ticket object"),
+    )
+    .expect("object reaches ticket decoder");
+    assert!(lower(&invalid, PROJECT).is_err());
+
+    let negative_sequence = serde_json::json!({ "ticket": serde_json::to_value(ticket).expect("ticket"), "after_sequence": -1 });
+    let invalid_sequence = Invocation::from_json(
+        grammar,
+        negative_sequence
+            .as_object()
+            .expect("invalid sequence arguments"),
+    )
+    .expect("sequence reaches bounded parser");
+    assert!(lower(&invalid_sequence, PROJECT).is_err());
+}

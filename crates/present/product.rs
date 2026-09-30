@@ -1,7 +1,7 @@
 //! The registry, home, and session surfaces, in the same shape as everything else.
 //!
-//! Twenty-four of the thirty-five registry rows answer with a
-//! [`SurfaceReply`] — registry packages, subscriptions, project folders,
+//! Many registry rows answer with a [`SurfaceReply`] — registry packages,
+//! subscriptions, project folders,
 //! session tree nodes, semantic generations, declaration diffs. Today both
 //! surfaces print those as pretty-printed JSON, which is the same failure as
 //! the outline: a wire value shown to a person.
