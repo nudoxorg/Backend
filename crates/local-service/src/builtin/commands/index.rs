@@ -3575,7 +3575,7 @@ pub(super) fn semantic_versions(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: &backend_engine::PackageReference,
     workspace: Option<&Path>,
-    semantic_authority: &super::super::semantic_authority::SemanticAuthority,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
 ) -> Result<Box<[backend_engine::SemanticVersionRecord]>, BuiltinModelError> {
     let relation = daemon
         .engine()

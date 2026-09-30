@@ -365,9 +365,17 @@ struct NativeHistoryStatusEntry {
 }
 
 #[derive(Default)]
-struct NativeHistoryWorkerState {
+struct NativeHistoryOwnerState {
     statuses: VecDeque<NativeHistoryStatusEntry>,
     in_flight: HashSet<[u8; 32]>,
+    retry_after: Option<ProductSemanticPublicationKey>,
+}
+
+struct NativeHistoryCompletion {
+    key: ProductSemanticPublicationKey,
+    stamp: backend_replication::SelectedGenerationStamp,
+    selection_id: [u8; 32],
+    status: backend_engine::SemanticHistoryPublicationStatus,
 }
 
 pub(super) struct NativeHistoryPublicationWork {
@@ -378,30 +386,6 @@ pub(super) struct NativeHistoryPublicationWork {
     pub(super) expected_claim: SemanticPublicationClaim,
     pub(super) stamp: backend_replication::SelectedGenerationStamp,
     pub(super) selection_id: [u8; 32],
-}
-
-fn record_native_history_status(
-    state: &Arc<Mutex<NativeHistoryWorkerState>>,
-    key: ProductSemanticPublicationKey,
-    stamp: backend_replication::SelectedGenerationStamp,
-    status: backend_engine::SemanticHistoryPublicationStatus,
-) {
-    let Ok(mut state) = state.lock() else {
-        return;
-    };
-    if let Some(position) = state
-        .statuses
-        .iter()
-        .position(|entry| entry.key == key && entry.stamp == stamp)
-    {
-        state.statuses.remove(position);
-    }
-    state
-        .statuses
-        .push_back(NativeHistoryStatusEntry { key, stamp, status });
-    while state.statuses.len() > MAX_NATIVE_HISTORY_STATUS_ROWS {
-        state.statuses.pop_front();
-    }
 }
 
 pub(super) struct SelectedClosureImageLoader {
@@ -645,6 +629,40 @@ impl SelectedClosureImageLoader {
         self.selections.read().map_err(|_| {
             BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
         })
+    }
+
+    fn product_selection_batch(
+        &self,
+        after: Option<&ProductSemanticPublicationKey>,
+        limit: usize,
+    ) -> Result<Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>, BuiltinModelError>
+    {
+        let selections = self.acquire_publication_read()?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(limit).map_err(|_| {
+            BuiltinModelError("native history retry batch allocation failed".to_owned())
+        })?;
+        match after {
+            Some(after) => {
+                rows.extend(
+                    selections
+                        .by_product
+                        .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+                        .take(limit)
+                        .map(|(key, claim)| (key.clone(), *claim)),
+                );
+            }
+            None => {
+                rows.extend(
+                    selections
+                        .by_product
+                        .iter()
+                        .take(limit)
+                        .map(|(key, claim)| (key.clone(), *claim)),
+                );
+            }
+        }
+        Ok(rows)
     }
 
     fn acquire_publication_write(
@@ -1019,8 +1037,9 @@ pub(crate) struct SemanticAuthority {
     /// semantic freshness. Newer candidate observations remain private until
     /// their product intent commits.
     committed_observations: BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>,
-    native_history_state: Arc<Mutex<NativeHistoryWorkerState>>,
+    native_history_state: NativeHistoryOwnerState,
     native_history_sender: SyncSender<NativeHistoryPublicationWork>,
+    native_history_completions: mpsc::Receiver<NativeHistoryCompletion>,
 }
 
 impl SemanticAuthority {
@@ -1039,10 +1058,11 @@ impl SemanticAuthority {
             store: store.clone(),
             selections: RwLock::new(SelectedClosureSnapshot::default()),
         });
-        let native_history_state = Arc::new(Mutex::new(NativeHistoryWorkerState::default()));
+        let native_history_state = NativeHistoryOwnerState::default();
         let (native_history_sender, receiver) =
             mpsc::sync_channel::<NativeHistoryPublicationWork>(NATIVE_HISTORY_QUEUE_CAPACITY);
-        let worker_state = Arc::clone(&native_history_state);
+        let (completion_sender, native_history_completions) =
+            mpsc::sync_channel::<NativeHistoryCompletion>(NATIVE_HISTORY_QUEUE_CAPACITY);
         std::thread::Builder::new()
             .name("locald-native-history".to_owned())
             .spawn(move || {
@@ -1060,9 +1080,16 @@ impl SemanticAuthority {
                                 .to_owned(),
                         }
                     });
-                    record_native_history_status(&worker_state, key, stamp, status);
-                    if let Ok(mut state) = worker_state.lock() {
-                        state.in_flight.remove(&selection_id);
+                    if completion_sender
+                        .send(NativeHistoryCompletion {
+                            key,
+                            stamp,
+                            selection_id,
+                            status,
+                        })
+                        .is_err()
+                    {
+                        break;
                     }
                 }
             })
@@ -1086,6 +1113,7 @@ impl SemanticAuthority {
             committed_observations: BTreeMap::new(),
             native_history_state,
             native_history_sender,
+            native_history_completions,
         })
     }
 
@@ -1151,62 +1179,64 @@ impl SemanticAuthority {
     /// Returns the sidecar status only for the exact generation still named
     /// by the committed product marker.
     pub(crate) fn native_history_status(
-        &self,
+        &mut self,
         key: &ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
     ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
+        self.drain_native_history_completions()?;
         let (selected_claim, selected) = self.image_loader.committed_pair(key)?;
         if selected_claim != claim {
             return Ok(backend_engine::SemanticHistoryPublicationStatus::NotSelected);
         }
         let stamp = Self::selected_generation_stamp(key, &selected)?;
-        let status = self.native_history_status_for_stamp(key, stamp)?;
-        if status.is_none() {
+        let status = self.native_history_status_for_stamp(key, stamp);
+        if status.is_none()
+            || matches!(
+                status,
+                Some(backend_engine::SemanticHistoryPublicationStatus::Deferred { .. })
+                    | Some(backend_engine::SemanticHistoryPublicationStatus::Superseded { .. })
+            )
+        {
             // Status rows are bounded. If an exact selected marker has aged
-            // out, re-enqueue from its immutable closure rather than leaving
-            // a selected generation permanently absent from derived history.
+            // out or was deferred/stale, re-enqueue from its immutable closure
+            // rather than leaving it absent from derived history.
             self.schedule_native_history(key.clone(), claim)?;
         }
         Ok(self
-            .native_history_status_for_stamp(key, stamp)?
-            .unwrap_or_else(
-                || backend_engine::SemanticHistoryPublicationStatus::NotRequested {
-                    selection_id: super::versioned_planes::native_history_selection_id(
-                        key, stamp, None,
-                    ),
-                },
-            ))
+            .native_history_status_for_stamp(key, stamp)
+            .unwrap_or_else(|| {
+                let selection_id =
+                    super::versioned_planes::native_history_selection_id(key, stamp, None);
+                if self.native_history_state.in_flight.contains(&selection_id) {
+                    backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id }
+                } else {
+                    backend_engine::SemanticHistoryPublicationStatus::NotRequested { selection_id }
+                }
+            }))
     }
 
     fn native_history_status_for_stamp(
         &self,
         key: &ProductSemanticPublicationKey,
         stamp: backend_replication::SelectedGenerationStamp,
-    ) -> Result<Option<backend_engine::SemanticHistoryPublicationStatus>, BuiltinModelError> {
-        let state = self
-            .native_history_state
-            .lock()
-            .map_err(|_| BuiltinModelError("native history status map is poisoned".to_owned()))?;
-        Ok(state
+    ) -> Option<backend_engine::SemanticHistoryPublicationStatus> {
+        self.native_history_state
             .statuses
             .iter()
             .rev()
             .find(|entry| entry.key == *key && entry.stamp == stamp)
-            .map(|entry| entry.status.clone()))
+            .map(|entry| entry.status.clone())
     }
 
     /// Records one asynchronous history outcome against its exact product
     /// marker stamp. The FIFO is bounded independently of V3 commit history.
-    pub(crate) fn record_native_history_status(
-        &self,
+    fn record_native_history_status(
+        &mut self,
         key: ProductSemanticPublicationKey,
         stamp: backend_replication::SelectedGenerationStamp,
         status: backend_engine::SemanticHistoryPublicationStatus,
-    ) -> Result<(), BuiltinModelError> {
-        let mut state = self
-            .native_history_state
-            .lock()
-            .map_err(|_| BuiltinModelError("native history status map is poisoned".to_owned()))?;
+    ) {
+        let state = &mut self.native_history_state;
         if let Some(position) = state
             .statuses
             .iter()
@@ -1219,6 +1249,75 @@ impl SemanticAuthority {
             .push_back(NativeHistoryStatusEntry { key, stamp, status });
         while state.statuses.len() > MAX_NATIVE_HISTORY_STATUS_ROWS {
             state.statuses.pop_front();
+        }
+    }
+
+    /// Applies completed history jobs on the owner thread, then retries a
+    /// bounded round-robin page of currently selected markers. The worker
+    /// never mutates selection or status state directly.
+    pub(crate) fn drain_native_history_completions(&mut self) -> Result<(), BuiltinModelError> {
+        loop {
+            let completion = match self.native_history_completions.try_recv() {
+                Ok(completion) => completion,
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+            };
+            self.native_history_state
+                .in_flight
+                .remove(&completion.selection_id);
+            let still_selected = self
+                .image_loader
+                .committed_pair(&completion.key)
+                .ok()
+                .and_then(|(_, selected)| {
+                    Self::selected_generation_stamp(&completion.key, &selected).ok()
+                })
+                == Some(completion.stamp);
+            if still_selected {
+                self.record_native_history_status(
+                    completion.key,
+                    completion.stamp,
+                    completion.status,
+                );
+            }
+        }
+        self.retry_selected_native_history_batch()
+    }
+
+    fn retry_selected_native_history_batch(&mut self) -> Result<(), BuiltinModelError> {
+        const RETRY_BATCH: usize = 32;
+        let cursor = self.native_history_state.retry_after.clone();
+        let mut rows = self
+            .image_loader
+            .product_selection_batch(cursor.as_ref(), RETRY_BATCH)?;
+        if rows.is_empty() && cursor.is_some() {
+            self.native_history_state.retry_after = None;
+            rows = self
+                .image_loader
+                .product_selection_batch(None, RETRY_BATCH)?;
+        }
+        let Some((last_key, _)) = rows.last() else {
+            return Ok(());
+        };
+        self.native_history_state.retry_after = Some(last_key.clone());
+        for (key, claim) in rows {
+            let (selected_claim, selected) = match self.image_loader.committed_pair(&key) {
+                Ok(selection) => selection,
+                Err(_) => continue,
+            };
+            if selected_claim != claim {
+                continue;
+            }
+            let stamp = Self::selected_generation_stamp(&key, &selected)?;
+            let status = self.native_history_status_for_stamp(&key, stamp);
+            if status.is_none()
+                || matches!(
+                    status,
+                    Some(backend_engine::SemanticHistoryPublicationStatus::Deferred { .. })
+                        | Some(backend_engine::SemanticHistoryPublicationStatus::Superseded { .. })
+                )
+            {
+                self.schedule_native_history(key, claim)?;
+            }
         }
         Ok(())
     }
@@ -2922,9 +3021,10 @@ impl SemanticAuthority {
     }
 
     /// Queues bounded derived history work for one exact committed product
-    /// selection. A full queue is recorded as a refusal and retried at startup.
+    /// selection. A full queue is recorded as deferred and retried from the
+    /// selected-marker inventory as worker capacity becomes available.
     pub(crate) fn schedule_native_history(
-        &self,
+        &mut self,
         key: ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
     ) -> Result<(), BuiltinModelError> {
@@ -2934,14 +3034,19 @@ impl SemanticAuthority {
         }
         let stamp = Self::selected_generation_stamp(&key, &selected)?;
         let selection_id = super::versioned_planes::native_history_selection_id(&key, stamp, None);
-        {
-            let mut state = self.native_history_state.lock().map_err(|_| {
-                BuiltinModelError("native history worker set is poisoned".to_owned())
-            })?;
-            if !state.in_flight.insert(selection_id) {
-                return Ok(());
-            }
+        if self.native_history_state.in_flight.contains(&selection_id) {
+            return Ok(());
         }
+        if let Some(status) = self.native_history_status_for_stamp(&key, stamp)
+            && !matches!(
+                status,
+                backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }
+                    | backend_engine::SemanticHistoryPublicationStatus::Superseded { .. }
+            )
+        {
+            return Ok(());
+        }
+        self.native_history_state.in_flight.insert(selection_id);
         let work = NativeHistoryPublicationWork {
             loader: Arc::clone(&self.image_loader),
             store: self.store.clone(),
@@ -2951,35 +3056,27 @@ impl SemanticAuthority {
             stamp,
             selection_id,
         };
-        if let Err(error) = self.record_native_history_status(
+        self.record_native_history_status(
             key.clone(),
             stamp,
             backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id },
-        ) {
-            if let Ok(mut state) = self.native_history_state.lock() {
-                state.in_flight.remove(&selection_id);
-            }
-            return Err(error);
-        }
+        );
         match self.native_history_sender.try_send(work) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
-                if let Ok(mut state) = self.native_history_state.lock() {
-                    state.in_flight.remove(&selection_id);
-                }
+                self.native_history_state.in_flight.remove(&selection_id);
                 self.record_native_history_status(
                     key,
                     stamp,
-                    backend_engine::SemanticHistoryPublicationStatus::Refused {
+                    backend_engine::SemanticHistoryPublicationStatus::Deferred {
                         selection_id,
-                        reason: "native history worker queue is full; retry on restart".to_owned(),
+                        reason: "native history worker queue is full; owner will retry".to_owned(),
                     },
-                )
+                );
+                Ok(())
             }
             Err(TrySendError::Disconnected(_)) => {
-                if let Ok(mut state) = self.native_history_state.lock() {
-                    state.in_flight.remove(&selection_id);
-                }
+                self.native_history_state.in_flight.remove(&selection_id);
                 self.record_native_history_status(
                     key,
                     stamp,
@@ -2987,7 +3084,8 @@ impl SemanticAuthority {
                         selection_id,
                         reason: "native history worker is unavailable".to_owned(),
                     },
-                )
+                );
+                Ok(())
             }
         }
     }

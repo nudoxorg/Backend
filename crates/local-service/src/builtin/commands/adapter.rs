@@ -1727,7 +1727,7 @@ impl CommandAdapter {
                     .registry
                     .as_ref()
                     .map(|gateway| gateway.workspace_root());
-                semantic_versions(daemon, &package, workspace, &self.semantic_authority)
+                semantic_versions(daemon, &package, workspace, &mut self.semantic_authority)
             }
             .map_or_else(
                 |error| {
