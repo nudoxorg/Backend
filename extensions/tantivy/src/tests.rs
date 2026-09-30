@@ -1038,6 +1038,121 @@ fn term_hits(source: &TantivySource, term: &str) -> Vec<EntityId> {
 }
 
 #[test]
+fn durable_selected_roots_reopen_update_and_roll_back_against_fixed_answers() {
+    static NEXT_ROOT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-selected-{}-{}",
+        std::process::id(),
+        NEXT_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let initial = state_for(
+        vec![
+            (document(1), vec![("name".into(), "alpha".into())]),
+            (document(2), vec![("name".into(), "beta".into())]),
+        ],
+        [41; 32],
+    );
+    let original = TantivySource::open_or_build_in_dir(
+        &initial,
+        Limits::default(),
+        &root,
+    )
+    .expect("publish initial selected root");
+    assert_eq!(term_hits(&original, "alpha"), vec![document(1)]);
+    assert_eq!(term_hits(&original, "beta"), vec![document(2)]);
+
+    let next_state = state_for(
+        vec![
+            (document(1), vec![("name".into(), "gamma".into())]),
+            (document(3), vec![("name".into(), "delta".into())]),
+        ],
+        [42; 32],
+    );
+    let (next, revision) = TantivySource::open_or_advance_in_dir(
+        &initial,
+        &next_state,
+        Limits::default(),
+        OverlayLimits::default(),
+        &root,
+    )
+    .expect("publish revised selected root");
+    assert_eq!(
+        revision.map(|revision| revision.kind),
+        Some(ProjectionKind::Revised)
+    );
+    assert_eq!(term_hits(&next, "alpha"), Vec::<EntityId>::new());
+    assert_eq!(term_hits(&next, "beta"), Vec::<EntityId>::new());
+    assert_eq!(term_hits(&next, "gamma"), vec![document(1)]);
+    assert_eq!(term_hits(&next, "delta"), vec![document(3)]);
+    drop(next);
+
+    let cold = TantivySource::open_or_build_in_dir(
+        &next_state,
+        Limits::default(),
+        &root,
+    )
+    .expect("cold reopen exact selected root");
+    assert_eq!(term_hits(&cold, "gamma"), vec![document(1)]);
+    assert_eq!(term_hits(&cold, "delta"), vec![document(3)]);
+    drop(cold);
+
+    let rollback = TantivySource::open_or_build_in_dir(
+        &initial,
+        Limits::default(),
+        &root,
+    )
+    .expect("reopen previous root for rollback");
+    assert_eq!(term_hits(&rollback, "alpha"), vec![document(1)]);
+    assert_eq!(term_hits(&rollback, "beta"), vec![document(2)]);
+    assert_eq!(term_hits(&rollback, "gamma"), Vec::<EntityId>::new());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn malformed_selected_root_and_interrupted_stage_rebuild_from_authoritative_state() {
+    static NEXT_ROOT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-recovery-{}-{}",
+        std::process::id(),
+        NEXT_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let state = state_for(
+        vec![(document(9), vec![("name".into(), "survivor".into())])],
+        [51; 32],
+    );
+    let first = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("first durable projection");
+    assert_eq!(term_hits(&first, "survivor"), vec![document(9)]);
+    drop(first);
+
+    let key = hex_fingerprint(projection_fingerprint(state.binding()));
+    let version_root = root.join(DURABLE_ROOTS_DIRECTORY);
+    let selected = version_root.join(key);
+    let incomplete = version_root.join(".interrupted-generation.building-1");
+    std::fs::create_dir(&incomplete).expect("incomplete staging directory");
+    std::fs::write(selected.join(BINDING_FILE), b"truncated authority stamp")
+        .expect("corrupt generation marker");
+
+    let other = state_for(
+        vec![(document(9), vec![("name".into(), "impostor".into())])],
+        [52; 32],
+    );
+    assert!(matches!(
+        TantivySource::open_in_dir(&other, Limits::default(), &selected),
+        Err(TantivySourceError::Contract(Error::StaleRoot))
+    ));
+
+    let recovered = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("rebuild malformed selected root");
+    assert_eq!(term_hits(&recovered, "survivor"), vec![document(9)]);
+    assert_eq!(term_hits(&recovered, "impostor"), Vec::<EntityId>::new());
+    assert!(!incomplete.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn rebinding_a_view_keeps_every_posting_and_rejects_the_old_binding() {
     let documents = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
