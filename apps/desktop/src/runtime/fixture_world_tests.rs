@@ -301,15 +301,25 @@ fn a_restored_window_says_what_it_needs_of_the_world() {
 fn boot_of(route: crate::model::PersistedRoute, hand: Vec<crate::model::persistence::PersistedHeld>) -> crate::host::launch::Boot {
     let state = crate::model::PersistedDesktopState { route, hand, ..crate::model::PersistedDesktopState::default() };
     // Scratch lives under the repo's `.local/` (never /tmp), private (0700), and goes when the test does.
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/scratch").join(format!("i3-boot-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
+    let id = NEXT.fetch_add(1, Ordering::SeqCst);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/scratch")
+        .join(format!("i3-boot-{}-{id}", std::process::id()));
+    // Unix sockets have a short sockaddr path limit; keep only this endpoint outside the deep repo path.
+    let endpoint =
+        Path::new("/tmp").join(format!("nx-i3-boot-{}-{id}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&endpoint);
     let project = root.join("project");
     let data = root.join("data");
     crate::host::private_dir(&project.join("src")).expect("project");
     std::fs::write(project.join("Cargo.toml"), b"[package]\nname='wanted'\nversion='0.1.0'\nedition='2024'\n").expect("manifest");
     crate::host::private_dir(&data).expect("data");
     std::fs::write(data.join("desktop-state.json"), serde_json::to_vec(&state).expect("state")).expect("write state");
-    let paths = backend_runtime::WorkspacePaths::discover(Some(project), Some(data), Some(root.with_extension("sock"))).expect("paths");
+    let paths =
+        backend_runtime::WorkspacePaths::discover(Some(project), Some(data), Some(endpoint.clone()))
+            .expect("paths");
     let boot = crate::host::launch::prepare(Ok(paths), |_, _| None);
+    let _ = std::fs::remove_file(&endpoint);
     let _ = std::fs::remove_dir_all(&root);
     boot
 }
