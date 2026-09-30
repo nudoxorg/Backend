@@ -173,6 +173,16 @@ impl PackageRef {
         Self::parse(&format!("{}@{version}{rest}", &text[..at])).ok()
     }
 
+    /// The registry release this package is: a purl's, or a registry tree's
+    /// (as its manifest names it). `None` for a person's own project.
+    #[must_use]
+    pub fn release(&self) -> Option<crate::model::release::Release> {
+        match self.registry_release() {
+            Some((name, version)) => crate::model::release::Release::new(name, version).ok(),
+            None => crate::model::release::Release::from_purl(self.as_str()),
+        }
+    }
+
     /// The registry release a local root is, as `(name, version)` from its
     /// manifest, when it is a registry package's unpacked source: cargo's
     /// cache (`…/registry/src/index.…/NAME-VERSION`) or this app's own

@@ -68,10 +68,13 @@ pub(crate) fn facet_offer(offer: &Offer) -> facet::browse::acquire::Offer {
 /// whose own address the owner has not indexed. `None` for a local project,
 /// and for a page that already reads indexed names.
 pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &Links, view: EntityId, measure: &Measure, cx: &mut App) -> Option<AnyElement> {
-    if dossier.package.is_local() || dossier.outline.known().is_some_and(|outline| outline.count() > 0) {
+    if dossier.outline.known().is_some_and(|outline| outline.count() > 0) {
         return None;
     }
-    let release = Release::from_purl(dossier.package.as_str())?;
+    // A purl, or a registry release's own tree (an earlier release of a
+    // package the library holds, read from the comb); never a person's own
+    // project.
+    let release = dossier.package.release()?;
     let source = crate::host::registry::composed()?.source;
     let offer = Offer { availability: source.availability(&release), release, library: None };
     let palette = cx.palette();

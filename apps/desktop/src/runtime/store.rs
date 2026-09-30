@@ -245,9 +245,37 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
     };
     let pinned = PackageRef::parse(package.as_str()).ok()?;
     Some(match at {
-        Some(at) => pinned.at(at.as_str()).unwrap_or(pinned),
+        Some(at) => pinned.at(at.as_str()).or_else(|| release_tree(&pinned, at.as_str())).unwrap_or(pinned),
         None => pinned,
     })
+}
+
+/// The tree of the release `at` of the registry package whose tree `pinned`
+/// is: a registry root is read at another release by reading that release's
+/// own tree (`…/toml-0.5.11` beside `…/toml-0.8.23`), which the library holds
+/// once it is added. `None` for a person's own project, for the pinned
+/// release itself, and for a release this machine does not have.
+fn release_tree(pinned: &PackageRef, at: &str) -> Option<PackageRef> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, PoisonError};
+    static TREES: Mutex<Option<HashMap<(String, String), Option<String>>>> = Mutex::new(None);
+    let (name, version) = pinned.registry_release()?;
+    if version == at {
+        return None;
+    }
+    let key = (pinned.as_str().to_owned(), at.to_owned());
+    let known = TREES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|trees| trees.get(&key).cloned());
+    let tree = match known {
+        Some(tree) => tree,
+        None => {
+            let release = crate::model::release::Release::new(name, at).ok()?;
+            let composed = crate::host::registry::composed()?;
+            let tree = composed.source.tree_of(&release).and_then(|tree| tree.to_str().map(str::to_owned));
+            TREES.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new).insert(key, tree.clone());
+            tree
+        }
+    }?;
+    PackageRef::parse(&tree).ok()
 }
 
 /// The declaration a route reads, scoped to the release it views.

@@ -548,6 +548,186 @@ fn a_relaunch_lands_what_the_owner_lists_before_it_lists_the_projects_packages()
     );
 }
 
+/// What the app's search read answers at `endpoint`, or why not.
+fn searched_at(endpoint: &Path, text: &str) -> Result<Vec<(String, Option<String>)>, String> {
+    let mut reader = SessionReader::connect(endpoint);
+    let cancel = CancellationToken::new();
+    let outlines = OutlineCache::default();
+    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+    let query = crate::model::pages::SearchQuery::new(text, crate::model::pages::SearchQuery::DEFAULT_LIMIT).expect("query");
+    match reader.read(&ReadRequest::Search(query), &context) {
+        Ok(PageValue::Search(page)) => Ok(page
+            .rows
+            .iter()
+            .map(|row| (row.decl.name.to_string(), row.package.as_deref().map(|package| format!("{package}|{:?}|{}", row.decl.kind, row.decl.coordinate.as_str()))))
+            .collect()),
+        Ok(other) => Err(format!("not a search page: {other:?}")),
+        Err(error) => Err(format!("{error:?}")),
+    }
+}
+
+/// The child half of [`a_search_finds_names_in_every_package_the_library_holds_even_one_the_compiler_could_not_finish`]:
+/// an owner at `NX_SEARCH_ROOT` adds toml_datetime (compiles) and serde_core
+/// (the compiler cannot finish it), then searches as the app does, printing
+/// each answer. Its standard error is the owner's.
+#[test]
+#[ignore = "run by a_search_finds_names_in_every_package_the_library_holds_even_one_the_compiler_could_not_finish"]
+fn search_child() {
+    use crate::runtime::acquire::{Listed, index_release};
+    let root = PathBuf::from(std::env::var_os("NX_SEARCH_ROOT").expect("NX_SEARCH_ROOT"));
+    let host = DesktopHost::start_with_paths(anchored_at(&root)).expect("the owner starts");
+    let source = CargoCache::from_env(root.join("unpacked")).expect("a cargo home");
+    let composition = Composition { endpoint: host.endpoint().to_path_buf(), source: Arc::new(source), refusals: None };
+    for (name, version) in [("toml_datetime", "0.6.11"), ("serde_core", "1.0.229"), ("toml", "0.8.23"), ("toml_edit", "0.22.27")] {
+        let stage = index_release(&composition, &Release::new(name, version).expect("release"), Listed::Any, &|_| {});
+        println!("SEARCH-STAGE {name} {stage:?}");
+    }
+    for text in ["Datetime", "Deserializer", "toml Value"] {
+        match searched_at(host.endpoint(), text) {
+            Ok(rows) => {
+                for (name, package) in rows {
+                    println!("SEARCH-ROW {text}|{name}|{}", package.unwrap_or_default());
+                }
+                println!("SEARCH-DONE {text}");
+            }
+            Err(error) => println!("SEARCH-FAILED {text}: {error}"),
+        }
+    }
+    drop(host);
+}
+
+/// Search over a real library holding a package the compiler could not
+/// finish: each package is searchable by what the owner has for it (the
+/// compiler's rows, or the names its source declares), and the owner's view
+/// and its search evidence pair exactly (the owner says on its standard
+/// error when they do not, and leaves the unpaired rows out). Every search
+/// failed here before: the view gave each external declaration a link names
+/// its own row, and the search evidence left out the ones a link joined to a
+/// declaration of the project.
+#[test]
+fn a_search_finds_names_in_every_package_the_library_holds_even_one_the_compiler_could_not_finish() {
+    let root = scratch("search-thin");
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", "host::registry::owner_tests::search_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("NX_SEARCH_ROOT", &root)
+        .output()
+        .expect("the child runs");
+    let _ = std::fs::remove_dir_all(&root);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "the child finished: {stdout}\n{stderr}");
+    assert!(stdout.contains("SEARCH-STAGE toml_datetime Added"), "toml_datetime compiles: {stdout}");
+    assert!(stdout.contains("SEARCH-STAGE serde_core Partial"), "serde_core is the package the compiler could not finish: {stdout}");
+    for failed in stdout.lines().filter(|line| line.starts_with("SEARCH-FAILED")) {
+        panic!("a search over a library with a thin package answers: {failed}");
+    }
+    let found = |text: &str, name: &str, package: &str| {
+        stdout.lines().any(|line| {
+            line.strip_prefix("SEARCH-ROW ")
+                .and_then(|row| row.split_once('|'))
+                .is_some_and(|(asked, rest)| {
+                    let mut parts = rest.split('|');
+                    asked == text && parts.next() == Some(name) && parts.next().is_some_and(|owner| owner.ends_with(package))
+                })
+        })
+    };
+    assert!(found("Datetime", "Datetime", "toml_datetime-0.6.11"), "toml_datetime's Datetime is found (the compiler's row): {stdout}");
+    assert!(found("Deserializer", "Deserializer", "serde_core-1.0.229"), "serde_core's Deserializer is found from its source's names: {stdout}");
+    // ⌘K `toml Value` ↵ opens the first row: toml's own Value, not
+    // toml_edit's (its path has the word toml too), nor a row whose words
+    // merely start with both.
+    let first_of = |text: &str| stdout.lines().find_map(|line| line.strip_prefix(&format!("SEARCH-ROW {text}|")).map(str::to_owned));
+    let datetime = first_of("Datetime");
+    assert!(
+        datetime.as_deref().is_some_and(|row| row.starts_with("Datetime|") && row.contains("toml_datetime-0.6.11|Some(Struct)")),
+        "`Datetime` puts toml_datetime's struct first, before a `use` that re-exports it: {datetime:?}"
+    );
+    let first = stdout.lines().find_map(|line| line.strip_prefix("SEARCH-ROW toml Value|"));
+    assert!(
+        first.is_some_and(|row| {
+            let parts = row.split('|').collect::<Vec<_>>();
+            parts.first() == Some(&"Value") && parts.get(1).is_some_and(|owner| owner.ends_with("toml-0.8.23")) && parts.get(2) == Some(&"Some(Enum)")
+        }),
+        "`toml Value` puts toml's Value first: {first:?}\n{stdout}"
+    );
+    let disagreed = stderr.lines().filter(|line| line.contains("locald search: the view and its search evidence disagree")).collect::<Vec<_>>();
+    assert!(disagreed.is_empty(), "the owner's view and its search evidence pair exactly: {disagreed:?}");
+}
+
+/// Every place the owner names for a use is the use: the name, in code, at
+/// the file's own bytes. `toml::Value::as_str`'s page listed toml's license
+/// header (`src/map.rs:4`) as a call: a name-matched call's span was counted
+/// in bytes of its declaration's excerpt and read as bytes of the file.
+#[test]
+fn every_place_a_use_is_named_at_is_the_name_in_code() {
+    let owner = Owner::start("places");
+    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let tree = source.resolve(&Release::new("toml", "0.8.23").expect("release")).expect("toml 0.8.23 is in the local cargo cache");
+    owner.index(&tree);
+    let package = PackageRef::parse(tree.root.to_str().expect("UTF-8")).expect("package");
+    let mut reader = SessionReader::connect(owner.host.endpoint());
+    let cancel = CancellationToken::new();
+    let outlines = OutlineCache::default();
+    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+    let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context) else { panic!("toml's page did not read") };
+    let outline = dossier.outline.known().expect("outline");
+    let mut placed = 0;
+    for name in ["as_str", "as_integer", "get", "insert", "from_str"] {
+        for node in outline.walk().filter(|node| node.decl.name.as_ref() == name) {
+            let target = backend_library::ProductText::new(node.decl.coordinate.as_str().to_owned()).expect("target");
+            let Ok(reply) = Session::connect(owner.host.endpoint()).expect("session").surface(SurfaceCommand::References { target }) else { continue };
+            let SurfaceReply::References { references, .. } = reply else { continue };
+            for reference in references.iter() {
+                let Some(span) = &reference.evidence.source else { continue };
+                let text = std::fs::read_to_string(tree.root.join(span.file.as_str())).expect("the file");
+                let (start, end) = (span.start as usize, span.end as usize);
+                let line_start = text[..start].rfind('\n').map_or(0, |at| at + 1);
+                let line = &text[line_start..text[start..].find('\n').map_or(text.len(), |at| start + at)];
+                assert_eq!(text.get(start..end), Some(name), "a use of {name} at {}:{start}..{end} is its name: {line:?}", span.file.as_str());
+                assert!(!line.trim_start().starts_with("//"), "a use of {name} is in code, not a comment: {}: {line:?}", span.file.as_str());
+                placed += 1;
+            }
+        }
+    }
+    assert!(placed > 0, "toml's methods have uses the owner places");
+}
+
+/// Definition of done 9: toml 0.5.11, read against the pinned 0.8.23, from
+/// the local cargo cache. The comb's route at 0.5.11 reads 0.5.11's own tree
+/// (it read the pin's names under "Reading 0.5.11"), the page offers exactly
+/// that release, and once added its names are 0.5.11's.
+#[test]
+fn an_earlier_release_is_read_from_its_own_tree_once_it_is_added() {
+    use crate::navigation::{PackageLane, PackageRoute, ReleaseId, Route};
+    use crate::runtime::acquire::{Listed, Stage, index_release};
+    let owner = Owner::start("earlier");
+    let source = Arc::new(CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home"));
+    let composition = Composition { endpoint: owner.host.endpoint().to_path_buf(), source: source.clone(), refusals: None };
+    crate::host::registry::install(composition.clone());
+    let (pinned, earlier) = (Release::new("toml", "0.8.23").expect("release"), Release::new("toml", "0.5.11").expect("release"));
+    let Stage::Added(pinned_page) = index_release(&composition, &pinned, Listed::Any, &|_| {}) else { panic!("toml 0.8.23 is added") };
+    let at = |version: &str| {
+        Route::Package(PackageRoute {
+            project: None,
+            package: crate::core::PackageId::new(pinned_page.as_str()).expect("package id"),
+            lane: PackageLane::Overview,
+            selected: None,
+            at: Some(ReleaseId::new(version).expect("release id")),
+        })
+    };
+    let earlier_tree = source.resolve(&earlier).expect("toml 0.5.11 is in the local cargo cache");
+    let viewed = crate::runtime::store::route_package(&at("0.5.11")).expect("a package");
+    assert_eq!(viewed.as_str(), earlier_tree.root.to_str().expect("UTF-8"), "the route at 0.5.11 reads 0.5.11's own tree, not the pin's");
+    assert_eq!(viewed.release(), Some(earlier.clone()), "and its page offers exactly that release");
+    assert_eq!(crate::runtime::store::route_package(&at("0.8.23")).as_ref(), Some(&pinned_page), "the pinned release reads the pin");
+    let Stage::Added(page) = index_release(&composition, &earlier, Listed::Ready, &|_| {}) else { panic!("toml 0.5.11 is added") };
+    assert_eq!(page, viewed, "added, it is listed under the root the route reads");
+    let earlier_names = names_at(owner.host.endpoint(), &earlier_tree);
+    let pinned_names = names_at(owner.host.endpoint(), &source.resolve(&pinned).expect("0.8.23"));
+    assert!(earlier_names.iter().any(|name| name == "Tokenizer"), "0.5.11's own names (its src/tokens.rs): {} names", earlier_names.len());
+    assert!(!pinned_names.iter().any(|name| name == "Tokenizer"), "which 0.8.23 does not have");
+}
+
 #[test]
 fn refusal_words_are_kept_and_forgotten_by_release() {
     let root = scratch("refusals");

@@ -64,7 +64,8 @@ pub(super) fn body(
         Route::Symbol(route) => (PackageRef::parse(route.package.as_str()).ok(), route.at.clone()),
         _ => (None, None),
     };
-    let pin_version = pin.as_ref().and_then(|pin| pin.version()).map(str::to_owned);
+    // A registry tree read as a local root is a release too (`toml-0.8.23`).
+    let pin_version = pin.as_ref().and_then(PackageRef::release_version).map(str::to_owned);
     let record = dossier.record.known();
     let name = record.map_or_else(|| dossier.package.display_name().to_owned(), |record| record.name.to_string());
     let project_name = active.name.as_deref().unwrap_or("your project");

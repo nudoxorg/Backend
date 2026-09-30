@@ -91,6 +91,16 @@ pub(crate) trait RegistrySource: Send + Sync {
     /// # Errors
     /// [`SourceError`]; never a download.
     fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError>;
+
+    /// Where `release`'s tree is, or will be once its archive is unpacked
+    /// (the root the owner lists it under); `None` when reading it needs a
+    /// download. Nothing is unpacked.
+    fn tree_of(&self, release: &Release) -> Option<PathBuf> {
+        match self.availability(release) {
+            Availability::Unpacked(tree) => Some(tree.canonicalize().unwrap_or(tree)),
+            Availability::Archive(_) | Availability::Download => None,
+        }
+    }
 }
 
 /// The local cargo cache, and a directory of this app's own for archives it
@@ -221,6 +231,18 @@ impl RegistrySource for CargoCache {
 
     fn availability(&self, release: &Release) -> Availability {
         self.locate(release)
+    }
+
+    fn tree_of(&self, release: &Release) -> Option<PathBuf> {
+        match self.locate(release) {
+            Availability::Unpacked(tree) => Some(tree.canonicalize().unwrap_or(tree)),
+            // `resolve` unpacks it here, and the owner lists it by this path.
+            Availability::Archive(_) => {
+                let own = self.own_tree(release);
+                Some(self.unpacked.canonicalize().map_or(own, |unpacked| unpacked.join(release.stem()).join(release.stem())))
+            }
+            Availability::Download => None,
+        }
     }
 
     fn release_of(&self, root: &Path) -> Option<Release> {

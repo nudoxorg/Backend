@@ -242,7 +242,7 @@ pub(super) fn facts(page: &SymbolPage, package: &str, companions: &[(DeclRef, Op
     let display = pinned.as_ref().map_or_else(|| package.to_owned(), |package| package.display_name().to_owned());
     let mut facts = Facts::new(&name, kind_of(page.identity.kind), lang(page), &display);
     facts.path = pinned.as_ref().map_or_else(|| vec![display.clone()], |package| path(package, page, owner.as_deref()));
-    facts.version = pinned.as_ref().and_then(|package| package.version()).map(ToOwned::to_owned);
+    facts.version = pinned.as_ref().and_then(PackageRef::release_version).map(ToOwned::to_owned);
     facts.owner = owner;
     facts.signature = page.signature.known().map(|signature| signature.text.to_string());
     facts.links = links(page);

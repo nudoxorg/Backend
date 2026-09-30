@@ -41,7 +41,8 @@ pub(super) use semantic::{
 };
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
-    structural_call_graph_relations_mapped, structural_call_span, structural_reference_facts,
+    structural_call_graph_relations_mapped, structural_call_span, structural_file_span,
+    structural_reference_facts,
     structural_symbol_identity, view_row_for_structural_coordinate,
 };
 
