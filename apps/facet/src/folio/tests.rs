@@ -7,7 +7,7 @@
 use super::berg::{Basis, BergBlock, BergFacts, berg};
 use super::cards::{CardFacts, Change, symbol_card};
 use super::crest::stamp;
-use super::features::{FeatureFacts, FeatureNode, features};
+use super::features::{FeatureFacts, FeatureNode, feature_preview};
 use super::fixture::{self, MPSC, TOML};
 use super::heads::{Place, Sighting, Signals, findings, heads};
 use super::shingles::{ModuleFacts, ShingleFacts, shingles};
@@ -470,29 +470,29 @@ fn chip(cx: &mut VisualTestContext, name: &str) -> (f32, f32) {
 }
 
 #[gpui::test]
-fn turning_full_on_locks_what_it_needs_counts_what_it_pulls_in_and_a_locked_chip_says_who_holds_it(cx: &mut TestAppContext) {
+fn feature_preview_is_read_only_and_names_its_manifest_profile(cx: &mut TestAppContext) {
     let (cx, _) = open(cx, |_, cx, _| {
         let m = cx.facet().measure(px(WIDTH - 40.0));
-        features("fb", tokio_features(), px(WIDTH - 40.0), &m).into_any_element()
+        feature_preview("fb", tokio_features(), px(WIDTH - 40.0), &m).into_any_element()
     });
-    assert!(says(cx, "of 25 on") && says(cx, "0"), "{:?}", said(cx));
+    let before = said(cx);
+    assert!(before.iter().any(|t| t == "read only · manifest defaults"), "the profile and disabled action are explicit: {before:?}");
+    assert!(before.iter().any(|t| t == "0") && before.iter().any(|t| t == "of 25 on"), "the empty manifest default remains off: {before:?}");
+    let frame = ledger(cx);
+    let target_keys: Vec<&str> = frame.targets.iter().map(|target| target.key.as_str()).collect();
+    assert!(target_keys.iter().all(|key| !key.contains("chip-")), "feature projections are not focus or click targets: {target_keys:?}");
+    let scroll = frame
+        .scrolls
+        .iter()
+        .find(|scroll| scroll.key == "folio-feature-scroll-fb")
+        .expect("the actual horizontal feature scroller publishes its extent");
+    assert!(scroll.offset.is_some(), "the frame samples the live ScrollHandle offset: {scroll:?}");
+    assert!(scroll.content.width > scroll.viewport.width, "the profile has scrollable content: {scroll:?}");
+
     let (x, y) = chip(cx, "full");
     click(cx, x, y);
     advance(cx, 500);
-    let after = said(cx);
-    assert!(after.iter().any(|t| t == "12") && after.iter().any(|t| t == "of 25 on"), "twelve features on: {after:?}");
-    assert!(after.iter().any(|t| t == "8") && after.iter().any(|t| t == "(471K lines)"), "it pulls in eight packages, 471K lines: {after:?}");
-    // A held chip does not turn off: it shakes and names who holds it.
-    let (nx, ny) = chip(cx, "net");
-    click(cx, nx, ny);
-    advance(cx, 400);
-    assert!(says(cx, "net is held on by full"), "{:?}", said(cx));
-    assert!(says(cx, "12"), "the count did not change: {:?}", said(cx));
-    // Turning `full` back off releases everything.
-    let (fx, fy) = chip(cx, "full");
-    click(cx, fx, fy);
-    advance(cx, 400);
-    assert!(says(cx, "0") && !says(cx, "(471K lines)"), "{:?}", said(cx));
+    assert_eq!(said(cx), before, "pointer input cannot simulate a feature change");
 }
 
 // ------------------------------------------------------------------ berg
