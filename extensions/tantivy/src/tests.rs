@@ -1201,8 +1201,23 @@ fn durable_delta_reopen_uses_the_persisted_sparse_ordinal_map() {
     let ordinal_path = selected.join(ORDINAL_MAP_FILE);
     let mut ordinal_map = std::fs::read(&ordinal_path).expect("read ordinal map");
     let first_identity = ORDINAL_MAP_MAGIC.len() + 32 + 8 + 8 + 8;
+    let original_ordinal_map = ordinal_map.clone();
     ordinal_map[first_identity] ^= 0x80;
     std::fs::write(&ordinal_path, ordinal_map).expect("damage ordinal identity");
+    write_projection_manifest(&selected, fingerprint).expect("refresh integrity manifest");
+    assert!(matches!(
+        TantivySource::open_in_dir(&third, Limits::default(), &selected),
+        Err(TantivySourceError::Corrupt(_))
+    ));
+    ordinal_map = original_ordinal_map;
+    let record_size = 8 + 32 + 32 + 4 + 32;
+    let first_payload = ORDINAL_MAP_MAGIC.len() + 32 + 8 + 8 + 8;
+    let second_payload = first_payload + record_size;
+    let first_record_tail = ordinal_map[first_payload..first_payload + record_size - 8].to_vec();
+    let second_record_tail = ordinal_map[second_payload..second_payload + record_size - 8].to_vec();
+    ordinal_map[first_payload..first_payload + record_size - 8].copy_from_slice(&second_record_tail);
+    ordinal_map[second_payload..second_payload + record_size - 8].copy_from_slice(&first_record_tail);
+    std::fs::write(&ordinal_path, ordinal_map).expect("swap ordinal identities");
     write_projection_manifest(&selected, fingerprint).expect("refresh integrity manifest");
     assert!(matches!(
         TantivySource::open_in_dir(&third, Limits::default(), &selected),
