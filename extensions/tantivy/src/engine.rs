@@ -39,6 +39,7 @@ const MAX_PROJECTION_FILES: usize = 65_536;
 const MAX_PROJECTION_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ORDINAL_MAP_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ORDINAL_SLOTS: usize = 4_000_000;
+const ORDINAL_MAP_RECORD_BYTES: usize = 8 + 32 + 32 + 4 + 32;
 const MAX_DURABLE_ROOT_SCAN_ENTRIES: usize = 65_536;
 static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 
@@ -193,6 +194,13 @@ pub enum TantivySourceError {
         /// Bytes required by the selected root or retained cache.
         required_bytes: u64,
     },
+    /// The selected state cannot fit its identity map within the format bound.
+    OrdinalMapCapacityExceeded {
+        /// Maximum encoded sidecar size.
+        maximum_bytes: u64,
+        /// Encoded size required by the selected live documents.
+        required_bytes: u64,
+    },
 }
 
 impl std::fmt::Display for TantivySourceError {
@@ -202,9 +210,19 @@ impl std::fmt::Display for TantivySourceError {
             Self::Backend(error) => write!(formatter, "Tantivy backend failed: {error}"),
             Self::Io(error) => write!(formatter, "Tantivy projection I/O failed: {error}"),
             Self::Corrupt(detail) => write!(formatter, "Tantivy projection is corrupt: {detail}"),
-            Self::BudgetExceeded { budget_bytes, required_bytes } => write!(
+            Self::BudgetExceeded {
+                budget_bytes,
+                required_bytes,
+            } => write!(
                 formatter,
                 "Tantivy projection needs {required_bytes} bytes, above the {budget_bytes}-byte cache budget",
+            ),
+            Self::OrdinalMapCapacityExceeded {
+                maximum_bytes,
+                required_bytes,
+            } => write!(
+                formatter,
+                "Tantivy ordinal identity map needs {required_bytes} bytes, above its {maximum_bytes}-byte format bound",
             ),
         }
     }
@@ -289,6 +307,7 @@ impl TantivySource {
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
+        preflight_ordinal_map_capacity(state.iter().count())?;
         let directory = directory.as_ref();
         let _directory_handle = backend_platform::durability::open_directory_readonly_nofollow(directory)?;
         verify_projection_manifest(directory, projection_fingerprint(state.binding()), budget)?;
@@ -378,6 +397,7 @@ impl TantivySource {
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
+        preflight_ordinal_map_capacity(state.iter().count())?;
         let projected = projection_schema();
         let index = Index::create_in_dir(directory.as_ref(), projected.schema)?;
         let source = Self::populate(state, limits, index, projected.fields)?;
@@ -470,6 +490,7 @@ impl TantivySource {
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
+        preflight_ordinal_map_capacity(state.iter().count())?;
         let version_root = cache_root.join(DURABLE_ROOTS_DIRECTORY);
         fs::create_dir_all(&version_root)?;
         let _version_directory =
@@ -607,6 +628,7 @@ impl TantivySource {
         {
             return Err(Error::IncompleteCoverage.into());
         }
+        preflight_ordinal_map_capacity(next.iter().count())?;
         if previous.binding() == next.binding() {
             return Self::open_or_build_locked(next, limits, cache_root, cache_budget)
                 .map(|(source, action)| (source, None, action));
@@ -1316,21 +1338,24 @@ fn write_ordinal_map(
     if documents.len() > MAX_ORDINAL_SLOTS {
         return Err(Error::SizeLimit.into());
     }
-    let live_count = documents.iter().filter(|document| document.is_some()).count();
-    let record_bytes = live_count.checked_mul(8 + 32 + 32 + 4 + 32).ok_or(Error::SizeLimit)?;
-    let total_bytes = ORDINAL_MAP_MAGIC
-        .len()
-        .checked_add(32 + 8 + 8)
-        .and_then(|header| header.checked_add(record_bytes))
-        .ok_or(Error::SizeLimit)?;
-    if total_bytes as u64 > MAX_ORDINAL_MAP_BYTES {
-        return Err(Error::SizeLimit.into());
-    }
+    let live_count = documents
+        .iter()
+        .filter(|document| document.is_some())
+        .count();
+    let total_bytes = preflight_ordinal_map_capacity(live_count)?;
     let mut bytes = Vec::with_capacity(total_bytes);
     bytes.extend_from_slice(ORDINAL_MAP_MAGIC);
     bytes.extend_from_slice(&fingerprint);
-    bytes.extend_from_slice(&u64::try_from(documents.len()).map_err(|_| Error::SizeLimit)?.to_le_bytes());
-    bytes.extend_from_slice(&u64::try_from(live_count).map_err(|_| Error::SizeLimit)?.to_le_bytes());
+    bytes.extend_from_slice(
+        &u64::try_from(documents.len())
+            .map_err(|_| Error::SizeLimit)?
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(
+        &u64::try_from(live_count)
+            .map_err(|_| Error::SizeLimit)?
+            .to_le_bytes(),
+    );
     for (ordinal, document) in documents.iter().enumerate() {
         let Some(document) = document else { continue };
         let ordinal = u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?;
@@ -1348,6 +1373,25 @@ fn write_ordinal_map(
     backend_platform::durable::replace_file(&staging, &directory.join(ORDINAL_MAP_FILE))?;
     sync_directory(directory)?;
     Ok(())
+}
+
+fn preflight_ordinal_map_capacity(live_count: usize) -> Result<usize, TantivySourceError> {
+    let required_bytes = live_count
+        .checked_mul(ORDINAL_MAP_RECORD_BYTES)
+        .and_then(|records| {
+            ORDINAL_MAP_MAGIC
+                .len()
+                .checked_add(48)?
+                .checked_add(records)
+        })
+        .ok_or(Error::SizeLimit)?;
+    if required_bytes as u64 > MAX_ORDINAL_MAP_BYTES {
+        return Err(TantivySourceError::OrdinalMapCapacityExceeded {
+            maximum_bytes: MAX_ORDINAL_MAP_BYTES,
+            required_bytes: u64::try_from(required_bytes).map_err(|_| Error::SizeLimit)?,
+        });
+    }
+    Ok(required_bytes)
 }
 
 fn ordinal_witness(fingerprint: [u8; 32], ordinal: u64, document: &LiveDocument) -> [u8; 32] {
@@ -1792,10 +1836,10 @@ fn is_definitively_corrupt_root(error: &TantivySourceError) -> bool {
         TantivySourceError::Contract(Error::StaleRoot | Error::SchemaDrift)
         | TantivySourceError::Corrupt(_) => true,
         TantivySourceError::Backend(
-            tantivy::TantivyError::DataCorruption(_)
-            | tantivy::TantivyError::IncompatibleIndex(_),
+            tantivy::TantivyError::DataCorruption(_) | tantivy::TantivyError::IncompatibleIndex(_),
         ) => true,
         TantivySourceError::BudgetExceeded { .. } => false,
+        TantivySourceError::OrdinalMapCapacityExceeded { .. } => false,
         TantivySourceError::Contract(_)
         | TantivySourceError::Backend(_)
         | TantivySourceError::Io(_) => false,
@@ -2198,6 +2242,7 @@ pub(crate) mod test_support {
     pub(crate) const INTEGRITY_FILE: &str = super::INTEGRITY_FILE;
     pub(crate) const MAX_RETAINED_DURABLE_ROOTS: usize = super::MAX_RETAINED_DURABLE_ROOTS;
     pub(crate) const MAX_PROJECTION_MANIFEST_BYTES: u64 = super::MAX_PROJECTION_MANIFEST_BYTES;
+    pub(crate) const MAX_ORDINAL_MAP_BYTES: u64 = super::MAX_ORDINAL_MAP_BYTES;
     pub(crate) const ORDINAL_MAP_FILE: &str = super::ORDINAL_MAP_FILE;
     pub(crate) const ORDINAL_MAP_MAGIC: &[u8] = super::ORDINAL_MAP_MAGIC;
 
@@ -2207,6 +2252,12 @@ pub(crate) mod test_support {
 
     pub(crate) fn projection_fingerprint(binding: crate::Binding) -> [u8; 32] {
         super::projection_fingerprint(binding)
+    }
+
+    pub(crate) fn ordinal_map_capacity(
+        live_count: usize,
+    ) -> Result<usize, super::TantivySourceError> {
+        super::preflight_ordinal_map_capacity(live_count)
     }
 
     pub(crate) fn write_projection_manifest(

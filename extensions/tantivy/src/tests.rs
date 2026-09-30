@@ -9,9 +9,9 @@
 use super::*;
 use crate::engine::test_support::{
     BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
-    MAX_RETAINED_DURABLE_ROOTS,
+    MAX_ORDINAL_MAP_BYTES, MAX_RETAINED_DURABLE_ROOTS,
     ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint,
-    write_projection_manifest,
+    ordinal_map_capacity, write_projection_manifest,
 };
 use backend_semantic::{Entity, EntityId, Source, entity_key};
 use backend_version::{
@@ -1157,6 +1157,24 @@ fn durable_budget_refusal_keeps_a_valid_selected_root_for_later_reopen() {
         .expect("later default-budget open should reuse the intact root");
     assert_eq!(term_hits(&reopened, "budget-canary"), vec![document(8)]);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ordinal_map_capacity_is_typed_before_index_construction() {
+    let header_bytes = ORDINAL_MAP_MAGIC.len() + 48;
+    let maximum_records = usize::try_from(
+        (MAX_ORDINAL_MAP_BYTES - u64::try_from(header_bytes).expect("header size")) / 108,
+    )
+    .expect("record count fits this platform");
+
+    assert!(ordinal_map_capacity(maximum_records).is_ok());
+    assert!(matches!(
+        ordinal_map_capacity(maximum_records + 1),
+        Err(TantivySourceError::OrdinalMapCapacityExceeded {
+            maximum_bytes: MAX_ORDINAL_MAP_BYTES,
+            ..
+        })
+    ));
 }
 
 #[test]

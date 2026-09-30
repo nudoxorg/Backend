@@ -1012,7 +1012,8 @@ impl QueryCoordinator {
                     lexical::TantivySourceError::Backend(_)
                     | lexical::TantivySourceError::Io(_)
                     | lexical::TantivySourceError::Corrupt(_)
-                    | lexical::TantivySourceError::BudgetExceeded { .. } => {
+                    | lexical::TantivySourceError::BudgetExceeded { .. }
+                    | lexical::TantivySourceError::OrdinalMapCapacityExceeded { .. } => {
                         QueryError::LexicalProvider
                     }
                 })?
