@@ -13,12 +13,11 @@ use backend_replication::{
     SemanticRangeChunk, SemanticRangeGet, SemanticTargetKey, decode_request, encode_response,
 };
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read};
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_REMOTE_INDEX_CONNECTIONS: usize = 8;
@@ -33,7 +32,6 @@ const GRANT_USAGE_MAGIC: &[u8; 8] = b"BKRUGR01";
 const GRANT_USAGE_CHECKSUM_BYTES: usize = 32;
 const MAX_GRANT_USAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GRANT_USAGE_ENTRIES: usize = 256;
-static NEXT_USAGE_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -323,7 +321,7 @@ impl RemoteIndexUsage {
             return Err(RemoteIndexReject::CapabilityRevoked);
         }
         let next = usage.requests.saturating_add(1);
-        if next > capability.claims.request_budget || next > MAX_REMOTE_INDEX_REQUESTS_PER_SESSION {
+        if next > capability.claims.request_budget {
             return Err(RemoteIndexReject::ReplayOrBudget);
         }
         usage.requests = next;
@@ -414,37 +412,7 @@ impl RemoteIndexUsage {
                 "remote-index usage ledger is full",
             ));
         }
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        fs::create_dir_all(parent)?;
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let sequence = NEXT_USAGE_TEMP.fetch_add(1, Ordering::Relaxed);
-        let temporary = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), sequence));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let result = (|| {
-            let mut file = options.open(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            #[cfg(unix)]
-            {
-                let mut permissions = file.metadata()?.permissions();
-                permissions.set_mode(0o600);
-                file.set_permissions(permissions)?;
-            }
-            fs::rename(&temporary, path)?;
-            #[cfg(unix)]
-            File::open(parent)?.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result
+        backend_platform::durable::write_private_atomic(path, &bytes)
     }
 }
 
@@ -453,32 +421,35 @@ fn lock_usage_ledger(path: &Path) -> io::Result<File> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let lock_path = parent.join(format!("{name}.lock"));
-    match fs::symlink_metadata(&lock_path) {
-        Ok(metadata) if !metadata.file_type().is_file() => {
+    let file = backend_platform::durability::open_or_create_regular_file_nofollow(&lock_path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote-index ledger lock has an invalid type",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.nlink() != 1 {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "remote-index ledger lock has an invalid type",
+                io::ErrorKind::PermissionDenied,
+                "remote-index ledger lock must be owned by this user and have one link",
             ));
         }
-        #[cfg(unix)]
-        Ok(metadata) if metadata.permissions().mode() & 0o777 != 0o600 => {
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        let metadata = file.metadata()?;
+        if metadata.permissions().mode() & 0o777 != 0o600 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "remote-index ledger lock must have mode 0600",
             ));
         }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
     }
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let file = options.open(&lock_path)?;
     file.lock()?;
     Ok(file)
 }
@@ -487,25 +458,30 @@ fn read_usage_ledger(
     path: &Path,
     owner: backend_engine::cluster_transport::EndpointId,
 ) -> io::Result<BTreeMap<[u8; 16], GrantUsage>> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
+    let file = match backend_platform::durability::open_regular_file_nofollow(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(error) => return Err(error),
     };
-    if !metadata.file_type().is_file() || metadata.len() > MAX_GRANT_USAGE_BYTES as u64 {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_GRANT_USAGE_BYTES as u64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "remote-index grant ledger has an invalid type or size",
         ));
     }
     #[cfg(unix)]
-    if metadata.permissions().mode() & 0o777 != 0o600 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "remote-index grant ledger must have mode 0600",
-        ));
+    {
+        if metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.nlink() != 1
+            || metadata.permissions().mode() & 0o777 != 0o600
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger must be a single-link owner-only file",
+            ));
+        }
     }
-    let mut file = File::open(path)?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_GRANT_USAGE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
@@ -593,14 +569,24 @@ pub(crate) async fn serve_connection(
             Ok(Ok(request)) => request,
             _ => return,
         };
-        requests = requests.saturating_add(1);
+        let next_request = requests.saturating_add(1);
+        if next_request > MAX_REMOTE_INDEX_REQUESTS_PER_SESSION {
+            let _ = session
+                .send_response(&RemoteIndexResponse {
+                    request_id: request.request_id,
+                    outcome: RemoteIndexOutcome::Rejected(RemoteIndexReject::ReplayOrBudget),
+                })
+                .await;
+            return;
+        }
+        requests = next_request;
         let meter = usage.clone();
         let request_capability = capability.clone();
         let charged =
             tokio::task::spawn_blocking(move || meter.charge_request(&request_capability))
                 .await
                 .unwrap_or(Err(RemoteIndexReject::OwnerUnavailable));
-        if requests > MAX_REMOTE_INDEX_REQUESTS_PER_SESSION || charged.is_err() {
+        if charged.is_err() {
             let reason = charged.err().unwrap_or(RemoteIndexReject::ReplayOrBudget);
             let _ = session
                 .send_response(&RemoteIndexResponse {
@@ -738,7 +724,7 @@ fn serve_product_request(
             },
         };
     }
-    let body = match serde_json::to_vec(&reply) {
+    let body = match backend_engine::encode_reply_dto(&reply) {
         Ok(body) if !body.is_empty() && body.len() <= MAX_REMOTE_INDEX_BODY_BYTES => body,
         _ => return owner_unavailable(request.request_id),
     };
@@ -1011,6 +997,9 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("scratch directory");
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+            .expect("private scratch directory");
         path
     }
 
@@ -1087,6 +1076,37 @@ mod tests {
     }
 
     #[test]
+    fn cumulative_request_budget_can_continue_after_a_cold_session_boundary() {
+        let root = scratch("multiple-sessions");
+        let path = root.join("remote-index-grants.v1");
+        let capability = capability(MAX_REMOTE_INDEX_REQUESTS_PER_SESSION + 8, 64);
+        let owner = capability.claims.server;
+        let usage = RemoteIndexUsage::open(&path, owner).expect("fresh ledger");
+        usage
+            .register_capability(&capability, capability.claims.issued_at_unix_ms)
+            .expect("register signed grant");
+        {
+            let _lock = lock_usage_ledger(&path).expect("ledger lock");
+            let mut entries = read_usage_ledger(&path, owner).expect("read ledger");
+            entries
+                .get_mut(&capability.grant_id())
+                .expect("registered grant")
+                .requests = MAX_REMOTE_INDEX_REQUESTS_PER_SESSION;
+            usage
+                .persist(&entries)
+                .expect("persist previous session usage");
+        }
+        drop(usage);
+
+        let reopened = RemoteIndexUsage::open(&path, owner).expect("cold-reopened ledger");
+        reopened
+            .charge_request(&capability)
+            .expect("new connection can use the remaining signed budget");
+        assert_eq!(reopened.list().expect("grant summary")[0].requests, 4_097);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn exact_grant_revocation_survives_cold_reopen_and_is_idempotent() {
         let root = scratch("revoke");
         let path = root.join("remote-index-grants.v1");
@@ -1116,6 +1136,54 @@ mod tests {
         let grants = reopened.list().expect("list grant");
         assert_eq!(grants.len(), 1);
         assert!(grants[0].revoked);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grant_ledger_and_lock_reject_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let root = scratch("symlinks");
+        let target = root.join("target");
+        fs::write(&target, b"sensitive target").expect("write target");
+
+        let ledger_link = root.join("ledger-link");
+        symlink(&target, &ledger_link).expect("symlink ledger");
+        let capability = capability(4, 64);
+        assert!(RemoteIndexUsage::open(&ledger_link, capability.claims.server).is_err());
+
+        let ledger = root.join("lock-link-ledger");
+        let lock_link = root.join("lock-link-ledger.lock");
+        symlink(&target, &lock_link).expect("symlink lock");
+        assert!(RemoteIndexUsage::open(&ledger, capability.claims.server).is_err());
+        assert_eq!(fs::read(&target).expect("read target"), b"sensitive target");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grant_ledger_works_beneath_execute_only_ancestor() {
+        let root = scratch("execute-only");
+        let opaque = root.join("opaque");
+        let state = opaque.join("state");
+        fs::create_dir_all(&state).expect("create nested state");
+        fs::set_permissions(&opaque, fs::Permissions::from_mode(0o700))
+            .expect("set private ancestor");
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))
+            .expect("set private state directory");
+        fs::set_permissions(&opaque, fs::Permissions::from_mode(0o100))
+            .expect("make ancestor execute-only");
+        let path = state.join("remote-index-grants.v1");
+        let capability = capability(2, 64);
+        let usage = RemoteIndexUsage::open(&path, capability.claims.server)
+            .expect("open through execute-only ancestor");
+        usage
+            .register_capability(&capability, capability.claims.issued_at_unix_ms)
+            .expect("persist grant through execute-only ancestor");
+        drop(usage);
+        fs::set_permissions(&opaque, fs::Permissions::from_mode(0o700))
+            .expect("restore cleanup access");
         let _ = fs::remove_dir_all(root);
     }
 

@@ -10,10 +10,11 @@ use backend_cluster_transport::{
     AcceptedClusterConnection, AdmissionPolicy, AssignmentScope, BlobHash, Capability,
     CapabilityClaims, CapabilityIssuer, ChunkRange, ClusterListener, ControlAdmissionPolicy,
     ControlChannel, ControlMessage, ControlResultReceipt, ControlRole, MAX_RANGE_CHUNKS,
-    MAX_RESPONSE_BYTES, RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer,
-    RemoteIndexChannel, RemoteIndexOutcome, RemoteIndexPermission, RemoteIndexProductScope,
-    RemoteIndexQueryOperation, RemoteIndexResponse, ResumeState, ServerState, StoreBlobCatalog,
-    StoreObjectMapping, TransferScope, TransportError, bind_direct, connect_control, fetch_range,
+    MAX_REMOTE_INDEX_AUTH_BYTES, MAX_RESPONSE_BYTES, REMOTE_INDEX_ALPN,
+    RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexChannel,
+    RemoteIndexOutcome, RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
+    RemoteIndexResponse, ResumeState, ServerState, StoreBlobCatalog, StoreObjectMapping,
+    TransferScope, TransportError, accept_remote_index, bind_direct, connect_control, fetch_range,
     now_unix_ms, remote_index_now, serve_one, serve_one_measured, verify_admission,
 };
 use backend_store::{
@@ -196,6 +197,56 @@ async fn remote_index_capability_echo_works_from_an_independent_client_process()
     serving.await.expect("remote-index owner task");
     endpoint.close().await;
     std::fs::remove_dir_all(directory).expect("remove remote-index test state");
+}
+
+#[tokio::test]
+async fn remote_index_oversized_hello_is_rejected_before_payload_read() {
+    let owner = bind_direct(secret(201), "127.0.0.1:0".parse().expect("owner bind"))
+        .await
+        .expect("bind owner");
+    let client = bind_direct(secret(202), "127.0.0.1:0".parse().expect("client bind"))
+        .await
+        .expect("bind client");
+    let owner_id = owner.id();
+    let owner_address = owner
+        .bound_sockets()
+        .into_iter()
+        .next()
+        .expect("owner socket");
+    let owner_acceptor = owner.clone();
+    let serving = tokio::spawn(async move {
+        let incoming = timeout(Duration::from_secs(10), owner_acceptor.accept())
+            .await
+            .expect("incoming connection timeout")
+            .expect("owner endpoint remains open");
+        let connecting = incoming.accept().expect("accept incoming connection");
+        let connection = connecting.await.expect("finish Iroh handshake");
+        accept_remote_index(connection, owner_id).await
+    });
+
+    let connection = client
+        .connect(
+            EndpointAddr::new(owner_id).with_ip_addr(owner_address),
+            REMOTE_INDEX_ALPN,
+        )
+        .await
+        .expect("connect to remote-index ALPN");
+    let (mut send, _receive) = connection.open_bi().await.expect("open untrusted stream");
+    let too_large =
+        u32::try_from(MAX_REMOTE_INDEX_AUTH_BYTES + 1).expect("auth bound fits frame prefix");
+    send.write_all(&too_large.to_be_bytes())
+        .await
+        .expect("write oversized frame length only");
+    send.finish().await.expect("finish oversized header stream");
+
+    let error = timeout(Duration::from_secs(10), serving)
+        .await
+        .expect("owner hello admission timeout")
+        .expect("owner task completes")
+        .expect_err("oversized hello must fail before payload decode");
+    assert!(matches!(error, TransportError::Frame(_)));
+    client.close().await;
+    owner.close().await;
 }
 
 async fn run_child(

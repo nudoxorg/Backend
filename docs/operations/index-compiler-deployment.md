@@ -75,6 +75,22 @@ backend --workspace "$CLIENT_DATA" cluster client query \
   --operation search --value cluster_deploy_smoke --limit 20
 ```
 
+To exercise the installed CLI, real locald owner, and a separate remote client
+on one host, run the loopback journey after building both binaries:
+
+```sh
+BACKEND_CLI=/path/to/backend-cli \
+BACKEND_LOCALD_BIN=/path/to/backend-locald \
+tests/journeys/run-remote-index-client.sh
+```
+
+The journey indexes a temporary Rust fixture, searches it through the remote
+client, restarts locald, and repeats the query with the same grant. It uses
+temporary owner/client keys, samples combined owner/client RSS during each
+query, checks durable response-byte usage remains within the signed budget,
+and removes its state on exit. Set `REMOTE_INDEX_RSS_LIMIT_KB` to tune the
+sampled process-memory ceiling for the host.
+
 The owner checks the exact selected product root before and after each query;
 the typed command also carries that root as its basis. If publication changes
 the root during a query, the client receives a stale-root result and must

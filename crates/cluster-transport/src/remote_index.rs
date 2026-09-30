@@ -162,10 +162,12 @@ impl RemoteIndexCapabilityIssuer {
         if bytes.len() > MAX_REMOTE_INDEX_AUTH_BYTES {
             return Err(RemoteIndexCapabilityError::Invalid("claims size"));
         }
-        Ok(RemoteIndexCapability {
+        let capability = RemoteIndexCapability {
             claims,
             signature: self.0.sign(&bytes),
-        })
+        };
+        capability.encode()?;
+        Ok(capability)
     }
 }
 
@@ -491,13 +493,14 @@ pub async fn connect_remote_index(
         .open_bi()
         .await
         .map_err(|error| TransportError::Iroh(error.to_string()))?;
+    hello.capability.encode().map_err(frame_error)?;
     write_frame_bounded(
         &mut send,
         &RemoteIndexMessage::Hello(hello.clone()),
-        MAX_REMOTE_INDEX_FRAME_BYTES,
+        MAX_REMOTE_INDEX_AUTH_BYTES,
     )
     .await?;
-    match read_frame_bounded(&mut receive, MAX_REMOTE_INDEX_FRAME_BYTES).await? {
+    match read_frame_bounded(&mut receive, MAX_REMOTE_INDEX_AUTH_BYTES).await? {
         RemoteIndexMessage::Accepted {
             grant_id,
             session_id,
@@ -544,7 +547,7 @@ pub async fn accept_remote_index(
             .map_err(|error| TransportError::Iroh(error.to_string()))?;
     let hello = match tokio::time::timeout(
         REMOTE_INDEX_SESSION_TIMEOUT,
-        read_frame_bounded(&mut receive, MAX_REMOTE_INDEX_FRAME_BYTES),
+        read_frame_bounded(&mut receive, MAX_REMOTE_INDEX_AUTH_BYTES),
     )
     .await
     {
@@ -562,12 +565,13 @@ pub async fn accept_remote_index(
             return Err(frame_error("remote-index hello timed out"));
         }
     };
+    hello.capability.encode().map_err(frame_error)?;
     let peer = connection.remote_id();
     if hello.verify(local, peer, system_now_unix_ms()?).is_err() {
         let _ = write_frame_bounded(
             &mut send,
             &RemoteIndexMessage::Rejected(RemoteIndexReject::StaleCapability),
-            MAX_REMOTE_INDEX_FRAME_BYTES,
+            MAX_REMOTE_INDEX_AUTH_BYTES,
         )
         .await;
         connection.close(1_u32.into(), b"remote-index grant rejected");
@@ -580,7 +584,7 @@ pub async fn accept_remote_index(
             session_id: hello.session_id,
             channel: hello.channel,
         },
-        MAX_REMOTE_INDEX_FRAME_BYTES,
+        MAX_REMOTE_INDEX_AUTH_BYTES,
     )
     .await?;
     Ok(RemoteIndexSession {

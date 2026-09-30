@@ -3,8 +3,8 @@
 use crate::{ClientError, MAX_FRAME};
 use backend_engine::cluster_transport::{
     Endpoint, EndpointAddr, RemoteIndexCapability, RemoteIndexChannel, RemoteIndexOutcome,
-    RemoteIndexRequest, RemoteIndexSession, RemoteIndexSessionHello, SecretKey, bind_direct,
-    connect_remote_index, remote_index_now,
+    RemoteIndexRequest, RemoteIndexSession, RemoteIndexSessionHello, SecretKey, TransportError,
+    bind_direct, connect_remote_index, remote_index_now,
 };
 use backend_replication::{
     AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, FileSemanticRangeStore,
@@ -382,7 +382,7 @@ impl RemoteSemanticRangeConnection {
                 self.owner_address.clone(),
                 hello,
             ))
-            .map_err(map_transport_error)?;
+            .map_err(map_remote_index_transport_error)?;
         self.session = Some(session);
         Ok(())
     }
@@ -418,7 +418,7 @@ impl RemoteSemanticRangeConnection {
         };
         let response = match result {
             Ok(response) => response,
-            Err(_) => {
+            Err(error) if retryable_remote_index_transport(&error) => {
                 self.reconnect()?;
                 let session = self.session.as_mut().ok_or_else(|| {
                     ClientError::Io("remote semantic session was not reopened".to_owned())
@@ -435,8 +435,9 @@ impl RemoteSemanticRangeConnection {
                     session.receive_response(request_id).await
                 })
             }
+            Err(error) => return Err(map_remote_index_transport_error(error)),
         }
-        .map_err(map_transport_error)?;
+        .map_err(map_remote_index_transport_error)?;
         match response.outcome {
             RemoteIndexOutcome::Payload(body) => {
                 backend_replication::decode_response(&body, control_limits())
@@ -463,6 +464,20 @@ impl RemoteSemanticRangeConnection {
 
 fn map_transport_error(error: impl std::fmt::Display) -> ClientError {
     ClientError::Io(error.to_string())
+}
+
+fn retryable_remote_index_transport(error: &TransportError) -> bool {
+    matches!(error, TransportError::Iroh(_) | TransportError::Io(_))
+}
+
+fn map_remote_index_transport_error(error: TransportError) -> ClientError {
+    match error {
+        TransportError::Iroh(_) | TransportError::Io(_) => {
+            ClientError::Disconnected(std::io::ErrorKind::ConnectionReset)
+        }
+        TransportError::Frame(message) => ClientError::Protocol(message),
+        other => ClientError::Protocol(other.to_string()),
+    }
 }
 
 #[cfg(any(unix, windows))]

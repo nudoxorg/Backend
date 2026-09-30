@@ -4,7 +4,7 @@ use crate::{ClientError, CommandTransport, admit_reply};
 use backend_engine::cluster_transport::{
     Endpoint, EndpointAddr, MAX_REMOTE_INDEX_BODY_BYTES, RemoteIndexCapability, RemoteIndexChannel,
     RemoteIndexOutcome, RemoteIndexRequest, RemoteIndexSession, RemoteIndexSessionHello, SecretKey,
-    bind_direct, connect_remote_index, remote_index_now,
+    TransportError, bind_direct, connect_remote_index, remote_index_now,
 };
 use backend_library::{CommandDto, ReplyDto, decode_reply_body, encode_command_body};
 use std::net::SocketAddr;
@@ -69,7 +69,7 @@ impl RemoteIndexCommandTransport {
                 self.owner_address.clone(),
                 hello,
             ))
-            .map_err(map_transport)?;
+            .map_err(map_session_transport)?;
         self.session = Some(session);
         Ok(())
     }
@@ -92,7 +92,7 @@ impl RemoteIndexCommandTransport {
                 session.receive_response(request_id).await
             })
             .map(|response| response.outcome)
-            .map_err(map_transport)
+            .map_err(map_session_transport)
     }
 }
 
@@ -101,12 +101,13 @@ impl CommandTransport for RemoteIndexCommandTransport {
         let body = encode_command_body(&request).map_err(ClientError::Protocol)?;
         let outcome = match self.request_once(request.request_id, body.into_boxed_slice()) {
             Ok(outcome) => outcome,
-            Err(_) => {
+            Err(error) if matches!(error, ClientError::Disconnected(_)) => {
                 self.session = None;
                 self.open_session()?;
                 let body = encode_command_body(&request).map_err(ClientError::Protocol)?;
                 self.request_once(request.request_id, body.into_boxed_slice())?
             }
+            Err(error) => return Err(error),
         };
         match outcome {
             RemoteIndexOutcome::Payload(body) => {
@@ -142,4 +143,14 @@ impl CommandTransport for RemoteIndexCommandTransport {
 
 fn map_transport(error: impl std::fmt::Display) -> ClientError {
     ClientError::Io(error.to_string())
+}
+
+fn map_session_transport(error: TransportError) -> ClientError {
+    match error {
+        TransportError::Iroh(_) | TransportError::Io(_) => {
+            ClientError::Disconnected(std::io::ErrorKind::ConnectionReset)
+        }
+        TransportError::Frame(message) => ClientError::Protocol(message),
+        other => ClientError::Protocol(other.to_string()),
+    }
 }
