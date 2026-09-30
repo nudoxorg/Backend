@@ -6263,6 +6263,23 @@ mod tests {
         sorted[index]
     }
 
+    fn file_sha256(path: &std::path::Path) -> String {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(path).expect("open benchmark executable");
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer).expect("hash benchmark executable");
+            if read == 0 {
+                break;
+            }
+            digest.update(&buffer[..read]);
+        }
+        hex(&digest.finalize())
+    }
+
     #[cfg(unix)]
     fn resident_set_kib() -> Option<u64> {
         let pid = std::process::id().to_string();
@@ -6382,6 +6399,11 @@ mod tests {
         );
         let source_commit = std::env::var("BACKEND_DISCOVERY_BENCH_SOURCE_COMMIT")
             .unwrap_or_else(|_| "unspecified".to_owned());
+        let executable_path = std::env::current_exe().expect("resolve benchmark test executable");
+        let executable_sha256 = file_sha256(&executable_path);
+        let executable_bytes = std::fs::metadata(&executable_path)
+            .expect("inspect benchmark test executable")
+            .len();
         const EXPECTED_JOURNAL_SHA256: &str =
             "7b156608e0427b60a7fd394f1d4d0c4b68aa7d7df6d55f0b12a1da80f9f36899";
         const WARM_CHAINS_PER_QUERY: usize = 100;
@@ -6629,6 +6651,13 @@ mod tests {
             "provenance": {
                 "source_commit": source_commit,
                 "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+                "test_executable": {
+                    "path": executable_path.display().to_string(),
+                    "sha256": executable_sha256,
+                    "bytes": executable_bytes,
+                },
+                "target_dir": std::env::var("CARGO_TARGET_DIR").unwrap_or_default(),
+                "host": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
                 "journal_path": journal_path.display().to_string(),
                 "journal_sha256": journal_sha256,
                 "journal_bytes": journal_size,
