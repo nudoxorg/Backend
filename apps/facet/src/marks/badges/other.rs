@@ -3,8 +3,7 @@
 //! what its return type promises (an error, nothing, an iterator).
 //! Anything the text does not say earns no badge.
 
-use super::{Badge, Glyph, Ink, Item, Reading, Shape, between, find_word, has_word, ident, last_name, names_word, split_top, type_params};
-use crate::icons::Lang;
+use super::{Badge, Glyph, Ink, Item, Lang, Reading, Shape, between, find_word, has_word, ident, last_name, names_word, split_top, type_params};
 
 pub(super) fn read(item: &Item<'_>, text: &str, lang: Lang) -> Reading {
     let mut badges = Vec::new();
@@ -15,7 +14,7 @@ pub(super) fn read(item: &Item<'_>, text: &str, lang: Lang) -> Reading {
         Lang::Java => java(item, text, &mut badges),
         Lang::Csharp => csharp(item, text, &mut badges),
         Lang::Cpp => cpp(item, text, &mut badges),
-        Lang::Rust => Shape::Item,
+        Lang::Rust | Lang::Unknown => Shape::Item,
     };
     let shape = if shape == Shape::Item { item.kind.map_or(Shape::Item, Shape::of_kind) } else { shape };
     Reading {

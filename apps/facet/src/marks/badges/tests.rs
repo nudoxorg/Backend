@@ -3,8 +3,8 @@
 
 #![allow(clippy::expect_used, clippy::panic)]
 
-use super::{Glyph, Ink, Item, Shape, normalize, read};
-use crate::icons::{Kind, Lang};
+use super::{Glyph, Ink, Item, Lang, Shape, normalize, read};
+use crate::icons::Kind;
 
 fn rust(name: &str, signature: &str) -> super::Reading {
     read(&Item::new(name, Lang::Rust).signature(Some(signature)))
@@ -136,6 +136,13 @@ fn a_signature_that_is_not_source_reads_to_no_badges_but_keeps_its_kind() {
     // No signature at all: the kind still says what it is.
     let bare = read(&Item::new("go", Lang::Rust).kind(Some(Kind::Function)));
     assert_eq!((bare.shape, bare.word, bare.badges.len()), (Shape::Function, "fn", 0));
+}
+
+#[test]
+fn unknown_language_never_uses_the_rust_grammar() {
+    let reading = read(&Item::new("open", Lang::Unknown).kind(Some(Kind::Function)).signature(Some("pub unsafe fn open() -> Result<()>")));
+    assert_eq!(reading.word, "function");
+    assert!(reading.badges.is_empty(), "an unknown grammar cannot claim Rust's unsafe or result semantics");
 }
 
 #[test]

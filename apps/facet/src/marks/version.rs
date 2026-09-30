@@ -27,7 +27,7 @@ use crate::measure::Measure;
 use crate::theme::ActiveFacet;
 use crate::tokens::fluid::{COMB, Comb};
 use gpui::{
-    AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, canvas, div, px,
+    AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -559,19 +559,21 @@ fn unpublished(id: &ElementId, facts: &VersionFacts, measure: &Measure, sheet: b
         .pl(px(8.0 * s))
         .child(div().absolute().left_0().bottom_0().w(px(2.0 * s)).h(px(17.0 * s)).bg(palette.mint.base.hsla()))
         .child(text(ElementId::NamedChild(Arc::new(id.clone()), "number".into()), v, card::LINE, measure, palette.ink0));
-    let dashed = canvas(|_, _, _| {}, move |bounds, (), window, _| {
-        let y = bounds.origin.y + bounds.size.height - px(3.5 * s);
-        let mut x = bounds.origin.x;
-        while x < bounds.origin.x + bounds.size.width {
-            window.paint_quad(gpui::fill(
-                gpui::Bounds::new(gpui::point(x, y), gpui::size(px(3.0 * s), px(1.0))),
-                palette.ink4.hsla(),
-            ));
-            x += px(7.0 * s);
-        }
-    })
-    .w(px(120.0 * s))
-    .h(px(20.0 * s));
+    let mut dashes = Vec::new();
+    let mut x = px(0.0);
+    while x < px(120.0 * s) {
+        dashes.push(
+            div()
+                .absolute()
+                .left(x)
+                .bottom(px(3.5 * s))
+                .w(px(3.0 * s))
+                .h(px(1.0))
+                .bg(palette.ink4.hsla()),
+        );
+        x += px(7.0 * s);
+    }
+    let dashed = div().relative().w(px(120.0 * s)).h(px(20.0 * s)).children(dashes);
     let mark = div().flex().items_end().gap(px(8.0 * s)).h(px(28.0 * s)).pb(px(3.0 * s)).child(number).child(dashed);
     card::door(id, &key, &live, Some(content), sheet.then_some(0), None, mark)
 }

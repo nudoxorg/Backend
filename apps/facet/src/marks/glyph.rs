@@ -17,7 +17,10 @@
 use super::eco::Eco;
 use super::spdx::Family;
 use crate::paint::geom::{Fill, Poly, Pt, pt};
-use gpui::{Bounds, Hsla, Pixels, Window};
+use gpui::{
+    App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
+    Pixels, Refineable, Style, StyleRefinement, Styled, Window, px,
+};
 
 type P = (f32, f32);
 
@@ -311,6 +314,78 @@ pub(crate) fn diamond(kind: Diamond, bounds: Bounds<Pixels>, ink: Hsla, window: 
             }
             fill.paint(window, ink);
         }
+    }
+}
+
+/// A dependency diamond using the same paint geometry as the mark painter,
+/// sized and positioned by normal GPUI layout.
+pub(crate) fn diamond_element(kind: Diamond, size: f32, ink: Hsla) -> impl IntoElement + Styled {
+    DiamondElement { kind, size, ink, style: StyleRefinement::default() }
+        .size(px(size))
+        .flex_none()
+}
+
+struct DiamondElement {
+    kind: Diamond,
+    size: f32,
+    ink: Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for DiamondElement {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl IntoElement for DiamondElement {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for DiamondElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = px(self.size).into();
+        style.size.height = px(self.size).into();
+        style.flex_shrink = 0.0;
+        style.refine(&self.style);
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {}
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        diamond(self.kind, bounds, self.ink, window);
     }
 }
 

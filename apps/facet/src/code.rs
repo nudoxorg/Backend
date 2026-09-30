@@ -41,12 +41,14 @@ pub enum Lang {
     Java,
     /// NuGet.
     CSharp,
+    /// C (uses its own grammar rather than the C++ grammar).
+    C,
     /// Conan.
     Cpp,
 }
 
 impl Lang {
-    /// From a file extension or a language name (`rs`, `rust`, `tsx`, `c++`…).
+    /// From a file extension or a language name (`rs`, `rust`, `tsx`, `c`, `c++`…).
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name.trim_start_matches('.').to_ascii_lowercase().as_str() {
@@ -57,7 +59,8 @@ impl Lang {
             "go" | "golang" => Self::Go,
             "java" => Self::Java,
             "cs" | "csharp" | "c#" => Self::CSharp,
-            "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "h" | "c++" => Self::Cpp,
+            "c" | "h" => Self::C,
+            "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "h++" | "c++" => Self::Cpp,
             _ => return None,
         })
     }
@@ -72,6 +75,7 @@ impl Lang {
             Self::Go => "go",
             Self::Java => "java",
             Self::CSharp => "csharp",
+            Self::C => "c",
             Self::Cpp => "cpp",
         }
     }
@@ -376,7 +380,7 @@ mod tests {
 
     #[test]
     fn each_language_marks_keywords_strings_comments_and_functions() {
-        let cases: [(Lang, &'static str, [(&str, Option<Role>); 4]); 8] = [
+        let cases: [(Lang, &'static str, [(&str, Option<Role>); 4]); 9] = [
             (
                 Lang::Rust,
                 "// note\npub fn parse(input: &str) -> u32 { let s = \"hi\"; 42 }",
@@ -411,6 +415,11 @@ mod tests {
                 Lang::CSharp,
                 "// note\nclass A { int Parse(string input) { var s = \"hi\"; return 42; } }",
                 [("class", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("// note", Some(Role::Comment)), ("Parse", Some(Role::Function))],
+            ),
+            (
+                Lang::C,
+                "// note\nint parse(const char* input) { const char* s = \"hi\"; return 42; }",
+                [("return", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("// note", Some(Role::Comment)), ("parse", Some(Role::Function))],
             ),
             (
                 Lang::Cpp,

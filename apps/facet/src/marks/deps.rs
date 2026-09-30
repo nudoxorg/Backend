@@ -28,7 +28,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::motion::GLIDE;
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -302,10 +302,7 @@ fn diamond_ink(facts: &DepFacts, palette: &crate::tokens::Palette) -> Hsla {
 }
 
 fn diamond_element(kind: Diamond, size: f32, ink: Hsla) -> AnyElement {
-    canvas(|_, _, _| {}, move |bounds, (), window, _| glyph::diamond(kind, bounds, ink, window))
-        .size(px(size))
-        .flex_none()
-        .into_any_element()
+    glyph::diamond_element(kind, size, ink).into_any_element()
 }
 
 impl RenderOnce for DepLink {
