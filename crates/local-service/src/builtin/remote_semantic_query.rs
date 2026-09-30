@@ -662,7 +662,7 @@ fn serve_product_request(
         _ => return invalid(request.request_id),
     };
     let operation = match product_operation(&command.command) {
-        Some(operation) => operation,
+        Some(operation) => Some(operation),
         None if matches!(command.command, Command::Revision) => None,
         None => return denied(),
     };
