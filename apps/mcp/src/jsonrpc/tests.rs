@@ -10,11 +10,14 @@
 
 use super::*;
 use backend_library::{
-    Basis, COMMANDS, CommandReply, Coverage, DeclarationKind, Document, Fragment, Freshness,
-    Frontier, IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, Intent, Lane, Outline,
-    OutlineExtent, OutlineNode, ProjectionPage, Reason, Row, RowId, SourceAvailability,
-    SourceExcerpt, SourceExcerptExtent, SourceLocation, ViewRoot, ViewSnapshot, object_version,
-    package_key, symbol_key, view_key, view_state_root,
+    Basis, COMMANDS, CommandReply, CompileExecutionIntent, Coverage, DeclarationKind, Document,
+    Fragment, Freshness, Frontier, IndexCancelReceipt, IndexCancelStatus, IndexJobObservation,
+    IndexJobOutcome, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal,
+    IndexJobTicket, IndexProgressPage, IndexSearchCursor, IndexSearchPage, IndexSearchResultCount,
+    IndexStartResult, Intent, Lane, Outline, OutlineExtent, OutlineNode, PackageReference,
+    ProjectionPage, Reason, Row, RowId, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
+    SourceLocation, SurfaceReply, ViewRoot, ViewSnapshot, object_version, package_key, symbol_key,
+    view_key, view_state_root,
 };
 use backend_present::{domain_name, grammar_for};
 
@@ -50,12 +53,26 @@ struct Fake {
     surface_index_search_stale: bool,
     /// Owner cursors that reached the durable index-search surface.
     surface_index_search_seen: Vec<Option<String>>,
+    /// Exact typed surface commands reaching the owner boundary.
+    surface_commands: Vec<SurfaceCommand>,
     /// Number of graph requests that reached the product boundary.
     graph_query_calls: usize,
 }
 
 fn basis() -> Basis {
     Basis::new(view_state_root(&[]), object_version(b"source"))
+}
+
+fn index_job_ticket() -> IndexJobTicket {
+    IndexJobTicket::new(
+        std::num::NonZeroU64::new(17).expect("nonzero ticket"),
+        [7; 16],
+        PackageReference::parse("pkg:cargo/serde@1.0.228").expect("pinned package"),
+    )
+}
+
+fn ticket_value(ticket: &IndexJobTicket) -> Value {
+    serde_json::to_value(ticket).expect("owner ticket serializes")
 }
 
 fn root(rows: Vec<Row>) -> ViewRoot {
@@ -220,6 +237,7 @@ impl Engine for Fake {
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+        self.surface_commands.push(command.clone());
         if let Some(reply) = self.surface_reply.take() {
             return Ok(reply);
         }
@@ -517,8 +535,366 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
             "backend.read",
             "backend.references",
             "backend.graph",
+            "backend.index_start",
+            "backend.index_progress",
+            "backend.index_cancel",
         ]
     );
+}
+
+#[test]
+fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let tools = &listed["result"]["tools"];
+
+    let start = tool_named(tools, INDEX_START_TOOL);
+    assert_eq!(start["inputSchema"]["required"], json!(["package"]));
+    assert_eq!(
+        start["inputSchema"]["properties"]["execution_intent"]["enum"],
+        json!(["interactive", "background"])
+    );
+    assert_eq!(start["annotations"]["readOnlyHint"], false);
+
+    let progress = tool_named(tools, INDEX_PROGRESS_TOOL);
+    assert_eq!(progress["inputSchema"]["required"], json!(["ticket"]));
+    assert_eq!(
+        progress["inputSchema"]["properties"]["ticket"]["properties"]["owner_epoch"]["minItems"],
+        16
+    );
+    assert_eq!(
+        progress["inputSchema"]["properties"]["after_sequence"]["default"],
+        0
+    );
+    assert_eq!(progress["annotations"]["readOnlyHint"], true);
+    assert_eq!(
+        progress["outputSchema"]["properties"]["surface"]["required"],
+        json!(["result", "data", "index_job"])
+    );
+
+    let cancel = tool_named(tools, INDEX_CANCEL_TOOL);
+    assert_eq!(cancel["inputSchema"]["required"], json!(["ticket"]));
+    assert_eq!(cancel["annotations"]["readOnlyHint"], false);
+    assert!(
+        progress["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown-after-restart")
+    );
+    assert!(
+        cancel["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not terminal")
+    );
+}
+
+#[test]
+fn index_start_keeps_the_exact_owner_ticket_and_routes_purls_to_the_owner_job_api() {
+    let ticket = index_job_ticket();
+    let reply = SurfaceReply::IndexStarted(IndexStartResult::Started {
+        ticket: ticket.clone(),
+        stage: IndexJobStage::Acquiring,
+    });
+    let fake = Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    };
+    let mut server = ready(fake);
+    let result = call(
+        &mut server,
+        INDEX_START_TOOL,
+        &json!({
+            "package": "pkg:cargo/serde@1.0.228",
+            "execution_intent": "background"
+        }),
+    );
+
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&reply).expect("typed reply");
+    assert_eq!(
+        result["structuredContent"]["surface"]["result"],
+        wire["result"]
+    );
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["kind"],
+        "started"
+    );
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        serde_json::to_value(IndexStartResult::Started {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Acquiring,
+        })
+        .expect("start projection")
+    );
+    assert!(text_of(&result).contains("stage acquiring"));
+    assert!(text_of(&result).contains(&ticket_value(&ticket).to_string()));
+    assert_context_bounded(&result);
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexStart {
+            package: PackageReference::Purl(package),
+            execution_intent: CompileExecutionIntent::Background,
+        }] if package.as_str() == "pkg:cargo/serde@1.0.228"
+    ));
+}
+
+#[test]
+fn index_progress_returns_bounded_events_and_the_exact_next_sequence() {
+    let ticket = index_job_ticket();
+    let profile =
+        backend_library::SemanticLanguageProfile::from_name("rust").expect("closed rust profile");
+    let reply = SurfaceReply::IndexProgress(IndexJobObservation::Pending(IndexProgressPage {
+        ticket: ticket.clone(),
+        stage: IndexJobStage::Compiling,
+        events: vec![IndexJobProgressEvent {
+            ticket: ticket.clone(),
+            sequence: 3,
+            kind: IndexJobProgressKind::ProfileStarted {
+                profile,
+                ordinal: 1,
+                total: 2,
+            },
+        }]
+        .into_boxed_slice(),
+        next_sequence: 3,
+        truncated: true,
+        has_more: false,
+    }));
+    let mut server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({ "ticket": ticket_value(&ticket), "after_sequence": 2 }),
+    );
+
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&reply).expect("typed observation");
+    assert_eq!(
+        result["structuredContent"]["surface"]["result"],
+        wire["result"]
+    );
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        wire["data"]
+    );
+    let text = text_of(&result);
+    assert!(text.contains("older progress events aged out"), "{text}");
+    assert!(text.contains("rust profile started"), "{text}");
+    assert!(text.contains("after_sequence 3"), "{text}");
+    assert!(text.contains(&ticket_value(&ticket).to_string()), "{text}");
+    assert_context_bounded(&result);
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexProgress {
+            ticket: seen,
+            after_sequence: 2,
+        }] if seen == &ticket
+    ));
+}
+
+#[test]
+fn index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget() {
+    let ticket = index_job_ticket();
+    let profile =
+        backend_library::SemanticLanguageProfile::from_name("rust").expect("closed rust profile");
+    let events = (1..=backend_library::MAX_INDEX_PROGRESS_EVENTS as u64)
+        .map(|sequence| IndexJobProgressEvent {
+            ticket: ticket.clone(),
+            sequence,
+            kind: IndexJobProgressKind::ProfileAdmitted {
+                profile,
+                ordinal: 1,
+                total: 1,
+            },
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let reply = SurfaceReply::IndexProgress(IndexJobObservation::Pending(IndexProgressPage {
+        ticket: ticket.clone(),
+        stage: IndexJobStage::Publishing,
+        events,
+        next_sequence: backend_library::MAX_INDEX_PROGRESS_EVENTS as u64,
+        truncated: true,
+        has_more: true,
+    }));
+    let mut server = ready(Fake {
+        surface_reply: Some(reply),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({ "ticket": ticket_value(&ticket), "after_sequence": 0 }),
+    );
+    assert_eq!(result["isError"], false);
+    assert_context_bounded(&result);
+    let text = text_of(&result);
+    assert!(text.contains("more events available"), "{text}");
+    assert!(text.contains("after_sequence 16"), "{text}");
+}
+
+#[test]
+fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
+    let ticket = index_job_ticket();
+    let unknown = SurfaceReply::IndexProgress(IndexJobObservation::Unknown {
+        ticket: ticket.clone(),
+        current_owner_epoch: [8; 16],
+    });
+    let mut server = ready(Fake {
+        surface_reply: Some(unknown.clone()),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({ "ticket": ticket_value(&ticket) }),
+    );
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&unknown).expect("unknown observation");
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        wire["data"]
+    );
+    assert!(text_of(&result).contains("unknown after owner restart"));
+
+    let terminal = SurfaceReply::IndexProgress(IndexJobObservation::Terminal(IndexJobTerminal {
+        ticket: ticket.clone(),
+        outcome: IndexJobOutcome::Refused(
+            backend_library::ProductText::new("compiler input was refused").expect("reason"),
+        ),
+    }));
+    server.product.surface_reply = Some(terminal.clone());
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({ "ticket": ticket_value(&ticket), "after_sequence": 3 }),
+    );
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&terminal).expect("terminal observation");
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        wire["data"]
+    );
+    let text = text_of(&result);
+    assert!(text.contains("outcome refused"), "{text}");
+    assert!(text.contains("compiler input was refused"), "{text}");
+}
+
+#[test]
+fn index_cancel_preserves_terminal_races_and_rejects_fabricated_tickets() {
+    let ticket = index_job_ticket();
+    let terminal = IndexJobTerminal {
+        ticket: ticket.clone(),
+        outcome: IndexJobOutcome::Published,
+    };
+    let reply = SurfaceReply::IndexCancellation(IndexCancelReceipt {
+        ticket: ticket.clone(),
+        status: IndexCancelStatus::Terminal(terminal),
+    });
+    let mut server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_CANCEL_TOOL,
+        &json!({ "ticket": ticket_value(&ticket) }),
+    );
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&reply).expect("terminal cancellation race");
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        wire["data"]
+    );
+    assert!(text_of(&result).contains("outcome published"));
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexCancel { ticket: seen }] if seen == &ticket
+    ));
+
+    let requested = SurfaceReply::IndexCancellation(IndexCancelReceipt {
+        ticket: ticket.clone(),
+        status: IndexCancelStatus::Requested,
+    });
+    server.product.surface_reply = Some(requested.clone());
+    let result = call(
+        &mut server,
+        INDEX_CANCEL_TOOL,
+        &json!({ "ticket": ticket_value(&ticket) }),
+    );
+    assert_eq!(result["isError"], false);
+    let requested_wire = serde_json::to_value(&requested).expect("requested receipt");
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        requested_wire["data"]
+    );
+    let text = text_of(&result);
+    assert!(text.contains("cancellation was requested"), "{text}");
+    assert!(text.contains("cancellation ticket:"), "{text}");
+
+    let malformed = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": INDEX_CANCEL_TOOL,
+            "arguments": {
+                "ticket": {
+                    "id": 17,
+                    "owner_epoch": [7],
+                    "package": { "kind": "purl", "value": "pkg:cargo/serde@1.0.228" }
+                }
+            }
+        }),
+    );
+    assert_eq!(malformed["error"]["code"], -32602);
+    assert_eq!(server.product.surface_commands.len(), 2);
+}
+
+#[test]
+fn generic_surface_progress_and_cancel_keep_the_request_ticket_projection() {
+    let ticket = index_job_ticket();
+    let reply = SurfaceReply::IndexCancellation(IndexCancelReceipt {
+        ticket: ticket.clone(),
+        status: IndexCancelStatus::Requested,
+    });
+    let mut server = ready(Fake {
+        surface_reply: Some(reply),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        SURFACE_TOOL,
+        &json!({
+            "command": {
+                "operation": "index-cancel",
+                "ticket": ticket_value(&ticket)
+            }
+        }),
+    );
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["kind"],
+        "cancellation"
+    );
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"]["ticket"],
+        ticket_value(&ticket)
+    );
+    assert!(text_of(&result).contains(&ticket_value(&ticket).to_string()));
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexCancel { ticket: seen }] if seen == &ticket
+    ));
 }
 
 #[test]

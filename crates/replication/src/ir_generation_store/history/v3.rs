@@ -503,25 +503,45 @@ fn stage_typed_v3_locator_bytes(
     commit: HistoryCommitId,
     bytes: &[u8],
 ) -> Result<(), String> {
+    stage_typed_v3_locator_bytes_with::<String>(target_root, commit, bytes)
+}
+
+fn stage_typed_v3_locator_bytes_typed(
+    target_root: &Path,
+    commit: HistoryCommitId,
+    bytes: &[u8],
+) -> Result<(), HistoryMutationError> {
+    stage_typed_v3_locator_bytes_with::<HistoryMutationError>(target_root, commit, bytes)
+}
+
+fn stage_typed_v3_locator_bytes_with<E: HistoryMutationFailure>(
+    target_root: &Path,
+    commit: HistoryCommitId,
+    bytes: &[u8],
+) -> Result<(), E> {
     ensure_typed_v3_locator_directories(target_root)?;
     let pending = pending_locator_path(target_root, commit);
     match fs::symlink_metadata(&pending) {
         Ok(_) => {
             ensure_regular_file(&pending)?;
             if fs::metadata(&pending).map_err(display_io)?.len() != 0 {
-                return Err("typed V3 pending locator marker is not empty".to_owned());
+                return Err("typed V3 pending locator marker is not empty"
+                    .to_owned()
+                    .into());
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            backend_platform::durable::write_private_atomic(&pending, &[]).map_err(display_io)?;
+            backend_platform::durable::write_private_atomic(&pending, &[])
+                .map_err(|error| E::retryable_io(display_io(error)))?;
         }
-        Err(error) => return Err(display_io(error)),
+        Err(error) => return Err(E::retryable_io(display_io(error))),
     }
     let path = locator_path(target_root, commit);
     match read_optional_bounded(&path, MAX_TYPED_V3_LOCATOR_BYTES + 32 + CHECKSUM_BYTES)? {
         Some(existing) if existing == bytes => Ok(()),
-        Some(_) => Err("typed V3 history commit locator changed".to_owned()),
-        None => backend_platform::durable::write_private_atomic(&path, bytes).map_err(display_io),
+        Some(_) => Err("typed V3 history commit locator changed".to_owned().into()),
+        None => backend_platform::durable::write_private_atomic(&path, bytes)
+            .map_err(|error| E::retryable_io(display_io(error))),
     }
 }
 
@@ -654,12 +674,40 @@ impl LocalSemanticGenerationFiles {
         Ok(identity)
     }
 
+    pub(crate) fn stage_typed_v3_locator_typed(
+        &self,
+        target: &SemanticTargetKey,
+        commit: HistoryCommitId,
+        locator: &TypedV3HistoryLocator,
+    ) -> Result<HistoryTypedV3LocatorId, HistoryMutationError> {
+        let identity = locator.identity().map_err(HistoryMutationError::Refused)?;
+        let bytes = locator.encode().map_err(HistoryMutationError::Refused)?;
+        stage_typed_v3_locator_bytes_typed(&self.target_root(target), commit, &bytes)?;
+        Ok(identity)
+    }
+
     pub(crate) fn finish_typed_v3_locator_admission(
         &self,
         target: &SemanticTargetKey,
         commit: HistoryCommitId,
     ) -> Result<(), String> {
         remove_file(&pending_locator_path(&self.target_root(target), commit))
+    }
+
+    pub(crate) fn finish_typed_v3_locator_admission_typed(
+        &self,
+        target: &SemanticTargetKey,
+        commit: HistoryCommitId,
+    ) -> Result<(), HistoryMutationError> {
+        let path = pending_locator_path(&self.target_root(target), commit);
+        match fs::remove_file(&path) {
+            Ok(()) => backend_platform::durable::sync_parent(&path)
+                .map_err(|error| HistoryMutationError::RetryableAvailability(display_io(error))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(HistoryMutationError::RetryableAvailability(display_io(
+                error,
+            ))),
+        }
     }
 
     pub(crate) fn reconcile_pending_typed_v3_locators(
@@ -856,17 +904,23 @@ impl LocalSemanticGenerationFiles {
         proposal: UnpublishedHistoryProposal,
         payload_root: AdmittedHistoryPayloadRoot,
         selection_fence: &F,
-    ) -> Result<HistoryAdmissionReceipt, String> {
+    ) -> Result<HistoryAdmissionReceipt, HistoryMutationError> {
         let HistoryGenerationRoot::TypedV3(claim) = proposal.record.generation_root else {
-            return Err("typed V3 history proposal carries another generation root".to_owned());
+            return Err(HistoryMutationError::Refused(
+                "typed V3 history proposal carries another generation root".to_owned(),
+            ));
         };
         if claim.closure().as_bytes() != payload_root.closure.as_bytes() {
-            return Err("typed V3 commit and payload closure roots differ".to_owned());
+            return Err(HistoryMutationError::Refused(
+                "typed V3 commit and payload closure roots differ".to_owned(),
+            ));
         }
         if selection_fence.selected_target() != &proposal.record.target
             || selection_fence.selected_stamp() != proposal.record.stamp
         {
-            return Err("typed V3 proposal differs from its selected-owner fence".to_owned());
+            return Err(HistoryMutationError::Refused(
+                "typed V3 proposal differs from its selected-owner fence".to_owned(),
+            ));
         }
         let target_root = self.target_root(&proposal.record.target);
         let _ = load_typed_v3_history_locator(&target_root, proposal.identity, claim.locator())?;
@@ -879,15 +933,21 @@ impl LocalSemanticGenerationFiles {
         if selection_fence.selected_image() != selected.image
             || selection_fence.selected_image_identity() != selected.image_identity
         {
-            return Err("typed V3 generation differs from its selected-owner fence".to_owned());
+            return Err(HistoryMutationError::Refused(
+                "typed V3 generation differs from its selected-owner fence".to_owned(),
+            ));
         }
         // Persist the payload root before the commit/index. If interrupted,
         // the durable pending-locator marker removes both unreachable sidecars.
-        super::codec::write_history_payload_root(&target_root, proposal.identity, payload_root)?;
+        super::codec::write_history_payload_root_typed(
+            &target_root,
+            proposal.identity,
+            payload_root,
+        )?;
         let mut source = FencedSelectedGenerationSource {
             fence: selection_fence,
         };
-        self.admit_history_proposal(proposal, &mut source)
+        self.admit_history_proposal_typed(proposal, &mut source)
     }
 }
 

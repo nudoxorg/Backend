@@ -670,7 +670,9 @@ impl CommandAdapter {
             daemon,
             request_id,
             (
-                CommandReply::Surface(backend_library::SurfaceReply::IndexCancellation(status)),
+                CommandReply::Surface(backend_library::SurfaceReply::IndexCancellation(
+                    backend_library::IndexCancelReceipt { ticket, status },
+                )),
                 None,
             ),
             None,

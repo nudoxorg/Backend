@@ -16,7 +16,7 @@ use crate::glyph::{KindGlyph, LanguageGlyph};
 use crate::identity::{Identity, ProjectRef};
 use crate::outline::{OutlineEntry, OutlineTree};
 use crate::page::{MemberGroup, Page, Prose, RelationGroup, Source, Truncation};
-use crate::product::{CursorTarget, ProductView, semantic_history_details};
+use crate::product::{CursorTarget, IndexJobProjection, ProductView, semantic_history_details};
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
 use crate::signature::{Signature, TokenKind};
@@ -502,11 +502,13 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
     if let Some(note) = view.note() {
         lines.push(format!("  {note}"));
         index_search_page_footer(view, &mut lines);
+        index_job_footer(view, &mut lines, theme);
         return lines.finish();
     }
     if view.records().is_empty() {
         lines.push(theme.paint(Style::Dim, "  no row at this revision"));
         index_search_page_footer(view, &mut lines);
+        index_job_footer(view, &mut lines, theme);
         return lines.finish();
     }
     for record in view.records() {
@@ -527,7 +529,65 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
     }
     lines.push(theme.paint(Style::Dim, &format!("{} row(s)", view.records().len())));
     index_search_page_footer(view, &mut lines);
+    index_job_footer(view, &mut lines, theme);
     lines.finish()
+}
+
+fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
+    let Some(job) = view.index_job() else {
+        return;
+    };
+    let guidance = match job {
+        IndexJobProjection::Started(backend_library::IndexStartResult::Started { .. }) => {
+            "poll backend.index_progress with the exact ticket shown above (after_sequence 0)"
+        }
+        IndexJobProjection::Started(backend_library::IndexStartResult::Terminal(_))
+        | IndexJobProjection::Terminal(_) => "the owner returned a terminal index receipt",
+        IndexJobProjection::Progress(backend_library::IndexJobObservation::Pending(page)) => {
+            lines.push(theme.paint(
+                Style::Dim,
+                &format!(
+                    "  poll backend.index_progress with the exact ticket shown above (after_sequence {})",
+                    page.next_sequence
+                ),
+            ));
+            return;
+        }
+        IndexJobProjection::Progress(backend_library::IndexJobObservation::Terminal(_)) => {
+            "the owner returned a terminal index receipt"
+        }
+        IndexJobProjection::Progress(backend_library::IndexJobObservation::Unknown {
+            ticket,
+            current_owner_epoch,
+        }) if ticket.owner_epoch() != *current_owner_epoch => {
+            "this ticket belongs to a prior owner process and cannot be resumed here"
+        }
+        IndexJobProjection::Progress(backend_library::IndexJobObservation::Unknown { .. }) => {
+            "this ticket is no longer active or retained by the current owner"
+        }
+        IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
+            status: backend_library::IndexCancelStatus::Requested,
+            ..
+        }) => "cancellation was requested; poll backend.index_progress for its terminal receipt",
+        IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
+            status: backend_library::IndexCancelStatus::Terminal(_),
+            ..
+        }) => "the owner returned a terminal index receipt",
+        IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
+            status: backend_library::IndexCancelStatus::Unknown,
+            ..
+        }) => "no active or retained terminal job matched the cancellation ticket",
+    };
+    lines.push(theme.paint(Style::Dim, &format!("  {guidance}")));
+    if let IndexJobProjection::Cancellation(receipt) = job {
+        lines.push(theme.paint(
+            Style::Dim,
+            &format!(
+                "  cancellation ticket: {}",
+                serde_json::json!(&receipt.ticket)
+            ),
+        ));
+    }
 }
 
 fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {

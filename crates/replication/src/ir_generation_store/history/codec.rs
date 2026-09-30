@@ -146,7 +146,8 @@ fn prepare_history_layout_with<E: HistoryMutationFailure>(
     let commits_root = history_root.join("commits");
     create_private_directory(&commits_root)?;
     set_private_directory(&commits_root)?;
-    backend_platform::durable::sync_parent(&commits_root).map_err(display_io)?;
+    backend_platform::durable::sync_parent(&commits_root)
+        .map_err(|error| E::retryable_io(display_io(error)))?;
     for directory in ["indexed", "gc"] {
         let path = history_root.join(directory);
         create_private_directory(&path)?;
@@ -167,16 +168,18 @@ fn prepare_history_layout_with<E: HistoryMutationFailure>(
         )
         .map_err(|error| E::retryable_io(display_io(error)))?;
     } else if read_optional_bounded(&refs_path, MAX_HISTORY_REFS_BYTES)?.is_none() {
-        return Err("semantic history refs catalog is missing".to_owned());
+        return Err("semantic history refs catalog is missing".to_owned().into());
     } else {
         let index_path = history_root.join("commit.index");
         if !index_path.exists() {
-            return Err("semantic history commit index is missing".to_owned());
+            return Err("semantic history commit index is missing".to_owned().into());
         }
         ensure_regular_file(&index_path)?;
         let tombstones_path = history_root.join("tombstones.index");
         if !tombstones_path.exists() {
-            return Err("semantic history tombstone index is missing".to_owned());
+            return Err("semantic history tombstone index is missing"
+                .to_owned()
+                .into());
         }
         ensure_regular_file(&tombstones_path)?;
     }
@@ -277,6 +280,22 @@ pub(super) fn write_history_payload_root(
     identity: HistoryCommitId,
     payload: AdmittedHistoryPayloadRoot,
 ) -> Result<(), String> {
+    write_history_payload_root_with::<String>(target_root, identity, payload)
+}
+
+pub(super) fn write_history_payload_root_typed(
+    target_root: &Path,
+    identity: HistoryCommitId,
+    payload: AdmittedHistoryPayloadRoot,
+) -> Result<(), HistoryMutationError> {
+    write_history_payload_root_with::<HistoryMutationError>(target_root, identity, payload)
+}
+
+fn write_history_payload_root_with<E: HistoryMutationFailure>(
+    target_root: &Path,
+    identity: HistoryCommitId,
+    payload: AdmittedHistoryPayloadRoot,
+) -> Result<(), E> {
     let directory = target_root.join("history").join("payload-roots");
     create_private_directory(&directory)?;
     set_private_directory(&directory)?;
@@ -284,11 +303,14 @@ pub(super) fn write_history_payload_root(
     let path = history_payload_root_path(target_root, identity);
     match fs::read(&path) {
         Ok(existing) if existing == bytes => Ok(()),
-        Ok(_) => Err("immutable semantic history payload root changed".to_owned()),
+        Ok(_) => Err("immutable semantic history payload root changed"
+            .to_owned()
+            .into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            backend_platform::durable::write_private_atomic(&path, &bytes).map_err(display_io)
+            backend_platform::durable::write_private_atomic(&path, &bytes)
+                .map_err(|error| E::retryable_io(display_io(error)))
         }
-        Err(error) => Err(display_io(error)),
+        Err(error) => Err(E::retryable_io(display_io(error))),
     }
 }
 
@@ -497,6 +519,20 @@ pub(super) fn append_commit_index(
     target_root: &Path,
     identity: HistoryCommitId,
 ) -> Result<(), String> {
+    append_commit_index_with::<String>(target_root, identity)
+}
+
+pub(super) fn append_commit_index_typed(
+    target_root: &Path,
+    identity: HistoryCommitId,
+) -> Result<(), HistoryMutationError> {
+    append_commit_index_with::<HistoryMutationError>(target_root, identity)
+}
+
+fn append_commit_index_with<E: HistoryMutationFailure>(
+    target_root: &Path,
+    identity: HistoryCommitId,
+) -> Result<(), E> {
     let history_root = target_root.join("history");
     recover_history_index_intent(target_root)?;
     let indexed_path = history_root
@@ -508,7 +544,7 @@ pub(super) fn append_commit_index(
             return Ok(());
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(display_io(error)),
+        Err(error) => return Err(E::retryable_io(display_io(error))),
     }
     let index_path = history_root.join("commit.index");
     ensure_regular_file(&index_path)?;
@@ -516,19 +552,29 @@ pub(super) fn append_commit_index(
         .read(true)
         .write(true)
         .open(&index_path)
-        .map_err(display_io)?;
+        .map_err(|error| E::retryable_io(display_io(error)))?;
     let offset = repair_history_index_tail(&index_path, &mut index)?;
     let intent = HistoryIndexIntent { identity, offset };
     backend_platform::durable::write_private_atomic(
         &history_index_intent_path(target_root),
         &encode_history_index_intent(intent)?,
     )
-    .map_err(display_io)?;
-    append_history_index_entry(&index_path, identity, HISTORY_INDEX_DOMAIN)?;
+    .map_err(|error| E::retryable_io(display_io(error)))?;
+    append_history_index_entry_with::<E>(&index_path, identity, HISTORY_INDEX_DOMAIN)?;
     #[cfg(test)]
     super::trip_history_test_fault(super::HistoryTestFault::AfterHistoryIndex)?;
-    backend_platform::durable::write_private_atomic(&indexed_path, &[]).map_err(display_io)?;
-    remove_file(&history_index_intent_path(target_root))
+    backend_platform::durable::write_private_atomic(&indexed_path, &[])
+        .map_err(|error| E::retryable_io(display_io(error)))?;
+    remove_file_with::<E>(&history_index_intent_path(target_root))
+}
+
+fn remove_file_with<E: HistoryMutationFailure>(path: &Path) -> Result<(), E> {
+    match fs::remove_file(path) {
+        Ok(()) => backend_platform::durable::sync_parent(path)
+            .map_err(|error| E::retryable_io(display_io(error))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(E::retryable_io(display_io(error))),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -627,24 +673,51 @@ pub(crate) fn append_history_index_entry(
     identity: HistoryCommitId,
     domain: &[u8],
 ) -> Result<(), String> {
+    append_history_index_entry_with::<String>(index_path, identity, domain)
+}
+
+pub(crate) fn append_history_index_entry_typed(
+    index_path: &Path,
+    identity: HistoryCommitId,
+    domain: &[u8],
+) -> Result<(), HistoryMutationError> {
+    append_history_index_entry_with::<HistoryMutationError>(index_path, identity, domain)
+}
+
+fn append_history_index_entry_with<E: HistoryMutationFailure>(
+    index_path: &Path,
+    identity: HistoryCommitId,
+    domain: &[u8],
+) -> Result<(), E> {
     ensure_regular_file(index_path)?;
     let mut index = OpenOptions::new()
         .read(true)
         .write(true)
         .append(true)
         .open(index_path)
-        .map_err(display_io)?;
-    let length = index.metadata().map_err(display_io)?.len();
+        .map_err(|error| E::retryable_io(display_io(error)))?;
+    let length = index
+        .metadata()
+        .map_err(|error| E::retryable_io(display_io(error)))?
+        .len();
     let tail = length % HISTORY_INDEX_ENTRY_BYTES;
     if tail != 0 {
-        index.set_len(length - tail).map_err(display_io)?;
-        index.sync_all().map_err(display_io)?;
+        index
+            .set_len(length - tail)
+            .map_err(|error| E::retryable_io(display_io(error)))?;
+        index
+            .sync_all()
+            .map_err(|error| E::retryable_io(display_io(error)))?;
     }
     let mut entry = Vec::with_capacity(HISTORY_INDEX_ENTRY_BYTES as usize);
     entry.extend_from_slice(identity.as_bytes());
     entry.extend_from_slice(&history_index_checksum(identity, domain));
-    index.write_all(&entry).map_err(display_io)?;
-    index.sync_all().map_err(display_io)
+    index
+        .write_all(&entry)
+        .map_err(|error| E::retryable_io(display_io(error)))?;
+    index
+        .sync_all()
+        .map_err(|error| E::retryable_io(display_io(error)))
 }
 
 pub(super) fn history_index_checksum(identity: HistoryCommitId, domain: &[u8]) -> [u8; 32] {

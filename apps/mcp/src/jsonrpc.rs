@@ -20,9 +20,10 @@
 
 use backend_client::{ClientError, Session};
 use backend_library::{
-    AdmittedGraphQueryInput, GraphQueryPage, GraphQueryRow, GraphValue, HealthReport,
-    IndexSearchCursor, IndexSearchPage, PageContinuation, PageTerminal, ReplyDto, SurfaceCommand,
-    SurfaceReply, ViewStateRoot, encode_id,
+    AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
+    HealthReport, IndexJobTicket, IndexSearchCursor, IndexSearchPage, PackageReference,
+    PageContinuation, PageTerminal, ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot,
+    encode_id,
 };
 use backend_present::{
     Answer, BudgetExceeded, ContinuationCursor, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES,
@@ -47,7 +48,9 @@ use codec::{
     empty_cursor, error_reply, json_depth_within, limit, no_extra, object, query_variables,
     read_line, string, success, valid_id, write_message,
 };
-use tools::{QUERY_TOOL, SURFACE_TOOL, list_tools};
+use tools::{
+    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, QUERY_TOOL, SURFACE_TOOL, list_tools,
+};
 
 #[cfg(feature = "token-budget")]
 pub(crate) use tools::token_budget_tools as token_budget_tools_projection;
@@ -575,6 +578,13 @@ impl<P: Product> Server<P> {
             let context = continuation_context(&self.project, name, &surface_arguments, detail);
             return self.surface_tool(&surface_arguments, detail, &context);
         }
+        if matches!(
+            name,
+            INDEX_START_TOOL | INDEX_PROGRESS_TOOL | INDEX_CANCEL_TOOL
+        ) {
+            let context = continuation_context(&self.project, name, arguments, detail);
+            return self.index_job_tool(name, arguments, detail, &context);
+        }
         let context = continuation_context(&self.project, name, arguments, detail);
         let index_search_tool =
             grammar_for_tool(name).is_some_and(|grammar| grammar.name() == "index-search");
@@ -707,7 +717,73 @@ impl<P: Product> Server<P> {
             ClientError::StaleCursor => RpcError::stale_cursor(),
             other => RpcError::tool(other.to_string()),
         })?;
-        let view = backend_present::product_view(&reply);
+        self.surface_reply_result(&reply, detail, context)
+    }
+
+    fn index_job_tool(
+        &mut self,
+        name: &str,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        context: &[u8],
+    ) -> Result<Value, RpcError> {
+        let command = match name {
+            INDEX_START_TOOL => {
+                no_extra(arguments, &["package", "execution_intent", "detail"])?;
+                let spelling = string(arguments, "package")?.to_owned();
+                let package = PackageReference::parse(spelling)
+                    .map_err(|error| RpcError::invalid(error.to_string()))?;
+                let execution_intent = match arguments.get("execution_intent") {
+                    None => CompileExecutionIntent::Interactive,
+                    Some(value) => serde_json::from_value::<CompileExecutionIntent>(value.clone())
+                        .map_err(|_| {
+                            RpcError::invalid("execution_intent must be interactive or background")
+                        })?,
+                };
+                SurfaceCommand::IndexStart {
+                    package,
+                    execution_intent,
+                }
+            }
+            INDEX_PROGRESS_TOOL => {
+                no_extra(arguments, &["ticket", "after_sequence", "detail"])?;
+                let ticket = index_job_ticket(arguments)?;
+                let after_sequence = match arguments.get("after_sequence") {
+                    None => 0,
+                    Some(value) => value.as_u64().ok_or_else(|| {
+                        RpcError::invalid("after_sequence must be a non-negative integer")
+                    })?,
+                };
+                SurfaceCommand::IndexProgress {
+                    ticket,
+                    after_sequence,
+                }
+            }
+            INDEX_CANCEL_TOOL => {
+                no_extra(arguments, &["ticket", "detail"])?;
+                SurfaceCommand::IndexCancel {
+                    ticket: index_job_ticket(arguments)?,
+                }
+            }
+            _ => return Err(RpcError::new(-32602, "Unknown tool")),
+        };
+        command
+            .admit()
+            .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        let reply = self
+            .product
+            .surface(command)
+            .map_err(|error| RpcError::tool(error.to_string()))?;
+        self.surface_reply_result(&reply, detail, context)
+    }
+
+    fn surface_reply_result(
+        &mut self,
+        reply: &SurfaceReply,
+        detail: Detail,
+        context: &[u8],
+    ) -> Result<Value, RpcError> {
+        let view = backend_present::product_view(reply);
         let view = match view.cursor_family().cloned() {
             Some(cursor) => {
                 let token = self.issue_cursor(cursor, context)?;
@@ -722,8 +798,9 @@ impl<P: Product> Server<P> {
             None,
             SurfaceBody {
                 surface: SurfaceProjection {
-                    reply: &reply,
+                    reply,
                     next_cursor,
+                    index_job: view.index_job(),
                 },
             },
             DEFAULT_RESPONSE_BUDGET_BYTES,
@@ -1407,6 +1484,14 @@ fn response_detail(tool: &str, arguments: &Map<String, Value>) -> Result<Detail,
         .ok_or_else(|| RpcError::invalid("detail must be summary, standard, or full"))
 }
 
+fn index_job_ticket(arguments: &Map<String, Value>) -> Result<IndexJobTicket, RpcError> {
+    let encoded = arguments
+        .get("ticket")
+        .cloned()
+        .ok_or_else(|| RpcError::invalid("ticket must be the exact owner-issued ticket object"))?;
+    serde_json::from_value(encoded).map_err(|error| RpcError::invalid(format!("ticket: {error}")))
+}
+
 /// Returns the smallest projection that fulfils a tool's advertised promise.
 ///
 /// A document or source lookup exists to return code, so reducing it to an
@@ -1429,6 +1514,7 @@ struct SurfaceBody<'a> {
 struct SurfaceProjection<'a> {
     reply: &'a SurfaceReply,
     next_cursor: Option<&'a str>,
+    index_job: Option<&'a backend_present::IndexJobProjection>,
 }
 
 impl Serialize for SurfaceProjection<'_> {
@@ -1452,8 +1538,42 @@ impl Serialize for SurfaceProjection<'_> {
                 )?;
                 map.end()
             }
+            SurfaceReply::IndexStarted(data) => {
+                self.serialize_job(serializer, "index-started", data)
+            }
+            SurfaceReply::IndexTerminal(data) => {
+                self.serialize_job(serializer, "index-terminal", data)
+            }
+            SurfaceReply::IndexProgress(data) => {
+                self.serialize_job(serializer, "index-progress", data)
+            }
+            SurfaceReply::IndexCancellation(data) => {
+                self.serialize_job(serializer, "index-cancellation", data)
+            }
             reply => reply.serialize(serializer),
         }
+    }
+}
+
+impl SurfaceProjection<'_> {
+    fn serialize_job<S, D>(
+        &self,
+        serializer: S,
+        result: &'static str,
+        data: &D,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        D: Serialize,
+    {
+        let Some(index_job) = self.index_job else {
+            return self.reply.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("result", result)?;
+        map.serialize_entry("data", data)?;
+        map.serialize_entry("index_job", index_job)?;
+        map.end()
     }
 }
 
