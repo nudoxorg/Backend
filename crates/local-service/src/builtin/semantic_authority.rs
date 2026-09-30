@@ -46,7 +46,7 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const LOCAL_BRANCH: &str = "locald";
 const LOCAL_ENVIRONMENT: &str = "locald-product-v1";
@@ -362,6 +362,8 @@ struct NativeHistoryStatusEntry {
     key: ProductSemanticPublicationKey,
     stamp: backend_replication::SelectedGenerationStamp,
     status: backend_engine::SemanticHistoryPublicationStatus,
+    retry_attempts: u8,
+    retry_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -381,7 +383,7 @@ struct NativeHistoryCompletion {
 pub(super) struct NativeHistoryPublicationWork {
     pub(super) loader: Arc<SelectedClosureImageLoader>,
     pub(super) store: FileStore,
-    pub(super) image_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
+    pub(super) image_ranges: Arc<super::versioned_planes::SelectedClosureImageRangeReader>,
     pub(super) key: ProductSemanticPublicationKey,
     pub(super) expected_claim: SemanticPublicationClaim,
     pub(super) stamp: backend_replication::SelectedGenerationStamp,
@@ -602,6 +604,22 @@ impl SelectedClosureImageLoader {
             BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
         })?;
         Self::committed_pair_in(&selections, key)
+    }
+
+    /// Checks a worker's captured selection using only the committed in-memory
+    /// marker snapshot. The selected stamp binds the immutable closure and
+    /// catalog, so range loops never reopen Turso for each page.
+    pub(super) fn matches_committed_selection(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        expected_stamp: backend_replication::SelectedGenerationStamp,
+    ) -> bool {
+        self.committed_pair(key).is_ok_and(|(claim, selected)| {
+            claim == expected_claim
+                && SemanticAuthority::selected_generation_stamp(key, &selected)
+                    .is_ok_and(|stamp| stamp == expected_stamp)
+        })
     }
 
     pub(super) fn committed_pair_in(
@@ -1025,7 +1043,7 @@ pub(crate) struct SemanticAuthority {
     authority: TursoAuthority,
     store: FileStore,
     workspace: PathBuf,
-    s3_publisher: Option<Box<dyn SelectedClosurePublisher>>,
+    s3_publisher: Option<Arc<dyn SelectedClosurePublisher>>,
     compiler_trust_policy: std::path::PathBuf,
     image_loader: Arc<SelectedClosureImageLoader>,
     verified_segments: Arc<super::versioned_planes::VerifiedSegmentCache>,
@@ -1046,9 +1064,12 @@ impl SemanticAuthority {
     pub(crate) fn open(workspace: &Path) -> Result<Self, BuiltinModelError> {
         let store = FileStore::open(workspace.join(CAS_DIRECTORY), 512 * 1024 * 1024)
             .map_err(|error| BuiltinModelError(format!("open semantic artifact CAS: {error:?}")))?;
-        let s3_publisher = S3ClosurePublisher::from_env(workspace)
-            .map_err(|error| BuiltinModelError(format!("configure owner S3 publication: {error}")))?
-            .map(|publisher| Box::new(publisher) as Box<dyn SelectedClosurePublisher>);
+        let s3_publisher: Option<Arc<dyn SelectedClosurePublisher>> =
+            S3ClosurePublisher::from_env(workspace)
+                .map_err(|error| {
+                    BuiltinModelError(format!("configure owner S3 publication: {error}"))
+                })?
+                .map(|publisher| Arc::new(publisher) as Arc<dyn SelectedClosurePublisher>);
         let authority =
             futures_executor::block_on(TursoAuthority::open(workspace.join(AUTHORITY_FILE)))
                 .map_err(|error| {
@@ -1190,13 +1211,16 @@ impl SemanticAuthority {
         }
         let stamp = Self::selected_generation_stamp(key, &selected)?;
         let status = self.native_history_status_for_stamp(key, stamp);
-        if status.is_none()
-            || matches!(
-                status,
-                Some(backend_engine::SemanticHistoryPublicationStatus::Deferred { .. })
-                    | Some(backend_engine::SemanticHistoryPublicationStatus::Superseded { .. })
-            )
-        {
+        let retry = match status {
+            None | Some(backend_engine::SemanticHistoryPublicationStatus::Superseded { .. }) => {
+                true
+            }
+            Some(backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }) => {
+                self.native_history_retry_ready(key, stamp)
+            }
+            _ => false,
+        };
+        if retry {
             // Status rows are bounded. If an exact selected marker has aged
             // out or was deferred/stale, re-enqueue from its immutable closure
             // rather than leaving it absent from derived history.
@@ -1228,6 +1252,23 @@ impl SemanticAuthority {
             .map(|entry| entry.status.clone())
     }
 
+    fn native_history_retry_ready(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        stamp: backend_replication::SelectedGenerationStamp,
+    ) -> bool {
+        self.native_history_state
+            .statuses
+            .iter()
+            .rev()
+            .find(|entry| entry.key == *key && entry.stamp == stamp)
+            .is_some_and(|entry| {
+                entry
+                    .retry_at
+                    .is_none_or(|deadline| Instant::now() >= deadline)
+            })
+    }
+
     /// Records one asynchronous history outcome against its exact product
     /// marker stamp. The FIFO is bounded independently of V3 commit history.
     fn record_native_history_status(
@@ -1237,6 +1278,11 @@ impl SemanticAuthority {
         status: backend_engine::SemanticHistoryPublicationStatus,
     ) {
         let state = &mut self.native_history_state;
+        let previous_retry_attempts = state
+            .statuses
+            .iter()
+            .find(|entry| entry.key == key && entry.stamp == stamp)
+            .map_or(0, |entry| entry.retry_attempts);
         if let Some(position) = state
             .statuses
             .iter()
@@ -1244,9 +1290,29 @@ impl SemanticAuthority {
         {
             state.statuses.remove(position);
         }
-        state
-            .statuses
-            .push_back(NativeHistoryStatusEntry { key, stamp, status });
+        let (retry_attempts, retry_at) = if matches!(
+            &status,
+            backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }
+        ) {
+            let attempts = previous_retry_attempts.saturating_add(1);
+            let exponent = u32::from(attempts.saturating_sub(1).min(7));
+            let delay_ms = 250_u64
+                .saturating_mul(1_u64.checked_shl(exponent).unwrap_or(128))
+                .min(30_000);
+            (
+                attempts,
+                Instant::now().checked_add(Duration::from_millis(delay_ms)),
+            )
+        } else {
+            (0, None)
+        };
+        state.statuses.push_back(NativeHistoryStatusEntry {
+            key,
+            stamp,
+            status,
+            retry_attempts,
+            retry_at,
+        });
         while state.statuses.len() > MAX_NATIVE_HISTORY_STATUS_ROWS {
             state.statuses.pop_front();
         }
@@ -1309,13 +1375,15 @@ impl SemanticAuthority {
             }
             let stamp = Self::selected_generation_stamp(&key, &selected)?;
             let status = self.native_history_status_for_stamp(&key, stamp);
-            if status.is_none()
-                || matches!(
-                    status,
-                    Some(backend_engine::SemanticHistoryPublicationStatus::Deferred { .. })
-                        | Some(backend_engine::SemanticHistoryPublicationStatus::Superseded { .. })
-                )
-            {
+            let retry = match status {
+                None
+                | Some(backend_engine::SemanticHistoryPublicationStatus::Superseded { .. }) => true,
+                Some(backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }) => {
+                    self.native_history_retry_ready(&key, stamp)
+                }
+                _ => false,
+            };
+            if retry {
                 self.schedule_native_history(key, claim)?;
             }
         }
@@ -3050,7 +3118,13 @@ impl SemanticAuthority {
         let work = NativeHistoryPublicationWork {
             loader: Arc::clone(&self.image_loader),
             store: self.store.clone(),
-            image_readers: Arc::clone(&self.selected_image_readers),
+            image_ranges: Arc::new(
+                super::versioned_planes::SelectedClosureImageRangeReader::new(
+                    self.store.clone(),
+                    Arc::clone(&self.selected_image_readers),
+                    self.s3_publisher.clone(),
+                ),
+            ),
             key: key.clone(),
             expected_claim: claim,
             stamp,
@@ -3929,7 +4003,7 @@ mod tests {
             .expect("store test selected object");
         let pin = builder.seal_pinned().expect("seal test selected closure");
         let seen = Arc::new(std::sync::Mutex::new(None));
-        authority.s3_publisher = Some(Box::new(RejectingS3Publisher {
+        authority.s3_publisher = Some(Arc::new(RejectingS3Publisher {
             seen: Arc::clone(&seen),
         }));
 

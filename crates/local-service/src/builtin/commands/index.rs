@@ -716,6 +716,25 @@ pub(super) struct DeferredProfileTicket {
     key: ProductSemanticPublicationKey,
     expected_artifacts: u32,
     attempt: backend_extension_turso::CandidateAttempt,
+    ordinal: u16,
+    total: u16,
+}
+
+impl DeferredProfileTicket {
+    #[must_use]
+    pub(super) const fn profile(&self) -> LanguageProfile {
+        self.key.profile()
+    }
+
+    #[must_use]
+    pub(super) const fn ordinal(&self) -> u16 {
+        self.ordinal
+    }
+
+    #[must_use]
+    pub(super) const fn total(&self) -> u16 {
+        self.total
+    }
 }
 
 impl DeferredIndex {
@@ -724,12 +743,21 @@ impl DeferredIndex {
     pub(super) fn take_next_work(
         &mut self,
     ) -> Option<(DeferredProfileTicket, OwnedPackageSourceSet)> {
+        let total = u16::try_from(self.expected_profiles).ok()?;
+        let ordinal = u16::try_from(
+            self.expected_profiles
+                .checked_sub(self.profiles.len())?
+                .checked_add(1)?,
+        )
+        .ok()?;
         self.profiles.pop_front().map(|profile| {
             (
                 DeferredProfileTicket {
                     key: profile.key,
                     expected_artifacts: profile.expected_artifacts,
                     attempt: profile.attempt,
+                    ordinal,
+                    total,
                 },
                 profile.sources,
             )
