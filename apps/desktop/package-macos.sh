@@ -20,7 +20,7 @@ desktop_binary="$target_root/$target_profile/backend-desktop"
 mcp_binary="$target_root/$target_profile/backend-mcp"
 locald_binary="$target_root/$target_profile/backend-locald"
 
-cargo build --manifest-path "$root/Cargo.toml" --target-dir "$target_root" --profile "$cargo_profile" \
+cargo build --locked --manifest-path "$root/Cargo.toml" --target-dir "$target_root" --profile "$cargo_profile" \
   -p backend-desktop -p backend-mcp -p backend-locald
 install -d "$destination/Contents/MacOS" "$destination/Contents/Resources"
 install -m 755 "$desktop_binary" "$destination/Contents/MacOS/Nudox"
