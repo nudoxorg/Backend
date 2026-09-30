@@ -353,9 +353,10 @@ pub trait RustWorkspaceEditorBufferObserver {
     fn observe_editor_buffer(&mut self, relative_path: &Path, contents: &[u8]);
 }
 
-/// Borrow-scoped observer for selected buffers plus three concrete compiler
-/// event surfaces: loaded RA VFS file contents, successful Rustdoc input reads,
-/// and rejected `mod` candidates from RA's name-resolution `DefMap` diagnostics.
+/// Borrow-scoped observer for selected buffers plus concrete compiler event
+/// surfaces: loaded RA VFS file contents, Rustdoc filesystem attempts and
+/// successful input reads, and rejected `mod` candidates from RA's
+/// name-resolution `DefMap` diagnostics.
 ///
 /// This is diagnostic evidence only. The VFS scan does not see failed VFS
 /// loader probes, and unresolved-module DefMap diagnostics do not cover arbitrary
@@ -374,6 +375,20 @@ pub trait RustWorkspaceReadFrontierObserver {
     /// `include_str!` preloader before it is admitted into RA's VFS.
     fn observe_rustdoc_input(&mut self, absolute_path: &str, contents: &[u8]) -> bool;
 
+    /// Receives one attempt made by the Rustdoc include preloader at its actual
+    /// filesystem call site. `resolved_path` is populated only after
+    /// successful canonicalization. Return `true` only after accepting it;
+    /// observers that do not implement this callback reject it by default.
+    fn observe_authority_filesystem_attempt(
+        &mut self,
+        requested_path: &str,
+        operation: RustWorkspaceFilesystemOperation,
+        outcome: RustWorkspaceFilesystemOutcome,
+        resolved_path: Option<&str>,
+    ) -> bool {
+        false
+    }
+
     /// Receives the crate root, declaration file, and candidate path string
     /// RA reports after module resolution rejected all candidates.
     /// Return `true` only after the event has been accepted by the sink.
@@ -383,6 +398,121 @@ pub trait RustWorkspaceReadFrontierObserver {
         declaring_file: &str,
         candidate: &str,
     ) -> bool;
+}
+
+/// Filesystem operation performed while resolving an active Rustdoc include.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustWorkspaceFilesystemOperation {
+    /// Resolve symlinks and missing components for the include target.
+    Canonicalize,
+    /// Inspect the canonical include target.
+    Metadata,
+    /// Open the canonical include target.
+    Open,
+    /// Read the bounded bytes from an opened include target.
+    Read,
+}
+
+/// Outcome of one Rustdoc include filesystem operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustWorkspaceFilesystemOutcome {
+    /// The operation completed successfully, except metadata which carries its
+    /// own typed result below.
+    Succeeded,
+    /// Metadata was read, including whether the path identifies a regular file.
+    Metadata { length: u64, is_regular_file: bool },
+    /// The bounded read succeeded with this exact byte count.
+    Read { bytes_read: u64 },
+    /// The operation failed with the operating system error category.
+    Failed(std::io::ErrorKind),
+}
+
+/// Required read classes that remain outside the current Rust frontend observers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustWorkspaceReadFrontierGap {
+    /// The RA loader's failed requests and complete directory results are unknown.
+    RaLoaderRequests,
+    /// Successful module resolution and every individual resolver attempt are unknown.
+    ModuleResolverAttempts,
+    /// Filesystem activity outside the Rustdoc preloader remains unobserved.
+    OtherAuthorityFilesystem,
+    /// Complete directory enumeration results and errors are unknown.
+    DirectoryEnumeration,
+    /// Cargo and rust-analyzer project-model reads are unknown.
+    CargoProjectModel,
+    /// Present and absent environment values are unknown.
+    Environment,
+    /// Child-process identities, arguments, outputs, and terminal events are unknown.
+    ProcessTree,
+    /// Rustup, toolchain, sysroot, and standard-library reads are unknown.
+    ToolchainSysroot,
+    /// Build-script and generated output reads are unknown.
+    GeneratedOutputs,
+    /// Registry, path dependency, and other external source reads are unknown.
+    ExternalDependencies,
+    /// Read bytes are not yet proven members of the immutable remote assignment closure.
+    AssignmentClosure,
+    /// Observation was truncated at a fixed event or byte limit.
+    ObservationTruncated,
+    /// An observed path could not be represented in the observer's path format.
+    UnsupportedPath,
+    /// The observer rejected or failed to accept one or more visited events.
+    EventNotAcknowledged,
+}
+
+/// Compact typed set of blockers in a Rust read-frontier seal report.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RustWorkspaceReadFrontierGaps(u16);
+
+impl RustWorkspaceReadFrontierGaps {
+    const fn insert(&mut self, gap: RustWorkspaceReadFrontierGap) {
+        self.0 |= 1 << gap as u8;
+    }
+
+    /// Returns whether a required class prevents the frontier from sealing.
+    #[must_use]
+    pub const fn contains(self, gap: RustWorkspaceReadFrontierGap) -> bool {
+        self.0 & (1 << gap as u8) != 0
+    }
+
+    const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// Opaque token created only after every required read class has evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RustWorkspaceReadFrontierComplete {
+    _sealed: (),
+}
+
+/// Typed result of checking whether one frontend observation can seal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustWorkspaceReadFrontierSealReport {
+    /// The listed classes still block a complete read frontier.
+    Incomplete {
+        /// Required classes with unknown or unacknowledged evidence.
+        gaps: RustWorkspaceReadFrontierGaps,
+    },
+    /// Opaque proof token, constructible only by the private seal checker.
+    Complete(RustWorkspaceReadFrontierComplete),
+}
+
+impl RustWorkspaceReadFrontierSealReport {
+    /// Returns whether the complete-read token was produced.
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        matches!(self, Self::Complete(_))
+    }
+
+    /// Returns whether the report names this incomplete read class.
+    #[must_use]
+    pub const fn contains_gap(self, gap: RustWorkspaceReadFrontierGap) -> bool {
+        match self {
+            Self::Incomplete { gaps } => gaps.contains(gap),
+            Self::Complete(_) => false,
+        }
+    }
 }
 
 /// Independent source-side totals from one opt-in RA read-frontier scan.
@@ -407,10 +537,71 @@ pub struct RustWorkspaceReadFrontierSummary {
     pub rustdoc_inputs_visited: u64,
     /// Rustdoc include-file callbacks acknowledged by the observer.
     pub rustdoc_input_events_delivered: u64,
+    /// Filesystem attempts at the Rustdoc include boundary.
+    pub filesystem_attempts_visited: u64,
+    /// Filesystem-attempt callbacks acknowledged by the observer.
+    pub filesystem_attempt_events_delivered: u64,
+    /// All Rustdoc filesystem producer events, including exact successful bytes.
+    pub authority_filesystem_events_visited: u64,
+    /// All Rustdoc filesystem callbacks acknowledged by the observer.
+    pub authority_filesystem_events_delivered: u64,
     /// VFS, Rustdoc, or diagnostic paths that could not be represented as UTF-8.
     pub unsupported_paths: u64,
     /// The scan stopped at a fixed event/byte budget.
     pub truncated: bool,
+}
+
+impl RustWorkspaceReadFrontierSummary {
+    /// Checks the observed event totals and the fixed set of still-required
+    /// compiler channels. This frontend currently always returns `Incomplete`
+    /// because Cargo/project-model, environment, process, toolchain, loader,
+    /// and assignment-closure observations are not available here.
+    #[must_use]
+    pub fn seal_report(&self) -> RustWorkspaceReadFrontierSealReport {
+        let mut gaps = RustWorkspaceReadFrontierGaps::default();
+        if self.truncated {
+            gaps.insert(RustWorkspaceReadFrontierGap::ObservationTruncated);
+        }
+        if self.unsupported_paths > 0 {
+            gaps.insert(RustWorkspaceReadFrontierGap::UnsupportedPath);
+        }
+        if self.vfs_files_visited != self.vfs_events_delivered
+            || self.module_candidates_visited != self.module_candidate_events_delivered
+            || self.rustdoc_inputs_visited != self.rustdoc_input_events_delivered
+            || self.filesystem_attempts_visited != self.filesystem_attempt_events_delivered
+            || self.authority_filesystem_events_visited
+                != self.authority_filesystem_events_delivered
+        {
+            gaps.insert(RustWorkspaceReadFrontierGap::EventNotAcknowledged);
+        }
+
+        // These are required channel gaps, not an estimate inferred from the
+        // observed subset. No caller can turn the diagnostic observers above
+        // into Complete while any of these classes remains unsupported.
+        for gap in [
+            RustWorkspaceReadFrontierGap::RaLoaderRequests,
+            RustWorkspaceReadFrontierGap::ModuleResolverAttempts,
+            RustWorkspaceReadFrontierGap::OtherAuthorityFilesystem,
+            RustWorkspaceReadFrontierGap::DirectoryEnumeration,
+            RustWorkspaceReadFrontierGap::CargoProjectModel,
+            RustWorkspaceReadFrontierGap::Environment,
+            RustWorkspaceReadFrontierGap::ProcessTree,
+            RustWorkspaceReadFrontierGap::ToolchainSysroot,
+            RustWorkspaceReadFrontierGap::GeneratedOutputs,
+            RustWorkspaceReadFrontierGap::ExternalDependencies,
+            RustWorkspaceReadFrontierGap::AssignmentClosure,
+        ] {
+            gaps.insert(gap);
+        }
+
+        if gaps.is_empty() {
+            RustWorkspaceReadFrontierSealReport::Complete(RustWorkspaceReadFrontierComplete {
+                _sealed: (),
+            })
+        } else {
+            RustWorkspaceReadFrontierSealReport::Incomplete { gaps }
+        }
+    }
 }
 
 const MAX_RUST_READ_FRONTIER_EVENTS: u64 = 250_000;
@@ -451,6 +642,9 @@ impl RustWorkspaceSessionObserver<'_> {
             return;
         };
         summary.rustdoc_inputs_visited = summary.rustdoc_inputs_visited.saturating_add(1);
+        if !advance_authority_filesystem_event(summary) {
+            return;
+        }
         let Some(absolute_path) = path.to_str() else {
             summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
             return;
@@ -458,7 +652,66 @@ impl RustWorkspaceSessionObserver<'_> {
         if observer.observe_rustdoc_input(absolute_path, contents) {
             summary.rustdoc_input_events_delivered =
                 summary.rustdoc_input_events_delivered.saturating_add(1);
+            summary.authority_filesystem_events_delivered = summary
+                .authority_filesystem_events_delivered
+                .saturating_add(1);
         }
+    }
+
+    fn observe_authority_filesystem_attempt(
+        &mut self,
+        summary: &mut RustWorkspaceReadFrontierSummary,
+        requested_path: &Path,
+        operation: RustWorkspaceFilesystemOperation,
+        outcome: RustWorkspaceFilesystemOutcome,
+        resolved_path: Option<&Path>,
+    ) {
+        let Self::ReadFrontier(observer) = self else {
+            return;
+        };
+        summary.filesystem_attempts_visited = summary.filesystem_attempts_visited.saturating_add(1);
+        if !advance_authority_filesystem_event(summary) {
+            return;
+        }
+        let Some(requested_path) = requested_path.to_str() else {
+            summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
+            return;
+        };
+        let resolved_path = match resolved_path {
+            Some(path) => match path.to_str() {
+                Some(path) => Some(path),
+                None => {
+                    summary.unsupported_paths = summary.unsupported_paths.saturating_add(1);
+                    return;
+                }
+            },
+            None => None,
+        };
+        if observer.observe_authority_filesystem_attempt(
+            requested_path,
+            operation,
+            outcome,
+            resolved_path,
+        ) {
+            summary.filesystem_attempt_events_delivered = summary
+                .filesystem_attempt_events_delivered
+                .saturating_add(1);
+            summary.authority_filesystem_events_delivered = summary
+                .authority_filesystem_events_delivered
+                .saturating_add(1);
+        }
+    }
+}
+
+fn advance_authority_filesystem_event(summary: &mut RustWorkspaceReadFrontierSummary) -> bool {
+    summary.authority_filesystem_events_visited = summary
+        .authority_filesystem_events_visited
+        .saturating_add(1);
+    if summary.authority_filesystem_events_visited > MAX_RUST_READ_FRONTIER_EVENTS {
+        summary.truncated = true;
+        false
+    } else {
+        true
     }
 }
 
@@ -1484,30 +1737,79 @@ impl RustWorkspace {
                     .parent()
                     .unwrap_or(&self.root)
                     .join(include_path);
-                let canonical = fs::canonicalize(&requested).map_err(|source| {
-                    if source.kind() == std::io::ErrorKind::NotFound {
-                        RustAuthorityError::DocumentationInputMissing {
-                            path: requested.clone(),
+                let canonical = match fs::canonicalize(&requested) {
+                    Ok(canonical) => {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.observe_authority_filesystem_attempt(
+                                read_frontier_summary,
+                                &requested,
+                                RustWorkspaceFilesystemOperation::Canonicalize,
+                                RustWorkspaceFilesystemOutcome::Succeeded,
+                                Some(&canonical),
+                            );
                         }
-                    } else {
-                        RustAuthorityError::DocumentationInputRead {
-                            path: requested.clone(),
-                            source,
-                        }
+                        canonical
                     }
-                })?;
+                    Err(source) => {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.observe_authority_filesystem_attempt(
+                                read_frontier_summary,
+                                &requested,
+                                RustWorkspaceFilesystemOperation::Canonicalize,
+                                RustWorkspaceFilesystemOutcome::Failed(source.kind()),
+                                None,
+                            );
+                        }
+                        return Err(if source.kind() == std::io::ErrorKind::NotFound {
+                            RustAuthorityError::DocumentationInputMissing {
+                                path: requested.clone(),
+                            }
+                        } else {
+                            RustAuthorityError::DocumentationInputRead {
+                                path: requested.clone(),
+                                source,
+                            }
+                        });
+                    }
+                };
                 if !canonical.starts_with(&self.root) {
                     return Err(RustAuthorityError::SourceOutsidePackage {
                         root: self.root.clone(),
                         path: canonical,
                     });
                 }
-                let metadata = fs::metadata(&canonical).map_err(|source| {
-                    RustAuthorityError::DocumentationInputRead {
-                        path: canonical.clone(),
-                        source,
+                let metadata = match fs::metadata(&canonical) {
+                    Ok(metadata) => {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.observe_authority_filesystem_attempt(
+                                read_frontier_summary,
+                                &canonical,
+                                RustWorkspaceFilesystemOperation::Metadata,
+                                RustWorkspaceFilesystemOutcome::Metadata {
+                                    length: metadata.len(),
+                                    is_regular_file: metadata.is_file(),
+                                },
+                                None,
+                            );
+                        }
+                        metadata
                     }
-                })?;
+                    Err(source) => {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.observe_authority_filesystem_attempt(
+                                read_frontier_summary,
+                                &canonical,
+                                RustWorkspaceFilesystemOperation::Metadata,
+                                RustWorkspaceFilesystemOutcome::Failed(source.kind()),
+                                None,
+                            );
+                        }
+                        return Err(RustAuthorityError::DocumentationInputRead {
+                            path: canonical.clone(),
+                            source,
+                        });
+                    }
+                };
                 if !metadata.is_file() {
                     return Err(RustAuthorityError::DocumentationInputRead {
                         path: canonical,
@@ -1523,17 +1825,70 @@ impl RustWorkspace {
                 }
                 let mut bytes =
                     Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(usize::MAX));
-                fs::File::open(&canonical)
-                    .map_err(|source| RustAuthorityError::DocumentationInputRead {
-                        path: canonical.clone(),
-                        source,
-                    })?
+                let file = match fs::File::open(&canonical) {
+                    Ok(file) => {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.observe_authority_filesystem_attempt(
+                                read_frontier_summary,
+                                &canonical,
+                                RustWorkspaceFilesystemOperation::Open,
+                                RustWorkspaceFilesystemOutcome::Succeeded,
+                                None,
+                            );
+                        }
+                        file
+                    }
+                    Err(source) => {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.observe_authority_filesystem_attempt(
+                                read_frontier_summary,
+                                &canonical,
+                                RustWorkspaceFilesystemOperation::Open,
+                                RustWorkspaceFilesystemOutcome::Failed(source.kind()),
+                                None,
+                            );
+                        }
+                        return Err(RustAuthorityError::DocumentationInputRead {
+                            path: canonical.clone(),
+                            source,
+                        });
+                    }
+                };
+                let bytes_read = match file
                     .take(maximum_file_bytes.saturating_add(1))
                     .read_to_end(&mut bytes)
-                    .map_err(|source| RustAuthorityError::DocumentationInputRead {
-                        path: canonical.clone(),
-                        source,
-                    })?;
+                {
+                    Ok(bytes_read) => {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.observe_authority_filesystem_attempt(
+                                read_frontier_summary,
+                                &canonical,
+                                RustWorkspaceFilesystemOperation::Read,
+                                RustWorkspaceFilesystemOutcome::Read {
+                                    bytes_read: u64::try_from(bytes_read).unwrap_or(u64::MAX),
+                                },
+                                None,
+                            );
+                        }
+                        bytes_read
+                    }
+                    Err(source) => {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.observe_authority_filesystem_attempt(
+                                read_frontier_summary,
+                                &canonical,
+                                RustWorkspaceFilesystemOperation::Read,
+                                RustWorkspaceFilesystemOutcome::Failed(source.kind()),
+                                None,
+                            );
+                        }
+                        return Err(RustAuthorityError::DocumentationInputRead {
+                            path: canonical.clone(),
+                            source,
+                        });
+                    }
+                };
+                debug_assert_eq!(bytes_read, bytes.len());
                 if let Some(observer) = observer.as_deref_mut() {
                     observer.observe_rustdoc_input(read_frontier_summary, &canonical, &bytes);
                 }
