@@ -24,6 +24,8 @@ required-features = ["gallery"]
 [dependencies]
 gpui.workspace = true
 gpui_component.workspace = true
+tree-sitter.workspace = true
+tree-sitter-c = "=0.24.2"
 sha2.workspace = true
 smallvec.workspace = true
 serde.workspace = true
