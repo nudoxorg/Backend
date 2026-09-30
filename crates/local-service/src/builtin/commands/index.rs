@@ -30,7 +30,8 @@ use backend_semantic::vocabulary::{Language, LanguageProfile};
 use backend_version::{Coverage, ScopeRoot};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -236,6 +237,43 @@ fn prepare_index_project_at(
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     defer: bool,
 ) -> Result<PreparedIndex, BuiltinModelError> {
+    let work = capture_index_scan(
+        daemon,
+        package,
+        label,
+        source_root,
+        coordinate,
+        request_id,
+        execution_intent,
+        owner_cluster.is_some(),
+        Arc::new(AtomicBool::new(false)),
+    )?;
+    finish_index_scan(
+        daemon,
+        run_index_scan(work).map_err(IndexScanFailure::into_model_error)?,
+        compiler,
+        semantic_authority,
+        owner_cluster,
+        pending_stored_acks,
+        defer,
+    )
+}
+
+/// Captures the owner-backed source frontier and workspace root before an
+/// index scan is handed to a worker. This copies only bounded relation data;
+/// filesystem discovery stays outside the owner loop.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_index_scan(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: backend_engine::PackageKey,
+    label: &str,
+    source_root: &Path,
+    coordinate: Option<&PackageUrl>,
+    request_id: u64,
+    execution_intent: CompileExecutionIntent,
+    capture_workspace_snapshot: bool,
+    cancellation: Arc<AtomicBool>,
+) -> Result<IndexScanWork, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
@@ -253,6 +291,11 @@ fn prepare_index_project_at(
             })?,
         None => Vec::new(),
     };
+    if old_files.len() > ProductSourceRecord::MAX_PROJECT_FILES {
+        return Err(BuiltinModelError(
+            "project source frontier exceeds its bounded file limit".to_owned(),
+        ));
+    }
     let mut reusable = BTreeMap::new();
     for key in &old_files {
         let record = relation
@@ -268,15 +311,51 @@ fn prepare_index_project_at(
         }
         reusable.insert(*key, record);
     }
-    let source_coordinate = source_root.to_string_lossy();
-    let scan =
-        ingest::scan_project_for_unproven_authorities(&source_coordinate, project_key, &reusable)
-            .map_err(BuiltinModelError)?;
+    Ok(IndexScanWork {
+        package,
+        label: label.to_owned(),
+        source_root: source_root.to_path_buf(),
+        coordinate: coordinate.cloned(),
+        request_id,
+        execution_intent,
+        project_key,
+        workspace_root: daemon.engine().daemon().owner().head().root(),
+        before,
+        old_files,
+        reusable,
+        capture_workspace_snapshot,
+        cancellation,
+    })
+}
+
+/// Performs filesystem discovery and optional full compiler-workspace capture
+/// using only the immutable input copied from the owner.
+pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, IndexScanFailure> {
+    if work.cancellation.load(Ordering::Acquire) {
+        return Err(IndexScanFailure::Cancelled);
+    }
+    let source_coordinate = work.source_root.to_string_lossy();
+    let scan = ingest::scan_project_for_unproven_authorities_cancellable(
+        &source_coordinate,
+        work.project_key,
+        &work.reusable,
+        &work.cancellation,
+    )
+    .map_err(|error| {
+        if work.cancellation.load(Ordering::Acquire) {
+            IndexScanFailure::Cancelled
+        } else {
+            IndexScanFailure::Refused(BuiltinModelError(error))
+        }
+    })?;
     // Remote execution is available only when a complete, confined workspace
     // inventory can be captured. Failure to build that optional evidence
     // leaves the existing local compile path available.
-    let workspace_snapshot = owner_cluster.and_then(|_| {
-        match ingest::CompilerWorkspaceSnapshot::open(source_root) {
+    let workspace_snapshot = work.capture_workspace_snapshot.then(|| {
+        match ingest::CompilerWorkspaceSnapshot::open_with_cancellation(
+            &work.source_root,
+            Some(&work.cancellation),
+        ) {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 eprintln!(
@@ -285,12 +364,97 @@ fn prepare_index_project_at(
                 None
             }
         }
-    });
+    }).flatten();
+    if work.cancellation.load(Ordering::Acquire) {
+        return Err(IndexScanFailure::Cancelled);
+    }
+    let workspace_is_current = match workspace_snapshot.as_ref() {
+        Some(snapshot) => snapshot
+            .revalidate_with_cancellation(Some(&work.cancellation))
+            .map_err(|error| {
+                if work.cancellation.load(Ordering::Acquire) {
+                    IndexScanFailure::Cancelled
+                } else {
+                    IndexScanFailure::Refused(BuiltinModelError(error))
+                }
+            })?,
+        None => true,
+    };
+    if !ingest::compiler_revision_is_current_with_cancellation(
+        &scan.revision_fence,
+        Some(&work.cancellation),
+    )
+    .map_err(|error| {
+        if work.cancellation.load(Ordering::Acquire) {
+            IndexScanFailure::Cancelled
+        } else {
+            IndexScanFailure::Refused(BuiltinModelError(error))
+        }
+    })? || !workspace_is_current
+    {
+        return Err(IndexScanFailure::Refused(BuiltinModelError(
+            "project files changed while the index scan was running; retry indexing".to_owned(),
+        )));
+    }
+    Ok(IndexScanResult {
+        work,
+        scan,
+        workspace_snapshot,
+    })
+}
+
+/// Completes source and semantic admission on the owner after a worker scan.
+/// The captured workspace root fences the immutable scan input from a newer
+/// owner selection before any candidate observations are prepared.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn finish_index_scan(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    result: IndexScanResult,
+    compiler: &LocalCompilerClient,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
+    pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    defer: bool,
+) -> Result<PreparedIndex, BuiltinModelError> {
+    let current_root = daemon.engine().daemon().owner().head().root();
+    if current_root != result.work.workspace_root {
+        return Err(BuiltinModelError(
+            "workspace selection changed while the project scan was running; retry indexing"
+                .to_owned(),
+        ));
+    }
+    let IndexScanResult {
+        work,
+        scan,
+        workspace_snapshot,
+    } = result;
+    let relation = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .snapshot()
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
+    let IndexScanWork {
+        package,
+        label,
+        source_root,
+        coordinate,
+        request_id,
+        execution_intent,
+        project_key,
+        before,
+        old_files,
+        reusable,
+        ..
+    } = work;
+    let source_root = source_root.as_path();
+    let coordinate = coordinate.as_ref();
     let revision_fence = &scan.revision_fence;
     let inputs = compiler_input_admissions(source_root, &scan, compiler);
     let semantic_context = SemanticCompilationContext::admit(
         package,
-        label,
+        &label,
         source_root,
         coordinate,
         request_id,
@@ -340,7 +504,7 @@ fn prepare_index_project_at(
         );
     }
     let file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project = ProductSourceRecord::project(label, scan.source_version, file_keys.clone())
+    let project = ProductSourceRecord::project(&label, scan.source_version, file_keys.clone())
         .map_err(BuiltinModelError)?;
     let mut changes = Vec::new();
     if before.as_ref() != Some(&project) {
@@ -387,7 +551,7 @@ fn prepare_index_project_at(
             if compiler_exact_witness_is_current(
                 daemon,
                 package,
-                label,
+                &label,
                 coordinate,
                 compiler,
                 source_root,
@@ -418,7 +582,7 @@ fn prepare_index_project_at(
             if defer && owner_cluster.is_none() {
                 return prepare_deferred_compile(
                     package,
-                    label,
+                    &label,
                     changes,
                     &semantic_context,
                     sources,
@@ -447,7 +611,7 @@ fn prepare_index_project_at(
     } else {
         Some(BuiltinIntent::index_with_semantics(
             package,
-            label,
+            &label,
             changes,
             semantic_changes,
         )?)
@@ -456,6 +620,46 @@ fn prepare_index_project_at(
         intent,
         selected,
     }))
+}
+
+/// Owner-captured immutable inputs for one filesystem scan.
+pub(super) struct IndexScanWork {
+    package: backend_engine::PackageKey,
+    label: String,
+    source_root: PathBuf,
+    coordinate: Option<PackageUrl>,
+    request_id: u64,
+    execution_intent: CompileExecutionIntent,
+    project_key: [u8; 32],
+    workspace_root: [u8; 32],
+    before: Option<ProductSourceRecord>,
+    old_files: Vec<[u8; 32]>,
+    reusable: BTreeMap<[u8; 32], ProductSourceRecord>,
+    capture_workspace_snapshot: bool,
+    cancellation: Arc<AtomicBool>,
+}
+
+/// Worker scan outcome, distinguishing an explicit job cancellation from an
+/// invalid or unreadable project.
+pub(super) enum IndexScanFailure {
+    Cancelled,
+    Refused(BuiltinModelError),
+}
+
+impl IndexScanFailure {
+    fn into_model_error(self) -> BuiltinModelError {
+        match self {
+            Self::Cancelled => BuiltinModelError("index scan was cancelled".to_owned()),
+            Self::Refused(error) => error,
+        }
+    }
+}
+
+/// Filesystem scan output paired with the owner state it was captured for.
+pub(super) struct IndexScanResult {
+    work: IndexScanWork,
+    scan: ingest::IndexSnapshot,
+    workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
 }
 
 /// The complete candidate product transaction. Its intent is the one durable
