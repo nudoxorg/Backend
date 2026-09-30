@@ -668,8 +668,10 @@ impl Element for Shingles {
             for line in &wrapped {
                 line.paint(gpui::point(px(lx), px(ly)), px(label_role.line), TextAlign::Left, None, window, cx)
                     .ok();
+                let line_count = 1 + line.wrap_boundaries().len();
                 #[allow(clippy::cast_precision_loss)]
-                ly += (1 + line.wrap_boundaries().len()) as f32 * label_role.line;
+                let line_count = line_count as f32;
+                ly += line_count * label_role.line;
             }
             let label_height = (ly - (oy + ry + pad)).max(label_role.line);
             painted.push((

@@ -604,14 +604,14 @@ impl Element for Ticker {
             };
             let (mut t, mut at, mut words) = place(full, window);
             if t.width() > width {
-                (t, at, words) = place(short, window);
+                (t, at, words) = place(short.clone(), window);
             }
             if t.width() > width {
                 continue;
             }
             let touches = |at: f32, w: f32, spans: &[(f32, f32)]| spans.iter().any(|(a, b)| at < *b + 6.0 * s && at + w > *a - 6.0 * s);
             if touches(at, t.width(), &spans) {
-                (t, at, words) = place(short, window);
+                (t, at, words) = place(short.clone(), window);
             }
             if touches(at, t.width(), &spans) {
                 continue;
