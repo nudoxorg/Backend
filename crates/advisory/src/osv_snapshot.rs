@@ -202,6 +202,7 @@ impl FileLease {
     }
 }
 
+/// Immutable, package-indexed OSV generation selected by an advisory authority.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OsvSnapshotRef {
     generation: String,

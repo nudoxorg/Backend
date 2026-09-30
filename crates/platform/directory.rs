@@ -1,8 +1,9 @@
 //! Directory capabilities for race-resistant local state access.
 //!
-//! A capability pins a directory handle and resolves every child name beneath
-//! that handle. On Unix, every opened component rejects symlinks; on Windows,
-//! operations delegate to the workspace root's handle-relative NT boundary.
+//! A capability resolves its caller-supplied root once, pins the resulting
+//! directory handle, then resolves every child name beneath that handle. On
+//! Unix, opened descendants reject symlinks; on Windows, operations delegate
+//! to the workspace root's handle-relative NT boundary.
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -86,24 +87,26 @@ impl DirectoryCapability {
         }
     }
 
-    /// Opens an existing directory by walking its path without following any
-    /// symbolic link or reparse point.
+    /// Resolves the supplied root once, then opens the resolved directory
+    /// without following links in the resulting path. Every later operation
+    /// is relative to that pinned handle.
     pub fn open(path: &Path) -> io::Result<Self> {
+        let resolved = std::fs::canonicalize(path)?;
         #[cfg(unix)]
         {
-            return open_unix_path(path).map(|handle| Self {
+            return open_unix_path(&resolved).map(|handle| Self {
                 handle: Arc::new(handle),
             });
         }
         #[cfg(windows)]
         {
-            return crate::win32::workspace_fs::WorkspaceRoot::open(path).map(|handle| Self {
+            return crate::win32::workspace_fs::WorkspaceRoot::open(&resolved).map(|handle| Self {
                 handle: Arc::new(handle),
             });
         }
         #[cfg(not(any(unix, windows)))]
         {
-            let _ = path;
+            let _ = resolved;
             Err(unsupported())
         }
     }
