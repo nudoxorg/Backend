@@ -23,7 +23,7 @@ use crate::tokens::motion::{BOUNCE, QUICK};
 use crate::tokens::{Palette, ty};
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::rc::Rc;
 
@@ -436,7 +436,29 @@ impl RenderOnce for Toggle {
                     .child(note),
             );
         }
-        let row = row.id(id).opacity(if self.disabled { 0.4 } else { 1.0 });
+        let mut row = row.id(id).opacity(if self.disabled { 0.4 } else { 1.0 });
+        match self.kind {
+            Kind::Switch(on) => {
+                row = row.role(gpui::Role::Switch).aria_toggled(on.into());
+            }
+            Kind::Check(state) => {
+                let toggled = match state {
+                    Tri::Off => gpui::Toggled::False,
+                    Tri::On => gpui::Toggled::True,
+                    Tri::Mixed => gpui::Toggled::Mixed,
+                };
+                row = row.role(gpui::Role::CheckBox).aria_toggled(toggled);
+            }
+            Kind::Radio(selected) => {
+                row = row.role(gpui::Role::RadioButton).aria_selected(selected);
+            }
+        }
+        if let Some(label) = self.label {
+            row = row.aria_label(label);
+        }
+        if let Some(note) = self.note {
+            row = row.aria_description(note);
+        }
         let row = if active {
             wire(row, &touch, self.on_toggle).into_any_element()
         } else {

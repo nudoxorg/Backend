@@ -579,7 +579,7 @@ impl RenderOnce for Titlebar {
                 .or_else(|| shown_behind.iter().find(|bead| bead.key == item.key))
             else {
                 // A leaving bead we no longer have data for: hold its slot.
-                thread = thread.child(item.slot(div().w(px(bead_hit + strand_w))));
+                thread = thread.child(item.slot(div().w(px(bead_box + strand_w))));
                 continue;
             };
             let age = count
@@ -667,6 +667,9 @@ impl RenderOnce for Titlebar {
                 .id(bead_id)
                 .flex_none()
                 .size(px(bead_hit))
+                // Expand only the hit area; cancel the margin in layout so the
+                // measured thread keeps its original bead-and-strand width.
+                .mx(px((bead_box - bead_hit) * 0.5))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -759,6 +762,7 @@ impl RenderOnce for Titlebar {
                             .id(bead_id)
                             .flex_none()
                             .size(px(bead_hit))
+                            .mx(px((bead_box - bead_hit) * 0.5))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -783,7 +787,7 @@ impl RenderOnce for Titlebar {
                         button
                     })
                     .into_any_element(),
-                None => div().w(px(bead_hit + strand_w)).into_any_element(),
+                None => div().w(px(bead_box + strand_w)).into_any_element(),
             };
             thread = thread.child(item.slot(piece));
         }
@@ -817,6 +821,7 @@ impl RenderOnce for Titlebar {
 
         let mut bar = div()
             .id(id)
+            .role(gpui::Role::TitleBar)
             .flex()
             .flex_none()
             .items_center()

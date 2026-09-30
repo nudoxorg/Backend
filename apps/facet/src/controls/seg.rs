@@ -344,6 +344,12 @@ impl RenderOnce for Seg {
         let id = self.id.clone();
         let count = self.choices.len().max(1);
         let selected = self.selected.min(count - 1);
+        let group_label = self
+            .choices
+            .iter()
+            .map(|choice| choice.name.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
 
         let well = self.style == SegStyle::Well;
         let (item_h, label_role, spread, gap_px) = if well {
@@ -529,6 +535,13 @@ impl RenderOnce for Seg {
             };
             let mut item = div()
                 .id(("choice", index))
+                .role(gpui::Role::RadioButton)
+                .aria_label(choice.name.clone())
+                .aria_selected(index == selected);
+            if index == selected {
+                item = item.aria_active_descendant();
+            }
+            item = item
                 .relative()
                 .flex()
                 .flex_none()
@@ -573,7 +586,7 @@ impl RenderOnce for Seg {
         } else {
             super::clear(palette.inset.into())
         };
-        let well = cut()
+        let mut well = cut()
             .chamfer(Chamfer::Px(f32::from(well_h) * 0.25))
             .edge(well_edge)
             .plate(Plate::Flat)
@@ -585,7 +598,11 @@ impl RenderOnce for Seg {
             .child(plate)
             .child(row)
             .id(id)
+            .role(gpui::Role::RadioGroup)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
+        if !group_label.is_empty() {
+            well = well.aria_label(group_label);
+        }
         let well = if active {
             let entity = touch.entity.clone();
             let select = self.on_select.clone();

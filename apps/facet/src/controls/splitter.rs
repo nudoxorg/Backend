@@ -462,6 +462,13 @@ impl RenderOnce for Splitter {
         let down_id = id.clone();
         let click_change = self.on_change.clone();
         let key_change = self.on_change.clone();
+        let min_width = model
+            .collapsed
+            .map_or(model.min, |spine| spine.min(model.min));
+        let side_name = match side {
+            PanelSide::Left => "left",
+            PanelSide::Right => "right",
+        };
         let mut handle = div()
             .id(id.clone())
             .relative()
@@ -472,6 +479,12 @@ impl RenderOnce for Splitter {
             .cursor_col_resize()
             .track_focus(&focus)
             .tab_index(0)
+            .role(gpui::Role::Splitter)
+            .aria_label(format!("Resize {side_name} panel"))
+            .aria_orientation(gpui::Orientation::Vertical)
+            .aria_min_numeric_value(f64::from(min_width))
+            .aria_max_numeric_value(f64::from(model.max))
+            .aria_numeric_value(f64::from(model.resting()))
             .child(div().absolute().inset_0().child(bar))
             .on_hover(move |inside, _window, cx| {
                 let inside = *inside;
