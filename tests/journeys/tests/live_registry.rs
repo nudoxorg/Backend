@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 
 const DEADLINE: Duration = Duration::from_secs(180);
 const STARTUP_DEADLINE: Duration = Duration::from_secs(45);
+const MAX_LIVE_RESPONSE_BYTES: &str = "33554432";
 const AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
@@ -228,8 +229,12 @@ fn run_bounded_with_input(command: &mut ProcessCommand, input: &[u8], label: &st
 }
 
 fn unique_root(case: LiveCase) -> PathBuf {
+    unique_root_named(case.lane)
+}
+
+fn unique_root_named(label: &str) -> PathBuf {
     if let Some(base) = std::env::var_os("NUDOX_LIVE_WORKSPACE_ROOT") {
-        let path = PathBuf::from(base).join(case.lane);
+        let path = PathBuf::from(base).join(label);
         if path.exists() {
             if std::env::var_os("NUDOX_LIVE_RESET_WORKSPACE").is_some() {
                 std::fs::remove_dir_all(&path).expect("reset live workspace");
@@ -246,7 +251,7 @@ fn unique_root(case: LiveCase) -> PathBuf {
     let serial = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "nudox-live-{}-{}-{}",
-        case.lane,
+        label,
         std::process::id(),
         serial
     ));
@@ -399,12 +404,98 @@ fn curl_get(url: &str, label: &str) -> Vec<u8> {
         .arg("--silent")
         .arg("--show-error")
         .arg("--location")
+        .arg("--max-filesize")
+        .arg(MAX_LIVE_RESPONSE_BYTES)
         .arg("--max-time")
         .arg("30")
         .arg(url);
     let output = run_bounded(command, label);
     assert_process_success(&output, label);
     output.stdout
+}
+
+fn curl_status_and_headers(url: &str, label: &str, if_none_match: Option<&str>) -> (u16, String) {
+    let mut command = ProcessCommand::new("curl");
+    command
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--location")
+        .arg("--max-filesize")
+        .arg(MAX_LIVE_RESPONSE_BYTES)
+        .arg("--max-time")
+        .arg("30")
+        .arg("--dump-header")
+        .arg("-")
+        .arg("--output")
+        .arg("/dev/null")
+        .arg("--write-out")
+        .arg("\nNUDOX_HTTP_STATUS:%{http_code}");
+    if let Some(etag) = if_none_match {
+        command
+            .arg("--header")
+            .arg(format!("If-None-Match: {etag}"));
+    }
+    command.arg(url);
+    let output = run_bounded(command, label);
+    assert_process_success(&output, label);
+    let text = String::from_utf8(output.stdout).expect("HTTP headers UTF-8");
+    let status_line = text
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("NUDOX_HTTP_STATUS:"))
+        .expect("curl status marker");
+    let status = status_line.parse().expect("HTTP status code");
+    (status, text)
+}
+
+fn official_rustsec_etag_evidence() -> serde_json::Value {
+    const URL: &str = "https://raw.githubusercontent.com/RustSec/advisory-db/main/crates/tokio/RUSTSEC-2021-0124.md";
+    let (first_status, first_headers) = curl_status_and_headers(URL, "RustSec source GET", None);
+    assert_eq!(first_status, 200, "RustSec source status");
+    let etag = first_headers
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("etag").then(|| value.trim())
+        })
+        .next_back()
+        .expect("official RustSec response ETag");
+    let (conditional_status, _) =
+        curl_status_and_headers(URL, "RustSec conditional GET", Some(etag));
+    assert_eq!(
+        conditional_status, 304,
+        "official source honors its validator"
+    );
+    serde_json::json!({
+        "url": URL,
+        "initial_status": first_status,
+        "validator": etag,
+        "conditional_status": conditional_status,
+        "source": "live official RustSec advisory document",
+    })
+}
+
+fn official_cargo_index_release(crate_name: &str, version: &str) -> serde_json::Value {
+    let lowercase = crate_name.to_ascii_lowercase();
+    let path = match lowercase.len() {
+        1 => format!("1/{lowercase}"),
+        2 => format!("2/{lowercase}"),
+        3 => format!("3/{}/{}", &lowercase[..1], lowercase),
+        _ => format!("{}/{}/{}", &lowercase[..2], &lowercase[2..4], lowercase),
+    };
+    let url = format!("https://index.crates.io/{path}");
+    let bytes = curl_get(&url, "Cargo sparse index package record");
+    let release = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .find(|row| row.get("vers").and_then(serde_json::Value::as_str) == Some(version))
+        .unwrap_or_else(|| panic!("official Cargo index omitted {crate_name}@{version}"));
+    serde_json::json!({
+        "url": url,
+        "crate": crate_name,
+        "release": release,
+    })
 }
 
 /// Verifies the real native route shape before locald is involved. This
@@ -515,6 +606,18 @@ fn cli_add(endpoint: &Path, coordinate: &str) -> Output {
     run_bounded(process, "live CLI add")
 }
 
+fn cli_add_json(endpoint: &Path, coordinate: &str) -> Output {
+    let mut process = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-cli"));
+    process
+        .arg("--endpoint")
+        .arg(endpoint)
+        .arg("--format")
+        .arg("json")
+        .arg("add")
+        .arg(coordinate);
+    run_bounded(process, "live CLI add JSON")
+}
+
 fn mcp_surface(endpoint: &Path, workspace: &Path, command: SurfaceCommand) -> Output {
     let request = CommandDto::new(1, Command::Surface(command));
     let encoded = encode_request(&request).expect("encode MCP request");
@@ -535,6 +638,38 @@ fn assert_process_success(output: &Output, label: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn absent_release_coordinate(case: LiveCase) -> String {
+    let base = purl_with_version(case)
+        .rsplit_once('@')
+        .map(|(base, _)| base)
+        .expect("purl contains exact version");
+    let version = if case.ecosystem == "pypi" {
+        "99.99.99.post20260930"
+    } else {
+        "99.99.99-nudox-live-absent"
+    };
+    format!("{base}@{version}")
+}
+
+fn typed_cli_fault(output: &Output, label: &str) -> serde_json::Value {
+    assert!(!output.status.success(), "{label} unexpectedly succeeded");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "{label} did not return typed JSON: {error}; stdout={}; stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert_eq!(value["answer"], "fault", "{label} answer kind: {value}");
+    for field in ["slug", "cause", "operand", "detail"] {
+        assert!(
+            value[field].as_str().is_some_and(|text| !text.is_empty()),
+            "{label} omitted typed fault field {field}: {value}"
+        );
+    }
+    value
 }
 
 fn assert_profile_json(output: &Output, purl: &str) {
@@ -615,8 +750,7 @@ fn assert_expected_dependencies(
     match (case.ecosystem, facts) {
         ("cargo", DependencyFacts::Known(rows)) => {
             assert!(rows.iter().any(|row| {
-                row.target.name.as_str() == "ahash"
-                    && row.target.requirement.as_str() == "^0.8.7"
+                row.target.name.as_str() == "ahash" && row.target.requirement.as_str() == "^0.8.7"
             }));
         }
         ("npm", DependencyFacts::Known(rows)) => {
@@ -638,12 +772,18 @@ fn assert_expected_dependencies(
             assert!(!reason.as_str().is_empty());
         }
         ("golang", DependencyFacts::Known(rows)) => {
-            assert!(rows.is_empty(), "the pinned go.mod has no require directives");
+            assert!(
+                rows.is_empty(),
+                "the pinned go.mod has no require directives"
+            );
         }
         ("cpp", DependencyFacts::Unavailable(reason)) => {
             assert!(!reason.as_str().is_empty());
         }
-        (_, other) => panic!("unexpected dependency coverage for {}: {other:?}", case.lane),
+        (_, other) => panic!(
+            "unexpected dependency coverage for {}: {other:?}",
+            case.lane
+        ),
     }
 
     if let DependencyFacts::Known(rows) = facts {
@@ -688,24 +828,37 @@ fn assert_expected_native_metadata(
             let artifact = metadata.artifacts.first().expect("Cargo crate artifact");
             assert_eq!(artifact.filename.as_str(), "hashbrown-0.14.5.crate");
             assert_eq!(artifact.kind, RegistryNativeArtifactKind::CargoCrate);
-            assert_eq!(artifact.checksum.algorithm, RegistryNativeChecksumAlgorithm::Sha256);
+            assert_eq!(
+                artifact.checksum.algorithm,
+                RegistryNativeChecksumAlgorithm::Sha256
+            );
             assert_eq!(artifact.yanked, Some(false));
-            assert_eq!(metadata.published_at.as_deref(), Some("2024-04-28T18:32:09Z"));
+            assert_eq!(
+                metadata.published_at.as_deref(),
+                Some("2024-04-28T18:32:09Z")
+            );
             assert_eq!(metadata.rust_version.as_deref(), Some("1.63.0"));
-            assert!(metadata
-                .features
-                .iter()
-                .any(|feature| feature.name == "default"));
-            assert!(metadata
-                .features2
-                .iter()
-                .any(|feature| feature.name == "nightly"));
+            assert!(
+                metadata
+                    .features
+                    .iter()
+                    .any(|feature| feature.name == "default")
+            );
+            assert!(
+                metadata
+                    .features2
+                    .iter()
+                    .any(|feature| feature.name == "nightly")
+            );
         }
         ("npm", RegistryNativeDetails::Npm(metadata)) => {
             let artifact = metadata.artifacts.first().expect("npm tarball artifact");
             assert!(artifact.filename.ends_with("parser-7.26.8.tgz"));
             assert_eq!(artifact.kind, RegistryNativeArtifactKind::NpmTarball);
-            assert_eq!(artifact.checksum.algorithm, RegistryNativeChecksumAlgorithm::Sha512);
+            assert_eq!(
+                artifact.checksum.algorithm,
+                RegistryNativeChecksumAlgorithm::Sha512
+            );
             assert!(!metadata.dist_tags.is_empty());
         }
         ("pypi", RegistryNativeDetails::Pypi(metadata)) => {
@@ -719,7 +872,11 @@ fn assert_expected_native_metadata(
         }
         ("maven", RegistryNativeDetails::Maven(metadata)) => {
             let artifact = metadata.artifacts.first().expect("Maven JAR artifact");
-            assert!(artifact.filename.ends_with("jackson-annotations-2.16.1.jar"));
+            assert!(
+                artifact
+                    .filename
+                    .ends_with("jackson-annotations-2.16.1.jar")
+            );
             assert_eq!(artifact.kind, RegistryNativeArtifactKind::MavenJar);
             assert!(matches!(
                 &metadata.checksum,
@@ -757,7 +914,10 @@ fn assert_expected_native_metadata(
             assert_eq!(source.version, "v1.4.0");
             assert!(metadata.retracts.is_empty());
             assert_eq!(metadata.artifacts.len(), 1);
-            assert_eq!(metadata.artifacts[0].kind, RegistryNativeArtifactKind::GoSource);
+            assert_eq!(
+                metadata.artifacts[0].kind,
+                RegistryNativeArtifactKind::GoSource
+            );
         }
         ("cpp", RegistryNativeDetails::Cpp(metadata)) => {
             assert_eq!(
@@ -778,7 +938,7 @@ fn assert_registry_facts(
     endpoint: &Path,
     coordinate: &str,
     package_name: &str,
-) -> u64 {
+) -> (u64, backend_library::RegistryPackageRecord) {
     let package = PackageReference::parse(coordinate).expect("registry package reference");
     let source_id = official_native_source_id(case);
     let mut session = Session::connect(endpoint).expect("registry facts session connect");
@@ -908,7 +1068,7 @@ fn assert_registry_facts(
         }
         reply => panic!("registry owner reply changed shape: {reply:?}"),
     }
-    record.bytes
+    (record.bytes, record)
 }
 
 fn assert_desktop_root(endpoint: &Path, workspace: &Path) -> (backend_library::ViewRoot, String) {
@@ -1020,6 +1180,7 @@ fn write_live_artifacts(
     workspace: &Path,
     action_names: &[&str],
     archive_bytes: u64,
+    observed_record: &backend_library::RegistryPackageRecord,
     elapsed: Duration,
 ) {
     let directory = live_artifact_root().join(case.lane);
@@ -1054,6 +1215,11 @@ fn write_live_artifacts(
         "staging": "confined",
         "index": "durable",
         "archive_bytes": archive_bytes,
+        // Preserve the exact product-returned authority, completeness,
+        // freshness, native metadata, dependency-independent release facts,
+        // download state, and advisory decision. This is runtime evidence,
+        // not a parallel fixture projection.
+        "observed_registry_record": observed_record,
         "elapsed_ms": elapsed.as_millis(),
         "surfaces": ["cli", "mcp", "desktop-model"],
         "gui_prepopulate": true,
@@ -1172,6 +1338,191 @@ fn unconfigured_registry_is_an_explicit_typed_empty_state() {
 }
 
 #[test]
+#[ignore = "requires NUDOX_LIVE_REGISTRY=1 and official registry/network access"]
+fn official_registries_report_absent_releases_as_typed_not_found() {
+    let mut outcomes = Vec::new();
+    for case in selected_case() {
+        assert_nix_pin(case);
+        let root = unique_root_named(&format!("{}-absent", case.lane));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create absent-release workspace");
+        let endpoint = endpoint_for(&workspace);
+        let authority = authority_secret(&root);
+        let mut owner =
+            ChildGuard::spawn(&locald_args(&endpoint, &workspace, &authority, case, false));
+        wait_for_socket(&endpoint, &mut owner);
+
+        let coordinate = absent_release_coordinate(case);
+        let output = cli_add_json(&endpoint, &coordinate);
+        let fault = typed_cli_fault(&output, "official absent-release add");
+        assert!(
+            fault["operand"]
+                .as_str()
+                .is_some_and(|operand| operand.contains(&coordinate)),
+            "absent-release fault lost its exact coordinate: {fault}"
+        );
+        assert!(
+            fault["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.to_ascii_lowercase().contains("not found")),
+            "official source absence did not remain a typed not-found: {fault}"
+        );
+        outcomes.push(serde_json::json!({
+            "lane": case.lane,
+            "coordinate": coordinate,
+            "configured_official_source": case.endpoint,
+            "metadata_endpoint": native_metadata_endpoint(case),
+            "cli_fault": fault,
+        }));
+        owner.crash();
+        if !keep_workspace() {
+            std::fs::remove_dir_all(root).expect("remove absent-release workspace");
+        }
+    }
+
+    let path = live_artifact_root().join("official-absence-matrix.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create official failure artifact directory");
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "nudox.live.registry-absence-matrix.v1",
+            "fact_origin": "production native registry adapters against configured official sources",
+            "expected_fact": "exact release absent",
+            "outcomes": outcomes,
+        }))
+        .expect("encode official absence matrix"),
+    )
+    .expect("write official absence matrix");
+}
+
+#[test]
+#[ignore = "requires NUDOX_LIVE_REGISTRY=1 and official Cargo/RustSec network access"]
+fn official_cargo_yank_and_rustsec_advisory_remain_typed_source_facts() {
+    let serde_release = official_cargo_index_release("serde", "1.0.31");
+    assert_eq!(serde_release["release"]["yanked"], true);
+    let tokio_release = official_cargo_index_release("tokio", "1.13.0");
+    assert_eq!(tokio_release["release"]["yanked"], false);
+
+    const ADVISORY_URL: &str = "https://raw.githubusercontent.com/RustSec/advisory-db/main/crates/tokio/RUSTSEC-2021-0124.md";
+    let advisory_bytes = curl_get(ADVISORY_URL, "official RustSec advisory document");
+    let advisory_text = String::from_utf8(advisory_bytes.clone()).expect("RustSec UTF-8");
+    assert!(advisory_text.contains("id = \"RUSTSEC-2021-0124\""));
+    assert!(advisory_text.contains("package = \"tokio\""));
+    assert!(advisory_text.contains("<= 1.13.0"));
+
+    let case = CASES[0];
+    let root = unique_root_named("cargo-security-facts");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create Cargo security workspace");
+    let endpoint = endpoint_for(&workspace);
+    let authority = authority_secret(&root);
+    let mut args = locald_args(&endpoint, &workspace, &authority, case, false);
+    args.push(OsString::from("--advisory-rustsec"));
+    args.push(OsString::from(ADVISORY_URL));
+    let mut owner = ChildGuard::spawn(&args);
+    wait_for_socket(&endpoint, &mut owner);
+
+    let mut session = Session::connect(&endpoint).expect("Cargo security session");
+    let refreshed = session
+        .surface(SurfaceCommand::AdvisoryRefresh)
+        .expect("refresh official RustSec source");
+    let SurfaceReply::AdvisoryRefreshed(sources) = refreshed else {
+        panic!("advisory refresh reply changed shape: {refreshed:?}");
+    };
+    assert_eq!(
+        sources.len(),
+        1,
+        "only the explicit RustSec source is configured"
+    );
+    let rustsec = sources
+        .iter()
+        .find(|source| source.source == "rustsec")
+        .expect("RustSec source state");
+    assert_eq!(rustsec.advisories, 1, "one official advisory was admitted");
+    assert!(
+        !rustsec.complete,
+        "one advisory document is not complete coverage"
+    );
+    assert!(
+        rustsec.error.is_none(),
+        "official advisory refresh failed: {rustsec:?}"
+    );
+    let rustsec_state = serde_json::json!({
+        "source": &rustsec.source,
+        "scope": &rustsec.scope,
+        "complete": rustsec.complete,
+        "advisories": rustsec.advisories,
+        "observed_at": rustsec.observed_at,
+        "expires_at": rustsec.expires_at,
+        "error": &rustsec.error,
+    });
+
+    let vulnerable_coordinate = "pkg:cargo/tokio@1.13.0";
+    let vulnerable = typed_cli_fault(
+        &cli_add_json(&endpoint, vulnerable_coordinate),
+        "officially vulnerable Tokio release",
+    );
+    let vulnerable_detail = vulnerable["detail"]
+        .as_str()
+        .expect("typed advisory refusal detail")
+        .to_ascii_lowercase();
+    assert!(
+        vulnerable_detail.contains("rustsec-2021-0124")
+            || vulnerable_detail.contains("vulnerab")
+            || vulnerable_detail.contains("advisory"),
+        "real matching advisory did not explain the refusal: {vulnerable}"
+    );
+
+    let yanked_coordinate = "pkg:cargo/serde@1.0.31";
+    let yanked = typed_cli_fault(
+        &cli_add_json(&endpoint, yanked_coordinate),
+        "officially yanked Serde release",
+    );
+    assert!(
+        yanked["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.to_ascii_lowercase().contains("yanked")),
+        "real publisher yank did not remain visible: {yanked}"
+    );
+
+    owner.crash();
+    let rustsec_validator = official_rustsec_etag_evidence();
+    let path = live_artifact_root().join("official-cargo-security-facts.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create Cargo security artifact directory");
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "nudox.live.cargo-security-facts.v1",
+            "source_facts": {
+                "yanked_release": serde_release,
+                "vulnerable_release": tokio_release,
+                "rustsec_document": {
+                    "url": ADVISORY_URL,
+                    "id": "RUSTSEC-2021-0124",
+                    "text_bytes": advisory_text.len(),
+                },
+                "conditional_get": rustsec_validator,
+                "product_refresh_state": rustsec_state,
+            },
+            "production_outcomes": {
+                "vulnerable_release": vulnerable,
+                "yanked_release": yanked,
+                "unavailable_http_429": "not induced against official services; retry behavior stays covered by the bounded transport test suite",
+            },
+        }))
+        .expect("encode Cargo security evidence"),
+    )
+    .expect("write Cargo security evidence");
+    if !keep_workspace() {
+        std::fs::remove_dir_all(root).expect("remove Cargo security workspace");
+    }
+}
+
+#[test]
 #[ignore = "requires NUDOX_LIVE_REGISTRY=1 and real registry/network/toolchain access"]
 fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
     assert_native_protocol_routes();
@@ -1200,7 +1551,8 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
         } else {
             case.package_name
         };
-        let archive_bytes = assert_registry_facts(case, &endpoint, &coordinate, recorded_name);
+        let (archive_bytes, observed_record) =
+            assert_registry_facts(case, &endpoint, &coordinate, recorded_name);
         let profile = cli_surface(
             &endpoint,
             SurfaceCommand::PackageProfile {
@@ -1325,6 +1677,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
                 "warm-offline-read",
             ],
             archive_bytes,
+            &observed_record,
             started.elapsed(),
         );
         drop(offline_owner);
