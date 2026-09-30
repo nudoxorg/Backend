@@ -86,6 +86,18 @@ impl<E: Endpoint> Reconnecting<E> {
         }
     }
 
+    /// Defers opening the first product connection until the first operation
+    /// that needs the owner. This lets the MCP handshake and static tool
+    /// discovery complete while the local daemon is unavailable; the first
+    /// owner-backed request then receives the ordinary typed connection
+    /// failure instead of the process exiting before it reads stdin.
+    pub(crate) const fn disconnected(endpoint: E) -> Self {
+        Self {
+            endpoint,
+            product: None,
+        }
+    }
+
     /// Runs one call, reopening the connection if it is gone.
     ///
     /// `call` is invoked at most twice and only ever a second time when the

@@ -38,6 +38,8 @@ use serde::{
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::io::Read;
 use std::io::{self, BufRead, Write};
 
 mod codec;
@@ -245,17 +247,13 @@ impl reconnect::Endpoint for SessionEndpoint {
 
 pub(super) type ReconnectingProduct = reconnect::Reconnecting<SessionEndpoint>;
 
-pub(super) fn reconnecting_product(
-    session: Session,
+pub(super) fn disconnected_reconnecting_product(
     paths: &backend_runtime::WorkspacePaths,
 ) -> ReconnectingProduct {
-    reconnect::Reconnecting::new(
-        SessionEndpoint {
-            paths: paths.clone(),
-            pending_continuation_state: None,
-        },
-        SessionProduct::new(session),
-    )
+    reconnect::Reconnecting::disconnected(SessionEndpoint {
+        paths: paths.clone(),
+        pending_continuation_state: None,
+    })
 }
 
 /// Converts a daemon restart window into the same reconnectable class as a
@@ -289,18 +287,13 @@ const fn is_disconnect_kind(kind: io::ErrorKind) -> bool {
 
 /// Runs newline-delimited MCP stdio until the client closes stdin.
 pub(super) fn serve_stdio(
-    session: Session,
     paths: &backend_runtime::WorkspacePaths,
     project: String,
     cursor_secret: [u8; 32],
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> io::Result<()> {
-    let endpoint = SessionEndpoint {
-        paths: paths.clone(),
-        pending_continuation_state: None,
-    };
-    let product = reconnect::Reconnecting::new(endpoint, SessionProduct::new(session));
+    let product = disconnected_reconnecting_product(paths);
     let working_directory = std::env::current_dir()
         .ok()
         .map(backend_runtime::normalize_surface_path)
@@ -1052,6 +1045,41 @@ pub(super) fn read_authority_secret(path: &std::path::Path) -> Result<[u8; 32], 
             path.display()
         )
     })
+}
+
+pub(super) fn cursor_secret(paths: &backend_runtime::WorkspacePaths) -> Result<[u8; 32], String> {
+    match backend_engine::read_authority_secret(paths.authority_secret()) {
+        Ok(secret) => Ok(secret),
+        Err(backend_engine::AuthoritySecretError::Io(io::ErrorKind::NotFound)) => {
+            // Preserve the normal durable key for a new workspace. If private
+            // state cannot be initialized, a process-only random key is still
+            // sufficient to authenticate this MCP process's cursors while an
+            // unavailable owner is being reported through JSON-RPC. Such
+            // cursors naturally expire when this process exits.
+            match paths.initialize() {
+                Ok(()) => read_authority_secret(paths.authority_secret()),
+                Err(_) => process_cursor_secret(),
+            }
+        }
+        Err(error) => Err(format!(
+            "cannot admit MCP authority secret {}: {error}",
+            paths.authority_secret().display()
+        )),
+    }
+}
+
+fn process_cursor_secret() -> Result<[u8; 32], String> {
+    let mut secret = [0_u8; 32];
+    #[cfg(unix)]
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut secret))
+        .map_err(|error| format!("cannot create process MCP cursor authority: {error}"))?;
+    #[cfg(windows)]
+    backend_platform::win32::random::fill(&mut secret)
+        .map_err(|error| format!("cannot create process MCP cursor authority: {error}"))?;
+    #[cfg(not(any(unix, windows)))]
+    return Err("MCP cursor authority is unsupported on this platform".to_owned());
+    Ok(secret)
 }
 
 fn unix_seconds() -> u64 {
