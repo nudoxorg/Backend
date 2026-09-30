@@ -1450,20 +1450,32 @@ fn cold_posting_cover_counts_distinct_edges_across_case_and_field_duplicates() {
 #[test]
 fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
     let id = document(20);
+    let stable_id = document(21);
     let initial = state_for(
-        vec![(id, vec![("name".into(), "initialtoken".into())])],
+        vec![
+            (id, vec![("name".into(), "initialtoken".into())]),
+            (stable_id, vec![("name".into(), "stablecanary".into())]),
+        ],
         [0x94; 32],
     );
     let mut source = TantivySource::build(&initial, Limits::default()).expect("initial source");
     let _no_automatic_merges = crate::engine::test_support::no_automatic_merges_for_test();
+    let initial_searcher = source.reader.searcher();
+    assert_eq!(
+        initial_searcher.segment_readers().len(),
+        1,
+        "the two initial rows must share the segment whose tombstone remains observable"
+    );
+    assert_eq!(initial_searcher.segment_readers()[0].max_doc(), 2);
+    drop(initial_searcher);
     let (initial_edges, initial_work_units) =
         crate::engine::test_support::validate_posting_cover_with_work_budget(
             &source,
             &initial,
             u64::MAX,
         )
-        .expect("one live token is within the test budget");
-    assert_eq!(initial_edges, 4);
+        .expect("two live tokens are within the test budget");
+    assert_eq!(initial_edges, 8);
     assert_eq!(
         crate::engine::test_support::validate_posting_cover_with_work_budget(
             &source,
@@ -1475,14 +1487,20 @@ fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
     );
 
     let retired = state_for(
-        vec![(id, vec![("name".into(), "retiredtoken".into())])],
+        vec![
+            (id, vec![("name".into(), "retiredtoken".into())]),
+            (stable_id, vec![("name".into(), "stablecanary".into())]),
+        ],
         [0x95; 32],
     );
     source
         .maintain(&retired, OverlayLimits::default())
         .expect("first one-row revision");
     let selected = state_for(
-        vec![(id, vec![("name".into(), "finaltoken".into())])],
+        vec![
+            (id, vec![("name".into(), "finaltoken".into())]),
+            (stable_id, vec![("name".into(), "stablecanary".into())]),
+        ],
         [0x96; 32],
     );
     source
@@ -1502,10 +1520,10 @@ fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
             u64::MAX,
         )
         .expect("live-only source scan");
-    assert_eq!(selected_live_edges, 4);
+    assert_eq!(selected_live_edges, 8);
     assert_eq!(
-        selected_live_work_units, 60,
-        "independent bound: four term keys (10+10+16+16 bytes), four dictionary visits, and four posting edges"
+        selected_live_work_units, 128,
+        "independent bound: key bytes 2*(10+16+12+18)=112, plus eight dictionary visits and eight posting edges"
     );
 
     let error = crate::engine::test_support::validate_posting_cover_with_work_budget(
@@ -1526,6 +1544,7 @@ fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
         "resource refusal must preserve a potentially valid root"
     );
     assert_eq!(term_hits(&source, "finaltoken"), vec![id]);
+    assert_eq!(term_hits(&source, "stablecanary"), vec![stable_id]);
     assert!(term_hits(&source, "initialtoken").is_empty());
     assert!(term_hits(&source, "retiredtoken").is_empty());
 }

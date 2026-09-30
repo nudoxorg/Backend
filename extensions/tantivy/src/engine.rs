@@ -1528,7 +1528,7 @@ impl TantivySource {
 
     #[cfg(test)]
     fn force_merge_after_commit_for_test(&mut self) -> Result<(), TantivySourceError> {
-        if !TEST_FORCE_MERGE_AFTER_NEXT_COMMIT.with(std::cell::Cell::replace(false)) {
+        if !TEST_FORCE_MERGE_AFTER_NEXT_COMMIT.with(|requested| requested.replace(false)) {
             return Ok(());
         }
         let searcher = self.reader.searcher();
