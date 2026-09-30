@@ -49,6 +49,8 @@ impl MappedSemanticImage {
 pub struct MappedSemanticImageRangeMetrics {
     /// Exact selected payload bytes copied into the mapping.
     pub bytes_read: u64,
+    /// Exact payload bytes hashed while each range was copied into the mapping.
+    pub identity_hash_bytes: u64,
     /// Number of bounded source-range calls used to fill the mapping.
     pub range_reads: u64,
 }
@@ -124,6 +126,7 @@ pub fn load_semantic_image_mmap_from_ranges<E>(
 
     let mut offset = 0_u64;
     let mut range_reads = 0_u64;
+    let mut identity_builder = SemanticImageIdentityBuilder::new();
     while offset < total_length {
         if is_cancelled() {
             return Err(MappedSemanticImageRangeError::Cancelled);
@@ -174,6 +177,7 @@ pub fn load_semantic_image_mmap_from_ranges<E>(
                 observed,
             });
         }
+        identity_builder.update(output);
         offset = offset
             .checked_add(u64::try_from(count).map_err(|_| {
                 MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileTooLarge {
@@ -198,17 +202,21 @@ pub fn load_semantic_image_mmap_from_ranges<E>(
             source,
         })
     })?;
-    let image = admit_mapping(
+    let (observed_identity, observed_generation) = identity_builder.finish();
+    let image = admit_mapping_with_identities(
         mapping,
         mapping_length,
         expected_identity,
         expected_generation,
+        observed_identity,
+        observed_generation,
     )
     .map_err(MappedSemanticImageRangeError::Mapping)?;
     Ok((
         image,
         MappedSemanticImageRangeMetrics {
             bytes_read: total_length,
+            identity_hash_bytes: total_length,
             range_reads,
         },
     ))
@@ -408,6 +416,24 @@ fn admit_mapping(
     expected_generation: GenerationId,
 ) -> Result<MappedSemanticImage, MappedSemanticImageError> {
     let (observed_identity, observed_generation) = identities(&mapping);
+    admit_mapping_with_identities(
+        mapping,
+        mapping_length,
+        expected_identity,
+        expected_generation,
+        observed_identity,
+        observed_generation,
+    )
+}
+
+fn admit_mapping_with_identities(
+    mapping: Mmap,
+    mapping_length: usize,
+    expected_identity: SemanticImageIdentity,
+    expected_generation: GenerationId,
+    observed_identity: SemanticImageIdentity,
+    observed_generation: GenerationId,
+) -> Result<MappedSemanticImage, MappedSemanticImageError> {
     if observed_identity != expected_identity {
         return Err(MappedSemanticImageError::Identity {
             expected: expected_identity,
@@ -431,15 +457,36 @@ fn admit_mapping(
     })
 }
 
-fn identities(bytes: &[u8]) -> (SemanticImageIdentity, GenerationId) {
-    let mut image_hasher = ArtifactHasher::<IrSemanticImageEncoding, IrSemanticImageDomain>::new();
-    let mut generation_hasher = blake3::Hasher::new();
-    for chunk in bytes.chunks(16 * 1024) {
-        image_hasher.write_chunk(chunk);
-        generation_hasher.update(chunk);
+struct SemanticImageIdentityBuilder {
+    image: ArtifactHasher<IrSemanticImageEncoding, IrSemanticImageDomain>,
+    generation: blake3::Hasher,
+}
+
+impl SemanticImageIdentityBuilder {
+    fn new() -> Self {
+        Self {
+            image: ArtifactHasher::<IrSemanticImageEncoding, IrSemanticImageDomain>::new(),
+            generation: blake3::Hasher::new(),
+        }
     }
-    (
-        image_hasher.finalize(),
-        GenerationId::from_raw(*generation_hasher.finalize().as_bytes()),
-    )
+
+    fn update(&mut self, bytes: &[u8]) {
+        self.image.write_chunk(bytes);
+        self.generation.update(bytes);
+    }
+
+    fn finish(self) -> (SemanticImageIdentity, GenerationId) {
+        (
+            self.image.finalize(),
+            GenerationId::from_raw(*self.generation.finalize().as_bytes()),
+        )
+    }
+}
+
+fn identities(bytes: &[u8]) -> (SemanticImageIdentity, GenerationId) {
+    let mut identity_builder = SemanticImageIdentityBuilder::new();
+    for chunk in bytes.chunks(16 * 1024) {
+        identity_builder.update(chunk);
+    }
+    identity_builder.finish()
 }

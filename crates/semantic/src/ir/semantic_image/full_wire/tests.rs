@@ -222,6 +222,11 @@ fn mapped_image_range_loader_writes_exact_ranges_into_the_mapping() {
         u64::try_from(bytes.len()).expect("length fits")
     );
     assert_eq!(
+        metrics.identity_hash_bytes,
+        u64::try_from(bytes.len()).expect("length fits"),
+        "both selected identities are accumulated during the source reads",
+    );
+    assert_eq!(
         usize::try_from(metrics.range_reads).expect("range count fits"),
         expected_ranges
     );
