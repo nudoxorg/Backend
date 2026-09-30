@@ -32,7 +32,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -279,6 +279,88 @@ impl Drop for Locald {
         }
         let _ = std::fs::remove_file(&self.endpoint);
     }
+}
+
+struct ProcessRssSampler {
+    stop: Arc<AtomicBool>,
+    owner_pid: Arc<AtomicU32>,
+    samples: Arc<AtomicUsize>,
+    peak_kb: Arc<AtomicUsize>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl ProcessRssSampler {
+    fn start(owner_pid: u32) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let current_owner = Arc::new(AtomicU32::new(owner_pid));
+        let samples = Arc::new(AtomicUsize::new(0));
+        let peak_kb = Arc::new(AtomicUsize::new(0));
+        let thread_stop = Arc::clone(&stop);
+        let thread_owner = Arc::clone(&current_owner);
+        let thread_samples = Arc::clone(&samples);
+        let thread_peak = Arc::clone(&peak_kb);
+        let client_pid = std::process::id();
+        let join = thread::Builder::new()
+            .name("backend-remote-index-rss".to_owned())
+            .spawn(move || {
+                while !thread_stop.load(Ordering::Acquire) {
+                    let owner_pid = thread_owner.load(Ordering::Acquire);
+                    if let (Some(client), Some(owner)) =
+                        (process_rss_kb(client_pid), process_rss_kb(owner_pid))
+                    {
+                        thread_peak.fetch_max(client.saturating_add(owner), Ordering::Relaxed);
+                        thread_samples.fetch_add(1, Ordering::Relaxed);
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+            })
+            .expect("start remote owner/client RSS sampler");
+        Self {
+            stop,
+            owner_pid: current_owner,
+            samples,
+            peak_kb,
+            join: Some(join),
+        }
+    }
+
+    fn set_owner_pid(&self, owner_pid: u32) {
+        self.owner_pid.store(owner_pid, Ordering::Release);
+    }
+
+    fn finish(mut self) -> (usize, usize) {
+        self.stop.store(true, Ordering::Release);
+        self.join
+            .take()
+            .expect("RSS sampler thread exists")
+            .join()
+            .expect("join remote owner/client RSS sampler");
+        (
+            self.samples.load(Ordering::Relaxed),
+            self.peak_kb.load(Ordering::Relaxed),
+        )
+    }
+}
+
+impl Drop for ProcessRssSampler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn process_rss_kb(pid: u32) -> Option<usize> {
+    let pid = pid.to_string();
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
 fn run(command: &mut Command, label: &str) -> Output {
@@ -573,6 +655,12 @@ fn exercise_remote_s3_range_interrupt(
         *selected,
         "owner restart for remote S3 range serving changed the selected generation"
     );
+    let owner_pid = locald
+        .child
+        .as_ref()
+        .expect("remote owner child is running")
+        .id();
+    let rss_sampler = ProcessRssSampler::start(owner_pid);
 
     let client_secret = SecretKey::generate();
     let client_secret_bytes = client_secret.to_bytes();
@@ -777,6 +865,13 @@ fn exercise_remote_s3_range_interrupt(
         "owner did not stop before range reconnect"
     );
     *locald = Locald::launch(endpoint, workspace, authority_secret, Some(s3), true);
+    rss_sampler.set_owner_pid(
+        locald
+            .child
+            .as_ref()
+            .expect("restarted owner child is running")
+            .id(),
+    );
     assert_eq!(
         selected_generation(runtime, authority, namespace),
         *selected,
@@ -964,6 +1059,21 @@ fn exercise_remote_s3_range_interrupt(
     assert!(
         low_response_bytes > 0 && low_response_bytes <= low_byte_budget,
         "quota refusal response was not durably byte-metered within its grant"
+    );
+    let (rss_samples, peak_combined_rss_kb) = rss_sampler.finish();
+    assert!(
+        rss_samples > 0,
+        "could not sample owner/client RSS during transfer"
+    );
+    let rss_limit_kb = std::env::var("REMOTE_INDEX_RSS_LIMIT_KB")
+        .map(|value| value.parse::<usize>().expect("valid RSS ceiling"))
+        .unwrap_or(2 * 1024 * 1024);
+    assert!(
+        peak_combined_rss_kb <= rss_limit_kb,
+        "combined owner/client RSS {peak_combined_rss_kb} KiB exceeded ceiling {rss_limit_kb} KiB"
+    );
+    eprintln!(
+        "remote S3 range journey sampled combined owner/client RSS: {peak_combined_rss_kb} KiB (ceiling {rss_limit_kb} KiB)"
     );
     assert!(
         locald.running(),
