@@ -2583,8 +2583,14 @@ for identity in items:
         let (workspace, view) = super::super::tests::selected_view();
         let coverage = crate::builtin::admitted_coverage().expect("coverage");
         let evidence = super::super::tests::semantic_evidence(workspace, &view);
-        let coordinator = QueryCoordinator::new(workspace, view.clone(), coverage, evidence)
-            .expect("coordinator");
+        let coordinator = QueryCoordinator::new(
+            workspace,
+            view.clone(),
+            view.capability().cloned().expect("view capability"),
+            coverage,
+            evidence,
+        )
+        .expect("coordinator");
         let semantic_documents = collect_semantic_documents(&coordinator);
         let target_index = semantic_documents
             .iter()
@@ -2661,8 +2667,14 @@ for identity in items:
         )
         .expect("next view");
         let next_evidence = super::super::tests::semantic_evidence(workspace, &next_view);
-        let next = QueryCoordinator::new(workspace, next_view, coverage, next_evidence)
-            .expect("next coordinator");
+        let next = QueryCoordinator::new(
+            workspace,
+            next_view.clone(),
+            next_view.capability().cloned().expect("view capability"),
+            coverage,
+            next_evidence,
+        )
+        .expect("next coordinator");
         let stale_local = next
             .search_local(LocalQuery::prefix("alpha", 3).expect("query"))
             .expect("next local search");
@@ -2918,8 +2930,14 @@ for identity in items:
         )
         .expect("next view");
         let next_evidence = super::super::tests::semantic_evidence(workspace, &next_view);
-        let next = QueryCoordinator::new(workspace, next_view, coverage, next_evidence)
-            .expect("next coordinator");
+        let next = QueryCoordinator::new(
+            workspace,
+            next_view.clone(),
+            next_view.capability().cloned().expect("view capability"),
+            coverage,
+            next_evidence,
+        )
+        .expect("next coordinator");
         let mut next_documents = documents;
         next_documents.push(QdrantDocument {
             row: extra_id,
@@ -2999,8 +3017,14 @@ for identity in items:
         )
         .expect("smaller view");
         let next_evidence = super::super::tests::semantic_evidence(workspace, &next_view);
-        let next = QueryCoordinator::new(workspace, next_view, coverage, next_evidence)
-            .expect("next coordinator");
+        let next = QueryCoordinator::new(
+            workspace,
+            next_view.clone(),
+            next_view.capability().cloned().expect("view capability"),
+            coverage,
+            next_evidence,
+        )
+        .expect("next coordinator");
         let second = configured
             .activate(&next, coverage, kept_documents)
             .expect("rebound survivors");
@@ -3032,8 +3056,14 @@ for identity in items:
         let (workspace, view) = super::super::tests::selected_view();
         let coverage = crate::builtin::admitted_coverage().expect("coverage");
         let evidence = super::super::tests::semantic_evidence(workspace, &view);
-        let coordinator =
-            QueryCoordinator::new(workspace, view, coverage, evidence).expect("coordinator");
+        let coordinator = QueryCoordinator::new(
+            workspace,
+            view.clone(),
+            view.capability().cloned().expect("view capability"),
+            coverage,
+            evidence,
+        )
+        .expect("coordinator");
         let semantic_documents = collect_semantic_documents(&coordinator);
         let target_index = semantic_documents
             .iter()
@@ -3083,8 +3113,14 @@ for identity in items:
         let (workspace, view) = super::super::tests::selected_view();
         let coverage = crate::builtin::admitted_coverage().expect("coverage");
         let evidence = super::super::tests::semantic_evidence(workspace, &view);
-        let coordinator =
-            QueryCoordinator::new(workspace, view, coverage, evidence).expect("coordinator");
+        let coordinator = QueryCoordinator::new(
+            workspace,
+            view.clone(),
+            view.capability().cloned().expect("view capability"),
+            coverage,
+            evidence,
+        )
+        .expect("coordinator");
         let row = collect_semantic_documents(&coordinator)
             .first()
             .expect("semantic document")
