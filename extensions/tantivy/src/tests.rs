@@ -776,6 +776,31 @@ fn case_policy_is_explicit_and_bound_into_query_identity() {
 }
 
 #[test]
+fn streamed_query_identity_preserves_the_canonical_cursor_version() {
+    let query = Query::with_policy(
+        vec!["BETA".into(), "Alpha".into()],
+        MatchMode::Prefix,
+        FieldSelection::Only("name".into()),
+        Limits::default(),
+    )
+    .expect("field-qualified prefix query");
+    let mut canonical = vec![2, 2, 1];
+    canonical.extend_from_slice(&4_u64.to_be_bytes());
+    canonical.extend_from_slice(b"name");
+    for term in ["alpha", "beta"] {
+        canonical.extend_from_slice(&(term.len() as u64).to_be_bytes());
+        canonical.extend_from_slice(term.as_bytes());
+    }
+    assert_eq!(
+        query.version,
+        QueryVersion::from_value(canonical.as_slice())
+    );
+    query
+        .validate(Limits::default())
+        .expect("validate stream identity");
+}
+
+#[test]
 fn ranked_cursor_pages_refill_without_per_page_truncation() {
     let documents = vec![
         (document(1), vec![("name".into(), "map_or_else".into())]),
@@ -1142,6 +1167,49 @@ fn oversized_query_scratch_is_refused_before_scorer_compilation() {
             })
             .expect_err("page query setup must fit the scratch budget"),
     );
+    assert_eq!(source.rank_evaluations(), 0);
+    assert_eq!(source.rank_docs_visited(), 0);
+}
+
+#[test]
+fn field_qualified_query_admission_accounts_for_coexisting_prefix_copies() {
+    const FIELD_BYTES: usize = 8_192;
+    const SCRATCH_BUDGET: usize = 10_000;
+    let field = "f".repeat(FIELD_BYTES);
+    let limits = Limits::default();
+    let query = Query::with_policy(
+        vec!["x".into()],
+        MatchMode::Exact,
+        FieldSelection::Only(field.clone()),
+        limits,
+    )
+    .expect("large field-qualified query");
+    let (binding, coverage) = binding(&[]);
+    let state = DocumentState::new(binding, coverage, Vec::new(), limits).expect("empty state");
+    let source = TantivySource::build(&state, limits)
+        .expect("empty projection")
+        .with_rank_snapshot_budget(
+            RankSnapshotBudget::new(SCRATCH_BUDGET, 1_024).expect("nonzero query budget"),
+        );
+
+    let error = source
+        .for_each_ranked_hit(&query, |_| {})
+        .expect_err("the owned Tantivy term and temporary prefix coexist");
+    let TantivySourceError::RankSnapshotBudgetExceeded {
+        budget_bytes,
+        required_bytes,
+    } = error
+    else {
+        panic!("field-prefix scratch should be refused before compiling the scorer");
+    };
+    // `field_token_prefix` encodes the decimal field-byte length and colon,
+    // followed by the field and token. The builder string and retained Term
+    // own two copies concurrently, independently of implementation estimates.
+    let minimum_materialized_bytes =
+        2 * (FIELD_BYTES + 1 + FIELD_BYTES.to_string().len() + "x".len());
+    assert_eq!(budget_bytes, SCRATCH_BUDGET);
+    assert!(required_bytes >= minimum_materialized_bytes);
+    assert!(required_bytes > budget_bytes);
     assert_eq!(source.rank_evaluations(), 0);
     assert_eq!(source.rank_docs_visited(), 0);
 }

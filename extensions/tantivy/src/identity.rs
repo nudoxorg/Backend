@@ -76,7 +76,7 @@ impl Schema for ReadManifestSchema {
 
 /// Versioned query term set identity used to bind cursors.
 #[derive(Debug, Eq, PartialEq)]
-pub struct QuerySchema;
+pub(crate) struct QuerySchema;
 
 impl Schema for QuerySchema {
     const DOMAIN: u8 = 0x74;

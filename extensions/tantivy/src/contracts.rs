@@ -1,7 +1,8 @@
 //! Query and source-facing lexical contracts.
 
-use crate::{Binding, Error, Limits, QueryVersion};
+use crate::{Binding, Error, Limits, QueryVersion, identity::QuerySchema};
 use backend_semantic::EntityId;
+use backend_version::{ObjectVersionHasher, Schema, SchemaIdentity};
 use std::cmp::Ordering;
 
 /// Closed lexical matching grammar shared by local and remote execution.
@@ -265,9 +266,9 @@ impl Query {
         }
         terms.sort();
         terms.dedup();
-        let bytes = admit_query_bytes(&terms, match_mode, &fields, case, limits)?;
+        let version = query_version(&terms, match_mode, &fields, case, limits)?;
         Ok(Self {
-            version: QueryVersion::from_value(&bytes),
+            version,
             terms,
             match_mode,
             fields,
@@ -276,7 +277,7 @@ impl Query {
     }
 
     pub(crate) fn validate(&self, limits: Limits) -> Result<(), Error> {
-        let bytes = admit_query_bytes(
+        let expected = query_version(
             &self.terms,
             self.match_mode,
             &self.fields,
@@ -290,20 +291,20 @@ impl Query {
                     .iter()
                     .all(|byte| !byte.is_ascii_uppercase())
             });
-        if !canonical_order || !canonical_case || QueryVersion::from_value(&bytes) != self.version {
+        if !canonical_order || !canonical_case || expected != self.version {
             return Err(Error::MalformedInput);
         }
         Ok(())
     }
 }
 
-fn admit_query_bytes(
+fn query_version(
     terms: &[String],
     match_mode: MatchMode,
     fields: &FieldSelection,
     case: CaseSensitivity,
     limits: Limits,
-) -> Result<Vec<u8>, Error> {
+) -> Result<QueryVersion, Error> {
     if terms.iter().any(String::is_empty) {
         return Err(Error::MalformedInput);
     }
@@ -312,18 +313,8 @@ fn admit_query_bytes(
     {
         return Err(Error::SizeLimit);
     }
-    let mut bytes = vec![
-        match match_mode {
-            MatchMode::Exact => 1,
-            MatchMode::Prefix => 2,
-        },
-        match case {
-            CaseSensitivity::Sensitive => 1,
-            CaseSensitivity::FoldAscii => 2,
-        },
-    ];
-    match fields {
-        FieldSelection::All => bytes.push(0),
+    let field = match fields {
+        FieldSelection::All => None,
         FieldSelection::Only(field) => {
             if field.is_empty() {
                 return Err(Error::MalformedInput);
@@ -331,16 +322,59 @@ fn admit_query_bytes(
             if field.len() > limits.max_field_bytes {
                 return Err(Error::SizeLimit);
             }
-            bytes.push(1);
-            bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
-            bytes.extend_from_slice(field.as_bytes());
+            Some(field.as_str())
         }
+    };
+    let mut payload_bytes = 3_usize;
+    if let Some(field) = field {
+        payload_bytes = payload_bytes
+            .checked_add(8)
+            .and_then(|bytes| bytes.checked_add(field.len()))
+            .ok_or(Error::SizeLimit)?;
     }
     for term in terms {
-        bytes.extend_from_slice(&(term.len() as u64).to_be_bytes());
-        bytes.extend_from_slice(term.as_bytes());
+        payload_bytes = payload_bytes
+            .checked_add(8)
+            .and_then(|bytes| bytes.checked_add(term.len()))
+            .ok_or(Error::SizeLimit)?;
     }
-    Ok(bytes)
+    let schema = SchemaIdentity::new(QuerySchema::DOMAIN, QuerySchema::TYPE, QuerySchema::VERSION);
+    let mut encoder =
+        ObjectVersionHasher::new(schema, payload_bytes).map_err(|_| Error::SizeLimit)?;
+    let match_tag = [match match_mode {
+        MatchMode::Exact => 1,
+        MatchMode::Prefix => 2,
+    }];
+    let case_tag = [match case {
+        CaseSensitivity::Sensitive => 1,
+        CaseSensitivity::FoldAscii => 2,
+    }];
+    encoder.update(&match_tag).map_err(|_| Error::SizeLimit)?;
+    encoder.update(&case_tag).map_err(|_| Error::SizeLimit)?;
+    if let Some(field) = field {
+        encoder.update(&[1]).map_err(|_| Error::SizeLimit)?;
+        let length = u64::try_from(field.len()).map_err(|_| Error::SizeLimit)?;
+        encoder
+            .update(&length.to_be_bytes())
+            .map_err(|_| Error::SizeLimit)?;
+        encoder
+            .update(field.as_bytes())
+            .map_err(|_| Error::SizeLimit)?;
+    } else {
+        encoder.update(&[0]).map_err(|_| Error::SizeLimit)?;
+    }
+    for term in terms {
+        let length = u64::try_from(term.len()).map_err(|_| Error::SizeLimit)?;
+        encoder
+            .update(&length.to_be_bytes())
+            .map_err(|_| Error::SizeLimit)?;
+        encoder
+            .update(term.as_bytes())
+            .map_err(|_| Error::SizeLimit)?;
+    }
+    encoder
+        .finish_version::<QuerySchema>()
+        .map_err(|_| Error::SizeLimit)
 }
 
 /// A bounded page cursor bound to all lexical inputs and terms.

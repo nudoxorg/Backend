@@ -3386,16 +3386,25 @@ fn query_scratch_bytes(query: &Query, extra_bytes: usize) -> Result<usize, Tanti
         .len()
         .checked_mul(std::mem::size_of::<Option<Relevance>>())
         .ok_or(Error::SizeLimit)?;
-    let field_bytes = match &query.fields {
+    let field_prefix_bytes = match &query.fields {
         FieldSelection::All => 0,
-        FieldSelection::Only(field) => field.len(),
+        FieldSelection::Only(field) => field
+            .len()
+            .checked_add(1)
+            .and_then(|bytes| bytes.checked_add(decimal_digits(field.len())))
+            .ok_or(Error::SizeLimit)?,
     };
     let term_setup_bytes = query.terms.iter().try_fold(0_usize, |total, term| {
-        // Query compilation owns the term bytes and a clause/scorer object;
-        // field-qualified terms also materialize their field prefix.
+        // `Term::from_field_text` retains an owned copy while the builder's
+        // `String` remains live. Field-qualified terms duplicate the complete
+        // encoded field prefix, including the decimal byte-length header.
+        let term_value_bytes = term
+            .len()
+            .checked_add(field_prefix_bytes)
+            .ok_or(Error::SizeLimit)?;
+        let owned_and_building_bytes = term_value_bytes.checked_mul(2).ok_or(Error::SizeLimit)?;
         total
-            .checked_add(term.len().checked_mul(2).ok_or(Error::SizeLimit)?)
-            .and_then(|bytes| bytes.checked_add(field_bytes))
+            .checked_add(owned_and_building_bytes)
             .and_then(|bytes| bytes.checked_add(256))
             .ok_or(Error::SizeLimit)
     })?;
@@ -3403,6 +3412,15 @@ fn query_scratch_bytes(query: &Query, extra_bytes: usize) -> Result<usize, Tanti
         .checked_add(term_setup_bytes)
         .and_then(|bytes| bytes.checked_add(extra_bytes))
         .ok_or_else(|| Error::SizeLimit.into())
+}
+
+fn decimal_digits(mut value: usize) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
 }
 
 fn preflight_query_scratch(
