@@ -366,4 +366,56 @@ print(f"durable remote grant: {grant['requests']}/{grant['requestBudget']} reque
 print(f"sampled owner plus client RSS peak: {peak}/{limit} KiB")
 PY
 
-printf 'remote catalog journey passed (frozen Maven journal, exact composite snapshot, cold restart, typed cursor chain)\n'
+grant_id=$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    grants = json.load(f)
+    print(next(item["grantId"] for item in grants if item["product"]))
+' "$root/grants.json")
+requests_before_revoke=$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    grants = json.load(f)
+    print(next(item["requests"] for item in grants if item["product"]))
+' "$root/grants.json")
+bytes_before_revoke=$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    grants = json.load(f)
+    print(next(item["responseBytes"] for item in grants if item["product"]))
+' "$root/grants.json")
+
+"$backend_cli" --workspace "$owner_data" cluster owner grant revoke \
+  --grant-id "$grant_id" >/dev/null
+stop_locald
+start_locald
+if "$backend_cli" --workspace "$client_data" \
+  cluster client query --key-file "$client_key" \
+  --owner-peer "$owner_peer" --owner-address "$address" \
+  --capability-file "$capability_client" \
+  --operation index-search --value identity --limit 10 \
+  >"$root/revoked-query.out" 2>"$root/revoked-query.err"; then
+  printf '%s\n' "the cold-restarted owner accepted a revoked catalog grant" >&2
+  exit 1
+fi
+if ! grep -q "remote grant was revoked by its owner" "$root/revoked-query.err"; then
+  printf '%s\n' "the cold-restarted owner did not return its typed revoked-grant response" >&2
+  exit 1
+fi
+"$backend_cli" --workspace "$owner_data" --format json \
+  cluster owner grant list >"$root/revoked-grants.json"
+python3 - "$root/revoked-grants.json" "$grant_id" \
+  "$requests_before_revoke" "$bytes_before_revoke" <<'PY'
+import json, sys
+grants = json.loads(open(sys.argv[1], encoding="utf-8").read())
+grant = next(item for item in grants if item["grantId"] == sys.argv[2])
+if not grant["revoked"]:
+    raise SystemExit("per-grant revoke did not survive owner cold restart")
+if grant["requests"] != int(sys.argv[3]):
+    raise SystemExit("revoked request was charged or dispatched")
+if grant["responseBytes"] <= int(sys.argv[4]):
+    raise SystemExit("typed revoked notice was not reserved against the signed byte budget")
+print(f"cold-restarted revoke: {grant['requests']} requests; metered notice added {grant['responseBytes'] - int(sys.argv[4])} response bytes")
+PY
+
+printf 'remote catalog journey passed (frozen Maven journal, exact composite snapshot, cold restart, typed cursor chain, persistent revoke)\n'
