@@ -228,11 +228,11 @@ impl TantivySource {
         }
         let directory = directory.as_ref();
         let _directory_handle = backend_platform::durability::open_directory_readonly_nofollow(directory)?;
+        verify_projection_manifest(directory, projection_fingerprint(state.binding()))?;
         let persisted = read_binding_stamp(directory)?;
         if persisted != projection_fingerprint(state.binding()) {
             return Err(Error::StaleRoot.into());
         }
-        verify_projection_manifest(directory, projection_fingerprint(state.binding()))?;
         let index = Index::open_in_dir(directory)?;
         let projected = projection_schema();
         if index.schema() != projected.schema {
@@ -1159,7 +1159,7 @@ fn read_binding_stamp(directory: &Path) -> Result<[u8; 32], TantivySourceError> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(TantivySource::corrupt("durable projection has no binding stamp"));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+        Err(error) if is_nofollow_rejection(&error) => {
             return Err(TantivySource::corrupt("durable projection binding is not a regular file"));
         }
         Err(error) => return Err(error.into()),
@@ -1236,7 +1236,7 @@ fn read_ordinal_map(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(TantivySource::corrupt("durable projection has no ordinal map"));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+        Err(error) if is_nofollow_rejection(&error) => {
             return Err(TantivySource::corrupt("durable projection ordinal map is malformed"));
         }
         Err(error) => return Err(error.into()),
@@ -1370,7 +1370,7 @@ fn verify_projection_manifest(
                 "durable projection has no integrity manifest",
             ));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+        Err(error) if is_nofollow_rejection(&error) => {
             return Err(TantivySource::corrupt(
                 "durable projection integrity manifest is malformed",
             ));
@@ -1384,9 +1384,7 @@ fn verify_projection_manifest(
     }
     let mut offset = INTEGRITY_MAGIC.len();
     if take_bytes::<32>(&bytes, &mut offset) != Some(fingerprint) {
-        return Err(TantivySourceError::Corrupt(
-            "durable projection integrity root does not match",
-        ));
+        return Err(Error::StaleRoot.into());
     }
     let Some(count) = take_u32(&bytes, &mut offset) else {
         return Err(TantivySourceError::Corrupt(
@@ -1501,7 +1499,7 @@ fn projection_file_fingerprints(
         let path = entry.path();
         let mut file = match backend_platform::durability::open_regular_file_nofollow(&path) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            Err(error) if is_nofollow_rejection(&error) => {
                 return Err(TantivySource::corrupt(
                     "durable projection file changed to a link or non-file",
                 ));
@@ -1547,7 +1545,13 @@ fn projection_file_fingerprints(
 }
 
 fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, std::io::Error> {
-    let mut file = backend_platform::durability::open_regular_file_nofollow(path)?;
+    let mut file = backend_platform::durability::open_regular_file_nofollow(path).map_err(|error| {
+        if is_nofollow_rejection(&error) {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+        } else {
+            error
+        }
+    })?;
     let initial_length = file.metadata()?.len();
     if initial_length > maximum {
         return Err(std::io::Error::new(
@@ -1579,6 +1583,13 @@ fn is_volatile_projection_file(name: &str) -> bool {
     ) || name == format!(".{BINDING_FILE}.tmp")
         || name == format!(".{INTEGRITY_FILE}.tmp")
         || name == format!(".{ORDINAL_MAP_FILE}.tmp")
+}
+
+fn is_nofollow_rejection(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::FilesystemLoop
+    )
 }
 
 fn is_projection_file_name(name: &str) -> bool {
@@ -1825,12 +1836,9 @@ fn prune_durable_roots(root: &Path, selected: &Path) -> Result<(), std::io::Erro
         retained_bytes = retained_bytes
             .checked_add(bytes)
             .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
-        let access = entry.path().join(".last-used");
-        let modified = fs::symlink_metadata(&access)
-            .and_then(|metadata| metadata.modified())
-            .or_else(|_| metadata.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        roots.push((entry.path(), modified, bytes));
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let last_used = durable_root_last_used(&entry.path(), modified)?;
+        roots.push((entry.path(), last_used, bytes));
     }
     roots.sort_by(|left, right| left.1.cmp(&right.1));
     let mut live_roots = roots.len();
@@ -1865,6 +1873,32 @@ fn open_root_lease(root: &Path) -> Result<File, std::io::Error> {
     backend_platform::durability::open_or_create_regular_file_nofollow(
         &root.join(DURABLE_ROOT_LEASE),
     )
+}
+
+fn durable_root_last_used(
+    root: &Path,
+    fallback: std::time::SystemTime,
+) -> Result<u128, std::io::Error> {
+    let path = root.join(".last-used");
+    let mut file = match backend_platform::durability::open_regular_file_nofollow(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(fallback
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos());
+        }
+        Err(error) => return Err(error),
+    };
+    if file.metadata()?.len() != 16 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "durable root last-used stamp has an invalid size",
+        ));
+    }
+    let mut bytes = [0_u8; 16];
+    file.read_exact(&mut bytes)?;
+    Ok(u128::from_le_bytes(bytes))
 }
 
 fn remove_unpinned_projection_root(path: &Path) -> Result<(), std::io::Error> {
