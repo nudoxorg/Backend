@@ -61,7 +61,7 @@ case "$cargo_command" in
     ;;
 esac
 
-export RUSTC_WRAPPER="${RUSTC_WRAPPER:-@sccache@}"
+export RUSTC_WRAPPER="${RUSTC_WRAPPER:-@rustc_cache_wrapper@}"
 export SCCACHE_DIR="${SCCACHE_DIR:-$cache_root/sccache}"
 export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-8G}"
 export SCCACHE_CLIENT_SIDE="${SCCACHE_CLIENT_SIDE:-1}"
@@ -479,7 +479,7 @@ export CARGO_TARGET_DIR
 
 if provenance_start="$(NUDOX_PROVENANCE_GIT="@git@" @python3@ @provenance@ begin \
   "$workspace_root" "$CARGO_BUILD_BUILD_DIR" "$CARGO_TARGET_DIR" "$0" \
-  "@wrapper_source@" "@cargo@" "${RUSTC:-@rustc@}" "$@" 2>/dev/null)"; then
+  "@wrapper_source@" "@cargo@" "${RUSTC:-@rustc@}" "$RUSTC_WRAPPER" "$@" 2>/dev/null)"; then
   :
 else
   echo "nudox cargo: build provenance capture could not start" >&2

@@ -57,6 +57,22 @@ role-specific build root and leaves the target directory worktree-local by
 default; the shared wrapper derives the leased build child. Existing caller
 Cargo arguments and explicit target paths are preserved.
 
+By default, `RUSTC_WRAPPER` is a small gate that sends only `lib`/`rlib`
+compilations whose source is under Cargo's registry or git-checkout directories
+to `sccache`. Workspace crates, vendored sources, build scripts, proc macros,
+and unknown invocations run the selected `rustc` directly. The shared cache
+therefore reuses compiler results for unchanged external dependency inputs
+without sharing a Cargo fingerprint graph or workspace artifact directory.
+An explicitly supplied `RUSTC_WRAPPER` is preserved and bypasses this gate.
+The `sccache` cache key still controls whether an external compilation can be
+reused; unsupported rustc modes compile normally.
+
+Legacy build/target directories without a matching `.nudox-worktree-root`
+stamp are never relabeled or imported automatically. Use an empty target path
+per worktree for the first build with this wrapper. The old path remains
+available for read-only comparison until its owner has reviewed and retired
+it; existing mixed graphs cannot be promoted by adding a stamp.
+
 Each compiling invocation writes a private JSON provenance record beneath
 `CARGO_TARGET_DIR/.nudox-provenance/`. It includes the canonical root, HEAD and
 dirty-tree digests, lockfile digest, Cargo/Rust versions, wrapper hashes,
@@ -84,7 +100,7 @@ workspace build:
 They use fake Cargo, git, and sccache processes to prove same-worktree
 serialization and reuse, independent-worktree parallelism, metadata bypass,
 explicit role-root namespacing, mismatch refusal/isolation, provenance fields
-and output hashes, exit-code/argument preservation, dead-owner recovery,
-cancellation cleanup, and the shared-root invocation ceiling. They do not
-measure real compiler memory or arbitrate callers using a different cache root
-or unwrapped Cargo.
+and output hashes, external-only rustc cache routing, exit-code/argument
+preservation, dead-owner recovery, cancellation cleanup, and the shared-root
+invocation ceiling. They do not measure real compiler memory or arbitrate
+callers using a different cache root or unwrapped Cargo.

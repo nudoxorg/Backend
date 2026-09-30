@@ -61,7 +61,7 @@ printf '%s\n' '#!/bin/sh' \
 '  printf "%s\\n" "$NUDOX_TEST_WORKTREE" > "$marker"' \
 'fi' \
 'if [ "${NUDOX_TEST_CREATE_OUTPUT:-0}" != 0 ]; then mkdir -p "$CARGO_TARGET_DIR/debug"; printf "test executable\\n" > "$CARGO_TARGET_DIR/debug/fake-bin"; chmod +x "$CARGO_TARGET_DIR/debug/fake-bin"; fi' \
-'printf "%s|%s|%s|%s|%s\\n" "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${CARGO_TARGET_DIR:-}" "$*" "${CARGO_BUILD_JOBS:-}" >> "$NUDOX_TEST_LOG"' \
+'printf "%s|%s|%s|%s|%s|%s\\n" "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${CARGO_TARGET_DIR:-}" "$*" "${CARGO_BUILD_JOBS:-}" "${RUSTC_WRAPPER:-}" >> "$NUDOX_TEST_LOG"' \
 'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
   'trap '\''if [ -n "${NUDOX_TEST_CHILD_DONE_FILE:-}" ]; then : > "$NUDOX_TEST_CHILD_DONE_FILE"; fi; exit 143'\'' HUP INT TERM' \
   'if [ "${NUDOX_TEST_CARGO_SLEEP:-0}" != 0 ]; then' \
@@ -71,11 +71,20 @@ printf '%s\n' '#!/bin/sh' \
   'exit "${NUDOX_TEST_CARGO_STATUS:-0}"' > "$test_root/bin/cargo"
 chmod +x "$test_root/bin/cargo"
 
-printf '%s\n' '#!/bin/sh' 'printf "rustc 1.97.1-test\\n"' > "$test_root/bin/rustc"
+printf '%s\n' '#!/bin/sh' \
+  'if [ "${1:-}" = --version ]; then printf "rustc 1.97.1-test\\n"; exit 0; fi' \
+  'if [ -n "${RUSTC_TEST_LOG:-}" ]; then printf "%s\\n" "$*" >> "$RUSTC_TEST_LOG"; fi' \
+  'exit "${RUSTC_TEST_STATUS:-0}"' > "$test_root/bin/rustc"
 chmod +x "$test_root/bin/rustc"
 
-printf '%s\n' '#!/bin/sh' 'exit 0' > "$test_root/bin/sccache"
+printf '%s\n' '#!/bin/sh' \
+  'if [ -n "${SCCACHE_TEST_LOG:-}" ]; then printf "%s\\n" "$*" >> "$SCCACHE_TEST_LOG"; fi' \
+  'exit "${SCCACHE_TEST_STATUS:-0}"' > "$test_root/bin/sccache"
 chmod +x "$test_root/bin/sccache"
+
+sed -e "s|@sccache@|$test_root/bin/sccache|g" \
+  "$repo_root/.config/scripts/cargo-rustc-cache.sh" > "$test_root/rustc-cache-wrapper"
+chmod +x "$test_root/rustc-cache-wrapper"
 
 {
   printf '%s\n' '#!/bin/sh' 'set -eu'
@@ -83,6 +92,7 @@ chmod +x "$test_root/bin/sccache"
     -e "s|@cargo@|$test_root/bin/cargo|g" \
     -e "s|@git@|$test_root/bin/git|g" \
     -e "s|@sccache@|$test_root/bin/sccache|g" \
+    -e "s|@rustc_cache_wrapper@|$test_root/rustc-cache-wrapper|g" \
     -e "s|@python3@|$(command -v python3)|g" \
     -e "s|@rustc@|$test_root/bin/rustc|g" \
     -e "s|@wrapper_source@|$repo_root/.config/scripts/cargo-shared-cache.sh|g" \
@@ -150,12 +160,13 @@ assert_eq 'build --locked -p demo' "$(cut -d '|' -f 4 "$cargo_in_log")"
 assert_eq 3 "$(cut -d '|' -f 5 "$cargo_in_log")"
 assert_eq "$cargo_in_root" "$(cat "$cargo_in_build/.nudox-worktree-root")"
 assert_eq "$cargo_in_root" "$(cat "$cargo_in_target/.nudox-worktree-root")"
+assert_eq "$test_root/rustc-cache-wrapper" "$(cut -d '|' -f 6 "$cargo_in_log")"
 
 cargo_in_explicit_log="$test_root/cargo-in-explicit.log"
 cargo_in_explicit_build="$test_root/cargo-in-explicit-build"
 cargo_in_explicit_target="$test_root/cargo-in-explicit-target"
 NUDOX_TEST_WORKTREE="$cargo_in_root" NUDOX_TEST_LOG="$cargo_in_explicit_log" \
-  PATH="$test_root/bin:$PATH" CARGO_BUILD_JOBS=7 \
+  PATH="$test_root/bin:$PATH" CARGO_BUILD_JOBS=7 RUSTC_WRAPPER="$test_root/custom-rustc-wrapper" \
   CARGO_BUILD_BUILD_DIR="$cargo_in_explicit_build" CARGO_TARGET_DIR="$cargo_in_explicit_target" \
   NUDOX_BUILD_CACHE_ROOT="$test_root/cargo-in-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
@@ -164,6 +175,80 @@ assert_eq "$cargo_in_explicit_build/.nudox-cargo/slot-0" "$(cut -d '|' -f 2 "$ca
 assert_eq "$cargo_in_explicit_target" "$(cut -d '|' -f 3 "$cargo_in_explicit_log")"
 assert_eq 'check --offline -p demo' "$(cut -d '|' -f 4 "$cargo_in_explicit_log")"
 assert_eq 7 "$(cut -d '|' -f 5 "$cargo_in_explicit_log")"
+assert_eq "$test_root/custom-rustc-wrapper" "$(cut -d '|' -f 6 "$cargo_in_explicit_log")"
+
+# Only ordinary registry/git library source is routed to the immutable
+# compiler cache. Workspace, vendored, build-script, proc-macro, and unknown
+# invocations retain exact direct-rustc behavior.
+rustc_cache_home="$test_root/cargo home"
+rustc_cache_workspace="$test_root/workspace"
+mkdir -p "$rustc_cache_home/registry/src/index.crates.io-1/serde-1/src" \
+  "$rustc_cache_home/git/checkouts/example-1/commit/src" \
+  "$rustc_cache_workspace/src" "$rustc_cache_workspace/vendor/example/src"
+registry_source="$rustc_cache_home/registry/src/index.crates.io-1/serde-1/src/lib.rs"
+git_source="$rustc_cache_home/git/checkouts/example-1/commit/src/lib.rs"
+workspace_source="$rustc_cache_workspace/src/lib.rs"
+vendor_source="$rustc_cache_workspace/vendor/example/src/lib.rs"
+for source in "$registry_source" "$git_source" "$workspace_source" "$vendor_source"; do : > "$source"; done
+rustc_cache_log="$test_root/rustc-cache.log"
+rustc_direct_log="$test_root/rustc-direct.log"
+: > "$rustc_cache_log"
+: > "$rustc_direct_log"
+if CARGO_HOME="$rustc_cache_home" SCCACHE_TEST_LOG="$rustc_cache_log" \
+  SCCACHE_TEST_STATUS=19 RUSTC_TEST_LOG="$rustc_direct_log" \
+  "$test_root/rustc-cache-wrapper" "$test_root/bin/rustc" \
+  --crate-name serde --crate-type lib "$registry_source" --out-dir "$test_root/output"; then
+  fail "external library cache status was not propagated"
+else
+  assert_eq 19 "$?"
+fi
+assert_file_lines "$rustc_cache_log" 1
+assert_eq 0 "$(wc -l < "$rustc_direct_log" | tr -d ' ')"
+case "$(cat "$rustc_cache_log")" in
+  *"$test_root/bin/rustc --crate-name serde --crate-type lib $registry_source --out-dir $test_root/output"*) ;;
+  *) fail "external compiler arguments changed before sccache" ;;
+esac
+CARGO_HOME="$rustc_cache_home" SCCACHE_TEST_LOG="$rustc_cache_log" \
+  SCCACHE_TEST_STATUS=0 RUSTC_TEST_LOG="$rustc_direct_log" \
+  "$test_root/rustc-cache-wrapper" "$test_root/bin/rustc" \
+  --crate-name example --crate-type=rlib "$git_source" --out-dir "$test_root/output"
+assert_file_lines "$rustc_cache_log" 2
+if CARGO_HOME="$rustc_cache_home" SCCACHE_TEST_LOG="$rustc_cache_log" \
+  SCCACHE_TEST_STATUS=0 RUSTC_TEST_LOG="$rustc_direct_log" RUSTC_TEST_STATUS=23 \
+  "$test_root/rustc-cache-wrapper" "$test_root/bin/rustc" \
+  --crate-name application --crate-type lib "$workspace_source" --out-dir "$test_root/output"; then
+  fail "workspace direct-rustc status was not propagated"
+else
+  assert_eq 23 "$?"
+fi
+assert_file_lines "$rustc_cache_log" 2
+assert_file_lines "$rustc_direct_log" 1
+case "$(cat "$rustc_direct_log")" in
+  *"--crate-name application --crate-type lib $workspace_source --out-dir $test_root/output"*) ;;
+  *) fail "workspace compiler arguments changed before rustc" ;;
+esac
+run_rustc_cache_case() {
+  case "$2" in
+    "")
+      CARGO_HOME="$rustc_cache_home" SCCACHE_TEST_LOG="$rustc_cache_log" \
+        SCCACHE_TEST_STATUS=0 RUSTC_TEST_LOG="$rustc_direct_log" \
+        "$test_root/rustc-cache-wrapper" "$test_root/bin/rustc" \
+        --crate-name "$1" "$3" --out-dir "$test_root/output"
+      ;;
+    *)
+      CARGO_HOME="$rustc_cache_home" SCCACHE_TEST_LOG="$rustc_cache_log" \
+        SCCACHE_TEST_STATUS=0 RUSTC_TEST_LOG="$rustc_direct_log" \
+        "$test_root/rustc-cache-wrapper" "$test_root/bin/rustc" \
+        --crate-name "$1" --crate-type "$2" "$3" --out-dir "$test_root/output"
+      ;;
+  esac
+}
+run_rustc_cache_case build_script_build bin "$registry_source"
+run_rustc_cache_case serde_derive proc-macro "$registry_source"
+run_rustc_cache_case vendor_crate lib "$vendor_source"
+run_rustc_cache_case ambiguous "" "$registry_source"
+assert_file_lines "$rustc_cache_log" 2
+assert_file_lines "$rustc_direct_log" 5
 
 # Metadata and formatting remain unrestricted and do not require a socket or
 # a mutable build directory.
@@ -518,6 +603,8 @@ assert value["toolchain"]["cargo"] == "cargo 1.97.1-test"
 assert value["toolchain"]["rustc"].startswith("rustc 1.97.1-test")
 assert len(value["wrapper"]["runtime_sha256"]) == 64
 assert len(value["wrapper"]["source_sha256"]) == 64
+assert value["wrapper"]["rustc_path"].endswith("rustc-cache-wrapper")
+assert len(value["wrapper"]["rustc_sha256"]) == 64
 outputs = {item["path"]: item["sha256"] for item in value["outputs"]}
 assert outputs["debug/fake-bin"] == hashlib.sha256(b"test executable\n").hexdigest()
 PY

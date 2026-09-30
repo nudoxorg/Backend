@@ -93,6 +93,16 @@ def _version(command: str, *args: str) -> str | None:
     return value if result.returncode == 0 else None
 
 
+def _command_path(command: str | None) -> pathlib.Path | None:
+    if not command:
+        return None
+    path = pathlib.Path(command)
+    if path.is_absolute():
+        return path
+    resolved = shutil.which(command)
+    return pathlib.Path(resolved) if resolved else None
+
+
 def _features(arguments: list[str]) -> dict[str, object]:
     values: list[str] = []
     all_features = False
@@ -139,9 +149,9 @@ def _atomic_json(path: pathlib.Path, value: dict[str, object]) -> None:
 
 
 def _begin(arguments: list[str]) -> int:
-    if len(arguments) < 7:
+    if len(arguments) < 8:
         return 64
-    root, build_dir, target_dir, runtime_wrapper, source_wrapper, cargo, rustc, *cargo_args = arguments
+    root, build_dir, target_dir, runtime_wrapper, source_wrapper, cargo, rustc, rustc_wrapper, *cargo_args = arguments
     workspace = pathlib.Path(root)
     now_ns = time.time_ns()
     run_id = f"{now_ns}-{os.getpid()}"
@@ -168,6 +178,8 @@ def _begin(arguments: list[str]) -> int:
             "runtime_sha256": _sha256_path(pathlib.Path(runtime_wrapper)),
             "source_path": source_wrapper,
             "source_sha256": _sha256_path(pathlib.Path(source_wrapper)),
+            "rustc_path": rustc_wrapper,
+            "rustc_sha256": _sha256_path(_command_path(rustc_wrapper)) if _command_path(rustc_wrapper) else None,
         },
         "outputs": [],
     }

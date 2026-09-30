@@ -55,8 +55,15 @@ let
       null;
   # A bounded pool of Cargo 1.97 build directories shares intermediate
   # artifacts without making parallel worktrees wait on one build lock.
-  # sccache shares compiler results across the four isolated lanes; callers
-  # wait or fail with status 75 when every lane is occupied.
+  # sccache shares immutable third-party library compilation results across
+  # the four isolated lanes; callers wait or fail with status 75 when every
+  # lane is occupied.
+  dependencyRustcCache = pkgs.writeShellScript "nudox-dependency-rustc-cache" (
+    builtins.replaceStrings
+      [ "@sccache@" ]
+      [ "${pkgs.sccache}/bin/sccache" ]
+      (builtins.readFile ../scripts/cargo-rustc-cache.sh)
+  );
   parallelCargo = pkgs.writeShellApplication {
     name = "cargo";
     runtimeInputs = [
@@ -69,11 +76,12 @@ let
     ];
     text =
       builtins.replaceStrings
-        [ "@cargo@" "@git@" "@sccache@" "@python3@" "@rustc@" "@wrapper_source@" "@provenance@" ]
+        [ "@cargo@" "@git@" "@sccache@" "@rustc_cache_wrapper@" "@python3@" "@rustc@" "@wrapper_source@" "@provenance@" ]
         [
           "${toolchains.stable}/bin/cargo"
           "${pkgs.git}/bin/git"
           "${pkgs.sccache}/bin/sccache"
+          (toString dependencyRustcCache)
           "${pkgs.python3}/bin/python3"
           "${toolchains.stable}/bin/rustc"
           (toString ../scripts/cargo-shared-cache.sh)
