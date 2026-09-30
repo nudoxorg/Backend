@@ -51,6 +51,26 @@ impl Subject {
     }
 }
 
+/// The hoverable that represents a keyboard target, paired with the same
+/// subject its pointer hitbox uses. The shell mirrors its focused target
+/// through this value; Facet does not infer focus from layout or pointer
+/// position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FocusTarget {
+    /// The element id used by [`hoverable`].
+    pub id: ElementId,
+    /// The identity shared by related hoverables.
+    pub subject: Subject,
+}
+
+impl FocusTarget {
+    /// A focused hoverable with the same identity as its pointer target.
+    #[must_use]
+    pub fn new(id: impl Into<ElementId>, subject: Subject) -> Self {
+        Self { id: id.into(), subject }
+    }
+}
+
 /// How a hoverable is lit this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Lit {
@@ -175,14 +195,14 @@ pub fn lit(subject: &Subject, window: &Window, cx: &App) -> Lit {
     }
 }
 
-/// Keyboard focus lights like the pointer: `Some` makes `id` the target,
-/// `None` clears it (only if `id` holds it).
-pub fn focus(target: Option<(ElementId, Subject)>, window: &mut Window, cx: &mut App) {
-    set_target(
-        target.map(|(id, subject)| Held { id, subject, source: Source::Keyboard }),
-        window,
-        cx,
-    );
+/// Keyboard focus lights like the pointer. Clearing focus releases a
+/// keyboard-held target while leaving a pointer-held target alone.
+pub fn focus(target: Option<FocusTarget>, window: &mut Window, cx: &mut App) {
+    match target {
+        Some(target) => set_target(Some(Held { id: target.id, subject: target.subject, source: Source::Keyboard }), window, cx),
+        None if held(window, cx).is_some_and(|held| held.source == Source::Keyboard) => set_target(None, window, cx),
+        None => {}
+    }
 }
 
 /// The ink a hoverable's text takes: one step up the ink ramp when lit
@@ -363,11 +383,11 @@ impl gpui::Element for Hoverable {
                     return;
                 }
                 let hovered = hitbox.is_hovered(window);
-                let holds = target(window, cx).is_some_and(|(held, _)| held == id);
-                if hovered && !holds {
+                let current = held(window, cx);
+                if hovered && current.as_ref().is_none_or(|held| held.id != id || held.source != Source::Pointer) {
                     let held = Held { id: id.clone(), subject: subject.clone(), source: Source::Pointer };
                     set_target(Some(held), window, cx);
-                } else if !hovered && holds {
+                } else if !hovered && current.as_ref().is_some_and(|held| held.id == id && held.source == Source::Pointer) {
                     set_target(None, window, cx);
                 }
             }

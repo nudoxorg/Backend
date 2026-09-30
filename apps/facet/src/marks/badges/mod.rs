@@ -7,7 +7,7 @@
 //! sentence opens inside the badge when you rest on it).
 //!
 //! The grammar is Rust's in full (it is the language most packages here are
-//! written in) and a smaller, honest reading of the other six ecosystems:
+//! written in) and a smaller, honest reading of the other supported languages:
 //! a word that cannot be read from the text is not invented, and a
 //! signature that is not source text (an encoded compiler type) reads to no
 //! badges at all.
@@ -46,7 +46,9 @@ pub enum Lang {
     Java,
     /// C#.
     Csharp,
-    /// C or C++.
+    /// C.
+    C,
+    /// C++.
     Cpp,
     /// No supported language was identified.
     Unknown,
@@ -255,7 +257,16 @@ pub fn read(item: &Item<'_>) -> Reading {
     let hinted = item.kind.map(Shape::of_kind);
     let mut reading = match (&text, item.lang) {
         (Some(text), Lang::Rust) => rust::read(item, text),
-        (Some(text), lang @ (Lang::Typescript | Lang::Python | Lang::Go | Lang::Java | Lang::Csharp | Lang::Cpp)) => other::read(item, text, lang),
+        (
+            Some(text),
+            lang @ (Lang::Typescript
+            | Lang::Python
+            | Lang::Go
+            | Lang::Java
+            | Lang::Csharp
+            | Lang::C
+            | Lang::Cpp),
+        ) => other::read(item, text, lang),
         (Some(_), Lang::Unknown) => Reading {
             shape: hinted.unwrap_or(Shape::Item),
             word: hinted.unwrap_or(Shape::Item).word(item.lang),

@@ -2,7 +2,7 @@
 //! target and every other occurrence of its subject in the frame that
 //! answers it, and nothing else.
 
-use super::{Lit, Subject, hoverable, ink};
+use super::{FocusTarget, Lit, Subject, hoverable, ink};
 use crate::overlay::float;
 use crate::theme::{ActiveFacet, Facet, set_facet};
 use gpui::{
@@ -149,10 +149,42 @@ fn a_word_that_moves_out_from_under_a_still_pointer_lets_go(cx: &mut TestAppCont
 fn a_focus_target_survives_frames_with_the_pointer_elsewhere(cx: &mut TestAppContext) {
     let (seen, _drop, cx) = words(cx);
     frame(cx);
-    cx.update(|window, cx| super::focus(Some(("c".into(), Subject::new("present::RelationDirection"))), window, cx));
+    cx.update(|window, cx| super::focus(Some(FocusTarget::new("c", Subject::new("present::RelationDirection"))), window, cx));
     frame(cx);
     frame(cx);
     assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Target)), "focus on c lights c");
+    cx.simulate_mouse_move(point(px(400.0), px(400.0)), None, Modifiers::none());
+    frame(cx);
+    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Target)), "a pointer move away does not clear keyboard focus");
+}
+
+/// Keyboard focus and the pointer use the same element and relation identity;
+/// moving focus away releases its light in the answering frame.
+#[gpui::test]
+fn a_focus_target_lights_its_subject_and_clears_when_focus_leaves(cx: &mut TestAppContext) {
+    let (seen, _drop, cx) = words(cx);
+    frame(cx);
+    cx.update(|window, cx| {
+        super::focus(Some(FocusTarget::new("a", Subject::new("present::SemanticLinkKind"))), window, cx);
+    });
+    frame(cx);
+    assert_eq!(lit_of(&seen), (Some(Lit::Target), Some(Lit::Related), Some(Lit::Rest)));
+    cx.update(|window, cx| super::focus(None, window, cx));
+    assert_eq!(cx.update(|window, cx| super::target(window, cx)), None, "blur releases a keyboard-held target immediately");
+    frame(cx);
+    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Rest)));
+}
+
+/// Clearing an absent keyboard target does not erase a pointer target.
+#[gpui::test]
+fn clearing_keyboard_focus_preserves_the_pointer_target(cx: &mut TestAppContext) {
+    let (seen, _drop, cx) = words(cx);
+    frame(cx);
+    cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
+    frame(cx);
+    assert_eq!(lit_of(&seen).0, Some(Lit::Target));
+    cx.update(|window, cx| super::focus(None, window, cx));
+    assert_eq!(cx.update(|window, cx| super::target(window, cx)), Some(("a".into(), Subject::new("present::SemanticLinkKind"))));
 }
 
 /// Navigation closes what floats and lets go of the hover target: the page

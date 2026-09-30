@@ -1,0 +1,32 @@
+[package]
+name = "backend-embedding-candle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "backend-embedding-candle"
+path = "src/main.rs"
+
+[features]
+default = ["cpu"]
+cpu = []
+
+[dependencies]
+blake3.workspace = true
+candle-nn = { version = "=0.11.0", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+tokenizers = { version = "=0.23.1", default-features = false, features = ["fancy-regex"] }
+tracing.workspace = true
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+candle-core = { version = "=0.11.0", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "=0.11.0", default-features = false, features = ["metal"] }
+
+[lints]
+workspace = true

@@ -279,7 +279,7 @@ fn version_board(_: &mut Window, cx: &mut App) -> AnyView {
             let serde = fixture::version("serde");
             let react = fixture::version("@types/react");
             let present = fixture::version("present");
-            let also = version::board_also(&toml, "1.1.5").unwrap_or_else(|| version::board_number(&toml));
+            let also = version::board_also(&toml, "1.1.5+spec-1.1.0").unwrap_or_else(|| version::board_number(&toml));
             let syn_also = version::board_also(&syn, "2.0.119").unwrap_or_else(|| version::board_number(&syn));
             let rows_out = vec![
                 variants,
@@ -409,7 +409,7 @@ fn hero(pkg: &'static str, look: Look, measure: &Measure, window: &mut Window, c
         Look::CopyFilm => eco = eco.press_look(900),
         Look::Lic => lic = lic.open_look(),
         Look::Ver => ver = ver.number_look(),
-        Look::Also => ver = ver.also_look("1.1.5"),
+        Look::Also => ver = ver.also_look("1.1.5+spec-1.1.0"),
         Look::ScrubFilm => ver = ver.scrub_at(100, "1.1.6+spec-1.1.0").scrub_at(1500, p.pin.clone().unwrap_or_default()),
         _ => {}
     }

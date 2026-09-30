@@ -1,4 +1,4 @@
-use backend_engine::{Row, RowId, ViewRoot, WorkspaceRoot};
+use backend_engine::{CoverageCapability, Row, RowId, ViewRoot, WorkspaceRoot};
 use backend_extension_tantivy as lexical;
 use backend_extension_trustfall::{SemanticQueryCorpus, SemanticQueryPresentation};
 use backend_semantic::{Entity, EntityId, Source};
@@ -700,6 +700,7 @@ pub(crate) enum SnapshotMaintenance {
 pub struct SearchSnapshotOwner {
     selected: Option<QueryCoordinator>,
     durable_root: Option<PathBuf>,
+    durable_budget: lexical::DurableCacheBudget,
     builds: u64,
     opens: u64,
     maintenance: Option<SnapshotMaintenance>,
@@ -719,6 +720,13 @@ impl SearchSnapshotOwner {
         }
     }
 
+    /// Sets the typed byte budget used by this owner's durable index role.
+    #[must_use]
+    pub fn with_durable_cache_budget(mut self, budget: lexical::DurableCacheBudget) -> Self {
+        self.durable_budget = budget;
+        self
+    }
+
     /// Selects the coordinator for one exact immutable product snapshot.
     ///
     /// # Errors
@@ -729,9 +737,11 @@ impl SearchSnapshotOwner {
         &mut self,
         workspace: WorkspaceRoot,
         view: ViewRoot,
+        expected_view_capability: CoverageCapability,
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<&QueryCoordinator, QueryError> {
+        validate_view_binding(&view, &expected_view_capability)?;
         if self.selected.as_ref().is_some_and(|selected| {
             selected.matches_selection(workspace, &view, coverage, &semantic_evidence)
         }) {
@@ -742,9 +752,11 @@ impl SearchSnapshotOwner {
             Some(selected) => selected.try_revise(
                 workspace,
                 &view,
+                &expected_view_capability,
                 coverage,
                 &semantic_evidence,
                 self.durable_root.as_deref(),
+                self.durable_budget,
             ),
             None => Ok(None),
         };
@@ -776,9 +788,11 @@ impl SearchSnapshotOwner {
         let (selected, action) = QueryCoordinator::new_with_durable_root(
             workspace,
             view,
+            &expected_view_capability,
             coverage,
             semantic_evidence,
             self.durable_root.clone(),
+            self.durable_budget,
         )?;
         self.selected = Some(selected);
         match action {
@@ -888,26 +902,44 @@ impl QueryCoordinator {
     pub fn new(
         workspace: WorkspaceRoot,
         view: ViewRoot,
+        expected_view_capability: CoverageCapability,
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<Self, QueryError> {
-        Self::new_with_durable_root(workspace, view, coverage, semantic_evidence, None)
-            .map(|(coordinator, _)| coordinator)
+        Self::new_with_durable_root(
+            workspace,
+            view,
+            &expected_view_capability,
+            coverage,
+            semantic_evidence,
+            None,
+            lexical::DurableCacheBudget::default(),
+        )
+        .map(|(coordinator, _)| coordinator)
     }
 
     fn new_with_durable_root(
         workspace: WorkspaceRoot,
         view: ViewRoot,
+        expected_view_capability: &CoverageCapability,
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
         durable_root: Option<PathBuf>,
+        durable_budget: lexical::DurableCacheBudget,
     ) -> Result<(Self, lexical::DurableProjectionAction), QueryError> {
-        let prepared = prepare_corpus(workspace, view, coverage, semantic_evidence)?;
+        let prepared = prepare_corpus(
+            workspace,
+            view,
+            expected_view_capability,
+            coverage,
+            semantic_evidence,
+        )?;
         let (source, action) = match durable_root.as_deref() {
-            Some(root) => lexical::TantivySource::open_or_build_in_dir_with_action(
+            Some(root) => lexical::TantivySource::open_or_build_in_dir_with_budget_and_action(
                 &prepared.state,
                 lexical::Limits::default(),
                 root,
+                durable_budget,
             ),
             None => lexical::TantivySource::build(&prepared.state, lexical::Limits::default())
                 .map(|source| (source, lexical::DurableProjectionAction::Built)),
@@ -932,17 +964,28 @@ impl QueryCoordinator {
         &mut self,
         workspace: WorkspaceRoot,
         view: &ViewRoot,
+        expected_view_capability: &CoverageCapability,
         coverage: CoverageWitness,
         semantic_evidence: &SemanticQueryCorpus,
         durable_root: Option<&Path>,
+        durable_budget: lexical::DurableCacheBudget,
     ) -> Result<Option<SnapshotMaintenance>, QueryError> {
-        let prepared =
-            prepare_corpus(workspace, view.clone(), coverage, semantic_evidence.clone())?;
+        let prepared = prepare_corpus(
+            workspace,
+            view.clone(),
+            expected_view_capability,
+            coverage,
+            semantic_evidence.clone(),
+        )?;
         let previous_state = if durable_root.is_some() {
             Some(
                 prepare_corpus(
                     self.corpus.workspace,
                     self.corpus.view.clone(),
+                    self.corpus
+                        .view
+                        .capability()
+                        .ok_or(QueryError::StaleViewBinding)?,
                     self.corpus.coverage,
                     self.corpus.semantic_evidence.clone(),
                 )?
@@ -956,12 +999,13 @@ impl QueryCoordinator {
         };
         let durable_publication = match (durable_root, previous_state.as_ref()) {
             (Some(root), Some(previous)) => Some(
-                lexical::TantivySource::open_or_advance_in_dir_with_action(
+                lexical::TantivySource::open_or_advance_in_dir_with_budget_and_action(
                     previous,
                     &prepared.state,
                     lexical::Limits::default(),
                     lexical::OverlayLimits::default(),
                     root,
+                    durable_budget,
                 )
                 .map_err(|_| QueryError::LexicalProvider)?,
             ),
@@ -990,7 +1034,10 @@ impl QueryCoordinator {
                     lexical::TantivySourceError::Contract(error) => QueryError::Lexical(error),
                     lexical::TantivySourceError::Backend(_)
                     | lexical::TantivySourceError::Io(_)
-                    | lexical::TantivySourceError::Corrupt(_) => QueryError::LexicalProvider,
+                    | lexical::TantivySourceError::Corrupt(_)
+                    | lexical::TantivySourceError::BudgetExceeded { .. } => {
+                        QueryError::LexicalProvider
+                    }
                 })?
             {
                 lexical::MaintainOutcome::RebuildRequired => return Ok(None),
@@ -1186,12 +1233,11 @@ impl QueryCoordinator {
         self.corpus.selected.document_order.len()
     }
 
-    /// Returns the exact workspace selected by the owner for this corpus.
+    /// Returns the typed workspace identity selected by this coordinator.
     #[must_use]
     pub(crate) fn workspace_root(&self) -> WorkspaceRoot {
         self.corpus.workspace
     }
-
     /// Checks the non-root portion of a semantic binding against this exact
     /// selected view.  The read manifest and frontier include the immutable
     /// view identity, while the candidate root is derived from the document
@@ -1299,9 +1345,11 @@ struct PreparedCorpus {
 fn prepare_corpus(
     workspace: WorkspaceRoot,
     view: ViewRoot,
+    expected_view_capability: &CoverageCapability,
     coverage: CoverageWitness,
     semantic_evidence: SemanticQueryCorpus,
 ) -> Result<PreparedCorpus, QueryError> {
+    validate_view_binding(&view, expected_view_capability)?;
     if !matches!(
         coverage,
         CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
@@ -1358,6 +1406,16 @@ fn prepare_corpus(
         selected,
         semantic_evidence,
     })
+}
+
+fn validate_view_binding(
+    view: &ViewRoot,
+    expected_view_capability: &CoverageCapability,
+) -> Result<(), QueryError> {
+    if view.capability() != Some(expected_view_capability) {
+        return Err(QueryError::StaleViewBinding);
+    }
+    Ok(())
 }
 
 fn collect_selected_documents(
@@ -1579,6 +1637,9 @@ pub enum QueryError {
     InvalidLimit,
     /// The selected source was not proven complete by its owner.
     IncompleteCoverage,
+    /// The selected view was not published against the exact workspace
+    /// snapshot selected by the caller.
+    StaleViewBinding,
     /// Two logical rows collapsed onto one cross-index identity.
     IdentityCollision,
     /// The selected view could not form a canonical lexical relation.
@@ -1601,6 +1662,9 @@ impl fmt::Display for QueryError {
             Self::EmptyQuery => formatter.write_str("query text is empty"),
             Self::InvalidLimit => formatter.write_str("query page limit is invalid"),
             Self::IncompleteCoverage => formatter.write_str("selected view coverage is incomplete"),
+            Self::StaleViewBinding => {
+                formatter.write_str("selected view is bound to another workspace snapshot")
+            }
             Self::IdentityCollision => formatter.write_str("cross-index identity collision"),
             Self::InvalidView => formatter.write_str("selected view is not a valid query corpus"),
             Self::InvalidSemanticEvidence => {

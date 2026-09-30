@@ -108,7 +108,7 @@ pub struct CanaryReport {
 }
 
 /// The canaries and the stage/check each must fail.
-pub const EXPECTED: [(&str, &str, &str); 18] = [
+pub const EXPECTED: [(&str, &str, &str); 20] = [
     ("canary-stuck-hover", "storm", "hover"),
     ("canary-jump", "motion", "continuity"),
     ("canary-clipped-text", "lint", "clip"),
@@ -127,6 +127,8 @@ pub const EXPECTED: [(&str, &str, &str); 18] = [
     ("canary-dead-focus", "storm", "focus"),
     ("canary-wall-clock", "determinism", "determinism"),
     ("canary-residue", "matrix", "settled!=reduced"),
+    ("canary-zero-opacity", "lint", "ink"),
+    ("canary-opaque-cover", "lint", "ink"),
 ];
 
 fn digest(image: &image::RgbaImage) -> String {
@@ -305,12 +307,17 @@ fn lints(scene: &Scene) -> Stage {
     match capture(scene, &shot) {
         Ok(frames) => {
             if let Some(frame) = frames.first() {
-                let linted = lint::lint(&frame.image, &frame.ledger, frame.drawn.viewport);
+                let linted = lint::lint_with_painted(
+                    &frame.image,
+                    &frame.ledger,
+                    frame.drawn.viewport,
+                    &frame.painted_texts,
+                );
                 stage.summary = format!(
                     "{} visible of {} texts, {} visible of {} targets, contrast measured on {}{}",
-                    linted.coverage.visible_texts,
+                    linted.coverage.clip_visible_texts,
                     linted.coverage.texts,
-                    linted.coverage.visible_targets,
+                    linted.coverage.clip_visible_targets,
                     linted.coverage.targets,
                     linted.coverage.contrast,
                     linted
@@ -326,8 +333,8 @@ fn lints(scene: &Scene) -> Stage {
                         format!("{} {}: {}", item.rule.name(), item.key, item.detail),
                     );
                 }
-                if linted.coverage.visible_texts == 0
-                    && linted.coverage.visible_targets == 0
+                if linted.coverage.clip_visible_texts == 0
+                    && linted.coverage.clip_visible_targets == 0
                     && stage.outcome == Outcome::Pass
                 {
                     stage.outcome = Outcome::NotCovered;
@@ -361,7 +368,7 @@ fn matrix_stage(scene: &Scene, axes: Option<&Axes>, out: &Path) -> Stage {
                 .count();
             let linted: usize = results
                 .iter()
-                .map(|r| r.linted.coverage.visible_texts + r.linted.coverage.visible_targets)
+                .map(|r| r.linted.coverage.clip_visible_texts + r.linted.coverage.clip_visible_targets)
                 .sum();
             stage.summary = format!(
                 "{}/{} cells pass, {linted} boxes linted, {compared} settled==reduced comparisons",

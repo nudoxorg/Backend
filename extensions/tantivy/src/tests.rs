@@ -9,6 +9,7 @@
 use super::*;
 use crate::engine::test_support::{
     BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
+    MAX_RETAINED_DURABLE_ROOTS,
     ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint,
     write_projection_manifest,
 };
@@ -1115,6 +1116,50 @@ fn durable_selected_roots_reopen_update_and_roll_back_against_fixed_answers() {
 }
 
 #[test]
+fn durable_budget_refusal_keeps_a_valid_selected_root_for_later_reopen() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-budget-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let state = state_for(
+        vec![(document(8), vec![("name".into(), "budget-canary".into())])],
+        [81; 32],
+    );
+    let source = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("publish root under default cache budget");
+    drop(source);
+    let key = hex_fingerprint(projection_fingerprint(state.binding()));
+    let selected = root.join(DURABLE_ROOTS_DIRECTORY).join(key);
+    let original_manifest =
+        std::fs::read(selected.join(INTEGRITY_FILE)).expect("integrity manifest");
+    let tiny_budget = DurableCacheBudget::new(1).expect("nonzero cache budget");
+
+    assert!(matches!(
+        TantivySource::open_or_build_in_dir_with_budget_and_action(
+            &state,
+            Limits::default(),
+            &root,
+            tiny_budget,
+        ),
+        Err(TantivySourceError::BudgetExceeded { budget_bytes: 1, .. })
+    ));
+    assert!(selected.is_dir(), "capacity refusal must retain the selected root");
+    assert_eq!(
+        std::fs::read(selected.join(INTEGRITY_FILE)).expect("retained manifest"),
+        original_manifest
+    );
+
+    let reopened = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("later default-budget open should reuse the intact root");
+    assert_eq!(term_hits(&reopened, "budget-canary"), vec![document(8)]);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn durable_delta_reopen_uses_the_persisted_sparse_ordinal_map() {
     static NEXT_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
@@ -1209,7 +1254,8 @@ fn durable_delta_reopen_uses_the_persisted_sparse_ordinal_map() {
     let original_ordinal_map = ordinal_map.clone();
     ordinal_map[first_identity] ^= 0x80;
     std::fs::write(&ordinal_path, ordinal_map).expect("damage ordinal identity");
-    write_projection_manifest(&selected, fingerprint).expect("refresh integrity manifest");
+    write_projection_manifest(&selected, fingerprint, DurableCacheBudget::default())
+        .expect("refresh integrity manifest");
     assert!(matches!(
         TantivySource::open_in_dir(&third, Limits::default(), &selected),
         Err(TantivySourceError::Corrupt(_))
@@ -1223,7 +1269,8 @@ fn durable_delta_reopen_uses_the_persisted_sparse_ordinal_map() {
     ordinal_map[first_payload..first_payload + record_size - 8].copy_from_slice(&second_record_tail);
     ordinal_map[second_payload..second_payload + record_size - 8].copy_from_slice(&first_record_tail);
     std::fs::write(&ordinal_path, ordinal_map).expect("swap ordinal identities");
-    write_projection_manifest(&selected, fingerprint).expect("refresh integrity manifest");
+    write_projection_manifest(&selected, fingerprint, DurableCacheBudget::default())
+        .expect("refresh integrity manifest");
     assert!(matches!(
         TantivySource::open_in_dir(&third, Limits::default(), &selected),
         Err(TantivySourceError::Corrupt(_))
@@ -1342,6 +1389,29 @@ fn durable_root_pin_survives_cross_process_pruning_then_releases_for_eviction() 
         drop(source);
     }
     assert!(old_root.is_dir(), "active cross-process root must stay on disk");
+    let version_root = root.join(DURABLE_ROOTS_DIRECTORY);
+    for ordinal in 2..=4 {
+        let revision = state_for(
+            vec![(document(ordinal), vec![("name".into(), format!("revision{ordinal}"))])],
+            [ordinal as u8; 32],
+        );
+        let path = version_root.join(hex_fingerprint(projection_fingerprint(revision.binding())));
+        assert!(!path.exists(), "older unpinned revision {ordinal} should be pruned");
+    }
+    for ordinal in 5..=8 {
+        let revision = state_for(
+            vec![(document(ordinal), vec![("name".into(), format!("revision{ordinal}"))])],
+            [ordinal as u8; 32],
+        );
+        let path = version_root.join(hex_fingerprint(projection_fingerprint(revision.binding())));
+        assert!(path.is_dir(), "recent unpinned revision {ordinal} should be retained");
+    }
+    let retained_root_count = std::fs::read_dir(&version_root)
+        .expect("list retained roots")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .count();
+    assert_eq!(retained_root_count, MAX_RETAINED_DURABLE_ROOTS + 1);
 
     let mut child_stdin = child.stdin.take().expect("child stdin");
     std::io::Write::write_all(&mut child_stdin, b"x").expect("release child root lease");

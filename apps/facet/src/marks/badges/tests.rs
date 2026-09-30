@@ -196,6 +196,38 @@ fn python_java_csharp_and_cpp_read_what_the_text_says() {
 }
 
 #[test]
+fn c_and_cpp_use_separate_conservative_readers() {
+    let c = read(
+        &Item::new("lookup", Lang::C)
+            .signature(Some("int lookup(const char *name, size_t length);")),
+    );
+    assert_eq!((c.shape, c.word), (Shape::Function, "function"));
+    assert_eq!(c.words(), ["takes 2"]);
+    assert_eq!(c.badges[0].tip, "It receives 2 declared parameters.");
+    assert_eq!(
+        read(&Item::new("init", Lang::C).signature(Some("int init(void);"))).words(),
+        ["takes nothing"]
+    );
+    assert!(
+        read(&Item::new("legacy", Lang::C).signature(Some("int legacy();")))
+            .badges
+            .is_empty()
+    );
+    assert_eq!(
+        read(&Item::new("make", Lang::C).signature(Some("struct Point make(void);"))).shape,
+        Shape::Function
+    );
+
+    let cpp = read(
+        &Item::new("find", Lang::Cpp)
+            .signature(Some("template <typename T> T find(T value) const noexcept")),
+    );
+    assert!(cpp.says("noexcept"));
+    assert!(cpp.says("reads it"));
+    assert!(cpp.says("T"));
+}
+
+#[test]
 fn every_glyph_has_a_distinct_name() {
     let mut names: Vec<&str> = Glyph::ALL.iter().map(|glyph| glyph.name()).collect();
     names.sort_unstable();

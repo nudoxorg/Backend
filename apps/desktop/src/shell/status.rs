@@ -204,7 +204,7 @@ impl Render for Status {
         let retry = retry_button(notice.as_ref(), &snapshot, &self.links, &measure);
         let hand = snapshot.session().hand.clone();
         if !speaks || !hand.is_empty() {
-            let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+            let view = crate::runtime::hand::hand_view_for(&hand, &snapshot, cx);
             let left = marks_left(self.core.width(), self.reader_left, measure.scale());
             // The first card ever held: "Value *in hand*", once per install.
             // Timed on the motion clock (virtual under the harness), from
@@ -252,16 +252,18 @@ impl Render for Status {
                 let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), room, cx);
                 div().flex().flex_col().min_w(px(0.0)).children(said_lines(lines, role, palette.ink3.hsla()))
             });
-            return foot.pl(left).child(
-                div()
+            let mut row = div()
                     .flex()
                     .items_center()
                     .gap(measure.space(Space::Roomy))
                     .children(self.marks.render(&view, &self.links, &measure, palette, window, cx))
                     .children(words)
                     .children(said)
-                    .children(retry),
-            );
+                    .children(retry);
+            if let Some(status) = &view.status {
+                row = row.child(super::kit::text(ty::CAPTION, &measure, palette.ink2).child(status.to_string()));
+            }
+            return foot.pl(left).child(row);
         }
         let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), self.core.width(), cx);
         if retry.is_some() {

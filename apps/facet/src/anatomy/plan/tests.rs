@@ -88,6 +88,13 @@ fn record(plan: &PagePlan) -> &Record {
     match &plan.spec { Spec::Record(record) => record, other => panic!("expected a record specimen, got {other:?}") }
 }
 
+#[test]
+fn c_and_cpp_are_distinct_page_languages() {
+    assert_eq!(Lang::from_name("c"), Lang::C);
+    assert_eq!(Lang::from_name("c++"), Lang::Cpp);
+    assert_eq!(Lang::from_name("h"), Lang::Other);
+}
+
 /// Each rung as the page reads it: `name?  type in words`.
 fn rungs(record: &Record) -> Vec<String> {
     record.rungs.iter().map(|rung| format!("{}{}  {}", rung.name, if rung.optional { "?" } else { "" }, rung.ty.plain())).collect()

@@ -330,10 +330,16 @@ impl RenderOnce for Section {
         if !self.lens.compared() {
             let explanation = match self.lens.status {
                 ComparisonStatus::SourceUnavailable => {
-                    format!("{} is not on this machine, so its API cannot be compared; only its date is known.", self.lens.to)
+                    format!("{} source is unavailable, so its API cannot be compared.", self.lens.to)
                 }
                 ComparisonStatus::DiffUnavailable => {
                     format!("{} is on this machine, but this comparison is unavailable.", self.lens.to)
+                }
+                ComparisonStatus::SourceAmbiguous => {
+                    format!("{} matches multiple registry sources, so its API cannot be compared.", self.lens.to)
+                }
+                ComparisonStatus::SourceUnverified => {
+                    format!("{} has an unverified source archive, so its API cannot be compared.", self.lens.to)
                 }
                 ComparisonStatus::Compared => unreachable!("compared lenses continue into their rows"),
             };

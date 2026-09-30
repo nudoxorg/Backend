@@ -16,7 +16,7 @@ use crate::glyph::{KindGlyph, LanguageGlyph};
 use crate::identity::{Identity, ProjectRef};
 use crate::outline::{OutlineEntry, OutlineTree};
 use crate::page::{MemberGroup, Page, Prose, RelationGroup, Source, Truncation};
-use crate::product::ProductView;
+use crate::product::{CursorTarget, ProductView};
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
 use crate::signature::{Signature, TokenKind};
@@ -540,6 +540,14 @@ fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
         page.result_count()
     ));
     if let Some(cursor) = page.next_cursor() {
-        lines.push(format!("  next cursor (pass --cursor): {cursor}"));
+        let instruction = match page
+            .cursor_projection()
+            .map_or(CursorTarget::CliOption, |projection| projection.target())
+        {
+            CursorTarget::CliOption => "pass --cursor",
+            CursorTarget::McpIndexSearchTool => "pass cursor to backend.index_search",
+            CursorTarget::SurfaceCommand => "set command.cursor in backend.surface",
+        };
+        lines.push(format!("  next cursor ({instruction}): {cursor}"));
     }
 }

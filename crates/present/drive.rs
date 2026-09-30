@@ -38,9 +38,22 @@ use crate::shelf::Shelf;
 use crate::status::Status;
 use backend_client::ClientError;
 use backend_library::{
-    CommandReply, CompileExecutionIntent, GraphRelation, HealthReport, IntentId, PageContinuation,
-    ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
+    CommandReply, CompileExecutionIntent, GraphRelation, HealthReport, IndexSearchCursor, IntentId,
+    PageContinuation, ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
+
+/// One owner-issued continuation family supported by agent-facing surfaces.
+///
+/// Page continuations are authenticated by the shared catalog owner. Index
+/// search cursors are opaque strings owned by the durable product surface and
+/// must pass through that owner unchanged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ContinuationCursor {
+    /// A presentation page continuation such as search, resolve, or graph.
+    Page(PageContinuation),
+    /// An opaque durable index-search continuation.
+    IndexSearch(IndexSearchCursor),
+}
 
 /// Rows fetched for one page's members and relations.
 const PROBE_ROWS: u16 = 200;
@@ -205,6 +218,16 @@ impl Answer {
     pub fn continuation(&self) -> Option<PageContinuation> {
         match self {
             Self::Records(records) => records.continuation(),
+            _ => None,
+        }
+    }
+
+    /// Returns the owner-issued cursor family carried by this answer.
+    #[must_use]
+    pub fn cursor(&self) -> Option<ContinuationCursor> {
+        match self {
+            Self::Records(records) => records.continuation().map(ContinuationCursor::Page),
+            Self::Product(product) => product.cursor_family().cloned(),
             _ => None,
         }
     }

@@ -20,7 +20,12 @@ use std::sync::Arc;
 
 /// The words painted under a key containing `part`, in paint order.
 fn said(ledger: &Ledger, part: &str) -> Vec<String> {
-    ledger.texts.iter().filter(|t| t.key.contains(part)).map(|t| t.content.clone()).collect()
+    ledger
+        .texts
+        .iter()
+        .filter(|t| t.key.contains(part))
+        .map(|t| t.content.clone())
+        .collect()
 }
 
 fn has(ledger: &Ledger, part: &str) -> bool {
@@ -29,17 +34,31 @@ fn has(ledger: &Ledger, part: &str) -> bool {
 
 /// The centre of the first text painted under a key containing `part`.
 fn centre(ledger: &Ledger, part: &str) -> (f32, f32) {
-    let text = ledger.texts.iter().find(|t| t.key.contains(part)).unwrap_or_else(|| panic!("nothing painted under `{part}`: {:?}", ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>()));
-    (text.bounds.x + text.bounds.width / 2.0, text.bounds.y + text.bounds.height / 2.0)
+    let text = ledger
+        .texts
+        .iter()
+        .find(|t| t.key.contains(part))
+        .unwrap_or_else(|| {
+            panic!(
+                "nothing painted under `{part}`: {:?}",
+                ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>()
+            )
+        });
+    (
+        text.bounds.x + text.bounds.width / 2.0,
+        text.bounds.y + text.bounds.height / 2.0,
+    )
 }
 
 fn click(rig: &mut Rig, at: (f32, f32)) {
-    rig.cx.simulate_click(point(px(at.0), px(at.1)), Modifiers::default());
+    rig.cx
+        .simulate_click(point(px(at.0), px(at.1)), Modifiers::default());
     rig.settle();
 }
 
 fn move_to(rig: &mut Rig, at: (f32, f32)) {
-    rig.cx.simulate_mouse_move(point(px(at.0), px(at.1)), None, Modifiers::default());
+    rig.cx
+        .simulate_mouse_move(point(px(at.0), px(at.1)), None, Modifiers::default());
     rig.settle();
 }
 
@@ -49,7 +68,9 @@ fn krate() -> PathBuf {
     // crate under another's feet reads an empty manifest.
     static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/scratch").join(format!("nudox-folio-{}-{call}-present", std::process::id()));
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/scratch")
+        .join(format!("nudox-folio-{}-{call}-present", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let write = |path: &str, body: &str| {
         let at = dir.join(path);
@@ -60,7 +81,10 @@ fn krate() -> PathBuf {
         "Cargo.toml",
         "[package]\nname = \"present\"\nversion = \"0.4.2\"\nedition = \"2021\"\nlicense = \"MIT\"\nauthors = [\"Ada Lovelace <ada@example.org>\"]\n[features]\ndefault = []\nfast = []\n",
     );
-    write("src/lib.rs", "//! How one symbol page reads.\npub mod glyph;\n");
+    write(
+        "src/lib.rs",
+        "//! How one symbol page reads.\npub mod glyph;\n",
+    );
     write(
         "src/glyph.rs",
         "//! Glyphs for relations.\nuse std::process::Command;\n\n/// Names a relation.\npub enum RelationLabel { Typed, Related }\n\n/// Which way it points.\npub enum RelationDirection { In, Out }\n\n/// A glyph for one kind.\npub struct KindGlyph;\n\n/// Who is named.\npub struct Identity;\n\n/// The outline.\npub struct Outline;\n\n/// The label of a relation.\npub fn relation_label(link: &str) -> Option<String> {\n    let _ = Command::new(\"true\");\n    unsafe { std::hint::unreachable_unchecked() }\n}\n",
@@ -79,7 +103,8 @@ fn read_and_open(rig: &mut Rig) {
 
 /// Installs what reading the crate at `dir` said, and goes to the package page.
 fn read_and_open_at(rig: &mut Rig, dir: &Path) {
-    let facts = source_facts::read(dir, &std::collections::HashMap::new(), None).expect("the crate reads");
+    let facts =
+        source_facts::read(dir, &std::collections::HashMap::new(), None).expect("the crate reads");
     let package = package();
     rig.cx.update(|_, cx| {
         facet::probe::enable(cx);
@@ -94,33 +119,93 @@ fn a_page_whose_source_is_missing_says_so_instead_of_inventing_facts(cx: &mut Te
     install(&mut rig);
     let ledger = painted(&mut rig);
     let heads = said(&ledger, "heads-words");
-    assert_eq!(heads, ["Its source is not on this machine. Nothing is read for build scripts, network, files and unsafe."], "{heads:?}");
+    assert_eq!(
+        heads,
+        [
+            "Its source is not on this machine. Nothing is read for build scripts, network, files and unsafe."
+        ],
+        "{heads:?}"
+    );
     let weight = said(&ledger, "weight-words");
-    assert_eq!(weight, ["Its source is not on this machine. Nothing is read for lines of code."], "{weight:?}");
-    assert_eq!(said(&ledger, "advisories-word"), ["yours"], "a project of yours is not checked against feeds of published releases");
+    assert_eq!(
+        weight,
+        ["Its source is not on this machine. Nothing is read for lines of code."],
+        "{weight:?}"
+    );
+    assert_eq!(
+        said(&ledger, "advisories-word"),
+        ["yours"],
+        "a project of yours is not checked against feeds of published releases"
+    );
     assert_eq!(said(&ledger, "licence-verdict"), ["Permissive"]);
-    assert!(!has(&ledger, "weight-note") && !has(&ledger, "heads-note"), "nothing is labelled `from its source` when nothing was read from it");
-    assert!(!has(&ledger, "berg") && !has(&ledger, "features"), "no berg and no features bar without a manifest");
+    assert!(
+        !has(&ledger, "weight-note") && !has(&ledger, "heads-note"),
+        "nothing is labelled `from its source` when nothing was read from it"
+    );
+    assert!(
+        !has(&ledger, "berg") && !has(&ledger, "features"),
+        "no berg and no features bar without a manifest"
+    );
 }
 
 #[gpui::test]
-fn the_outline_is_the_territory_its_modules_are_regions_and_a_module_opens_into_cards_that_say_badges_never_code(cx: &mut TestAppContext) {
+fn the_outline_is_the_territory_its_modules_are_regions_and_a_module_opens_into_cards_that_say_badges_never_code(
+    cx: &mut TestAppContext,
+) {
     let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
     // The fixture puts every name in `glyph.rs`, so the outline is one module of six names.
-    assert_eq!(said(&ledger, "present-names").first().map(String::as_str), Some("6"), "six public names");
+    assert_eq!(
+        said(&ledger, "present-names").first().map(String::as_str),
+        Some("6"),
+        "six public names"
+    );
     assert_eq!(said(&ledger, "shingles-region-"), ["glyph"]);
     let said_lines = rig.said();
-    assert!(!said_lines.iter().any(|line| line == "Start here" || line == "what you hold"), "no fixture-ranked tour: {said_lines:#?}");
+    assert!(
+        !said_lines
+            .iter()
+            .any(|line| line == "Start here" || line == "what you hold"),
+        "no fixture-ranked tour: {said_lines:#?}"
+    );
     click(&mut rig, centre(&ledger, "shingles-region-glyph"));
     let ledger = painted(&mut rig);
-    let names: Vec<String> = ledger.texts.iter().filter(|t| t.key.contains("module-card-") && t.key.ends_with("-name")).map(|t| t.content.clone()).collect();
-    assert_eq!(names, ["Identity", "RelationLabel", "RelationDirection", "KindGlyph", "relation_label", "Outline"], "the recorded order, one card each");
-    let kinds: Vec<String> = ledger.texts.iter().filter(|t| t.key.contains("module-card-") && t.key.ends_with("-kind")).map(|t| t.content.clone()).collect();
+    let names: Vec<String> = ledger
+        .texts
+        .iter()
+        .filter(|t| t.key.contains("module-card-") && t.key.ends_with("-name"))
+        .map(|t| t.content.clone())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Identity",
+            "RelationLabel",
+            "RelationDirection",
+            "KindGlyph",
+            "relation_label",
+            "Outline"
+        ],
+        "the recorded order, one card each"
+    );
+    let kinds: Vec<String> = ledger
+        .texts
+        .iter()
+        .filter(|t| t.key.contains("module-card-") && t.key.ends_with("-kind"))
+        .map(|t| t.content.clone())
+        .collect();
     assert_eq!(kinds, ["struct", "enum", "enum", "struct", "fn", "struct"]);
-    assert!(!ledger.texts.iter().any(|t| t.content.contains("pub struct") || t.content.contains("pub enum") || t.content.contains('{')), "a card says what a name is, not its code");
-    assert!(has(&ledger, "rail-close-name"), "the rail offers a way back");
+    assert!(
+        !ledger.texts.iter().any(|t| t.content.contains("pub struct")
+            || t.content.contains("pub enum")
+            || t.content.contains('{')),
+        "a card says what a name is, not its code"
+    );
+    assert!(
+        has(&ledger, "rail-close-name"),
+        "the rail offers a way back"
+    );
 }
 
 #[gpui::test]
@@ -130,9 +215,21 @@ fn a_card_is_a_door_to_its_exact_indexed_page(cx: &mut TestAppContext) {
     let ledger = painted(&mut rig);
     click(&mut rig, centre(&ledger, "shingles-region-glyph"));
     let ledger = painted(&mut rig);
-    let key = format!("pkg-card-{}", crate::shell::tests::coordinate("RelationLabel"));
-    let card = ledger.targets.iter().find(|target| target.key == key).unwrap_or_else(|| panic!("no card door `{key}`")).bounds.clone();
-    click(&mut rig, (card.x + card.width / 2.0, card.y + card.height / 2.0));
+    let key = format!(
+        "pkg-card-{}",
+        crate::shell::tests::coordinate("RelationLabel")
+    );
+    let card = ledger
+        .targets
+        .iter()
+        .find(|target| target.key == key)
+        .unwrap_or_else(|| panic!("no card door `{key}`"))
+        .bounds
+        .clone();
+    click(
+        &mut rig,
+        (card.x + card.width / 2.0, card.y + card.height / 2.0),
+    );
     assert_eq!(rig.route(), page_route("RelationLabel"));
 }
 
@@ -142,17 +239,40 @@ fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut Te
     install(&mut rig);
     let _ = painted(&mut rig);
     rig.keys("j");
-    let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
-    assert_eq!(focused.as_deref(), Some("pkg-module-glyph"), "j lands on the first module");
+    let (_, focused) = rig
+        .shell
+        .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(
+        focused.as_deref(),
+        Some("pkg-module-glyph"),
+        "j lands on the first module"
+    );
     rig.keys("enter");
     let ledger = painted(&mut rig);
-    assert_eq!(rig.route(), package_route(), "opening a module stays on the page");
-    assert!(has(&ledger, "module-card-0-name"), "the module's cards are out");
+    assert_eq!(
+        rig.route(),
+        package_route(),
+        "opening a module stays on the page"
+    );
+    assert!(
+        has(&ledger, "module-card-0-name"),
+        "the module's cards are out"
+    );
     rig.keys("j");
-    let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
-    assert_eq!(focused.as_deref().map(|id| id.starts_with("pkg-card-")), Some(true), "j now walks the cards: {focused:?}");
+    let (_, focused) = rig
+        .shell
+        .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(
+        focused.as_deref().map(|id| id.starts_with("pkg-card-")),
+        Some(true),
+        "j now walks the cards: {focused:?}"
+    );
     rig.keys("enter");
-    assert!(matches!(rig.route(), crate::navigation::Route::Symbol(_)), "enter on a card opens its page: {:?}", rig.route());
+    assert!(
+        matches!(rig.route(), crate::navigation::Route::Symbol(_)),
+        "enter on a card opens its page: {:?}",
+        rig.route()
+    );
 }
 
 #[gpui::test]
@@ -162,11 +282,22 @@ fn what_the_source_says_is_read_from_it_and_labelled_so(cx: &mut TestAppContext)
     let ledger = painted(&mut rig);
     // Heads-up: it starts a program (a warning) and has one unsafe block.
     assert_eq!(said(&ledger, "heads-label"), ["HEADS-UP"]);
-    assert_eq!(said(&ledger, "heads-accent"), ["1"], "one warning: the program it starts");
+    assert_eq!(
+        said(&ledger, "heads-accent"),
+        ["1"],
+        "one warning: the program it starts"
+    );
     assert_eq!(said(&ledger, "heads-note"), ["from its source"]);
     // Weight: a crate with no dependencies is all above the water.
     assert_eq!(said(&ledger, "weight-note"), ["from its source"]);
-    assert!(said(&ledger, "weight-caption").iter().any(|c| c.starts_with("0 packages beneath") && (c.contains("default features") || c.contains("in your lock"))), "{:?}", said(&ledger, "weight-caption"));
+    assert!(
+        said(&ledger, "weight-caption")
+            .iter()
+            .any(|c| c.starts_with("0 packages beneath")
+                && (c.contains("default features") || c.contains("in your lock"))),
+        "{:?}",
+        said(&ledger, "weight-caption")
+    );
     // The features bar reads its manifest: nothing on by default.
     assert_eq!(said(&ledger, "features-label"), ["Features"]);
     assert_eq!(said(&ledger, "features-of"), ["of 1 on"]);
@@ -174,13 +305,26 @@ fn what_the_source_says_is_read_from_it_and_labelled_so(cx: &mut TestAppContext)
     assert_eq!(said(&ledger, "shingles-region-"), ["glyph"]);
     click(&mut rig, centre(&ledger, "shingles-region-glyph"));
     let ledger = painted(&mut rig);
-    let docs: Vec<String> = ledger.texts.iter().filter(|t| t.key.contains("module-card-") && t.key.ends_with("-doc")).map(|t| t.content.clone()).collect();
-    assert!(docs.iter().any(|d| d == "Names a relation"), "the first sentence of `RelationLabel`'s doc: {docs:?}");
-    assert!(!docs.iter().any(|d| d == "undocumented") || docs.len() > 1, "{docs:?}");
+    let docs: Vec<String> = ledger
+        .texts
+        .iter()
+        .filter(|t| t.key.contains("module-card-") && t.key.ends_with("-doc"))
+        .map(|t| t.content.clone())
+        .collect();
+    assert!(
+        docs.iter().any(|d| d == "Names a relation"),
+        "the first sentence of `RelationLabel`'s doc: {docs:?}"
+    );
+    assert!(
+        !docs.iter().any(|d| d == "undocumented") || docs.len() > 1,
+        "{docs:?}"
+    );
 }
 
 #[gpui::test]
-fn the_heads_up_hand_fans_out_and_a_click_opens_the_evidence_read_from_source(cx: &mut TestAppContext) {
+fn the_heads_up_hand_fans_out_and_a_click_opens_the_evidence_read_from_source(
+    cx: &mut TestAppContext,
+) {
     let mut rig = rig(cx, None, 1440.0, 900.0);
     read_and_open(&mut rig);
     let ledger = painted(&mut rig);
@@ -189,13 +333,31 @@ fn the_heads_up_hand_fans_out_and_a_click_opens_the_evidence_read_from_source(cx
     rig.frame(400);
     let ledger = painted(&mut rig);
     let words = said(&ledger, "heads-word-");
-    assert!(words.iter().any(|w| w == "Starts programs") && words.iter().any(|w| w == "Unsafe blocks"), "hovering spreads the hand into words: {words:?}");
+    assert!(
+        words.iter().any(|w| w == "Starts programs") && words.iter().any(|w| w == "Unsafe blocks"),
+        "hovering spreads the hand into words: {words:?}"
+    );
     click(&mut rig, (x, y + 27.0));
     rig.frame(400);
     let ledger = painted(&mut rig);
-    let evidence: Vec<&str> = ledger.texts.iter().map(|t| t.content.as_str()).filter(|c| c.starts_with("src/glyph.rs:")).collect();
-    assert!(!evidence.is_empty(), "the sheet names the file and line of what it found: {:?}", ledger.texts.iter().map(|t| &t.content).collect::<Vec<_>>());
-    assert!(ledger.texts.iter().any(|t| t.content.contains("Command::new(\"true\")")), "and shows the line");
+    let evidence: Vec<&str> = ledger
+        .texts
+        .iter()
+        .map(|t| t.content.as_str())
+        .filter(|c| c.starts_with("src/glyph.rs:"))
+        .collect();
+    assert!(
+        !evidence.is_empty(),
+        "the sheet names the file and line of what it found: {:?}",
+        ledger.texts.iter().map(|t| &t.content).collect::<Vec<_>>()
+    );
+    assert!(
+        ledger
+            .texts
+            .iter()
+            .any(|t| t.content.contains("Command::new(\"true\")")),
+        "and shows the line"
+    );
 }
 
 // ------------------------------------------------------------------ widths
@@ -207,8 +369,15 @@ fn folio_layout(ledger: &Ledger) -> Vec<(String, [f32; 4])> {
     let mut out: Vec<(String, [f32; 4])> = ledger
         .texts
         .iter()
-        .filter(|t| t.key.contains("folio-") || t.key.starts_with("name:") || t.key.starts_with("mk-"))
-        .map(|t| (t.key.clone(), [t.bounds.x, t.bounds.y, t.bounds.width, t.bounds.height]))
+        .filter(|t| {
+            t.key.contains("folio-") || t.key.starts_with("name:") || t.key.starts_with("mk-")
+        })
+        .map(|t| {
+            (
+                t.key.clone(),
+                [t.bounds.x, t.bounds.y, t.bounds.width, t.bounds.height],
+            )
+        })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -222,7 +391,12 @@ fn folio_layout(ledger: &Ledger) -> Vec<(String, [f32; 4])> {
 fn a_page_after_a_resize_storm_equals_a_fresh_page(cx: &mut TestAppContext) {
     let mut stormed = rig(cx, None, 1440.0, 900.0);
     read_and_open(&mut stormed);
-    for (width, height) in [(800.0, 600.0), (2560.0, 1440.0), (1024.0, 700.0), (1440.0, 900.0)] {
+    for (width, height) in [
+        (800.0, 600.0),
+        (2560.0, 1440.0),
+        (1024.0, 700.0),
+        (1440.0, 900.0),
+    ] {
         resize(&mut stormed, width, height);
     }
     let after = folio_layout(&painted_at(&mut stormed));
@@ -230,10 +404,17 @@ fn a_page_after_a_resize_storm_equals_a_fresh_page(cx: &mut TestAppContext) {
     read_and_open(&mut fresh);
     let born = folio_layout(&painted_at(&mut fresh));
     assert!(!born.is_empty(), "the fresh page painted nothing");
-    assert_eq!(after.iter().map(|(k, _)| k).collect::<Vec<_>>(), born.iter().map(|(k, _)| k).collect::<Vec<_>>(), "the same words are on the page");
+    assert_eq!(
+        after.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+        born.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+        "the same words are on the page"
+    );
     for ((key, was), (_, is)) in after.iter().zip(&born) {
         for (axis, (a, b)) in was.iter().zip(is).enumerate() {
-            assert!((a - b).abs() <= 0.75, "`{key}` sits differently after a resize storm (axis {axis}): {was:?} against a fresh window's {is:?}");
+            assert!(
+                (a - b).abs() <= 0.75,
+                "`{key}` sits differently after a resize storm (axis {axis}): {was:?} against a fresh window's {is:?}"
+            );
         }
     }
 }
@@ -248,7 +429,13 @@ fn a_page_after_a_resize_storm_equals_a_fresh_page(cx: &mut TestAppContext) {
 fn the_blocks_under_the_crest_glide_when_its_cells_change_rows(cx: &mut TestAppContext) {
     let mut rig = rig(cx, None, 1600.0, 900.0);
     read_and_open(&mut rig);
-    let heading = |ledger: &Ledger| ledger.texts.iter().find(|t| t.key.contains("names-words")).map(|t| t.bounds.y);
+    let heading = |ledger: &Ledger| {
+        ledger
+            .texts
+            .iter()
+            .find(|t| t.key.contains("names-words"))
+            .map(|t| t.bounds.y)
+    };
     let before = heading(&painted_at(&mut rig)).expect("the modules' heading is drawn");
     rig.cx.simulate_resize(gpui::size(px(1100.0), px(900.0)));
     let mut ys = vec![before];
@@ -264,12 +451,24 @@ fn the_blocks_under_the_crest_glide_when_its_cells_change_rows(cx: &mut TestAppC
     }
     rig.settle();
     let landed = heading(&painted_at(&mut rig)).expect("the heading is drawn");
-    assert!((landed - before).abs() > 40.0, "the crest changed rows between 1600 and 1100 px, so the heading moved: {before} -> {landed}");
-    let worst = ys.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0_f32, f32::max);
-    assert!(worst <= (landed - before).abs() * 0.6, "the heading jumped {worst:.1} px in one frame on its way from {before:.1} to {landed:.1}: {ys:?}");
+    assert!(
+        (landed - before).abs() > 40.0,
+        "the crest changed rows between 1600 and 1100 px, so the heading moved: {before} -> {landed}"
+    );
+    let worst = ys
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        worst <= (landed - before).abs() * 0.6,
+        "the heading jumped {worst:.1} px in one frame on its way from {before:.1} to {landed:.1}: {ys:?}"
+    );
     let mut fresh = rig_at(cx, 1100.0);
     let born = heading(&painted_at(&mut fresh)).expect("drawn");
-    assert!((born - landed).abs() <= 0.75, "it lands where a fresh 1100 px window puts it: {landed} vs {born}");
+    assert!(
+        (born - landed).abs() <= 0.75,
+        "it lands where a fresh 1100 px window puts it: {landed} vs {born}"
+    );
 }
 
 fn rig_at(cx: &mut TestAppContext, width: f32) -> Rig {
@@ -285,17 +484,47 @@ fn rig_at(cx: &mut TestAppContext, width: f32) -> Rig {
 fn the_page_holds_together_at_every_width(cx: &mut TestAppContext) {
     let mut rig = rig(cx, None, 1440.0, 900.0);
     read_and_open(&mut rig);
-    for (width, height) in [(1440.0, 900.0), (320.0, 640.0), (360.0, 740.0), (390.0, 844.0), (430.0, 932.0), (480.0, 800.0), (600.0, 800.0), (768.0, 1024.0), (800.0, 600.0), (980.0, 700.0), (1024.0, 700.0), (1280.0, 800.0), (1920.0, 1080.0), (2560.0, 1440.0)] {
+    for (width, height) in [
+        (1440.0, 900.0),
+        (320.0, 640.0),
+        (360.0, 740.0),
+        (390.0, 844.0),
+        (430.0, 932.0),
+        (480.0, 800.0),
+        (600.0, 800.0),
+        (768.0, 1024.0),
+        (800.0, 600.0),
+        (980.0, 700.0),
+        (1024.0, 700.0),
+        (1280.0, 800.0),
+        (1920.0, 1080.0),
+        (2560.0, 1440.0),
+    ] {
         resize(&mut rig, width, height);
         let ledger = painted_at(&mut rig);
-        let mine = |key: &str| key.contains("folio-") || key.starts_with("name:") || key.starts_with("mk-");
+        let mine = |key: &str| {
+            key.contains("folio-") || key.starts_with("name:") || key.starts_with("mk-")
+        };
         let ours: Vec<String> = findings(&ledger, width, height)
             .into_iter()
-            .filter(|f| f.rule != "edge" && (f.what.contains("[folio-") || f.what.contains("[name:") || f.what.contains("[mk-")))
+            .filter(|f| {
+                f.rule != "edge"
+                    && (f.what.contains("[folio-")
+                        || f.what.contains("[name:")
+                        || f.what.contains("[mk-"))
+            })
             .map(|f| format!("{}: {}", f.rule, f.what))
             .collect();
-        assert!(ours.is_empty(), "at {width} px the page has {} problems: {ours:#?}", ours.len());
-        for text in ledger.texts.iter().filter(|t| mine(&t.key) && !t.content.trim().is_empty()) {
+        assert!(
+            ours.is_empty(),
+            "at {width} px the page has {} problems: {ours:#?}",
+            ours.len()
+        );
+        for text in ledger
+            .texts
+            .iter()
+            .filter(|t| mine(&t.key) && !t.content.trim().is_empty())
+        {
             assert!(
                 text.bounds.x >= -0.5 && text.bounds.x + text.bounds.width <= width + 0.5,
                 "at {width} px `{}` runs past the window's side: x {:.0}, {:.0} wide [{}]",
@@ -308,7 +537,6 @@ fn the_page_holds_together_at_every_width(cx: &mut TestAppContext) {
     }
 }
 
-
 // ------------------------------------------------------------------ releases
 
 /// A crate named like one the registry's index cache knows (`toml`), so its
@@ -316,17 +544,30 @@ fn the_page_holds_together_at_every_width(cx: &mut TestAppContext) {
 fn krate_named_toml() -> PathBuf {
     static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/scratch").join(format!("nudox-folio-{}-{call}-toml", std::process::id()));
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/scratch")
+        .join(format!("nudox-folio-{}-{call}-toml", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).expect("dir");
-    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"toml\"\nversion = \"0.8.23\"\nlicense = \"MIT\"\n").expect("manifest");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"toml\"\nversion = \"0.8.23\"\nlicense = \"MIT\"\n",
+    )
+    .expect("manifest");
     std::fs::write(dir.join("src/lib.rs"), "//! toml.\npub struct Value;\n").expect("lib");
     dir
 }
 
 /// The years of the ticker's axis, as painted.
 fn years(ledger: &Ledger) -> Vec<String> {
-    ledger.texts.iter().filter(|t| t.key.contains("-ticker-") && t.content.len() == 4 && t.content.starts_with("20")).map(|t| t.content.clone()).collect()
+    ledger
+        .texts
+        .iter()
+        .filter(|t| {
+            t.key.contains("-ticker-") && t.content.len() == 4 && t.content.starts_with("20")
+        })
+        .map(|t| t.content.clone())
+        .collect()
 }
 
 /// A package the library indexed from an unpacked registry directory has no
@@ -338,7 +579,8 @@ fn a_local_root_gets_its_release_ticker_from_the_registry_cache(cx: &mut TestApp
         return;
     }
     let mut rig = rig(cx, None, 1440.0, 900.0);
-    let facts = source_facts::read(&krate_named_toml(), &std::collections::HashMap::new(), None).expect("the crate reads");
+    let facts = source_facts::read(&krate_named_toml(), &std::collections::HashMap::new(), None)
+        .expect("the crate reads");
     let package = package();
     rig.cx.update(|_, cx| {
         facet::probe::enable(cx);
@@ -346,8 +588,18 @@ fn a_local_root_gets_its_release_ticker_from_the_registry_cache(cx: &mut TestApp
     });
     rig.go(Intent::Navigate(package_route()));
     let ledger = painted(&mut rig);
-    assert!(years(&ledger).len() >= 3, "the ticker's axis is dated: {:?}", ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>());
-    assert!(!ledger.targets.iter().any(|t| t.key.contains("folio-") && t.key.ends_with("-back")), "on the pin there is no way back to show");
+    assert!(
+        years(&ledger).len() >= 3,
+        "the ticker's axis is dated: {:?}",
+        ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>()
+    );
+    assert!(
+        !ledger
+            .targets
+            .iter()
+            .any(|t| t.key.contains("folio-") && t.key.ends_with("-back")),
+        "on the pin there is no way back to show"
+    );
 }
 
 /// Reading another release says so and offers the way out, on a page whose
@@ -356,21 +608,61 @@ fn a_local_root_gets_its_release_ticker_from_the_registry_cache(cx: &mut TestApp
 fn the_past_says_so_and_offers_the_way_back_with_or_without_a_ticker(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
     install(&mut rig);
-    rig.go(Intent::SetRelease(Some(crate::navigation::ReleaseId::new("0.3.0").expect("release"))));
+    rig.go(Intent::SetRelease(Some(
+        crate::navigation::ReleaseId::new("0.3.0").expect("release"),
+    )));
     let ledger = painted(&mut rig);
-    assert!(!has(&ledger, "-ticker-"), "the fixture package has no releases to draw");
-    assert_eq!(said(&ledger, "-reading").first().map(String::as_str), Some("Reading"), "the banner says the page is in the past");
-    assert_eq!(said(&ledger, "-at").first().map(String::as_str), Some("0.3.0"));
-    let back = ledger.targets.iter().find(|t| t.key.contains("folio-") && t.key.ends_with("-back")).unwrap_or_else(|| panic!("the way back is a button: {:?}", ledger.targets.iter().map(|t| &t.key).collect::<Vec<_>>()));
-    click(&mut rig, (back.bounds.x + back.bounds.width / 2.0, back.bounds.y + back.bounds.height / 2.0));
-    assert!(matches!(rig.route(), crate::navigation::Route::Package(route) if route.at.is_none()), "the way back returns to the pin: {:?}", rig.route());
+    assert!(
+        !has(&ledger, "-ticker-"),
+        "the fixture package has no releases to draw"
+    );
+    assert_eq!(
+        said(&ledger, "-reading").first().map(String::as_str),
+        Some("Reading"),
+        "the banner says the page is in the past"
+    );
+    assert_eq!(
+        said(&ledger, "-at").first().map(String::as_str),
+        Some("0.3.0")
+    );
+    let back = ledger
+        .targets
+        .iter()
+        .find(|t| t.key.contains("folio-") && t.key.ends_with("-back"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the way back is a button: {:?}",
+                ledger.targets.iter().map(|t| &t.key).collect::<Vec<_>>()
+            )
+        });
+    click(
+        &mut rig,
+        (
+            back.bounds.x + back.bounds.width / 2.0,
+            back.bounds.y + back.bounds.height / 2.0,
+        ),
+    );
+    assert!(
+        matches!(rig.route(), crate::navigation::Route::Package(route) if route.at.is_none()),
+        "the way back returns to the pin: {:?}",
+        rig.route()
+    );
 }
 
 /// The four crest cells' label rows, top to bottom: which cell sits on which line.
 fn crest_rows(ledger: &Ledger) -> Vec<Vec<&'static str>> {
     let mut at: Vec<(f32, &'static str)> = Vec::new();
-    for (part, name) in [("licence-label", "licence"), ("heads-label", "heads"), ("weight-label", "weight"), ("advisories-label", "advisories")] {
-        if let Some(text) = ledger.texts.iter().find(|t| t.key.contains("folio-") && t.key.ends_with(part)) {
+    for (part, name) in [
+        ("licence-label", "licence"),
+        ("heads-label", "heads"),
+        ("weight-label", "weight"),
+        ("advisories-label", "advisories"),
+    ] {
+        if let Some(text) = ledger
+            .texts
+            .iter()
+            .find(|t| t.key.contains("folio-") && t.key.ends_with(part))
+        {
             at.push((text.bounds.y, name));
         }
     }
@@ -395,12 +687,22 @@ fn the_crest_is_whole_rows_at_every_width_and_never_more_rows_when_wider(cx: &mu
     read_and_open(&mut rig);
     let mut previous_rows = usize::MAX;
     // Every width R-Folio saw go wrong (1440-1600 orphaned a fourth cell; 720 was one column wide of two), and each side of the arrangement's edges.
-    for width in [300, 360, 430, 460, 480, 560, 640, 720, 800, 960, 1000, 1024, 1152, 1280, 1360, 1440, 1500, 1600, 1700, 1920, 2560] {
+    for width in [
+        300, 360, 430, 460, 480, 560, 640, 720, 800, 960, 1000, 1024, 1152, 1280, 1360, 1440, 1500,
+        1600, 1700, 1920, 2560,
+    ] {
         resize(&mut rig, width as f32, 900.0);
         let rows = crest_rows(&painted_at(&mut rig));
         let shape: Vec<usize> = rows.iter().map(Vec::len).collect();
-        assert!(matches!(shape.as_slice(), [4] | [2, 2] | [1, 1, 1, 1]), "at {width} px the crest is {rows:?}");
-        assert!(rows.len() <= previous_rows, "at {width} px the crest has {} rows, more than at a narrower window ({previous_rows}): {rows:?}", rows.len());
+        assert!(
+            matches!(shape.as_slice(), [4] | [2, 2] | [1, 1, 1, 1]),
+            "at {width} px the crest is {rows:?}"
+        );
+        assert!(
+            rows.len() <= previous_rows,
+            "at {width} px the crest has {} rows, more than at a narrower window ({previous_rows}): {rows:?}",
+            rows.len()
+        );
         previous_rows = rows.len();
     }
 }
@@ -411,14 +713,22 @@ fn the_crest_is_whole_rows_at_every_width_and_never_more_rows_when_wider(cx: &mu
 /// on `id` (at most `limit` presses); the walk clamps at the ends of the list.
 fn walk_by(rig: &mut Rig, key: &str, id: &str, limit: usize) {
     for _ in 0..limit {
-        let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let (_, focused) = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
         if focused.as_deref() == Some(id) {
             return;
         }
         rig.keys(key);
     }
-    let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
-    assert_eq!(focused.as_deref(), Some(id), "{limit} presses of `{key}` never reached `{id}` (zone {zone:?})");
+    let (zone, focused) = rig
+        .shell
+        .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(
+        focused.as_deref(),
+        Some(id),
+        "{limit} presses of `{key}` never reached `{id}` (zone {zone:?})"
+    );
 }
 
 /// Walks on (`j`) to `id`.
@@ -432,42 +742,61 @@ fn walk_back_to(rig: &mut Rig, id: &str, limit: usize) {
 }
 
 fn focused(rig: &mut Rig) -> Option<String> {
-    rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.map(|id| id.to_string())
+    rig.shell
+        .read_with(rig.cx, |shell, cx| shell.focus_state(cx))
+        .1
+        .map(|id| id.to_string())
 }
 
-/// The crest's cells, the features and the releases are on the keyboard's
+/// The crest's cells and the releases are on the keyboard's
 /// list after the territory (a reader walks what the page is about first),
 /// and Enter does on each what a click does.
 #[gpui::test]
-fn the_crest_the_features_and_the_releases_are_doors_and_enter_does_what_a_click_does(cx: &mut TestAppContext) {
+fn the_crest_and_releases_are_doors_and_enter_does_what_a_click_does(cx: &mut TestAppContext) {
     let mut rig = rig(cx, None, 1440.0, 900.0);
     read_and_open(&mut rig);
     // The territory first.
     rig.keys("j");
-    assert_eq!(focused(&mut rig).as_deref(), Some("pkg-module-glyph"), "the first door is the territory's");
+    assert_eq!(
+        focused(&mut rig).as_deref(),
+        Some("pkg-module-glyph"),
+        "the first door is the territory's"
+    );
     // Then the licence: Enter holds the stamp unfolded, Enter again lets it go.
     walk_to(&mut rig, "pkg-licence", 6);
     rig.keys("enter");
-    assert!(has(&painted(&mut rig), "licence-line") || said(&painted(&mut rig), "licence").iter().any(|w| w.contains("keep the notice")), "Enter unfolded the licence stamp");
+    assert!(
+        has(&painted(&mut rig), "licence-line")
+            || said(&painted(&mut rig), "licence")
+                .iter()
+                .any(|w| w.contains("keep the notice")),
+        "Enter unfolded the licence stamp"
+    );
     rig.keys("enter");
     rig.settle();
     rig.frame(400);
-    assert!(!said(&painted(&mut rig), "licence").iter().any(|w| w.contains("keep the notice")), "Enter again folded it");
+    assert!(
+        !said(&painted(&mut rig), "licence")
+            .iter()
+            .any(|w| w.contains("keep the notice")),
+        "Enter again folded it"
+    );
     // The heads-up hand: Enter opens the sheet of evidence.
     walk_to(&mut rig, "pkg-heads", 3);
     rig.keys("enter");
     rig.frame(500);
     let sheet = painted(&mut rig);
-    assert!(sheet.texts.iter().any(|t| t.content.starts_with("src/glyph.rs:")), "Enter on the hand opened the evidence sheet");
+    assert!(
+        sheet
+            .texts
+            .iter()
+            .any(|t| t.content.starts_with("src/glyph.rs:")),
+        "Enter on the hand opened the evidence sheet"
+    );
     rig.keys("escape");
     rig.frame(400);
-    // The weight: Enter opens the berg (the crate has no dependencies, so an empty one), Enter again folds it.
+    // The weight: Enter opens the berg (the crate has no dependencies, so an empty one).
     walk_to(&mut rig, "pkg-weight", 4);
-    // The one feature: Enter flips it on.
-    walk_to(&mut rig, "pkg-feature-fast", 6);
-    rig.keys("enter");
-    rig.frame(300);
-    assert_eq!(said(&painted(&mut rig), "features-on"), ["1"], "Enter on the `fast` chip turned one feature on");
 }
 
 /// A module opened folds on Esc, on the page, before the shell does anything
@@ -479,12 +808,18 @@ fn escape_folds_the_open_module_first(cx: &mut TestAppContext) {
     let _ = painted(&mut rig);
     rig.keys("j");
     rig.keys("enter");
-    assert!(has(&painted(&mut rig), "module-card-0-name"), "the module is open");
+    assert!(
+        has(&painted(&mut rig), "module-card-0-name"),
+        "the module is open"
+    );
     rig.keys("escape");
     rig.frame(300);
     let ledger = painted(&mut rig);
     assert!(!has(&ledger, "module-card-0-name"), "Esc folded the module");
-    assert!(has(&ledger, "shingles-region-glyph"), "and the territory is back");
+    assert!(
+        has(&ledger, "shingles-region-glyph"),
+        "and the territory is back"
+    );
     assert_eq!(rig.route(), package_route(), "Esc folded; it did not leave");
 }
 
@@ -496,7 +831,8 @@ fn the_releases_are_doors_and_enter_travels_to_one(cx: &mut TestAppContext) {
         return;
     }
     let mut rig = rig(cx, None, 1440.0, 900.0);
-    let facts = source_facts::read(&krate_named_toml(), &std::collections::HashMap::new(), None).expect("the crate reads");
+    let facts = source_facts::read(&krate_named_toml(), &std::collections::HashMap::new(), None)
+        .expect("the crate reads");
     let package = package();
     rig.cx.update(|_, cx| {
         facet::probe::enable(cx);
@@ -506,8 +842,15 @@ fn the_releases_are_doors_and_enter_travels_to_one(cx: &mut TestAppContext) {
     let _ = painted(&mut rig);
     walk_to(&mut rig, "pkg-release-newest", 40);
     rig.keys("enter");
-    assert!(matches!(rig.route(), crate::navigation::Route::Package(route) if route.at.is_some()), "Enter on the newest release travelled to it: {:?}", rig.route());
-    assert!(has(&painted(&mut rig), "-reading"), "the page says it is reading another release");
+    assert!(
+        matches!(rig.route(), crate::navigation::Route::Package(route) if route.at.is_some()),
+        "Enter on the newest release travelled to it: {:?}",
+        rig.route()
+    );
+    assert!(
+        has(&painted(&mut rig), "-reading"),
+        "the page says it is reading another release"
+    );
 }
 
 // -------------------------------------------------------------------- berg
@@ -518,7 +861,9 @@ fn krate_needing_toml() -> Option<PathBuf> {
     static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     crate::model::source_facts::registry::pick("toml", "0.8", None)?;
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/scratch").join(format!("nudox-folio-{}-{call}-heavy", std::process::id()));
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/scratch")
+        .join(format!("nudox-folio-{}-{call}-heavy", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).expect("dir");
     std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"heavy\"\nversion = \"0.1.0\"\nlicense = \"MIT\"\n[dependencies]\ntoml = \"0.8\"\n").expect("manifest");
@@ -528,12 +873,20 @@ fn krate_needing_toml() -> Option<PathBuf> {
 
 /// The berg's blocks, as painted.
 fn berg_blocks(ledger: &Ledger) -> usize {
-    ledger.bounds.iter().filter(|b| b.key.contains("-berg-block-")).count()
+    ledger
+        .bounds
+        .iter()
+        .filter(|b| b.key.contains("-berg-block-"))
+        .count()
 }
 
 /// The top edge of the names line, below the berg: what it pushes down when it opens.
 fn below_the_berg(ledger: &Ledger) -> f32 {
-    ledger.texts.iter().find(|t| t.key.ends_with("-names")).map_or(f32::NAN, |t| t.bounds.y)
+    ledger
+        .texts
+        .iter()
+        .find(|t| t.key.ends_with("-names"))
+        .map_or(f32::NAN, |t| t.bounds.y)
 }
 
 /// The berg drops in when the weight is opened and lifts out when it is
@@ -543,9 +896,12 @@ fn below_the_berg(ledger: &Ledger) -> f32 {
 /// is exactly where it began.
 #[gpui::test]
 fn the_berg_drops_in_and_lifts_out_and_its_doors_go_with_it(cx: &mut TestAppContext) {
-    let Some(dir) = krate_needing_toml() else { return };
+    let Some(dir) = krate_needing_toml() else {
+        return;
+    };
     let mut rig = rig(cx, None, 1440.0, 900.0);
-    let facts = source_facts::read(&dir, &std::collections::HashMap::new(), None).expect("the crate reads");
+    let facts =
+        source_facts::read(&dir, &std::collections::HashMap::new(), None).expect("the crate reads");
     if facts.berg.blocks.is_empty() {
         return;
     }
@@ -558,10 +914,15 @@ fn the_berg_drops_in_and_lifts_out_and_its_doors_go_with_it(cx: &mut TestAppCont
     let closed = painted(&mut rig);
     assert_eq!(berg_blocks(&closed), 0, "the berg is folded away at first");
     let before = below_the_berg(&closed);
-    assert!(before.is_finite(), "the features line is painted: {:?}", closed.texts.iter().map(|t| &t.key).collect::<Vec<_>>());
+    assert!(
+        before.is_finite(),
+        "the features line is painted: {:?}",
+        closed.texts.iter().map(|t| &t.key).collect::<Vec<_>>()
+    );
     // Open it by the pointer and watch it arrive frame by frame.
     let at = centre(&closed, "weight-label");
-    rig.cx.simulate_click(point(px(at.0), px(at.1)), Modifiers::default());
+    rig.cx
+        .simulate_click(point(px(at.0), px(at.1)), Modifiers::default());
     let mut ys = Vec::new();
     for _ in 0..30 {
         rig.frame(16);
@@ -570,9 +931,20 @@ fn the_berg_drops_in_and_lifts_out_and_its_doors_go_with_it(cx: &mut TestAppCont
     }
     let settled = ys.last().copied().expect("frames");
     assert!(settled.0 > 0, "the berg opened: {ys:?}");
-    assert!(settled.1 > before + 40.0, "and the page below it moved down ({before} to {}): {ys:?}", settled.1);
-    assert!(ys.iter().any(|(_, y)| *y > before + 1.0 && *y < settled.1 - 1.0), "it took frames to arrive, it did not cut: {ys:?}");
-    assert!(ys.windows(2).all(|pair| pair[1].1 >= pair[0].1 - 0.5), "it never moved back on the way down: {ys:?}");
+    assert!(
+        settled.1 > before + 40.0,
+        "and the page below it moved down ({before} to {}): {ys:?}",
+        settled.1
+    );
+    assert!(
+        ys.iter()
+            .any(|(_, y)| *y > before + 1.0 && *y < settled.1 - 1.0),
+        "it took frames to arrive, it did not cut: {ys:?}"
+    );
+    assert!(
+        ys.windows(2).all(|pair| pair[1].1 >= pair[0].1 - 0.5),
+        "it never moved back on the way down: {ys:?}"
+    );
     // Open, the blocks are on the keyboard's list.
     walk_to(&mut rig, &PageTarget::Block(0).id(), 30);
     // Fold it by the keyboard and watch it lift out.
@@ -586,16 +958,33 @@ fn the_berg_drops_in_and_lifts_out_and_its_doors_go_with_it(cx: &mut TestAppCont
         if frame == 1 {
             // Lifting out, the berg is still on the page but no longer on the
             // keyboard's list: `j` from the weight goes past it.
-            assert!(berg_blocks(&ledger) > 0, "the berg is still lifting out: {ys:?}");
+            assert!(
+                berg_blocks(&ledger) > 0,
+                "the berg is still lifting out: {ys:?}"
+            );
             rig.cx.simulate_keystrokes("j");
             let now = focused(&mut rig);
-            assert!(now.as_deref().is_some_and(|id| !id.starts_with("pkg-block-")), "a lifting berg has no doors, `j` went to {now:?}");
+            assert!(
+                now.as_deref()
+                    .is_some_and(|id| !id.starts_with("pkg-block-")),
+                "a lifting berg has no doors, `j` went to {now:?}"
+            );
         }
     }
-    assert!(ys.iter().any(|(blocks, _)| *blocks > 0) && ys.last().is_some_and(|(blocks, _)| *blocks == 0), "the berg was still there a moment, then gone: {ys:?}");
-    assert!(ys.windows(2).all(|pair| pair[1].1 <= pair[0].1 + 0.5), "it never moved back down on the way up: {ys:?}");
+    assert!(
+        ys.iter().any(|(blocks, _)| *blocks > 0)
+            && ys.last().is_some_and(|(blocks, _)| *blocks == 0),
+        "the berg was still there a moment, then gone: {ys:?}"
+    );
+    assert!(
+        ys.windows(2).all(|pair| pair[1].1 <= pair[0].1 + 0.5),
+        "it never moved back down on the way up: {ys:?}"
+    );
     let last = ys.last().expect("frames").1;
-    assert!((last - before).abs() < 1.0, "folded, the page is where it began ({before} vs {last}): {ys:?}");
+    assert!(
+        (last - before).abs() < 1.0,
+        "folded, the page is where it began ({before} vs {last}): {ys:?}"
+    );
     // Its doors left with it.
     rig.keys("k");
     let ids: Vec<String> = (0..12)
@@ -604,24 +993,34 @@ fn the_berg_drops_in_and_lifts_out_and_its_doors_go_with_it(cx: &mut TestAppCont
             focused(&mut rig)
         })
         .collect();
-    assert!(!ids.iter().any(|id| id.starts_with("pkg-block-")), "a folded berg has no doors: {ids:?}");
+    assert!(
+        !ids.iter().any(|id| id.starts_with("pkg-block-")),
+        "a folded berg has no doors: {ids:?}"
+    );
 }
 
 // ------------------------------------------------------------------ flight
 
 /// Where the flying stones are (their bounds), by index.
 fn stone(ledger: &Ledger, index: usize) -> Option<&facet::probe::BoundsSample> {
-    ledger.bounds.iter().find(|b| b.key.ends_with(&format!("-flight-stone-{index}")))
+    ledger
+        .bounds
+        .iter()
+        .find(|b| b.key.ends_with(&format!("-flight-stone-{index}")))
 }
 
 /// Where flying stone `index` is going.
 fn mark(ledger: &Ledger, index: usize) -> Option<&facet::probe::BoundsSample> {
-    ledger.bounds.iter().find(|b| b.key.ends_with(&format!("-flight-mark-{index}")))
+    ledger
+        .bounds
+        .iter()
+        .find(|b| b.key.ends_with(&format!("-flight-mark-{index}")))
 }
 
 /// How far the centre of `from` is from the centre of `to`.
 fn gap(from: &facet::probe::BoundsSample, to: &facet::probe::BoundsSample) -> f32 {
-    (from.x + from.width / 2.0 - (to.x + to.width / 2.0)).hypot(from.y + from.height / 2.0 - (to.y + to.height / 2.0))
+    (from.x + from.width / 2.0 - (to.x + to.width / 2.0))
+        .hypot(from.y + from.height / 2.0 - (to.y + to.height / 2.0))
 }
 
 /// A module opens by carrying its shingles to its cards: one stone in the
@@ -634,34 +1033,74 @@ fn opening_a_module_carries_each_shingle_to_its_card_and_lands(cx: &mut TestAppC
     install(&mut rig);
     let ledger = painted(&mut rig);
     let at = centre(&ledger, "shingles-region-glyph");
-    rig.cx.simulate_click(point(px(at.0), px(at.1)), Modifiers::default());
+    rig.cx
+        .simulate_click(point(px(at.0), px(at.1)), Modifiers::default());
     let mut frames: Vec<Ledger> = Vec::new();
     for _ in 0..80 {
         rig.frame(16);
         frames.push(rig.cx.update(|_, cx| facet::probe::take(cx)));
     }
     let landed = frames.last().expect("frames");
-    let flying: Vec<&Ledger> = frames.iter().filter(|frame| stone(frame, 0).is_some()).collect();
-    assert!(flying.len() >= 4, "the shingles took frames to arrive: {} frames in the air", flying.len());
-    assert!(frames.iter().filter(|frame| stone(frame, 0).is_some()).all(|frame| (0..6).all(|index| stone(frame, index).is_some())), "one stone per name, six, in every frame of the flight");
-    assert!(stone(landed, 0).is_none(), "and none in the air once they have landed");
-    assert!(has(landed, "module-card-0-name"), "the cards are there to be read");
-    let distances: Vec<f32> = flying.iter().filter_map(|frame| Some(gap(stone(frame, 0)?, mark(frame, 0)?))).collect();
+    let flying: Vec<&Ledger> = frames
+        .iter()
+        .filter(|frame| stone(frame, 0).is_some())
+        .collect();
+    assert!(
+        flying.len() >= 4,
+        "the shingles took frames to arrive: {} frames in the air",
+        flying.len()
+    );
+    assert!(
+        frames
+            .iter()
+            .filter(|frame| stone(frame, 0).is_some())
+            .all(|frame| (0..6).all(|index| stone(frame, index).is_some())),
+        "one stone per name, six, in every frame of the flight"
+    );
+    assert!(
+        stone(landed, 0).is_none(),
+        "and none in the air once they have landed"
+    );
+    assert!(
+        has(landed, "module-card-0-name"),
+        "the cards are there to be read"
+    );
+    let distances: Vec<f32> = flying
+        .iter()
+        .filter_map(|frame| Some(gap(stone(frame, 0)?, mark(frame, 0)?)))
+        .collect();
     let (first, last) = (distances[0], *distances.last().expect("distances"));
-    assert!(first > 15.0, "the shingle starts away from its card ({first}px): {distances:?}");
-    assert!(last < first * 0.35, "and is over it by the last frame in the air ({first} to {last}): {distances:?}");
-    assert!(distances.windows(2).all(|pair| pair[1] <= pair[0] + 1.5), "never turning back on the way: {distances:?}");
+    assert!(
+        first > 15.0,
+        "the shingle starts away from its card ({first}px): {distances:?}"
+    );
+    assert!(
+        last < first * 0.35,
+        "and is over it by the last frame in the air ({first} to {last}): {distances:?}"
+    );
+    assert!(
+        distances.windows(2).all(|pair| pair[1] <= pair[0] + 1.5),
+        "never turning back on the way: {distances:?}"
+    );
     // Folding it (Esc) leaves nothing in the air.
     rig.keys("escape");
     rig.frame(16);
     let folded = rig.cx.update(|_, cx| facet::probe::take(cx));
-    assert!(stone(&folded, 0).is_none(), "nothing flies when a module folds");
+    assert!(
+        stone(&folded, 0).is_none(),
+        "nothing flies when a module folds"
+    );
 }
 
 // --------------------------------------------------------------- structure
 
 fn region(name: &str, placement: super::data::Placement) -> super::data::ModuleData {
-    super::data::ModuleData { name: name.to_owned().into(), placement, doc: None, items: Vec::new() }
+    super::data::ModuleData {
+        name: name.to_owned().into(),
+        placement,
+        doc: None,
+        items: Vec::new(),
+    }
 }
 
 /// Names the index placed in no module say so; a package of several modules,
@@ -669,9 +1108,26 @@ fn region(name: &str, placement: super::data::Placement) -> super::data::ModuleD
 #[test]
 fn names_the_index_placed_in_no_module_are_called_that_not_drawn_as_a_module() {
     use super::data::{Placement, Structure, structure};
-    assert_eq!(structure(&[region("present", Placement::Gathered)], None), Structure::Gathered);
-    assert_eq!(structure(&[region("lib", Placement::Recorded)], None), Structure::Modules, "one recorded module, and no source to say otherwise");
-    assert_eq!(structure(&[region("a", Placement::Recorded), region("b", Placement::Gathered)], None), Structure::Modules, "several regions are several regions");
+    assert_eq!(
+        structure(&[region("present", Placement::Gathered)], None),
+        Structure::Gathered
+    );
+    assert_eq!(
+        structure(&[region("lib", Placement::Recorded)], None),
+        Structure::Modules,
+        "one recorded module, and no source to say otherwise"
+    );
+    assert_eq!(
+        structure(
+            &[
+                region("a", Placement::Recorded),
+                region("b", Placement::Gathered)
+            ],
+            None
+        ),
+        Structure::Modules,
+        "several regions are several regions"
+    );
     assert_eq!(structure(&[], None), Structure::Modules);
 }
 
@@ -688,13 +1144,36 @@ fn a_crate_whose_modules_are_private_says_its_names_are_all_at_the_root(cx: &mut
     .expect("lib");
     read_and_open_at(&mut rig, &dir);
     let ledger = painted(&mut rig);
-    assert_eq!(said(&ledger, "shingles-region-"), ["lib"], "every public name is at the root: {:?}", ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>());
-    assert_eq!(said(&ledger, "-names").first().map(String::as_str), Some("6"));
-    assert!(said(&ledger, "names-words").iter().any(|w| w.contains("all at the root")), "the header says so: {:?}", said(&ledger, "names-words"));
-    let hidden: Vec<String> = ledger.texts.iter().filter(|t| t.key.ends_with("-hidden")).map(|t| t.content.clone()).collect();
+    assert_eq!(
+        said(&ledger, "shingles-region-"),
+        ["lib"],
+        "every public name is at the root: {:?}",
+        ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        said(&ledger, "-names").first().map(String::as_str),
+        Some("6")
+    );
+    assert!(
+        said(&ledger, "names-words")
+            .iter()
+            .any(|w| w.contains("all at the root")),
+        "the header says so: {:?}",
+        said(&ledger, "names-words")
+    );
+    let hidden: Vec<String> = ledger
+        .texts
+        .iter()
+        .filter(|t| t.key.ends_with("-hidden"))
+        .map(|t| t.content.clone())
+        .collect();
     assert_eq!(hidden, ["1"], "through one private module");
     assert_eq!(said(&ledger, "hidden-words"), ["private module"]);
-    assert!(!has(&ledger, "modules-words"), "it does not claim `1 module`: {:?}", said(&ledger, "modules-words"));
+    assert!(
+        !has(&ledger, "modules-words"),
+        "it does not claim `1 module`: {:?}",
+        said(&ledger, "modules-words")
+    );
 }
 
 /// A project's dependency is indexed as the tree its lock pins (a local root
@@ -706,12 +1185,19 @@ fn a_dependency_links_to_the_release_the_library_holds() {
     use crate::model::pages::{Dependency, DependencyScope, IndexedPackage, Readiness};
     let home = std::env::var("HOME").unwrap_or_default();
     let tree = |name: &str| IndexedPackage {
-        package: PackageRef::parse(&format!("{home}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{name}")).expect("a tree"),
+        package: PackageRef::parse(&format!(
+            "{home}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{name}"
+        ))
+        .expect("a tree"),
         name: Arc::from(name),
         readiness: Readiness::Ready,
     };
     // Trees this machine's cargo cache holds (the journeys read the same).
-    let library = [tree("toml-0.8.23"), tree("toml-0.5.11"), tree("serde-1.0.229")];
+    let library = [
+        tree("toml-0.8.23"),
+        tree("toml-0.5.11"),
+        tree("serde-1.0.229"),
+    ];
     let wants = |name: &str, requirement: &str, resolved: Option<&str>| Dependency {
         name: Arc::from(name),
         requirement: Arc::from(requirement),
@@ -719,11 +1205,36 @@ fn a_dependency_links_to_the_release_the_library_holds() {
         optional: false,
         resolved: resolved.map(|purl| PackageRef::parse(purl).expect("a purl")),
     };
-    let linked = |dependency: &Dependency| super::in_the_library(dependency, &library).map(|package| package.as_str().rsplit('/').next().unwrap_or_default().to_owned());
-    assert_eq!(linked(&wants("toml", "0.8.23", None)).as_deref(), Some("toml-0.8.23"), "the release the requirement names");
-    assert_eq!(linked(&wants("toml", "0.5", Some("pkg:cargo/toml@0.5.11"))).as_deref(), Some("toml-0.5.11"), "the release the resolver chose");
-    assert_eq!(linked(&wants("serde", "1", None)).as_deref(), Some("serde-1.0.229"), "the one release of that name");
-    assert_eq!(linked(&wants("winnow", "0.7", None)), None, "a package the library does not hold has no link here");
+    let linked = |dependency: &Dependency| {
+        super::in_the_library(dependency, &library).map(|package| {
+            package
+                .as_str()
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+    };
+    assert_eq!(
+        linked(&wants("toml", "0.8.23", None)).as_deref(),
+        Some("toml-0.8.23"),
+        "the release the requirement names"
+    );
+    assert_eq!(
+        linked(&wants("toml", "0.5", Some("pkg:cargo/toml@0.5.11"))).as_deref(),
+        Some("toml-0.5.11"),
+        "the release the resolver chose"
+    );
+    assert_eq!(
+        linked(&wants("serde", "1", None)).as_deref(),
+        Some("serde-1.0.229"),
+        "the one release of that name"
+    );
+    assert_eq!(
+        linked(&wants("winnow", "0.7", None)),
+        None,
+        "a package the library does not hold has no link here"
+    );
 }
 
 /// Serves the fixture dossier naming two dependencies: `serde`, whose
@@ -751,7 +1262,10 @@ impl crate::runtime::reads::PageReader for Depends {
                 optional: false,
                 resolved: resolved.map(|purl| PackageRef::parse(purl).expect("a purl")),
             };
-            about.dependencies = Known::Known(Arc::from([wants("serde", "1", Some("pkg:cargo/serde@1.0.229")), wants("winnow", "0.7", None)]));
+            about.dependencies = Known::Known(Arc::from([
+                wants("serde", "1", Some("pkg:cargo/serde@1.0.229")),
+                wants("winnow", "0.7", None),
+            ]));
         }
         Ok(PageValue::Package(about))
     }
@@ -764,21 +1278,51 @@ impl crate::runtime::reads::PageReader for Depends {
 #[gpui::test]
 fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut TestAppContext) {
     let pool = crate::runtime::reads::ReadPool::start(1, |_| Depends).expect("pool");
-    let mut rig = crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+    let mut rig =
+        crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     let ledger = painted(&mut rig);
-    assert_eq!(said(&ledger, "mk-deps").iter().filter(|w| *w != "on").collect::<Vec<_>>(), ["serde", "winnow"], "the hero names both");
-    let doors: Vec<&str> = ledger.targets.iter().map(|t| t.key.as_str()).filter(|key| key.starts_with("pkg-dep-")).collect();
-    assert_eq!(doors, ["pkg-dep-serde"], "only the dependency with a place to go is a door");
-    let door = ledger.targets.iter().find(|t| t.key == "pkg-dep-serde").expect("the door").bounds.clone();
+    assert_eq!(
+        said(&ledger, "mk-deps")
+            .iter()
+            .filter(|w| *w != "on")
+            .collect::<Vec<_>>(),
+        ["serde", "winnow"],
+        "the hero names both"
+    );
+    let doors: Vec<&str> = ledger
+        .targets
+        .iter()
+        .map(|t| t.key.as_str())
+        .filter(|key| key.starts_with("pkg-dep-"))
+        .collect();
+    assert_eq!(
+        doors,
+        ["pkg-dep-serde"],
+        "only the dependency with a place to go is a door"
+    );
+    let door = ledger
+        .targets
+        .iter()
+        .find(|t| t.key == "pkg-dep-serde")
+        .expect("the door")
+        .bounds
+        .clone();
     assert!(door.height >= 24.0, "a door a pointer can hit: {door:?}");
     walk_to(&mut rig, "pkg-dep-serde", 24);
     rig.keys("enter");
     let opened = rig.route();
-    assert!(format!("{opened:?}").contains("serde@1.0.229"), "Enter opened the release the resolver chose: {opened:?}");
+    assert!(
+        format!("{opened:?}").contains("serde@1.0.229"),
+        "Enter opened the release the resolver chose: {opened:?}"
+    );
     rig.keys("cmd-[");
     assert_eq!(rig.route(), package_route(), "⌘[ came back");
-    assert_eq!(focused(&mut rig).as_deref(), Some("pkg-dep-serde"), "and the keyboard stands on the door it left by");
+    assert_eq!(
+        focused(&mut rig).as_deref(),
+        Some("pkg-dep-serde"),
+        "and the keyboard stands on the door it left by"
+    );
 }
 
 /// Back puts the keyboard on the door the page was left by, and the focus
@@ -787,7 +1331,8 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
 #[gpui::test]
 fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut TestAppContext) {
     let pool = crate::runtime::reads::ReadPool::start(1, |_| Depends).expect("pool");
-    let mut rig = crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+    let mut rig =
+        crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     let _ = painted(&mut rig);
     walk_to(&mut rig, "pkg-dep-serde", 24);
@@ -802,11 +1347,39 @@ fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut Test
     for _ in 0..40 {
         rig.frame(16);
     }
-    assert_eq!(focused(&mut rig).as_deref(), Some("pkg-dep-serde"), "back stands on the door");
+    assert_eq!(
+        focused(&mut rig).as_deref(),
+        Some("pkg-dep-serde"),
+        "back stands on the door"
+    );
     let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
-    let glow: Vec<&facet::probe::TrackSample> = ledger.tracks.iter().filter(|track| track.key == "reader.glow-y").collect();
-    let born = glow.iter().position(|sample| sample.kind == facet::probe::TrackKind::Snap).unwrap_or_else(|| panic!("the bevel came back as a designed start: {glow:#?}"));
-    let door = ledger.targets.iter().find(|target| target.key == "pkg-dep-serde").expect("the door is painted").bounds.clone();
-    assert!((glow[born].value - door.y).abs() < 0.5, "it is born on the door: {} vs {}", glow[born].value, door.y);
-    assert!(glow[born..].iter().all(|sample| !sample.live && (sample.value - door.y).abs() < 0.5), "and never flies: {:#?}", &glow[born..]);
+    let glow: Vec<&facet::probe::TrackSample> = ledger
+        .tracks
+        .iter()
+        .filter(|track| track.key == "reader.glow-y")
+        .collect();
+    let born = glow
+        .iter()
+        .position(|sample| sample.kind == facet::probe::TrackKind::Snap)
+        .unwrap_or_else(|| panic!("the bevel came back as a designed start: {glow:#?}"));
+    let door = ledger
+        .targets
+        .iter()
+        .find(|target| target.key == "pkg-dep-serde")
+        .expect("the door is painted")
+        .bounds
+        .clone();
+    assert!(
+        (glow[born].value - door.y).abs() < 0.5,
+        "it is born on the door: {} vs {}",
+        glow[born].value,
+        door.y
+    );
+    assert!(
+        glow[born..]
+            .iter()
+            .all(|sample| !sample.live && (sample.value - door.y).abs() < 0.5),
+        "and never flies: {:#?}",
+        &glow[born..]
+    );
 }

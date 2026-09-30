@@ -393,28 +393,23 @@ fn toml() -> (Rc<[Release]>, usize, Vec<usize>) {
     let Some(krate) = crate::data::release::fixture::get("toml") else {
         return (Rc::from(Vec::new()), 0, Vec::new());
     };
-    let date = |at: &str| {
-        let mut parts = at.get(..10).unwrap_or("0-0-0").split('-').map(|p| p.parse::<i64>().unwrap_or(0));
-        let (y, m, d) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-        y * 372 + m * 31 + d
-    };
-    let newest = krate.versions.last().map_or(0, |v| date(&v.at));
+    let newest = krate
+        .versions
+        .iter()
+        .filter_map(|version| match &version.at {
+            crate::data::release::RegistryFact::Known(at) => date_ordinal(at),
+            crate::data::release::RegistryFact::Missing | crate::data::release::RegistryFact::Ambiguous => None,
+        })
+        .max();
     let releases: Rc<[Release]> = krate
         .versions
         .iter()
         .map(|v| {
-            let days = newest - date(&v.at);
-            let age = match days {
-                0..=6 => "this week".to_owned(),
-                7..=59 => format!("{} weeks ago", days / 7),
-                60..=729 => format!("{} months ago", days / 31),
-                _ => format!("{} years ago", days / 372),
-            };
             Release {
                 id: ReleaseId(v.v.clone()),
                 version: v.v.clone(),
                 step: Step::of(&v.v),
-                age: age.into(),
+                age: relative_age(&v.at, newest),
             }
         })
         .collect();
@@ -427,6 +422,39 @@ fn toml() -> (Rc<[Release]>, usize, Vec<usize>) {
         .map(|(i, _)| i)
         .collect();
     (releases, pin, touches)
+}
+
+fn date_ordinal(at: &str) -> Option<i64> {
+    let date = at.get(..10)?;
+    let mut parts = date.split('-');
+    let year = parts.next()?.parse::<i64>().ok()?;
+    let month = parts.next()?.parse::<i64>().ok()?;
+    let day = parts.next()?.parse::<i64>().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(year * 372 + month * 31 + day)
+}
+
+fn relative_age(at: &crate::data::release::RegistryFact<gpui::SharedString>, newest: Option<i64>) -> gpui::SharedString {
+    use crate::data::release::RegistryFact;
+    let label = match at {
+        RegistryFact::Known(at) => {
+            let (Some(date), Some(newest)) = (date_ordinal(at), newest) else {
+                return "date unavailable".into();
+            };
+            let days = newest.saturating_sub(date);
+            match days {
+                0..=6 => "this week".to_owned(),
+                7..=59 => format!("{} weeks ago", days / 7),
+                60..=729 => format!("{} months ago", days / 31),
+                _ => format!("{} years ago", days / 372),
+            }
+        }
+        RegistryFact::Missing => "date unavailable".to_owned(),
+        RegistryFact::Ambiguous => "date conflicts".to_owned(),
+    };
+    label.into()
 }
 
 /// A young package: three releases.

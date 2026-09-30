@@ -6,18 +6,19 @@
 
 use super::berg::{Basis, BergBlock, BergFacts, berg};
 use super::cards::{CardFacts, Change, symbol_card};
-use super::crest::stamp;
-use super::features::{FeatureFacts, FeatureNode, features};
+use super::crest::{stamp, unread};
+use super::features::{FeatureFacts, FeatureNode, feature_preview};
 use super::fixture::{self, MPSC, TOML};
 use super::heads::{Place, Sighting, Signals, findings, heads};
 use super::shingles::{ModuleFacts, ShingleFacts, shingles};
-use super::state::{Extent, Fold, Names, Nominal, Pick, Standing, Time, Unsafe, Use};
+use super::state::{Extent, Nominal, Unsafe, Use};
 use super::ticker::{Release, TickerFacts, ticker};
+use crate::data::release::{RegistryFact, SourceAvailability};
 use crate::marks::badges::{Item, Lang};
 use crate::marks::license::LicenseFacts;
 use crate::overlay::{dialog, float};
-use crate::probe::{self, Ledger};
-use crate::theme::ActiveFacet;
+use crate::probe::{self, Ledger, TextOverflow};
+use crate::theme::{ActiveFacet, Facet, set_facet};
 use crate::tokens::Family;
 use gpui::{
     AnyElement, Context, IntoElement, Modifiers, MouseButton, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div,
@@ -246,9 +247,10 @@ fn releases(dated: bool) -> Rc<TickerFacts> {
         .iter()
         .map(|(v, d)| Release {
             version: (*v).to_owned(),
-            date: dated.then(|| (*d).to_owned()),
-            standing: if *v == "0.1.3" { Standing::Yanked } else { Standing::Available },
-            names: if *v == "0.1.7" { Names::Unread } else { Names::Read },
+            date: if dated { RegistryFact::Known((*d).to_owned()) } else { RegistryFact::Missing },
+            yanked: RegistryFact::Known(*v == "0.1.3"),
+            source: SourceAvailability::Available,
+            indexed: RegistryFact::Known(*v != "0.1.7"),
         })
         .collect();
     Rc::new(TickerFacts::new(&rows, Some("1.47.0"), "2026-09-28"))
@@ -279,7 +281,7 @@ fn the_ticker_label_rides_the_release_under_the_pointer_and_leaving_takes_it_awa
     advance(cx, 200);
     let label = text_at(cx, "label").map(|t| t.0).expect("a label rides the hot release");
     assert!(label.contains("1.28.0") && label.contains("2023-04-19") && label.contains("features") && label.contains("3.4 years ago") || label.contains("years ago"), "{label}");
-    assert!(label.ends_with("read"), "{label}");
+    assert!(label.ends_with("release indexed"), "{label}");
     move_to(cx, 5.0, 690.0);
     advance(cx, 300);
     assert!(text_at(cx, "label").is_none(), "the label outlived the pointer");
@@ -452,6 +454,21 @@ fn a_lone_finding_says_its_words_at_rest(cx: &mut TestAppContext) {
     assert!(rest.iter().any(|t| t == "Forbids unsafe code"), "the only finding is said, not just drawn: {rest:?}");
 }
 
+#[gpui::test]
+fn a_long_source_note_ellipsises_inside_a_narrow_cell_at_double_text_size(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(240.0));
+        unread("source", "Licence", "reading its source", px(240.0), &m)
+            .note("registry mirror · crates index · local source manifest, verified for this package")
+            .into_any_element()
+    });
+    let note = ledger(cx).texts.into_iter().find(|text| text.key.ends_with("-note")).expect("the source note is published from the rendered frame");
+    assert_eq!(note.overflow, TextOverflow::Ellipsis, "the note declares its native ellipsis treatment: {note:?}");
+    assert!(note.natural_width > note.bounds.width, "the fixture exercises real overflow: {note:?}");
+    assert!(note.bounds.x >= 20.0 && note.bounds.x + note.bounds.width <= 260.5, "the clipped note remains inside its 240px cell: {note:?}");
+}
+
 // ------------------------------------------------------------------ features
 
 fn tokio_features() -> Rc<FeatureFacts> {
@@ -470,29 +487,30 @@ fn chip(cx: &mut VisualTestContext, name: &str) -> (f32, f32) {
 }
 
 #[gpui::test]
-fn turning_full_on_locks_what_it_needs_counts_what_it_pulls_in_and_a_locked_chip_says_who_holds_it(cx: &mut TestAppContext) {
+fn feature_preview_is_read_only_and_names_its_manifest_profile(cx: &mut TestAppContext) {
     let (cx, _) = open(cx, |_, cx, _| {
         let m = cx.facet().measure(px(WIDTH - 40.0));
-        features("fb", tokio_features(), px(WIDTH - 40.0), &m).into_any_element()
+        feature_preview("fb", tokio_features(), px(WIDTH - 40.0), &m).into_any_element()
     });
-    assert!(says(cx, "of 25 on") && says(cx, "0"), "{:?}", said(cx));
+    let before = said(cx);
+    assert!(before.iter().any(|t| t == "read only · manifest defaults"), "the profile and disabled action are explicit: {before:?}");
+    assert!(before.iter().any(|t| t == "not default"), "each unselected item has a text status: {before:?}");
+    assert!(before.iter().any(|t| t == "0") && before.iter().any(|t| t == "of 25 on"), "the empty manifest default remains off: {before:?}");
+    let frame = ledger(cx);
+    let target_keys: Vec<&str> = frame.targets.iter().map(|target| target.key.as_str()).collect();
+    assert!(target_keys.iter().all(|key| !key.contains("chip-")), "feature projections are not focus or click targets: {target_keys:?}");
+    let scroll = frame
+        .scrolls
+        .iter()
+        .find(|scroll| scroll.key == "folio-feature-scroll-fb")
+        .expect("the actual horizontal feature scroller publishes its extent");
+    assert!(scroll.offset.is_some(), "the frame samples the live ScrollHandle offset: {scroll:?}");
+    assert!(scroll.content.width > scroll.viewport.width, "the profile has scrollable content: {scroll:?}");
+
     let (x, y) = chip(cx, "full");
     click(cx, x, y);
     advance(cx, 500);
-    let after = said(cx);
-    assert!(after.iter().any(|t| t == "12") && after.iter().any(|t| t == "of 25 on"), "twelve features on: {after:?}");
-    assert!(after.iter().any(|t| t == "8") && after.iter().any(|t| t == "(471K lines)"), "it pulls in eight packages, 471K lines: {after:?}");
-    // A held chip does not turn off: it shakes and names who holds it.
-    let (nx, ny) = chip(cx, "net");
-    click(cx, nx, ny);
-    advance(cx, 400);
-    assert!(says(cx, "net is held on by full"), "{:?}", said(cx));
-    assert!(says(cx, "12"), "the count did not change: {:?}", said(cx));
-    // Turning `full` back off releases everything.
-    let (fx, fy) = chip(cx, "full");
-    click(cx, fx, fy);
-    advance(cx, 400);
-    assert!(says(cx, "0") && !says(cx, "(471K lines)"), "{:?}", said(cx));
+    assert_eq!(said(cx), before, "pointer input cannot simulate a feature change");
 }
 
 // ------------------------------------------------------------------ berg

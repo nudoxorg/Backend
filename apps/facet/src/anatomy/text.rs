@@ -309,7 +309,7 @@ impl Line {
                 color: palette.peri.base.hsla(),
                 style: StyleRefinement::default(),
             };
-            overlay.absolute().size_0();
+            overlay = overlay.absolute().size_0();
             root = root.child(overlay);
         }
         if targets.is_empty() {

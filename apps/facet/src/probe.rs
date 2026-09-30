@@ -289,12 +289,11 @@ pub struct TargetSample {
 /// scrolling" from "clipped by a fixed box or the window, unreachable".
 ///
 /// This is an opt-in seam: a scroll container calls [`record_scroll`] once
-/// per frame it paints. Nothing calls it yet in the shipped shell (see
-/// `apps/desktop/src/shell/*`, none of which this lane owns) — until one
-/// does, focusables inside a real scroll container still lint as
-/// `offscreen` exactly as before. The rule and its exemption are proven by
-/// canary scenes in `apps/facet/src/gallery/bench.rs` that call this
-/// directly.
+/// per frame it paints and wraps the actual child subtree with
+/// [`scroll_scope`]. The measured key must occur in a text or target's real
+/// ancestry before its extent can exempt offscreen lint. Shell reader and
+/// shelf rows use this pairing; other scrollers remain untrusted until they
+/// publish both facts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScrollSample {
     /// The container's key.
@@ -305,8 +304,21 @@ pub struct ScrollSample {
     /// would be laid out at scroll offset zero (i.e. everything reachable by
     /// scrolling this container, not just what is visible right now).
     pub content: BoundsSample,
+    /// The scroll's current window displacement (GPUI `ScrollHandle::offset`:
+    /// negative when content has moved up or left). Missing means this sample
+    /// cannot prove that offscreen content is reachable.
+    pub offset: Option<ScrollOffset>,
     /// Actual ancestor scroll identities, outermost first.
     pub ancestors: Vec<String>,
+}
+
+/// A scroll container's actual current displacement in window coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollOffset {
+    /// Horizontal displacement; GPUI offsets are negative when scrolled right.
+    pub x: f32,
+    /// Vertical displacement; GPUI offsets are negative when scrolled down.
+    pub y: f32,
 }
 
 impl ScrollSample {
@@ -318,6 +330,10 @@ impl ScrollSample {
     /// either axis does not scroll at all, so it reaches nothing extra.
     #[must_use]
     pub fn reaches(&self, bounds: &BoundsSample, ancestors: &[String]) -> bool {
+        let Some(offset) = self.offset else { return false };
+        if !offset.x.is_finite() || !offset.y.is_finite() {
+            return false;
+        }
         let Some(position) = ancestors.iter().position(|ancestor| ancestor == &self.key) else {
             return false;
         };
@@ -329,10 +345,13 @@ impl ScrollSample {
         if !scrolls_x && !scrolls_y {
             return false;
         }
-        let within_content = bounds.x >= self.content.x - 0.5
-            && bounds.y >= self.content.y - 0.5
-            && bounds.x + bounds.width <= self.content.x + self.content.width + 0.5
-            && bounds.y + bounds.height <= self.content.y + self.content.height + 0.5;
+        // Translate the currently painted, window-space item back into the
+        // content's zero-offset coordinate system before checking extent.
+        let (content_x, content_y) = (bounds.x - offset.x, bounds.y - offset.y);
+        let within_content = content_x >= self.content.x - 0.5
+            && content_y >= self.content.y - 0.5
+            && content_x + bounds.width <= self.content.x + self.content.width + 0.5
+            && content_y + bounds.height <= self.content.y + self.content.height + 0.5;
         let within_viewport_x = bounds.x >= self.viewport.x - 0.5
             && bounds.x + bounds.width <= self.viewport.x + self.viewport.width + 0.5;
         let within_viewport_y = bounds.y >= self.viewport.y - 0.5
@@ -578,11 +597,34 @@ pub fn record_scroll(
     viewport: Bounds<Pixels>,
     content: Bounds<Pixels>,
 ) {
+    record_scroll_with_offset_value(cx, key, viewport, content, None);
+}
+
+/// Publishes a scroll container with its observed current displacement. Only
+/// this form can prove that content outside the current viewport is reachable.
+pub fn record_scroll_with_offset(
+    cx: &mut App,
+    key: &ElementId,
+    viewport: Bounds<Pixels>,
+    content: Bounds<Pixels>,
+    offset: gpui::Point<Pixels>,
+) {
+    record_scroll_with_offset_value(cx, key, viewport, content, Some(ScrollOffset { x: f32::from(offset.x), y: f32::from(offset.y) }));
+}
+
+fn record_scroll_with_offset_value(
+    cx: &mut App,
+    key: &ElementId,
+    viewport: Bounds<Pixels>,
+    content: Bounds<Pixels>,
+    offset: Option<ScrollOffset>,
+) {
     if enabled(cx) {
         let sample = ScrollSample {
             key: key.to_string(),
             viewport: bounds_sample(key, viewport),
             content: bounds_sample(key, content),
+            offset,
             ancestors: current_scroll_ancestors(),
         };
         cx.default_global::<Probe>().ledger.scrolls.push(sample);
@@ -734,13 +776,47 @@ fn bounds_sample(key: &ElementId, bounds: Bounds<Pixels>) -> BoundsSample {
 /// Publishes a text element's box, natural width and overflow handling while
 /// recording.
 pub fn record_text(cx: &mut App, key: &ElementId, bounds: Bounds<Pixels>, sample: TextSample) {
-    if enabled(cx) {
-        let sample = TextSample {
-            key: key.to_string(),
-            bounds: bounds_sample(key, bounds),
-            ..sample
-        };
-        cx.default_global::<Probe>().ledger.texts.push(sample);
+    let _ = record_text_with_index(cx, key, bounds, sample);
+}
+
+/// Appends a text observation and returns the exact ledger slot its native
+/// paint pass must complete. Text keys describe probe identity, but can be
+/// repeated for identical words; paint completion must bind to this sample,
+/// not search by key and accidentally leave earlier duplicate text unmasked.
+fn record_text_with_index(
+    cx: &mut App,
+    key: &ElementId,
+    bounds: Bounds<Pixels>,
+    sample: TextSample,
+) -> Option<usize> {
+    if !enabled(cx) {
+        return None;
+    }
+    let sample = TextSample {
+        key: key.to_string(),
+        bounds: bounds_sample(key, bounds),
+        ..sample
+    };
+    let ledger = &mut cx.default_global::<Probe>().ledger;
+    let index = ledger.texts.len();
+    ledger.texts.push(sample);
+    Some(index)
+}
+
+fn finish_text_paint(
+    cx: &mut App,
+    index: usize,
+    paint_clip: BoundsSample,
+    scroll_ancestors: Vec<String>,
+) {
+    if let Some(text) = cx
+        .default_global::<Probe>()
+        .ledger
+        .texts
+        .get_mut(index)
+    {
+        text.paint_clip = Some(paint_clip);
+        text.scroll_ancestors = scroll_ancestors;
     }
 }
 
@@ -1069,6 +1145,52 @@ mod grouping_tests {
         });
     }
 
+    #[gpui::test]
+    fn duplicate_text_keys_complete_their_own_paint_masks(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            super::enable(cx);
+            let key = gpui::ElementId::Name("same-words".into());
+            let sample = |bounds| TextSample {
+                key: String::new(),
+                bounds,
+                paint_clip: None,
+                scroll_ancestors: Vec::new(),
+                natural_width: 20.0,
+                overflow: TextOverflow::Wrap,
+                content: "repeat".to_owned(),
+                min_width: 20.0,
+                line_height: 16.0,
+                size: 12.0,
+                weight: 400.0,
+                region: None,
+            };
+            let first_bounds = bounds(0.0, 0.0, 20.0, 16.0);
+            let second_bounds = bounds(40.0, 0.0, 20.0, 16.0);
+            let first = super::record_text_with_index(cx, &key, gpui::Bounds::default(), sample(first_bounds))
+                .expect("enabled probe records the first text");
+            let second = super::record_text_with_index(cx, &key, gpui::Bounds::default(), sample(second_bounds))
+                .expect("enabled probe records the second text");
+            super::finish_text_paint(
+                cx,
+                first,
+                bounds(0.0, 0.0, 30.0, 30.0),
+                vec!["first-scroll".to_owned()],
+            );
+            super::finish_text_paint(
+                cx,
+                second,
+                bounds(40.0, 0.0, 30.0, 30.0),
+                vec!["second-scroll".to_owned()],
+            );
+            let ledger = super::take(cx);
+            assert_eq!(ledger.texts.len(), 2);
+            assert_eq!(ledger.texts[0].paint_clip, Some(bounds(0.0, 0.0, 30.0, 30.0)));
+            assert_eq!(ledger.texts[1].paint_clip, Some(bounds(40.0, 0.0, 30.0, 30.0)));
+            assert_eq!(ledger.texts[0].scroll_ancestors, ["first-scroll"]);
+            assert_eq!(ledger.texts[1].scroll_ancestors, ["second-scroll"]);
+        });
+    }
+
     #[test]
     fn nested_groups_use_the_innermost_scope_and_unwind() {
         assert_eq!(current_group(), None);
@@ -1243,7 +1365,7 @@ impl IntoElement for Text {
 
 impl Element for Text {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Option<usize>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -1272,7 +1394,7 @@ impl Element for Text {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        if enabled(cx) {
+        let sample_index = if enabled(cx) {
             let natural = natural_width(&self.content, self.role, self.scale, window);
             let widest_word = self
                 .content
@@ -1300,9 +1422,12 @@ impl Element for Text {
                 weight: self.role.weight,
                 region: self.region.clone(),
             };
-            record_text(cx, &self.key, bounds, sample);
-        }
+            record_text_with_index(cx, &self.key, bounds, sample)
+        } else {
+            None
+        };
         self.child.prepaint(window, cx);
+        sample_index
     }
 
     fn paint(
@@ -1311,19 +1436,14 @@ impl Element for Text {
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
+        prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         if enabled(cx) {
             let clip = bounds_sample(&self.key, window.content_mask().bounds);
-            let key = self.key.to_string();
-            for text in cx.default_global::<Probe>().ledger.texts.iter_mut().rev() {
-                if text.key == key {
-                    text.paint_clip = Some(clip);
-                    text.scroll_ancestors = current_scroll_ancestors();
-                    break;
-                }
+            if let Some(index) = *prepaint {
+                finish_text_paint(cx, index, clip, current_scroll_ancestors());
             }
         }
         self.child.paint(window, cx);

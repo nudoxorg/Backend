@@ -302,7 +302,13 @@ impl Element for ScrollProbe {
             viewport.origin,
             size(viewport.size.width + reach.x, viewport.size.height + reach.y),
         );
-        facet::probe::record_scroll(cx, &ElementId::Name(SharedString::new_static(self.key)), viewport, content);
+        facet::probe::record_scroll_with_offset(
+            cx,
+            &ElementId::Name(SharedString::new_static(self.key)),
+            viewport,
+            content,
+            self.handle.offset(),
+        );
     }
 
     fn paint(

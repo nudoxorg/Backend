@@ -32,11 +32,11 @@ mod scope;
 mod state;
 mod view;
 
+pub(crate) use input::KEYS;
+pub(crate) use listing::{LibraryOrder, beside_your_projects, told_apart};
 pub(crate) use outline::{is_test_module, shelf_name};
 #[cfg(test)]
 pub(crate) use row::TESTS_ROW;
-pub(crate) use input::KEYS;
-pub(crate) use listing::{LibraryOrder, beside_your_projects, told_apart};
 pub(crate) mod twin;
 
 use super::focus::{Act, Target, Targets};
@@ -50,8 +50,9 @@ use facet::overlay::float;
 use facet::tokens::fluid::{SIDE, SideForm};
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
-    App, Context, InteractiveElement, IntoElement, KeystrokeEvent, ParentElement, Pixels, Render, ScrollStrategy, SharedString, Styled,
-    Subscription, Task, UniformListScrollHandle, Window, div, px,
+    App, Context, InteractiveElement, IntoElement, KeystrokeEvent, ParentElement, Pixels, Render,
+    ScrollStrategy, SharedString, Styled, Subscription, Task, UniformListScrollHandle, Window, div,
+    px,
 };
 use input::{Chord, Peek, Query, SideKey, Typed};
 use lens::Lens;
@@ -79,7 +80,10 @@ impl Place {
             Route::Symbol(route) => Some(route.package.as_str().to_owned().into()),
             Route::Orbit(_) | Route::World => None,
         };
-        Self { book, symbol: super::jump::route_symbol(route) }
+        Self {
+            book,
+            symbol: super::jump::route_symbol(route),
+        }
     }
 }
 
@@ -152,7 +156,15 @@ impl Shelf {
     pub(crate) fn new(name: &'static str, links: Links, store: &DataStore) -> Self {
         let route = store.snapshot().route().clone();
         Self {
-            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Workspace, Branch::GraphFocus]),
+            core: RegionCore::new(
+                store,
+                &[
+                    Branch::Route,
+                    Branch::Overlay,
+                    Branch::Workspace,
+                    Branch::GraphFocus,
+                ],
+            ),
             links,
             targets: Targets::named(name),
             hover: HoverIntent::default(),
@@ -196,13 +208,21 @@ impl Shelf {
     pub(crate) fn comb_marks(&self) -> Option<(Option<SharedString>, Option<SharedString>)> {
         let versions = self.comb_versions.borrow();
         self.comb.get().map(|(pinned, viewing)| {
-            (pinned.and_then(|i| versions.get(i).cloned()), viewing.and_then(|i| versions.get(i).cloned()))
+            (
+                pinned.and_then(|i| versions.get(i).cloned()),
+                viewing.and_then(|i| versions.get(i).cloned()),
+            )
         })
     }
 
     #[cfg(test)]
     pub(crate) fn current_symbols(&self) -> Vec<SymbolRef> {
-        self.rows.iter().filter_map(Row::item).filter(|item| item.current).filter_map(|item| item.source.clone()).collect()
+        self.rows
+            .iter()
+            .filter_map(Row::item)
+            .filter(|item| item.current)
+            .filter_map(|item| item.source.clone())
+            .collect()
     }
 
     pub(crate) const fn renders(&self) -> u64 {
@@ -224,7 +244,11 @@ impl Shelf {
 
     /// Keeps the focused row on screen after a keyboard walk.
     pub(crate) fn reveal_focused(&self) {
-        if let Some(index) = self.targets.focused().and_then(|id| self.rows.iter().position(|row| row.item().is_some_and(|item| item.key == id))) {
+        if let Some(index) = self.targets.focused().and_then(|id| {
+            self.rows
+                .iter()
+                .position(|row| row.item().is_some_and(|item| item.key == id))
+        }) {
             self.scroll.scroll_to_item(index, ScrollStrategy::Center);
         }
     }
@@ -239,17 +263,39 @@ impl Shelf {
             _ => None,
         };
         let package = self.crumbs.package().cloned();
-        let diffs = package.as_ref().and_then(|package| crate::runtime::fixture_releases::release_data(package, cx));
-        let book = self.book_of(package.as_ref(), route, diffs);
+        let release_data =
+            package.as_ref().and_then(|package| {
+                match crate::runtime::releases::get(
+                    package,
+                    snapshot.key(),
+                    route.at().map(|at| at.as_str()),
+                    cx,
+                ) {
+                    crate::runtime::releases::Read::Ready(data) => Some(data),
+                    crate::runtime::releases::Read::Reading
+                    | crate::runtime::releases::Read::Unavailable(_) => None,
+                }
+            });
+        let diffs = release_data
+            .as_ref()
+            .map(|data| std::sync::Arc::clone(&data.krate));
+        let book = self.book_of(package.as_ref(), route, diffs.as_deref());
         let held = hold::chips(
-            crate::runtime::fixture_world::hand_view_for(&snapshot.session().hand, cx).cards.iter().map(|card| (card.held.clone(), card.name.clone(), card.kind)),
+            crate::runtime::hand::hand_view_for(&snapshot.session().hand, snapshot, cx)
+                .cards
+                .iter()
+                .map(|card| (card.held.clone(), card.name.clone(), card.kind)),
         );
         let back = snapshot.session().back.to_vec();
         let store = self.links.store.read(cx);
         let dossier = package.as_ref().map(|package| store.package(package));
         let orbit = store.orbit();
         let current = match store.graph_focus() {
-            Some(focus) => focus.indexed.as_ref().filter(|(owner, _)| Some(owner) == package.as_ref()).map(|(_, symbol)| symbol.clone()),
+            Some(focus) => focus
+                .indexed
+                .as_ref()
+                .filter(|(owner, _)| Some(owner) == package.as_ref())
+                .map(|(_, symbol)| symbol.clone()),
             None => super::jump::route_symbol(route),
         };
         let inputs = Inputs {
@@ -258,9 +304,14 @@ impl Shelf {
             crumbs: &self.crumbs,
             lens: self.lens,
             folds: &self.folds,
-            filter: Filter { query: self.narrow.query(), via: self.via.as_ref() },
+            filter: Filter {
+                query: self.narrow.query(),
+                via: self.via.as_ref(),
+            },
             book: &book,
-            dossier: dossier.as_ref().and_then(|resource| resource.loaded_value()),
+            dossier: dossier
+                .as_ref()
+                .and_then(|resource| resource.loaded_value()),
             orbit: orbit.loaded_value(),
             current,
             diffs,
@@ -273,9 +324,19 @@ impl Shelf {
 
     /// The state book for the package being read, made again only when the
     /// package, the pin or the release being read changes.
-    fn book_of(&mut self, package: Option<&PackageRef>, route: &Route, diffs: Option<&'static facet::data::release::Crate>) -> Rc<StateBook> {
-        let (Some(package), Some(krate)) = (package, diffs) else { return Rc::clone(&self.no_book) };
-        let spelled = |version: &str| crate::runtime::fixture_releases::spelled(krate, version).unwrap_or_else(|| version.to_owned().into());
+    fn book_of(
+        &mut self,
+        package: Option<&PackageRef>,
+        route: &Route,
+        diffs: Option<&facet::data::release::Crate>,
+    ) -> Rc<StateBook> {
+        let (Some(package), Some(krate)) = (package, diffs) else {
+            return Rc::clone(&self.no_book);
+        };
+        let spelled = |version: &str| {
+            crate::runtime::releases::spelled(krate, version)
+                .unwrap_or_else(|| version.to_owned().into())
+        };
         let pinned = match route {
             Route::Package(route) => PackageRef::parse(route.package.as_str()).ok(),
             Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok(),
@@ -283,15 +344,29 @@ impl Shelf {
         }
         .filter(|routed| scope::book_of(routed) == scope::book_of(package))
         .and_then(|package| package.version().map(str::to_owned));
-        let Some(pinned) = pinned else { return Rc::clone(&self.no_book) };
-        let to = route.at().filter(|_| pinned_here(route, package)).map(|at| spelled(at.as_str()));
-        let key = BookKey { package: package.clone(), from: spelled(&pinned), to };
+        let Some(pinned) = pinned else {
+            return Rc::clone(&self.no_book);
+        };
+        let to = route
+            .at()
+            .filter(|_| pinned_here(route, package))
+            .map(|at| spelled(at.as_str()));
+        let key = BookKey {
+            package: package.clone(),
+            from: spelled(&pinned),
+            to,
+        };
         if let Some((known, book)) = &self.book
             && *known == key
         {
             return Rc::clone(book);
         }
-        let book = Rc::new(StateBook::from_release(krate, package.display_name(), &key.from, key.to.as_deref()));
+        let book = Rc::new(StateBook::from_release(
+            krate,
+            package.display_name(),
+            &key.from,
+            key.to.as_deref(),
+        ));
         self.book = Some((key, Rc::clone(&book)));
         book
     }
@@ -311,12 +386,18 @@ impl Shelf {
             Do::Via(name) => {
                 // Choosing your crate again lets it go; choosing one shows
                 // what it uses in Contents.
-                self.via = if self.via.as_ref() == Some(name) { None } else { Some(name.clone()) };
+                self.via = if self.via.as_ref() == Some(name) {
+                    None
+                } else {
+                    Some(name.clone())
+                };
                 self.lens = Lens::Contents;
                 self.list_changed(cx);
             }
             Do::Widen(query) => {
-                let find = Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query.clone())));
+                let find = Route::Orbit(crate::navigation::OrbitRoute::Browse(
+                    crate::navigation::BrowseRoute::Find(query.clone()),
+                ));
                 self.links.dispatch(Intent::Navigate(find), cx);
             }
         }
@@ -377,14 +458,22 @@ impl Shelf {
     /// The row the keyboard stands on.
     fn focused_item(&self) -> Option<&Item> {
         let id = self.targets.focused()?;
-        self.rows.iter().filter_map(Row::item).find(|item| item.key == id)
+        self.rows
+            .iter()
+            .filter_map(Row::item)
+            .find(|item| item.key == id)
     }
 
     // ------------------------------------------------------------ keys
 
     /// Reads a keystroke the shell has not bound, while the sidebar has the
     /// keyboard. Returns whether it was the sidebar's.
-    fn intercept(&mut self, event: &KeystrokeEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn intercept(
+        &mut self,
+        event: &KeystrokeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.owns_keyboard(event, window, cx) {
             return false;
         }
@@ -394,14 +483,23 @@ impl Shelf {
     /// Whether this keystroke is the sidebar's: its zone is the active one,
     /// the shelf is on screen, and the focus is not in a place that owns
     /// the letters (a text input, a menu, the graph, hint mode).
-    fn owns_keyboard(&self, event: &KeystrokeEvent, window: &Window, cx: &mut Context<Self>) -> bool {
+    fn owns_keyboard(
+        &self,
+        event: &KeystrokeEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         const OWN_THE_LETTERS: [&str; 5] = ["Input", "Menu", "Graph", "BrowseCompare", "hints"];
         if !self.targets.is_active() {
             return false;
         }
         let stack = &event.context_stack;
-        let in_shell = stack.iter().any(|context| context.contains(super::keys::CONTEXT));
-        let elsewhere = stack.iter().any(|context| OWN_THE_LETTERS.iter().any(|name| context.contains(name)));
+        let in_shell = stack
+            .iter()
+            .any(|context| context.contains(super::keys::CONTEXT));
+        let elsewhere = stack
+            .iter()
+            .any(|context| OWN_THE_LETTERS.iter().any(|name| context.contains(name)));
         let snapshot = self.links.snapshot(cx);
         let on_screen = self
             .links
@@ -414,13 +512,27 @@ impl Shelf {
     }
 
     /// One key of the sidebar's. Returns whether it was used.
-    fn key(&mut self, keystroke: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(key) = input::decode(keystroke) else { return false };
+    fn key(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(key) = input::decode(keystroke) else {
+            return false;
+        };
         // The peek belongs to the row it was opened on: anything that changes
         // the list closes it (moving the selection follows it instead).
         let peek_open = self.peek_is_open(window, cx);
-        if peek_open && !matches!(key, SideKey::Up | SideKey::Down | SideKey::Space | SideKey::Escape) {
-            let holds = matches!(key, SideKey::Char('h' | 'H')) && self.narrow.is_empty() && !self.chord.is_armed();
+        if peek_open
+            && !matches!(
+                key,
+                SideKey::Up | SideKey::Down | SideKey::Space | SideKey::Escape
+            )
+        {
+            let holds = matches!(key, SideKey::Char('h' | 'H'))
+                && self.narrow.is_empty()
+                && !self.chord.is_armed();
             let graphs = matches!(key, SideKey::Char('g' | 'G'));
             if !holds && !graphs {
                 self.close_peek(window, cx);
@@ -430,9 +542,17 @@ impl Shelf {
             SideKey::Up => self.walk(-1, window, cx),
             SideKey::Down => self.walk(1, window, cx),
             SideKey::Space => self.toggle_peek(window, cx),
-            SideKey::Char('h' | 'H') if peek_open && self.narrow.is_empty() && !self.chord.is_armed() => self.hold_selection(window, cx),
+            SideKey::Char('h' | 'H')
+                if peek_open && self.narrow.is_empty() && !self.chord.is_armed() =>
+            {
+                self.hold_selection(window, cx)
+            }
             SideKey::Char(character) => {
-                match self.chord.feed(character, Query::of(self.narrow.is_empty()), Peek::of(peek_open)) {
+                match self.chord.feed(
+                    character,
+                    Query::of(self.narrow.is_empty()),
+                    Peek::of(peek_open),
+                ) {
                     Typed::Graph => {
                         self.chord_timer = None;
                         self.close_peek(window, cx);
@@ -504,16 +624,35 @@ impl Shelf {
     }
 
     fn show_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(item) = self.focused_item().cloned() else { return false };
-        let Some(page) = item.warm.clone() else { return false };
-        let Some(anchor) = self.targets.focused_bounds() else { return false };
+        let Some(item) = self.focused_item().cloned() else {
+            return false;
+        };
+        let Some(page) = item.warm.clone() else {
+            return false;
+        };
+        let Some(anchor) = self.targets.focused_bounds() else {
+            return false;
+        };
         let store = self.links.store.clone();
         store.update(cx, |store, cx| {
             store.ensure(page.clone(), cx);
         });
-        let book = self.book.as_ref().map_or_else(|| Rc::clone(&self.no_book), |(_, book)| Rc::clone(book));
-        let extras = peek::Extras { symbol: item.source.clone(), path: item.path.clone(), book, store, hoists: item.hoists.is_some() };
-        float::open(peek::request(page, item.name.clone(), anchor, extras), window, cx);
+        let book = self
+            .book
+            .as_ref()
+            .map_or_else(|| Rc::clone(&self.no_book), |(_, book)| Rc::clone(book));
+        let extras = peek::Extras {
+            symbol: item.source.clone(),
+            path: item.path.clone(),
+            book,
+            store,
+            hoists: item.hoists.is_some(),
+        };
+        float::open(
+            peek::request(page, item.name.clone(), anchor, extras),
+            window,
+            cx,
+        );
         self.peeking = true;
         true
     }
@@ -542,9 +681,20 @@ impl Shelf {
             Do::Go(Route::Package(route)) => Some((route.package.clone(), None)),
             _ => None,
         });
-        let Some((package, id)) = held else { return false };
+        let Some((package, id)) = held else {
+            return false;
+        };
         let at = super::root::now_ms();
-        self.links.dispatch(Intent::Hold(crate::model::hand::Held { package, id, why: crate::model::hand::HeldWhy::Pin, held_at: at, touched_at: at }), cx);
+        self.links.dispatch(
+            Intent::Hold(crate::model::hand::Held {
+                package,
+                id,
+                why: crate::model::hand::HeldWhy::Pin,
+                held_at: at,
+                touched_at: at,
+            }),
+            cx,
+        );
         self.close_peek(window, cx);
         true
     }
@@ -602,7 +752,9 @@ impl Shelf {
     /// →: scopes into the row the keyboard is on; a closed group with
     /// nothing to scope into opens.
     fn right(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(item) = self.focused_item() else { return false };
+        let Some(item) = self.focused_item() else {
+            return false;
+        };
         if let Some(scope) = item.hoists.clone() {
             self.hoist(scope, cx);
             return true;
@@ -631,12 +783,18 @@ impl Shelf {
         let snapshot = store.snapshot();
         let route = snapshot.route();
         let place = Place::of(route);
-        let tree = crate::runtime::store::route_package(route).map(|package| store.package(&package));
+        let tree =
+            crate::runtime::store::route_package(route).map(|package| store.package(&package));
         if place == self.followed {
             // Another release of the same book: what is shown stays shown.
             self.crumbs.retarget(route);
         } else {
-            self.crumbs.follow(route, tree.as_ref().and_then(|resource| resource.loaded_value()).and_then(|dossier| dossier.outline.known()));
+            self.crumbs.follow(
+                route,
+                tree.as_ref()
+                    .and_then(|resource| resource.loaded_value())
+                    .and_then(|dossier| dossier.outline.known()),
+            );
         }
         if place.book != self.followed.book {
             self.lens = Lens::Contents;
@@ -655,7 +813,8 @@ impl Shelf {
 
 /// Whether the reader is on the book `package` is (at any release of it).
 fn pinned_here(route: &Route, package: &PackageRef) -> bool {
-    crate::runtime::store::route_package(route).is_some_and(|reading| scope::book_of(&reading) == scope::book_of(package))
+    crate::runtime::store::route_package(route)
+        .is_some_and(|reading| scope::book_of(&reading) == scope::book_of(package))
 }
 
 impl Region for Shelf {
@@ -669,7 +828,10 @@ impl Region for Shelf {
         }
         let mut keys = vec![PageKey::Orbit];
         // What the reader is on, and what the sidebar has been scoped into.
-        for package in crate::runtime::store::route_package(snapshot.route()).into_iter().chain(self.crumbs.package().cloned()) {
+        for package in crate::runtime::store::route_package(snapshot.route())
+            .into_iter()
+            .chain(self.crumbs.package().cloned())
+        {
             let key = PageKey::Package(package);
             if !keys.contains(&key) {
                 keys.push(key);
@@ -692,7 +854,10 @@ impl Render for Shelf {
         if self.keys.is_none() {
             let shelf = cx.weak_entity();
             self.keys = Some(cx.intercept_keystrokes(move |event, window, cx| {
-                if shelf.update(cx, |shelf, cx| shelf.intercept(event, window, cx)).unwrap_or(false) {
+                if shelf
+                    .update(cx, |shelf, cx| shelf.intercept(event, window, cx))
+                    .unwrap_or(false)
+                {
                     cx.stop_propagation();
                 }
             }));
@@ -702,7 +867,11 @@ impl Render for Shelf {
         let palette = facet.palette();
         let width = self.core.width();
         let snapshot = self.links.snapshot(cx);
-        let Listing { head, rows, matched } = self.listing(&snapshot, cx);
+        let Listing {
+            head,
+            rows,
+            matched,
+        } = self.listing(&snapshot, cx);
         let weak = cx.weak_entity();
         for row in &rows {
             if let Row::Item(item) = row
@@ -721,7 +890,10 @@ impl Render for Shelf {
         self.rows = Rc::new(rows);
         self.settle_focus();
         if std::mem::take(&mut self.reveal)
-            && let Some(index) = self.rows.iter().position(|row| row.item().is_some_and(|item| item.current))
+            && let Some(index) = self
+                .rows
+                .iter()
+                .position(|row| row.item().is_some_and(|item| item.current))
         {
             self.scroll.scroll_to_item(index, ScrollStrategy::Center);
         }
@@ -740,7 +912,11 @@ impl Render for Shelf {
         let over = (rest_measure.space(Space::Roomy) / span).clamp(0.01, 0.5);
         let open = ((travel - (1.0 - over)) / over).clamp(0.0, 1.0);
         let open = open * open * (3.0 - 2.0 * open);
-        self.form = self.core.modes().settle(&SIDE, rest_measure.fluid_room()).mode;
+        self.form = self
+            .core
+            .modes()
+            .settle(&SIDE, rest_measure.fluid_room())
+            .mode;
         let mut root = div()
             .id("shelf")
             .relative()
@@ -786,13 +962,26 @@ impl Shelf {
     /// Keeps the keyboard on a row that is in the list: when a narrowing (or
     /// a lens) took its row away, it lands on the first one.
     fn settle_focus(&mut self) {
-        let Some(id) = self.targets.focused() else { return };
-        let there = self.rows.iter().filter_map(Row::item).any(|item| item.key == id && item.is_target());
+        let Some(id) = self.targets.focused() else {
+            return;
+        };
+        let there = self
+            .rows
+            .iter()
+            .filter_map(Row::item)
+            .any(|item| item.key == id && item.is_target());
         if there {
             return;
         }
-        match self.rows.iter().filter_map(Row::item).find(|item| item.is_target()) {
-            Some(first) if !self.narrow.is_empty() || self.via.is_some() => self.targets.focus(first.key.clone()),
+        match self
+            .rows
+            .iter()
+            .filter_map(Row::item)
+            .find(|item| item.is_target())
+        {
+            Some(first) if !self.narrow.is_empty() || self.via.is_some() => {
+                self.targets.focus(first.key.clone())
+            }
             _ => self.targets.clear_focus(),
         }
     }

@@ -34,7 +34,7 @@ const ORDINAL_MAP_MAGIC: &[u8] = b"backend-tantivy-ordinals-v1\0";
 const DURABLE_ROOTS_DIRECTORY: &str = "v2";
 const DURABLE_ROOT_LEASE: &str = ".backend-root-reader.lock";
 const MAX_RETAINED_DURABLE_ROOTS: usize = 4;
-const MAX_DURABLE_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const DEFAULT_DURABLE_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_PROJECTION_FILES: usize = 65_536;
 const MAX_PROJECTION_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ORDINAL_MAP_BYTES: u64 = 256 * 1024 * 1024;
@@ -82,6 +82,42 @@ pub enum DurableProjectionAction {
     Built,
     /// A delta was written into a copy-on-write stage and atomically published.
     Revised,
+}
+
+/// Maximum bytes retained by one local durable Tantivy cache.
+///
+/// This bounds both a selected projection while it is verified and the set of
+/// retained generations. A root which exceeds the configured budget is
+/// reported as a capacity refusal and is never treated as corrupt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DurableCacheBudget {
+    max_bytes: u64,
+}
+
+impl DurableCacheBudget {
+    /// Creates a nonzero byte budget.
+    #[must_use]
+    pub const fn new(max_bytes: u64) -> Option<Self> {
+        if max_bytes == 0 {
+            None
+        } else {
+            Some(Self { max_bytes })
+        }
+    }
+
+    /// Returns the maximum retained bytes.
+    #[must_use]
+    pub const fn max_bytes(self) -> u64 {
+        self.max_bytes
+    }
+}
+
+impl Default for DurableCacheBudget {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_DURABLE_CACHE_BYTES,
+        }
+    }
 }
 
 /// One live ordinal in the resident projection.
@@ -150,6 +186,13 @@ pub enum TantivySourceError {
     Io(std::io::Error),
     /// Tantivy returned a document outside the verified projection mapping.
     Corrupt(&'static str),
+    /// A complete projection does not fit the configured durable cache budget.
+    BudgetExceeded {
+        /// Configured maximum cache bytes.
+        budget_bytes: u64,
+        /// Bytes required by the selected root or retained cache.
+        required_bytes: u64,
+    },
 }
 
 impl std::fmt::Display for TantivySourceError {
@@ -159,6 +202,10 @@ impl std::fmt::Display for TantivySourceError {
             Self::Backend(error) => write!(formatter, "Tantivy backend failed: {error}"),
             Self::Io(error) => write!(formatter, "Tantivy projection I/O failed: {error}"),
             Self::Corrupt(detail) => write!(formatter, "Tantivy projection is corrupt: {detail}"),
+            Self::BudgetExceeded { budget_bytes, required_bytes } => write!(
+                formatter,
+                "Tantivy projection needs {required_bytes} bytes, above the {budget_bytes}-byte cache budget",
+            ),
         }
     }
 }
@@ -222,17 +269,33 @@ impl TantivySource {
         limits: Limits,
         directory: impl AsRef<Path>,
     ) -> Result<Self, TantivySourceError> {
+        Self::open_in_dir_with_budget(state, limits, directory, DurableCacheBudget::default())
+    }
+
+    /// Reopens a committed directory while applying an explicit cache budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::open_in_dir`], plus
+    /// [`TantivySourceError::BudgetExceeded`] when the verified root is larger
+    /// than `budget`.
+    pub fn open_in_dir_with_budget(
+        state: &DocumentState,
+        limits: Limits,
+        directory: impl AsRef<Path>,
+        budget: DurableCacheBudget,
+    ) -> Result<Self, TantivySourceError> {
         let limits = limits.validate()?;
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
         let directory = directory.as_ref();
         let _directory_handle = backend_platform::durability::open_directory_readonly_nofollow(directory)?;
+        verify_projection_manifest(directory, projection_fingerprint(state.binding()), budget)?;
         let persisted = read_binding_stamp(directory)?;
         if persisted != projection_fingerprint(state.binding()) {
             return Err(Error::StaleRoot.into());
         }
-        verify_projection_manifest(directory, projection_fingerprint(state.binding()))?;
         let index = Index::open_in_dir(directory)?;
         let projected = projection_schema();
         if index.schema() != projected.schema {
@@ -295,6 +358,22 @@ impl TantivySource {
         limits: Limits,
         directory: impl AsRef<Path>,
     ) -> Result<Self, TantivySourceError> {
+        Self::build_in_dir_with_budget(state, limits, directory, DurableCacheBudget::default())
+    }
+
+    /// Builds a durable projection under an explicit cache byte budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::build_in_dir`], plus
+    /// [`TantivySourceError::BudgetExceeded`] when its completed projection
+    /// exceeds `budget`.
+    pub fn build_in_dir_with_budget(
+        state: &DocumentState,
+        limits: Limits,
+        directory: impl AsRef<Path>,
+        budget: DurableCacheBudget,
+    ) -> Result<Self, TantivySourceError> {
         let limits = limits.validate()?;
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
@@ -311,7 +390,11 @@ impl TantivySource {
             directory.as_ref(),
             projection_fingerprint(state.binding()),
         )?;
-        write_projection_manifest(directory.as_ref(), projection_fingerprint(state.binding()))?;
+        write_projection_manifest(
+            directory.as_ref(),
+            projection_fingerprint(state.binding()),
+            budget,
+        )?;
         Ok(source)
     }
 
@@ -342,6 +425,27 @@ impl TantivySource {
         limits: Limits,
         cache_root: impl AsRef<Path>,
     ) -> Result<(Self, DurableProjectionAction), TantivySourceError> {
+        Self::open_or_build_in_dir_with_budget_and_action(
+            state,
+            limits,
+            cache_root,
+            DurableCacheBudget::default(),
+        )
+    }
+
+    /// Opens or publishes the selected root under an explicit cache budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::open_or_build_in_dir_with_action`],
+    /// plus [`TantivySourceError::BudgetExceeded`] when a root or the pinned
+    /// retained set does not fit `budget`.
+    pub fn open_or_build_in_dir_with_budget_and_action(
+        state: &DocumentState,
+        limits: Limits,
+        cache_root: impl AsRef<Path>,
+        budget: DurableCacheBudget,
+    ) -> Result<(Self, DurableProjectionAction), TantivySourceError> {
         let limits = limits.validate()?;
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
@@ -351,13 +455,14 @@ impl TantivySource {
         let _cache_directory =
             backend_platform::durability::open_directory_readonly_nofollow(cache_root.as_ref())?;
         let _cache_lock = DurableCacheLock::acquire(cache_root.as_ref())?;
-        Self::open_or_build_locked(state, limits, cache_root.as_ref())
+        Self::open_or_build_locked(state, limits, cache_root.as_ref(), budget)
     }
 
     fn open_or_build_locked(
         state: &DocumentState,
         limits: Limits,
         cache_root: &Path,
+        budget: DurableCacheBudget,
     ) -> Result<(Self, DurableProjectionAction), TantivySourceError> {
         // The public entrypoints keep the process-safe cache lock alive across
         // this whole operation, including stale-stage cleanup and pruning.
@@ -377,11 +482,11 @@ impl TantivySource {
             remove_projection_path(&selected)?;
         }
         if path_exists(&selected)? {
-            match Self::open_in_dir(state, limits, &selected) {
+            match Self::open_in_dir_with_budget(state, limits, &selected, budget) {
                 Ok(mut source) => {
                     pin_durable_root(&mut source, &selected)?;
                     touch_durable_root(&selected)?;
-                    prune_durable_roots(&version_root, &selected)?;
+                    prune_durable_roots(&version_root, &selected, budget)?;
                     return Ok((source, DurableProjectionAction::Opened));
                 }
                 Err(error) if is_definitively_corrupt_root(&error) => {
@@ -397,7 +502,7 @@ impl TantivySource {
             std::process::id()
         ));
         fs::create_dir(&staging)?;
-        let built = match Self::build_in_dir(state, limits, &staging) {
+        let built = match Self::build_in_dir_with_budget(state, limits, &staging, budget) {
             Ok(source) => source,
             Err(error) => {
                 let _ = remove_projection_path(&staging);
@@ -409,10 +514,10 @@ impl TantivySource {
         fs::rename(&staging, &selected)?;
         sync_directory(&version_root)?;
 
-        let mut source = Self::open_in_dir(state, limits, &selected)?;
+        let mut source = Self::open_in_dir_with_budget(state, limits, &selected, budget)?;
         pin_durable_root(&mut source, &selected)?;
         touch_durable_root(&selected)?;
-        prune_durable_roots(&version_root, &selected)?;
+        prune_durable_roots(&version_root, &selected, budget)?;
         Ok((source, DurableProjectionAction::Built))
     }
 
@@ -450,6 +555,31 @@ impl TantivySource {
         budget: OverlayLimits,
         cache_root: impl AsRef<Path>,
     ) -> Result<(Self, Option<ProjectionRevision>, DurableProjectionAction), TantivySourceError> {
+        Self::open_or_advance_in_dir_with_budget_and_action(
+            previous,
+            next,
+            limits,
+            budget,
+            cache_root,
+            DurableCacheBudget::default(),
+        )
+    }
+
+    /// Advances a durable binding under an explicit cache byte budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::open_or_advance_in_dir_with_action`],
+    /// plus [`TantivySourceError::BudgetExceeded`] when a root or the pinned
+    /// retained set does not fit `cache_budget`.
+    pub fn open_or_advance_in_dir_with_budget_and_action(
+        previous: &DocumentState,
+        next: &DocumentState,
+        limits: Limits,
+        budget: OverlayLimits,
+        cache_root: impl AsRef<Path>,
+        cache_budget: DurableCacheBudget,
+    ) -> Result<(Self, Option<ProjectionRevision>, DurableProjectionAction), TantivySourceError> {
         let limits = limits.validate()?;
         if !matches!(previous.coverage(), CoverageWitness::Complete(_))
             || !matches!(next.coverage(), CoverageWitness::Complete(_))
@@ -460,7 +590,7 @@ impl TantivySource {
         let _cache_directory =
             backend_platform::durability::open_directory_readonly_nofollow(cache_root.as_ref())?;
         let _cache_lock = DurableCacheLock::acquire(cache_root.as_ref())?;
-        Self::open_or_advance_locked(previous, next, limits, budget, cache_root.as_ref())
+        Self::open_or_advance_locked(previous, next, limits, budget, cache_root.as_ref(), cache_budget)
     }
 
     fn open_or_advance_locked(
@@ -469,6 +599,7 @@ impl TantivySource {
         limits: Limits,
         budget: OverlayLimits,
         cache_root: &Path,
+        cache_budget: DurableCacheBudget,
     ) -> Result<(Self, Option<ProjectionRevision>, DurableProjectionAction), TantivySourceError> {
         let limits = limits.validate()?;
         if !matches!(previous.coverage(), CoverageWitness::Complete(_))
@@ -477,7 +608,7 @@ impl TantivySource {
             return Err(Error::IncompleteCoverage.into());
         }
         if previous.binding() == next.binding() {
-            return Self::open_or_build_locked(next, limits, cache_root)
+            return Self::open_or_build_locked(next, limits, cache_root, cache_budget)
                 .map(|(source, action)| (source, None, action));
         }
         let version_root = cache_root.join(DURABLE_ROOTS_DIRECTORY);
@@ -492,11 +623,11 @@ impl TantivySource {
             remove_projection_path(&selected)?;
         }
         if path_exists(&selected)? {
-            match Self::open_in_dir(next, limits, &selected) {
+            match Self::open_in_dir_with_budget(next, limits, &selected, cache_budget) {
                 Ok(mut source) => {
                     pin_durable_root(&mut source, &selected)?;
                     touch_durable_root(&selected)?;
-                    prune_durable_roots(&version_root, &selected)?;
+                    prune_durable_roots(&version_root, &selected, cache_budget)?;
                     return Ok((source, None, DurableProjectionAction::Opened));
                 }
                 Err(error) if is_definitively_corrupt_root(&error) => {
@@ -508,7 +639,8 @@ impl TantivySource {
 
         let previous_key = hex_fingerprint(projection_fingerprint(previous.binding()));
         let previous_path = version_root.join(previous_key);
-        let (previous_source, _) = Self::open_or_build_locked(previous, limits, cache_root)?;
+        let (previous_source, _) =
+            Self::open_or_build_locked(previous, limits, cache_root, cache_budget)?;
         drop(previous_source);
 
         let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
@@ -520,7 +652,7 @@ impl TantivySource {
             let _ = remove_projection_path(&staging);
             return Err(error.into());
         }
-        let mut staged = match Self::open_in_dir(previous, limits, &staging) {
+        let mut staged = match Self::open_in_dir_with_budget(previous, limits, &staging, cache_budget) {
             Ok(source) => source,
             Err(error) => {
                 let _ = remove_projection_path(&staging);
@@ -532,7 +664,7 @@ impl TantivySource {
             Ok(MaintainOutcome::RebuildRequired) => {
                 drop(staged);
                 remove_projection_path(&staging)?;
-                return Self::open_or_build_locked(next, limits, cache_root)
+                return Self::open_or_build_locked(next, limits, cache_root, cache_budget)
                     .map(|(source, action)| (source, None, action));
             }
             Err(error) => {
@@ -548,15 +680,19 @@ impl TantivySource {
         )?;
         write_binding_stamp(&staging, projection_fingerprint(next.binding()))?;
         drop(staged);
-        write_projection_manifest(&staging, projection_fingerprint(next.binding()))?;
+        write_projection_manifest(
+            &staging,
+            projection_fingerprint(next.binding()),
+            cache_budget,
+        )?;
         sync_directory(&staging)?;
         fs::rename(&staging, &selected)?;
         sync_directory(&version_root)?;
 
-        let mut source = Self::open_in_dir(next, limits, &selected)?;
+        let mut source = Self::open_in_dir_with_budget(next, limits, &selected, cache_budget)?;
         pin_durable_root(&mut source, &selected)?;
         touch_durable_root(&selected)?;
-        prune_durable_roots(&version_root, &selected)?;
+        prune_durable_roots(&version_root, &selected, cache_budget)?;
         Ok((source, Some(revision), DurableProjectionAction::Revised))
     }
 
@@ -1159,7 +1295,7 @@ fn read_binding_stamp(directory: &Path) -> Result<[u8; 32], TantivySourceError> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(TantivySource::corrupt("durable projection has no binding stamp"));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+        Err(error) if is_nofollow_rejection(&error) => {
             return Err(TantivySource::corrupt("durable projection binding is not a regular file"));
         }
         Err(error) => return Err(error.into()),
@@ -1236,7 +1372,7 @@ fn read_ordinal_map(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(TantivySource::corrupt("durable projection has no ordinal map"));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+        Err(error) if is_nofollow_rejection(&error) => {
             return Err(TantivySource::corrupt("durable projection ordinal map is malformed"));
         }
         Err(error) => return Err(error.into()),
@@ -1314,8 +1450,9 @@ fn read_ordinal_map(
 fn write_projection_manifest(
     directory: &Path,
     fingerprint: [u8; 32],
+    budget: DurableCacheBudget,
 ) -> Result<(), TantivySourceError> {
-    let files = projection_file_fingerprints(directory)?;
+    let files = projection_file_fingerprints(directory, budget)?;
     let count = u32::try_from(files.len()).map_err(|_| Error::SizeLimit)?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(INTEGRITY_MAGIC);
@@ -1347,6 +1484,7 @@ fn write_projection_manifest(
 fn verify_projection_manifest(
     directory: &Path,
     fingerprint: [u8; 32],
+    budget: DurableCacheBudget,
 ) -> Result<(), TantivySourceError> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
@@ -1370,7 +1508,7 @@ fn verify_projection_manifest(
                 "durable projection has no integrity manifest",
             ));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+        Err(error) if is_nofollow_rejection(&error) => {
             return Err(TantivySource::corrupt(
                 "durable projection integrity manifest is malformed",
             ));
@@ -1384,9 +1522,7 @@ fn verify_projection_manifest(
     }
     let mut offset = INTEGRITY_MAGIC.len();
     if take_bytes::<32>(&bytes, &mut offset) != Some(fingerprint) {
-        return Err(TantivySourceError::Corrupt(
-            "durable projection integrity root does not match",
-        ));
+        return Err(Error::StaleRoot.into());
     }
     let Some(count) = take_u32(&bytes, &mut offset) else {
         return Err(TantivySourceError::Corrupt(
@@ -1441,7 +1577,7 @@ fn verify_projection_manifest(
             ));
         }
     }
-    if offset != bytes.len() || expected != projection_file_fingerprints(directory)? {
+    if offset != bytes.len() || expected != projection_file_fingerprints(directory, budget)? {
         return Err(TantivySourceError::Corrupt(
             "durable projection files do not match their integrity manifest",
         ));
@@ -1470,6 +1606,7 @@ fn take_bytes<const N: usize>(bytes: &[u8], offset: &mut usize) -> Option<[u8; N
 
 fn projection_file_fingerprints(
     root: &Path,
+    budget: DurableCacheBudget,
 ) -> Result<BTreeMap<String, (u64, [u8; 32])>, TantivySourceError> {
     let mut files = BTreeMap::new();
     let mut total_bytes = 0_u64;
@@ -1501,7 +1638,7 @@ fn projection_file_fingerprints(
         let path = entry.path();
         let mut file = match backend_platform::durability::open_regular_file_nofollow(&path) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            Err(error) if is_nofollow_rejection(&error) => {
                 return Err(TantivySource::corrupt(
                     "durable projection file changed to a link or non-file",
                 ));
@@ -1517,10 +1654,11 @@ fn projection_file_fingerprints(
         total_bytes = total_bytes
             .checked_add(opened_metadata.len())
             .ok_or(Error::SizeLimit)?;
-        if total_bytes > MAX_DURABLE_CACHE_BYTES {
-            return Err(TantivySource::corrupt(
-                "durable projection exceeds its byte quota",
-            ));
+        if total_bytes > budget.max_bytes() {
+            return Err(TantivySourceError::BudgetExceeded {
+                budget_bytes: budget.max_bytes(),
+                required_bytes: total_bytes,
+            });
         }
         let mut hasher = blake3::Hasher::new();
         let mut buffer = [0_u8; 64 * 1024];
@@ -1547,7 +1685,13 @@ fn projection_file_fingerprints(
 }
 
 fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, std::io::Error> {
-    let mut file = backend_platform::durability::open_regular_file_nofollow(path)?;
+    let mut file = backend_platform::durability::open_regular_file_nofollow(path).map_err(|error| {
+        if is_nofollow_rejection(&error) {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+        } else {
+            error
+        }
+    })?;
     let initial_length = file.metadata()?.len();
     if initial_length > maximum {
         return Err(std::io::Error::new(
@@ -1579,6 +1723,40 @@ fn is_volatile_projection_file(name: &str) -> bool {
     ) || name == format!(".{BINDING_FILE}.tmp")
         || name == format!(".{INTEGRITY_FILE}.tmp")
         || name == format!(".{ORDINAL_MAP_FILE}.tmp")
+}
+
+fn is_nofollow_rejection(error: &std::io::Error) -> bool {
+    let loop_error = {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            error.raw_os_error() == Some(40)
+        }
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        {
+            error.raw_os_error() == Some(62)
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
+        {
+            false
+        }
+    };
+    error.kind() == std::io::ErrorKind::InvalidData || loop_error
 }
 
 fn is_projection_file_name(name: &str) -> bool {
@@ -1617,6 +1795,7 @@ fn is_definitively_corrupt_root(error: &TantivySourceError) -> bool {
             tantivy::TantivyError::DataCorruption(_)
             | tantivy::TantivyError::IncompatibleIndex(_),
         ) => true,
+        TantivySourceError::BudgetExceeded { .. } => false,
         TantivySourceError::Contract(_)
         | TantivySourceError::Backend(_)
         | TantivySourceError::Io(_) => false,
@@ -1794,9 +1973,21 @@ fn pin_durable_root(source: &mut TantivySource, path: &Path) -> Result<(), Tanti
     Ok(())
 }
 
-fn prune_durable_roots(root: &Path, selected: &Path) -> Result<(), std::io::Error> {
-    let mut roots = Vec::new();
-    let mut retained_bytes = 0_u64;
+fn prune_durable_roots(
+    root: &Path,
+    selected: &Path,
+    budget: DurableCacheBudget,
+) -> Result<(), TantivySourceError> {
+    struct Candidate {
+        path: std::path::PathBuf,
+        last_used: u128,
+        bytes: u64,
+        selected: bool,
+        retained: bool,
+    }
+
+    let mut candidates = Vec::new();
+    let mut pinned_bytes = 0_u64;
     let mut entries_seen = 0_usize;
     for entry in fs::read_dir(root)? {
         entries_seen = entries_seen.saturating_add(1);
@@ -1804,7 +1995,8 @@ fn prune_durable_roots(root: &Path, selected: &Path) -> Result<(), std::io::Erro
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "durable root directory exceeds its entry bound",
-            ));
+            )
+            .into());
         }
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| {
@@ -1814,7 +2006,8 @@ fn prune_durable_roots(root: &Path, selected: &Path) -> Result<(), std::io::Erro
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "durable root directory contains an unrecognized entry",
-            ));
+            )
+            .into());
         }
         let metadata = fs::symlink_metadata(entry.path())?;
         if !metadata.file_type().is_dir() {
@@ -1822,49 +2015,120 @@ fn prune_durable_roots(root: &Path, selected: &Path) -> Result<(), std::io::Erro
             continue;
         }
         let bytes = durable_root_size(&entry.path())?;
-        retained_bytes = retained_bytes
-            .checked_add(bytes)
-            .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
-        let access = entry.path().join(".last-used");
-        let modified = fs::symlink_metadata(&access)
-            .and_then(|metadata| metadata.modified())
-            .or_else(|_| metadata.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        roots.push((entry.path(), modified, bytes));
-    }
-    roots.sort_by(|left, right| left.1.cmp(&right.1));
-    let mut live_roots = roots.len();
-    for (path, _, bytes) in roots {
-        if path == selected
-            || (live_roots <= MAX_RETAINED_DURABLE_ROOTS
-                && retained_bytes <= MAX_DURABLE_CACHE_BYTES)
-        {
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let last_used = durable_root_last_used(&entry.path(), modified)?;
+        if entry.path() == selected {
+            candidates.push(Candidate {
+                path: entry.path(),
+                last_used,
+                bytes,
+                selected: true,
+                retained: true,
+            });
             continue;
         }
-        let lease = open_root_lease(&path)?;
+        let lease = open_root_lease(&entry.path())?;
         match lease.try_lock() {
-            Ok(()) => {
-                remove_projection_path(&path)?;
-                retained_bytes = retained_bytes.saturating_sub(bytes);
-                live_roots = live_roots.saturating_sub(1);
+            Ok(()) => candidates.push(Candidate {
+                path: entry.path(),
+                last_used,
+                bytes,
+                selected: false,
+                retained: false,
+            }),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                pinned_bytes = pinned_bytes
+                    .checked_add(bytes)
+                    .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
             }
-            Err(std::fs::TryLockError::WouldBlock) => {}
-            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
     }
-    if retained_bytes > MAX_DURABLE_CACHE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::StorageFull,
-            "durable Tantivy roots are pinned beyond the cache byte quota",
-        ));
+    candidates.sort_by(|left, right| {
+        right
+            .selected
+            .cmp(&left.selected)
+            .then_with(|| right.last_used.cmp(&left.last_used))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let mut retained_bytes = pinned_bytes;
+    let mut retained_roots = 0_usize;
+    for candidate in &mut candidates {
+        if candidate.selected {
+            retained_roots = retained_roots.saturating_add(1);
+            retained_bytes = retained_bytes
+                .checked_add(candidate.bytes)
+                .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+            continue;
+        }
+        if retained_roots < MAX_RETAINED_DURABLE_ROOTS
+            && retained_bytes
+                .checked_add(candidate.bytes)
+                .is_some_and(|required| required <= budget.max_bytes())
+        {
+            candidate.retained = true;
+            retained_roots = retained_roots.saturating_add(1);
+            retained_bytes = retained_bytes
+                .checked_add(candidate.bytes)
+                .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+        }
     }
-    sync_directory(root)
+    for candidate in candidates.iter().filter(|candidate| !candidate.retained) {
+        match remove_unpinned_projection_root(&candidate.path) {
+            Ok(()) => {
+                retained_bytes = retained_bytes.saturating_sub(candidate.bytes);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                // A reader may have pinned the root after classification. Keep
+                // it; reader leases are outside the root-count limit but remain
+                // inside the total byte quota.
+                retained_bytes = retained_bytes
+                    .checked_add(candidate.bytes)
+                    .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if retained_bytes > budget.max_bytes() {
+        return Err(TantivySourceError::BudgetExceeded {
+            budget_bytes: budget.max_bytes(),
+            required_bytes: retained_bytes,
+        });
+    }
+    sync_directory(root)?;
+    Ok(())
 }
 
 fn open_root_lease(root: &Path) -> Result<File, std::io::Error> {
     backend_platform::durability::open_or_create_regular_file_nofollow(
         &root.join(DURABLE_ROOT_LEASE),
     )
+}
+
+fn durable_root_last_used(
+    root: &Path,
+    fallback: std::time::SystemTime,
+) -> Result<u128, std::io::Error> {
+    let path = root.join(".last-used");
+    let mut file = match backend_platform::durability::open_regular_file_nofollow(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(fallback
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos());
+        }
+        Err(error) => return Err(error),
+    };
+    if file.metadata()?.len() != 16 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "durable root last-used stamp has an invalid size",
+        ));
+    }
+    let mut bytes = [0_u8; 16];
+    file.read_exact(&mut bytes)?;
+    Ok(u128::from_le_bytes(bytes))
 }
 
 fn remove_unpinned_projection_root(path: &Path) -> Result<(), std::io::Error> {
@@ -1932,6 +2196,7 @@ pub(crate) mod test_support {
     pub(crate) const BINDING_FILE: &str = super::BINDING_FILE;
     pub(crate) const DURABLE_ROOTS_DIRECTORY: &str = super::DURABLE_ROOTS_DIRECTORY;
     pub(crate) const INTEGRITY_FILE: &str = super::INTEGRITY_FILE;
+    pub(crate) const MAX_RETAINED_DURABLE_ROOTS: usize = super::MAX_RETAINED_DURABLE_ROOTS;
     pub(crate) const MAX_PROJECTION_MANIFEST_BYTES: u64 = super::MAX_PROJECTION_MANIFEST_BYTES;
     pub(crate) const ORDINAL_MAP_FILE: &str = super::ORDINAL_MAP_FILE;
     pub(crate) const ORDINAL_MAP_MAGIC: &[u8] = super::ORDINAL_MAP_MAGIC;
@@ -1947,8 +2212,9 @@ pub(crate) mod test_support {
     pub(crate) fn write_projection_manifest(
         directory: &std::path::Path,
         fingerprint: [u8; 32],
+        budget: super::DurableCacheBudget,
     ) -> Result<(), super::TantivySourceError> {
-        super::write_projection_manifest(directory, fingerprint)
+        super::write_projection_manifest(directory, fingerprint, budget)
     }
 }
 

@@ -1,12 +1,16 @@
 //! One small drawn vocabulary for the page: what a place does with the
 //! symbol (twelve verbs), how a call can end, the joints on the rail, the
 //! capability marks. Each is a few strokes in a 14-unit box, painted in the
-//! palette's voices by one canvas, so a mark is the same shape and colour
-//! wherever it appears.
+//! palette's voices by its typed element, so a mark is the same shape and
+//! colour wherever it appears.
 
 use super::view::{CapMark, Change, Effect, Verb};
 use crate::tokens::Palette;
-use gpui::{AnyElement, Hsla, IntoElement, PathBuilder, Pixels, Point, Styled, canvas, point, px};
+use gpui::{
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
+    IntoElement, LayoutId, PathBuilder, Pixels, Point, Refineable, Style, StyleRefinement,
+    Styled, Window, point, px,
+};
 
 /// One stroke or fill, in viewbox units.
 #[derive(Clone, Debug)]
@@ -209,54 +213,75 @@ fn points(pts: &[(f32, f32)], origin: Point<Pixels>, k: f32) -> Vec<Point<Pixels
 pub fn mark(g: G, palette: &Palette, size: f32) -> AnyElement {
     let (vw, vh, prims) = glyph(g, hue(palette));
     let k = size / vw.max(vh);
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
+    PageMark { prims, scale: k, style: StyleRefinement::default() }
+        .w(px(size * vw / vw.max(vh)))
+        .h(px(size * vh / vw.max(vh)))
+        .flex_none()
+        .into_any_element()
+}
+
+/// One page mark, painted with the measured dimensions of its path geometry.
+struct PageMark {
+    prims: Vec<Prim>,
+    scale: f32,
+    style: StyleRefinement,
+}
+
+impl Styled for PageMark {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for PageMark {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for PageMark {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (prims, scale) = (&self.prims, self.scale);
+        style.paint(bounds, window, cx, |window, _| {
             let origin = bounds.origin;
-            for prim in &prims {
+            for prim in prims {
                 match prim {
                     Prim::Fill(pts, color) => {
                         let mut path = PathBuilder::fill();
-                        path.add_polygon(&points(pts, origin, k), true);
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, *color);
-                        }
+                        path.add_polygon(&points(pts, origin, scale), true);
+                        if let Ok(path) = path.build() { window.paint_path(path, *color); }
                     }
                     Prim::Line(pts, color, width) => {
-                        let mut path = PathBuilder::stroke(px(width * k));
-                        let pts = points(pts, origin, k);
+                        let mut path = PathBuilder::stroke(px(width * scale));
+                        let pts = points(pts, origin, scale);
                         if let Some((first, rest)) = pts.split_first() {
                             path.move_to(*first);
-                            for p in rest {
-                                path.line_to(*p);
-                            }
+                            for p in rest { path.line_to(*p); }
                         }
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, *color);
-                        }
+                        if let Ok(path) = path.build() { window.paint_path(path, *color); }
                     }
                     Prim::Poly(pts, color, width) => {
-                        let mut path = PathBuilder::stroke(px(width * k));
-                        path.add_polygon(&points(pts, origin, k), true);
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, *color);
-                        }
+                        let mut path = PathBuilder::stroke(px(width * scale));
+                        path.add_polygon(&points(pts, origin, scale), true);
+                        if let Ok(path) = path.build() { window.paint_path(path, *color); }
                     }
                     Prim::Dashed(pts, color, width, dash) => {
-                        let mut path = PathBuilder::stroke(px(width * k)).dash_array(&[px(dash[0] * k), px(dash[1] * k)]);
-                        path.add_polygon(&points(pts, origin, k), true);
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, *color);
-                        }
+                        let mut path = PathBuilder::stroke(px(width * scale)).dash_array(&[px(dash[0] * scale), px(dash[1] * scale)]);
+                        path.add_polygon(&points(pts, origin, scale), true);
+                        if let Ok(path) = path.build() { window.paint_path(path, *color); }
                     }
                 }
             }
-        },
-    )
-    .w(px(size * vw / vw.max(vh)))
-    .h(px(size * vh / vw.max(vh)))
-    .flex_none()
-    .into_any_element()
+        });
+    }
 }
 
 /// The glyph for an option's change of outcome (`fails → nothing`).

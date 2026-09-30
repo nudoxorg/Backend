@@ -12,13 +12,14 @@
 //! exactly the record shape the search and shelf renderings already use, so a
 //! reader learns it once.
 
+use crate::drive::ContinuationCursor;
 use crate::fault::Fault;
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
-    IndexSearchPage, IndexSearchResultCount, PackageDependencyRecord, PackageReference,
-    ProjectRecord, RegistryDiscoveryCandidate, RegistryEvidenceFacet, RegistryMetadata,
-    RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
+    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, PackageDependencyRecord,
+    PackageReference, ProjectRecord, RegistryDiscoveryCandidate, RegistryEvidenceFacet,
+    RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
     RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
     RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
     RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SemanticVersionFreshness,
@@ -157,7 +158,72 @@ pub struct IndexSearchPageInfo {
     snapshot: [u8; 32],
     evaluated_at_millis: u64,
     result_count: IndexSearchResultCount,
-    next_cursor: Option<String>,
+    next_cursor: Option<CursorProjection>,
+}
+
+/// Where a projected cursor should be passed on the next call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorTarget {
+    /// The CLI's `--cursor` option.
+    CliOption,
+    /// The `cursor` argument of `backend.index_search`.
+    McpIndexSearchTool,
+    /// The tagged `command.cursor` field accepted by `backend.surface`.
+    SurfaceCommand,
+}
+
+/// One typed owner cursor together with its adapter-facing token and usage.
+///
+/// The token is the only value that should be rendered or serialized. The
+/// family retains the owner cursor separately so an adapter can wrap it
+/// without confusing an opaque product token with a presentation cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CursorProjection {
+    family: ContinuationCursor,
+    token: String,
+    target: CursorTarget,
+}
+
+impl CursorProjection {
+    fn index_search(cursor: IndexSearchCursor) -> Self {
+        Self {
+            token: cursor.as_str().to_owned(),
+            family: ContinuationCursor::IndexSearch(cursor),
+            target: CursorTarget::CliOption,
+        }
+    }
+
+    /// Creates an adapter-facing projection of an owner cursor.
+    #[must_use]
+    pub fn projected(
+        family: ContinuationCursor,
+        token: impl Into<String>,
+        target: CursorTarget,
+    ) -> Self {
+        Self {
+            family,
+            token: token.into(),
+            target,
+        }
+    }
+
+    /// Returns the owner-issued cursor family.
+    #[must_use]
+    pub const fn family(&self) -> &ContinuationCursor {
+        &self.family
+    }
+
+    /// Returns the token exposed to this surface's caller.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Returns the caller's resume field or option.
+    #[must_use]
+    pub const fn target(&self) -> CursorTarget {
+        self.target
+    }
 }
 
 impl IndexSearchPageInfo {
@@ -179,10 +245,16 @@ impl IndexSearchPageInfo {
         self.result_count
     }
 
-    /// Opaque continuation for the following result page.
+    /// Caller-facing continuation for the following result page.
     #[must_use]
     pub fn next_cursor(&self) -> Option<&str> {
-        self.next_cursor.as_deref()
+        self.next_cursor.as_ref().map(CursorProjection::token)
+    }
+
+    /// Typed owner cursor retained behind the caller-facing projection.
+    #[must_use]
+    pub fn cursor_projection(&self) -> Option<&CursorProjection> {
+        self.next_cursor.as_ref()
     }
 }
 
@@ -217,6 +289,29 @@ impl ProductView {
         self.index_search_page.as_ref()
     }
 
+    /// Returns this product answer's typed owner cursor, when it has one.
+    #[must_use]
+    pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
+        self.index_search_page
+            .as_ref()?
+            .cursor_projection()
+            .map(CursorProjection::family)
+    }
+
+    /// Replaces the caller-facing cursor while retaining its owner family.
+    #[must_use]
+    pub fn project_cursor(mut self, token: impl Into<String>, target: CursorTarget) -> Self {
+        let token = token.into();
+        if let Some(cursor) = self
+            .index_search_page
+            .as_mut()
+            .and_then(|page| page.next_cursor.as_mut())
+        {
+            *cursor = CursorProjection::projected(cursor.family.clone(), token, target);
+        }
+        self
+    }
+
     fn with_index_search_page(mut self, page: &IndexSearchPage) -> Self {
         self.index_search_page = Some(IndexSearchPageInfo {
             snapshot: page.snapshot,
@@ -225,7 +320,8 @@ impl ProductView {
             next_cursor: page
                 .next_cursor
                 .as_ref()
-                .map(|cursor| cursor.as_str().to_owned()),
+                .cloned()
+                .map(CursorProjection::index_search),
         });
         self
     }
@@ -1480,6 +1576,47 @@ mod tests {
         RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistryReleaseStanding,
         RegistrySearchGroupKind,
     };
+
+    #[test]
+    fn index_search_cursor_projection_keeps_owner_family_and_projects_both_renderings() {
+        let owner_cursor = IndexSearchCursor::new("owner-v4-token").expect("owner cursor");
+        let reply = SurfaceReply::IndexSearchPage(IndexSearchPage {
+            snapshot: [7; 32],
+            evaluated_at_millis: 11,
+            hits: Box::new([]),
+            next_cursor: Some(owner_cursor),
+            result_count: IndexSearchResultCount::AtLeast(1),
+        });
+        let view = product_view(&reply);
+        assert!(crate::markdown::product(&view).contains("pass `--cursor`"));
+        assert!(crate::markdown::product(&view).contains("owner-v4-token"));
+
+        let projected = view.project_cursor("mcp1-signed-token", CursorTarget::SurfaceCommand);
+        assert_eq!(
+            projected
+                .index_search_page()
+                .and_then(IndexSearchPageInfo::next_cursor),
+            Some("mcp1-signed-token")
+        );
+        assert!(
+            crate::markdown::product(&projected)
+                .contains("set `command.cursor` in `backend.surface`")
+        );
+        assert!(crate::markdown::product(&projected).contains("mcp1-signed-token"));
+        assert!(!crate::markdown::product(&projected).contains("owner-v4-token"));
+        assert!(matches!(
+            projected.cursor_family(),
+            Some(ContinuationCursor::IndexSearch(cursor))
+                if cursor.as_str() == "owner-v4-token"
+        ));
+        assert_eq!(
+            crate::dto::ProductDto::new(&projected)
+                .index_search_page
+                .and_then(|page| page.next_cursor)
+                .as_deref(),
+            Some("mcp1-signed-token")
+        );
+    }
 
     #[test]
     fn lineage_metadata_only_results_are_not_presented_as_release_matches() {
