@@ -1261,13 +1261,12 @@ fn validate_component(name: &str) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn rename_then_sync<T>(
-    rename: impl FnOnce() -> io::Result<T>,
+fn rename_then_sync(
+    rename: impl FnOnce() -> io::Result<()>,
     sync: impl FnOnce() -> io::Result<()>,
-) -> Result<T, DirectoryRenameError> {
-    let value = rename().map_err(DirectoryRenameError::NotCommitted)?;
-    sync().map_err(DirectoryRenameError::CommittedButNotDurable)?;
-    Ok(value)
+) -> Result<(), DirectoryRenameError> {
+    rename().map_err(DirectoryRenameError::NotCommitted)?;
+    sync().map_err(DirectoryRenameError::CommittedButNotDurable)
 }
 
 fn invalid(message: &'static str) -> io::Error {
