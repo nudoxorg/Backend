@@ -1881,7 +1881,8 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
                 command["cursor"] = json!(changed);
             }
             "expired" => {
-                let context_arguments = json!({"command": first_command.clone()})
+                let context_arguments_value = json!({"command": first_command.clone()});
+                let context_arguments = context_arguments_value
                     .as_object()
                     .expect("surface arguments");
                 let context =
