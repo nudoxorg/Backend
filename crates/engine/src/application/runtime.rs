@@ -4446,7 +4446,10 @@ mod request_lease_tests {
         request.mark_dispatched();
         cancelled.store(true, Ordering::Release);
 
-        assert_eq!(request.complete(Err("cancelled")), Err("cancelled"));
+        assert_eq!(
+            request.complete(Err::<u8, &str>("cancelled")),
+            Err("cancelled")
+        );
         assert!(cancelled.load(Ordering::Acquire));
         assert!(
             !shared
