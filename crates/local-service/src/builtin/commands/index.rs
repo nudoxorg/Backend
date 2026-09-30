@@ -13,8 +13,8 @@ use backend_engine::application::{
     CompilerWorkspaceEntryV2, ExactInputWitness, FullWorkspaceInputClaim, FullWorkspaceInputError,
     FullWorkspaceInputVerifier, LocalCompilerAvailability, LocalCompilerClient, OwnedPackageSource,
     OwnedPackageSourceSet, PackageLineageId, StagedSemanticPackage, VerifiedCompilerInput,
-    VerifiedCompilerInputAdmission,
-    VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
+    VerifiedCompilerInputAdmission, VerifierAcceptedFullWorkspaceInput,
+    capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
     PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
@@ -41,7 +41,7 @@ pub(super) fn index_project_intent(
     request_id: u64,
     compiler: &LocalCompilerClient,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster(
         daemon,
         package,
@@ -65,7 +65,7 @@ pub(super) fn index_project_intent_with_cluster(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster(
         daemon,
         package,
@@ -90,7 +90,7 @@ pub(super) fn index_project_intent_with_cluster_and_intent(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster_and_intent(
         daemon,
         package,
@@ -106,13 +106,11 @@ pub(super) fn index_project_intent_with_cluster_and_intent(
     )
 }
 
-/// Prepares indexing a local project folder on the owner loop: the scan and
-/// the source frontier's commit, as [`index_project_intent_with_cluster_and_intent`]
-/// does them. When a local compile is needed (and no compiler cluster may take
-/// it), the compile is handed back as a [`DeferredIndex`] instead of run: the
-/// caller runs it off the loop ([`run_deferred_compile`]) and publishes it on
-/// the loop ([`finish_deferred_index`]), and the loop answers reads from the
-/// last publication meanwhile.
+/// Prepares indexing a local project folder on the owner loop without changing
+/// the selected product. When a local compile is needed (and no compiler
+/// cluster may take it), the compile is handed back as a [`DeferredIndex`]:
+/// the caller runs it off the loop and finishes the whole product transaction
+/// on the loop afterward.
 pub(super) fn prepare_index_project(
     daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: backend_engine::PackageKey,
@@ -147,7 +145,7 @@ pub(super) fn index_project_intent_at(
     request_id: u64,
     compiler: &LocalCompilerClient,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster(
         daemon,
         package,
@@ -173,7 +171,7 @@ fn index_project_intent_at_with_cluster(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster_and_intent(
         daemon,
         package,
@@ -201,7 +199,7 @@ fn index_project_intent_at_with_cluster_and_intent(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     match prepare_index_project_at(
         daemon,
         package,
@@ -216,7 +214,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         pending_stored_acks,
         false,
     )? {
-        PreparedIndex::Ready(intent) => Ok(intent),
+        PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
         PreparedIndex::Compile(_) => Err(BuiltinModelError(
             "an index compile was deferred on a path that runs it in place".to_owned(),
         )),
@@ -307,9 +305,9 @@ fn prepare_index_project_at(
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
     let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
         .map_err(BuiltinModelError)?;
-    // Persist the new source observation before advancing the workspace source
-    // relation. If that relation transaction fails, the previous semantic head
-    // is conservatively historical on both the live and cold-reopened paths.
+    // Persist candidate observations first. They fence compilation but remain
+    // private to freshness and query paths until the combined product intent
+    // commits.
     let mut observed_profiles = live.clone();
     observed_profiles.extend(lost.iter().copied());
     let mut observations = BTreeMap::new();
@@ -369,20 +367,14 @@ fn prepare_index_project_at(
             .filter(|key| !selected.contains(key))
             .map(|key| BuiltinSourceChange { key, after: None }),
     );
-    // Commit the source frontier before a semantic authority head can move.
-    // A crash between these two commits leaves the old semantic selection
-    // visible against the new source input; a crash after Turso selection is
-    // repaired from the selected closure before view-journal recovery.
-    if !changes.is_empty() {
-        let source_intent =
-            BuiltinIntent::index_with_semantics(package, label, changes, Vec::new())?;
-        super::commit_builtin_intent(daemon, request_id.wrapping_add(1), &source_intent)?;
-    }
+    // Keep these source rows private until every semantic profile has been
+    // admitted. The eventual BuiltinIntent carries source and semantic roots
+    // in one workspace transition.
     // This compiler owner does not expose a complete typed present-and-negative
     // read set, so its source/configuration digest cannot authorize reuse.
     // Every live semantic profile rebuilds until the authority can prove its
     // complete input closure.
-    let semantic_changes = {
+    let (semantic_changes, selected) = {
         let fresh_profiles = scan
             .compiler_sources
             .iter()
@@ -419,7 +411,7 @@ fn prepare_index_project_at(
             &dirty,
         );
         if dirty.is_empty() {
-            Vec::new()
+            (Vec::new(), Vec::new())
         } else {
             let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
                 .map_err(BuiltinModelError)?;
@@ -427,6 +419,7 @@ fn prepare_index_project_at(
                 return prepare_deferred_compile(
                     package,
                     label,
+                    changes,
                     &semantic_context,
                     sources,
                     revision_fence.clone(),
@@ -449,27 +442,51 @@ fn prepare_index_project_at(
             )?
         }
     };
-    if semantic_changes.is_empty() {
-        return Ok(PreparedIndex::Ready(None));
+    let intent = if changes.is_empty() && semantic_changes.is_empty() {
+        None
+    } else {
+        Some(BuiltinIntent::index_with_semantics(
+            package,
+            label,
+            changes,
+            semantic_changes,
+        )?)
+    };
+    Ok(PreparedIndex::Ready(PreparedProductSelection {
+        intent,
+        selected,
+    }))
+}
+
+/// The complete candidate product transaction. Its intent is the one durable
+/// source-plus-semantic selection marker; `selected` advances serving only
+/// after that intent commits.
+pub(super) struct PreparedProductSelection {
+    pub(super) intent: Option<BuiltinIntent>,
+    pub(super) selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+}
+
+impl PreparedProductSelection {
+    fn into_option(self) -> Option<Self> {
+        (self.intent.is_some() || !self.selected.is_empty()).then_some(self)
     }
-    BuiltinIntent::index_with_semantics(package, label, Vec::new(), semantic_changes)
-        .map(|intent| PreparedIndex::Ready(Some(intent)))
 }
 
 /// What preparing an index job came to.
 pub(super) enum PreparedIndex {
-    /// Nothing to compile off the loop: the semantic intent, if any.
-    Ready(Option<BuiltinIntent>),
+    /// All required planes were admitted; the transaction is ready to commit.
+    Ready(PreparedProductSelection),
     /// A compile to run off the owner loop, then publish on it.
     Compile(DeferredIndex),
 }
 
 /// The compile an index job hands off the owner loop, and everything its
-/// publication needs afterwards, owned: the source frontier is committed,
-/// each profile's candidate attempt is begun, and nothing is selected yet.
+/// publication needs afterwards. Source changes and authority observations
+/// remain private until the candidate transaction succeeds.
 pub(super) struct DeferredIndex {
     package: backend_engine::PackageKey,
     label: String,
+    source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
     profiles: Vec<DeferredProfile>,
 }
@@ -497,6 +514,7 @@ impl DeferredIndex {
 fn prepare_deferred_compile(
     package: backend_engine::PackageKey,
     label: &str,
+    source_changes: Vec<BuiltinSourceChange>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
     revision_fence: ingest::CompilerRevisionFence,
@@ -566,6 +584,7 @@ fn prepare_deferred_compile(
     Ok(DeferredIndex {
         package,
         label: label.to_owned(),
+        source_changes,
         revision_fence,
         profiles,
     })
@@ -586,16 +605,15 @@ pub(super) fn run_deferred_compile(
         .collect()
 }
 
-/// Publishes a deferred index's compile on the owner loop, exactly as the
-/// in-place local route does: each profile's output is admitted, selected
-/// while its source is still the source on disk, and recorded. Returns the
-/// semantic intent the caller commits and publishes.
-pub(super) fn finish_deferred_index(
+/// Publishes a deferred compile's semantic candidates on the owner loop and
+/// returns one source-plus-semantic intent. The caller commits that intent
+/// before advancing the process-local serving selector.
+pub(super) fn finish_deferred_index<E: std::fmt::Display>(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     job: DeferredIndex,
-    compiled: Vec<Result<StagedSemanticPackage, String>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+    compiled: Vec<Result<StagedSemanticPackage, E>>,
+) -> Result<PreparedProductSelection, BuiltinModelError> {
     if compiled.len() != job.profiles.len() {
         return Err(BuiltinModelError(
             "the deferred compile did not answer every profile; prior selected semantic generation was preserved"
@@ -610,6 +628,7 @@ pub(super) fn finish_deferred_index(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(job.profiles.len().saturating_mul(2));
+    let mut selected = Vec::with_capacity(job.profiles.len());
     for (profile, compiled) in job.profiles.into_iter().zip(compiled) {
         let DeferredProfile {
             key,
@@ -625,12 +644,26 @@ pub(super) fn finish_deferred_index(
             &staged,
             &job.revision_fence,
         )?;
-        record_semantic_publication(&relation, key, publication_coverage, claim, &mut changes)?;
+        record_semantic_publication(
+            &relation,
+            key.clone(),
+            publication_coverage,
+            claim,
+            &mut changes,
+        )?;
+        selected.push((key, claim));
     }
-    if changes.is_empty() {
-        return Ok(None);
-    }
-    BuiltinIntent::index_with_semantics(job.package, &job.label, Vec::new(), changes).map(Some)
+    let intent = if job.source_changes.is_empty() && changes.is_empty() {
+        None
+    } else {
+        Some(BuiltinIntent::index_with_semantics(
+            job.package,
+            &job.label,
+            job.source_changes,
+            changes,
+        )?)
+    };
+    Ok(PreparedProductSelection { intent, selected })
 }
 
 struct SemanticCompilationContext<'request> {
@@ -872,7 +905,13 @@ fn compile_semantic_publications(
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     execution_intent: CompileExecutionIntent,
-) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
+) -> Result<
+    (
+        Vec<BuiltinSemanticChange>,
+        Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    ),
+    BuiltinModelError,
+> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     let mut source_paths_by_profile = BTreeMap::<LanguageProfile, BTreeSet<String>>::new();
     for source in sources {
@@ -894,6 +933,7 @@ fn compile_semantic_publications(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
+    let mut selected_claims = Vec::with_capacity(by_profile.len());
     for (profile, sources) in by_profile {
         let expected_artifacts = u32::try_from(sources.len())
             .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
@@ -1489,8 +1529,13 @@ fn compile_semantic_publications(
                     }
                 }
             }
-            let publication =
-                publish_local_compile(semantic_authority, &key, local_attempt, &staged, revision_fence)?;
+            let publication = publish_local_compile(
+                semantic_authority,
+                &key,
+                local_attempt,
+                &staged,
+                revision_fence,
+            )?;
             (publication.0, publication.1, publication_coverage)
         };
         match execution_route {
@@ -1502,10 +1547,17 @@ fn compile_semantic_publications(
             }
             SemanticExecutionRoute::LocalOnly => {}
         }
-        record_semantic_publication(&relation, key, publication_coverage, claim, &mut changes)?;
+        record_semantic_publication(
+            &relation,
+            key.clone(),
+            publication_coverage,
+            claim,
+            &mut changes,
+        )?;
+        selected_claims.push((key, claim));
         let _ = selected;
     }
-    Ok(changes)
+    Ok((changes, selected_claims))
 }
 
 /// Admits one local compile's output: every expected source is accounted
@@ -1582,7 +1634,13 @@ fn publish_local_compile(
     attempt: backend_extension_turso::CandidateAttempt,
     staged: &StagedSemanticPackage,
     revision_fence: &ingest::CompilerRevisionFence,
-) -> Result<(SemanticPublicationClaim, backend_extension_turso::SelectedGeneration), BuiltinModelError> {
+) -> Result<
+    (
+        SemanticPublicationClaim,
+        backend_extension_turso::SelectedGeneration,
+    ),
+    BuiltinModelError,
+> {
     if !ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)? {
         return Err(BuiltinModelError(
             "compiler source or configuration revision changed during semantic compilation; retry indexing"
