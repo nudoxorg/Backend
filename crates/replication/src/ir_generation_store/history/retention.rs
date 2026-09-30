@@ -1785,6 +1785,8 @@ mod tests {
     #[test]
     fn oversized_candidate_value_is_rejected_with_a_bounded_read() {
         let directory = TestDirectory::create();
+        super::super::codec::prepare_history_layout(&directory.0)
+            .expect("create the private history and GC parents used in production");
         let digest = [0x6d; 32];
         let work_root =
             ensure_work_layout(&directory.0, &digest).expect("create retention candidate layout");
@@ -1809,9 +1811,10 @@ mod tests {
     #[test]
     fn legacy_retention_state_fails_closed_before_delete_recovery() {
         let directory = TestDirectory::create();
+        super::super::codec::prepare_history_layout(&directory.0)
+            .expect("create the private history layout used in production");
         let history_root = directory.0.join("history");
         let commits_root = history_root.join("commits");
-        fs::create_dir_all(&commits_root).expect("create history commit directory");
         let identity = "ab".repeat(32);
         let commit_name = format!("{identity}.commit");
         let commit_path = commits_root.join(&commit_name);

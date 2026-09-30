@@ -1833,11 +1833,14 @@ mod tests {
             .join("pending")
             .join(&pending_name);
         let indexed_path = history_root.join("indexed").join(&indexed_name);
+        assert!(
+            !pending_path.exists(),
+            "successful V3 publication removes its admission staging marker before GC"
+        );
         for path in [
             &commit_path,
             &payload_root_path,
             &locator_path,
-            &pending_path,
             &indexed_path,
         ] {
             assert!(
