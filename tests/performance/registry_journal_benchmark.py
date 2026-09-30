@@ -21,6 +21,7 @@ import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,23 @@ def tree_bytes(path: Path) -> int:
         if entry.is_file():
             total = total + entry.stat().st_size
     return total
+
+
+def make_private_owner_file(path: Path) -> None:
+    """Restrict one copied owner-state file without following links."""
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ValueError(f"copied owner-state path is not a single-link file: {path}")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise ValueError(f"copied owner-state path is not owned by this user: {path}")
+    os.chmod(path, 0o600, follow_symlinks=False)
+    verified = path.lstat()
+    if (
+        not stat.S_ISREG(verified.st_mode)
+        or verified.st_nlink != 1
+        or stat.S_IMODE(verified.st_mode) != 0o600
+    ):
+        raise ValueError(f"could not make copied owner-state file private: {path}")
 
 
 def percentile(samples: list[int], percent: int) -> int | None:
@@ -396,6 +414,10 @@ def main() -> int:
     project = work / "project"
     shutil.copytree(workspace_template, workspace, symlinks=True)
     shutil.copytree(project_template, project, symlinks=True)
+    registry_directory = workspace / "registry"
+    if not stat.S_ISDIR(registry_directory.lstat().st_mode):
+        raise ValueError(f"copied registry state directory is not a real directory: {registry_directory}")
+    make_private_owner_file(registry_directory / "advisory-authority.json")
     if sha256(workspace / "registry-discovery" / "catalog.journal") != journal_digest:
         raise ValueError("private workspace copy changed the labeled journal")
 

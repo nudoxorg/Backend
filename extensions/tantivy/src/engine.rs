@@ -9,7 +9,11 @@ use backend_semantic::EntityId;
 use backend_version::CoverageWitness;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
-    collections::BTreeMap, fs, fs::File, io::Read, path::Path,
+    collections::{BTreeMap, HashMap, HashSet},
+    fs,
+    fs::File,
+    io::Read,
+    path::Path,
     sync::atomic::Ordering as AtomicOrdering,
 };
 use tantivy::columnar::BytesColumn;
@@ -46,6 +50,12 @@ const MAX_RANK_MATERIAL_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_RANK_SCRATCH_BYTES: usize = 1024 * 1024 * 1024;
 const DEFAULT_RETAINED_RANK_BYTES: usize = 64 * 1024 * 1024;
 const RANK_SCRATCH_BYTES_PER_MATCH: usize = 320;
+const MAX_POSTING_COVER_SCRATCH_BYTES: usize = 256 * 1024 * 1024;
+// Conservative per-token charge for borrowed term references and tokenizer scratch.
+const POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN: usize = 96;
+// Cold admission charges each dictionary term, its key bytes, and each posting edge. A finite
+// limit keeps tombstone-heavy roots from requiring an unbounded validation walk.
+const MAX_POSTING_COVER_SCAN_WORK_UNITS: u64 = 100_000_000;
 const MAX_DURABLE_ROOT_SCAN_ENTRIES: usize = 65_536;
 static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 
@@ -199,6 +209,14 @@ struct OrdinalDocument {
     ordinal: u32,
     document: LiveDocument,
     address: Option<DocAddress>,
+    segment_id: Option<tantivy::index::SegmentId>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct BindingWork {
+    payload_rows_scanned: usize,
+    source_posting_checks: usize,
+    posting_cover_edges_scanned: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -262,35 +280,6 @@ impl DocumentTable {
                     .map(|_| entry.ordinal as usize)
             })
     }
-
-    fn merge_replacements(mut self, mut replacements: Vec<OrdinalDocument>) -> Result<Self, Error> {
-        replacements.sort_unstable_by_key(|entry| entry.ordinal);
-        if replacements
-            .windows(2)
-            .any(|pair| pair[0].ordinal == pair[1].ordinal)
-        {
-            return Err(Error::MalformedInput);
-        }
-        let mut merged = Vec::with_capacity(self.live.len().saturating_add(replacements.len()));
-        let mut old = self.live.into_iter().peekable();
-        let mut new = replacements.into_iter().peekable();
-        loop {
-            match (old.peek(), new.peek()) {
-                (Some(left), Some(right)) if left.ordinal == right.ordinal => {
-                    return Err(Error::MalformedInput);
-                }
-                (Some(left), Some(right)) if left.ordinal < right.ordinal => {
-                    merged.push(old.next().ok_or(Error::MalformedInput)?);
-                }
-                (Some(_), Some(_)) => merged.push(new.next().ok_or(Error::MalformedInput)?),
-                (Some(_), None) => merged.push(old.next().ok_or(Error::MalformedInput)?),
-                (None, Some(_)) => merged.push(new.next().ok_or(Error::MalformedInput)?),
-                (None, None) => break,
-            }
-        }
-        self.live = merged;
-        Ok(self)
-    }
 }
 
 fn entity_fingerprint(id: EntityId) -> [u8; 16] {
@@ -323,6 +312,8 @@ pub struct TantivySource {
     rank_evaluations: AtomicU64,
     rank_docs_visited: AtomicU64,
     rank_peak_scratch_bytes: AtomicU64,
+    #[cfg(test)]
+    last_binding_work: BindingWork,
 }
 
 struct TopHits {
@@ -438,6 +429,20 @@ pub enum TantivySourceError {
         /// Bytes required by the exact query snapshot or conservative build bound.
         required_bytes: usize,
     },
+    /// Cold exact-posting validation exceeded its bounded per-row scratch allowance.
+    PostingCoverBudgetExceeded {
+        /// Maximum temporary bytes permitted while counting source-authoritative posting edges.
+        budget_bytes: usize,
+        /// Conservative temporary bytes required by the selected row.
+        required_bytes: usize,
+    },
+    /// Cold exact-posting validation exceeded its dictionary, term-byte, and posting allowance.
+    PostingCoverWorkExceeded {
+        /// Maximum scan-work units permitted during one cold validation.
+        maximum_units: u64,
+        /// First work-unit count that exceeded the maximum.
+        attempted_units: u64,
+    },
     /// Durable projections are immutable; updates must publish a new root.
     DurableProjectionImmutable,
 }
@@ -469,6 +474,20 @@ impl std::fmt::Display for TantivySourceError {
             } => write!(
                 formatter,
                 "exact lexical query needs {required_bytes} bytes, above its {budget_bytes}-byte query budget",
+            ),
+            Self::PostingCoverBudgetExceeded {
+                budget_bytes,
+                required_bytes,
+            } => write!(
+                formatter,
+                "cold posting validation needs {required_bytes} bytes, above its {budget_bytes}-byte scratch budget",
+            ),
+            Self::PostingCoverWorkExceeded {
+                maximum_units,
+                attempted_units,
+            } => write!(
+                formatter,
+                "cold posting validation exceeded its {maximum_units}-unit work budget at unit {attempted_units}",
             ),
             Self::DurableProjectionImmutable => write!(
                 formatter,
@@ -577,7 +596,14 @@ impl TantivySource {
             .try_into()?;
         let mut documents =
             read_ordinal_map(state, projection_fingerprint(state.binding()), directory)?;
-        bind_document_addresses(&reader, &mut documents, limits, state, projected.fields)?;
+        let binding_work = bind_document_addresses(
+            &reader,
+            &mut documents,
+            limits,
+            state,
+            projected.fields,
+            true,
+        )?;
         let fields = projected.fields;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
@@ -602,6 +628,8 @@ impl TantivySource {
             rank_evaluations: AtomicU64::new(0),
             rank_docs_visited: AtomicU64::new(0),
             rank_peak_scratch_bytes: AtomicU64::new(0),
+            #[cfg(test)]
+            last_binding_work: binding_work,
         })
     }
 
@@ -998,6 +1026,7 @@ impl TantivySource {
                     postings,
                 },
                 address: None,
+                segment_id: None,
             });
         }
         let mut documents = DocumentTable::from_live(
@@ -1012,7 +1041,8 @@ impl TantivySource {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        bind_document_addresses(&reader, &mut documents, limits, state, fields)?;
+        let binding_work =
+            bind_document_addresses(&reader, &mut documents, limits, state, fields, false)?;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
             binding: state.binding(),
@@ -1036,6 +1066,8 @@ impl TantivySource {
             rank_evaluations: AtomicU64::new(0),
             rank_docs_visited: AtomicU64::new(0),
             rank_peak_scratch_bytes: AtomicU64::new(0),
+            #[cfg(test)]
+            last_binding_work: binding_work,
         })
     }
 
@@ -1142,6 +1174,10 @@ impl TantivySource {
             RevisionPlan::Rebound => {
                 self.binding = next.binding();
                 self.coverage = next.coverage();
+                #[cfg(test)]
+                {
+                    self.last_binding_work = BindingWork::default();
+                }
                 Ok(MaintainOutcome::Applied(ProjectionRevision {
                     kind: ProjectionKind::Rebound,
                     rewritten_documents: 0,
@@ -1153,11 +1189,11 @@ impl TantivySource {
         }
     }
 
-    fn plan_revision(
+    fn plan_revision<'next>(
         &self,
-        next: &DocumentState,
+        next: &'next DocumentState,
         budget: OverlayLimits,
-    ) -> Result<Option<RevisionPlan>, TantivySourceError> {
+    ) -> Result<Option<RevisionPlan<'next>>, TantivySourceError> {
         let budget = budget.validate()?;
         if !matches!(next.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
@@ -1165,138 +1201,218 @@ impl TantivySource {
         if next.binding().workspace != self.binding.workspace {
             return Ok(None);
         }
-        let mut next_fields = BTreeMap::new();
-        for (id, fields) in next.iter() {
-            if next_fields.insert(id, fields).is_some() {
-                return Err(Error::MalformedInput.into());
-            }
-        }
+        let live_count = self.documents.live.len();
+        let bitmap_words = live_count.checked_add(63).ok_or(Error::SizeLimit)? / 64;
+        let mut present = Vec::new();
+        present
+            .try_reserve_exact(bitmap_words)
+            .map_err(|_| Error::SizeLimit)?;
+        present.resize(bitmap_words, 0_u64);
+        let mut rewritten_slots = Vec::new();
+        rewritten_slots
+            .try_reserve_exact(bitmap_words)
+            .map_err(|_| Error::SizeLimit)?;
+        rewritten_slots.resize(bitmap_words, 0_u64);
         let mut rewritten = Vec::new();
-        let mut removed = Vec::new();
-        for (_, current) in self.documents.iter() {
-            let id = current.id;
-            match next_fields.get(&id) {
-                Some(fields) if document_fields_digest(fields) == current.fields_digest => {}
-                Some(_) => rewritten.push(id),
-                None => removed.push(id),
+        let mut added = Vec::new();
+        let mut slot_count = self.documents.slot_count;
+        let mut next_document_count = 0usize;
+        let mut term_count = 0usize;
+        let mut estimated_bytes = 0usize;
+        for (id, fields) in next.iter() {
+            next_document_count = next_document_count.checked_add(1).ok_or(Error::SizeLimit)?;
+            if let Some(ordinal) = self
+                .documents
+                .ordinal_for_entity(&self.identity_ordinals, id)
+            {
+                let ordinal = u32::try_from(ordinal).map_err(|_| Error::SizeLimit)?;
+                let index = self
+                    .documents
+                    .live
+                    .binary_search_by_key(&ordinal, |entry| entry.ordinal)
+                    .map_err(|_| Self::corrupt("selected identity ordinal is missing"))?;
+                present[index / 64] |= 1_u64 << (index % 64);
+                let current = &self.documents.live[index].document;
+                if document_fields_digest(fields) != current.fields_digest {
+                    if rewritten.len().saturating_add(added.len()) == budget.max_changed_documents {
+                        return Ok(None);
+                    }
+                    term_count = term_count
+                        .checked_add(
+                            usize::try_from(posting_count(fields)?)
+                                .map_err(|_| Error::SizeLimit)?,
+                        )
+                        .ok_or(Error::SizeLimit)?;
+                    if term_count > budget.max_terms {
+                        return Ok(None);
+                    }
+                    estimated_bytes = estimated_bytes
+                        .checked_add(revision_document_bytes(fields)?)
+                        .ok_or(Error::SizeLimit)?;
+                    if estimated_bytes > budget.max_bytes {
+                        return Ok(None);
+                    }
+                    rewritten.try_reserve(1).map_err(|_| Error::SizeLimit)?;
+                    rewritten.push((id, ordinal));
+                    rewritten_slots[index / 64] |= 1_u64 << (index % 64);
+                }
+            } else {
+                if rewritten.len().saturating_add(added.len()) == budget.max_changed_documents {
+                    return Ok(None);
+                }
+                term_count = term_count
+                    .checked_add(
+                        usize::try_from(posting_count(fields)?).map_err(|_| Error::SizeLimit)?,
+                    )
+                    .ok_or(Error::SizeLimit)?;
+                if term_count > budget.max_terms {
+                    return Ok(None);
+                }
+                estimated_bytes = estimated_bytes
+                    .checked_add(revision_document_bytes(fields)?)
+                    .ok_or(Error::SizeLimit)?;
+                if estimated_bytes > budget.max_bytes {
+                    return Ok(None);
+                }
+                added.try_reserve(1).map_err(|_| Error::SizeLimit)?;
+                added.push((id, slot_count));
+                slot_count = slot_count.checked_add(1).ok_or(Error::SizeLimit)?;
             }
         }
-        let mut added = Vec::new();
-        for id in next_fields.keys() {
-            if self
-                .documents
-                .ordinal_for_entity(&self.identity_ordinals, *id)
-                .is_none()
-            {
-                added.push(*id);
+        let mut removed_ordinals = Vec::new();
+        let mut retired_postings = 0_u64;
+        let mut removed_documents = 0usize;
+        for (index, entry) in self.documents.live.iter().enumerate() {
+            let is_present = present[index / 64] & (1_u64 << (index % 64)) != 0;
+            let was_rewritten = rewritten_slots[index / 64] & (1_u64 << (index % 64)) != 0;
+            if is_present && !was_rewritten {
+                continue;
             }
+            if !is_present {
+                removed_documents = removed_documents.checked_add(1).ok_or(Error::SizeLimit)?;
+                estimated_bytes = estimated_bytes
+                    .checked_add(std::mem::size_of::<EntityId>())
+                    .ok_or(Error::SizeLimit)?;
+                if estimated_bytes > budget.max_bytes {
+                    return Ok(None);
+                }
+                if rewritten
+                    .len()
+                    .saturating_add(added.len())
+                    .saturating_add(removed_documents)
+                    > budget.max_changed_documents
+                {
+                    return Ok(None);
+                }
+            }
+            removed_ordinals
+                .try_reserve(1)
+                .map_err(|_| Error::SizeLimit)?;
+            removed_ordinals.push(entry.ordinal);
+            retired_postings = retired_postings
+                .checked_add(u64::from(entry.document.postings))
+                .ok_or(Error::SizeLimit)?;
         }
         let rewritten_documents = rewritten
             .len()
-            .saturating_add(removed.len())
-            .saturating_add(added.len());
+            .saturating_add(added.len())
+            .saturating_add(removed_documents);
         if rewritten_documents == 0 {
             return Ok(Some(RevisionPlan::Rebound));
         }
-        if rewritten_documents > budget.max_changed_documents {
-            return Ok(None);
-        }
-        let mut term_count = 0usize;
-        for id in rewritten.iter().chain(added.iter()) {
-            let Some(fields) = next_fields.get(id) else {
-                return Err(Self::corrupt("planned document is missing its fields"));
-            };
-            term_count = term_count
-                .checked_add(usize::try_from(posting_count(fields)?).map_err(|_| Error::SizeLimit)?)
-                .ok_or(Error::SizeLimit)?;
-        }
-        if term_count > budget.max_terms {
-            return Ok(None);
-        }
-        let resulting_slots = (self.documents.slot_count as usize).saturating_add(added.len());
+        let resulting_slots = slot_count as usize;
         // Stable ordinals leave holes after deletion. Compact through a
         // complete rebuild before the sparse ordinal map grows without bound.
         if resulting_slots > MAX_ORDINAL_SLOTS
-            || resulting_slots > next_fields.len().saturating_mul(2).saturating_add(65_536)
+            || resulting_slots > next_document_count.saturating_mul(2).saturating_add(65_536)
         {
             return Ok(None);
         }
-        let mut documents = self.documents.clone();
-        let mut deletes = Vec::new();
-        let mut removed_ordinals = Vec::new();
-        let mut retired_postings = 0u64;
-        for id in removed.iter().chain(rewritten.iter()) {
-            let Some(ordinal) = self
-                .documents
-                .ordinal_for_entity(&self.identity_ordinals, *id)
-            else {
-                return Err(Self::corrupt("planned document has no ordinal"));
-            };
-            let Some(current) = self.documents.get(ordinal).copied() else {
-                return Err(Self::corrupt("planned ordinal is already empty"));
-            };
-            retired_postings = retired_postings
-                .checked_add(u64::from(current.postings))
-                .ok_or(Error::SizeLimit)?;
-            deletes.push(u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?);
-            removed_ordinals.push(u32::try_from(ordinal).map_err(|_| Error::SizeLimit)?);
-        }
-        removed_ordinals.sort_unstable();
-        removed_ordinals.dedup();
-        documents
-            .live
-            .retain(|entry| removed_ordinals.binary_search(&entry.ordinal).is_err());
         let mut writes = Vec::new();
-        for id in rewritten {
-            let Some(ordinal) = self
-                .documents
-                .ordinal_for_entity(&self.identity_ordinals, id)
-            else {
-                return Err(Self::corrupt("revised document has no ordinal"));
-            };
-            let Some(fields) = next_fields.get(&id) else {
+        writes
+            .try_reserve_exact(rewritten.len().saturating_add(added.len()))
+            .map_err(|_| Error::SizeLimit)?;
+        for (id, ordinal) in rewritten {
+            let Some(fields) = next.fields_for(id) else {
                 return Err(Self::corrupt("revised document is missing its fields"));
             };
             writes.push(PlannedWrite {
-                ordinal: u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?,
+                ordinal: u64::from(ordinal),
                 id,
                 fields_digest: document_fields_digest(fields),
-                fields: fields.to_vec(),
+                fields,
             });
         }
-        for id in added {
-            let ordinal = u64::from(documents.slot_count);
-            let Some(fields) = next_fields.get(&id) else {
+        for (id, ordinal) in added {
+            let Some(fields) = next.fields_for(id) else {
                 return Err(Self::corrupt("added document is missing its fields"));
             };
-            documents.slot_count = documents
-                .slot_count
-                .checked_add(1)
-                .ok_or(Error::SizeLimit)?;
             writes.push(PlannedWrite {
-                ordinal,
+                ordinal: u64::from(ordinal),
                 id,
                 fields_digest: document_fields_digest(fields),
-                fields: fields.to_vec(),
+                fields,
             });
         }
         Ok(Some(RevisionPlan::Changed(RevisionChanges {
             rewritten_documents,
             retired_postings,
-            deletes,
+            removed_ordinals,
             writes,
-            documents,
+            slot_count,
         })))
     }
 
     fn commit_revision(
         &mut self,
         next: &DocumentState,
-        mut plan: RevisionChanges,
+        plan: RevisionChanges<'_>,
     ) -> Result<MaintainOutcome, TantivySourceError> {
+        let RevisionChanges {
+            rewritten_documents,
+            retired_postings,
+            removed_ordinals,
+            writes,
+            slot_count,
+        } = plan;
+        let additional_live = writes.len().saturating_sub(removed_ordinals.len());
+        self.documents
+            .live
+            .try_reserve_exact(additional_live)
+            .map_err(|_| Error::SizeLimit)?;
+        self.identity_ordinals
+            .try_reserve_exact(additional_live)
+            .map_err(|_| Error::SizeLimit)?;
+        let mut replacements = Vec::new();
+        replacements
+            .try_reserve_exact(writes.len())
+            .map_err(|_| Error::SizeLimit)?;
+        let mut changed_ordinals = Vec::new();
+        changed_ordinals
+            .try_reserve_exact(writes.len())
+            .map_err(|_| Error::SizeLimit)?;
+        for write in &writes {
+            changed_ordinals.push(u32::try_from(write.ordinal).map_err(|_| Error::SizeLimit)?);
+        }
+        changed_ordinals.sort_unstable();
+        let old_searcher = self.reader.searcher();
+        let mut old_segment_ids = HashSet::new();
+        old_segment_ids
+            .try_reserve(old_searcher.segment_readers().len())
+            .map_err(|_| Error::SizeLimit)?;
+        for segment in old_searcher.segment_readers() {
+            if !old_segment_ids.insert(segment.segment_id()) {
+                return Err(
+                    Self::corrupt("resident Tantivy segment identity is duplicated").into(),
+                );
+            }
+        }
+        drop(old_searcher);
+
         let mut writer = self._index.writer(WRITER_MEMORY_BYTES)?;
-        for ordinal in &plan.deletes {
-            let _opstamp = writer.delete_term(Term::from_field_u64(self.ordinal, *ordinal));
+        for ordinal in &removed_ordinals {
+            let _opstamp =
+                writer.delete_term(Term::from_field_u64(self.ordinal, u64::from(*ordinal)));
         }
         let mut added_postings = 0u64;
         let fields = ProjectionFields {
@@ -1308,14 +1424,13 @@ impl TantivySource {
             rank_material: self.rank_material,
             rank_material_len: self.rank_material_len,
         };
-        let mut replacements = Vec::with_capacity(plan.writes.len());
-        for write in plan.writes {
+        for write in writes {
             let postings = write_document(
                 &writer,
                 &fields,
                 write.ordinal,
                 write.id,
-                &write.fields,
+                write.fields,
                 rank_material_limit(self.limits),
             )?;
             added_postings = added_postings
@@ -1329,6 +1444,7 @@ impl TantivySource {
                     postings,
                 },
                 address: None,
+                segment_id: None,
             });
         }
         writer.commit()?;
@@ -1340,27 +1456,56 @@ impl TantivySource {
             self.poisoned = true;
             return Err(error.into());
         }
-        let mut documents = match plan.documents.merge_replacements(replacements) {
+        let mut documents = std::mem::take(&mut self.documents);
+        documents
+            .live
+            .retain(|entry| removed_ordinals.binary_search(&entry.ordinal).is_err());
+        documents.slot_count = slot_count;
+        documents.live.extend(replacements.iter().copied());
+        documents.live.sort_unstable_by_key(|entry| entry.ordinal);
+        let mut documents = match DocumentTable::from_live(slot_count, documents.live) {
             Ok(documents) => documents,
             Err(error) => {
                 self.poisoned = true;
                 return Err(error.into());
             }
         };
-        if let Err(error) =
-            bind_document_addresses(&self.reader, &mut documents, self.limits, next, fields)
+        let binding_work = match bind_resident_document_addresses(
+            &self.reader,
+            &mut documents,
+            self.limits,
+            next,
+            fields,
+            &old_segment_ids,
+            &changed_ordinals,
+        ) {
+            Ok(work) => work,
+            Err(error) => {
+                self.poisoned = true;
+                return Err(error);
+            }
+        };
+        #[cfg(test)]
         {
-            self.poisoned = true;
-            return Err(error);
+            self.last_binding_work = binding_work;
         }
+        self.identity_ordinals
+            .retain(|identity| removed_ordinals.binary_search(&identity.ordinal).is_err());
+        for replacement in &replacements {
+            self.identity_ordinals.push(IdentityOrdinal {
+                fingerprint: entity_fingerprint(replacement.document.id),
+                ordinal: replacement.ordinal,
+            });
+        }
+        self.identity_ordinals
+            .sort_unstable_by_key(|entry| (entry.fingerprint, entry.ordinal));
         self.documents = documents;
-        self.identity_ordinals = self.documents.identity_index();
         self.binding = next.binding();
         self.coverage = next.coverage();
         Ok(MaintainOutcome::Applied(ProjectionRevision {
             kind: ProjectionKind::Revised,
-            rewritten_documents: plan.rewritten_documents,
-            retired_postings: plan.retired_postings,
+            rewritten_documents,
+            retired_postings,
             added_postings,
         }))
     }
@@ -2175,6 +2320,7 @@ fn read_ordinal_map(
             ordinal: u32::try_from(ordinal).map_err(|_| Error::SizeLimit)?,
             document: live,
             address: None,
+            segment_id: None,
         });
     }
     if offset != bytes.len() || seen.iter().any(|admitted| !admitted) {
@@ -2567,6 +2713,8 @@ fn is_definitively_corrupt_root(error: &TantivySourceError) -> bool {
         TantivySourceError::BudgetExceeded { .. } => false,
         TantivySourceError::OrdinalMapCapacityExceeded { .. } => false,
         TantivySourceError::RankSnapshotBudgetExceeded { .. } => false,
+        TantivySourceError::PostingCoverBudgetExceeded { .. } => false,
+        TantivySourceError::PostingCoverWorkExceeded { .. } => false,
         TantivySourceError::DurableProjectionImmutable => false,
         TantivySourceError::Contract(_)
         | TantivySourceError::Backend(_)
@@ -3021,6 +3169,84 @@ pub(crate) mod test_support {
         )
     }
 
+    pub(crate) fn resident_table_addresses(source: &super::TantivySource) -> (usize, usize) {
+        (
+            source.documents.live.as_ptr() as usize,
+            source.identity_ordinals.as_ptr() as usize,
+        )
+    }
+
+    pub(crate) fn binding_work(source: &super::TantivySource) -> (usize, usize) {
+        (
+            source.last_binding_work.payload_rows_scanned,
+            source.last_binding_work.source_posting_checks,
+        )
+    }
+
+    pub(crate) fn posting_cover_edges_scanned(source: &super::TantivySource) -> u64 {
+        source.last_binding_work.posting_cover_edges_scanned
+    }
+
+    pub(crate) fn validate_posting_cover_with_work_budget(
+        source: &super::TantivySource,
+        state: &super::DocumentState,
+        maximum_work_units: u64,
+    ) -> Result<(u64, u64), super::TantivySourceError> {
+        source.ensure_live()?;
+        if source.binding != state.binding() {
+            return Err(super::Error::StaleRoot.into());
+        }
+        let mut expected = super::PostingEdgeCounts::default();
+        for entry in &source.documents.live {
+            let fields = state.fields_for(entry.document.id).ok_or_else(|| {
+                super::TantivySource::corrupt(
+                    "test posting cover row is outside the selected document state",
+                )
+            })?;
+            expected.add(super::source_posting_edge_counts(
+                fields,
+                entry.document.postings,
+            )?)?;
+        }
+        let work = super::validate_exact_live_posting_cover(
+            &source.reader.searcher(),
+            super::projection_schema().fields,
+            expected,
+            maximum_work_units,
+        )?;
+        Ok((work.edges_scanned, work.units_scanned))
+    }
+
+    pub(crate) fn deleted_document_count(source: &super::TantivySource) -> u64 {
+        source
+            .reader
+            .searcher()
+            .segment_readers()
+            .iter()
+            .map(|segment| {
+                (0..segment.max_doc())
+                    .filter(|doc| segment.is_deleted(*doc))
+                    .count() as u64
+            })
+            .sum()
+    }
+
+    pub(crate) fn definitively_corrupt(error: &super::TantivySourceError) -> bool {
+        super::is_definitively_corrupt_root(error)
+    }
+
+    pub(crate) fn resident_segment_id(
+        source: &super::TantivySource,
+        document: backend_semantic::EntityId,
+    ) -> Option<tantivy::index::SegmentId> {
+        source
+            .documents
+            .live
+            .iter()
+            .find(|entry| entry.document.id == document)
+            .and_then(|entry| entry.segment_id)
+    }
+
     pub(crate) fn write_sparse_durable_fixture(
         state: &super::DocumentState,
         directory: &std::path::Path,
@@ -3058,7 +3284,63 @@ pub(crate) mod test_support {
                     postings,
                 },
                 address: None,
+                segment_id: None,
             }],
+        )?;
+        super::write_ordinal_map(directory, fingerprint, &documents)?;
+        super::write_binding_stamp(directory, fingerprint)?;
+        super::write_projection_manifest(
+            directory,
+            fingerprint,
+            super::DurableCacheBudget::default(),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn write_projection_with_surplus_posting_fixture(
+        state: &super::DocumentState,
+        directory: &std::path::Path,
+        field: &str,
+        token: &str,
+    ) -> Result<(), super::TantivySourceError> {
+        let live_count = state.iter().count();
+        if live_count == 0 || live_count > super::MAX_ORDINAL_SLOTS {
+            return Err(super::Error::SizeLimit.into());
+        }
+        let projected = super::projection_schema();
+        let index = super::Index::create_in_dir(directory, projected.schema)?;
+        let mut writer = index.writer(super::WRITER_MEMORY_BYTES)?;
+        let mut live = Vec::new();
+        live.try_reserve_exact(live_count)
+            .map_err(|_| super::Error::SizeLimit)?;
+        for (ordinal, (id, fields)) in state.iter().enumerate() {
+            let ordinal = u64::try_from(ordinal).map_err(|_| super::Error::SizeLimit)?;
+            let postings = super::write_document_with_index_extras(
+                &writer,
+                &projected.fields,
+                ordinal,
+                id,
+                fields,
+                &[(field, token)],
+                super::rank_material_limit(super::Limits::default()),
+            )?;
+            live.push(super::OrdinalDocument {
+                ordinal: u32::try_from(ordinal).map_err(|_| super::Error::SizeLimit)?,
+                document: super::LiveDocument {
+                    id,
+                    fields_digest: super::document_fields_digest(fields),
+                    postings,
+                },
+                address: None,
+                segment_id: None,
+            });
+        }
+        writer.commit()?;
+        writer.wait_merging_threads()?;
+        let fingerprint = super::projection_fingerprint(state.binding());
+        let documents = super::DocumentTable::from_live(
+            u32::try_from(live_count).map_err(|_| super::Error::SizeLimit)?,
+            live,
         )?;
         super::write_ordinal_map(directory, fingerprint, &documents)?;
         super::write_binding_stamp(directory, fingerprint)?;
@@ -3193,6 +3475,7 @@ pub(crate) mod test_support {
                     postings,
                 },
                 address: None,
+                segment_id: None,
             }],
         )?;
         super::write_ordinal_map(directory, fingerprint, &documents)?;
@@ -3345,24 +3628,24 @@ impl LexicalSource for TantivySource {
     }
 }
 
-enum RevisionPlan {
+enum RevisionPlan<'next> {
     Rebound,
-    Changed(RevisionChanges),
+    Changed(RevisionChanges<'next>),
 }
 
-struct RevisionChanges {
+struct RevisionChanges<'next> {
     rewritten_documents: usize,
     retired_postings: u64,
-    deletes: Vec<u64>,
-    writes: Vec<PlannedWrite>,
-    documents: DocumentTable,
+    removed_ordinals: Vec<u32>,
+    writes: Vec<PlannedWrite<'next>>,
+    slot_count: u32,
 }
 
-struct PlannedWrite {
+struct PlannedWrite<'next> {
     ordinal: u64,
     id: EntityId,
     fields_digest: [u8; 32],
-    fields: Vec<(String, String)>,
+    fields: &'next [(String, String)],
 }
 
 fn document_fields_digest(fields: &[(String, String)]) -> [u8; 32] {
@@ -3396,6 +3679,42 @@ fn posting_count(fields: &[(String, String)]) -> Result<u32, Error> {
         postings = postings.checked_add(count).ok_or(Error::SizeLimit)?;
     }
     Ok(postings)
+}
+
+fn revision_document_bytes(fields: &[(String, String)]) -> Result<usize, Error> {
+    let mut bytes = std::mem::size_of::<EntityId>();
+    for (field, text) in fields {
+        let qualified_prefix = field
+            .len()
+            .checked_add(decimal_digits(field.len()))
+            .and_then(|bytes| bytes.checked_add(1))
+            .ok_or(Error::SizeLimit)?;
+        for token in searchable_tokens(text) {
+            // The Tantivy schema stores raw/folded and field-qualified
+            // raw/folded terms for every canonical token. Include their
+            // encoded term bytes and four row associations in the same
+            // transition estimate used before writer creation.
+            let term_bytes = token
+                .searchable
+                .len()
+                .checked_mul(4)
+                .and_then(|bytes| {
+                    qualified_prefix
+                        .checked_mul(2)
+                        .and_then(|qualified| bytes.checked_add(qualified))
+                })
+                .ok_or(Error::SizeLimit)?;
+            let posting_bytes = term_bytes
+                .checked_add(
+                    std::mem::size_of::<EntityId>()
+                        .checked_mul(4)
+                        .ok_or(Error::SizeLimit)?,
+                )
+                .ok_or(Error::SizeLimit)?;
+            bytes = bytes.checked_add(posting_bytes).ok_or(Error::SizeLimit)?;
+        }
+    }
+    Ok(bytes)
 }
 
 fn rank_material_limit(limits: Limits) -> usize {
@@ -3462,6 +3781,26 @@ fn write_document(
     document_fields: &[(String, String)],
     maximum_material_bytes: usize,
 ) -> Result<u32, TantivySourceError> {
+    write_document_with_index_extras(
+        writer,
+        fields,
+        document_ordinal,
+        document_id,
+        document_fields,
+        &[],
+        maximum_material_bytes,
+    )
+}
+
+fn write_document_with_index_extras(
+    writer: &tantivy::IndexWriter,
+    fields: &ProjectionFields,
+    document_ordinal: u64,
+    document_id: EntityId,
+    document_fields: &[(String, String)],
+    extra_indexed_terms: &[(&str, &str)],
+    maximum_material_bytes: usize,
+) -> Result<u32, TantivySourceError> {
     if document_fields.len() > u32::MAX as usize {
         return Err(Error::SizeLimit.into());
     }
@@ -3525,6 +3864,28 @@ fn write_document(
             append_rank_material_len(&mut material, token.ranking_bytes, maximum_material_bytes)?;
         }
     }
+    // Adversarial durable-projection fixtures can add terms to Tantivy without
+    // adding them to the source-authoritative rank material. Production callers
+    // use `write_document`, which always passes an empty slice.
+    #[cfg(test)]
+    for &(field, token) in extra_indexed_terms {
+        if field.is_empty() || field_weight(field) == 0 || token.is_empty() {
+            return Err(Error::MalformedInput.into());
+        }
+        let folded = token.to_ascii_lowercase();
+        document.add_text(fields.raw_token, token);
+        document.add_text(fields.folded_token, folded.as_str());
+        document.add_text(
+            fields.field_raw_token,
+            field_token_value(field, token, false),
+        );
+        document.add_text(
+            fields.field_folded_token,
+            field_token_value(field, token, true),
+        );
+    }
+    #[cfg(not(test))]
+    debug_assert!(extra_indexed_terms.is_empty());
     document.add_u64(fields.ordinal, document_ordinal);
     document.add_bytes(fields.rank_material, &material);
     document.add_u64(
@@ -3823,15 +4184,230 @@ fn require_document_posting(
     Ok(())
 }
 
+#[derive(Clone, Copy, Default)]
+struct PostingEdgeCounts {
+    raw: u64,
+    folded: u64,
+    field_raw: u64,
+    field_folded: u64,
+}
+
+impl PostingEdgeCounts {
+    fn add(&mut self, other: Self) -> Result<(), TantivySourceError> {
+        self.raw = self.raw.checked_add(other.raw).ok_or(Error::SizeLimit)?;
+        self.folded = self
+            .folded
+            .checked_add(other.folded)
+            .ok_or(Error::SizeLimit)?;
+        self.field_raw = self
+            .field_raw
+            .checked_add(other.field_raw)
+            .ok_or(Error::SizeLimit)?;
+        self.field_folded = self
+            .field_folded
+            .checked_add(other.field_folded)
+            .ok_or(Error::SizeLimit)?;
+        Ok(())
+    }
+}
+
+fn source_posting_edge_counts(
+    source_fields: &[(String, String)],
+    expected_postings: u32,
+) -> Result<PostingEdgeCounts, TantivySourceError> {
+    let expected_postings = usize::try_from(expected_postings).map_err(|_| Error::SizeLimit)?;
+    let required_bytes = expected_postings
+        .checked_mul(POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN)
+        .ok_or(Error::SizeLimit)?;
+    if required_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
+        return Err(TantivySourceError::PostingCoverBudgetExceeded {
+            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+            required_bytes,
+        });
+    }
+
+    let mut all_terms = Vec::<&str>::new();
+    all_terms
+        .try_reserve_exact(expected_postings)
+        .map_err(|_| TantivySourceError::PostingCoverBudgetExceeded {
+            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+            required_bytes,
+        })?;
+    let allocated_bytes = all_terms
+        .capacity()
+        .checked_mul(std::mem::size_of::<&str>())
+        .ok_or(Error::SizeLimit)?;
+    if allocated_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
+        return Err(TantivySourceError::PostingCoverBudgetExceeded {
+            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+            required_bytes: allocated_bytes,
+        });
+    }
+
+    let mut counts = PostingEdgeCounts::default();
+    for (_, text) in source_fields {
+        let mut tokens = searchable_tokens(text);
+        for token in &tokens {
+            all_terms.push(token.searchable);
+        }
+
+        // Field-qualified terms include the field name, so their expected edge
+        // cardinality is the sum of distinct terms within each authoritative field.
+        tokens.sort_unstable_by(|left, right| left.searchable.cmp(right.searchable));
+        let mut previous = None;
+        for token in &tokens {
+            if previous != Some(token.searchable) {
+                counts.field_raw = counts.field_raw.checked_add(1).ok_or(Error::SizeLimit)?;
+                previous = Some(token.searchable);
+            }
+        }
+
+        tokens.sort_unstable_by(|left, right| {
+            compare_ascii_folded_terms(left.searchable, right.searchable)
+        });
+        let mut previous: Option<&str> = None;
+        for token in &tokens {
+            if previous.is_none_or(|prior| {
+                compare_ascii_folded_terms(prior, token.searchable) != std::cmp::Ordering::Equal
+            }) {
+                counts.field_folded = counts.field_folded.checked_add(1).ok_or(Error::SizeLimit)?;
+                previous = Some(token.searchable);
+            }
+        }
+    }
+
+    if all_terms.len() != expected_postings {
+        return Err(TantivySource::corrupt(
+            "source token count changed during cold posting validation",
+        )
+        .into());
+    }
+    all_terms.sort_unstable();
+    let mut previous = None;
+    for term in &all_terms {
+        if previous != Some(*term) {
+            counts.raw = counts.raw.checked_add(1).ok_or(Error::SizeLimit)?;
+            previous = Some(*term);
+        }
+    }
+    all_terms.sort_unstable_by(|left, right| compare_ascii_folded_terms(left, right));
+    let mut previous: Option<&str> = None;
+    for term in &all_terms {
+        if previous.is_none_or(|prior| {
+            compare_ascii_folded_terms(prior, term) != std::cmp::Ordering::Equal
+        }) {
+            counts.folded = counts.folded.checked_add(1).ok_or(Error::SizeLimit)?;
+            previous = Some(term);
+        }
+    }
+    Ok(counts)
+}
+
+fn compare_ascii_folded_terms(left: &str, right: &str) -> std::cmp::Ordering {
+    left.bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PostingCoverScanWork {
+    edges_scanned: u64,
+    units_scanned: u64,
+}
+
+fn consume_posting_cover_work_unit(
+    scanned: &mut u64,
+    amount: u64,
+    maximum: u64,
+) -> Result<(), TantivySourceError> {
+    let attempted = scanned.checked_add(amount).ok_or(Error::SizeLimit)?;
+    if attempted > maximum {
+        return Err(TantivySourceError::PostingCoverWorkExceeded {
+            maximum_units: maximum,
+            attempted_units: attempted,
+        });
+    }
+    *scanned = attempted;
+    Ok(())
+}
+
+fn validate_exact_live_posting_cover(
+    searcher: &tantivy::Searcher,
+    fields: ProjectionFields,
+    expected: PostingEdgeCounts,
+    maximum_work_units: u64,
+) -> Result<PostingCoverScanWork, TantivySourceError> {
+    let mut total_edges_scanned = 0u64;
+    let mut total_work_units = 0u64;
+    for (field, expected_edges) in [
+        (fields.raw_token, expected.raw),
+        (fields.folded_token, expected.folded),
+        (fields.field_raw_token, expected.field_raw),
+        (fields.field_folded_token, expected.field_folded),
+    ] {
+        let mut actual_edges = 0u64;
+        for segment in searcher.segment_readers() {
+            let inverted_index = segment.inverted_index(field)?;
+            let mut terms = inverted_index.terms().stream()?;
+            while let Some((term, term_info)) = terms.next() {
+                // Charge the dictionary entry plus its key bytes; term iteration can otherwise
+                // hide a large amount of work behind a small number of very long forged terms.
+                let term_units = u64::try_from(term.len())
+                    .map_err(|_| Error::SizeLimit)?
+                    .checked_add(1)
+                    .ok_or(Error::SizeLimit)?;
+                consume_posting_cover_work_unit(
+                    &mut total_work_units,
+                    term_units,
+                    maximum_work_units,
+                )?;
+                let mut postings = inverted_index
+                    .read_postings_from_terminfo(term_info, IndexRecordOption::Basic)?;
+                loop {
+                    let doc = postings.doc();
+                    if doc == TERMINATED {
+                        break;
+                    }
+                    consume_posting_cover_work_unit(&mut total_work_units, 1, maximum_work_units)?;
+                    total_edges_scanned =
+                        total_edges_scanned.checked_add(1).ok_or(Error::SizeLimit)?;
+                    if !segment.is_deleted(doc) {
+                        actual_edges = actual_edges.checked_add(1).ok_or(Error::SizeLimit)?;
+                        if actual_edges > expected_edges {
+                            return Err(TantivySource::corrupt(
+                                "Tantivy contains surplus live source-term postings",
+                            )
+                            .into());
+                        }
+                    }
+                    postings.advance();
+                }
+            }
+        }
+        if actual_edges != expected_edges {
+            return Err(TantivySource::corrupt(
+                "live Tantivy posting coverage disagrees with authoritative source terms",
+            )
+            .into());
+        }
+    }
+    Ok(PostingCoverScanWork {
+        edges_scanned: total_edges_scanned,
+        units_scanned: total_work_units,
+    })
+}
+
 fn bind_document_addresses(
     reader: &IndexReader,
     documents: &mut DocumentTable,
     limits: Limits,
     state: &DocumentState,
     fields: ProjectionFields,
-) -> Result<(), TantivySourceError> {
+    validate_exact_posting_cover: bool,
+) -> Result<BindingWork, TantivySourceError> {
     for entry in &mut documents.live {
         entry.address = None;
+        entry.segment_id = None;
     }
     let searcher = reader.searcher();
     let expected_docs = u64::try_from(documents.live.len()).map_err(|_| Error::SizeLimit)?;
@@ -3839,8 +4415,11 @@ fn bind_document_addresses(
         return Err(TantivySource::corrupt("Tantivy row count disagrees with ordinal map").into());
     }
     let mut bound = 0usize;
+    let mut work = BindingWork::default();
+    let mut expected_postings = PostingEdgeCounts::default();
     let mut material = Vec::new();
     for (segment_ord, segment) in searcher.segment_readers().iter().enumerate() {
+        let segment_id = segment.segment_id();
         let ordinals = segment.fast_fields().u64(ORDINAL_FIELD)?;
         let payload_lengths = segment.fast_fields().u64(RANK_MATERIAL_LENGTH_FIELD_NAME)?;
         let payloads = segment
@@ -3848,6 +4427,10 @@ fn bind_document_addresses(
             .bytes(RANK_MATERIAL_FIELD_NAME)?
             .ok_or_else(|| TantivySource::corrupt("rank payload fast field is missing"))?;
         for doc in segment.doc_ids_alive() {
+            work.payload_rows_scanned = work
+                .payload_rows_scanned
+                .checked_add(1)
+                .ok_or(Error::SizeLimit)?;
             let ordinal =
                 u32::try_from(ordinals.values.get_val(doc)).map_err(|_| Error::SizeLimit)?;
             let address = DocAddress::new(
@@ -3898,6 +4481,7 @@ fn bind_document_addresses(
             let (source_postings, source_tail_digest) =
                 canonical_rank_material_tail(source_fields)?;
             if entry.address.is_some()
+                || entry.segment_id.is_some()
                 || id != *entry.document.id.as_bytes()
                 || digest != entry.document.fields_digest
                 || postings != entry.document.postings
@@ -3909,6 +4493,12 @@ fn bind_document_addresses(
                     "Tantivy row identity or rank material disagrees with the selected generation",
                 )
                 .into());
+            }
+            if validate_exact_posting_cover {
+                expected_postings.add(source_posting_edge_counts(
+                    source_fields,
+                    entry.document.postings,
+                )?)?;
             }
             for (field, text) in source_fields {
                 for token in searchable_tokens(text) {
@@ -3924,9 +4514,14 @@ fn bind_document_addresses(
                         &qualified_folded,
                         doc,
                     )?;
+                    work.source_posting_checks = work
+                        .source_posting_checks
+                        .checked_add(4)
+                        .ok_or(Error::SizeLimit)?;
                 }
             }
             entry.address = Some(address);
+            entry.segment_id = Some(segment_id);
             bound = bound.checked_add(1).ok_or(Error::SizeLimit)?;
         }
     }
@@ -3936,7 +4531,216 @@ fn bind_document_addresses(
         )
         .into());
     }
-    Ok(())
+    if validate_exact_posting_cover {
+        work.posting_cover_edges_scanned = validate_exact_live_posting_cover(
+            &searcher,
+            fields,
+            expected_postings,
+            MAX_POSTING_COVER_SCAN_WORK_UNITS,
+        )?
+        .edges_scanned;
+    }
+    Ok(work)
+}
+
+fn bind_resident_document_addresses(
+    reader: &IndexReader,
+    documents: &mut DocumentTable,
+    limits: Limits,
+    state: &DocumentState,
+    fields: ProjectionFields,
+    old_segment_ids: &HashSet<tantivy::index::SegmentId>,
+    changed_ordinals: &[u32],
+) -> Result<BindingWork, TantivySourceError> {
+    let searcher = reader.searcher();
+    let expected_docs = u64::try_from(documents.live.len()).map_err(|_| Error::SizeLimit)?;
+    if searcher.num_docs() != expected_docs {
+        return Err(TantivySource::corrupt("Tantivy row count disagrees with ordinal map").into());
+    }
+    let segment_readers = searcher.segment_readers();
+    let mut segment_positions = HashMap::new();
+    segment_positions
+        .try_reserve(segment_readers.len())
+        .map_err(|_| Error::SizeLimit)?;
+    for (segment_ord, segment) in segment_readers.iter().enumerate() {
+        let segment_ord = u32::try_from(segment_ord).map_err(|_| Error::SizeLimit)?;
+        if segment_positions
+            .insert(segment.segment_id(), segment_ord)
+            .is_some()
+        {
+            return Err(TantivySource::corrupt("Tantivy segment identity is duplicated").into());
+        }
+    }
+
+    for entry in &mut documents.live {
+        let Some((segment_id, address)) = entry.segment_id.zip(entry.address) else {
+            entry.segment_id = None;
+            entry.address = None;
+            continue;
+        };
+        let Some(segment_ord) = segment_positions.get(&segment_id).copied() else {
+            entry.segment_id = None;
+            entry.address = None;
+            continue;
+        };
+        let segment = segment_readers
+            .get(segment_ord as usize)
+            .ok_or_else(|| TantivySource::corrupt("resident segment address is missing"))?;
+        if segment.is_deleted(address.doc_id) {
+            return Err(TantivySource::corrupt(
+                "unchanged selected row became deleted during resident revision",
+            )
+            .into());
+        }
+        entry.address = Some(DocAddress::new(segment_ord, address.doc_id));
+    }
+
+    let mut work = BindingWork::default();
+    let mut material = Vec::new();
+    for (segment_ord, segment) in segment_readers.iter().enumerate() {
+        let segment_id = segment.segment_id();
+        if old_segment_ids.contains(&segment_id) {
+            continue;
+        }
+        let ordinals = segment.fast_fields().u64(ORDINAL_FIELD)?;
+        let payload_lengths = segment.fast_fields().u64(RANK_MATERIAL_LENGTH_FIELD_NAME)?;
+        let payloads = segment
+            .fast_fields()
+            .bytes(RANK_MATERIAL_FIELD_NAME)?
+            .ok_or_else(|| TantivySource::corrupt("rank payload fast field is missing"))?;
+        for doc in segment.doc_ids_alive() {
+            work.payload_rows_scanned = work
+                .payload_rows_scanned
+                .checked_add(1)
+                .ok_or(Error::SizeLimit)?;
+            let ordinal =
+                u32::try_from(ordinals.values.get_val(doc)).map_err(|_| Error::SizeLimit)?;
+            let payload_len = usize::try_from(payload_lengths.values.get_val(doc))
+                .map_err(|_| Error::SizeLimit)?;
+            if payload_len == 0 || payload_len > MAX_RANK_MATERIAL_BYTES {
+                return Err(TantivySource::corrupt("rank payload length is invalid").into());
+            }
+            if material.capacity() < payload_len {
+                material
+                    .try_reserve_exact(payload_len.saturating_sub(material.len()))
+                    .map_err(|_| Error::SizeLimit)?;
+            }
+            let bytes = material_for_doc(&payloads, doc, &mut material)?;
+            if bytes.len() != payload_len {
+                return Err(TantivySource::corrupt(
+                    "rank payload length disagrees with its fast field",
+                )
+                .into());
+            }
+            let (payload_ordinal, id, digest, field_count, offset) =
+                parse_rank_material_header(bytes)?;
+            if payload_ordinal != ordinal {
+                return Err(TantivySource::corrupt(
+                    "rank payload ordinal disagrees with its fast field",
+                )
+                .into());
+            }
+            let index = documents
+                .live
+                .binary_search_by_key(&ordinal, |entry| entry.ordinal)
+                .map_err(|_| {
+                    TantivySource::corrupt("Tantivy row ordinal is not in the selected map")
+                })?;
+            let entry = documents
+                .live
+                .get(index)
+                .ok_or_else(|| TantivySource::corrupt("Tantivy row ordinal is missing"))?;
+            if entry.address.is_some()
+                || entry.segment_id.is_some()
+                || id != *entry.document.id.as_bytes()
+                || digest != entry.document.fields_digest
+            {
+                return Err(TantivySource::corrupt(
+                    "resident Tantivy row identity disagrees with the selected generation",
+                )
+                .into());
+            }
+            if changed_ordinals.binary_search(&ordinal).is_ok() {
+                let source_fields = state.fields_for(entry.document.id).ok_or_else(|| {
+                    TantivySource::corrupt(
+                        "revised Tantivy row is outside the selected document state",
+                    )
+                })?;
+                let source_digest = document_fields_digest(source_fields);
+                let (source_postings, source_tail_digest) =
+                    canonical_rank_material_tail(source_fields)?;
+                let postings = validate_rank_material_tail(bytes, offset, field_count, limits)?;
+                if source_digest != entry.document.fields_digest
+                    || postings != entry.document.postings
+                    || postings != source_postings
+                    || field_count != source_fields.len()
+                    || blake3::hash(&bytes[offset..]).as_bytes() != &source_tail_digest
+                {
+                    return Err(TantivySource::corrupt(
+                        "new Tantivy row rank material disagrees with the selected generation",
+                    )
+                    .into());
+                }
+                for (field, text) in source_fields {
+                    for token in searchable_tokens(text) {
+                        require_document_posting(segment, fields.raw_token, token.searchable, doc)?;
+                        let folded = token.searchable.to_ascii_lowercase();
+                        require_document_posting(segment, fields.folded_token, &folded, doc)?;
+                        let qualified_raw = field_token_value(field, token.searchable, false);
+                        require_document_posting(
+                            segment,
+                            fields.field_raw_token,
+                            &qualified_raw,
+                            doc,
+                        )?;
+                        let qualified_folded = field_token_value(field, token.searchable, true);
+                        require_document_posting(
+                            segment,
+                            fields.field_folded_token,
+                            &qualified_folded,
+                            doc,
+                        )?;
+                        work.source_posting_checks = work
+                            .source_posting_checks
+                            .checked_add(4)
+                            .ok_or(Error::SizeLimit)?;
+                    }
+                }
+            } else {
+                let source_fields = state.fields_for(entry.document.id).ok_or_else(|| {
+                    TantivySource::corrupt(
+                        "merged Tantivy row is outside the selected document state",
+                    )
+                })?;
+                if field_count != source_fields.len() {
+                    return Err(TantivySource::corrupt(
+                        "merged Tantivy row field count disagrees with selected state",
+                    )
+                    .into());
+                }
+            }
+            let entry = documents
+                .live
+                .get_mut(index)
+                .ok_or_else(|| TantivySource::corrupt("Tantivy row ordinal is missing"))?;
+            entry.address = Some(DocAddress::new(
+                u32::try_from(segment_ord).map_err(|_| Error::SizeLimit)?,
+                doc,
+            ));
+            entry.segment_id = Some(segment_id);
+        }
+    }
+    if documents
+        .live
+        .iter()
+        .any(|entry| entry.address.is_none() || entry.segment_id.is_none())
+    {
+        return Err(TantivySource::corrupt(
+            "selected ordinal map has no exact resident Tantivy row address",
+        )
+        .into());
+    }
+    Ok(work)
 }
 
 impl crate::Adapter<TantivySource> {
