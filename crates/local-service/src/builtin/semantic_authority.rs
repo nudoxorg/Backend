@@ -3883,15 +3883,12 @@ mod tests {
 
         authority
             .commit_product_selection_transaction(Vec::new(), || {
-                assert!(matches!(
-                    reader_loader.selections.try_read(),
-                    Err(std::sync::TryLockError::WouldBlock)
-                ));
+                let reader_thread_loader = Arc::clone(&reader_loader);
                 reader = Some(std::thread::spawn(move || {
                     attempted_sender
                         .send(())
                         .expect("signal selection read attempt");
-                    let _lease = reader_loader
+                    let _lease = reader_thread_loader
                         .acquire_publication_read()
                         .expect("acquire committed selection read lease");
                     acquired_sender
@@ -3902,10 +3899,11 @@ mod tests {
                     .recv_timeout(std::time::Duration::from_secs(2))
                     .expect("reader attempts during durable marker callback");
                 assert!(
-                    acquired_receiver
-                        .recv_timeout(std::time::Duration::from_millis(30))
-                        .is_err(),
-                    "a V3 selection reader crossed the in-progress marker commit"
+                    matches!(
+                        reader_loader.selections.try_read(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ),
+                    "the durable marker callback must retain the serving-selector write lease"
                 );
                 Ok(())
             })
