@@ -122,3 +122,38 @@ fn the_ring_grows_as_packages_arrive_and_no_name_is_ever_painted_over_another(cx
     }
     assert!(snaps > 0, "the ring re-wrapped at least once (a name changed line) while it grew");
 }
+
+/// The Library leaves for a page and comes back: its ring of names does not
+/// fly while it is the page going away (drawn under the plate, it is a still
+/// copy), and back again every name stands where it lays out. J9 saw three
+/// chips fly 700 px as the Library left, and come back mid-flight.
+#[gpui::test]
+fn the_ring_stands_still_while_the_library_leaves_and_when_it_comes_back(cx: &mut TestAppContext) {
+    let packages = Arc::new(Mutex::new(vec!["equivalent", "indexmap", "serde", "serde_core", "toml", "toml_datetime", "toml_edit", "winnow"]));
+    let shared = Arc::clone(&packages);
+    let pool = ReadPool::start(2, move |_| Growing { packages: Arc::clone(&shared) }).expect("read pool");
+    let mut rig = rig_with_reads(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0, pool);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    for _ in 0..40 {
+        rig.frame(16);
+    }
+    let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let mut flying = Vec::new();
+    let mut watch = |rig: &mut super::tests::Rig, what: &str| {
+        for frame in 0..40 {
+            rig.frame(16);
+            let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+            flying.extend(ledger.tracks.iter().filter(|track| track.key.starts_with("orbit-ring.") && track.live).map(|track| format!("{what} frame {frame}: {} at {:.1} toward {:.1}", track.key, track.value, track.target)));
+        }
+    };
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(crate::navigation::Intent::Navigate(super::tests::page_route("RelationLabel")), cx));
+    watch(&mut rig, "leaving");
+    // While the Library is away, the window narrows: the ring it comes back
+    // to wraps otherwise than the one it left.
+    rig.cx.simulate_resize(gpui::size(gpui::px(1000.0), gpui::px(900.0)));
+    watch(&mut rig, "away");
+    rig.cx.simulate_keystrokes("cmd-[");
+    watch(&mut rig, "back");
+    assert!(matches!(rig.route(), Route::Orbit(_)), "back on the Library: {:?}", rig.route());
+    assert!(flying.is_empty(), "no name of the ring flies: {flying:#?}");
+}

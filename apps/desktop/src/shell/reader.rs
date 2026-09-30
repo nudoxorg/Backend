@@ -678,7 +678,7 @@ impl Reader {
             self.scroll.set_offset(scroll.map_or(point(px(0.0), px(0.0)), |origin| origin.scroll));
         }
         self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
-        self.targets.clear_focus();
+        self.targets.new_page();
     }
 
     /// Which plate move a place change plays, and what it needs from the
@@ -1508,6 +1508,14 @@ impl Render for Reader {
         // The current page, in the scroller: inside the plate when it opens
         // or unfolds, outside it (above) when the plate closes over it.
         let current_edge = staged.filter(|staged| matches!(staged.verb, Verb::Open | Verb::Unfold)).and_then(|staged| staged.edge);
+        // The Library's ring is the live ring only on the Library: away from
+        // it, the ring forgets where its names were, so they stand where they
+        // lay out when it comes back (never flying from a place last seen
+        // before the page left).
+        let on_the_library = !matches!(current.overlay, Some(Overlay::Settings(_) | Overlay::Inbox)) && matches!(&current.route, Route::Orbit(orbit) if !matches!(orbit, crate::navigation::OrbitRoute::Browse(_)));
+        if !on_the_library {
+            self.ring_flow.forget(cx);
+        }
         let body = self.body(&current, true, &snapshot, &layout, &facet, current_edge, cx);
         if let Some(reader) = reader {
             self.follow(reader, cx);
@@ -1716,7 +1724,10 @@ impl Reader {
             // first frame is a designed start, not a step from the last
             // change's rest. (One that interrupts a change in flight is
             // judged against where that one was.)
-            if self.in_flight.borrow().is_empty() {
+            // (A render may publish its frame twice: the birth frame stays a
+            // birth, or the probe keeps the later sample and loses it.)
+            let born = self.in_flight.borrow().first().is_none_or(|last| last.kind == facet::probe::TrackKind::Snap && (last.at_ms - at_ms).abs() < 1e-6);
+            if born {
                 for sample in &mut samples {
                     sample.kind = facet::probe::TrackKind::Snap;
                 }

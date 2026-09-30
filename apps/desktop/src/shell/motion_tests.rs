@@ -109,6 +109,64 @@ fn a_landed_change_ends_its_tracks_at_rest_on_their_targets(cx: &mut TestAppCont
     }
 }
 
+/// Two changes one after the other: each is born where it starts (its
+/// first frame a designed start: the plate at its row, the driver at its
+/// start), never stepped to from the last change's rest; the driver's
+/// landing is designed too (it is never painted), while the plate's last
+/// step stays a judged spring (J1 saw `reader.plate.top` "jump" 432 px from
+/// one change's rest to the next change's row, and `reader.carry` 0.988 to
+/// 1.000 as its page landed).
+#[gpui::test]
+fn each_change_is_born_where_it_starts_not_stepped_to_from_the_last(cx: &mut TestAppContext) {
+    use facet::probe::TrackKind;
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let mut carry = Vec::new();
+    let mut plate = Vec::new();
+    for next in ["KindGlyph", "RelationDirection"] {
+        rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route(next)), cx));
+        for frame in 0..60 {
+            rig.frame(16);
+            // The shell may draw a frame twice (J1: the birth sample was
+            // published, then republished as a spring at the same instant,
+            // and the probe keeps the later one).
+            if frame == 0 {
+                rig.repaint();
+            }
+            let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+            carry.extend(ledger.tracks.iter().filter(|track| track.key == CARRY).cloned());
+            plate.extend(ledger.tracks.iter().filter(|track| track.key == "reader.plate.top").cloned());
+        }
+    }
+    // Of two samples at one instant, the later is the one the probe keeps.
+    let kept = |samples: &mut Vec<facet::probe::TrackSample>| {
+        let mut out: Vec<facet::probe::TrackSample> = Vec::new();
+        for sample in samples.drain(..) {
+            match out.last_mut() {
+                Some(last) if (last.at_ms - sample.at_ms).abs() < 1e-6 && last.live == sample.live => *last = sample,
+                _ => out.push(sample),
+            }
+        }
+        *samples = out;
+    };
+    kept(&mut carry);
+    kept(&mut plate);
+    for (name, samples) in [("reader.carry", &carry), ("reader.plate.top", &plate)] {
+        let born = samples.iter().filter(|sample| sample.live && sample.kind == TrackKind::Snap).count();
+        assert_eq!(born, 2, "{name}: each change's first frame is a designed start: {samples:#?}");
+        for pair in samples.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            if !a.live && b.live {
+                assert_eq!(b.kind, TrackKind::Snap, "{name}: after a rest the next change is born, not stepped to: {a:?} -> {b:?}");
+            }
+        }
+    }
+    let landed = |samples: &[facet::probe::TrackSample]| samples.iter().filter(|sample| !sample.live).map(|sample| sample.kind).collect::<Vec<_>>();
+    assert!(landed(&carry).iter().all(|kind| *kind == TrackKind::Snap), "the driver lands by design: {:?}", landed(&carry));
+    assert!(landed(&plate).iter().all(|kind| *kind == TrackKind::Spring), "the plate's landing is judged: {:?}", landed(&plate));
+}
+
 /// The window narrows across the edge where the symbol page's rail moves
 /// from beside the page to under it (FLUID-C: a block moved 1084 px in one
 /// frame there). In no frame of the change is a word painted over another:

@@ -770,6 +770,8 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
     assert_eq!(said(&ledger, "mk-deps").iter().filter(|w| *w != "on").collect::<Vec<_>>(), ["serde", "winnow"], "the hero names both");
     let doors: Vec<&str> = ledger.targets.iter().map(|t| t.key.as_str()).filter(|key| key.starts_with("pkg-dep-")).collect();
     assert_eq!(doors, ["pkg-dep-serde"], "only the dependency with a place to go is a door");
+    let door = ledger.targets.iter().find(|t| t.key == "pkg-dep-serde").expect("the door").bounds.clone();
+    assert!(door.height >= 24.0, "a door a pointer can hit: {door:?}");
     walk_to(&mut rig, "pkg-dep-serde", 24);
     rig.keys("enter");
     let opened = rig.route();
@@ -777,4 +779,34 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
     rig.keys("cmd-[");
     assert_eq!(rig.route(), package_route(), "⌘[ came back");
     assert_eq!(focused(&mut rig).as_deref(), Some("pkg-dep-serde"), "and the keyboard stands on the door it left by");
+}
+
+/// Back puts the keyboard on the door the page was left by, and the focus
+/// bevel comes back on it as a new bevel: it does not fly in from where it
+/// last stood on the other page (J1 saw it step from a stale place).
+#[gpui::test]
+fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut TestAppContext) {
+    let pool = crate::runtime::reads::ReadPool::start(1, |_| Depends).expect("pool");
+    let mut rig = crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let _ = painted(&mut rig);
+    walk_to(&mut rig, "pkg-dep-serde", 24);
+    rig.keys("enter");
+    // On the other page the bevel stands somewhere else.
+    rig.keys("j");
+    for _ in 0..40 {
+        rig.frame(16);
+    }
+    let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
+    rig.keys("cmd-[");
+    for _ in 0..40 {
+        rig.frame(16);
+    }
+    assert_eq!(focused(&mut rig).as_deref(), Some("pkg-dep-serde"), "back stands on the door");
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let glow: Vec<&facet::probe::TrackSample> = ledger.tracks.iter().filter(|track| track.key == "reader.glow-y").collect();
+    let born = glow.iter().position(|sample| sample.kind == facet::probe::TrackKind::Snap).unwrap_or_else(|| panic!("the bevel came back as a designed start: {glow:#?}"));
+    let door = ledger.targets.iter().find(|target| target.key == "pkg-dep-serde").expect("the door is painted").bounds.clone();
+    assert!((glow[born].value - door.y).abs() < 0.5, "it is born on the door: {} vs {}", glow[born].value, door.y);
+    assert!(glow[born..].iter().all(|sample| !sample.live && (sample.value - door.y).abs() < 0.5), "and never flies: {:#?}", &glow[born..]);
 }

@@ -129,7 +129,12 @@ pub(super) fn body(
                 let mut ring = div().flex().flex_wrap().justify_center().gap(measure.space(Space::Roomy));
                 // The names wrap as the room changes; a name that moves to
                 // another line glides there (FLIP) instead of jumping.
-                let flow = ctx.ring_flow.clone();
+                // Drawn away from the scroller (leaving under a plate), the
+                // Library is inert: its names stand where they lay out, and
+                // neither fly with the plate nor leave the live ring's
+                // springs mid-flight when the page goes (J9 saw chips fly
+                // 700 px as the Library left for a page and came back).
+                let flow = if ctx.active { ctx.ring_flow.clone() } else { facet::motion::Flow::new("orbit-inert") };
                 flow.epoch((measure.density(), measure.scale().to_bits()));
                 // Your projects stand in the middle; the ring is what they
                 // use, in the library's own order (the same after a

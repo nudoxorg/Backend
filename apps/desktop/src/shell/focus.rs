@@ -169,6 +169,9 @@ pub(crate) struct Targets {
     active: bool,
     /// Where the bevel was last heading, kept while it comes to rest unseen.
     heading: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// A new page arrived ([`Targets::new_page`]): the bevel is born on the
+    /// next target focused, not flown there from the last page's.
+    fresh: Rc<Cell<bool>>,
     /// This frame's layout of each target (known before any prepaint, so a
     /// scroll container can bring one into view in the same frame).
     layouts: Rc<RefCell<HashMap<SharedString, LayoutId>>>,
@@ -300,6 +303,14 @@ impl Targets {
         self.recall.clear_focus();
     }
 
+    /// A new page arrived: it starts unfocused, and the bevel it shows next
+    /// is a new one, born on its target (Back restoring the row a page was
+    /// left by must not fly the bevel in from the other page).
+    pub(crate) fn new_page(&self) {
+        self.recall.clear_focus();
+        self.fresh.set(true);
+    }
+
     /// Focuses `id` (a pointer click keeps the keyboard where the pointer
     /// is). `&self`: a body only ever holds `&Targets`, so a click can call
     /// this directly, the same way it already calls `push`/`track`.
@@ -388,6 +399,7 @@ impl Targets {
             bounds: Rc::clone(&self.bounds),
             focused: self.recall.focused().filter(|_| self.active),
             heading: Rc::clone(&self.heading),
+            fresh: Rc::clone(&self.fresh),
             motion: self.motion.clone(),
             chamfer: f32::from(measure.space(facet::Space::Base)).max(4.0),
         }
@@ -515,8 +527,39 @@ pub(crate) struct FocusGlow {
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     focused: Option<SharedString>,
     heading: Rc<Cell<Option<Bounds<Pixels>>>>,
+    fresh: Rc<Cell<bool>>,
     motion: Motion,
     chamfer: f32,
+}
+
+impl FocusGlow {
+    /// The bevel was put away (unseen, and at rest), or a new page arrived:
+    /// it comes back on its target as a new bevel, never flying in from where
+    /// it was last seen (on another page, before a Back). The probe is told
+    /// it is a designed start, not a step from that old place.
+    fn born(&self, target: Bounds<Pixels>, cx: &mut App) {
+        let values = [target.origin.x, target.origin.y, target.size.width, target.size.height].map(f32::from);
+        for (key, value) in self.keys.iter().zip(values) {
+            self.motion.set(key.clone(), value);
+            if facet::probe::enabled(cx) {
+                let at_ms = facet::motion::now(cx).saturating_duration_since(facet::motion::epoch(cx)).as_secs_f64() * 1000.0;
+                facet::probe::record_track(cx, || facet::probe::TrackSample {
+                    key: key.to_string(),
+                    kind: facet::probe::TrackKind::Snap,
+                    value,
+                    target: value,
+                    velocity: 0.0,
+                    started_ms: at_ms,
+                    budget_ms: 0.0,
+                    at_ms,
+                    live: false,
+                    overshoot_ratio: 0.0,
+                    overshoot_absolute: 0.0,
+                    group: None,
+                });
+            }
+        }
+    }
 }
 
 impl IntoElement for FocusGlow {
@@ -570,6 +613,10 @@ impl Element for FocusGlow {
             .and_then(|id| self.bounds.borrow().get(id).copied());
         let target = match shown {
             Some(target) => {
+                if self.heading.get().is_none() || self.fresh.get() {
+                    self.fresh.set(false);
+                    self.born(target, cx);
+                }
                 self.heading.set(Some(target));
                 target
             }

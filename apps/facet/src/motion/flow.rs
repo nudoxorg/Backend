@@ -746,6 +746,28 @@ impl Flow {
         self.inner.borrow_mut().model.settle();
     }
 
+    /// Forgets every item: the flow's items are no longer drawn (their page
+    /// went away), so when they are drawn again each stands where it lays
+    /// out, never flying from where it was last seen. An item still moving
+    /// ends its tracks where it was last shown (the probe hears it go).
+    pub fn forget(&self, cx: &mut App) {
+        let (scope, gone) = {
+            let mut inner = self.inner.borrow_mut();
+            if inner.model.records.is_empty() {
+                return;
+            }
+            let gone: Vec<(ElementId, Point<f32>)> = inner.model.records.drain().filter(|(_, record)| record.reported).map(|(key, record)| (key, record.shown)).collect();
+            inner.model.vanished.clear();
+            (inner.scope.clone(), gone)
+        };
+        if probe::enabled(cx) {
+            let now = now(cx);
+            for (key, shown) in gone {
+                publish(cx, &scope, &key, Sample::gone(shown), now);
+            }
+        }
+    }
+
     /// This frame's layout changes land where they are laid out instead of
     /// flowing (call it before the items are prepainted). For a viewport that
     /// jumped under the items: a reader that scrolled to keep the keyboard's
