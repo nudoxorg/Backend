@@ -3,6 +3,7 @@
 # replace Cargo, git, and sccache with tiny shims; they never compile the
 # workspace or evaluate Nix.
 set -eu
+unset CARGO_BUILD_BUILD_DIR CARGO_TARGET_DIR
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 # A Nix check runs this file as a lone store path, where the repository layout
@@ -37,11 +38,14 @@ assert_file_lines() {
 mkdir -p "$test_root/bin" "$test_root/roots/a" "$test_root/roots/b"
 
 printf '%s\n' '#!/bin/sh' \
-  'if [ "${1:-}" = rev-parse ] && [ "${2:-}" = --show-toplevel ]; then' \
-  '  printf "%s\\n" "$NUDOX_TEST_WORKTREE"' \
-  '  exit 0' \
-  'fi' \
-  'if [ "${1:-}" = worktree ] && [ "${2:-}" = list ]; then' \
+'if [ "${1:-}" = -C ]; then shift 2; fi' \
+'if [ "${1:-}" = rev-parse ] && [ "${2:-}" = --show-toplevel ]; then' \
+'  printf "%s\\n" "$NUDOX_TEST_WORKTREE"' \
+'  exit 0' \
+'fi' \
+'if [ "${1:-}" = rev-parse ] && [ "${2:-}" = HEAD ]; then printf "0123456789abcdef0123456789abcdef01234567\\n"; exit 0; fi' \
+'if [ "${1:-}" = status ] || [ "${1:-}" = diff ] || [ "${1:-}" = ls-files ]; then exit 0; fi' \
+'if [ "${1:-}" = worktree ] && [ "${2:-}" = list ]; then' \
   '  printf "worktree %s\\n" "$NUDOX_TEST_WORKTREE"' \
   '  exit 0' \
   'fi' \
@@ -49,14 +53,16 @@ printf '%s\n' '#!/bin/sh' \
 chmod +x "$test_root/bin/git"
 
 printf '%s\n' '#!/bin/sh' \
-  'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
-  'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then' \
+'if [ "${1:-}" = --version ]; then printf "cargo 1.97.1-test\\n"; exit 0; fi' \
+'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
+'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then' \
   '  marker="$CARGO_BUILD_BUILD_DIR/fake-public-api.rmeta"' \
   '  if [ "${1:-}" = consumer ] && [ -f "$marker" ] && [ "$(cat "$marker")" != "$NUDOX_TEST_WORKTREE" ]; then exit 42; fi' \
-  '  printf "%s\\n" "$NUDOX_TEST_WORKTREE" > "$marker"' \
-  'fi' \
-  'printf "%s|%s|%s\\n" "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${1:-}" >> "$NUDOX_TEST_LOG"' \
-  'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
+'  printf "%s\\n" "$NUDOX_TEST_WORKTREE" > "$marker"' \
+'fi' \
+'if [ "${NUDOX_TEST_CREATE_OUTPUT:-0}" != 0 ]; then mkdir -p "$CARGO_TARGET_DIR/debug"; printf "test executable\\n" > "$CARGO_TARGET_DIR/debug/fake-bin"; chmod +x "$CARGO_TARGET_DIR/debug/fake-bin"; fi' \
+'printf "%s|%s|%s|%s|%s\\n" "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${CARGO_TARGET_DIR:-}" "$*" "${CARGO_BUILD_JOBS:-}" >> "$NUDOX_TEST_LOG"' \
+'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
   'trap '\''if [ -n "${NUDOX_TEST_CHILD_DONE_FILE:-}" ]; then : > "$NUDOX_TEST_CHILD_DONE_FILE"; fi; exit 143'\'' HUP INT TERM' \
   'if [ "${NUDOX_TEST_CARGO_SLEEP:-0}" != 0 ]; then' \
   '  end=$(( $(date +%s) + NUDOX_TEST_CARGO_SLEEP ))' \
@@ -65,15 +71,22 @@ printf '%s\n' '#!/bin/sh' \
   'exit "${NUDOX_TEST_CARGO_STATUS:-0}"' > "$test_root/bin/cargo"
 chmod +x "$test_root/bin/cargo"
 
+printf '%s\n' '#!/bin/sh' 'printf "rustc 1.97.1-test\\n"' > "$test_root/bin/rustc"
+chmod +x "$test_root/bin/rustc"
+
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$test_root/bin/sccache"
 chmod +x "$test_root/bin/sccache"
 
 {
-  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+  printf '%s\n' '#!/bin/sh' 'set -eu'
   sed \
     -e "s|@cargo@|$test_root/bin/cargo|g" \
     -e "s|@git@|$test_root/bin/git|g" \
     -e "s|@sccache@|$test_root/bin/sccache|g" \
+    -e "s|@python3@|$(command -v python3)|g" \
+    -e "s|@rustc@|$test_root/bin/rustc|g" \
+    -e "s|@wrapper_source@|$repo_root/.config/scripts/cargo-shared-cache.sh|g" \
+    -e "s|@provenance@|$repo_root/.config/scripts/cargo-provenance.py|g" \
     "$source_script"
 } > "$test_root/wrapper"
 chmod +x "$test_root/wrapper"
@@ -102,6 +115,55 @@ run_wrapper() {
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
   "$test_root/wrapper" "$3"
 }
+
+run_explicit_wrapper() {
+  NUDOX_TEST_WORKTREE="$1" \
+  NUDOX_TEST_LOG="$2" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/cache-explicit" \
+  NUDOX_CARGO_BUILD_SLOTS="${NUDOX_TEST_SLOTS:-2}" \
+  NUDOX_CARGO_WORKTREE_WAIT_MS="${NUDOX_TEST_WORKTREE_WAIT_MS:-300000}" \
+  NUDOX_CARGO_SLOT_WAIT_MS="${NUDOX_TEST_SLOT_WAIT_MS:-300000}" \
+  CARGO_BUILD_BUILD_DIR="$3" \
+  CARGO_TARGET_DIR="$4" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" "${5:-build}" "${6:-}"
+}
+
+# The tracked cargo-in source uses an explicit role root while leaving final
+# artifacts in the worktree-local target. Exercise it through the real wrapper.
+cargo_in_root="$test_root/roots/cargo-in"
+cargo_in_log="$test_root/cargo-in.log"
+mkdir -p "$cargo_in_root/.local/devenv" "$test_root/wrapper-bin"
+ln -s "$test_root/wrapper" "$test_root/wrapper-bin/cargo"
+printf 'PATH="%s:$PATH"; export PATH\n' "$test_root/wrapper-bin" \
+  > "$cargo_in_root/.local/devenv/development.sh"
+NUDOX_TEST_WORKTREE="$cargo_in_root" NUDOX_TEST_LOG="$cargo_in_log" \
+  PATH="$test_root/bin:$PATH" CARGO_BUILD_JOBS="" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/cargo-in-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$repo_root/.config/scripts/cargo-in.sh" shell build --locked -p demo
+cargo_in_build="$cargo_in_root/.local/build/shell/.nudox-cargo/slot-0"
+cargo_in_target="$cargo_in_root/.local/target"
+assert_eq "$cargo_in_build" "$(cut -d '|' -f 2 "$cargo_in_log")"
+assert_eq "$cargo_in_target" "$(cut -d '|' -f 3 "$cargo_in_log")"
+assert_eq 'build --locked -p demo' "$(cut -d '|' -f 4 "$cargo_in_log")"
+assert_eq 3 "$(cut -d '|' -f 5 "$cargo_in_log")"
+assert_eq "$cargo_in_root" "$(cat "$cargo_in_build/.nudox-worktree-root")"
+assert_eq "$cargo_in_root" "$(cat "$cargo_in_target/.nudox-worktree-root")"
+
+cargo_in_explicit_log="$test_root/cargo-in-explicit.log"
+cargo_in_explicit_build="$test_root/cargo-in-explicit-build"
+cargo_in_explicit_target="$test_root/cargo-in-explicit-target"
+NUDOX_TEST_WORKTREE="$cargo_in_root" NUDOX_TEST_LOG="$cargo_in_explicit_log" \
+  PATH="$test_root/bin:$PATH" CARGO_BUILD_JOBS=7 \
+  CARGO_BUILD_BUILD_DIR="$cargo_in_explicit_build" CARGO_TARGET_DIR="$cargo_in_explicit_target" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/cargo-in-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$repo_root/.config/scripts/cargo-in.sh" shell check --offline -p demo
+assert_eq "$cargo_in_explicit_build/.nudox-cargo/slot-0" "$(cut -d '|' -f 2 "$cargo_in_explicit_log")"
+assert_eq "$cargo_in_explicit_target" "$(cut -d '|' -f 3 "$cargo_in_explicit_log")"
+assert_eq 'check --offline -p demo' "$(cut -d '|' -f 4 "$cargo_in_explicit_log")"
+assert_eq 7 "$(cut -d '|' -f 5 "$cargo_in_explicit_log")"
 
 # Metadata and formatting remain unrestricted and do not require a socket or
 # a mutable build directory.
@@ -159,18 +221,104 @@ different_dirs="$(cut -d '|' -f 2 "$different_log" | sort -u | wc -l | tr -d ' '
 assert_eq 2 "$different_dirs"
 [ "$elapsed" -le 2 ] || fail "independent worktrees were serialized (${elapsed}s)"
 
-# An explicit build-dir is never overwritten and never claims a pooled graph.
-explicit_log="$test_root/explicit.log"
-NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$explicit_log" \
-  NUDOX_BUILD_CACHE_ROOT="$test_root/explicit-cache" CARGO_BUILD_BUILD_DIR="$test_root/explicit-build" \
-  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build
-explicit_dir="$(cut -d '|' -f 2 "$explicit_log")"
-assert_eq "$test_root/explicit-build" "$explicit_dir"
-if find "$test_root/explicit-cache/locks" -mindepth 1 -print -quit 2>/dev/null | grep . >/dev/null; then
-  fail "explicit build-dir leaked a lease"
+# The default machine-wide pool admits at most four active Cargo processes.
+# Start four independent roots, wait until each reaches fake Cargo, and verify
+# a fifth caller fails at the zero-wait boundary without reaching Cargo.
+four_cache="$test_root/four-cache"
+four_log="$test_root/four.log"
+: > "$four_log"
+four_pids=""
+for root_name in c d e f; do
+  four_root="$test_root/roots/$root_name"
+  mkdir -p "$four_root"
+  NUDOX_TEST_WORKTREE="$four_root" NUDOX_TEST_LOG="$four_log" \
+    NUDOX_BUILD_CACHE_ROOT="$four_cache" NUDOX_CARGO_BUILD_SLOTS=4 \
+    NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=3 \
+    SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
+  four_pids="$four_pids $!"
+done
+four_waited=0
+while [ "$four_waited" -lt 120 ] && [ "$(wc -l < "$four_log" 2>/dev/null | tr -d ' ')" != 4 ]; do
+  sleep 0.05
+  four_waited="$((four_waited + 1))"
+done
+assert_file_lines "$four_log" 4
+if NUDOX_TEST_WORKTREE="$test_root/roots/g" NUDOX_TEST_LOG="$four_log" \
+  NUDOX_BUILD_CACHE_ROOT="$four_cache" NUDOX_CARGO_BUILD_SLOTS=4 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build; then
+  fail "default four-slot ceiling admitted a fifth Cargo process"
 fi
-if find "$test_root/explicit-cache/affinity" -type f -print -quit 2>/dev/null | grep . >/dev/null; then
-  fail "explicit build-dir changed pooled graph affinity"
+assert_file_lines "$four_log" 4
+for four_pid in $four_pids; do wait "$four_pid"; done
+
+# An explicit build-dir is a role root. Its leased child is stamped, isolated
+# between worktrees, and the caller's parent directory remains intact.
+explicit_log="$test_root/explicit.log"
+explicit_build_root="$test_root/explicit-build"
+explicit_target_root="$test_root/explicit-target"
+printf 'preserve caller data\n' > "$explicit_build_root-sentinel"
+NUDOX_TEST_SLOTS=1 run_explicit_wrapper "$test_root/roots/a" "$explicit_log" \
+  "$explicit_build_root" "$explicit_target_root" build
+explicit_dir="$(cut -d '|' -f 2 "$explicit_log")"
+explicit_target="$(cut -d '|' -f 3 "$explicit_log")"
+assert_eq "$explicit_build_root/.nudox-cargo/slot-0" "$explicit_dir"
+assert_eq "$explicit_target_root" "$explicit_target"
+assert_eq "$test_root/roots/a" "$(cat "$explicit_dir/.nudox-worktree-root")"
+assert_eq "$test_root/roots/a" "$(cat "$explicit_target/.nudox-worktree-root")"
+assert_eq 'preserve caller data' "$(cat "$explicit_build_root-sentinel")"
+
+# A different worktree may reuse a leased explicit build lane only after the
+# old stamped graph is retired. Reusing the exact target path is refused.
+before_lines="$(wc -l < "$explicit_log" | tr -d ' ')"
+if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$explicit_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/cache-explicit" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$explicit_build_root" CARGO_TARGET_DIR="$explicit_target_root" \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" consumer; then
+  fail "target directory stamped for another worktree was accepted"
+fi
+assert_eq "$test_root/roots/b" "$(cat "$explicit_dir/.nudox-worktree-root")"
+assert_eq "$test_root/roots/a" "$(cat "$explicit_target_root/.nudox-worktree-root")"
+assert_eq "$before_lines" "$(wc -l < "$explicit_log" | tr -d ' ')"
+assert_eq 'preserve caller data' "$(cat "$explicit_build_root-sentinel")"
+
+# An unmarked non-empty managed child is refused rather than adopted/erased.
+refused_build_root="$test_root/refused-build"
+refused_child="$refused_build_root/.nudox-cargo/slot-0"
+mkdir -p "$refused_child"
+printf 'unowned content\n' > "$refused_child/keep.txt"
+before_lines="$(wc -l < "$explicit_log" | tr -d ' ')"
+if NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$explicit_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/cache-explicit" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$refused_build_root" CARGO_TARGET_DIR="$explicit_target_root" \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build; then
+  fail "unmarked explicit graph was adopted"
+fi
+assert_eq "$before_lines" "$(wc -l < "$explicit_log" | tr -d ' ')"
+assert_eq 'unowned content' "$(cat "$refused_child/keep.txt")"
+
+# A contradictory target-root stamp is refused with all prior data retained.
+conflicted_target_root="$test_root/conflicted-target"
+mkdir -p "$conflicted_target_root"
+printf '%s\n' "$test_root/roots/b" > "$conflicted_target_root/.nudox-worktree-root"
+printf 'keep target\n' > "$conflicted_target_root/keep.txt"
+if NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$explicit_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/cache-explicit" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$explicit_build_root" CARGO_TARGET_DIR="$conflicted_target_root" \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build; then
+  fail "target namespace with another worktree stamp was accepted"
+fi
+assert_eq "$before_lines" "$(wc -l < "$explicit_log" | tr -d ' ')"
+assert_eq 'keep target' "$(cat "$conflicted_target_root/keep.txt")"
+
+if find "$test_root/cache-explicit/locks" -mindepth 1 -print -quit 2>/dev/null | grep . >/dev/null; then
+  fail "explicit build-dir leaked a capacity lease"
+fi
+if find "$test_root/cache-explicit/affinity" -type f -print -quit 2>/dev/null | grep . >/dev/null; then
+  fail "explicit build-dir changed default graph affinity"
 fi
 
 # A dead owner is recovered without waiting for the configured bound.
@@ -189,6 +337,7 @@ assert_file_lines "$stale_log" 1
 # the worktree and slot leases before the wrapper exits.
 signal_cache="$test_root/signal-cache"
 signal_log="$test_root/signal.log"
+signal_target="$test_root/signal-target"
 signal_child_pid="$test_root/signal-child.pid"
 signal_child_done="$test_root/signal-child.done"
 signal_sleep="${NUDOX_TEST_SIGNAL_SLEEP:-1}"
@@ -196,7 +345,8 @@ NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$signal_log" \
   NUDOX_BUILD_CACHE_ROOT="$signal_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP="$signal_sleep" \
   NUDOX_TEST_CHILD_PID_FILE="$signal_child_pid" NUDOX_TEST_CHILD_DONE_FILE="$signal_child_done" \
-  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
+  CARGO_TARGET_DIR="$signal_target" SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build &
 signal_pid="$!"
 signal_waited=0
 while [ "$signal_waited" -lt 40 ] && [ ! -f "$signal_child_pid" ]; do
@@ -224,6 +374,16 @@ signal_child="$(cat "$signal_child_pid")"
 if kill -0 "$signal_child" 2>/dev/null; then
   fail "cancelled compile left the Cargo child alive"
 fi
+signal_manifest="$(find "$signal_target/.nudox-provenance" -maxdepth 1 -type f -name '*.json' -print | head -n 1)"
+[ -n "$signal_manifest" ] || fail "cancelled compile did not finalize provenance"
+python3 - "$signal_manifest" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["cargo_exit_status"] == 143
+PY
 
 # Interrupting while waiting for a busy warm lane also releases the worktree
 # lease. Keep the synthetic slot owner alive for the duration of this check.
@@ -264,6 +424,12 @@ while [ "$ceiling_waited" -lt 40 ] && ! find "$ceiling_cache/locks" -type d -nam
   sleep 0.05
   ceiling_waited="$((ceiling_waited + 1))"
 done
+ceiling_waited=0
+while [ "$ceiling_waited" -lt 80 ] && [ ! -f "$ceiling_log" ]; do
+  sleep 0.05
+  ceiling_waited="$((ceiling_waited + 1))"
+done
+[ -f "$ceiling_log" ] || fail "leased compiler did not reach fake Cargo"
 if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
   NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
@@ -271,9 +437,8 @@ if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
   fail "busy build ceiling unexpectedly admitted another compiler"
 fi
 assert_file_lines "$ceiling_log" 1
-# Named directories obey the same ceiling, even though their intermediate
-# graph is caller-managed. Cargo must never run and its directory must stay
-# absent while another worktree owns the only slot.
+# Named role roots obey the same ceiling. Cargo must never run and the role
+# root must stay absent while another worktree owns the only slot.
 if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
   NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   CARGO_BUILD_BUILD_DIR="$test_root/blocked-explicit-build" \
@@ -290,7 +455,7 @@ NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" check
 assert_file_lines "$ceiling_log" 2
 # After release the same explicit request starts normally without altering
-# the warm slot's previous owner or destroying its graph.
+# the default warm slot's previous owner or graph.
 pooled_owner="$(cat "$ceiling_cache/affinity/slot-0.owner")"
 pooled_marker="$(cat "$ceiling_cache/build/slot-0/fake-public-api.rmeta")"
 NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$ceiling_log" \
@@ -301,9 +466,60 @@ NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$ceiling_log" \
 assert_file_lines "$ceiling_log" 3
 assert_eq "$pooled_owner" "$(cat "$ceiling_cache/affinity/slot-0.owner")"
 assert_eq "$pooled_marker" "$(cat "$ceiling_cache/build/slot-0/fake-public-api.rmeta")"
-assert_eq "$test_root/blocked-explicit-build" "$(tail -n 1 "$ceiling_log" | cut -d '|' -f 2)"
+assert_eq "$test_root/blocked-explicit-build/.nudox-cargo/slot-0" "$(tail -n 1 "$ceiling_log" | cut -d '|' -f 2)"
 if find "$ceiling_cache/build" -maxdepth 1 -type d -name 'overflow-*' -print -quit 2>/dev/null | grep . >/dev/null; then
   fail "hard build ceiling created an overflow directory"
 fi
 
-echo "cargo-shared-cache: PASS (affinity, independent lanes, hard ceiling, bypasses, override, stale recovery)"
+# Provenance is emitted for a failed Cargo invocation too, while the original
+# arguments and exact Cargo exit status remain intact. The executable output
+# hash, source/lock identity, toolchain, wrapper and feature selection are all
+# tied to the same namespaced paths.
+provenance_root="$test_root/roots/a"
+provenance_build_root="$test_root/provenance-build"
+provenance_target_root="$test_root/provenance-target"
+provenance_log="$test_root/provenance.log"
+printf 'test lockfile\n' > "$provenance_root/Cargo.lock"
+if NUDOX_TEST_WORKTREE="$provenance_root" NUDOX_TEST_LOG="$provenance_log" \
+  NUDOX_TEST_CREATE_OUTPUT=1 NUDOX_TEST_CARGO_STATUS=17 \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/provenance-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$provenance_build_root" CARGO_TARGET_DIR="$provenance_target_root" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build --locked --features smoke; then
+  fail "fake Cargo failure was not propagated"
+else
+  cargo_status="$?"
+fi
+assert_eq 17 "$cargo_status"
+assert_eq 'build --locked --features smoke' "$(cut -d '|' -f 4 "$provenance_log")"
+provenance_target="$provenance_target_root"
+provenance_manifest="$(find "$provenance_target/.nudox-provenance" -maxdepth 1 -type f -name '*.json' -print | head -n 1)"
+[ -n "$provenance_manifest" ] || fail "build provenance manifest was not emitted"
+python3 - "$provenance_manifest" "$provenance_root" \
+  "$provenance_build_root/.nudox-cargo/slot-0" "$provenance_target" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest_path, root, build_dir, target_dir = map(pathlib.Path, sys.argv[1:])
+value = json.loads(manifest_path.read_text())
+assert value["workspace_root"] == str(root)
+assert value["git_head"] == "0123456789abcdef0123456789abcdef01234567"
+assert value["source_dirty_sha256"] == value["source_dirty_sha256_after"]
+assert len(value["source_dirty_sha256"]) == 64
+assert value["cargo_lock_sha256"] == hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest()
+assert value["cargo_lock_sha256_after"] == value["cargo_lock_sha256"]
+assert value["cargo_build_dir"] == str(build_dir)
+assert value["cargo_target_dir"] == str(target_dir)
+assert value["features"]["features"] == ["smoke"]
+assert value["cargo_exit_status"] == 17
+assert value["toolchain"]["cargo"] == "cargo 1.97.1-test"
+assert value["toolchain"]["rustc"].startswith("rustc 1.97.1-test")
+assert len(value["wrapper"]["runtime_sha256"]) == 64
+assert len(value["wrapper"]["source_sha256"]) == 64
+outputs = {item["path"]: item["sha256"] for item in value["outputs"]}
+assert outputs["debug/fake-bin"] == hashlib.sha256(b"test executable\n").hexdigest()
+PY
+
+echo "cargo-shared-cache: PASS (affinity, isolation, hard ceiling, stamps, provenance, exit propagation, stale recovery)"

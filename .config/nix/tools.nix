@@ -65,11 +65,20 @@ let
       pkgs.sccache
       pkgs.gawk
       pkgs.procps
+      pkgs.python3
     ];
     text =
       builtins.replaceStrings
-        [ "@cargo@" "@git@" "@sccache@" ]
-        [ "${toolchains.stable}/bin/cargo" "${pkgs.git}/bin/git" "${pkgs.sccache}/bin/sccache" ]
+        [ "@cargo@" "@git@" "@sccache@" "@python3@" "@rustc@" "@wrapper_source@" "@provenance@" ]
+        [
+          "${toolchains.stable}/bin/cargo"
+          "${pkgs.git}/bin/git"
+          "${pkgs.sccache}/bin/sccache"
+          "${pkgs.python3}/bin/python3"
+          "${toolchains.stable}/bin/rustc"
+          (toString ../scripts/cargo-shared-cache.sh)
+          (toString ../scripts/cargo-provenance.py)
+        ]
         (builtins.readFile ../scripts/cargo-shared-cache.sh);
   };
   # `luna-tools` is the cheap, pinned command closure used to enter a lane

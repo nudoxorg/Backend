@@ -2,21 +2,30 @@
 
 The Nix shell wraps Cargo with `.config/scripts/cargo-shared-cache.sh`. Cargo
 1.97's `build.build-dir` is assigned from a bounded pool of reusable warm
-directories. The final target directory remains inside the calling worktree.
-Each warm directory has an exclusive lease, so two worktrees can compile in
-parallel without mutating the same intermediate graph. A warm directory is
-reused without cleaning only by the same canonical worktree; handing it to a
-different worktree first resets the old Cargo graph. Cross-worktree compiler
-reuse comes from `sccache`, which avoids stale `rmeta` and public-API leakage.
-The pool size caps simultaneous Cargo invocations sharing `NUDOX_BUILD_CACHE_ROOT`.
-Use the same cache root for every lane on a host; different roots have separate
-leases. When every lane is
-busy, another caller waits for `NUDOX_CARGO_SLOT_WAIT_MS` (five minutes by
-default) and exits with status 75 if no lane opens. It never creates an
-overflow lane. This caps invocations, not compiler memory: an explicit
-`CARGO_BUILD_JOBS` is preserved, and each invocation's workload has its own RAM
-cost. The readiness runs also coordinate four machine-wide lanes explicitly
-and set one compiler job per lane.
+directories. Each directory has an exclusive lease, so two worktrees can
+compile in parallel without mutating the same intermediate graph. A slot has a
+`.nudox-worktree-root` stamp. Reuse by that same canonical worktree is warm;
+when the slot changes owners, the wrapper retires only that managed slot graph
+while holding its lease. Cross-worktree compiler reuse comes from `sccache`,
+which avoids stale `rmeta` and public-API leakage.
+
+The final target directory defaults to `<worktree>/.local/target` and is
+stamped with its canonical worktree root. An explicitly supplied
+`CARGO_TARGET_DIR` keeps its exact path when it is empty or already stamped for
+that worktree. A non-empty unmarked target, symlink, or stamp for a different
+root is refused without changing its contents. An explicit
+`CARGO_BUILD_BUILD_DIR` is a role root. The actual graph is placed in
+`.nudox-cargo/slot-N` below that root, with the same lease and stamp rules as
+the default pool. A non-empty unmarked managed child is refused without
+deleting its contents.
+
+The pool size caps simultaneous Cargo invocations sharing
+`NUDOX_BUILD_CACHE_ROOT`. Use the same cache root for every lane on a host;
+different roots have separate leases. When every lane is busy, another caller
+waits for `NUDOX_CARGO_SLOT_WAIT_MS` (five minutes by default) and exits with
+status 75 if no lane opens. It never creates an overflow lane. This caps
+invocations, not compiler memory: an explicit `CARGO_BUILD_JOBS` is preserved,
+and each invocation's workload has its own RAM cost.
 
 Compiling commands also acquire a lease keyed by the canonical git worktree
 path. The first command records the warm lane it used in the cache affinity
@@ -35,12 +44,25 @@ path to avoid racing a compile. Manifest-changing commands such as `update`,
 `generate-lockfile`, `add`, `remove`, and `vendor`, along with artifact commands
 such as `package` and `clean`, also stay on the conservative path. Unknown
 commands use the compiling path so a new Cargo subcommand cannot accidentally
-weaken isolation. An explicit
-`CARGO_BUILD_BUILD_DIR` is always preserved verbatim. It still acquires the
-same worktree and shared-cache capacity leases, while leaving pooled build graphs and
-their affinity unchanged. An override cannot start a fifth compiler when the
-four configured slots are occupied. Explicit directories are caller-managed;
-callers must give each concurrently active worktree its own directory.
+weaken isolation. Explicit build-directory values are role roots, not exact
+graph paths: build graphs use stamped, leased children. Explicit target
+directories keep their caller-selected path under a matching worktree stamp.
+An override cannot start a fifth compiler when the four configured slots are
+occupied.
+
+`.config/scripts/cargo-in.sh` is the tracked source for the local
+`.local/devenv/cargo-in` helper. Refresh that ignored helper with
+`install -m 0755 .config/scripts/cargo-in.sh .local/devenv/cargo-in`. It sets a
+role-specific build root and leaves the target directory worktree-local by
+default; the shared wrapper derives the leased build child. Existing caller
+Cargo arguments and explicit target paths are preserved.
+
+Each compiling invocation writes a private JSON provenance record beneath
+`CARGO_TARGET_DIR/.nudox-provenance/`. It includes the canonical root, HEAD and
+dirty-tree digests, lockfile digest, Cargo/Rust versions, wrapper hashes,
+feature/target selection, effective build and target paths, Cargo exit status,
+and hashes of executable outputs written during that invocation. Failed Cargo
+commands still receive a record and retain Cargo's exit status.
 
 Lease directories contain the owner PID, process start token, and canonical
 worktree path. A dead owner is reclaimed by an atomic rename before its lock
@@ -61,6 +83,8 @@ workspace build:
 
 They use fake Cargo, git, and sccache processes to prove same-worktree
 serialization and reuse, independent-worktree parallelism, metadata bypass,
-explicit override preservation, dead-owner recovery, cancellation cleanup,
-and the shared-root invocation ceiling. They do not measure real compiler
-memory or arbitrate callers using a different cache root or unwrapped Cargo.
+explicit role-root namespacing, mismatch refusal/isolation, provenance fields
+and output hashes, exit-code/argument preservation, dead-owner recovery,
+cancellation cleanup, and the shared-root invocation ceiling. They do not
+measure real compiler memory or arbitrate callers using a different cache root
+or unwrapped Cargo.
