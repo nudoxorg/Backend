@@ -113,3 +113,19 @@ After the fixture source changed to V2, a second ticket reached the typed `Compi
 The owner was stopped with SIGTERM and reopened against the same workspace. The persistent MCP process (PID 59177) returned a structured `isError=true` response while the owner was down and survived; the text was `the local endpoint could not be used: local runtime I/O failed: private state parent is not owned by this user with owner-only access`. After reopen, MCP and CLI still returned V1 at the same revision with 11 rows, V2 remained absent, there were no state-0 attempts, and the immutable cancellation receipt rows matched exactly. The selected root's unchanged identity and independent V1 query are the evidence for selection preservation.
 
 The complete report is `/Users/mileswirht/Downloads/backend/.local/live-typed-publish-cancel-1a6b54/20260930T124643Z-59101/artifacts/report.json` (SHA-256 `a81fbda2270a63da1883bf98d2384ec753d5dff8eea2090e36304d2fef0f50f7`); the lossless same-process MCP transcript is `artifacts/logs/mcp-typed-job.jsonl` (SHA-256 `2701901bade89f4391b690adb77c9284abdf416864205df65113de41b44059bd`). Runtime lasted 26.006 seconds. `/bin/ps` sampled every 200 ms for 116 samples with no sampler errors; peak aggregate sampled RSS was 643,168 KiB across a peak of six visible processes. The retained evidence tree measured 1,341,695 bytes across 186 files. This is a useful typed lifecycle and cold-reopen pass for one authored, dependency-free Rust fixture. It does not establish a public registry dependency closure, all-seven-language readiness, 18/18 semantic readiness, a live Turso registry backup, or an index-engine quality/latency advantage.
+
+## Direct production search API, independent initial and reopened queries
+
+The direct Maven experiment passed at clean source `259ea09eb237af272211ce7016eed201c69df21b`. It checks nine independently labelled query chains against the frozen 100-PURL journal before and after dropping and reopening the durable projection. Membership, duplicate rejection, complete chain counts, and first-page lower bounds are checked separately: a bounded first page may report `AtLeast(11)` while its complete chain contains 37 or 96 results. The previous count-oracle failure remains in the earlier run's report.
+
+| Measured boundary | Observation |
+| --- | ---: |
+| Durable projection build | 284.665 ms |
+| Reopen in the same process | 14.009 ms |
+| All nine first query chains after reopen | 117.906 ms |
+| Warm complete query chains | 900 samples; p50 6.835 ms, p95 51.384 ms, p99 53.636 ms |
+| Durable projection bytes | 234,941 |
+
+The API measurement includes Tantivy ranking, cursor paging and authoritative standing hydration; it excludes CLI startup and the local socket. This is a debug build with workspace dependency optimizations, and reopening does **not** flush the OS page cache. It is neither a cold-machine latency measurement nor a production-scale or `lib.rs` comparison. The saved Nix Cargo/Rust version was 1.97.1; an earlier host-PATH version attribution was retracted.
+
+Report: `/Users/mileswirht/Downloads/backend/.local/live-maven-replay/20260930T054321Z/case/runtime/direct-api-run-20260930-02/report/production-index-debug.json`, SHA-256 `2aa6437d1755ebe375a3ce5999c48a2de183fdf7633df2c1fe33acde271a6a1a`. Test executable SHA-256 is `3b45998f1570cce7ba4fea99e715a4fa4453f5f8217223fe12e8f0fe3be3852d`; lock SHA-256 is `917ad40bba32c03be27fabd3a34d502ccc84d04a3200f84968b09fac8c276144`. The report itself does not contain a macOS RSS value. A separate 200 ms process sampler recorded 89 samples and a peak of 61,456 KiB; that sampling observation cannot exclude shorter memory peaks.
