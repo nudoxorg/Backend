@@ -400,7 +400,7 @@ impl RenderOnce for FeaturePreview {
         let scroll_key = format!("folio-feature-scroll-{}", self.id);
 
         let profile = wrap(key(&self.id, "profile"), "read only · manifest defaults", SMALL, palette.ink3, &measure, None);
-        let mut head = div().flex().flex_wrap().items_baseline().gap_x(measure.space(Space::Snug));
+        let mut head = div().w(self.width).min_w_0().flex().flex_wrap().items_baseline().gap_x(measure.space(Space::Snug));
         head = head.child(one(key(&self.id, "label"), "Features", LABEL, palette.ink3, &measure));
         if measure.effective() < 360.0 {
             // Keep the manifest fact in a real full-width row on narrow,
