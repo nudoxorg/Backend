@@ -9,6 +9,7 @@ use backend_engine::{
     ForgePackageManifest, ForgeSearchRecord, ProductPackageCoordinate, RowChange, RowId, ViewDelta,
     ViewRoot, ViewStateRoot,
 };
+use backend_extension_tantivy::DurableCacheBudget;
 use backend_library::{Fragment, Row};
 use serde::{Deserialize, Serialize};
 use std::cell::OnceCell;
@@ -52,12 +53,10 @@ const SEARCH_PROJECTION_MANIFEST: &str = "selected-root-v1";
 const SEARCH_PROJECTION_ROOT_LEASE: &str = ".backend-root-reader.lock";
 const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v2\0";
 const MAX_RETAINED_SEARCH_PROJECTIONS: usize = 4;
-const MAX_SEARCH_PROJECTION_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_SEARCH_PROJECTION_FILES: usize = 196_608;
 const MAX_SEARCH_PROJECTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SEARCH_ROOT_SCAN_ENTRIES: usize = 65_536;
-static NEXT_SEARCH_STAGE: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static NEXT_SEARCH_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Identity for one source-specific discovery claim. A second configured source
 /// may publish the same coordinate and remains a distinct search result.
@@ -1110,9 +1109,7 @@ impl LineageSearchIndex {
             }
         };
         let inner = match (mode, directory.as_deref()) {
-            (SearchIndexMode::Memory, _) => {
-                TextSearchIndex::new_with_memory(WRITER_MEMORY_BYTES)?
-            }
+            (SearchIndexMode::Memory, _) => TextSearchIndex::new_with_memory(WRITER_MEMORY_BYTES)?,
             (SearchIndexMode::BuildAt(_), Some(directory)) => {
                 TextSearchIndex::new_at(directory, WRITER_MEMORY_BYTES)?
             }
@@ -1788,6 +1785,7 @@ pub(crate) struct DiscoverySearchIndex {
     forge_documents: BTreeMap<String, ForgeSearchDocument>,
     source_pin_documents: BTreeMap<String, ForgeSourcePinSearchDocument>,
     durable_cache_root: Option<PathBuf>,
+    durable_cache_budget: DurableCacheBudget,
     _durable_root_lease: Option<File>,
 }
 
@@ -1826,11 +1824,28 @@ impl DiscoverySearchIndex {
         forge_documents: &[ForgeSearchDocument],
         source_pin_documents: &[ForgeSourcePinSearchDocument],
     ) -> Result<Self, String> {
+        Self::open_with_forge_and_source_pins_at_with_budget(
+            cache_root,
+            store,
+            forge_documents,
+            source_pin_documents,
+            DurableCacheBudget::default(),
+        )
+    }
+
+    pub(crate) fn open_with_forge_and_source_pins_at_with_budget(
+        cache_root: impl AsRef<Path>,
+        store: &DiscoveryStore,
+        forge_documents: &[ForgeSearchDocument],
+        source_pin_documents: &[ForgeSourcePinSearchDocument],
+        budget: DurableCacheBudget,
+    ) -> Result<Self, String> {
         Self::open_durable(
             Some(store),
             forge_documents,
             source_pin_documents,
             cache_root.as_ref(),
+            budget,
         )
     }
 
@@ -1858,11 +1873,26 @@ impl DiscoverySearchIndex {
         forge_documents: &[ForgeSearchDocument],
         source_pin_documents: &[ForgeSourcePinSearchDocument],
     ) -> Result<Self, String> {
+        Self::open_forge_only_with_source_pins_at_with_budget(
+            cache_root,
+            forge_documents,
+            source_pin_documents,
+            DurableCacheBudget::default(),
+        )
+    }
+
+    pub(crate) fn open_forge_only_with_source_pins_at_with_budget(
+        cache_root: impl AsRef<Path>,
+        forge_documents: &[ForgeSearchDocument],
+        source_pin_documents: &[ForgeSourcePinSearchDocument],
+        budget: DurableCacheBudget,
+    ) -> Result<Self, String> {
         Self::open_durable(
             None,
             forge_documents,
             source_pin_documents,
             cache_root.as_ref(),
+            budget,
         )
     }
 
@@ -1925,6 +1955,7 @@ impl DiscoverySearchIndex {
             source_pin_documents: BTreeMap::new(),
             _durable_root_lease: None,
             durable_cache_root,
+            durable_cache_budget: DurableCacheBudget::default(),
         };
         index.sync_forge_documents(forge_documents)?;
         index.sync_source_pin_documents(source_pin_documents)?;
@@ -1936,26 +1967,29 @@ impl DiscoverySearchIndex {
         forge_documents: &[ForgeSearchDocument],
         source_pin_documents: &[ForgeSourcePinSearchDocument],
         cache_root: &Path,
+        budget: DurableCacheBudget,
     ) -> Result<Self, String> {
         // This process-safe lock fences stage cleanup, publication, and pruning
         // across every durable discovery open for this cache.
         fs::create_dir_all(cache_root).map_err(|error| error.to_string())?;
-        let _cache_directory =
-            backend_platform::durability::open_directory_readonly_nofollow(cache_root)
-                .map_err(|error| format!("open discovery search cache without following links: {error}"))?;
+        let _cache_directory = backend_platform::durability::open_directory_readonly_nofollow(
+            cache_root,
+        )
+        .map_err(|error| format!("open discovery search cache without following links: {error}"))?;
         let _cache_lock = SearchProjectionCacheLock::acquire(cache_root)?;
         let version_root = cache_root.join(SEARCH_PROJECTION_DIRECTORY);
         fs::create_dir_all(&version_root).map_err(|error| error.to_string())?;
-        let _version_directory =
-            backend_platform::durability::open_directory_readonly_nofollow(&version_root)
-                .map_err(|error| format!("open discovery search root without following links: {error}"))?;
+        let _version_directory = backend_platform::durability::open_directory_readonly_nofollow(
+            &version_root,
+        )
+        .map_err(|error| format!("open discovery search root without following links: {error}"))?;
         remove_search_projection_stages(&version_root)?;
 
         let expected_root = selected_discovery_root(store, forge_documents, source_pin_documents)?;
         let name = hex(&expected_root);
         let selected = version_root.join(&name);
         if projection_path_exists(&selected)? {
-            match verify_search_projection(&selected, expected_root) {
+            match verify_search_projection(&selected, expected_root, budget) {
                 Ok(true) => {
                     let mut index = Self::build_from_sources(
                         store,
@@ -1967,7 +2001,8 @@ impl DiscoverySearchIndex {
                     index.validate_open_projection(expected_root)?;
                     pin_search_projection(&mut index, &selected)?;
                     touch_search_projection(&selected)?;
-                    prune_search_projections(&version_root, &selected)?;
+                    index.durable_cache_budget = budget;
+                    prune_search_projections(&version_root, &selected, budget)?;
                     return Ok(index);
                 }
                 Ok(false) => remove_unpinned_search_projection(&selected)?,
@@ -2000,7 +2035,7 @@ impl DiscoverySearchIndex {
             return Err("discovery projection root disagrees with its source snapshot".to_owned());
         }
         drop(built);
-        write_search_projection_manifest(&staging, expected_root)?;
+        write_search_projection_manifest(&staging, expected_root, budget)?;
         sync_search_projection_tree(&staging)?;
         fs::rename(&staging, &selected).map_err(|error| error.to_string())?;
         sync_search_directory(&version_root)?;
@@ -2012,9 +2047,10 @@ impl DiscoverySearchIndex {
             Some(cache_root.to_path_buf()),
         )?;
         index.validate_open_projection(expected_root)?;
+        index.durable_cache_budget = budget;
         pin_search_projection(&mut index, &selected)?;
         touch_search_projection(&selected)?;
-        prune_search_projections(&version_root, &selected)?;
+        prune_search_projections(&version_root, &selected, budget)?;
         Ok(index)
     }
 
@@ -2023,10 +2059,11 @@ impl DiscoverySearchIndex {
             || self.inner.reader.searcher().num_docs() != self.inner.keys.len() as u64
             || self.lineages.inner.reader.searcher().num_docs()
                 != self.lineages.inner.keys.len() as u64
-            || self.source_pins.reader.searcher().num_docs()
-                != self.source_pins.keys.len() as u64
+            || self.source_pins.reader.searcher().num_docs() != self.source_pins.keys.len() as u64
         {
-            return Err("durable discovery postings do not match the selected source root".to_owned());
+            return Err(
+                "durable discovery postings do not match the selected source root".to_owned(),
+            );
         }
         Ok(())
     }
@@ -2043,11 +2080,12 @@ impl DiscoverySearchIndex {
                 .values()
                 .cloned()
                 .collect::<Vec<_>>();
-            *self = Self::open_with_forge_and_source_pins_at(
+            *self = Self::open_with_forge_and_source_pins_at_with_budget(
                 cache_root,
                 store,
                 &forge_documents,
                 &source_pin_documents,
+                self.durable_cache_budget,
             )?;
             return Ok(());
         }
@@ -2072,11 +2110,12 @@ impl DiscoverySearchIndex {
         source_pin_documents: &[ForgeSourcePinSearchDocument],
     ) -> Result<(), String> {
         if let Some(cache_root) = self.durable_cache_root.clone() {
-            *self = Self::open_with_forge_and_source_pins_at(
+            *self = Self::open_with_forge_and_source_pins_at_with_budget(
                 cache_root,
                 store,
                 forge_documents,
                 source_pin_documents,
+                self.durable_cache_budget,
             )?;
             return Ok(());
         }
@@ -2098,10 +2137,11 @@ impl DiscoverySearchIndex {
         source_pin_documents: &[ForgeSourcePinSearchDocument],
     ) -> Result<(), String> {
         if let Some(cache_root) = self.durable_cache_root.clone() {
-            *self = Self::open_forge_only_with_source_pins_at(
+            *self = Self::open_forge_only_with_source_pins_at_with_budget(
                 cache_root,
                 forge_documents,
                 source_pin_documents,
+                self.durable_cache_budget,
             )?;
             return Ok(());
         }
@@ -3406,7 +3446,7 @@ impl SearchProjectionCacheLock {
         let file = backend_platform::durability::open_or_create_regular_file_nofollow(
             &cache_root.join(".discovery-search-v1.lock"),
         )
-            .map_err(|error| format!("open discovery search cache lock: {error}"))?;
+        .map_err(|error| format!("open discovery search cache lock: {error}"))?;
         file.lock()
             .map_err(|error| format!("lock discovery search cache: {error}"))?;
         Ok(Self { _file: file })
@@ -3460,8 +3500,13 @@ fn selected_discovery_root(
     for document in forge_documents {
         document.admit()?;
         let identity = forge_search_identity(document);
-        if normalized_forge.insert(identity.clone(), document.clone()).is_some() {
-            return Err("forge search catalog contains a duplicate package/version identity".to_owned());
+        if normalized_forge
+            .insert(identity.clone(), document.clone())
+            .is_some()
+        {
+            return Err(
+                "forge search catalog contains a duplicate package/version identity".to_owned(),
+            );
         }
         let (_, _, release) = forge_lineage_release(&identity, document)?;
         if !release_ids.insert(identity) {
@@ -3499,7 +3544,11 @@ fn xor_fingerprint(target: &mut [u8; 32], value: [u8; 32]) {
     }
 }
 
-fn verify_search_projection(directory: &Path, expected_root: [u8; 32]) -> Result<bool, String> {
+fn verify_search_projection(
+    directory: &Path,
+    expected_root: [u8; 32],
+    budget: DurableCacheBudget,
+) -> Result<bool, String> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -3508,14 +3557,20 @@ fn verify_search_projection(directory: &Path, expected_root: [u8; 32]) -> Result
     if !metadata.file_type().is_dir() {
         return Ok(false);
     }
-    let _directory_handle = match backend_platform::durability::open_directory_readonly_nofollow(directory) {
-        Ok(handle) => handle,
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(false),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("open discovery search root without following links: {error}")),
-    };
+    let _directory_handle =
+        match backend_platform::durability::open_directory_readonly_nofollow(directory) {
+            Ok(handle) => handle,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "open discovery search root without following links: {error}"
+                ));
+            }
+        };
     let manifest_path = directory.join(SEARCH_PROJECTION_MANIFEST);
-    let bytes = match read_bounded_search_file(&manifest_path, MAX_SEARCH_PROJECTION_MANIFEST_BYTES) {
+    let bytes = match read_bounded_search_file(&manifest_path, MAX_SEARCH_PROJECTION_MANIFEST_BYTES)
+    {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(false),
@@ -3534,17 +3589,15 @@ fn verify_search_projection(directory: &Path, expected_root: [u8; 32]) -> Result
     }
     if manifest.files.keys().any(|path| {
         path.len() > 261
-            || !path
-                .split_once('/')
-                .is_some_and(|(index, file)| {
-                    matches!(index, "inner" | "source-pins" | "lineages")
-                        && file.len() <= 255
-                        && is_search_tantivy_file_name(file)
-                })
+            || !path.split_once('/').is_some_and(|(index, file)| {
+                matches!(index, "inner" | "source-pins" | "lineages")
+                    && file.len() <= 255
+                    && is_search_tantivy_file_name(file)
+            })
     }) {
         return Ok(false);
     }
-    let actual = match search_projection_file_fingerprints(directory) {
+    let actual = match search_projection_file_fingerprints(directory, budget) {
         Ok(files) => files,
         Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(false),
         Err(error) => return Err(format!("verify discovery search files: {error}")),
@@ -3560,8 +3613,9 @@ fn verify_search_projection(directory: &Path, expected_root: [u8; 32]) -> Result
 fn write_search_projection_manifest(
     directory: &Path,
     root: [u8; 32],
+    budget: DurableCacheBudget,
 ) -> Result<(), String> {
-    let files = search_projection_file_fingerprints(directory)
+    let files = search_projection_file_fingerprints(directory, budget)
         .map_err(|error| format!("fingerprint discovery projection files: {error}"))?;
     let manifest = DurableSearchManifest {
         version: 1,
@@ -3595,6 +3649,7 @@ fn search_projection_recipe() -> [u8; 32] {
 
 fn search_projection_file_fingerprints(
     root: &Path,
+    budget: DurableCacheBudget,
 ) -> Result<BTreeMap<String, (u64, [u8; 32])>, std::io::Error> {
     let mut files = BTreeMap::new();
     let mut total_bytes = 0_u64;
@@ -3608,7 +3663,9 @@ fn search_projection_file_fingerprints(
         let metadata = fs::symlink_metadata(&path)?;
         if is_search_root_marker(&name) {
             if !metadata.file_type().is_file() {
-                return Err(invalid_search_projection_file("root marker is not a regular file"));
+                return Err(invalid_search_projection_file(
+                    "root marker is not a regular file",
+                ));
             }
             continue;
         }
@@ -3618,7 +3675,9 @@ fn search_projection_file_fingerprints(
             ));
         }
         if !matches!(name.as_str(), "inner" | "source-pins" | "lineages") {
-            return Err(invalid_search_projection_file("unknown projection namespace"));
+            return Err(invalid_search_projection_file(
+                "unknown projection namespace",
+            ));
         }
         let _directory = backend_platform::durability::open_directory_readonly_nofollow(&path)?;
         for child in fs::read_dir(&path)? {
@@ -3645,15 +3704,16 @@ fn search_projection_file_fingerprints(
                     "projection file count exceeds its bound",
                 ));
             }
-            let mut file = match backend_platform::durability::open_regular_file_nofollow(&child_path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                    return Err(invalid_search_projection_file(
-                        "Tantivy file changed to a link or special entry",
-                    ));
-                }
-                Err(error) => return Err(error),
-            };
+            let mut file =
+                match backend_platform::durability::open_regular_file_nofollow(&child_path) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                        return Err(invalid_search_projection_file(
+                            "Tantivy file changed to a link or special entry",
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                };
             let opened_metadata = file.metadata()?;
             if opened_metadata.len() != child_metadata.len() {
                 return Err(invalid_search_projection_file(
@@ -3663,9 +3723,13 @@ fn search_projection_file_fingerprints(
             total_bytes = total_bytes
                 .checked_add(opened_metadata.len())
                 .ok_or_else(|| invalid_search_projection_file("projection size overflow"))?;
-            if total_bytes > MAX_SEARCH_PROJECTION_CACHE_BYTES {
-                return Err(invalid_search_projection_file(
-                    "discovery search projection exceeds its byte quota",
+            if total_bytes > budget.max_bytes() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::StorageFull,
+                    format!(
+                        "discovery search projection needs {total_bytes} bytes, above the {}-byte cache budget",
+                        budget.max_bytes()
+                    ),
                 ));
             }
             let mut hasher = blake3::Hasher::new();
@@ -3693,8 +3757,13 @@ fn search_projection_file_fingerprints(
             );
         }
     }
-    if !["inner", "source-pins", "lineages"].iter().all(|name| root.join(name).is_dir()) {
-        return Err(invalid_search_projection_file("projection namespace is missing"));
+    if !["inner", "source-pins", "lineages"]
+        .iter()
+        .all(|name| root.join(name).is_dir())
+    {
+        return Err(invalid_search_projection_file(
+            "projection namespace is missing",
+        ));
     }
     Ok(files)
 }
@@ -3714,7 +3783,8 @@ fn read_bounded_search_file(path: &Path, maximum: u64) -> Result<Vec<u8>, std::i
     let capacity = usize::try_from(initial_length)
         .map_err(|_| invalid_search_projection_file("discovery metadata length is too large"))?;
     let mut bytes = Vec::with_capacity(capacity);
-    file.take(maximum.saturating_add(1)).read_to_end(&mut bytes)?;
+    file.take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > maximum || bytes.len() as u64 != initial_length {
         return Err(invalid_search_projection_file(
             "discovery search metadata changed or exceeds its byte bound",
@@ -3724,8 +3794,10 @@ fn read_bounded_search_file(path: &Path, maximum: u64) -> Result<Vec<u8>, std::i
 }
 
 fn is_search_root_marker(name: &str) -> bool {
-    matches!(name, SEARCH_PROJECTION_MANIFEST | SEARCH_PROJECTION_ROOT_LEASE | ".last-used")
-        || name == format!(".{SEARCH_PROJECTION_MANIFEST}.tmp")
+    matches!(
+        name,
+        SEARCH_PROJECTION_MANIFEST | SEARCH_PROJECTION_ROOT_LEASE | ".last-used"
+    ) || name == format!(".{SEARCH_PROJECTION_MANIFEST}.tmp")
 }
 
 fn is_search_tantivy_volatile_file(name: &str) -> bool {
@@ -3763,10 +3835,12 @@ fn is_search_tantivy_file_name(name: &str) -> bool {
     if segment.len() != 32 || !segment.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return false;
     }
-    matches!(component, "idx" | "pos" | "term" | "store" | "fast" | "fieldnorm")
-        || component
-            .strip_suffix(".del")
-            .is_some_and(|opstamp| !opstamp.is_empty() && opstamp.bytes().all(|byte| byte.is_ascii_digit()))
+    matches!(
+        component,
+        "idx" | "pos" | "term" | "store" | "fast" | "fieldnorm"
+    ) || component.strip_suffix(".del").is_some_and(|opstamp| {
+        !opstamp.is_empty() && opstamp.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 fn sync_search_projection_tree(directory: &Path) -> Result<(), String> {
@@ -3800,9 +3874,11 @@ fn remove_search_projection(path: &Path) -> Result<(), String> {
         Err(error) => return Err(format!("inspect discovery search path: {error}")),
     };
     if metadata.file_type().is_dir() {
-        fs::remove_dir_all(path).map_err(|error| format!("remove corrupt discovery search root: {error}"))
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("remove corrupt discovery search root: {error}"))
     } else {
-        fs::remove_file(path).map_err(|error| format!("remove corrupt discovery search path: {error}"))
+        fs::remove_file(path)
+            .map_err(|error| format!("remove corrupt discovery search path: {error}"))
     }
 }
 
@@ -3834,9 +3910,9 @@ fn remove_unpinned_search_projection(path: &Path) -> Result<(), String> {
     let lease = search_projection_lease(path)?;
     match lease.try_lock() {
         Ok(()) => remove_search_projection(path),
-        Err(std::fs::TryLockError::WouldBlock) => Err(
-            "selected discovery search root is held by an active reader".to_owned(),
-        ),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            Err("selected discovery search root is held by an active reader".to_owned())
+        }
         Err(std::fs::TryLockError::Error(error)) => {
             Err(format!("lock discovery search root for recovery: {error}"))
         }
@@ -3866,7 +3942,7 @@ fn touch_search_projection(path: &Path) -> Result<(), String> {
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(
         &path.join(".last-used"),
     )
-        .map_err(|error| format!("update discovery search cache use marker: {error}"))?;
+    .map_err(|error| format!("update discovery search cache use marker: {error}"))?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -3876,7 +3952,11 @@ fn touch_search_projection(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("sync discovery search cache use marker: {error}"))
 }
 
-fn prune_search_projections(root: &Path, selected: &Path) -> Result<(), String> {
+fn prune_search_projections(
+    root: &Path,
+    selected: &Path,
+    budget: DurableCacheBudget,
+) -> Result<(), String> {
     let mut roots = Vec::new();
     let mut retained_bytes = 0_u64;
     let mut entries_seen = 0_usize;
@@ -3914,7 +3994,7 @@ fn prune_search_projections(root: &Path, selected: &Path) -> Result<(), String> 
     for (path, _, bytes) in roots {
         if path == selected
             || (live_roots <= MAX_RETAINED_SEARCH_PROJECTIONS
-                && retained_bytes <= MAX_SEARCH_PROJECTION_CACHE_BYTES)
+                && retained_bytes <= budget.max_bytes())
         {
             continue;
         }
@@ -3931,8 +4011,11 @@ fn prune_search_projections(root: &Path, selected: &Path) -> Result<(), String> 
             }
         }
     }
-    if retained_bytes > MAX_SEARCH_PROJECTION_CACHE_BYTES {
-        return Err("active discovery search roots exceed the cache byte quota".to_owned());
+    if retained_bytes > budget.max_bytes() {
+        return Err(format!(
+            "active discovery search roots need {retained_bytes} bytes, above the {}-byte cache budget",
+            budget.max_bytes()
+        ));
     }
     sync_search_directory(root)
 }
@@ -3959,15 +4042,17 @@ fn search_projection_size(root: &Path) -> Result<u64, String> {
         {
             return Err("discovery search cache contains an unknown root entry".to_owned());
         }
-        let _directory = backend_platform::durability::open_directory_readonly_nofollow(&entry.path())
-            .map_err(|error| format!("open discovery search directory for quota: {error}"))?;
+        let _directory =
+            backend_platform::durability::open_directory_readonly_nofollow(&entry.path())
+                .map_err(|error| format!("open discovery search directory for quota: {error}"))?;
         for file in fs::read_dir(entry.path()).map_err(|error| error.to_string())? {
             let file = file.map_err(|error| error.to_string())?;
             let file_name = file
                 .file_name()
                 .into_string()
                 .map_err(|_| "Tantivy projection filename is not UTF-8".to_owned())?;
-            let file_metadata = fs::symlink_metadata(file.path()).map_err(|error| error.to_string())?;
+            let file_metadata =
+                fs::symlink_metadata(file.path()).map_err(|error| error.to_string())?;
             if !file_metadata.file_type().is_file()
                 || (!is_search_tantivy_volatile_file(&file_name)
                     && !is_search_tantivy_file_name(&file_name))
@@ -6047,6 +6132,7 @@ mod tests {
             forge_documents: BTreeMap::new(),
             source_pin_documents: BTreeMap::new(),
             durable_cache_root: None,
+            durable_cache_budget: DurableCacheBudget::default(),
             _durable_root_lease: None,
         }
     }
@@ -6925,6 +7011,7 @@ mod tests {
             forge_documents: BTreeMap::new(),
             source_pin_documents: BTreeMap::new(),
             durable_cache_root: None,
+            durable_cache_budget: DurableCacheBudget::default(),
             _durable_root_lease: None,
         };
         let build_millis = build_started.elapsed().as_millis();
@@ -7654,6 +7741,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(cache);
     }
 
+    #[test]
+    fn durable_forge_projection_budget_refusal_preserves_selected_root() {
+        let cache = std::env::temp_dir().join(format!(
+            "backend-discovery-search-budget-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let document = forge_document(
+            "https://github.com/acme/budgeted@tag:v1.0.0",
+            "pkg:cargo/budgeted@1.0.0",
+            DiscoveryFacet::Known(vec!["budgeted package".to_owned()]),
+            DiscoveryFacet::Known("cache quota fixture".to_owned()),
+            DiscoveryFacet::Known(vec!["durable".to_owned()]),
+            DiscoveryFacet::Known("MIT".to_owned()),
+            DiscoveryFacet::Known("budgeted projection".to_owned()),
+            vec!["budgetretentionmarker".to_owned()],
+        );
+        let selected = DiscoverySearchIndex::open_forge_only_with_source_pins_at(
+            &cache,
+            std::slice::from_ref(&document),
+            &[],
+        )
+        .expect("publish a durable projection");
+        let selected_root = cache
+            .join(SEARCH_PROJECTION_DIRECTORY)
+            .join(hex(&selected.snapshot_root));
+        drop(selected);
+
+        let tiny_budget = DurableCacheBudget::new(1).expect("nonzero cache budget");
+        let refused = DiscoverySearchIndex::open_forge_only_with_source_pins_at_with_budget(
+            &cache,
+            std::slice::from_ref(&document),
+            &[],
+            tiny_budget,
+        );
+        assert!(
+            refused
+                .err()
+                .expect("valid selected root must exceed the one-byte budget")
+                .contains("budget"),
+            "capacity refusal should be reported as a budget error"
+        );
+        assert!(
+            selected_root.is_dir(),
+            "capacity refusal must retain the valid root"
+        );
+
+        let reopened = DiscoverySearchIndex::open_forge_only_with_source_pins_at(
+            &cache,
+            std::slice::from_ref(&document),
+            &[],
+        )
+        .expect("default budget can reopen retained selected root");
+        let page = reopened
+            .search(
+                DiscoverySearchRequest {
+                    text: "budgetretentionmarker",
+                    ecosystem: Some(RegistryEcosystem::Cargo),
+                },
+                4,
+            )
+            .expect("query retained postings");
+        assert_eq!(page.hits.len(), 1);
+        assert_eq!(
+            page.hits[0].key.coordinate.as_str(),
+            "pkg:cargo/budgeted@1.0.0"
+        );
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(cache);
+    }
+
     #[cfg(unix)]
     #[test]
     fn durable_forge_projection_pins_active_roots_and_bounds_manifest_recovery() {
@@ -7706,7 +7867,10 @@ mod tests {
             latest_snapshot_root = current.snapshot_root;
             drop(current);
         }
-        assert!(initial_root.is_dir(), "an active selected reader pins its root");
+        assert!(
+            initial_root.is_dir(),
+            "an active selected reader pins its root"
+        );
         drop(initial);
 
         let latest = DiscoverySearchIndex::open_forge_only_with_source_pins_at(
@@ -7726,9 +7890,15 @@ mod tests {
             .expect("query independently known latest term")
             .hits;
         assert_eq!(expected.len(), 1);
-        assert_eq!(expected[0].key.coordinate.as_str(), "pkg:cargo/pinned@1.0.0");
+        assert_eq!(
+            expected[0].key.coordinate.as_str(),
+            "pkg:cargo/pinned@1.0.0"
+        );
         drop(latest);
-        assert!(!initial_root.exists(), "released old root becomes evictable");
+        assert!(
+            !initial_root.exists(),
+            "released old root becomes evictable"
+        );
 
         std::fs::set_permissions(&latest_root, std::fs::Permissions::from_mode(0o000))
             .expect("make selected root unreadable where permissions are enforced");
@@ -7745,7 +7915,10 @@ mod tests {
                     error.to_ascii_lowercase().contains("permission denied"),
                     "unexpected error should not be treated as transient I/O: {error}"
                 );
-                assert!(latest_root.is_dir(), "transient I/O must retain the selected root");
+                assert!(
+                    latest_root.is_dir(),
+                    "transient I/O must retain the selected root"
+                );
             }
             Ok(index) => drop(index), // Some test runners bypass mode-bit permissions.
         }
@@ -7768,7 +7941,8 @@ mod tests {
         drop(rebuilt);
 
         let manifest = latest_root.join(SEARCH_PROJECTION_MANIFEST);
-        let oversized = File::create(&manifest).expect("replace manifest with oversized sparse file");
+        let oversized =
+            File::create(&manifest).expect("replace manifest with oversized sparse file");
         oversized
             .set_len(MAX_SEARCH_PROJECTION_MANIFEST_BYTES + 1)
             .expect("set oversized manifest length");
