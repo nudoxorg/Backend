@@ -422,17 +422,43 @@ impl OwnedSemanticAuthoritySelectionSource {
             backend_extension_turso::SelectedGeneration,
             SelectedVersionedPlanePublication,
         ),
-        BuiltinModelError,
+        OwnedSemanticAuthoritySelectionError,
     > {
         let selections = self.loader.acquire_publication_read()?;
-        let (claim, selected) =
-            super::semantic_authority::SelectedClosureImageLoader::committed_pair_in(
+        let Some((claim, selected)) =
+            super::semantic_authority::SelectedClosureImageLoader::committed_pair_optional_in(
                 &selections,
                 &self.key,
-            )?;
+            )?
+        else {
+            return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
+        };
         let publication =
             SemanticAuthority::selected_plane_for_store(&self.store, &self.key, claim, &selected)?;
         Ok((claim, selected, publication))
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum OwnedSemanticAuthoritySelectionError {
+    Authority(BuiltinModelError),
+    StaleSelection,
+}
+
+impl From<BuiltinModelError> for OwnedSemanticAuthoritySelectionError {
+    fn from(error: BuiltinModelError) -> Self {
+        Self::Authority(error)
+    }
+}
+
+impl fmt::Display for OwnedSemanticAuthoritySelectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Authority(error) => fmt::Display::fmt(error, formatter),
+            Self::StaleSelection => {
+                formatter.write_str("committed semantic product selection moved")
+            }
+        }
     }
 }
 
@@ -590,7 +616,7 @@ impl VersionedPlaneSelectionResolver for SemanticAuthoritySelectionSource<'_> {
 }
 
 impl SelectedGenerationSource for OwnedSemanticAuthoritySelectionSource {
-    type Error = BuiltinModelError;
+    type Error = OwnedSemanticAuthoritySelectionError;
 
     fn current_selected_generation(&mut self) -> Result<SelectedGenerationStamp, Self::Error> {
         self.current_selection()
@@ -625,8 +651,21 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
     where
         Self: 'fence;
 
+    fn classify_selection_error(
+        error: &Self::Error,
+    ) -> backend_replication::SelectedNativeImageSourceFailure {
+        match error {
+            OwnedSemanticAuthoritySelectionError::StaleSelection => {
+                backend_replication::SelectedNativeImageSourceFailure::StaleSelection
+            }
+            OwnedSemanticAuthoritySelectionError::Authority(_) => {
+                backend_replication::SelectedNativeImageSourceFailure::Refused
+            }
+        }
+    }
+
     fn selected_semantic_target(&mut self) -> Result<SemanticTargetKey, Self::Error> {
-        self.target()
+        self.target().map_err(Into::into)
     }
 
     fn selected_native_image_identity(
@@ -635,9 +674,7 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
     ) -> Result<SemanticImageIdentity, Self::Error> {
         let (claim, selected, publication) = self.current_selection()?;
         if publication.metadata().artifact_for_image(image).is_none() {
-            return Err(BuiltinModelError(
-                "native image is absent from the committed selected catalog".to_owned(),
-            ));
+            return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
         }
         SemanticAuthority::selected_native_image_identity_for_store(
             &self.store,
@@ -652,27 +689,32 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
         &'fence mut self,
         selected_image: &SelectedNativeHistoryImage<'_>,
     ) -> Result<Self::PublicationFence<'fence>, Self::Error> {
-        let target = self.target()?;
+        let target = self
+            .target()
+            .map_err(OwnedSemanticAuthoritySelectionError::from)?;
         if selected_image.target() != &target {
-            return Err(BuiltinModelError(
-                "typed V3 history target differs from its committed product key".to_owned(),
+            return Err(OwnedSemanticAuthoritySelectionError::Authority(
+                BuiltinModelError(
+                    "typed V3 history target differs from its committed product key".to_owned(),
+                ),
             ));
         }
         let selections = self.loader.acquire_publication_read()?;
-        let (claim, selected) =
-            super::semantic_authority::SelectedClosureImageLoader::committed_pair_in(
+        let Some((claim, selected)) =
+            super::semantic_authority::SelectedClosureImageLoader::committed_pair_optional_in(
                 &selections,
                 &self.key,
-            )?;
+            )?
+        else {
+            return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
+        };
         let publication =
             SemanticAuthority::selected_plane_for_store(&self.store, &self.key, claim, &selected)?;
         let image = selected_image.image_key();
         if publication.stamp() != selected_image.selected_stamp()
             || publication.metadata().artifact_for_image(image).is_none()
         {
-            return Err(BuiltinModelError(
-                "typed V3 history image is no longer the committed product selection".to_owned(),
-            ));
+            return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
         }
         let image_identity = SemanticAuthority::selected_native_image_identity_for_store(
             &self.store,
@@ -682,10 +724,7 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
             image,
         )?;
         if image_identity != selected_image.image_identity() {
-            return Err(BuiltinModelError(
-                "typed V3 history image identity differs from the committed product selection"
-                    .to_owned(),
-            ));
+            return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
         }
         Ok(OwnedSemanticAuthorityPublicationFence {
             _selections: selections,
@@ -1754,6 +1793,41 @@ mod tests {
             NativeHistoryPublicationError::Refused(reason)
                 if reason.contains("IntegrityFailure")
         ));
+    }
+
+    #[test]
+    fn owned_selection_source_classifies_an_absent_committed_marker_as_stale() {
+        let directory = path();
+        let package = backend_engine::PackageReference::parse(
+            "pkg:cargo/native-history-selection@1.0.0".to_owned(),
+        )
+        .expect("valid product package");
+        let coordinate = backend_library::interface::PackageUrl::parse(
+            "pkg:cargo/native-history-selection@1.0.0".to_owned(),
+        )
+        .expect("valid product coordinate");
+        let key = ProductSemanticPublicationKey::new(
+            package,
+            coordinate,
+            backend_semantic::ir::LanguageProfile::Rust(
+                backend_semantic::ir::RustEdition::Rust2021,
+            ),
+        )
+        .expect("valid product selection key");
+        let authority = SemanticAuthority::open(&directory).expect("open semantic authority");
+        let mut source = authority.owned_history_selection_source(key);
+
+        let error = source
+            .current_selected_generation()
+            .expect_err("unselected product has no current history stamp");
+        assert!(matches!(
+            OwnedSemanticAuthoritySelectionSource::classify_selection_error(&error),
+            backend_replication::SelectedNativeImageSourceFailure::StaleSelection,
+        ));
+
+        drop(source);
+        drop(authority);
+        std::fs::remove_dir_all(directory).expect("remove temporary authority workspace");
     }
 
     struct FakeSelectedImageRangePublisher {

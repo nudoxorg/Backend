@@ -626,9 +626,22 @@ impl SelectedClosureImageLoader {
         selections: &SelectedClosureSnapshot,
         key: &ProductSemanticPublicationKey,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
-        let claim = selections.by_product.get(key).copied().ok_or_else(|| {
+        Self::committed_pair_optional_in(selections, key)?.ok_or_else(|| {
             BuiltinModelError("product has no committed semantic selection".to_owned())
-        })?;
+        })
+    }
+
+    /// Looks up the product marker while preserving the distinction between
+    /// a successfully observed absent selection and a broken in-memory
+    /// projection. History publication uses the former as typed staleness;
+    /// it must not infer marker movement from a generic read error.
+    pub(super) fn committed_pair_optional_in(
+        selections: &SelectedClosureSnapshot,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<Option<(SemanticPublicationClaim, SelectedGeneration)>, BuiltinModelError> {
+        let Some(claim) = selections.by_product.get(key).copied() else {
+            return Ok(None);
+        };
         let selected = selections
             .by_binding
             .get(&(key.clone(), *claim.binding().identity.as_ref()))
@@ -638,7 +651,7 @@ impl SelectedClosureImageLoader {
                     "semantic projection names a generation absent from Turso history".to_owned(),
                 )
             })?;
-        Ok((claim, selected))
+        Ok(Some((claim, selected)))
     }
 
     pub(super) fn acquire_publication_read(
