@@ -1193,7 +1193,6 @@ impl SemanticAuthority {
             Arc::clone(&self.image_loader),
             self.store.clone(),
             key,
-            Arc::clone(&self.selected_image_readers),
         )
     }
 
