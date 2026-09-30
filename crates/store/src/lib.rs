@@ -126,6 +126,9 @@ pub enum StoreError {
     PublicationAuthorityBusy,
     /// A filesystem operation failed while reading or publishing durable data.
     Io(String),
+    /// A filesystem operation failed with an explicitly transient kind such
+    /// as interruption, would-block, resource-busy, or timeout.
+    TemporaryIo(String),
     /// The journal selected the publication, but synchronizing the redundant
     /// HEAD receipt failed after the selection became durable. Recovery may
     /// be retried with the returned selected head as the authoritative state.

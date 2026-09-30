@@ -1008,6 +1008,7 @@ impl RenderOnce for Folio {
                     .iter()
                     .map(|m| m.items.iter().map(|i| i.name.clone()).collect())
                     .collect();
+                let geometry = facet::folio::shingles::measured(&modules, &measure, window);
                 // The region the keyboard stands on reads itself, as a hovered one does.
                 let standing = facts.modules.iter().position(|m| {
                     self.targets
@@ -1016,6 +1017,7 @@ impl RenderOnce for Folio {
                 let carry_state = nav.clone();
                 let carry_names = names.clone();
                 let map = shingles(key(&self.id, "shingles"), modules.clone(), &measure)
+                    .geometry(geometry.clone())
                     .time(if facts.past.is_some() {
                         Time::Past
                     } else {
@@ -1043,7 +1045,7 @@ impl RenderOnce for Folio {
                             cx.notify();
                         });
                     });
-                self.with_doors(map, &modules, &nav, &measure)
+                self.with_doors(map, &nav, &geometry)
             }
             Some(open) => self.open_module(open, &nav_value, &nav, &measure, carried),
         };
@@ -1194,11 +1196,11 @@ impl Folio {
     fn with_doors(
         &self,
         map: facet::folio::shingles::Shingles,
-        modules: &[ModuleFacts],
         nav: &Entity<Nav>,
-        measure: &Measure,
+        geometry: &facet::folio::shingles::Layout,
     ) -> AnyElement {
-        let over = facet::folio::shingles::rects(modules, measure)
+        let over = geometry
+            .region_bounds()
             .into_iter()
             .zip(self.facts.modules.iter())
             .map(|(at, module)| {

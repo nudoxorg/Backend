@@ -1,7 +1,7 @@
 //! Deterministic lexical provider and page admission.
 
 use crate::identity::{QueryVersion, SchemaVersion};
-use crate::{AdapterError, Binding, Cursor, Error, Limits, Query, RankedHit};
+use crate::{AdapterError, Binding, Cursor, Error, Limits, Query, RankedHit, compare_ranked_hits};
 use backend_version::CoverageWitness;
 
 /// A request sent to a lexical source.
@@ -159,6 +159,7 @@ impl LexicalSource for MemorySource {
         if let Some(cursor) = request.cursor
             && (cursor.binding() != request.binding
                 || cursor.query() != request.query.version
+                || cursor.after_hit().is_some()
                 || cursor.offset() > self.hits.len())
         {
             return Err(Error::InvalidCursor);
@@ -249,11 +250,10 @@ impl<S: LexicalSource> Adapter<S> {
             return Err(AdapterError::Extension(Error::SizeLimit));
         }
         let hits = page.hits;
-        if hits.windows(2).any(|window| {
-            window[0].relevance < window[1].relevance
-                || (window[0].relevance == window[1].relevance
-                    && window[0].document >= window[1].document)
-        }) || hits
+        if hits
+            .windows(2)
+            .any(|window| compare_ranked_hits(window[0], window[1]).is_ge())
+            || hits
             .iter()
             .map(|hit| hit.document)
             .collect::<std::collections::BTreeSet<_>>()
@@ -261,6 +261,13 @@ impl<S: LexicalSource> Adapter<S> {
             != hits.len()
         {
             return Err(AdapterError::Extension(Error::MalformedInput));
+        }
+        if let Some(after) = request.cursor.and_then(Cursor::after_hit)
+            && hits
+                .first()
+                .is_some_and(|first| !compare_ranked_hits(after, *first).is_lt())
+        {
+            return Err(AdapterError::Extension(Error::InvalidCursor));
         }
         let current_offset = request.cursor.map_or(0, Cursor::offset);
         let end = current_offset
@@ -275,6 +282,20 @@ impl<S: LexicalSource> Adapter<S> {
                 || next.offset() <= current_offset
                 || next.offset() != end
                 || page.total == end)
+        {
+            return Err(AdapterError::Extension(Error::InvalidCursor));
+        }
+        if let Some(next) = page.next
+            && next
+                .after_hit()
+                .is_some_and(|after| hits.last().copied() != Some(after))
+        {
+            return Err(AdapterError::Extension(Error::InvalidCursor));
+        }
+        if request
+            .cursor
+            .is_some_and(|cursor| cursor.after_hit().is_some())
+            && page.next.is_some_and(|next| next.after_hit().is_none())
         {
             return Err(AdapterError::Extension(Error::InvalidCursor));
         }

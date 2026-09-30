@@ -6,7 +6,7 @@
 //! one link; a link count above one would let another name mutate supposedly
 //! immutable bytes.
 
-use super::{ClosureId, FileStore, ObjectId, StoreError, io_error};
+use super::{ClosureId, FileStore, ObjectId, StoreError, io_error, lock_error};
 use crate::UntrustedObjectId;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
@@ -171,7 +171,7 @@ mod imp {
     use std::os::unix::fs::MetadataExt;
 
     fn error(error: Errno) -> StoreError {
-        StoreError::Io(error.to_string())
+        io_error(&std::io::Error::from(error))
     }
 
     fn path_error(error: Errno) -> StoreError {
@@ -368,9 +368,7 @@ mod imp {
                 .map_err(error)?;
                 let lease = File::from(lease_fd);
                 validate_single_link_file(&lease)?;
-                lease
-                    .try_lock()
-                    .map_err(|error| StoreError::Io(error.to_string()))?;
+                lease.try_lock().map_err(lock_error)?;
                 directory.sync_all()?;
                 parent.sync_all()?;
                 Ok(lease)
@@ -664,7 +662,7 @@ mod imp {
                 }
                 Err(std::fs::TryLockError::WouldBlock) => {}
                 Err(std::fs::TryLockError::Error(error)) => {
-                    return Err(StoreError::Io(error.to_string()));
+                    return Err(io_error(&error));
                 }
             }
         }
@@ -877,9 +875,7 @@ mod imp {
             .open(path)
             .map_err(|error| io_error(&error))?;
         check_regular(path, &lease)?;
-        lease
-            .try_lock()
-            .map_err(|error| StoreError::Io(error.to_string()))?;
+        lease.try_lock().map_err(lock_error)?;
         Ok(lease)
     }
 
@@ -1032,7 +1028,7 @@ mod imp {
                 }
                 Err(std::fs::TryLockError::WouldBlock) => {}
                 Err(std::fs::TryLockError::Error(error)) => {
-                    return Err(StoreError::Io(error.to_string()));
+                    return Err(io_error(&error));
                 }
             }
         }

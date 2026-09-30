@@ -576,6 +576,13 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
     assert_eq!(cancel["inputSchema"]["required"], json!(["ticket"]));
     assert_eq!(cancel["annotations"]["readOnlyHint"], false);
     assert!(
+        tools
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .all(|tool| tool["name"] != "backend.index_await")
+    );
+    assert!(
         progress["description"]
             .as_str()
             .unwrap_or_default()
@@ -895,6 +902,43 @@ fn generic_surface_progress_and_cancel_keep_the_request_ticket_projection() {
         server.product.surface_commands.as_slice(),
         [SurfaceCommand::IndexCancel { ticket: seen }] if seen == &ticket
     ));
+}
+
+#[test]
+fn blocking_owner_await_is_not_exposed_over_mcp() {
+    let mut server = ready(Fake::default());
+    let response = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": "backend.index_await",
+            "arguments": { "ticket": ticket_value(&index_job_ticket()) }
+        }),
+    );
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(
+        response["error"]["message"],
+        "Use backend.index_progress for bounded polling"
+    );
+
+    let command = SurfaceCommand::IndexAwait {
+        ticket: index_job_ticket(),
+    };
+    let generic = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": SURFACE_TOOL,
+            "arguments": { "command": serde_json::to_value(command).expect("await command") }
+        }),
+    );
+    assert_eq!(generic["error"]["code"], -32602);
+    assert!(
+        generic["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("immediate bounded polling"))
+    );
+    assert!(server.product.surface_commands.is_empty());
 }
 
 #[test]
@@ -2035,6 +2079,78 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
 }
 
 #[test]
+fn index_search_cursor_round_trips_between_servers_with_the_same_workspace_authority() {
+    let mut first_server = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let first = call(
+        &mut first_server,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1,"detail":"summary"}),
+    );
+    let cursor = first["structuredContent"]["index_search_page"]["next_cursor"]
+        .as_str()
+        .expect("first page carries a signed cursor")
+        .to_owned();
+
+    // MCP server processes reconstructed from the same workspace authority
+    // and exact project/query context can resume durable owner cursors.
+    let mut same_authority = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let resumed = call(
+        &mut same_authority,
+        "backend.index_search",
+        &json!({
+            "query":"maven",
+            "limit":1,
+            "detail":"summary",
+            "cursor":cursor
+        }),
+    );
+    assert_eq!(resumed["isError"], false);
+    assert_eq!(
+        same_authority.product.surface_index_search_seen,
+        vec![Some("maven-owner-v4".to_owned())]
+    );
+
+    // The same token cannot be replayed under a different workspace key or
+    // project selection, and neither rejected request reaches the owner.
+    for mismatch in ["authority", "project"] {
+        let mut other = ready(Fake {
+            surface_index_search_pages: true,
+            ..Fake::default()
+        });
+        match mismatch {
+            "authority" => other.cursor_secret = [8; 32],
+            "project" => other.project = "/other-project".to_owned(),
+            _ => unreachable!(),
+        }
+        let response = request(
+            &mut other,
+            "tools/call",
+            &json!({
+                "name":"backend.index_search",
+                "arguments":{
+                    "query":"maven",
+                    "limit":1,
+                    "detail":"summary",
+                    "cursor":cursor
+                }
+            }),
+        );
+        assert_eq!(response["error"]["code"], -32602, "mismatch={mismatch}");
+        assert_eq!(
+            response["error"]["data"]["detail"],
+            "cursor is unknown, expired, or belongs to another workspace authority"
+        );
+        assert!(other.product.surface_index_search_seen.is_empty());
+    }
+}
+
+#[test]
 fn oversized_signed_index_search_cursor_projection_is_refused_without_truncation() {
     let owner_cursor = "x".repeat(26 * 1024);
     let mut server = ready(Fake {
@@ -2062,7 +2178,14 @@ fn oversized_signed_index_search_cursor_projection_is_refused_without_truncation
 #[test]
 fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
     for mutation in [
-        "query", "limit", "detail", "project", "session", "tamper", "expired", "raw",
+        "query",
+        "limit",
+        "detail",
+        "project",
+        "authority",
+        "tamper",
+        "expired",
+        "raw",
     ] {
         let mut server = ready(Fake {
             surface_index_search_pages: true,
@@ -2088,7 +2211,7 @@ fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
             "limit" => arguments["limit"] = json!(2),
             "detail" => arguments["detail"] = json!("full"),
             "project" => server.project = "/other-project".to_owned(),
-            "session" => server.cursor_secret = [8; 32],
+            "authority" => server.cursor_secret = [8; 32],
             "tamper" => {
                 let token = arguments["cursor"].as_str().expect("cursor token");
                 let mut changed = token.to_owned();
@@ -2215,7 +2338,14 @@ fn stale_named_index_search_cursor_is_a_restartable_refusal() {
 #[test]
 fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
     for mutation in [
-        "query", "limit", "detail", "project", "session", "tamper", "expired", "raw",
+        "query",
+        "limit",
+        "detail",
+        "project",
+        "authority",
+        "tamper",
+        "expired",
+        "raw",
     ] {
         let mut server = ready(Fake {
             surface_index_search_pages: true,
@@ -2250,7 +2380,7 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
             "limit" => command["limit"] = json!(2),
             "detail" => detail = "full",
             "project" => server.project = "/other-project".to_owned(),
-            "session" => server.cursor_secret = [8; 32],
+            "authority" => server.cursor_secret = [8; 32],
             "tamper" => {
                 let token = command["cursor"].as_str().expect("cursor token");
                 let mut changed = token.to_owned();

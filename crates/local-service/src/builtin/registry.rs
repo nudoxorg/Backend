@@ -328,6 +328,50 @@ struct RegistrySlot {
     service: Option<AcquisitionService>,
 }
 
+/// Failure to create the registry owner without losing its operation, path,
+/// or underlying platform error.
+#[derive(Debug)]
+pub(super) enum RegistryGatewayOpenError {
+    /// The workspace-local registry namespace could not be securely opened or
+    /// created.
+    RegistryRoot {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// The durable advisory authority could not be opened or initialized.
+    AdvisoryAuthority {
+        path: PathBuf,
+        source: backend_engine::advisory::AuthorityStorageError,
+    },
+}
+
+impl fmt::Display for RegistryGatewayOpenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RegistryRoot { path, source } => write!(
+                formatter,
+                "open or create private registry root {} ({}): {source}",
+                path.display(),
+                source.kind()
+            ),
+            Self::AdvisoryAuthority { path, source } => write!(
+                formatter,
+                "open or initialize advisory authority {}: {source}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RegistryGatewayOpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::RegistryRoot { source, .. } => Some(source),
+            Self::AdvisoryAuthority { source, .. } => Some(source),
+        }
+    }
+}
+
 /// Typed terminal state returned while satisfying a remote package add.
 #[derive(Debug)]
 pub(super) enum RegistryAddError {
@@ -441,9 +485,24 @@ impl RegistryGateway {
                 error,
             });
         }
-        authority
-            .persist(&self.advisory_path)
-            .map_err(|error| error.to_string())?;
+        if let Err(error) = authority.persist(&self.advisory_path) {
+            if matches!(
+                &error,
+                backend_engine::advisory::AuthorityStorageError::CommittedButNotDurable(_)
+            ) {
+                // The authority pathname now refers to this candidate, but a
+                // failed parent flush means cold recovery must decide whether
+                // the old or new journal survived. Retain both snapshot leases,
+                // but make all in-process observations unavailable until a
+                // successful retry or cold open confirms the selected journal.
+                authority.mark_persistence_uncertain();
+                self.advisory = Arc::new(authority);
+                self.slots.clear();
+                self.projection = None;
+            }
+            return Err(error.to_string());
+        }
+        authority.clear_persistence_uncertain();
         self.advisory = Arc::new(authority);
         // Open owners hold the previous authority as their resolver; they
         // reopen lazily with the new one.
@@ -692,11 +751,26 @@ impl RegistryGateway {
         config: &RegistryConfig,
         root: impl AsRef<Path>,
         advisory_config: &AdvisoryConfig,
-    ) -> Result<Option<Self>, AcquisitionError> {
+    ) -> Result<Option<Self>, RegistryGatewayOpenError> {
         let workspace_root = root.as_ref().to_path_buf();
+        // The authority journal lives directly under this namespace. Create
+        // the namespace through a held parent capability before the authority
+        // initializer writes its first durable state; persist itself must not
+        // create ancestors by re-walking their pathnames.
+        let registry_directory = DirectoryCapability::open_or_create_private(&workspace_root)
+            .map_err(|source| RegistryGatewayOpenError::RegistryRoot {
+                path: workspace_root.clone(),
+                source,
+            })?;
+        drop(registry_directory);
         let advisory_path = workspace_root.join("advisory-authority.json");
-        let advisory = open_advisory_authority(&advisory_path, advisory_config)
-            .map_err(|error| AcquisitionError::Io(std::io::Error::other(error)))?;
+        let advisory =
+            open_advisory_authority(&advisory_path, advisory_config).map_err(|source| {
+                RegistryGatewayOpenError::AdvisoryAuthority {
+                    path: advisory_path.clone(),
+                    source,
+                }
+            })?;
         // Every source, including a legacy endpoint override, is composed
         // below the versioned router root. This keeps cache migration and
         // owner identity independent of the process adapter that selected it.
@@ -787,6 +861,7 @@ impl RegistryGateway {
         hasher.update(&1_u16.to_be_bytes());
         hasher.update(&self.advisory.max_age_secs.to_be_bytes());
         hasher.update(&[u8::from(self.advisory_config.offline)]);
+        hasher.update(&[u8::from(self.advisory.persistence_is_uncertain())]);
         let now = advisory_now();
         for source in &self.advisory_config.sources {
             let source_identity = backend_engine::serde_json::to_vec(&source.source)
@@ -1456,7 +1531,10 @@ fn native_adapter(
 fn open_advisory_authority(
     path: &Path,
     config: &AdvisoryConfig,
-) -> Result<Arc<backend_engine::advisory::AdvisoryAuthority>, String> {
+) -> Result<
+    Arc<backend_engine::advisory::AdvisoryAuthority>,
+    backend_engine::advisory::AuthorityStorageError,
+> {
     let maximum_state_bytes = u64::try_from(config.max_feed_bytes)
         .unwrap_or(u64::MAX)
         .saturating_mul(4)
@@ -1468,8 +1546,7 @@ fn open_advisory_authority(
         path,
         config.max_age_secs,
         maximum_state_bytes,
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     authority.set_max_age_secs(config.max_age_secs);
     authority.set_offline(config.offline);
     authority.configure_sources(config.sources.iter().map(|source| source.source));
@@ -1484,7 +1561,7 @@ fn open_advisory_authority(
     // A daemon must be able to bind and serve local/cached reads with no
     // startup network dependency; a future explicit refresh command can use
     // the existing bounded source adapter.
-    authority.persist(path).map_err(|error| error.to_string())?;
+    authority.persist(path)?;
     Ok(Arc::new(authority))
 }
 
@@ -2210,7 +2287,8 @@ fn read_rustsec_tree(
     let mut output = Vec::new();
     let mut directories = Vec::new();
     let mut files = Vec::new();
-    let root_directory = DirectoryCapability::open(root).map_err(|error| error.to_string())?;
+    let root_directory =
+        DirectoryCapability::open_read_only_source(root).map_err(|error| error.to_string())?;
     visit(
         &root_directory,
         0,
@@ -3143,6 +3221,44 @@ mod tests {
             }
         }
         panic!("registry fixture directory capacity exhausted")
+    }
+
+    #[test]
+    fn gateway_bootstraps_absent_registry_root_as_private_state() {
+        let parent = scratch();
+        let root = parent.join("registry");
+        let config = registry_config("http://127.0.0.1:9".to_owned());
+
+        let gateway = RegistryGateway::open(&config, &root, &advisory_config(None))
+            .expect("open gateway with a new registry namespace")
+            .expect("configured source set");
+
+        assert!(root.is_dir());
+        let directory = DirectoryCapability::open(&root).expect("private registry directory");
+        let authority = directory
+            .open_private_file("advisory-authority.json")
+            .expect("initialized private advisory authority");
+        assert!(authority.metadata().expect("authority metadata").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(directory_mode(&root) & 0o077, 0);
+            assert_eq!(
+                authority.metadata().expect("authority metadata").mode() & 0o077,
+                0
+            );
+        }
+
+        drop(gateway);
+        drop(authority);
+        drop(directory);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[cfg(unix)]
+    fn directory_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).expect("registry root metadata").mode()
     }
 
     fn tar_file(name: &str, bytes: &[u8]) -> Vec<u8> {

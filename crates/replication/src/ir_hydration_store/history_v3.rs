@@ -876,12 +876,34 @@ impl FileSemanticRangeStore {
             tier,
             jumbo_limits,
         )
-        .map_err(|detail| {
-            refused(
-                SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
-                SelectedTypedV3HistoryRefusal::IntegrityFailure,
+        .map_err(|error| match error {
+            crate::ir_producer_store::SelectedTypedPlaneProductionError::RetryableAvailability(
                 detail,
-            )
+            ) => SelectedTypedV3HistoryError::RetryableAvailability {
+                operation: SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                detail,
+            },
+            crate::ir_producer_store::SelectedTypedPlaneProductionError::ResourceLimit(detail) => {
+                refused(
+                    SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                    SelectedTypedV3HistoryRefusal::ResourceLimit,
+                    detail,
+                )
+            }
+            crate::ir_producer_store::SelectedTypedPlaneProductionError::Refused(detail) => {
+                refused(
+                    SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                    SelectedTypedV3HistoryRefusal::IntegrityFailure,
+                    detail,
+                )
+            }
+            crate::ir_producer_store::SelectedTypedPlaneProductionError::UnclassifiedFailure(
+                detail,
+            ) => refused(
+                SelectedTypedV3HistoryOperation::VerifyPayloadClosure,
+                SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                detail,
+            ),
         })?;
         let admission =
             self.verify_selected_native_typed_history_v3(&pin, &produced, tier, jumbo_limits)?;
@@ -1388,7 +1410,7 @@ fn store_failure(
 
     let detail = format!("{error:?}");
     match error {
-        StoreError::Io(_) | StoreError::PublicationAuthorityBusy => {
+        StoreError::TemporaryIo(_) | StoreError::PublicationAuthorityBusy => {
             SelectedTypedV3HistoryError::RetryableAvailability { operation, detail }
         }
         StoreError::PreparedWithSyncPending { .. } | StoreError::PublishedWithSyncPending(_) => {
@@ -1397,6 +1419,11 @@ fn store_failure(
         StoreError::Bounds | StoreError::OversizedKey | StoreError::NeedsScopedRebuild => refused(
             operation,
             SelectedTypedV3HistoryRefusal::ResourceLimit,
+            detail,
+        ),
+        StoreError::Io(_) => refused(
+            operation,
+            SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
             detail,
         ),
         StoreError::Corrupt
@@ -2125,12 +2152,24 @@ mod tests {
     fn typed_history_store_io_cas_conflict_and_integrity_keep_distinct_outcomes() {
         let io = store_failure(
             SelectedTypedV3HistoryOperation::ComposePayloadClosure,
-            backend_store::StoreError::Io("temporary fixture I/O".to_owned()),
+            backend_store::StoreError::TemporaryIo("temporary fixture I/O".to_owned()),
         );
         assert!(matches!(
             io,
             SelectedTypedV3HistoryError::RetryableAvailability {
                 operation: SelectedTypedV3HistoryOperation::ComposePayloadClosure,
+                ..
+            }
+        ));
+
+        let unclassified_io = store_failure(
+            SelectedTypedV3HistoryOperation::ComposePayloadClosure,
+            backend_store::StoreError::Io("permission denied".to_owned()),
+        );
+        assert!(matches!(
+            unclassified_io,
+            SelectedTypedV3HistoryError::Refused {
+                cause: SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
                 ..
             }
         ));

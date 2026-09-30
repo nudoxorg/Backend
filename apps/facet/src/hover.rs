@@ -34,8 +34,8 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, Tone};
 use gpui::{
     AnyElement, App, Bounds, ColorExt, ElementId, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Window,
-    WindowId, fill, point, px, size,
+    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString,
+    Subscription, Window, WindowId, fill, point, px, size,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -105,6 +105,49 @@ impl Lit {
     }
 }
 
+/// Which input source currently owns a hover treatment. A semantic focus
+/// change wins over the pointer position remembered before it; the pointer
+/// takes over again after its next actual move.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum InteractionMode {
+    /// The remembered pointer hit may light its target.
+    Pointer,
+    /// The current semantic target overrides a stale pointer hit.
+    Keyboard,
+}
+
+/// The current interaction mode for a component whose keyboard target is
+/// `rest` and whose last pointer event observed `observed_rest`.
+#[must_use]
+pub fn interaction_mode<T: PartialEq>(observed_rest: Option<&T>, rest: Option<&T>) -> InteractionMode {
+    if observed_rest == rest { InteractionMode::Pointer } else { InteractionMode::Keyboard }
+}
+
+/// Chooses the target lit by pointer or semantic keyboard focus using the
+/// shared modality rule. Components store `observed_rest` with pointer state
+/// and refresh it on a genuine pointer move.
+#[must_use]
+pub fn visible_target<T: Copy + PartialEq>(pointer: Option<T>, observed_rest: Option<T>, rest: Option<T>) -> Option<T> {
+    visible_target_by(pointer, observed_rest.as_ref(), rest.as_ref(), rest)
+}
+
+/// Chooses a painted target using a separate identity for the keyboard and
+/// pointer observations. This is useful when the painted target is an index
+/// into a changing snapshot: compare its stable semantic identity, then return
+/// the current index.
+#[must_use]
+pub fn visible_target_by<T: Copy, I: PartialEq>(
+    pointer: Option<T>,
+    observed_rest: Option<&I>,
+    rest_identity: Option<&I>,
+    rest_target: Option<T>,
+) -> Option<T> {
+    match interaction_mode(observed_rest, rest_identity) {
+        InteractionMode::Pointer => pointer.or(rest_target),
+        InteractionMode::Keyboard => rest_target,
+    }
+}
+
 /// The hit shape the target's bevel is drawn on.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Shape {
@@ -117,24 +160,11 @@ pub enum Shape {
     Diamond,
 }
 
-/// What made an element the target: the pointer over it, or keyboard focus
-/// on it. The pointer's target follows the pointer (it lets go when the
-/// element moves out from under a still pointer); a focus target stays
-/// until focus moves.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Source {
-    /// The pointer is over it.
-    Pointer,
-    /// Keyboard focus is on it.
-    Keyboard,
-}
-
 /// The element lit as the target, its subject and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Held {
     id: ElementId,
     subject: Subject,
-    source: Source,
 }
 
 /// The active target and both input sources belong to one window. Keeping the
@@ -144,14 +174,14 @@ struct Held {
 struct WindowField {
     pointer: Option<Held>,
     keyboard: Option<Held>,
-    active: Option<Source>,
+    active: Option<InteractionMode>,
 }
 
 impl WindowField {
     fn held(&self) -> Option<Held> {
         let value = match self.active {
-            Some(Source::Pointer) => self.pointer.as_ref().or(self.keyboard.as_ref()),
-            Some(Source::Keyboard) => self.keyboard.as_ref().or(self.pointer.as_ref()),
+            Some(InteractionMode::Pointer) => self.pointer.as_ref().or(self.keyboard.as_ref()),
+            Some(InteractionMode::Keyboard) => self.keyboard.as_ref().or(self.pointer.as_ref()),
             None => self.keyboard.as_ref().or(self.pointer.as_ref()),
         };
         value.cloned()
@@ -167,9 +197,27 @@ impl WindowField {
 #[derive(Default)]
 struct Field {
     windows: HashMap<WindowId, WindowField>,
+    /// One app-lifetime observer removes each closed window's last target.
+    /// The callback only receives an App when invoked; it captures no global
+    /// or entity, so this subscription does not keep the app's state alive.
+    window_closed: Option<Subscription>,
 }
 
 impl Global for Field {}
+
+/// Installs one app-wide cleanup observer before the first window target is
+/// recorded. Keeping it on the global makes the observer's lifetime match
+/// the `Field`; the callback itself owns no `Field` reference.
+fn watch_window_closes(cx: &mut App) {
+    if cx.default_global::<Field>().window_closed.is_some() {
+        return;
+    }
+
+    let subscription = cx.on_window_closed(|cx, id| {
+        cx.default_global::<Field>().windows.remove(&id);
+    });
+    cx.default_global::<Field>().window_closed = Some(subscription);
+}
 
 fn held(window: &Window, cx: &App) -> Option<Held> {
     cx.try_global::<Field>()
@@ -186,6 +234,7 @@ fn target(window: &Window, cx: &App) -> Option<(ElementId, Subject)> {
 }
 
 fn set_pointer(value: Option<Held>, window: &mut Window, cx: &mut App) {
+    watch_window_closes(cx);
     let id = window.window_handle().window_id();
     let field = cx.default_global::<Field>();
     let before = field.windows.get(&id).and_then(WindowField::held);
@@ -194,12 +243,12 @@ fn set_pointer(value: Option<Held>, window: &mut Window, cx: &mut App) {
         match value {
             Some(value) => {
                 state.pointer = Some(value);
-                state.active = Some(Source::Pointer);
+                state.active = Some(InteractionMode::Pointer);
             }
             None => {
                 state.pointer = None;
-                if state.active == Some(Source::Pointer) {
-                    state.active = state.keyboard.as_ref().map(|_| Source::Keyboard);
+                if state.active == Some(InteractionMode::Pointer) {
+                    state.active = state.keyboard.as_ref().map(|_| InteractionMode::Keyboard);
                 }
             }
         }
@@ -256,6 +305,7 @@ pub fn lit(subject: &Subject, window: &Window, cx: &App) -> Lit {
 /// still lies under the pointer. A repeated synchronization of the same focus
 /// target does not steal the light from a more recent pointer move.
 pub fn focus(target: Option<FocusTarget>, window: &mut Window, cx: &mut App) {
+    watch_window_closes(cx);
     let id = window.window_handle().window_id();
     let field = cx.default_global::<Field>();
     let before = field.windows.get(&id).and_then(WindowField::held);
@@ -263,18 +313,18 @@ pub fn focus(target: Option<FocusTarget>, window: &mut Window, cx: &mut App) {
         let state = field.windows.entry(id).or_default();
         match target {
             Some(target) => {
-                let target = Held { id: target.id, subject: target.subject, source: Source::Keyboard };
+                let target = Held { id: target.id, subject: target.subject };
                 // The shell mirrors its focus target every layout pass. Only
                 // a real focus change takes precedence over a recent pointer.
                 if state.keyboard.as_ref() != Some(&target) {
                     state.keyboard = Some(target);
-                    state.active = Some(Source::Keyboard);
+                    state.active = Some(InteractionMode::Keyboard);
                 }
             }
             None => {
                 state.keyboard = None;
-                if state.active == Some(Source::Keyboard) {
-                    state.active = state.pointer.as_ref().map(|_| Source::Pointer);
+                if state.active == Some(InteractionMode::Keyboard) {
+                    state.active = state.pointer.as_ref().map(|_| InteractionMode::Pointer);
                 }
             }
         }
@@ -472,7 +522,7 @@ impl gpui::Element for Hoverable {
                 }
                 let hovered = hitbox.is_hovered(window);
                 if hovered {
-                    let held = Held { id: id.clone(), subject: subject.clone(), source: Source::Pointer };
+                    let held = Held { id: id.clone(), subject: subject.clone() };
                     set_pointer(Some(held), window, cx);
                 } else if pointer_held(window, cx).is_some_and(|held| held.id == id) {
                     set_pointer(None, window, cx);

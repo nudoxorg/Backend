@@ -190,15 +190,17 @@ impl RenderOnce for ModuleView {
         let head = div()
             .flex()
             .flex_col()
+            .min_w_0()
+            .w(measure.width())
             .gap(measure.space(Space::Snug))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .items_baseline()
-                    .child(one(key(&self.id, "package"), self.package.clone(), PATH, palette.ink3, &measure))
+                    .child(wrap(key(&self.id, "package"), self.package.clone(), PATH, palette.ink3, &measure, None))
                     .child(one(key(&self.id, "sep"), "::", PATH, palette.ink4, &measure))
-                    .child(one(key(&self.id, "title"), self.name.clone(), PATH, palette.ink0, &measure)),
+                    .child(wrap(key(&self.id, "title"), self.name.clone(), PATH, palette.ink0, &measure, None)),
             )
             .child(match &self.doc {
                 Some(doc) => wrap(key(&self.id, "doc"), doc.clone(), DOC, palette.ink2, &measure, None).into_any_element(),

@@ -10,7 +10,7 @@
 
 use super::flight::{Marks, arrival, mark as flight_mark};
 use super::state::{Pick, Use};
-use super::text::{ellipsis, key, one, wrap};
+use super::text::{key, one, wrap};
 use crate::controls::button::{Handler, wire};
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::icons::{Kind, KindSize, kind_mark};
@@ -236,7 +236,7 @@ impl RenderOnce for SymbolCard {
             _ => palette.ink0.into(),
         };
 
-        let name = ellipsis(key(&self.id, "name"), facts.name.clone(), NAME, name_ink, &measure);
+        let name = wrap(key(&self.id, "name"), facts.name.clone(), NAME, name_ink, &measure, None);
         let mut head = div()
             .flex()
             .items_center()

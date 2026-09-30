@@ -9,9 +9,9 @@
 use super::*;
 use crate::engine::test_support::{
     BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
-    MAX_RETAINED_DURABLE_ROOTS,
-    ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint,
-    write_projection_manifest,
+    MAX_ORDINAL_MAP_BYTES, MAX_RETAINED_DURABLE_ROOTS,
+    ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint, rank_cache_bytes,
+    ordinal_map_capacity, write_projection_manifest,
 };
 use backend_semantic::{Entity, EntityId, Source, entity_key};
 use backend_version::{
@@ -650,6 +650,55 @@ fn prefix_rank_is_lossless_at_production_field_weight() {
 }
 
 #[test]
+fn three_clause_ranking_uses_weakest_quality_sum_weight_and_multivalue_maxima() {
+    // Put the exact-last-clause document at the larger identity so the old
+    // clause-count comparison would incorrectly promote it. Both first rows
+    // independently have a weakest ratio of 1/8, so stable identity orders
+    // them. The third repeats `a` across indexed field values; that clause
+    // contributes its best field once, while every query clause contributes
+    // its own weight.
+    let first_identity = document(1).min(document(2));
+    let second_identity = document(1).max(document(2));
+    let documents = vec![
+        (
+            first_identity,
+            vec![("name".into(), "a bbbbbbbb cccccccc".into())],
+        ),
+        (
+            second_identity,
+            vec![("name".into(), "aaaaaaaa bbbbbbbb c".into())],
+        ),
+        (
+            document(3),
+            vec![
+                ("name".into(), "a bbbbbbbb".into()),
+                ("signature".into(), "a cccccccc".into()),
+            ],
+        ),
+    ];
+    let (binding, coverage) = binding(&documents);
+    let state = DocumentState::new(binding, coverage, documents, Limits::default())
+        .expect("three clause ranking state");
+    let source = TantivySource::build(&state, Limits::default()).expect("projection");
+
+    for terms in [
+        vec!["a".into(), "b".into(), "c".into()],
+        vec!["c".into(), "a".into(), "b".into()],
+    ] {
+        let query = Query::prefix(terms, Limits::default()).expect("three clause prefix query");
+        let hits = source.search(&query).expect("independent fixed-label query");
+        assert_eq!(
+            hits.iter().map(|hit| hit.document).collect::<Vec<_>>(),
+            [first_identity, second_identity, document(3)]
+        );
+        assert_eq!(hits[0].relevance.rank_parts(), (1, 8, 12, 3));
+        assert_eq!(hits[1].relevance.rank_parts(), (1, 8, 12, 3));
+        assert_eq!(hits[2].relevance.rank_parts(), (1, 8, 11, 3));
+        assert!(hits.iter().all(|hit| !hit.relevance.is_exact()));
+    }
+}
+
+#[test]
 fn code_identifier_components_are_searchable_without_scanning() {
     let documents = vec![
         (
@@ -724,6 +773,31 @@ fn case_policy_is_explicit_and_bound_into_query_identity() {
             .expect("sensitive search")
             .is_empty()
     );
+}
+
+#[test]
+fn streamed_query_identity_preserves_the_canonical_cursor_version() {
+    let query = Query::with_policy(
+        vec!["BETA".into(), "Alpha".into()],
+        MatchMode::Prefix,
+        FieldSelection::Only("name".into()),
+        Limits::default(),
+    )
+    .expect("field-qualified prefix query");
+    let mut canonical = vec![2, 2, 1];
+    canonical.extend_from_slice(&4_u64.to_be_bytes());
+    canonical.extend_from_slice(b"name");
+    for term in ["alpha", "beta"] {
+        canonical.extend_from_slice(&(term.len() as u64).to_be_bytes());
+        canonical.extend_from_slice(term.as_bytes());
+    }
+    assert_eq!(
+        query.version,
+        QueryVersion::from_value(canonical.as_slice())
+    );
+    query
+        .validate(Limits::default())
+        .expect("validate stream identity");
 }
 
 #[test]
@@ -897,11 +971,11 @@ fn concrete_tantivy_pages_after_global_ranking_and_fences_the_binding() {
         )))
     ));
     assert_eq!(first.total, 3);
-    assert_eq!(adapter.rank_evaluations(), 1);
+    assert_eq!(adapter.rank_evaluations(), 3);
 }
 
 #[test]
-fn a_short_page_keeps_the_full_total_and_reuses_the_rank() {
+fn a_short_page_keeps_the_full_total_with_one_bounded_scan_per_page() {
     let documents = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
         (document(2), vec![("name".into(), "alpine".into())]),
@@ -939,7 +1013,316 @@ fn a_short_page_keeps_the_full_total_and_reuses_the_rank() {
     assert_eq!(second.total, 2);
     assert!(second.next.is_none());
     assert_ne!(first.hits[0].document, second.hits[0].document);
-    assert_eq!(adapter.rank_evaluations(), 1);
+    assert_eq!(adapter.rank_evaluations(), 2);
+}
+
+#[test]
+fn broad_keyset_pages_keep_only_the_current_page_and_row_scratch() {
+    let documents = (1..=128)
+        .map(|ordinal| {
+            (
+                document(ordinal),
+                vec![("name".into(), "commonquery token".into())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let (binding, coverage) = binding(&documents);
+    let limits = Limits {
+        max_page: 1,
+        ..Limits::default()
+    };
+    let state = DocumentState::new(binding, coverage, documents, limits).expect("state");
+    let adapter = Adapter::new(
+        TantivySource::build(&state, limits).expect("projection"),
+        limits,
+    )
+    .expect("adapter");
+    let query = Query::new(vec!["commonquery".into()], limits).expect("query");
+    let mut cursor = None;
+    let mut observed = Vec::new();
+    loop {
+        let page = adapter
+            .query(&QueryRequest {
+                binding,
+                query: query.clone(),
+                cursor,
+                limit: 1,
+            })
+            .expect("bounded keyset page");
+        assert_eq!(page.total, 128);
+        observed.extend(page.hits.iter().map(|hit| hit.document));
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let mut expected = (1..=128).map(document).collect::<Vec<_>>();
+    expected.sort_unstable();
+    assert_eq!(observed, expected);
+    assert_eq!(adapter.rank_evaluations(), 128);
+    assert_eq!(adapter.source().rank_docs_visited(), 128 * 128);
+    assert_eq!(rank_cache_bytes(&adapter).expect("retained rank bytes"), 0);
+}
+
+#[test]
+fn exact_pages_stay_bounded_and_all_results_refuse_over_budget() {
+    let documents = (1..=128)
+        .map(|ordinal| {
+            (
+                document(ordinal),
+                vec![("name".into(), "a bounded corpus row".into())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let (binding, coverage) = binding(&documents);
+    let limits = Limits {
+        max_page: 1,
+        ..Limits::default()
+    };
+    let state = DocumentState::new(binding, coverage, documents, limits).expect("state");
+    let source = TantivySource::build(&state, limits)
+        .expect("projection")
+        .with_rank_snapshot_budget(
+            RankSnapshotBudget::new(1024, 1024).expect("nonzero query budget"),
+        );
+    let adapter = Adapter::new(source, limits).expect("adapter");
+    let query = Query::new(Vec::new(), limits).expect("all-documents query");
+    let page = adapter
+        .query(&QueryRequest {
+            binding,
+            query: query.clone(),
+            cursor: None,
+            limit: 1,
+        })
+        .expect("bounded top page does not retain every exact hit");
+    assert_eq!(page.total, 128);
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(adapter.source().rank_docs_visited(), 128);
+    let error = adapter.source().search(&query).expect_err(
+        "the explicit all-results API must refuse output above its retained-byte budget",
+    );
+    let TantivySourceError::RankSnapshotBudgetExceeded {
+        budget_bytes,
+        required_bytes,
+    } = error
+    else {
+        panic!("the all-results API should return its typed memory refusal");
+    };
+    assert_eq!(budget_bytes, 1024);
+    assert!(required_bytes > budget_bytes);
+    assert_eq!(rank_cache_bytes(&adapter).expect("retained rank bytes"), 0);
+    assert!(adapter.source().rank_docs_visited() >= 128);
+}
+
+#[test]
+fn oversized_query_scratch_is_refused_before_scorer_compilation() {
+    let limits = Limits {
+        max_terms: 64,
+        ..Limits::default()
+    };
+    let (binding, coverage) = binding(&[]);
+    let state = DocumentState::new(binding, coverage, Vec::new(), limits).expect("empty state");
+    let source = TantivySource::build(&state, limits)
+        .expect("empty projection")
+        .with_rank_snapshot_budget(
+            RankSnapshotBudget::new(2_048, 1_024).expect("nonzero query budget"),
+        );
+    let query = Query::new(
+        (0..32)
+            .map(|term| format!("absent-token-{term:02}"))
+            .collect(),
+        limits,
+    )
+    .expect("admitted no-hit query");
+
+    let refused = |error: TantivySourceError| {
+        assert!(matches!(
+            error,
+            TantivySourceError::RankSnapshotBudgetExceeded {
+                budget_bytes: 2_048,
+                required_bytes
+            } if required_bytes > 2_048
+        ));
+    };
+    refused(
+        source
+            .for_each_ranked_hit(&query, |_| {})
+            .expect_err("query setup must fit the explicit scratch budget"),
+    );
+    refused(
+        source
+            .search(&query)
+            .expect_err("all-results query setup must fit the scratch budget"),
+    );
+    refused(
+        source
+            .relevance_for_candidates(&query, &[document(1)])
+            .expect_err("candidate scoring must fit the scratch budget"),
+    );
+    refused(
+        source
+            .fetch(&QueryRequest {
+                binding,
+                query,
+                cursor: None,
+                limit: 1,
+            })
+            .expect_err("page query setup must fit the scratch budget"),
+    );
+    assert_eq!(source.rank_evaluations(), 0);
+    assert_eq!(source.rank_docs_visited(), 0);
+}
+
+#[test]
+fn direct_candidate_relevance_returns_sorted_unique_exact_rows() {
+    let expected_documents = [document(41), document(7)];
+    let state = state_for(
+        expected_documents
+            .iter()
+            .map(|id| (*id, vec![("name".into(), "map".into())]))
+            .collect(),
+        [0x73; 32],
+    );
+    let source = TantivySource::build(&state, Limits::default()).expect("selected projection");
+    let query = Query::new(vec!["map".into()], Limits::default()).expect("query");
+    let mut expected = expected_documents.to_vec();
+    expected.sort_unstable();
+
+    let actual = source
+        .relevance_for_candidates(
+            &query,
+            &[document(7), document(99), document(41), document(7)],
+        )
+        .expect("score only the requested identities");
+    assert_eq!(
+        actual.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        expected,
+        "candidate duplicates and input order do not affect the sorted exact result"
+    );
+    assert!(actual
+        .iter()
+        .all(|(_, relevance)| *relevance == Relevance::exact(4)));
+}
+
+#[test]
+fn field_qualified_query_admission_accounts_for_coexisting_prefix_copies() {
+    const FIELD_BYTES: usize = 8_192;
+    const SCRATCH_BUDGET: usize = 10_000;
+    let field = "f".repeat(FIELD_BYTES);
+    let limits = Limits::default();
+    let query = Query::with_policy(
+        vec!["x".into()],
+        MatchMode::Exact,
+        FieldSelection::Only(field.clone()),
+        limits,
+    )
+    .expect("large field-qualified query");
+    let (binding, coverage) = binding(&[]);
+    let state = DocumentState::new(binding, coverage, Vec::new(), limits).expect("empty state");
+    let source = TantivySource::build(&state, limits)
+        .expect("empty projection")
+        .with_rank_snapshot_budget(
+            RankSnapshotBudget::new(SCRATCH_BUDGET, 1_024).expect("nonzero query budget"),
+        );
+
+    let error = source
+        .for_each_ranked_hit(&query, |_| {})
+        .expect_err("the owned Tantivy term and temporary prefix coexist");
+    let TantivySourceError::RankSnapshotBudgetExceeded {
+        budget_bytes,
+        required_bytes,
+    } = error
+    else {
+        panic!("field-prefix scratch should be refused before compiling the scorer");
+    };
+    // `field_token_prefix` encodes the decimal field-byte length and colon,
+    // followed by the field and token. The builder string and retained Term
+    // own two copies concurrently, independently of implementation estimates.
+    let minimum_materialized_bytes =
+        2 * (FIELD_BYTES + 1 + FIELD_BYTES.to_string().len() + "x".len());
+    assert_eq!(budget_bytes, SCRATCH_BUDGET);
+    assert!(required_bytes >= minimum_materialized_bytes);
+    assert!(required_bytes > budget_bytes);
+    assert_eq!(source.rank_evaluations(), 0);
+    assert_eq!(source.rank_docs_visited(), 0);
+}
+
+#[test]
+fn sparse_cold_reopen_residency_scales_with_live_rows_not_historical_slots() {
+    static NEXT_ROOT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let sequence = NEXT_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-sparse-reopen-{}-{sequence}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).expect("create sparse projection directory");
+    let documents = vec![(document(73), vec![("name".into(), "sparse canary".into())])];
+    let state = state_for(documents, [0x7b; 32]);
+    let slot_count = 4_000_000_u32;
+    let ordinal = slot_count - 1;
+    crate::engine::test_support::write_sparse_durable_fixture(
+        &state,
+        &directory,
+        slot_count,
+        ordinal,
+    )
+    .expect("write valid sparse durable projection");
+
+    let source = TantivySource::open_in_dir(&state, Limits::default(), &directory)
+        .expect("cold-open sparse ordinal root");
+    let (resident_slots, resident_rows, resident_bytes) =
+        crate::engine::test_support::ordinal_residency(&source);
+    assert_eq!((resident_slots, resident_rows), (slot_count, 1));
+    assert!(resident_bytes <= 128, "sparse residency is bounded by one live row");
+    assert_eq!(
+        source
+            .search(&Query::new(vec!["sparse".into()], Limits::default()).expect("query"))
+            .expect("search sparse reopened root")
+            .iter()
+            .map(|hit| hit.document)
+            .collect::<Vec<_>>(),
+        vec![document(73)]
+    );
+    drop(source);
+    std::fs::remove_dir_all(directory).expect("remove sparse projection directory");
+}
+
+#[test]
+fn a_rare_query_uses_sparse_ranks_instead_of_a_corpus_sized_vector() {
+    let documents = (1..=128)
+        .map(|ordinal| {
+            let text = if ordinal == 73 {
+                "needle only-here"
+            } else {
+                "ordinary corpus row"
+            };
+            (document(ordinal), vec![("name".into(), text.into())])
+        })
+        .collect::<Vec<_>>();
+    let (binding, coverage) = binding(&documents);
+    let limits = Limits::default();
+    let state = DocumentState::new(binding, coverage, documents, limits).expect("state");
+    let adapter = Adapter::new(
+        TantivySource::build(&state, limits).expect("projection"),
+        limits,
+    )
+    .expect("adapter");
+    let query = Query::new(vec!["needle".into()], limits).expect("query");
+    let page = adapter
+        .query(&QueryRequest {
+            binding,
+            query,
+            cursor: None,
+            limit: 10,
+        })
+        .expect("rare query");
+    assert_eq!(page.total, 1);
+    assert_eq!(
+        page.hits.iter().map(|hit| hit.document).collect::<Vec<_>>(),
+        vec![document(73)]
+    );
+    assert_eq!(rank_cache_bytes(&adapter).expect("retained rank bytes"), 0);
 }
 
 #[test]
@@ -991,7 +1374,7 @@ fn concrete_tantivy_can_commit_its_projection_to_disk() {
     let source = TantivySource::build_in_dir(&state, Limits::default(), &directory)
         .expect("durable Tantivy projection");
     assert!(directory.join("meta.json").is_file());
-    assert!(directory.join("backend-binding-v2").is_file());
+    assert!(directory.join("backend-binding-v3").is_file());
     drop(source);
     let source = TantivySource::open_in_dir(&state, Limits::default(), &directory)
         .expect("reopen exact projection");
@@ -1023,6 +1406,69 @@ fn concrete_tantivy_can_commit_its_projection_to_disk() {
         Err(TantivySourceError::Contract(Error::StaleRoot))
     ));
     std::fs::remove_dir_all(directory).expect("remove test index directory");
+}
+
+#[test]
+fn cold_reopen_rejects_rank_material_changed_under_a_refreshed_manifest() {
+    let authoritative_fields = vec![("name".into(), "map".into())];
+    let documents = vec![(document(17), authoritative_fields.clone())];
+    let state = state_for(documents, [0x4d; 32]);
+    let expected = TantivySource::build(&state, Limits::default())
+        .expect("build authoritative projection")
+        .search(&Query::new(vec!["map".into()], Limits::default()).expect("query"))
+        .expect("search authoritative source");
+    assert_eq!(
+        expected.iter().map(|hit| hit.document).collect::<Vec<_>>(),
+        vec![document(17)],
+        "the selected source row with name=map is an independent membership oracle"
+    );
+
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-rank-tail-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create projection directory");
+    let forged_rank_fields = vec![("name".into(), "zap".into())];
+    crate::engine::test_support::write_projection_mismatch_fixture(
+        &state,
+        &directory,
+        &authoritative_fields,
+        &forged_rank_fields,
+    )
+    .expect("write the indexed map term with a same-length zap rank tail");
+    assert!(directory.join(INTEGRITY_FILE).is_file());
+    assert!(matches!(
+        TantivySource::open_in_dir(&state, Limits::default(), &directory),
+        Err(TantivySourceError::Corrupt(_))
+    ));
+    std::fs::remove_dir_all(directory).expect("remove test projection directory");
+
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-posting-mismatch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create projection directory");
+    crate::engine::test_support::write_projection_mismatch_fixture(
+        &state,
+        &directory,
+        &forged_rank_fields,
+        &authoritative_fields,
+    )
+    .expect("write a rank payload whose source term is omitted from postings");
+    assert!(directory.join(INTEGRITY_FILE).is_file());
+    assert!(matches!(
+        TantivySource::open_in_dir(&state, Limits::default(), &directory),
+        Err(TantivySourceError::Corrupt(_))
+    ));
+    std::fs::remove_dir_all(directory).expect("remove test projection directory");
 }
 
 fn state_for(
@@ -1116,6 +1562,82 @@ fn durable_selected_roots_reopen_update_and_roll_back_against_fixed_answers() {
 }
 
 #[test]
+fn public_mutation_cannot_rewrite_a_selected_durable_root() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-immutable-root-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let initial = state_for(
+        vec![
+            (document(1), vec![("name".into(), "old-alpha".into())]),
+            (document(2), vec![("name".into(), "old-beta".into())]),
+        ],
+        [91; 32],
+    );
+    let next = state_for(
+        vec![
+            (document(1), vec![("name".into(), "new-gamma".into())]),
+            (document(3), vec![("name".into(), "new-delta".into())]),
+        ],
+        [92; 32],
+    );
+    let mut selected_source =
+        TantivySource::open_or_build_in_dir(&initial, Limits::default(), &root)
+            .expect("publish initial selected root");
+    let root_key = hex_fingerprint(projection_fingerprint(initial.binding()));
+    let selected_root = root.join(DURABLE_ROOTS_DIRECTORY).join(root_key);
+    let before_files = crate::engine::test_support::projection_files_for_test(&selected_root)
+        .expect("hash exact selected files");
+    let before_bytes = crate::engine::test_support::durable_root_bytes_for_test(&selected_root)
+        .expect("measure selected root");
+
+    assert!(matches!(
+        selected_source.maintain(&next, OverlayLimits::default()),
+        Err(TantivySourceError::DurableProjectionImmutable)
+    ));
+    assert_eq!(
+        crate::engine::test_support::projection_files_for_test(&selected_root)
+            .expect("selected files after rejected mutation"),
+        before_files,
+        "a rejected public mutation must leave every selected file byte-identical"
+    );
+    assert_eq!(
+        crate::engine::test_support::durable_root_bytes_for_test(&selected_root)
+            .expect("selected root size after rejected mutation"),
+        before_bytes
+    );
+    drop(selected_source);
+
+    let cold = TantivySource::open_or_build_in_dir(&initial, Limits::default(), &root)
+        .expect("cold rollback to the original selected root");
+    assert_eq!(term_hits(&cold, "old-alpha"), vec![document(1)]);
+    assert_eq!(term_hits(&cold, "old-beta"), vec![document(2)]);
+    assert!(term_hits(&cold, "new-gamma").is_empty());
+    assert!(term_hits(&cold, "new-delta").is_empty());
+    drop(cold);
+
+    let raw_root = root.join("raw-durable-root");
+    std::fs::create_dir_all(&raw_root).expect("create direct durable root");
+    let mut raw_source = TantivySource::build_in_dir(&initial, Limits::default(), &raw_root)
+        .expect("build direct durable root");
+    assert!(matches!(
+        raw_source.maintain(&next, OverlayLimits::default()),
+        Err(TantivySourceError::DurableProjectionImmutable)
+    ));
+    drop(raw_source);
+    let raw_cold = TantivySource::open_in_dir(&initial, Limits::default(), &raw_root)
+        .expect("direct durable root remains reopenable");
+    assert_eq!(term_hits(&raw_cold, "old-alpha"), vec![document(1)]);
+    assert!(term_hits(&raw_cold, "new-gamma").is_empty());
+    drop(raw_cold);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn durable_budget_refusal_keeps_a_valid_selected_root_for_later_reopen() {
     let root = std::env::temp_dir().join(format!(
         "backend-tantivy-budget-{}-{}",
@@ -1174,6 +1696,24 @@ fn durable_budget_refusal_keeps_a_valid_selected_root_for_later_reopen() {
         .expect("later default-budget open should reuse the intact root");
     assert_eq!(term_hits(&reopened, "budget-canary"), vec![document(8)]);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ordinal_map_capacity_is_typed_before_index_construction() {
+    let header_bytes = ORDINAL_MAP_MAGIC.len() + 48;
+    let maximum_records = usize::try_from(
+        (MAX_ORDINAL_MAP_BYTES - u64::try_from(header_bytes).expect("header size")) / 108,
+    )
+    .expect("record count fits this platform");
+
+    assert!(ordinal_map_capacity(maximum_records).is_ok());
+    assert!(matches!(
+        ordinal_map_capacity(maximum_records + 1),
+        Err(TantivySourceError::OrdinalMapCapacityExceeded {
+            maximum_bytes: MAX_ORDINAL_MAP_BYTES,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -1624,6 +2164,87 @@ fn rebinding_a_view_keeps_every_posting_and_rejects_the_old_binding() {
 }
 
 #[test]
+fn large_unchanged_corpus_rebind_keeps_exact_results_under_the_new_root() {
+    const ROWS: u64 = 2_048;
+    let documents = (1..=ROWS)
+        .map(|ordinal| {
+            (
+                document(ordinal),
+                vec![("name".into(), "stable shared-corpus-token".into())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = {
+        let mut ids = documents
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    };
+    let current = state_for(documents.clone(), [0x31; 32]);
+    let mut source = TantivySource::build(&current, Limits::default()).expect("projection");
+    let postings_before = source.indexed_postings();
+    let next = state_for(documents, [0x32; 32]);
+
+    let outcome = source
+        .maintain(&next, OverlayLimits::default())
+        .expect("rebind the unchanged corpus");
+    assert_eq!(
+        outcome,
+        MaintainOutcome::Applied(ProjectionRevision {
+            kind: ProjectionKind::Rebound,
+            rewritten_documents: 0,
+            retired_postings: 0,
+            added_postings: 0,
+        })
+    );
+    assert_eq!(source.indexed_postings(), postings_before);
+    assert_eq!(
+        source
+            .search(&Query::new(vec!["stable".into()], Limits::default()).expect("query"))
+            .expect("search rebound corpus")
+            .into_iter()
+            .map(|hit| hit.document)
+            .collect::<Vec<_>>(),
+        expected
+    );
+
+    let stale_query = Query::new(vec!["stable".into()], Limits::default()).expect("query");
+    assert!(matches!(
+        LexicalSource::fetch(
+            &source,
+            &QueryRequest {
+                binding: current.binding(),
+                query: stale_query.clone(),
+                cursor: None,
+                limit: 8,
+            }
+        ),
+        Err(TantivySourceError::Contract(Error::StaleRoot))
+    ));
+    let first_page = LexicalSource::fetch(
+        &source,
+        &QueryRequest {
+            binding: next.binding(),
+            query: stale_query,
+            cursor: None,
+            limit: 8,
+        },
+    )
+    .expect("new binding is admitted");
+    assert_eq!(first_page.total, ROWS as usize);
+    assert_eq!(
+        first_page
+            .hits
+            .iter()
+            .map(|hit| hit.document)
+            .collect::<Vec<_>>(),
+        expected[..8]
+    );
+}
+
+#[test]
 fn one_document_revision_deletes_only_that_documents_postings() {
     let original = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
@@ -1681,7 +2302,11 @@ fn one_document_revision_deletes_only_that_documents_postings() {
     .expect("beta after revision");
     assert_eq!(after_page.total, 0);
     assert!(after_page.hits.is_empty());
-    assert_eq!(source.rank_evaluations(), 2);
+    assert_eq!(
+        source.rank_evaluations(),
+        6,
+        "initial page, four membership probes, and the post-revision page"
+    );
 }
 
 #[test]
@@ -1703,7 +2328,13 @@ fn deleting_and_prepending_documents_keeps_untouched_ordinals() {
             OverlayLimits::default(),
         )
         .expect("delete");
+    let deleted_query_visits = source.rank_docs_visited();
     assert!(term_hits(&source, "beta").is_empty());
+    assert_eq!(
+        source.rank_docs_visited() - deleted_query_visits,
+        1,
+        "the raw Tantivy scorer must encounter the deleted beta row before the live-doc filter"
+    );
     let with_predecessor = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
         (document(3), vec![("name".into(), "gamma".into())]),

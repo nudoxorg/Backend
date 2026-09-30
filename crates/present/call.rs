@@ -1,6 +1,6 @@
 //! One command call, and the typed engine request it lowers to.
 //!
-//! Both surfaces reach the same thirty-five registry rows, and both must
+//! Both surfaces reach the same registry rows, and both must
 //! validate an operand the same way — a package reference that the CLI accepts
 //! and the MCP refuses is a parity bug waiting to be discovered by a user. So
 //! neither surface owns this: an [`Invocation`] is "which registry row, with
@@ -14,9 +14,10 @@
 use crate::fault::{Fault, Operand};
 use crate::grammar::{ArgumentKind, ArgumentSpec, CommandGrammar, grammar_for};
 use backend_library::{
-    CommandId, CompileExecutionIntent, IndexSearchCursor, OverrideEvidence, PackageCoordinate,
-    PackageReference, ProductText, ProjectName, ProjectSelector, SemanticGenerationId,
-    SemanticLanguageProfile, SurfaceCommand, TreeNodeId, TreeOpener, TreeSubject, decode_id,
+    CommandId, CompileExecutionIntent, IndexJobTicket, IndexSearchCursor, OverrideEvidence,
+    PackageCoordinate, PackageReference, ProductText, ProjectName, ProjectSelector,
+    SemanticGenerationId, SemanticLanguageProfile, SurfaceCommand, TreeNodeId, TreeOpener,
+    TreeSubject, decode_id,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
@@ -190,7 +191,12 @@ fn take_json(
         other => vec![other.clone()],
     };
     for scalar in scalars {
-        let text = scalar_text(&scalar).ok_or_else(|| {
+        let text = if spec.kind() == ArgumentKind::IndexJobTicket && scalar.is_object() {
+            serde_json::to_string(&scalar).ok()
+        } else {
+            scalar_text(&scalar)
+        }
+        .ok_or_else(|| {
             Fault::usage(
                 spec.json_name(),
                 format!(
@@ -293,18 +299,7 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
         CommandId::Packages => Ok(Request::Shelf),
         CommandId::Health | CommandId::Revision => Ok(Request::Status),
         CommandId::Add => {
-            let execution_intent = match invocation.option("execution-intent") {
-                None | Some("interactive") => CompileExecutionIntent::Interactive,
-                Some("background") => CompileExecutionIntent::Background,
-                Some(value) => {
-                    return Err(Fault::usage(
-                        "execution-intent",
-                        format!(
-                            "`{value}` is not a compile execution intent; choose interactive or background"
-                        ),
-                    ));
-                }
-            };
+            let execution_intent = compile_execution_intent(invocation)?;
             let path = path_or(invocation, project);
             if execution_intent == CompileExecutionIntent::Interactive {
                 Ok(Request::Index(path))
@@ -453,6 +448,41 @@ fn optional_index_search_cursor(
     })
 }
 
+fn compile_execution_intent(invocation: &Invocation) -> Result<CompileExecutionIntent, Fault> {
+    match invocation.option("execution-intent") {
+        None | Some("interactive") => Ok(CompileExecutionIntent::Interactive),
+        Some("background") => Ok(CompileExecutionIntent::Background),
+        Some(value) => Err(Fault::usage(
+            "execution-intent",
+            format!(
+                "`{value}` is not a compile execution intent; choose interactive or background"
+            ),
+        )),
+    }
+}
+
+fn index_job_ticket(invocation: &Invocation, index: usize) -> Result<IndexJobTicket, Fault> {
+    let value = invocation.require(index)?;
+    serde_json::from_str(value).map_err(|error| {
+        Fault::usage(
+            "ticket",
+            format!("pass the exact owner-issued ticket as JSON: {error}"),
+        )
+    })
+}
+
+fn progress_sequence(invocation: &Invocation) -> Result<u64, Fault> {
+    let Some(value) = invocation.option("after-sequence") else {
+        return Ok(0);
+    };
+    value.parse::<u64>().map_err(|_| {
+        Fault::usage(
+            "after-sequence",
+            format!("`{value}` is not a non-negative progress sequence"),
+        )
+    })
+}
+
 fn node(invocation: &Invocation, index: usize) -> Result<TreeNodeId, Fault> {
     let value = invocation.require(index)?;
     value
@@ -566,6 +596,20 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
             query: text(invocation, 0)?,
             limit: limit(invocation)?,
             cursor: optional_index_search_cursor(invocation)?,
+        },
+        CommandId::IndexStart => SurfaceCommand::IndexStart {
+            package: package(invocation, 0)?,
+            execution_intent: compile_execution_intent(invocation)?,
+        },
+        CommandId::IndexAwait => SurfaceCommand::IndexAwait {
+            ticket: index_job_ticket(invocation, 0)?,
+        },
+        CommandId::IndexProgress => SurfaceCommand::IndexProgress {
+            ticket: index_job_ticket(invocation, 0)?,
+            after_sequence: progress_sequence(invocation)?,
+        },
+        CommandId::IndexCancel => SurfaceCommand::IndexCancel {
+            ticket: index_job_ticket(invocation, 0)?,
         },
         CommandId::PackageVersions => SurfaceCommand::PackageVersions {
             package: package(invocation, 0)?,

@@ -477,6 +477,23 @@ pub enum EmbeddingRuntimeError {
     /// Persisted runtime bytes or artifact metadata are malformed or corrupt.
     #[error("embedding runtime state is corrupt")]
     Corrupt,
+    /// Private configuration access failed at a known path and I/O stage.
+    #[error(
+        "embedding runtime configuration {config_path} I/O failed during {phase:?} at {operation_path} ({kind:?}): {source}"
+    )]
+    ConfigIo {
+        /// Configuration entry being loaded.
+        config_path: PathBuf,
+        /// Exact path whose metadata or contents were being accessed.
+        operation_path: PathBuf,
+        /// Exact access stage that failed.
+        phase: EmbeddingRuntimeIoPhase,
+        /// Stable operating-system error class for operator diagnostics.
+        kind: std::io::ErrorKind,
+        /// Original operating-system failure.
+        #[source]
+        source: std::io::Error,
+    },
     /// File-system persistence or reading failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -486,6 +503,34 @@ pub enum EmbeddingRuntimeError {
     /// The external process did not pass the exact bounded embedding protocol.
     #[error(transparent)]
     Activation(#[from] backend_compile::EmbeddingExecutableError),
+}
+
+/// I/O stages while loading the owner-private embedding configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmbeddingRuntimeIoPhase {
+    /// Inspect the private directory containing the configuration.
+    ConfigParentMetadata,
+    /// Open the private configuration without following its final link.
+    ConfigOpen,
+    /// Read metadata from the opened configuration handle.
+    ConfigMetadata,
+    /// Read the bounded configuration bytes from the opened handle.
+    ConfigRead,
+}
+
+fn config_io_error(
+    config_path: &Path,
+    operation_path: &Path,
+    phase: EmbeddingRuntimeIoPhase,
+    source: std::io::Error,
+) -> EmbeddingRuntimeError {
+    EmbeddingRuntimeError::ConfigIo {
+        config_path: config_path.to_owned(),
+        operation_path: operation_path.to_owned(),
+        phase,
+        kind: source.kind(),
+        source,
+    }
 }
 
 struct PersistedEmbeddingRuntimeConfig {
@@ -770,12 +815,47 @@ fn decode_config(bytes: &[u8]) -> Result<PersistedEmbeddingRuntimeConfig, Embedd
 fn read_private_config(
     path: &Path,
 ) -> Result<Option<PersistedEmbeddingRuntimeConfig>, EmbeddingRuntimeError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::symlink_metadata(parent).map_err(|error| {
+        config_io_error(
+            path,
+            parent,
+            EmbeddingRuntimeIoPhase::ConfigParentMetadata,
+            error,
+        )
+    })?;
     let mut file = match backend_platform::durable::open_private_read(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // `open_private_read` can report ENOENT either for the final
+            // config entry or while validating its parent. Only the former
+            // means this runtime is not configured; a missing parent is an
+            // owner-state error and needs a path/stage diagnostic.
+            fs::symlink_metadata(parent).map_err(|error| {
+                config_io_error(
+                    path,
+                    parent,
+                    EmbeddingRuntimeIoPhase::ConfigParentMetadata,
+                    error,
+                )
+            })?;
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(config_io_error(
+                path,
+                path,
+                EmbeddingRuntimeIoPhase::ConfigOpen,
+                error,
+            ));
+        }
     };
-    let metadata = file.metadata()?;
+    let metadata = file.metadata().map_err(|error| {
+        config_io_error(path, path, EmbeddingRuntimeIoPhase::ConfigMetadata, error)
+    })?;
     if !metadata.is_file() || metadata.len() > MAX_CONFIG_BYTES as u64 {
         return Err(EmbeddingRuntimeError::Corrupt);
     }
@@ -785,7 +865,8 @@ fn read_private_config(
         .map_err(|_| EmbeddingRuntimeError::Corrupt)?;
     file.by_ref()
         .take((MAX_CONFIG_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
+        .read_to_end(&mut bytes)
+        .map_err(|error| config_io_error(path, path, EmbeddingRuntimeIoPhase::ConfigRead, error))?;
     if bytes.len() as u64 != metadata.len() {
         return Err(EmbeddingRuntimeError::Corrupt);
     }
@@ -1172,6 +1253,58 @@ sys.stdout.buffer.write(response)
         assert!(provision.runtime().is_none());
         fs::remove_dir_all(directory)?;
         Ok(())
+    }
+
+    #[test]
+    fn missing_config_parent_is_a_typed_io_failure_not_unconfigured() {
+        let directory = private_dir("missing-parent");
+        let config = directory.join("missing").join("embedding.config");
+        let error = EmbeddingRuntimeProvision::open(&config)
+            .expect_err("missing parent cannot mean an absent optional config");
+        match error {
+            EmbeddingRuntimeError::ConfigIo {
+                config_path,
+                operation_path,
+                phase,
+                kind,
+                ..
+            } => {
+                assert_eq!(config_path, config);
+                assert_eq!(operation_path, directory.join("missing"));
+                assert_eq!(phase, EmbeddingRuntimeIoPhase::ConfigParentMetadata);
+                assert_eq!(kind, std::io::ErrorKind::NotFound);
+            }
+            other => panic!("expected typed config-parent I/O diagnostic, got {other:?}"),
+        }
+        fs::remove_dir_all(directory).expect("remove missing-parent fixture");
+    }
+
+    #[test]
+    fn private_config_open_failure_retains_path_phase_and_io_kind() {
+        let directory = private_dir("insecure-config-parent");
+        let parent = directory.join("shared");
+        fs::create_dir(&parent).expect("create deliberately insecure parent");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))
+            .expect("make parent non-private");
+        let config = parent.join("embedding.config");
+        let error = EmbeddingRuntimeProvision::open(&config)
+            .expect_err("private config admission must fail closed");
+        match error {
+            EmbeddingRuntimeError::ConfigIo {
+                config_path,
+                operation_path,
+                phase,
+                kind,
+                ..
+            } => {
+                assert_eq!(config_path, config);
+                assert_eq!(operation_path, config);
+                assert_eq!(phase, EmbeddingRuntimeIoPhase::ConfigOpen);
+                assert_eq!(kind, std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected typed config-open I/O diagnostic, got {other:?}"),
+        }
+        fs::remove_dir_all(directory).expect("remove insecure-parent fixture");
     }
 
     #[test]

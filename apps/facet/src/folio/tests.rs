@@ -4,14 +4,15 @@
 
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 
-use super::berg::{Basis, BergBlock, BergFacts, berg};
+use super::berg::{Basis, BergBlock, BergFacts, berg, weight};
 use super::cards::{CardFacts, Change, symbol_card};
 use super::crest::{stamp, unread};
 use super::features::{FeatureFacts, FeatureNode, feature_preview};
 use super::fixture::{self, MPSC, TOML};
 use super::heads::{Place, Sighting, Signals, findings, heads};
+use super::module::module;
 use super::shingles::{ModuleFacts, ShingleFacts, shingles};
-use super::state::{Extent, Nominal, Unsafe, Use};
+use super::state::{Extent, Fold, Nominal, Unsafe, Use};
 use super::ticker::{Release, TickerFacts, ticker};
 use crate::data::release::{RegistryFact, SourceAvailability};
 use crate::marks::badges::{Item, Lang};
@@ -123,6 +124,52 @@ fn a_card_says_badge_words_and_never_the_code(cx: &mut TestAppContext) {
         assert!(said.iter().any(|t| t == word), "the card never said `{word}`: {said:?}");
     }
     assert!(said.iter().all(|t| !t.contains("pub fn") && !t.contains("Result<") && !t.contains("where")), "code leaked onto the card: {said:?}");
+}
+
+#[gpui::test]
+fn a_long_symbol_identity_wraps_inside_its_native_card_target_at_200_percent(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let name = "net::模块::🧪_symbol_with_an_unbreakable_segment_非常に長い経路".to_owned();
+    let expected = name.clone();
+    let (cx, _) = open(cx, move |_, cx, _| {
+        let measure = cx.facet().measure(px(256.0));
+        symbol_card(
+            "long-symbol",
+            rust_card(&name, crate::icons::Kind::Struct, "pub struct T;", None),
+            &measure,
+        )
+        .width(px(256.0))
+        .into_any_element()
+    });
+    let frame = ledger(cx);
+    let name = frame.texts.iter().find(|text| text.content == expected).expect("the full symbol identity is painted");
+    assert_eq!(name.overflow, TextOverflow::Wrap, "the name is visible through wrapping, not an ellipsis: {name:?}");
+    assert!(name.bounds.height > name.line_height, "the card reserves the full wrapped name: {name:?}");
+    let target = frame.targets.iter().find(|target| target.key.contains("long-symbol")).expect("the native card has a real focus target");
+    assert!(target.bounds.within(WIDTH, 700.0), "the actual focus target stays in the frame: {target:?}");
+    assert!(target.bounds.x + target.bounds.width <= 276.5, "the target fits inside its 256px card width: {target:?}");
+}
+
+#[gpui::test]
+fn a_long_module_path_wraps_inside_its_narrow_page_header_at_200_percent(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let package = "crate::subpackage::a_very_long_unbreakable_package_identity_非常に長い経路".to_owned();
+    let name = "net::模块::module_with_a_long_unbreakable_identity_🧪_非常に長い経路".to_owned();
+    let expected_package = package.clone();
+    let expected_name = name.clone();
+    let (cx, _) = open(cx, move |_, cx, _| {
+        let measure = cx.facet().measure(px(256.0));
+        module("long-module-page", package.clone(), name.clone(), Vec::new(), &measure)
+            .extent(Extent::Page)
+            .into_any_element()
+    });
+    let frame = ledger(cx);
+    for expected in [expected_package, expected_name] {
+        let text = frame.texts.iter().find(|text| text.content == expected).expect("the full module path is painted");
+        assert_eq!(text.overflow, TextOverflow::Wrap, "module identity is visible by wrapping: {text:?}");
+        assert!(text.bounds.height > text.line_height, "the page header reserves every wrapped line: {text:?}");
+        assert!(text.bounds.x >= 20.0 && text.bounds.x + text.bounds.width <= 276.5, "the module path stays in its 256px header: {text:?}");
+    }
 }
 
 #[gpui::test]
@@ -238,6 +285,31 @@ fn a_region_the_host_rests_on_reads_itself_in_the_foot(cx: &mut TestAppContext) 
         shingles("map", modules.into(), &m).rest(Some(crate::folio::shingles::Spot::Region(1))).into_any_element()
     });
     assert_eq!(text_at(cx, "foot-name").map(|t| t.0), Some(fixture::TOKIO_MODULES[1].0.to_owned()), "the foot names the region the host rests on");
+}
+
+#[gpui::test]
+fn a_long_unicode_module_name_wraps_whole_inside_a_narrow_double_text_map(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let name = "net::模块::🧪_symbol_with_an_unbreakable_segment_非常に長い経路".to_owned();
+    let expected = name.clone();
+    let (cx, _) = open(cx, move |_, cx, _| {
+        let measure = cx.facet().measure(px(256.0));
+        let facts = ModuleFacts::new(
+            name.clone(),
+            vec![ShingleFacts { name: "Symbol".into(), family: Family::Type, yours: Use::Elsewhere, state: None }],
+        );
+        shingles("narrow-long-label", vec![facts].into(), &measure)
+            .rest(Some(super::shingles::Spot::Region(0)))
+            .into_any_element()
+    });
+    let label = ledger(cx).texts.into_iter().find(|text| text.content == expected).expect("the complete Unicode module identity is painted");
+    assert_eq!(label.overflow, TextOverflow::Wrap, "the label wraps rather than clips: {label:?}");
+    assert!(label.bounds.height > label.line_height, "the map reserves every wrapped line: {label:?}");
+    assert!(label.bounds.x >= 20.0 && label.bounds.x + label.bounds.width <= 276.5, "the text box stays within its 256px measured map: {label:?}");
+    let foot = ledger(cx).texts.into_iter().find(|text| text.key.ends_with("foot-name")).expect("keyboard focus repeats the complete name in the foot");
+    assert_eq!(foot.content, expected);
+    assert_eq!(foot.overflow, TextOverflow::Wrap, "the focused name wraps too: {foot:?}");
+    assert!(foot.bounds.height > foot.line_height && foot.bounds.x + foot.bounds.width <= 276.5, "the foot reserves visible lines inside the map: {foot:?}");
 }
 
 // ------------------------------------------------------------------ ticker
@@ -513,6 +585,22 @@ fn feature_preview_is_read_only_and_names_its_manifest_profile(cx: &mut TestAppC
     assert_eq!(said(cx), before, "pointer input cannot simulate a feature change");
 }
 
+#[gpui::test]
+fn feature_profile_status_wraps_within_the_narrow_double_text_reader(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let (cx, _) = open(cx, |_, cx, _| {
+        let measure = cx.facet().measure(px(320.0));
+        feature_preview("narrow-features", tokio_features(), px(320.0), &measure).into_any_element()
+    });
+    let status = ledger(cx)
+        .texts
+        .into_iter()
+        .find(|text| text.content == "read only · manifest defaults")
+        .expect("the full read-only profile status is painted");
+    assert_eq!(status.overflow, TextOverflow::Wrap);
+    assert!(status.bounds.x >= 20.0 && status.bounds.x + status.bounds.width <= 340.5, "status stays inside the 320px feature reader: {status:?}");
+}
+
 // ------------------------------------------------------------------ berg
 
 fn tokio_berg() -> Rc<BergFacts> {
@@ -546,4 +634,38 @@ fn the_berg_names_a_block_on_a_plate_and_says_what_share_of_the_weight_it_carrie
     assert!(hot.contains("reached via mio") && hot.contains("click to go there"), "{hot}");
     click(cx, windows.x + windows.width * 0.5, windows.y + windows.height * 0.5);
     assert_eq!(log.borrow().as_slice(), ["go 9"]);
+}
+
+#[gpui::test]
+fn weight_caption_expands_and_keeps_the_whole_fact_at_double_text_scale(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let facts = Rc::new(BergFacts {
+        name: "tokio".into(),
+        own: 49_187,
+        blocks: (0..37)
+            .map(|index| BergBlock {
+                name: format!("package-{index}").into(),
+                version: "1.0.0".into(),
+                sloc: 1,
+                layer: 1,
+                parent: None,
+                deps: Vec::new(),
+            })
+            .collect(),
+        missing: 0,
+        basis: Some(Basis::Lock),
+    });
+    let (cx, _) = open(cx, move |_, cx, _| {
+        let measure = cx.facet().measure(px(256.0));
+        weight("weight-long-caption", facts.clone(), px(256.0), Nominal::px(138.0), Fold::Folded, &measure).into_any_element()
+    });
+    let caption = ledger(cx).texts.into_iter().find(|text| text.key.ends_with("caption")).expect("the weight caption is painted");
+    assert_eq!(caption.content, "37 packages beneath · in your lock");
+    assert_eq!(caption.overflow, TextOverflow::Wrap, "the source fact is not ellipsized at 200% text");
+    assert!(caption.bounds.height > caption.line_height, "all wrapped caption lines have layout height: {caption:?}");
+    let target = ledger(cx).targets.into_iter().find(|target| target.key.contains("weight-long-caption")).expect("the whole weight card has a native target");
+    assert!(
+        caption.bounds.y + caption.bounds.height <= target.bounds.y + target.bounds.height + 0.5,
+        "the caption remains inside the card's actual target bounds: caption={caption:?}, target={target:?}"
+    );
 }
