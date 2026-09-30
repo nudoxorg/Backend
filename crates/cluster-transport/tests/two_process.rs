@@ -237,7 +237,7 @@ async fn remote_index_oversized_hello_is_rejected_before_payload_read() {
     send.write_all(&too_large.to_be_bytes())
         .await
         .expect("write oversized frame length only");
-    send.finish().await.expect("finish oversized header stream");
+    send.finish().expect("finish oversized header stream");
 
     let error = timeout(Duration::from_secs(10), serving)
         .await
