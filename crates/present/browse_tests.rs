@@ -30,7 +30,7 @@ fn the_tree_reads_as_the_library_page_says_it() {
     assert_eq!(reading.name, "backend");
     assert_eq!(reading.lede, "Your 44 packages lean on 75 others directly, and 884 in all.");
     assert_eq!(reading.elsewhere.as_deref(), Some("and 309 more for other platforms"));
-    assert_eq!(reading.twice_line.as_deref(), Some("60 crates are here twice"));
+    assert_eq!(reading.twice_line.as_deref(), Some("60 crates appear at more than one version"));
     assert_eq!(reading.health, "advisories from a partial source, not a full check of 884");
     let alert = &reading.alerts[0];
     assert_eq!(alert.title, "bincode 1.3.3 is unmaintained");
