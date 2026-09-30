@@ -674,6 +674,34 @@ fn publish_native_history_commit(
         .selected_typed_v3_history_branch_current(&binding, &branch)
         .map_err(NativeHistoryPublicationError::Refused)?
     {
+        let ancestry = history
+            .history_ref_ancestry_proof(
+                binding.target(),
+                backend_replication::HistoryRefKind::Branch,
+                &branch,
+                commit,
+            )
+            .map_err(NativeHistoryPublicationError::Refused)?;
+        let replay = history
+            .replay_typed_v3_history(
+                binding.target(),
+                backend_replication::HistoryRefKind::Branch,
+                &branch,
+                commit,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .map_err(NativeHistoryPublicationError::Refused)?;
+        if replay.commit().identity() != commit
+            || replay.input_replay_status()
+                != backend_replication::TypedV3HistoryInputReplayStatus::Unproven
+        {
+            return Err(NativeHistoryPublicationError::Refused(
+                "cold typed V3 replay did not verify the exact selected commit as unproven input"
+                    .to_owned(),
+            ));
+        }
         if source.current_selected_generation().ok() != Some(work.stamp) {
             return Err(NativeHistoryPublicationError::Superseded);
         }
