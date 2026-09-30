@@ -646,7 +646,7 @@ impl FileSemanticRangeStore {
         let pin = self.pin_typed_v3_history_admission()?;
         let target = selected.target();
         let selected_stamp = selected.selected_stamp();
-        let selected_image = selected.image();
+        let selected_image = selected.image_key();
         let selected_image_identity = selected.image_identity();
         let selected_manifest_root = selected.manifest().root();
         let selected_build = selected.manifest().build();
