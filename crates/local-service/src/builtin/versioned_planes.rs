@@ -13,8 +13,8 @@ use backend_extension_turso::{
 use backend_replication::{
     ByteRange, IrHydrationRequest, SelectedGenerationSource, SelectedGenerationStamp,
     SelectedNativeHistoryBinding, SelectedNativeHistoryImage, SelectedNativeImagePublicationFence,
-    SelectedNativeImageSource, SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk,
-    SemanticManifestGet, SemanticTargetKey,
+    SelectedNativeImageSource, SelectedTypedV3HistoryError, SemanticCatalogChunk,
+    SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet, SemanticTargetKey,
 };
 use backend_replication::{
     FileSemanticRangeStore, HistoryCommitId, HistoryRefName, TransportLimits,
@@ -702,6 +702,24 @@ enum NativeHistoryPublicationError {
     Refused(String),
 }
 
+fn map_typed_history_publication_error(
+    error: SelectedTypedV3HistoryError,
+) -> NativeHistoryPublicationError {
+    match error {
+        SelectedTypedV3HistoryError::StaleSelection => NativeHistoryPublicationError::Superseded,
+        SelectedTypedV3HistoryError::RetryableAvailability { operation, detail } => {
+            NativeHistoryPublicationError::Deferred(format!("{operation:?}: {detail}"))
+        }
+        SelectedTypedV3HistoryError::Refused {
+            operation,
+            cause,
+            detail,
+        } => NativeHistoryPublicationError::Refused(format!(
+            "{operation:?} refused ({cause:?}): {detail}"
+        )),
+    }
+}
+
 pub(super) fn publish_native_history(
     work: super::semantic_authority::NativeHistoryPublicationWork,
 ) -> backend_engine::SemanticHistoryPublicationStatus {
@@ -992,7 +1010,7 @@ fn publish_native_history_commit(
             {
                 return Err(NativeHistoryPublicationError::Superseded);
             }
-            return Err(NativeHistoryPublicationError::Refused(error));
+            return Err(map_typed_history_publication_error(error));
         }
     };
     if !work
@@ -1703,6 +1721,37 @@ mod tests {
                 source: None,
             }),
             SelectedImageRangeReadError::Refused(_),
+        ));
+    }
+
+    #[test]
+    fn typed_v3_publication_failures_keep_retryability_separate_from_refusal() {
+        use backend_replication::{
+            SelectedTypedV3HistoryOperation as Operation, SelectedTypedV3HistoryRefusal as Refusal,
+        };
+
+        assert!(matches!(
+            map_typed_history_publication_error(SelectedTypedV3HistoryError::StaleSelection),
+            NativeHistoryPublicationError::Superseded,
+        ));
+        assert!(matches!(
+            map_typed_history_publication_error(
+                SelectedTypedV3HistoryError::RetryableAvailability {
+                    operation: Operation::CompareAndSwapRef,
+                    detail: "temporary store outage".to_owned(),
+                }
+            ),
+            NativeHistoryPublicationError::Deferred(reason)
+                if reason.contains("CompareAndSwapRef")
+        ));
+        assert!(matches!(
+            map_typed_history_publication_error(SelectedTypedV3HistoryError::Refused {
+                operation: Operation::VerifyPayloadClosure,
+                cause: Refusal::IntegrityFailure,
+                detail: "invalid closure".to_owned(),
+            }),
+            NativeHistoryPublicationError::Refused(reason)
+                if reason.contains("IntegrityFailure")
         ));
     }
 
