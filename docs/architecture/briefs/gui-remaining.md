@@ -17,7 +17,7 @@ It is written for whoever continues the GUI, and for the owner, who holds the de
 
 A claim marked "from code" was read in the source and has never been seen in a running app.
 
-**Inventories.** Four raw inventories back this brief. They hold one record per item, with file:line, and live in `.local/lanes/final/gui-inventory/`, which is git-ignored like every lane file:
+**Inventories.** Four raw inventories back this brief. They hold one record per item, with file:line, and are preserved in `docs/reviews/gui-checkpoint-2026-09-30/` so this checkpoint remains usable after a fresh checkout:
 - `plan.md` (295 records): what the design documents intended against what the code has;
 - `code.md`: routes, reachability, dead UI, deferral markers, exercise coverage, languages and platform, all from the code alone;
 - `lanes.md` (329 records): every open item the lanes and reviewers wrote down, deduplicated, with its latest status;
