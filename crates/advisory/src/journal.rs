@@ -197,13 +197,12 @@ impl AdvisoryJournal {
                 .all(|entry| matches!(entry, AdvisoryDelta::Upsert(_)))
         {
             entries.sort_by(|left, right| {
-                let native_id = |entry: &AdvisoryDelta| match entry {
-                    AdvisoryDelta::Upsert(advisory) => &advisory.key.native.id,
-                    AdvisoryDelta::Withdraw { .. }
-                    | AdvisoryDelta::Delete { .. }
-                    | AdvisoryDelta::Tombstone { .. } => unreachable!("upserts only"),
-                };
-                native_id(left).cmp(native_id(right))
+                match (left, right) {
+                    (AdvisoryDelta::Upsert(left), AdvisoryDelta::Upsert(right)) => {
+                        left.key.native.id.cmp(&right.key.native.id)
+                    }
+                    _ => unreachable!("upserts only"),
+                }
             });
         }
         for entry in entries {
