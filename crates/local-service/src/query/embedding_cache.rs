@@ -352,7 +352,8 @@ fn inventory(directory: &Path) -> Result<(u64, BTreeMap<[u8; 32], CacheEntry>, u
             let _ = fs::remove_file(entry.path());
             continue;
         };
-        if name != format!("{}.vec", hexadecimal(&identity)) {
+        let expected_name = format!("{}.vec", hexadecimal(&identity));
+        if name.to_str() != Some(expected_name.as_str()) {
             let _ = fs::remove_file(entry.path());
             continue;
         }
@@ -424,7 +425,8 @@ fn migrate_legacy_recipe_directories(directory: &Path) -> io::Result<()> {
                 }
                 continue;
             };
-            if name != format!("{}.vec", hexadecimal(&identity)) {
+            let expected_name = format!("{}.vec", hexadecimal(&identity));
+            if name.to_str() != Some(expected_name.as_str()) {
                 continue;
             }
             let mut cache_file = File::open(file.path())?;
