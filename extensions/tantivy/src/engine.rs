@@ -20,6 +20,7 @@ use tantivy::{
         Scorer, TermQuery,
     },
     schema::{BytesOptions, FAST, Field, INDEXED, IndexRecordOption, STRING, Schema},
+    ReloadPolicy,
 };
 
 const WRITER_MEMORY_BYTES: usize = 15_000_000;
@@ -571,7 +572,10 @@ impl TantivySource {
         if index.schema() != projected.schema {
             return Err(Error::SchemaDrift.into());
         }
-        let reader = index.reader()?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
         let mut documents =
             read_ordinal_map(state, projection_fingerprint(state.binding()), directory)?;
         bind_document_addresses(&reader, &mut documents, limits)?;
@@ -1005,7 +1009,10 @@ impl TantivySource {
         // Join background merges so no thread is still rewriting the index
         // directory once the source is handed out.
         writer.wait_merging_threads()?;
-        let reader = index.reader()?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
         bind_document_addresses(&reader, &mut documents, limits)?;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
@@ -1521,7 +1528,7 @@ impl TantivySource {
             let score =
                 self.score_rank_material(query, ordinal as u32, address, material, &mut best)?;
             if let Some(score) = score {
-                relevance.insert(candidate, score);
+                relevance.insert(candidate, score.relevance);
             }
         }
         Ok(relevance)
@@ -1608,6 +1615,14 @@ impl TantivySource {
             let mut doc = scorer.doc();
             while doc != TERMINATED {
                 self.rank_docs_visited.fetch_add(1, Ordering::Relaxed);
+                // A raw Weight scorer can include tombstoned doc IDs. Collector
+                // APIs normally apply the segment's live-doc bitset; this
+                // direct streaming collector must do so before resolving the
+                // stable ordinal against the selected generation.
+                if segment.is_deleted(doc) {
+                    doc = scorer.advance();
+                    continue;
+                }
                 let address = DocAddress::new(
                     u32::try_from(segment_ord).map_err(|_| Error::SizeLimit)?,
                     doc,
@@ -1795,7 +1810,15 @@ fn searchable_tokens(text: &str) -> Vec<SearchableToken<'_>> {
         // paths. Deduplicate each whitespace token before retaining the
         // field-wide canonical set, limiting transient duplicate entries.
         tokens[first..].sort_unstable();
-        tokens[first..].dedup();
+        let mut unique_end = first;
+        for index in first..tokens.len() {
+            let token = tokens[index];
+            if unique_end == first || token != tokens[unique_end - 1] {
+                tokens[unique_end] = token;
+                unique_end += 1;
+            }
+        }
+        tokens.truncate(unique_end);
     }
     tokens.sort_unstable();
     tokens.dedup();
@@ -2999,7 +3022,7 @@ pub(crate) mod test_support {
         }
         let projected = super::projection_schema();
         let index = super::Index::create_in_dir(directory, projected.schema)?;
-        let writer = index.writer(super::WRITER_MEMORY_BYTES)?;
+        let mut writer = index.writer(super::WRITER_MEMORY_BYTES)?;
         let postings = super::write_document(
             &writer,
             &projected.fields,

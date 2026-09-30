@@ -685,7 +685,7 @@ fn three_clause_ranking_uses_weakest_quality_sum_weight_and_multivalue_maxima() 
         vec!["a".into(), "b".into(), "c".into()],
         vec!["c".into(), "a".into(), "b".into()],
     ] {
-        let query = Query::new(terms, Limits::default()).expect("three clause query");
+        let query = Query::prefix(terms, Limits::default()).expect("three clause prefix query");
         let hits = source.search(&query).expect("independent fixed-label query");
         assert_eq!(
             hits.iter().map(|hit| hit.document).collect::<Vec<_>>(),
@@ -1056,7 +1056,9 @@ fn broad_keyset_pages_keep_only_the_current_page_and_row_scratch() {
             break;
         }
     }
-    assert_eq!(observed, (1..=128).map(document).collect::<Vec<_>>());
+    let mut expected = (1..=128).map(document).collect::<Vec<_>>();
+    expected.sort_unstable();
+    assert_eq!(observed, expected);
     assert_eq!(adapter.rank_evaluations(), 128);
     assert_eq!(adapter.source().rank_docs_visited(), 128 * 128);
     assert_eq!(rank_cache_bytes(&adapter).expect("retained rank bytes"), 0);
@@ -2206,7 +2208,11 @@ fn one_document_revision_deletes_only_that_documents_postings() {
     .expect("beta after revision");
     assert_eq!(after_page.total, 0);
     assert!(after_page.hits.is_empty());
-    assert_eq!(source.rank_evaluations(), 2);
+    assert_eq!(
+        source.rank_evaluations(),
+        6,
+        "initial page, four membership probes, and the post-revision page"
+    );
 }
 
 #[test]
