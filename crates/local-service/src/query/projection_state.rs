@@ -56,11 +56,17 @@ impl ProjectionState {
         provider_scope: [u8; 32],
     ) -> Option<Self> {
         create_private_directory(directory).ok()?;
+        // The complete composite key is also authenticated in the state
+        // contents. Keep the filesystem component short and fixed-size so
+        // workspace, recipe, and provider identities cannot exceed platform
+        // filename limits when staged temporary suffixes are added.
         let path = directory.join(format!(
-            "{}-{}-{}.state",
-            hexadecimal(workspace.as_bytes()),
-            hexadecimal(recipe.as_bytes()),
-            hexadecimal(&provider_scope)
+            "{}.state",
+            hexadecimal(&manifest_key(
+                workspace.to_bytes(),
+                recipe.to_bytes(),
+                provider_scope,
+            ))
         ));
         let row_keys = match read_state(&path, workspace, recipe, provider_scope) {
             Ok(rows) => rows,
@@ -131,11 +137,9 @@ impl ProjectionState {
     fn persist(&self, rows: &[String]) -> io::Result<()> {
         let encoded = encode_state(self.workspace, self.recipe, self.provider_scope, rows)?;
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary = self.path.with_extension(format!(
-            "{}-{}-{sequence}.tmp",
-            std::process::id(),
-            hexadecimal(self.workspace.as_bytes())
-        ));
+        let temporary = self
+            .path
+            .with_extension(format!("{}-{sequence}.tmp", std::process::id()));
         let result = (|| {
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -193,6 +197,15 @@ impl ProjectionState {
             }
         }
     }
+}
+
+fn manifest_key(workspace: [u8; 32], recipe: [u8; 32], provider_scope: [u8; 32]) -> [u8; 32] {
+    let mut hasher =
+        blake3::Hasher::new_derive_key("backend.local-service.qdrant-projection-manifest-key.v1");
+    hasher.update(&workspace);
+    hasher.update(&recipe);
+    hasher.update(&provider_scope);
+    *hasher.finalize().as_bytes()
 }
 
 fn validate_rows(rows: &[String]) -> io::Result<Vec<String>> {
@@ -445,6 +458,7 @@ fn state_data_error() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backend_version::{ClosedRelationScope, CoverageWitness, ScopeRoot, WorkspaceManifest};
 
     #[test]
     fn projection_membership_accepts_only_canonical_typed_row_keys() {
@@ -455,5 +469,63 @@ mod tests {
         assert!(!valid_row_key(&format!("symbol:{}", "A".repeat(64))));
         assert!(!valid_row_key(&format!("other:{}", "a".repeat(64))));
         assert!(!valid_row_key(&format!("object:{}", "a".repeat(63))));
+    }
+
+    #[test]
+    fn manifest_filename_is_bounded_and_contents_remain_authoritative() {
+        let workspace = WorkspaceManifest::from_versions(
+            1,
+            Vec::new(),
+            Vec::new(),
+            qdrant::Authority::from_value(&[1; 32]),
+            CoverageWitness::closed_relation(ClosedRelationScope::from_scope_root(
+                ScopeRoot::from_u64(1),
+            )),
+        )
+        .expect("workspace")
+        .root();
+        let recipe = qdrant::Recipe::from_value(&[2; 32]);
+        let first_scope = [3; 32];
+        let next_scope = [4; 32];
+        let first_name = format!(
+            "{}.state",
+            hexadecimal(&manifest_key(
+                workspace.to_bytes(),
+                recipe.to_bytes(),
+                first_scope,
+            ))
+        );
+        assert_eq!(first_name.len(), 70);
+
+        let directory = std::env::temp_dir().join(format!(
+            "backend-qdrant-state-key-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        create_private_directory(&directory).expect("fixture directory");
+        let mut first =
+            ProjectionState::open_in_directory(&directory, workspace, recipe, first_scope)
+                .expect("first manifest");
+        first
+            .commit(&[format!("package:{}", "a".repeat(64))])
+            .expect("commit exact rows");
+        let second_path = directory.join(format!(
+            "{}.state",
+            hexadecimal(&manifest_key(
+                workspace.to_bytes(),
+                recipe.to_bytes(),
+                next_scope,
+            ))
+        ));
+        fs::rename(&first.path, &second_path).expect("simulate a filename-key collision");
+
+        let next = ProjectionState::open_in_directory(&directory, workspace, recipe, next_scope)
+            .expect("next manifest");
+        assert!(next.row_keys().is_empty());
+        assert!(
+            !second_path.exists(),
+            "the authenticated provider identity rejects colliding file contents"
+        );
+        let _ = fs::remove_dir_all(directory);
     }
 }
