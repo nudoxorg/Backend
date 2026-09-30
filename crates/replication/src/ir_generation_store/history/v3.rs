@@ -525,7 +525,9 @@ fn stage_typed_v3_locator_bytes_with<E: HistoryMutationFailure>(
         Ok(_) => {
             ensure_regular_file(&pending)?;
             if fs::metadata(&pending).map_err(display_io)?.len() != 0 {
-                return Err("typed V3 pending locator marker is not empty".to_owned());
+                return Err("typed V3 pending locator marker is not empty"
+                    .to_owned()
+                    .into());
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -537,7 +539,7 @@ fn stage_typed_v3_locator_bytes_with<E: HistoryMutationFailure>(
     let path = locator_path(target_root, commit);
     match read_optional_bounded(&path, MAX_TYPED_V3_LOCATOR_BYTES + 32 + CHECKSUM_BYTES)? {
         Some(existing) if existing == bytes => Ok(()),
-        Some(_) => Err("typed V3 history commit locator changed".to_owned()),
+        Some(_) => Err("typed V3 history commit locator changed".to_owned().into()),
         None => backend_platform::durable::write_private_atomic(&path, bytes)
             .map_err(|error| E::retryable_io(display_io(error))),
     }

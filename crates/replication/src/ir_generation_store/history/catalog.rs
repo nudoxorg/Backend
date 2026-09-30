@@ -492,7 +492,9 @@ impl LocalSemanticGenerationFiles {
         }
         let admitted = load_history_commit(&commits_root, proposal.identity)?;
         if admitted != proposal.record {
-            return Err("admitted semantic history commit differs from its proposal".to_owned());
+            return Err("admitted semantic history commit differs from its proposal"
+                .to_owned()
+                .into());
         }
         append_commit_index_typed(&target_root, proposal.identity).map_err(E::from_typed)?;
         Ok(HistoryAdmissionReceipt {

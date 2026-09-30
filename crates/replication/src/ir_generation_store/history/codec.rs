@@ -168,16 +168,18 @@ fn prepare_history_layout_with<E: HistoryMutationFailure>(
         )
         .map_err(|error| E::retryable_io(display_io(error)))?;
     } else if read_optional_bounded(&refs_path, MAX_HISTORY_REFS_BYTES)?.is_none() {
-        return Err("semantic history refs catalog is missing".to_owned());
+        return Err("semantic history refs catalog is missing".to_owned().into());
     } else {
         let index_path = history_root.join("commit.index");
         if !index_path.exists() {
-            return Err("semantic history commit index is missing".to_owned());
+            return Err("semantic history commit index is missing".to_owned().into());
         }
         ensure_regular_file(&index_path)?;
         let tombstones_path = history_root.join("tombstones.index");
         if !tombstones_path.exists() {
-            return Err("semantic history tombstone index is missing".to_owned());
+            return Err("semantic history tombstone index is missing"
+                .to_owned()
+                .into());
         }
         ensure_regular_file(&tombstones_path)?;
     }
@@ -301,7 +303,9 @@ fn write_history_payload_root_with<E: HistoryMutationFailure>(
     let path = history_payload_root_path(target_root, identity);
     match fs::read(&path) {
         Ok(existing) if existing == bytes => Ok(()),
-        Ok(_) => Err("immutable semantic history payload root changed".to_owned()),
+        Ok(_) => Err("immutable semantic history payload root changed"
+            .to_owned()
+            .into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             backend_platform::durable::write_private_atomic(&path, &bytes)
                 .map_err(|error| E::retryable_io(display_io(error)))
