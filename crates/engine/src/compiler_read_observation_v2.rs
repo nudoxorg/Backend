@@ -775,7 +775,9 @@ mod tests {
 
     #[test]
     fn opaque_ra_vfs_and_hir_module_events_remain_diagnostic_and_sequenced() {
-        let mut recorder = CompilerReadObservationRecorderV2::new().expect("attempt id");
+        let attempt =
+            crate::compiler_attempt_v2::CompilationAttemptId::mint().expect("attempt identity");
+        let mut recorder = CompilerReadObservationRecorderV2::new(attempt);
         let vfs = recorder
             .register(CompilerReadObservationChannelV2::RaVfsLoader)
             .expect("RA VFS producer");
