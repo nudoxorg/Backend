@@ -776,13 +776,47 @@ fn bounds_sample(key: &ElementId, bounds: Bounds<Pixels>) -> BoundsSample {
 /// Publishes a text element's box, natural width and overflow handling while
 /// recording.
 pub fn record_text(cx: &mut App, key: &ElementId, bounds: Bounds<Pixels>, sample: TextSample) {
-    if enabled(cx) {
-        let sample = TextSample {
-            key: key.to_string(),
-            bounds: bounds_sample(key, bounds),
-            ..sample
-        };
-        cx.default_global::<Probe>().ledger.texts.push(sample);
+    let _ = record_text_with_index(cx, key, bounds, sample);
+}
+
+/// Appends a text observation and returns the exact ledger slot its native
+/// paint pass must complete. Text keys describe probe identity, but can be
+/// repeated for identical words; paint completion must bind to this sample,
+/// not search by key and accidentally leave earlier duplicate text unmasked.
+fn record_text_with_index(
+    cx: &mut App,
+    key: &ElementId,
+    bounds: Bounds<Pixels>,
+    sample: TextSample,
+) -> Option<usize> {
+    if !enabled(cx) {
+        return None;
+    }
+    let sample = TextSample {
+        key: key.to_string(),
+        bounds: bounds_sample(key, bounds),
+        ..sample
+    };
+    let ledger = &mut cx.default_global::<Probe>().ledger;
+    let index = ledger.texts.len();
+    ledger.texts.push(sample);
+    Some(index)
+}
+
+fn finish_text_paint(
+    cx: &mut App,
+    index: usize,
+    paint_clip: BoundsSample,
+    scroll_ancestors: Vec<String>,
+) {
+    if let Some(text) = cx
+        .default_global::<Probe>()
+        .ledger
+        .texts
+        .get_mut(index)
+    {
+        text.paint_clip = Some(paint_clip);
+        text.scroll_ancestors = scroll_ancestors;
     }
 }
 
@@ -1111,6 +1145,52 @@ mod grouping_tests {
         });
     }
 
+    #[gpui::test]
+    fn duplicate_text_keys_complete_their_own_paint_masks(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            super::enable(cx);
+            let key = gpui::ElementId::Name("same-words".into());
+            let sample = |bounds| TextSample {
+                key: String::new(),
+                bounds,
+                paint_clip: None,
+                scroll_ancestors: Vec::new(),
+                natural_width: 20.0,
+                overflow: TextOverflow::Wrap,
+                content: "repeat".to_owned(),
+                min_width: 20.0,
+                line_height: 16.0,
+                size: 12.0,
+                weight: 400.0,
+                region: None,
+            };
+            let first_bounds = bounds(0.0, 0.0, 20.0, 16.0);
+            let second_bounds = bounds(40.0, 0.0, 20.0, 16.0);
+            let first = super::record_text_with_index(cx, &key, gpui::Bounds::default(), sample(first_bounds))
+                .expect("enabled probe records the first text");
+            let second = super::record_text_with_index(cx, &key, gpui::Bounds::default(), sample(second_bounds))
+                .expect("enabled probe records the second text");
+            super::finish_text_paint(
+                cx,
+                first,
+                bounds(0.0, 0.0, 30.0, 30.0),
+                vec!["first-scroll".to_owned()],
+            );
+            super::finish_text_paint(
+                cx,
+                second,
+                bounds(40.0, 0.0, 30.0, 30.0),
+                vec!["second-scroll".to_owned()],
+            );
+            let ledger = super::take(cx);
+            assert_eq!(ledger.texts.len(), 2);
+            assert_eq!(ledger.texts[0].paint_clip, Some(bounds(0.0, 0.0, 30.0, 30.0)));
+            assert_eq!(ledger.texts[1].paint_clip, Some(bounds(40.0, 0.0, 30.0, 30.0)));
+            assert_eq!(ledger.texts[0].scroll_ancestors, ["first-scroll"]);
+            assert_eq!(ledger.texts[1].scroll_ancestors, ["second-scroll"]);
+        });
+    }
+
     #[test]
     fn nested_groups_use_the_innermost_scope_and_unwind() {
         assert_eq!(current_group(), None);
@@ -1285,7 +1365,7 @@ impl IntoElement for Text {
 
 impl Element for Text {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Option<usize>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -1314,7 +1394,7 @@ impl Element for Text {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        if enabled(cx) {
+        let sample_index = if enabled(cx) {
             let natural = natural_width(&self.content, self.role, self.scale, window);
             let widest_word = self
                 .content
@@ -1342,9 +1422,12 @@ impl Element for Text {
                 weight: self.role.weight,
                 region: self.region.clone(),
             };
-            record_text(cx, &self.key, bounds, sample);
-        }
+            record_text_with_index(cx, &self.key, bounds, sample)
+        } else {
+            None
+        };
         self.child.prepaint(window, cx);
+        sample_index
     }
 
     fn paint(
@@ -1353,19 +1436,14 @@ impl Element for Text {
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
+        prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         if enabled(cx) {
             let clip = bounds_sample(&self.key, window.content_mask().bounds);
-            let key = self.key.to_string();
-            for text in cx.default_global::<Probe>().ledger.texts.iter_mut().rev() {
-                if text.key == key {
-                    text.paint_clip = Some(clip);
-                    text.scroll_ancestors = current_scroll_ancestors();
-                    break;
-                }
+            if let Some(index) = *prepaint {
+                finish_text_paint(cx, index, clip, current_scroll_ancestors());
             }
         }
         self.child.paint(window, cx);
