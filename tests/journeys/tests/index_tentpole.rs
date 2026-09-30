@@ -318,7 +318,7 @@ fn mcp(
         .collect()
 }
 
-fn mcp_structured(reply: &Value, label: &str) -> &Value {
+fn mcp_structured<'a>(reply: &'a Value, label: &str) -> &'a Value {
     assert_eq!(
         reply["result"]["isError"], false,
         "MCP {label} returned an error: {reply}"
