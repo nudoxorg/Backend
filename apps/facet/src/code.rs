@@ -59,7 +59,7 @@ impl Lang {
             "go" | "golang" => Self::Go,
             "java" => Self::Java,
             "cs" | "csharp" | "c#" => Self::CSharp,
-            "c" | "h" => Self::C,
+            "c" => Self::C,
             "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "h++" | "c++" => Self::Cpp,
             _ => return None,
         })
@@ -365,6 +365,13 @@ pub fn parses(cx: &App) -> u64 {
 #[cfg(all(test, feature = "highlight"))]
 mod tests {
     use super::{Lang, Role, highlight_now};
+
+    #[test]
+    fn an_ambiguous_h_header_is_not_assumed_to_be_c() {
+        assert_eq!(Lang::from_name("c"), Some(Lang::C));
+        assert_eq!(Lang::from_name("h"), None);
+        assert_eq!(Lang::from_name("hpp"), Some(Lang::Cpp));
+    }
 
     /// The role of the first occurrence of `needle` in the highlighted source.
     fn role(lang: Lang, source: &'static str, needle: &str) -> Option<Role> {
