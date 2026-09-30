@@ -27,10 +27,11 @@ pub use error::AuthorityError;
 use types::DurableClosureVerifier;
 pub use types::{
     AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace, AuthorityPlane,
-    CandidateAttempt, CandidateAttemptRecoveryClaim, CandidateGeneration, ClosureClaim,
-    ClosureReceipt, ExistingGenerationSelection, NoResultRetirementBarrier, ProjectionKind,
-    ProjectionWatermark, SelectedFrontier, SelectedGeneration, SelectionOrigin,
-    SourceObservation, SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
+    CandidateAttempt, CandidateAttemptRecoveryClaim, CandidateAttemptRetirementReason,
+    CandidateGeneration, ClosureClaim, ClosureReceipt, ExistingGenerationSelection,
+    NoResultRetirementBarrier, ProjectionKind, ProjectionWatermark, SelectedFrontier,
+    SelectedGeneration, SelectionOrigin, SourceObservation, SourceObservationReceipt,
+    SourceObservationValue, SupersededAttemptProof,
 };
 pub use versioned::{
     VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA,
@@ -292,13 +293,8 @@ impl TursoAuthority {
                 1 if !profile.is_empty() => AuthorityPlane::semantic_profile(profile)?,
                 _ => return Err(AuthorityError::CorruptRecord("namespace_plane")),
             };
-            let namespace = AuthorityNamespace::with_plane(
-                package,
-                source,
-                branch,
-                environment,
-                plane,
-            )?;
+            let namespace =
+                AuthorityNamespace::with_plane(package, source, branch, environment, plane)?;
             if namespace.namespace_id() == namespace_id {
                 if found.replace(namespace).is_some() {
                     return Err(AuthorityError::CorruptRecord("namespace_id_collision"));
@@ -548,32 +544,62 @@ impl TursoAuthority {
     ) -> Result<Option<SupersededAttemptProof>, AuthorityError> {
         let epoch_sql = u64_to_i64(epoch)?;
         let tx = self.connection.unchecked_transaction().await?;
-        let mut attempt_rows = tx
-            .query(
-                "SELECT attempt_id, input_digest FROM backend_index_authority_attempts \
-                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
-                   AND plane_kind=?5 AND profile=?6 AND epoch=?7 AND attempt_fence=?8",
-                turso::params![
-                    namespace.package.as_ref(),
-                    namespace.source.as_ref(),
-                    namespace.branch.as_ref(),
-                    namespace.environment.as_ref(),
-                    namespace.plane.sql_parts().0,
-                    namespace.plane.sql_parts().1,
-                    epoch_sql,
-                    fence.as_slice()
-                ],
-            )
-            .await?;
-        let attempt_record = attempt_rows.next().await?;
-        let Some(attempt_record) = attempt_record else {
-            drop(attempt_rows);
+        let active_attempt_record = {
+            let mut attempt_rows = tx
+                .query(
+                    "SELECT attempt_id, input_digest FROM backend_index_authority_attempts \
+                     WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                       AND plane_kind=?5 AND profile=?6 AND epoch=?7 AND attempt_fence=?8",
+                    turso::params![
+                        namespace.package.as_ref(),
+                        namespace.source.as_ref(),
+                        namespace.branch.as_ref(),
+                        namespace.environment.as_ref(),
+                        namespace.plane.sql_parts().0,
+                        namespace.plane.sql_parts().1,
+                        epoch_sql,
+                        fence.as_slice()
+                    ],
+                )
+                .await?;
+            if let Some(row) = attempt_rows.next().await? {
+                Some((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+            } else {
+                None
+            }
+        };
+        let attempt_record = if let Some(active) = active_attempt_record {
+            Some(active)
+        } else {
+            let mut terminal_rows = tx
+                .query(
+                    "SELECT attempt_id, input_digest FROM backend_index_authority_attempt_terminals \
+                     WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                       AND plane_kind=?5 AND profile=?6 AND epoch=?7 AND attempt_fence=?8",
+                    turso::params![
+                        namespace.package.as_ref(),
+                        namespace.source.as_ref(),
+                        namespace.branch.as_ref(),
+                        namespace.environment.as_ref(),
+                        namespace.plane.sql_parts().0,
+                        namespace.plane.sql_parts().1,
+                        epoch_sql,
+                        fence.as_slice()
+                    ],
+                )
+                .await?;
+            let terminal = if let Some(row) = terminal_rows.next().await? {
+                Some((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+            } else {
+                None
+            };
+            drop(terminal_rows);
+            terminal
+        };
+        let Some((attempt_id, input_digest)) = attempt_record else {
             tx.rollback().await?;
             return Ok(None);
         };
-        let attempt_id: Vec<u8> = attempt_record.get(0)?;
-        let input_digest: Vec<u8> = attempt_record.get(1)?;
-        drop(attempt_rows);
         let attempt_id = decode_array::<16>(attempt_id, "attempt_id")?;
         let input_digest = decode_hash(input_digest, "input_digest")?;
         if expected_attempt_id.is_some_and(|expected| expected != attempt_id) {
@@ -848,6 +874,195 @@ impl TursoAuthority {
         ))
     }
 
+    /// Closes an exact unselected attempt after its owner job reaches a
+    /// terminal non-publication result. The operation never changes the
+    /// selected head and is safe to repeat with the same or a later terminal
+    /// reason. Selected attempts are an idempotent no-op and never have their
+    /// selected head or terminal state changed.
+    pub async fn retire_attempt(
+        &mut self,
+        attempt: &CandidateAttempt,
+        reason: CandidateAttemptRetirementReason,
+    ) -> Result<(), AuthorityError> {
+        let namespace = &attempt.namespace;
+        let tx = self
+            .connection
+            .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+            .await?;
+        let mut rows = tx
+            .query(
+                "SELECT epoch, attempt_fence, input_digest, base_generation, base_root, \
+                        observation_sequence, state \
+                 FROM backend_index_authority_attempts \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                turso::params![
+                    namespace.package.as_ref(),
+                    namespace.source.as_ref(),
+                    namespace.branch.as_ref(),
+                    namespace.environment.as_ref(),
+                    namespace.plane.sql_parts().0,
+                    namespace.plane.sql_parts().1,
+                    attempt.attempt_id.as_slice()
+                ],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            drop(rows);
+            let mut terminal_rows = tx
+                .query(
+                    "SELECT epoch, attempt_fence, input_digest, base_generation, base_root, \
+                            observation_sequence \
+                     FROM backend_index_authority_attempt_terminals \
+                     WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                       AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                    turso::params![
+                        namespace.package.as_ref(),
+                        namespace.source.as_ref(),
+                        namespace.branch.as_ref(),
+                        namespace.environment.as_ref(),
+                        namespace.plane.sql_parts().0,
+                        namespace.plane.sql_parts().1,
+                        attempt.attempt_id.as_slice()
+                    ],
+                )
+                .await?;
+            let terminal = terminal_rows.next().await?;
+            let Some(terminal) = terminal else {
+                drop(terminal_rows);
+                tx.rollback().await?;
+                return Err(AuthorityError::StaleAttempt);
+            };
+            let terminal_epoch: i64 = terminal.get(0)?;
+            let terminal_fence: Vec<u8> = terminal.get(1)?;
+            let terminal_input: Vec<u8> = terminal.get(2)?;
+            let terminal_base_generation: i64 = terminal.get(3)?;
+            let terminal_base_root: Option<Vec<u8>> = terminal.get(4)?;
+            let terminal_observation: i64 = terminal.get(5)?;
+            drop(terminal_rows);
+            if terminal_epoch != u64_to_i64(attempt.epoch)?
+                || terminal_fence.as_slice() != attempt.fence.as_slice()
+                || terminal_input.as_slice() != attempt.input_digest.as_slice()
+                || terminal_base_generation != u64_to_i64(attempt.base_generation)?
+                || decode_optional_hash(terminal_base_root, "base_root")? != attempt.base_root
+                || terminal_observation != u64_to_i64(attempt.observation.sequence)?
+            {
+                tx.rollback().await?;
+                return Err(AuthorityError::StaleAttempt);
+            }
+            tx.rollback().await?;
+            return Ok(());
+        };
+        let epoch: i64 = row.get(0)?;
+        let fence: Vec<u8> = row.get(1)?;
+        let input: Vec<u8> = row.get(2)?;
+        let base_generation: i64 = row.get(3)?;
+        let base_root: Option<Vec<u8>> = row.get(4)?;
+        let observation: i64 = row.get(5)?;
+        let state: i64 = row.get(6)?;
+        drop(rows);
+        if epoch != u64_to_i64(attempt.epoch)?
+            || fence.as_slice() != attempt.fence.as_slice()
+            || input.as_slice() != attempt.input_digest.as_slice()
+            || base_generation != u64_to_i64(attempt.base_generation)?
+            || decode_optional_hash(base_root, "base_root")? != attempt.base_root
+            || observation != u64_to_i64(attempt.observation.sequence)?
+        {
+            tx.rollback().await?;
+            return Err(AuthorityError::StaleAttempt);
+        }
+        match state {
+            0 => {}
+            1 => {
+                tx.rollback().await?;
+                return Ok(());
+            }
+            _ => {
+                tx.rollback().await?;
+                return Err(AuthorityError::CorruptRecord("attempt_state"));
+            }
+        }
+        // A stale current-input fence overrides the caller's requested
+        // disposition: the durable cause is supersession, regardless of
+        // whether cancellation or a compiler refusal arrived first.
+        let mut scope_rows = tx
+            .query(
+                "SELECT attempt_epoch, latest_attempt, latest_observation \
+                 FROM backend_index_authority_scopes \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6",
+                namespace_params(namespace),
+            )
+            .await?;
+        let scope = scope_rows.next().await?;
+        let Some(scope) = scope else {
+            drop(scope_rows);
+            tx.rollback().await?;
+            return Err(AuthorityError::StaleAttempt);
+        };
+        let current_epoch: i64 = scope.get(0)?;
+        let current_attempt: Option<Vec<u8>> = scope.get(1)?;
+        let current_observation: i64 = scope.get(2)?;
+        drop(scope_rows);
+        let terminal_reason = if current_epoch != epoch
+            || current_attempt.as_deref() != Some(attempt.attempt_id.as_slice())
+            || current_observation != observation
+        {
+            CandidateAttemptRetirementReason::Superseded
+        } else {
+            reason
+        };
+        tx.execute(
+            "INSERT INTO backend_index_authority_attempt_terminals(\
+                package, source, branch, environment, plane_kind, profile, attempt_id, epoch, \
+                attempt_fence, input_digest, base_generation, base_root, observation_sequence, \
+                terminal_reason\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            turso::params![
+                namespace.package.as_ref(),
+                namespace.source.as_ref(),
+                namespace.branch.as_ref(),
+                namespace.environment.as_ref(),
+                namespace.plane.sql_parts().0,
+                namespace.plane.sql_parts().1,
+                attempt.attempt_id.as_slice(),
+                epoch,
+                fence.as_slice(),
+                input.as_slice(),
+                base_generation,
+                attempt.base_root.as_ref().map(|root| root.as_slice()),
+                observation,
+                terminal_reason.sql_code()
+            ],
+        )
+        .await?;
+        let affected = tx
+            .execute(
+                "DELETE FROM backend_index_authority_attempts \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6 AND attempt_id=?7 AND epoch=?8 \
+                   AND attempt_fence=?9 AND state=0",
+                turso::params![
+                    namespace.package.as_ref(),
+                    namespace.source.as_ref(),
+                    namespace.branch.as_ref(),
+                    namespace.environment.as_ref(),
+                    namespace.plane.sql_parts().0,
+                    namespace.plane.sql_parts().1,
+                    attempt.attempt_id.as_slice(),
+                    u64_to_i64(attempt.epoch)?,
+                    attempt.fence.as_slice()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            tx.rollback().await?;
+            return Err(AuthorityError::StaleAttempt);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Proves that a still-latest, unselected attempt was invalidated solely
     /// by a newer source observation before another attempt was acquired.
     ///
@@ -891,42 +1106,88 @@ impl TursoAuthority {
         {
             return Ok(None);
         }
-        let mut attempt_rows = tx
-            .query(
-                "SELECT epoch, attempt_fence, input_digest, base_generation, base_root, \
-                    observation_sequence, state \
-             FROM backend_index_authority_attempts \
-             WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
-               AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
-                turso::params![
-                    namespace.package.as_ref(),
-                    namespace.source.as_ref(),
-                    namespace.branch.as_ref(),
-                    namespace.environment.as_ref(),
-                    namespace.plane.sql_parts().0,
-                    namespace.plane.sql_parts().1,
-                    claim.attempt_id.as_slice()
-                ],
-            )
-            .await?;
-        let Some(attempt) = attempt_rows.next().await? else {
+        let active_attempt = {
+            let mut rows = tx
+                .query(
+                    "SELECT epoch, attempt_fence, input_digest, base_generation, base_root, \
+                            observation_sequence \
+                     FROM backend_index_authority_attempts \
+                     WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                       AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                    turso::params![
+                        namespace.package.as_ref(),
+                        namespace.source.as_ref(),
+                        namespace.branch.as_ref(),
+                        namespace.environment.as_ref(),
+                        namespace.plane.sql_parts().0,
+                        namespace.plane.sql_parts().1,
+                        claim.attempt_id.as_slice()
+                    ],
+                )
+                .await?;
+            if let Some(row) = rows.next().await? {
+                Some((
+                    row.get::<i64>(0)?,
+                    row.get::<Vec<u8>>(1)?,
+                    row.get::<Vec<u8>>(2)?,
+                    row.get::<i64>(3)?,
+                    row.get::<Option<Vec<u8>>>(4)?,
+                    row.get::<i64>(5)?,
+                    true,
+                ))
+            } else {
+                None
+            }
+        };
+        let attempt_facts = if let Some(active) = active_attempt {
+            Some(active)
+        } else {
+            let mut rows = tx
+                .query(
+                    "SELECT epoch, attempt_fence, input_digest, base_generation, base_root, \
+                            observation_sequence \
+                     FROM backend_index_authority_attempt_terminals \
+                     WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                       AND plane_kind=?5 AND profile=?6 AND attempt_id=?7 \
+                       AND terminal_reason=?8",
+                    turso::params![
+                        namespace.package.as_ref(),
+                        namespace.source.as_ref(),
+                        namespace.branch.as_ref(),
+                        namespace.environment.as_ref(),
+                        namespace.plane.sql_parts().0,
+                        namespace.plane.sql_parts().1,
+                        claim.attempt_id.as_slice(),
+                        CandidateAttemptRetirementReason::Superseded.sql_code()
+                    ],
+                )
+                .await?;
+            if let Some(row) = rows.next().await? {
+                Some((
+                    row.get::<i64>(0)?,
+                    row.get::<Vec<u8>>(1)?,
+                    row.get::<Vec<u8>>(2)?,
+                    row.get::<i64>(3)?,
+                    row.get::<Option<Vec<u8>>>(4)?,
+                    row.get::<i64>(5)?,
+                    false,
+                ))
+            } else {
+                None
+            }
+        };
+        let Some((epoch, fence, input, base_generation, base_root, observation, is_active)) =
+            attempt_facts
+        else {
             return Ok(None);
         };
-        let epoch: i64 = attempt.get(0)?;
-        let fence: Vec<u8> = attempt.get(1)?;
-        let input: Vec<u8> = attempt.get(2)?;
-        let base_generation: i64 = attempt.get(3)?;
-        let base_root: Option<Vec<u8>> = attempt.get(4)?;
-        let observation: i64 = attempt.get(5)?;
-        let state: i64 = attempt.get(6)?;
-        drop(attempt_rows);
         if epoch != u64_to_i64(claim.epoch)?
             || fence.as_slice() != claim.fence.as_slice()
             || input.as_slice() != claim.input_digest.as_slice()
             || base_generation != u64_to_i64(claim.base_generation)?
             || decode_optional_hash(base_root, "base_root")? != claim.base_root
             || observation != u64_to_i64(claim.observation_sequence)?
-            || state != 0
+            || (is_active && current_observation <= observation)
         {
             return Ok(None);
         }

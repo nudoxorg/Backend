@@ -22,11 +22,11 @@ use backend_engine::cluster_transport::EndpointId;
 use backend_extension_turso::{
     AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
-    CompilerImageMember, CompilerPublicationEnvelope, CompilerPublicationMetadata,
-    ExistingGenerationSelection, ProjectionKind, ReopenedCompilerMetadata, SelectedGeneration,
-    SourceObservation, SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
-    TursoAuthority, VersionedPlaneArtifactMetadata, VersionedPlaneMember, VersionedPlaneMetadata,
-    reopen_selected_compiler_metadata,
+    CandidateAttemptRetirementReason, CompilerImageMember, CompilerPublicationEnvelope,
+    CompilerPublicationMetadata, ExistingGenerationSelection, ProjectionKind,
+    ReopenedCompilerMetadata, SelectedGeneration, SourceObservation, SourceObservationReceipt,
+    SourceObservationValue, SupersededAttemptProof, TursoAuthority, VersionedPlaneArtifactMetadata,
+    VersionedPlaneMember, VersionedPlaneMetadata, reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
 use backend_semantic::vocabulary::LanguageProfile;
@@ -2256,6 +2256,19 @@ impl SemanticAuthority {
             observation,
         ))
         .map_err(|error| BuiltinModelError(format!("acquire semantic compiler attempt: {error}")))
+    }
+
+    /// Durably closes one exact compiler attempt that did not reach semantic
+    /// selection. The Turso authority rechecks the full attempt tuple and
+    /// refuses to retire a selected generation.
+    pub(crate) fn retire_candidate_attempt(
+        &mut self,
+        attempt: &CandidateAttempt,
+        reason: CandidateAttemptRetirementReason,
+    ) -> Result<(), BuiltinModelError> {
+        futures_executor::block_on(self.authority.retire_attempt(attempt, reason)).map_err(
+            |error| BuiltinModelError(format!("retire semantic compiler attempt: {error}")),
+        )
     }
 
     /// Reopens the exact still-current Turso attempt named by a pending owner

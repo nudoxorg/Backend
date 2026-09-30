@@ -71,6 +71,18 @@ fn bounded_index_detail(value: impl std::fmt::Display) -> backend_library::Produ
         .unwrap_or_else(|_| backend_library::ProductText::from_static("index job failed"))
 }
 
+fn index_attempt_retirement_reason(
+    outcome: &backend_library::IndexJobOutcome,
+) -> Option<backend_extension_turso::CandidateAttemptRetirementReason> {
+    use backend_extension_turso::CandidateAttemptRetirementReason as R;
+    match outcome {
+        backend_library::IndexJobOutcome::Published => None,
+        backend_library::IndexJobOutcome::Refused(_) => Some(R::Refused),
+        backend_library::IndexJobOutcome::Cancelled => Some(R::Cancelled),
+        backend_library::IndexJobOutcome::Failed(_) => Some(R::Failed),
+    }
+}
+
 const ADD_TARGET_REQUIRED: &str =
     "add target must be an admitted local directory or version-pinned package URL";
 
@@ -739,12 +751,30 @@ impl CommandAdapter {
         let compiler = self.compiler.clone();
         let cancelled = Arc::clone(&indexing.cancelled);
         let (sender, compiled) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
+        let spawn = std::thread::Builder::new()
             .name("locald-index-compile".to_owned())
             .spawn(move || {
                 let _ = sender.send(run_deferred_compile(&compiler, sources, cancelled));
-            })
-            .map_err(|error| BuiltinModelError(format!("start the index compile: {error}")))?;
+            });
+        if let Err(error) = spawn {
+            let mut attempts = vec![profile.candidate_attempt().clone()];
+            attempts.extend(job.pending_attempts());
+            let mut cleanup_failure = None;
+            for attempt in attempts {
+                if let Err(retire_error) = self.semantic_authority.retire_candidate_attempt(
+                    &attempt,
+                    backend_extension_turso::CandidateAttemptRetirementReason::Failed,
+                ) {
+                    cleanup_failure.get_or_insert(retire_error);
+                }
+            }
+            return Err(match cleanup_failure {
+                Some(cleanup_failure) => BuiltinModelError(format!(
+                    "start the index compile failed ({error}); retire its candidate attempts failed ({cleanup_failure})"
+                )),
+                None => BuiltinModelError(format!("start the index compile: {error}")),
+            });
+        }
         indexing.work = IndexJobWork::Compiling {
             job,
             profile,
@@ -824,6 +854,18 @@ impl CommandAdapter {
             let mut terminal = None;
             let mut legacy_reply = None;
             let work = std::mem::replace(&mut indexing.work, IndexJobWork::Transition);
+            // Snapshot every attempt owned by the active compile stage before
+            // matching consumes the worker/job values. If any terminal path
+            // wins, the owner closes these exact pending attempts; attempts
+            // already selected by Turso are harmless idempotent no-ops.
+            let mut terminal_attempts = match &work {
+                IndexJobWork::Compiling { job, profile, .. } => {
+                    let mut attempts = vec![profile.candidate_attempt().clone()];
+                    attempts.extend(job.pending_attempts());
+                    attempts
+                }
+                _ => Vec::new(),
+            };
             match work {
                 IndexJobWork::Acquiring(acquired) => match acquired.try_recv() {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -1061,6 +1103,24 @@ impl CommandAdapter {
                 }
             }
             if let Some(outcome) = terminal {
+                let outcome = if let Some(reason) = index_attempt_retirement_reason(&outcome) {
+                    let mut retirement_failure = None;
+                    for attempt in terminal_attempts.drain(..) {
+                        if let Err(error) = self
+                            .semantic_authority
+                            .retire_candidate_attempt(&attempt, reason)
+                        {
+                            retirement_failure.get_or_insert(error);
+                        }
+                    }
+                    if let Some(error) = retirement_failure {
+                        backend_library::IndexJobOutcome::Failed(bounded_index_detail(error))
+                    } else {
+                        outcome
+                    }
+                } else {
+                    outcome
+                };
                 ready.extend(self.complete_index_job(daemon, indexing, outcome, legacy_reply));
             }
         }

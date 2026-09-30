@@ -723,6 +723,11 @@ pub(super) struct DeferredProfileTicket {
 
 impl DeferredProfileTicket {
     #[must_use]
+    pub(super) fn candidate_attempt(&self) -> &backend_extension_turso::CandidateAttempt {
+        &self.attempt
+    }
+
+    #[must_use]
     pub(super) const fn profile(&self) -> LanguageProfile {
         self.key.profile()
     }
@@ -768,6 +773,13 @@ impl DeferredIndex {
     pub(super) fn has_pending_profiles(&self) -> bool {
         !self.profiles.is_empty()
     }
+
+    pub(super) fn pending_attempts(&self) -> Vec<backend_extension_turso::CandidateAttempt> {
+        self.profiles
+            .iter()
+            .map(|profile| profile.attempt.clone())
+            .collect()
+    }
 }
 
 /// Begins the local compile of every profile the sources name, exactly as
@@ -793,55 +805,89 @@ fn prepare_deferred_compile(
     }
     let mut profiles = Vec::with_capacity(by_profile.len());
     for (profile, sources) in by_profile {
-        let expected_artifacts = u32::try_from(sources.len())
-            .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
-        let coordinate = super::super::compiler_scope::semantic_coordinate(
-            context.package,
-            profile,
-            context.coordinate,
-        )?;
-        let request = PackageCompileRequest::new(
-            GenerateTarget {
-                correlation: context.correlation,
+        let mut attempt_for_error = None;
+        let prepared = (|| {
+            let expected_artifacts = u32::try_from(sources.len())
+                .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
+            let coordinate = super::super::compiler_scope::semantic_coordinate(
+                context.package,
                 profile,
-                stage: backend_semantic::vocabulary::Stage::LowerIr,
-            },
-            coordinate.clone(),
-        )
-        .map_err(|error| BuiltinModelError(format!("semantic package profile: {error:?}")))?;
-        let key = ProductSemanticPublicationKey::new(
-            context.package_reference.clone(),
-            coordinate,
-            profile,
-        )
-        .map_err(|error| BuiltinModelError(error.to_owned()))?;
-        let scan_observation = observations.get(&profile).ok_or_else(|| {
-            BuiltinModelError("semantic compilation has no matching source observation".to_owned())
-        })?;
-        let scan_input_digest = scan_observation.observation().revision().ok_or_else(|| {
-            BuiltinModelError("semantic compilation observation has no input digest".to_owned())
-        })?;
-        let local_observation =
-            semantic_authority.observe(&key, scan_input_digest, u64::from(expected_artifacts))?;
-        let attempt = semantic_authority.begin_candidate_attempt(&key, &local_observation)?;
-        let input_claim = SemanticInputWitness::claimed_state(
-            scan_input_digest,
-            ScopeRoot::from_bytes(scan_input_digest),
-            Coverage::Partial,
-        );
-        let sources = OwnedPackageSourceSet::new(
-            request,
-            context.source_root.to_path_buf(),
-            sources.into_boxed_slice(),
-        )
-        .map_err(|error| BuiltinModelError(error.to_string()))?
-        .with_input_claim(input_claim);
-        profiles.push(DeferredProfile {
-            key,
-            expected_artifacts,
-            attempt,
-            sources,
-        });
+                context.coordinate,
+            )?;
+            let request = PackageCompileRequest::new(
+                GenerateTarget {
+                    correlation: context.correlation,
+                    profile,
+                    stage: backend_semantic::vocabulary::Stage::LowerIr,
+                },
+                coordinate.clone(),
+            )
+            .map_err(|error| BuiltinModelError(format!("semantic package profile: {error:?}")))?;
+            let key = ProductSemanticPublicationKey::new(
+                context.package_reference.clone(),
+                coordinate,
+                profile,
+            )
+            .map_err(|error| BuiltinModelError(error.to_owned()))?;
+            let scan_observation = observations.get(&profile).ok_or_else(|| {
+                BuiltinModelError(
+                    "semantic compilation has no matching source observation".to_owned(),
+                )
+            })?;
+            let scan_input_digest = scan_observation.observation().revision().ok_or_else(|| {
+                BuiltinModelError("semantic compilation observation has no input digest".to_owned())
+            })?;
+            let local_observation = semantic_authority.observe(
+                &key,
+                scan_input_digest,
+                u64::from(expected_artifacts),
+            )?;
+            let attempt = semantic_authority.begin_candidate_attempt(&key, &local_observation)?;
+            attempt_for_error = Some(attempt.clone());
+            let input_claim = SemanticInputWitness::claimed_state(
+                scan_input_digest,
+                ScopeRoot::from_bytes(scan_input_digest),
+                Coverage::Partial,
+            );
+            let sources = OwnedPackageSourceSet::new(
+                request,
+                context.source_root.to_path_buf(),
+                sources.into_boxed_slice(),
+            )
+            .map_err(|error| BuiltinModelError(error.to_string()))?
+            .with_input_claim(input_claim);
+            Ok::<_, BuiltinModelError>(DeferredProfile {
+                key,
+                expected_artifacts,
+                attempt,
+                sources,
+            })
+        })();
+        match prepared {
+            Ok(profile) => profiles.push(profile),
+            Err(error) => {
+                let mut attempts = profiles
+                    .drain(..)
+                    .map(|profile| profile.attempt)
+                    .collect::<Vec<_>>();
+                attempts.extend(attempt_for_error);
+                let mut cleanup_failure = None;
+                for attempt in attempts {
+                    if let Err(retire_error) = semantic_authority.retire_candidate_attempt(
+                        &attempt,
+                        backend_extension_turso::CandidateAttemptRetirementReason::Refused,
+                    ) {
+                        cleanup_failure.get_or_insert(retire_error);
+                    }
+                }
+                return Err(match cleanup_failure {
+                    Some(cleanup_failure) => BuiltinModelError(format!(
+                        "{error}; retire unprepared profile attempts failed: {cleanup_failure}"
+                    )),
+                    None => error,
+                });
+            }
+        }
     }
     let expected_profiles = profiles.len();
     Ok(DeferredIndex {
@@ -906,14 +952,37 @@ pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
         .snapshot()
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
-    let (staged, publication_coverage) = admit_local_compile(compiled, profile.expected_artifacts)?;
-    let (claim, _selected) = publish_local_compile(
+    let (staged, publication_coverage) =
+        match admit_local_compile(compiled, profile.expected_artifacts) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                semantic_authority.retire_candidate_attempt(
+                    &profile.attempt,
+                    backend_extension_turso::CandidateAttemptRetirementReason::Refused,
+                )?;
+                return Err(error);
+            }
+        };
+    // Keep the ticket's exact capability until the publication result is
+    // known. `publish_staged` consumes its copy when constructing a candidate,
+    // but any refusal before Turso selects that candidate still needs a
+    // durable terminal transition.
+    let (claim, _selected) = match publish_local_compile(
         semantic_authority,
         &profile.key,
-        profile.attempt,
+        profile.attempt.clone(),
         &staged,
         &job.revision_fence,
-    )?;
+    ) {
+        Ok(selected) => selected,
+        Err(error) => {
+            semantic_authority.retire_candidate_attempt(
+                &profile.attempt,
+                backend_extension_turso::CandidateAttemptRetirementReason::Refused,
+            )?;
+            return Err(error);
+        }
+    };
     record_semantic_publication(
         &relation,
         profile.key.clone(),

@@ -142,6 +142,106 @@ fn attempt_recovery_requires_every_current_durable_fence() {
 }
 
 #[test]
+fn retired_cancelled_attempt_reopens_terminal_without_moving_selected_head() {
+    futures_executor::block_on(async {
+        let path = path();
+        let mut authority = TursoAuthority::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("open: {error}"));
+        let observed = authority
+            .record_source_observation(observation(SourceObservationValue::KnownCount(1), 100))
+            .await
+            .unwrap_or_else(|error| panic!("observe: {error}"));
+        let attempt = authority
+            .begin_attempt(&namespace(), [92; 32], &observed)
+            .await
+            .unwrap_or_else(|error| panic!("begin: {error}"));
+        let before = authority
+            .selected_frontier(&namespace())
+            .await
+            .unwrap_or_else(|error| panic!("read initial head: {error}"));
+
+        authority
+            .retire_attempt(&attempt, CandidateAttemptRetirementReason::Cancelled)
+            .await
+            .unwrap_or_else(|error| panic!("retire: {error}"));
+        // Repeated cleanup cannot overwrite the first typed durable cause.
+        authority
+            .retire_attempt(&attempt, CandidateAttemptRetirementReason::Failed)
+            .await
+            .unwrap_or_else(|error| panic!("repeat retirement: {error}"));
+        assert_eq!(
+            authority
+                .selected_frontier(&namespace())
+                .await
+                .unwrap_or_else(|error| panic!("read unchanged head: {error}")),
+            before
+        );
+        assert!(matches!(
+            authority
+                .recover_candidate_attempt(&attempt.recovery_claim())
+                .await,
+            Err(AuthorityError::StaleAttempt)
+        ));
+
+        let mut active_rows = authority
+            .connection
+            .query(
+                "SELECT 1 FROM backend_index_authority_attempts \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                turso::params![
+                    namespace().package.as_ref(),
+                    namespace().source.as_ref(),
+                    namespace().branch.as_ref(),
+                    namespace().environment.as_ref(),
+                    namespace().plane.sql_parts().0,
+                    namespace().plane.sql_parts().1,
+                    attempt.attempt_id().as_slice()
+                ],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("read active attempts: {error}"));
+        assert!(
+            active_rows
+                .next()
+                .await
+                .unwrap_or_else(|error| panic!("active row: {error}"))
+                .is_none(),
+            "retired attempt remained recoverably pending"
+        );
+        let mut terminal_rows = authority
+            .connection
+            .query(
+                "SELECT terminal_reason FROM backend_index_authority_attempt_terminals \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                turso::params![
+                    namespace().package.as_ref(),
+                    namespace().source.as_ref(),
+                    namespace().branch.as_ref(),
+                    namespace().environment.as_ref(),
+                    namespace().plane.sql_parts().0,
+                    namespace().plane.sql_parts().1,
+                    attempt.attempt_id().as_slice()
+                ],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("read terminal attempt: {error}"));
+        let row = terminal_rows
+            .next()
+            .await
+            .unwrap_or_else(|error| panic!("terminal row: {error}"))
+            .unwrap_or_else(|| panic!("terminal attempt row missing"));
+        assert_eq!(
+            row.get::<i64>(0)
+                .unwrap_or_else(|error| panic!("terminal reason: {error}")),
+            CandidateAttemptRetirementReason::Cancelled.sql_code()
+        );
+    });
+}
+
+#[test]
 fn newer_observation_proves_unselected_same_epoch_attempt_invalid_without_minting_replacement() {
     futures_executor::block_on(async {
         let path = path();
@@ -204,6 +304,20 @@ fn newer_observation_proves_unselected_same_epoch_attempt_invalid_without_mintin
         assert_eq!(proof.attempt_observation_sequence(), first.sequence());
         assert_eq!(proof.current_observation_sequence(), second.sequence());
         assert_eq!(proof.current_revision(), Some([12; 32]));
+        // The owner may close the attempt after observing the newer source
+        // frontier. The close records Superseded, removes it from the
+        // recoverable pending table, and keeps the exact rejection proof.
+        authority
+            .retire_attempt(&attempt, CandidateAttemptRetirementReason::Cancelled)
+            .await
+            .expect("retire invalidated attempt");
+        assert_eq!(
+            authority
+                .attempt_invalidated_by_observation_proof(&claim)
+                .await
+                .expect("closed invalidation proof"),
+            Some(proof.clone())
+        );
         let mut forged = claim.clone();
         forged.fence[0] ^= 1;
         assert_eq!(
@@ -265,6 +379,18 @@ fn newer_observation_proves_unselected_same_epoch_attempt_invalid_without_mintin
                 .await
                 .expect("new epoch proof"),
             None
+        );
+        assert!(
+            authority
+                .superseded_attempt_proof(
+                    &namespace(),
+                    *attempt.attempt_id(),
+                    attempt.epoch(),
+                    attempt.fence_bytes()
+                )
+                .await
+                .expect("closed superseded proof")
+                .is_some()
         );
 
         let selected_path = self::path();
