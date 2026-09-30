@@ -149,10 +149,7 @@ fn compose(
     answer: &LocalAnswer,
     policy: CompositionPolicy,
     result: &semantic::VectorSearchResult,
-    lexical: &[(
-        backend_semantic::EntityId,
-        backend_extension_tantivy::Relevance,
-    )],
+    lexical: &super::local::CandidateLexicalScores,
 ) -> Composition {
     let qualified = !answer.query.qualified_clauses().is_empty();
     let mut ranked = Vec::with_capacity(answer.query.limit());
@@ -166,10 +163,7 @@ fn compose(
             suppressed = suppressed.saturating_add(1);
             continue;
         };
-        let relevance = lexical
-            .binary_search_by_key(&entity, |(candidate, _)| *candidate)
-            .ok()
-            .map(|index| lexical[index].1);
+        let relevance = lexical.score(entity);
         if relevance.is_none() {
             if qualified {
                 suppressed = suppressed.saturating_add(1);

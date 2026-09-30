@@ -783,8 +783,9 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
     assert_eq!(
         local
             .lexical_relevance_for_candidates(&known_candidates)
-            .expect("resolve already-known candidates"),
-        local.matches,
+            .expect("resolve already-known candidates")
+            .as_slice(),
+        local.matches.as_slice(),
         "all-cached candidate scores must be sorted and deduplicated like exact lexical results"
     );
     let lexical_ids = local

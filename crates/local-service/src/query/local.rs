@@ -532,6 +532,31 @@ pub struct LocalAnswer {
     pub lanes: Vec<LaneReport>,
 }
 
+/// Canonical lexical scores for an arbitrary candidate collection. Callers
+/// can ask for one score without relying on the vector's sort order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CandidateLexicalScores(Vec<(EntityId, lexical::Relevance)>);
+
+impl CandidateLexicalScores {
+    fn from_unsorted(mut scores: Vec<(EntityId, lexical::Relevance)>) -> Self {
+        scores.sort_unstable_by_key(|(entity, _)| *entity);
+        scores.dedup_by_key(|(entity, _)| *entity);
+        Self(scores)
+    }
+
+    pub(super) fn score(&self, entity: EntityId) -> Option<lexical::Relevance> {
+        self.0
+            .binary_search_by_key(&entity, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| self.0[index].1)
+    }
+
+    #[cfg(test)]
+    pub(super) fn as_slice(&self) -> &[(EntityId, lexical::Relevance)] {
+        &self.0
+    }
+}
+
 impl LocalAnswer {
     /// Returns the bounded local page's canonical identities in display order.
     ///
@@ -555,7 +580,7 @@ impl LocalAnswer {
     pub(super) fn lexical_relevance_for_candidates(
         &self,
         entities: &[EntityId],
-    ) -> Result<Vec<(EntityId, lexical::Relevance)>, QueryError> {
+    ) -> Result<CandidateLexicalScores, QueryError> {
         let mut remaining = BTreeSet::new();
         let mut relevance = Vec::new();
         relevance
@@ -568,37 +593,31 @@ impl LocalAnswer {
                 remaining.insert(*entity);
             }
         }
-        if remaining.is_empty() {
-            relevance.sort_unstable_by_key(|(entity, _)| *entity);
-            relevance.dedup_by_key(|(entity, _)| *entity);
-            return Ok(relevance);
-        }
-
-        let requested = remaining.into_iter().collect::<Vec<_>>();
-        for (entity, score) in self
-            .corpus
-            .lexical
-            .relevance_for_candidates(self.query.lexical(), &requested)
-            .map_err(|_| QueryError::LexicalProvider)?
-        {
-            let Some(selected) = self.corpus.selected.entity(entity) else {
-                return Err(QueryError::LexicalProvider);
-            };
-            let row_id = selected.row.stable_key();
-            if self.query.qualified_clauses().is_empty()
-                || qualified_row_matches(
-                    row_id.as_str(),
-                    self.query.qualified_clauses(),
-                    &self.corpus.selected,
-                    &self.corpus.semantic_evidence,
-                )
+        if !remaining.is_empty() {
+            let requested = remaining.into_iter().collect::<Vec<_>>();
+            for (entity, score) in self
+                .corpus
+                .lexical
+                .relevance_for_candidates(self.query.lexical(), &requested)
+                .map_err(|_| QueryError::LexicalProvider)?
             {
-                relevance.push((entity, score));
+                let Some(selected) = self.corpus.selected.entity(entity) else {
+                    return Err(QueryError::LexicalProvider);
+                };
+                let row_id = selected.row.stable_key();
+                if self.query.qualified_clauses().is_empty()
+                    || qualified_row_matches(
+                        row_id.as_str(),
+                        self.query.qualified_clauses(),
+                        &self.corpus.selected,
+                        &self.corpus.semantic_evidence,
+                    )
+                {
+                    relevance.push((entity, score));
+                }
             }
         }
-        relevance.sort_unstable_by_key(|(entity, _)| *entity);
-        relevance.dedup_by_key(|(entity, _)| *entity);
-        Ok(relevance)
+        Ok(CandidateLexicalScores::from_unsorted(relevance))
     }
 
     pub(super) fn candidate_row(
