@@ -555,6 +555,27 @@ pub enum IndexCancelStatus {
     Unknown,
 }
 
+/// Ticket-bound result of one index cancellation request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexCancelReceipt {
+    /// Exact job requested by the caller.
+    pub ticket: IndexJobTicket,
+    /// Immediate owner result for that exact job.
+    pub status: IndexCancelStatus,
+}
+
+impl IndexCancelReceipt {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let IndexCancelStatus::Terminal(terminal) = &self.status
+            && terminal.ticket != self.ticket
+        {
+            return Err(ProductAdmissionError::IndexCancelTicketMismatch);
+        }
+        Ok(())
+    }
+}
+
 /// One typed milestone emitted while an owner-managed index job is running.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case", deny_unknown_fields)]
@@ -2203,7 +2224,7 @@ pub enum SurfaceReply {
     /// Bounded typed progress facts returned for one exact index job.
     IndexProgress(IndexJobObservation),
     /// Immediate result of an owner-issued cancellation request.
-    IndexCancellation(IndexCancelStatus),
+    IndexCancellation(IndexCancelReceipt),
     /// Exact compiler generation selected by the durable owner.
     SemanticVersionSelected(SemanticVersionRecord),
     /// Latest package and history count.
@@ -2359,7 +2380,11 @@ impl SurfaceReply {
                 }
                 1
             }
-            Self::IndexStarted(_) | Self::IndexTerminal(_) | Self::IndexCancellation(_) => 1,
+            Self::IndexStarted(_) | Self::IndexTerminal(_) => 1,
+            Self::IndexCancellation(receipt) => {
+                receipt.admit()?;
+                1
+            }
             Self::IndexProgress(observation) => {
                 observation.admit()?;
                 match observation {
@@ -2534,8 +2559,8 @@ impl SurfaceReply {
                 .saturating_add(serde_json::to_vec(terminal).map_or(0, |bytes| bytes.len())),
             Self::IndexProgress(page) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
-            Self::IndexCancellation(status) => fixed_record_bound()
-                .saturating_add(serde_json::to_vec(status).map_or(0, |bytes| bytes.len())),
+            Self::IndexCancellation(receipt) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(receipt).map_or(0, |bytes| bytes.len())),
             Self::Dependents(RegistryMetadata::NotRecorded(reason))
             | Self::Owner(RegistryMetadata::NotRecorded(reason)) => text_bound(reason),
             Self::Dependencies(crate::DependencyFacts::Known(records)) => {
@@ -2787,6 +2812,8 @@ pub enum ProductAdmissionError {
     PackageGraphPage,
     /// An index progress page contains mismatched tickets or invalid sequence/profile facts.
     IndexProgressShape,
+    /// An index cancellation terminal receipt belongs to a different ticket.
+    IndexCancelTicketMismatch,
 }
 impl core::fmt::Display for ProductAdmissionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -2824,6 +2851,9 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::PackageGraphPage => "package graph request or page is invalid",
             Self::IndexProgressShape => {
                 "index progress page has inconsistent sequence or profile facts"
+            }
+            Self::IndexCancelTicketMismatch => {
+                "index cancellation terminal receipt has a different ticket"
             }
         })
     }
@@ -2883,10 +2913,33 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_slice(&encoded).expect("terminal decoding");
         assert_eq!(decoded, terminal);
 
-        let cancellation = SurfaceReply::IndexCancellation(IndexCancelStatus::Requested);
+        let cancellation = SurfaceReply::IndexCancellation(IndexCancelReceipt {
+            ticket: ticket.clone(),
+            status: IndexCancelStatus::Requested,
+        });
         cancellation
             .admit(CommandId::IndexCancel)
             .expect("cancellation reply");
+        let cancellation_wire =
+            serde_json::to_vec(&cancellation).expect("cancellation reply encoding");
+        let decoded_cancellation: SurfaceReply =
+            serde_json::from_slice(&cancellation_wire).expect("cancellation reply decoding");
+        assert_eq!(decoded_cancellation, cancellation);
+        let mismatched_cancellation = SurfaceReply::IndexCancellation(IndexCancelReceipt {
+            ticket: ticket.clone(),
+            status: IndexCancelStatus::Terminal(IndexJobTerminal {
+                ticket: IndexJobTicket::new(
+                    NonZeroU64::new(8).expect("nonzero id"),
+                    [3; 16],
+                    PackageReference::parse("pkg:cargo/demo@1.0.0").expect("package"),
+                ),
+                outcome: IndexJobOutcome::Cancelled,
+            }),
+        });
+        assert_eq!(
+            mismatched_cancellation.admit(CommandId::IndexCancel),
+            Err(ProductAdmissionError::IndexCancelTicketMismatch)
+        );
 
         let progress =
             SurfaceReply::IndexProgress(IndexJobObservation::Pending(IndexProgressPage {

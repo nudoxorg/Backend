@@ -26,7 +26,7 @@ pub use subscription_local::LocalSubscriptionTransport;
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
     CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
-    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelStatus,
+    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelReceipt,
     IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexProgressPage, IndexStartResult,
     NameQuery, OutlineQuery, PackageReference, PageContinuation, PageRequest, PageTerminal, Query,
     QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
@@ -982,9 +982,9 @@ impl Session {
     pub fn cancel_index_job(
         &mut self,
         ticket: IndexJobTicket,
-    ) -> Result<IndexCancelStatus, ClientError> {
+    ) -> Result<IndexCancelReceipt, ClientError> {
         match self.surface(SurfaceCommand::IndexCancel { ticket })? {
-            SurfaceReply::IndexCancellation(status) => Ok(status),
+            SurfaceReply::IndexCancellation(receipt) => Ok(receipt),
             _ => Err(ClientError::Protocol(
                 "index cancellation reply changed shape".to_owned(),
             )),
