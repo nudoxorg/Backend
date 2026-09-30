@@ -34,6 +34,7 @@ const fn badge_lang(lang: Lang) -> badges::Lang {
         Lang::Java => badges::Lang::Java,
         Lang::CSharp => badges::Lang::Csharp,
         Lang::Cpp => badges::Lang::Cpp,
+        Lang::C => badges::Lang::C,
         Lang::Other => badges::Lang::Unknown,
     }
 }
@@ -333,4 +334,16 @@ fn plain_edge(palette: &Palette) -> Edge {
     edge.hi = palette.line3.into();
     edge.lo = palette.line2.into();
     edge
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Lang, badge_lang, badges};
+
+    #[test]
+    fn page_badges_preserve_c_and_cpp_as_distinct_languages() {
+        assert_eq!(badge_lang(Lang::C), badges::Lang::C);
+        assert_eq!(badge_lang(Lang::Cpp), badges::Lang::Cpp);
+        assert_eq!(badge_lang(Lang::Other), badges::Lang::Unknown);
+    }
 }
