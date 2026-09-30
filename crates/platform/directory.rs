@@ -36,6 +36,72 @@ pub struct DirectoryEntry {
     pub kind: EntryKind,
 }
 
+/// Result category for an atomic namespace rename followed by its directory
+/// flush. A flush error occurs after the new name is already visible and must
+/// not be handled like a pre-commit rename failure.
+#[derive(Debug)]
+pub enum DirectoryRenameError {
+    /// The requested rename did not commit in the containing directory.
+    NotCommitted(io::Error),
+    /// The rename committed, but the containing directory could not be
+    /// confirmed durable.
+    CommittedButNotDurable(io::Error),
+}
+
+impl DirectoryRenameError {
+    /// Returns the underlying filesystem error without erasing commit state.
+    #[must_use]
+    pub fn cause(&self) -> &io::Error {
+        match self {
+            Self::NotCommitted(error) | Self::CommittedButNotDurable(error) => error,
+        }
+    }
+
+    /// Returns whether the namespace operation completed before the error.
+    #[must_use]
+    pub const fn committed(&self) -> bool {
+        matches!(self, Self::CommittedButNotDurable(_))
+    }
+
+    /// Converts to `io::Error` while preserving committed state as its source.
+    #[must_use]
+    pub fn into_io_error(self) -> io::Error {
+        match self {
+            Self::NotCommitted(error) => error,
+            committed @ Self::CommittedButNotDurable(_) => {
+                let kind = committed.cause().kind();
+                io::Error::new(kind, committed)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for DirectoryRenameError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCommitted(error) => {
+                write!(formatter, "directory rename did not commit: {error}")
+            }
+            Self::CommittedButNotDurable(error) => write!(
+                formatter,
+                "directory rename committed but its durability could not be confirmed: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DirectoryRenameError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CapabilityPurpose {
+    PrivateState,
+    ReadOnlySource,
+}
+
 /// An open directory handle used to resolve children without re-walking the
 /// directory's original pathname.
 #[derive(Clone)]
@@ -44,6 +110,7 @@ pub struct DirectoryCapability {
     handle: Arc<File>,
     #[cfg(windows)]
     handle: Arc<crate::win32::workspace_fs::WorkspaceRoot>,
+    purpose: CapabilityPurpose,
 }
 
 impl std::fmt::Debug for DirectoryCapability {
@@ -92,13 +159,43 @@ impl DirectoryCapability {
         {
             return open_unix_path(path).map(|handle| Self {
                 handle: Arc::new(handle),
+                purpose: CapabilityPurpose::PrivateState,
             });
         }
         #[cfg(windows)]
         {
             return crate::win32::workspace_fs::WorkspaceRoot::open(path).map(|handle| Self {
                 handle: Arc::new(handle),
+                purpose: CapabilityPurpose::PrivateState,
             });
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = path;
+            Err(unsupported())
+        }
+    }
+
+    /// Opens an ordinary source checkout for read-only inspection. Unlike a
+    /// persisted-state capability, this does not require owner-only ACLs on
+    /// Windows; it still rejects reparse points and pins every traversed
+    /// directory handle. Mutation methods refuse this capability.
+    pub fn open_read_only_source(path: &Path) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            return open_unix_path(path).map(|handle| Self {
+                handle: Arc::new(handle),
+                purpose: CapabilityPurpose::ReadOnlySource,
+            });
+        }
+        #[cfg(windows)]
+        {
+            return crate::win32::workspace_fs::WorkspaceRoot::open_read_only_source(path).map(
+                |handle| Self {
+                    handle: Arc::new(handle),
+                    purpose: CapabilityPurpose::ReadOnlySource,
+                },
+            );
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -129,12 +226,19 @@ impl DirectoryCapability {
             }
             return Ok(Self {
                 handle: Arc::new(handle),
+                purpose: self.purpose,
             });
         }
         #[cfg(windows)]
         {
-            return self.handle.open_dir_checked(&[name]).map(|handle| Self {
+            let handle = if self.purpose == CapabilityPurpose::ReadOnlySource {
+                self.handle.open_dir_source_checked(&[name])
+            } else {
+                self.handle.open_dir_checked(&[name])
+            }?;
+            return Ok(Self {
                 handle: Arc::new(handle),
+                purpose: self.purpose,
             });
         }
         #[cfg(not(any(unix, windows)))]
@@ -153,6 +257,12 @@ impl DirectoryCapability {
 
     /// Validates this held directory's owner and private mode or ACL.
     pub fn validate_private(&self) -> io::Result<()> {
+        if self.purpose == CapabilityPurpose::ReadOnlySource {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "read-only source capability is not a private state directory",
+            ));
+        }
         #[cfg(unix)]
         {
             use rustix::process::geteuid;
@@ -184,6 +294,12 @@ impl DirectoryCapability {
 
     /// Applies owner-only permissions to this held directory.
     pub fn restrict_private(&self) -> io::Result<()> {
+        if self.purpose == CapabilityPurpose::ReadOnlySource {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "read-only source capability cannot be made private",
+            ));
+        }
         #[cfg(unix)]
         {
             use rustix::process::geteuid;
@@ -212,6 +328,7 @@ impl DirectoryCapability {
 
     /// Creates one direct private directory and returns its pinned handle.
     pub fn create_private_dir(&self, name: &str) -> io::Result<Self> {
+        self.ensure_writable()?;
         validate_component(name)?;
         #[cfg(unix)]
         {
@@ -230,6 +347,7 @@ impl DirectoryCapability {
                 .create_child_dir_exclusive(name)
                 .map(|handle| Self {
                     handle: Arc::new(handle),
+                    purpose: CapabilityPurpose::PrivateState,
                 });
         }
         #[cfg(not(any(unix, windows)))]
@@ -259,7 +377,11 @@ impl DirectoryCapability {
         }
         #[cfg(windows)]
         {
-            return self.handle.open_file_read_checked(&[name]);
+            return if self.purpose == CapabilityPurpose::ReadOnlySource {
+                self.handle.open_file_read_source_checked(&[name])
+            } else {
+                self.handle.open_file_read_checked(&[name])
+            };
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -270,6 +392,10 @@ impl DirectoryCapability {
 
     /// Opens a direct regular file and validates owner-only permissions.
     pub fn open_private_file(&self, name: &str) -> io::Result<File> {
+        validate_component(name)?;
+        #[cfg(windows)]
+        let file = self.handle.open_file_read_checked(&[name])?;
+        #[cfg(not(windows))]
         let file = self.open_file_read(name)?;
         validate_private_file(&file)?;
         Ok(file)
@@ -278,6 +404,7 @@ impl DirectoryCapability {
     /// Opens or creates a direct regular file for reading and writing. New
     /// files are owner-only; existing files are opened with no-follow semantics.
     pub fn open_file_read_write(&self, name: &str, create: bool) -> io::Result<File> {
+        self.ensure_writable()?;
         validate_component(name)?;
         #[cfg(unix)]
         {
@@ -316,6 +443,7 @@ impl DirectoryCapability {
 
     /// Creates one direct regular file exclusively with owner-only mode or ACL.
     pub fn create_file_exclusive(&self, name: &str) -> io::Result<File> {
+        self.ensure_writable()?;
         validate_component(name)?;
         #[cfg(unix)]
         {
@@ -344,68 +472,99 @@ impl DirectoryCapability {
 
     /// Atomically renames one direct child within the pinned directory.
     pub fn rename(&self, source: &str, destination: &str, replace: bool) -> io::Result<()> {
-        validate_component(source)?;
-        validate_component(destination)?;
+        self.rename_with_outcome(source, destination, replace)
+            .map_err(DirectoryRenameError::into_io_error)
+    }
+
+    /// Atomically renames one direct child and preserves whether a subsequent
+    /// directory-flush failure happened before or after the namespace commit.
+    pub fn rename_with_outcome(
+        &self,
+        source: &str,
+        destination: &str,
+        replace: bool,
+    ) -> Result<(), DirectoryRenameError> {
+        self.ensure_writable()
+            .map_err(DirectoryRenameError::NotCommitted)?;
+        validate_component(source).map_err(DirectoryRenameError::NotCommitted)?;
+        validate_component(destination).map_err(DirectoryRenameError::NotCommitted)?;
         #[cfg(unix)]
         {
             use rustix::fs::renameat;
-            if replace {
-                renameat(
-                    self.handle.as_ref(),
-                    source,
-                    self.handle.as_ref(),
-                    destination,
-                )?;
-            } else {
-                #[cfg(any(target_os = "linux", target_vendor = "apple", target_os = "redox"))]
-                rustix::fs::renameat_with(
-                    self.handle.as_ref(),
-                    source,
-                    self.handle.as_ref(),
-                    destination,
-                    rustix::fs::RenameFlags::NOREPLACE,
-                )?;
-                #[cfg(not(any(
-                    target_os = "linux",
-                    target_vendor = "apple",
-                    target_os = "redox"
-                )))]
-                {
-                    let _ = (source, destination);
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "atomic no-replace rename is unavailable on this platform",
-                    ));
-                }
-            }
-            return self.sync_all();
+            return rename_then_sync(
+                || {
+                    if replace {
+                        renameat(
+                            self.handle.as_ref(),
+                            source,
+                            self.handle.as_ref(),
+                            destination,
+                        )
+                        .map_err(io::Error::from)
+                    } else {
+                        #[cfg(any(
+                            target_os = "linux",
+                            target_vendor = "apple",
+                            target_os = "redox"
+                        ))]
+                        {
+                            rustix::fs::renameat_with(
+                                self.handle.as_ref(),
+                                source,
+                                self.handle.as_ref(),
+                                destination,
+                                rustix::fs::RenameFlags::NOREPLACE,
+                            )
+                            .map_err(io::Error::from)
+                        }
+                        #[cfg(not(any(
+                            target_os = "linux",
+                            target_vendor = "apple",
+                            target_os = "redox"
+                        )))]
+                        {
+                            let _ = (source, destination);
+                            Err(io::Error::new(
+                                io::ErrorKind::Unsupported,
+                                "atomic no-replace rename is unavailable on this platform",
+                            ))
+                        }
+                    }
+                },
+                || self.sync_all(),
+            );
         }
         #[cfg(windows)]
         {
-            if self.handle.child_is_directory(&[source])? {
+            if self
+                .handle
+                .child_is_directory(&[source])
+                .map_err(DirectoryRenameError::NotCommitted)?
+            {
                 if replace {
-                    return Err(io::Error::new(
+                    return Err(DirectoryRenameError::NotCommitted(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "directory replacement is unsupported",
-                    ));
+                    )));
                 }
                 return self
                     .handle
-                    .rename_directory_relative(&[source], &[destination]);
+                    .rename_directory_relative_with_outcome(&[source], &[destination]);
             }
             return self
                 .handle
-                .rename_relative(&[source], &[destination], replace);
+                .rename_relative_with_outcome(&[source], &[destination], replace);
         }
         #[cfg(not(any(unix, windows)))]
         {
             let _ = (source, destination);
-            Err(unsupported())
+            Err(DirectoryRenameError::NotCommitted(unsupported()))
         }
     }
 
     /// Removes one direct regular file without following a replacement link.
     pub fn remove_file(&self, name: &str) -> io::Result<()> {
+        self.ensure_writable()?;
         validate_component(name)?;
         #[cfg(unix)]
         {
@@ -426,6 +585,7 @@ impl DirectoryCapability {
 
     /// Removes one empty direct directory.
     pub fn remove_dir(&self, name: &str) -> io::Result<()> {
+        self.ensure_writable()?;
         validate_component(name)?;
         #[cfg(unix)]
         {
@@ -447,6 +607,7 @@ impl DirectoryCapability {
     /// Removes one bounded directory tree by recursively opening each child
     /// beneath its already-held parent capability.
     pub fn remove_dir_all(&self, name: &str, maximum_entries: usize) -> io::Result<()> {
+        self.ensure_writable()?;
         validate_component(name)?;
         #[cfg(unix)]
         {
@@ -472,8 +633,21 @@ impl DirectoryCapability {
     pub fn entries(&self, maximum: usize) -> io::Result<Vec<DirectoryEntry>> {
         #[cfg(unix)]
         {
-            use rustix::fs::{AtFlags, Dir, FileType, statat};
-            let mut directory = Dir::read_from(self.handle.as_ref())?;
+            use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat};
+            // `Dir::read_from` can share an open-file-description cursor with
+            // a cloned capability. Open `.` relative to the held directory
+            // to get an independent enumeration handle on every call.
+            let enumeration_handle = openat(
+                self.handle.as_ref(),
+                ".",
+                OFlags::RDONLY
+                    | OFlags::DIRECTORY
+                    | OFlags::NOFOLLOW
+                    | OFlags::NONBLOCK
+                    | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?;
+            let mut directory = Dir::read_from(&enumeration_handle)?;
             let mut entries = Vec::new();
             while let Some(entry) = directory.read() {
                 let entry = entry?;
@@ -502,7 +676,11 @@ impl DirectoryCapability {
         }
         #[cfg(windows)]
         {
-            let entries = self.handle.read_dir_checked_limited(&[], maximum)?;
+            let entries = if self.purpose == CapabilityPurpose::ReadOnlySource {
+                self.handle.read_dir_source_checked_limited(&[], maximum)?
+            } else {
+                self.handle.read_dir_checked_limited(&[], maximum)?
+            };
             let mut entries = entries
                 .into_iter()
                 .map(|entry| DirectoryEntry {
@@ -525,6 +703,7 @@ impl DirectoryCapability {
 
     /// Flushes the pinned directory handle.
     pub fn sync_all(&self) -> io::Result<()> {
+        self.ensure_writable()?;
         #[cfg(unix)]
         {
             return self.handle.sync_all();
@@ -536,6 +715,17 @@ impl DirectoryCapability {
         #[cfg(not(any(unix, windows)))]
         {
             Err(unsupported())
+        }
+    }
+
+    fn ensure_writable(&self) -> io::Result<()> {
+        if self.purpose == CapabilityPurpose::ReadOnlySource {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "read-only source capability cannot mutate its directory",
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -863,6 +1053,198 @@ mod tests {
         assert_eq!(bytes, b"pinned");
         fs::remove_dir_all(root).expect("remove fixture");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_capability_reads_checkout_without_granting_mutation() {
+        use std::io::Read as _;
+
+        let root = scratch();
+        fs::write(root.join("README.md"), b"ordinary source tree")
+            .expect("write ordinary source file");
+        let source =
+            DirectoryCapability::open_read_only_source(&root).expect("open ordinary source tree");
+        assert_eq!(source.entries(4).expect("list source tree").len(), 1);
+        let mut readme = source
+            .open_file_read("README.md")
+            .expect("read source file");
+        let mut bytes = Vec::new();
+        readme.read_to_end(&mut bytes).expect("read bytes");
+        assert_eq!(bytes, b"ordinary source tree");
+        assert_eq!(
+            source
+                .create_file_exclusive("forbidden")
+                .expect_err("source capability is read-only")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(source.validate_private().is_err());
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_entries_use_independent_handles_for_large_listings() {
+        use std::sync::{Arc, Barrier};
+
+        const FILES: usize = 1_800;
+        let root = scratch();
+        for index in 0..FILES {
+            let name = format!("entry-{index:05}-{}", "x".repeat(64));
+            fs::write(root.join(name), b"x").expect("create listing member");
+        }
+        let capability = DirectoryCapability::open(&root).expect("pin large listing");
+        let left = capability.clone();
+        let right = capability;
+        let barrier = Arc::new(Barrier::new(3));
+        let left_barrier = Arc::clone(&barrier);
+        let right_barrier = Arc::clone(&barrier);
+        let left = std::thread::spawn(move || {
+            left_barrier.wait();
+            left.entries(FILES + 1).expect("left directory listing")
+        });
+        let right = std::thread::spawn(move || {
+            right_barrier.wait();
+            right.entries(FILES + 1).expect("right directory listing")
+        });
+        barrier.wait();
+        let left = left.join().expect("join left listing");
+        let right = right.join().expect("join right listing");
+        assert_eq!(left, right, "clone cursors must not split the listing");
+        assert_eq!(left.len(), FILES);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_outcome_distinguishes_post_commit_directory_flush_failure() {
+        use super::{DirectoryRenameError, rename_then_sync};
+
+        let root = scratch();
+        let source = root.join("staged");
+        let destination = root.join("selected");
+        fs::write(&source, b"new state").expect("write staged state");
+        let outcome = rename_then_sync(
+            || fs::rename(&source, &destination),
+            || {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected directory flush failure after rename",
+                ))
+            },
+        );
+        let Err(DirectoryRenameError::CommittedButNotDurable(error)) = outcome else {
+            panic!("post-commit flush failure lost its typed commit state: {outcome:?}");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!source.exists(), "rename source remains after commit");
+        assert_eq!(
+            fs::read(destination).expect("read committed destination"),
+            b"new state"
+        );
+
+        let old = root.join("old");
+        let new = root.join("new");
+        fs::write(&old, b"selected old").expect("write selected state");
+        let outcome = rename_then_sync(
+            || {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "injected pre-commit rename failure",
+                ))
+            },
+            || Ok(()),
+        );
+        assert!(matches!(
+            outcome,
+            Err(DirectoryRenameError::NotCommitted(_))
+        ));
+        assert_eq!(
+            fs::read(old).expect("read old selected state"),
+            b"selected old"
+        );
+        assert!(!new.exists(), "pre-commit failure created a destination");
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::DirectoryCapability;
+    use std::fs;
+    use std::io::Read as _;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch(label: &str) -> PathBuf {
+        let tick = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "backend-platform-source-{label}-{}-{tick}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn ordinary_inherited_source_acl_is_readable_without_private_state_admission() {
+        let root = scratch("ordinary-acl");
+        fs::create_dir(&root).expect("create source tree with inherited temp ACL");
+        fs::write(root.join("README.md"), b"ordinary source tree")
+            .expect("write inherited-ACL source file");
+        assert!(
+            DirectoryCapability::open(&root).is_err(),
+            "fixture must not accidentally be a private persisted-state root"
+        );
+        let source = DirectoryCapability::open_read_only_source(&root)
+            .expect("open ordinary inherited source ACL");
+        assert_eq!(source.entries(4).expect("list source").len(), 1);
+        let mut readme = source
+            .open_file_read("README.md")
+            .expect("read source under inherited ACL");
+        let mut bytes = Vec::new();
+        readme.read_to_end(&mut bytes).expect("read source bytes");
+        assert_eq!(bytes, b"ordinary source tree");
+        assert!(source.open_private_file("README.md").is_err());
+        assert!(source.create_file_exclusive("forbidden").is_err());
+        drop(source);
+        fs::remove_dir_all(root).expect("remove source fixture");
+    }
+
+    #[test]
+    fn concurrent_entries_use_independent_handles_for_large_listings() {
+        const FILES: usize = 1_300;
+        let root = scratch("large-listing");
+        for index in 0..FILES {
+            let name = format!("entry-{index:05}-{}", "x".repeat(64));
+            fs::write(root.join(name), b"x").expect("create listing member");
+        }
+        let capability = DirectoryCapability::open_read_only_source(&root)
+            .expect("open ordinary-ACL listing root");
+        let left = capability.clone();
+        let right = capability;
+        let barrier = Arc::new(Barrier::new(3));
+        let left_barrier = Arc::clone(&barrier);
+        let right_barrier = Arc::clone(&barrier);
+        let left = std::thread::spawn(move || {
+            left_barrier.wait();
+            left.entries(FILES + 1).expect("left directory listing")
+        });
+        let right = std::thread::spawn(move || {
+            right_barrier.wait();
+            right.entries(FILES + 1).expect("right directory listing")
+        });
+        barrier.wait();
+        let left = left.join().expect("join left listing");
+        let right = right.join().expect("join right listing");
+        assert_eq!(left, right, "clone cursors must not split the listing");
+        assert_eq!(left.len(), FILES);
+        drop(left);
+        drop(right);
+        fs::remove_dir_all(root).expect("remove listing fixture");
+    }
 }
 
 fn validate_component(name: &str) -> io::Result<()> {
@@ -876,6 +1258,16 @@ fn validate_component(name: &str) -> io::Result<()> {
         return Err(invalid("expected one safe path component"));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn rename_then_sync<T>(
+    rename: impl FnOnce() -> io::Result<T>,
+    sync: impl FnOnce() -> io::Result<()>,
+) -> Result<T, DirectoryRenameError> {
+    let value = rename().map_err(DirectoryRenameError::NotCommitted)?;
+    sync().map_err(DirectoryRenameError::CommittedButNotDurable)?;
+    Ok(value)
 }
 
 fn invalid(message: &'static str) -> io::Error {
