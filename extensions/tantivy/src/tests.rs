@@ -9,6 +9,7 @@
 use super::*;
 use crate::engine::test_support::{
     BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
+    MAX_RETAINED_DURABLE_ROOTS,
     ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint,
     write_projection_manifest,
 };
@@ -1388,6 +1389,29 @@ fn durable_root_pin_survives_cross_process_pruning_then_releases_for_eviction() 
         drop(source);
     }
     assert!(old_root.is_dir(), "active cross-process root must stay on disk");
+    let version_root = root.join(DURABLE_ROOTS_DIRECTORY);
+    for ordinal in 2..=4 {
+        let revision = state_for(
+            vec![(document(ordinal), vec![("name".into(), format!("revision{ordinal}"))])],
+            [ordinal as u8; 32],
+        );
+        let path = version_root.join(hex_fingerprint(projection_fingerprint(revision.binding())));
+        assert!(!path.exists(), "older unpinned revision {ordinal} should be pruned");
+    }
+    for ordinal in 5..=8 {
+        let revision = state_for(
+            vec![(document(ordinal), vec![("name".into(), format!("revision{ordinal}"))])],
+            [ordinal as u8; 32],
+        );
+        let path = version_root.join(hex_fingerprint(projection_fingerprint(revision.binding())));
+        assert!(path.is_dir(), "recent unpinned revision {ordinal} should be retained");
+    }
+    let retained_root_count = std::fs::read_dir(&version_root)
+        .expect("list retained roots")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .count();
+    assert_eq!(retained_root_count, MAX_RETAINED_DURABLE_ROOTS + 1);
 
     let mut child_stdin = child.stdin.take().expect("child stdin");
     std::io::Write::write_all(&mut child_stdin, b"x").expect("release child root lease");

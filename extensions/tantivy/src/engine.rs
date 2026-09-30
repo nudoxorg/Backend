@@ -1978,8 +1978,16 @@ fn prune_durable_roots(
     selected: &Path,
     budget: DurableCacheBudget,
 ) -> Result<(), TantivySourceError> {
-    let mut roots = Vec::new();
-    let mut retained_bytes = 0_u64;
+    struct Candidate {
+        path: std::path::PathBuf,
+        last_used: u128,
+        bytes: u64,
+        selected: bool,
+        retained: bool,
+    }
+
+    let mut candidates = Vec::new();
+    let mut pinned_bytes = 0_u64;
     let mut entries_seen = 0_usize;
     for entry in fs::read_dir(root)? {
         entries_seen = entries_seen.saturating_add(1);
@@ -2007,31 +2015,78 @@ fn prune_durable_roots(
             continue;
         }
         let bytes = durable_root_size(&entry.path())?;
-        retained_bytes = retained_bytes
-            .checked_add(bytes)
-            .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
         let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
         let last_used = durable_root_last_used(&entry.path(), modified)?;
-        roots.push((entry.path(), last_used, bytes));
-    }
-    roots.sort_by(|left, right| left.1.cmp(&right.1));
-    let mut live_roots = roots.len();
-    for (path, _, bytes) in roots {
-        if path == selected
-            || (live_roots <= MAX_RETAINED_DURABLE_ROOTS
-                && retained_bytes <= budget.max_bytes())
-        {
+        if entry.path() == selected {
+            candidates.push(Candidate {
+                path: entry.path(),
+                last_used,
+                bytes,
+                selected: true,
+                retained: true,
+            });
             continue;
         }
-        let lease = open_root_lease(&path)?;
+        let lease = open_root_lease(&entry.path())?;
         match lease.try_lock() {
-            Ok(()) => {
-                remove_projection_path(&path)?;
-                retained_bytes = retained_bytes.saturating_sub(bytes);
-                live_roots = live_roots.saturating_sub(1);
+            Ok(()) => candidates.push(Candidate {
+                path: entry.path(),
+                last_used,
+                bytes,
+                selected: false,
+                retained: false,
+            }),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                pinned_bytes = pinned_bytes
+                    .checked_add(bytes)
+                    .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
             }
-            Err(std::fs::TryLockError::WouldBlock) => {}
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .selected
+            .cmp(&left.selected)
+            .then_with(|| right.last_used.cmp(&left.last_used))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let mut retained_bytes = pinned_bytes;
+    let mut retained_roots = 0_usize;
+    for candidate in &mut candidates {
+        if candidate.selected {
+            retained_roots = retained_roots.saturating_add(1);
+            retained_bytes = retained_bytes
+                .checked_add(candidate.bytes)
+                .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+            continue;
+        }
+        if retained_roots < MAX_RETAINED_DURABLE_ROOTS
+            && retained_bytes
+                .checked_add(candidate.bytes)
+                .is_some_and(|required| required <= budget.max_bytes())
+        {
+            candidate.retained = true;
+            retained_roots = retained_roots.saturating_add(1);
+            retained_bytes = retained_bytes
+                .checked_add(candidate.bytes)
+                .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+        }
+    }
+    for candidate in candidates.iter().filter(|candidate| !candidate.retained) {
+        match remove_unpinned_projection_root(&candidate.path) {
+            Ok(()) => {
+                retained_bytes = retained_bytes.saturating_sub(candidate.bytes);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                // A reader may have pinned the root after classification. Keep
+                // it; reader leases are outside the root-count limit but remain
+                // inside the total byte quota.
+                retained_bytes = retained_bytes
+                    .checked_add(candidate.bytes)
+                    .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+            }
+            Err(error) => return Err(error.into()),
         }
     }
     if retained_bytes > budget.max_bytes() {
@@ -2141,6 +2196,7 @@ pub(crate) mod test_support {
     pub(crate) const BINDING_FILE: &str = super::BINDING_FILE;
     pub(crate) const DURABLE_ROOTS_DIRECTORY: &str = super::DURABLE_ROOTS_DIRECTORY;
     pub(crate) const INTEGRITY_FILE: &str = super::INTEGRITY_FILE;
+    pub(crate) const MAX_RETAINED_DURABLE_ROOTS: usize = super::MAX_RETAINED_DURABLE_ROOTS;
     pub(crate) const MAX_PROJECTION_MANIFEST_BYTES: u64 = super::MAX_PROJECTION_MANIFEST_BYTES;
     pub(crate) const ORDINAL_MAP_FILE: &str = super::ORDINAL_MAP_FILE;
     pub(crate) const ORDINAL_MAP_MAGIC: &[u8] = super::ORDINAL_MAP_MAGIC;
