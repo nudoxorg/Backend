@@ -170,7 +170,8 @@ fn child_checkpoint_open_sample(
 }
 
 fn child_validation_sample(output: &std::process::Output) -> Option<[u64; 6]> {
-    let fields = String::from_utf8_lossy(&output.stderr)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let fields = stderr
         .lines()
         .find_map(|line| line.strip_prefix("cluster-peer-validation "))?;
     let parse = |name: &str| {
