@@ -863,7 +863,9 @@ impl<P: Product> Server<P> {
             .filter(|token| !token.is_empty())
             .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
         let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
-            RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
+            RpcError::invalid(
+                "cursor is unknown, expired, or belongs to another workspace authority",
+            )
         })?;
         self.product
             .decode_continuation(&owner_token)
@@ -871,7 +873,7 @@ impl<P: Product> Server<P> {
             .map_err(|error| match error {
                 ClientError::StaleCursor => RpcError::stale_cursor(),
                 _ => RpcError::invalid(
-                    "cursor is unknown, expired, or belongs to another MCP session",
+                    "cursor is unknown, expired, or belongs to another workspace authority",
                 ),
             })
     }
@@ -897,10 +899,14 @@ impl<P: Product> Server<P> {
         context: &[u8],
     ) -> Result<IndexSearchCursor, RpcError> {
         let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
-            RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
+            RpcError::invalid(
+                "cursor is unknown, expired, or belongs to another workspace authority",
+            )
         })?;
         IndexSearchCursor::new(owner_token).map_err(|_| {
-            RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
+            RpcError::invalid(
+                "cursor is unknown, expired, or belongs to another workspace authority",
+            )
         })
     }
 
