@@ -1554,7 +1554,7 @@ mod tests {
                 &package,
                 "1.0.0",
                 AcquisitionGate {
-                    offline: super::OfflinePolicy::Warn,
+                    offline: crate::OfflinePolicy::Warn,
                 },
                 10,
                 false,
