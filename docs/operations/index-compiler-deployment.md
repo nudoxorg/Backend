@@ -120,7 +120,9 @@ sampled process-memory ceiling for the host.
 The `run-remote-index-catalog-client.sh` journey exercises this cross-plane
 operation against a copied, frozen offline Maven discovery journal. It checks
 the typed snapshot and cursor chain across an owner cold restart and compares
-all returned source coordinates with independent labels. Set
+all returned source coordinates with independent labels. Its product grant is
+limited to 100 requests and 4 MiB of responses, and it checks sampled combined
+owner/client RSS against `REMOTE_INDEX_RSS_LIMIT_KB` (default 2 GiB). Set
 `REMOTE_MAVEN_CATALOG_JOURNAL` and `REMOTE_MAVEN_LABELS` to use equivalent
 local fixtures. For the frozen Maven replay, set both paths explicitly:
 

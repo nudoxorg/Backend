@@ -6,6 +6,9 @@ locald_bin=${BACKEND_LOCALD_BIN:-backend-locald}
 journal_source=${REMOTE_MAVEN_CATALOG_JOURNAL:-}
 labels_file=${REMOTE_MAVEN_LABELS:-}
 expected_journal_sha256=7b156608e0427b60a7fd394f1d4d0c4b68aa7d7df6d55f0b12a1da80f9f36899
+request_budget=100
+byte_budget=4194304
+rss_limit_kb=${REMOTE_INDEX_RSS_LIMIT_KB:-2097152}
 
 command -v "$backend_cli" >/dev/null 2>&1 || {
   printf '%s\n' "set BACKEND_CLI to the built backend CLI" >&2
@@ -129,7 +132,8 @@ client_peer=$(printf '%s\n' "$client_output" | sed -n 's/^Created private remote
 "$backend_cli" --workspace "$owner_data" --project "$project" \
   --endpoint "$endpoint" cluster owner grant product create \
   --client-peer "$client_peer" --capability-file "$capability_owner" \
-  --operations index-search >/dev/null
+  --operations index-search --request-budget "$request_budget" \
+  --byte-budget "$byte_budget" >/dev/null
 cp "$capability_owner" "$capability_client"
 chmod 600 "$capability_client"
 
@@ -338,7 +342,7 @@ PY
 
 "$backend_cli" --workspace "$owner_data" --format json \
   cluster owner grant list >"$root/grants.json"
-python3 - "$root/grants.json" "$expected_snapshot" "$peak_rss_file" <<'PY'
+python3 - "$root/grants.json" "$expected_snapshot" "$peak_rss_file" "$rss_limit_kb" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as f:
     grants = json.load(f)
@@ -352,11 +356,14 @@ if grant["requests"] < 10 or grant["responseBytes"] == 0:
     raise SystemExit("durable grant accounting missed remote catalog requests")
 if grant["responseBytes"] > grant["byteBudget"] or grant["requests"] > grant["requestBudget"]:
     raise SystemExit("durable remote catalog grant usage exceeded its signed budget")
+if grant["requestBudget"] != 100 or grant["byteBudget"] != 4_194_304:
+    raise SystemExit("remote catalog grant did not retain the explicit bounded budgets")
 peak = int(open(sys.argv[3], encoding="utf-8").read().strip())
-if peak <= 0:
-    raise SystemExit("owner/client RSS sample was empty")
+limit = int(sys.argv[4])
+if peak <= 0 or peak > limit:
+    raise SystemExit(f"sampled owner plus client RSS {peak} KiB exceeds the {limit} KiB limit")
 print(f"durable remote grant: {grant['requests']}/{grant['requestBudget']} requests, {grant['responseBytes']}/{grant['byteBudget']} response bytes")
-print(f"sampled owner plus client RSS peak: {peak} KiB")
+print(f"sampled owner plus client RSS peak: {peak}/{limit} KiB")
 PY
 
 printf 'remote catalog journey passed (frozen Maven journal, exact composite snapshot, cold restart, typed cursor chain)\n'
