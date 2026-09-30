@@ -817,18 +817,26 @@ impl CommandAdapter {
         requested_package: backend_engine::PackageKey,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let PreparedProductSelection { intent, selected } = prepared;
-        let committed = self
-            .semantic_authority
-            .commit_product_selection_transaction(selected, || {
-                intent
-                    .map(|intent| {
-                        commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
-                            BuiltinModelError(format!("commit product source intent: {error}"))
-                        })?;
-                        Ok(intent)
-                    })
-                    .transpose()
-            })?;
+        let removals = intent
+            .as_ref()
+            .map(selected_semantic_removals)
+            .unwrap_or_default();
+        let committed =
+            self.semantic_authority
+                .commit_product_selection_changes(selected, removals, || {
+                    intent
+                        .map(|intent| {
+                            commit_builtin_intent(daemon, request_id, &intent).map_err(
+                                |error| {
+                                    BuiltinModelError(format!(
+                                        "commit product source intent: {error}"
+                                    ))
+                                },
+                            )?;
+                            Ok(intent)
+                        })
+                        .transpose()
+                })?;
         self.publish_view(daemon, committed.as_ref())?;
         Ok(added_reply(requested_package))
     }
@@ -1270,18 +1278,26 @@ impl CommandAdapter {
                 }),
         };
         let PreparedProductSelection { intent, selected } = prepared;
-        let committed = self
-            .semantic_authority
-            .commit_product_selection_transaction(selected, || {
-                intent
-                    .map(|intent| {
-                        commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
-                            BuiltinModelError(format!("commit product source intent: {error}"))
-                        })?;
-                        Ok(intent)
-                    })
-                    .transpose()
-            })?;
+        let removals = intent
+            .as_ref()
+            .map(selected_semantic_removals)
+            .unwrap_or_default();
+        let committed =
+            self.semantic_authority
+                .commit_product_selection_changes(selected, removals, || {
+                    intent
+                        .map(|intent| {
+                            commit_builtin_intent(daemon, request_id, &intent).map_err(
+                                |error| {
+                                    BuiltinModelError(format!(
+                                        "commit product source intent: {error}"
+                                    ))
+                                },
+                            )?;
+                            Ok(intent)
+                        })
+                        .transpose()
+                })?;
         self.publish_view(daemon, committed.as_ref())?;
         Ok(added_reply(requested_package))
     }
@@ -1444,9 +1460,18 @@ impl CommandAdapter {
         let committed = if let Some(intent) =
             remove_project_intent(daemon, package, &label, &mut self.semantic_authority)?
         {
-            commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
-                BuiltinModelError(format!("commit product source intent: {error}"))
-            })?;
+            let removals = self
+                .semantic_authority
+                .selected_product_keys_for_package(package)?;
+            self.semantic_authority.commit_product_selection_changes(
+                Vec::new(),
+                removals,
+                || {
+                    commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                        BuiltinModelError(format!("commit product source intent: {error}"))
+                    })
+                },
+            )?;
             Some(intent)
         } else {
             None
@@ -1977,21 +2002,35 @@ impl CommandAdapter {
                             after: Some(record.clone()),
                         }],
                     )?;
-                    commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
-                        BuiltinModelError(format!("commit semantic generation selection: {error}"))
-                    })?;
+                    self.semantic_authority
+                        .commit_product_selection_transaction(
+                            vec![(selected_key.clone(), claim)],
+                            || {
+                                commit_builtin_intent(daemon, request_id, &intent).map_err(
+                                    |error| {
+                                        BuiltinModelError(format!(
+                                            "commit semantic generation selection: {error}"
+                                        ))
+                                    },
+                                )
+                            },
+                        )?;
                     Some(intent)
                 } else {
                     None
                 };
                 self.publish_view(daemon, committed.as_ref())?;
-                return Ok(semantic_version_record(
+                let mut version = semantic_version_record(
                     &selected_key,
                     coverage,
                     claim,
                     true,
                     self.semantic_authority.freshness(&selected_key, claim),
-                ));
+                );
+                version.history_status = self
+                    .semantic_authority
+                    .native_history_status(&selected_key, claim)?;
+                return Ok(version);
             }
         }
         let workspace = self
@@ -2170,6 +2209,21 @@ fn certified_package_label(
     value.ok_or_else(|| {
         BuiltinModelError("package command certificate has no canonical package text".to_owned())
     })
+}
+
+fn selected_semantic_removals(intent: &BuiltinIntent) -> Vec<ProductSemanticPublicationKey> {
+    intent
+        .semantic_changes()
+        .iter()
+        .filter(|change| {
+            change.key.is_selected()
+                && matches!(
+                    change.after.as_ref(),
+                    None | Some(ProductSemanticPublicationRecord::Unavailable(_))
+                )
+        })
+        .map(|change| change.key.clone())
+        .collect()
 }
 
 pub(in crate::builtin) fn commit_builtin_intent(

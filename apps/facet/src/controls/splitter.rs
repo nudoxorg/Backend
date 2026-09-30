@@ -24,15 +24,15 @@ use super::state::track;
 use crate::Set;
 use crate::measure::Measure;
 use crate::motion::{Motion, SNAPPY, spec};
-use crate::paint::geom::{Fill, Poly};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole, geo};
 use gpui::{
-    App, ClickEvent, ColorExt, DispatchPhase, ElementId, EntityId, FocusHandle, Global, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
-    Window, canvas, div, px,
+    App, Bounds, ClickEvent, ColorExt, DispatchPhase, Element, ElementId, EntityId, FocusHandle,
+    Global, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement,
+    KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Refineable, RenderOnce, SharedString, StatefulInteractiveElement, Style,
+    StyleRefinement, Styled, Window, div, px,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -212,12 +212,20 @@ fn update(id: &ElementId, cx: &mut App, f: impl FnOnce(&mut Split) -> bool) {
 }
 
 fn motion(id: &ElementId, cx: &mut App) -> Motion {
-    Motion::scoped(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "split".into()), cx)
+    Motion::scoped(
+        ElementId::NamedChild(std::sync::Arc::new(id.clone()), "split".into()),
+        cx,
+    )
 }
 
 fn raw_width(drag: &Dragging, side: PanelSide) -> f32 {
     let delta = drag.now - drag.origin;
-    drag.start + if side == PanelSide::Left { delta } else { -delta }
+    drag.start
+        + if side == PanelSide::Left {
+            delta
+        } else {
+            -delta
+        }
 }
 
 /// This frame's width for the panel the splitter `id` sizes: following the
@@ -228,7 +236,7 @@ pub fn split_width(
     side: PanelSide,
     window: &mut Window,
     cx: &mut App,
-) -> gpui::Pixels {
+) -> Pixels {
     let drag = split(id, cx).drag;
     let (target, follow) = drag.map_or((model.resting(), false), |drag| {
         let pulled = pull(model, raw_width(&drag, side));
@@ -278,7 +286,10 @@ impl Splitter {
 
     /// Called when a release, a double-click or a key commits a change.
     #[must_use]
-    pub fn on_change(mut self, handler: impl Fn(SplitEvent, &mut Window, &mut App) + 'static) -> Self {
+    pub fn on_change(
+        mut self,
+        handler: impl Fn(SplitEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_change = Some(Rc::new(handler));
         self
     }
@@ -320,7 +331,11 @@ impl RenderOnce for Splitter {
         let motion = motion(&id, cx);
         let lit = motion.animate(
             track(&id, "lit"),
-            if hovered || drag.is_some() || focused { 1.0 } else { 0.0 },
+            if hovered || drag.is_some() || focused {
+                1.0
+            } else {
+                0.0
+            },
             spec::REVEAL,
             window,
             cx,
@@ -335,7 +350,11 @@ impl RenderOnce for Splitter {
         );
         let limit_t = motion.animate(
             track(&id, "limit"),
-            if pulled.is_some_and(|p| p.at_limit) { 1.0 } else { 0.0 },
+            if pulled.is_some_and(|p| p.at_limit) {
+                1.0
+            } else {
+                0.0
+            },
             spec::HOVER,
             window,
             cx,
@@ -348,28 +367,43 @@ impl RenderOnce for Splitter {
         let amber: Hsla = palette.amber.base.into();
         let bar_color = mix(peri, amber, limit_t);
         let grip_color = mix(peri_hi, amber, limit_t);
-        let bar = canvas(
-            |_, _, _| {},
-            move |bounds, (), window, _| {
-                if lit <= 0.0 {
-                    return;
-                }
-                let cx0 = f32::from(bounds.center().x);
-                let (y0, h) = (f32::from(bounds.origin.y), f32::from(bounds.size.height));
-                let width = 1.0 + 2.0 * lit;
-                let mut fill = Fill::new();
-                fill.poly(&Poly::rect(cx0 - width * 0.5, y0, width, h));
-                fill.paint(window, bar_color.opacity(lit));
-                // The grip: a cut stone at the middle.
-                let (gw, gh) = (5.0 * s, 28.0 * s);
-                let gy = y0 + (h - gh) * 0.5;
-                let grip = Poly::chamfer(cx0 - gw * 0.5, gy, gw, gh, 2.0 * s);
-                let mut fill = Fill::new();
-                fill.poly(&grip);
-                fill.paint(window, grip_color.opacity(lit));
-            },
-        )
-        .size_full();
+        let line_w = 1.0 + 2.0 * lit;
+        let (grip_w, grip_h, chamfer) = (5.0 * s, 28.0 * s, 2.0 * s);
+        let grip = crate::controls::native::native_paths(grip_w, grip_h)
+            .fill(
+                &[
+                    (chamfer, 0.0),
+                    (grip_w, 0.0),
+                    (grip_w, grip_h - chamfer),
+                    (grip_w - chamfer, grip_h),
+                    (0.0, grip_h),
+                    (0.0, chamfer),
+                ],
+                grip_color.opacity(lit),
+            )
+            .w(px(grip_w))
+            .h(px(grip_h));
+        let bar = div()
+            .absolute()
+            .inset_0()
+            .child(
+                div()
+                    .absolute()
+                    .left(px((hit - line_w) * 0.5))
+                    .top_0()
+                    .w(px(line_w))
+                    .h_full()
+                    .bg(bar_color.opacity(lit)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(grip),
+            );
 
         // The readout: a small cut plate beside the pointer while dragging.
         let readout = pulled.filter(|_| readout_t > 0.0).map(|pulled| {
@@ -378,9 +412,13 @@ impl RenderOnce for Splitter {
             } else {
                 #[allow(clippy::cast_possible_truncation)]
                 let shown = pulled.commit.round() as i32;
-                (SharedString::from(shown.to_string()), SharedString::from("px"))
+                (
+                    SharedString::from(shown.to_string()),
+                    SharedString::from("px"),
+                )
             };
-            let bevel = Edge::of(Bevel::Peri, palette).mix(Edge::of(Bevel::Amber, palette), limit_t);
+            let bevel =
+                Edge::of(Bevel::Peri, palette).mix(Edge::of(Bevel::Amber, palette), limit_t);
             let y = drag.map_or(0.0, |drag| drag.y);
             div()
                 .absolute()
@@ -416,70 +454,21 @@ impl RenderOnce for Splitter {
         });
 
         // While dragging, the whole window moves the seam.
-        let listen = {
-            let id = id.clone();
-            let on_change = self.on_change.clone();
-            canvas(
-                |_, _, _| {},
-                move |bounds, (), window, _| {
-                    let top = f32::from(bounds.origin.y);
-                    let moved = id.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
-                        if phase != DispatchPhase::Bubble {
-                            return;
-                        }
-                        let x = f32::from(event.position.x);
-                        let y = f32::from(event.position.y) - top;
-                        update(&moved, cx, |state| match state.drag {
-                            Some(drag) if drag.now != x || drag.y != y => {
-                                state.drag = Some(Dragging { now: x, y, ..drag });
-                                true
-                            }
-                            _ => false,
-                        });
-                    });
-                    let released = id.clone();
-                    let change = on_change.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble {
-                            return;
-                        }
-                        let Some(drag) = split(&released, cx).drag else {
-                            return;
-                        };
-                        // The seam ends where the button comes up, whatever
-                        // path the pointer took (and whether or not a last
-                        // move arrived first).
-                        let drag = Dragging {
-                            now: f32::from(event.position.x),
-                            ..drag
-                        };
-                        update(&released, cx, |state| {
-                            state.drag = None;
-                            true
-                        });
-                        let pulled = pull(&model, raw_width(&drag, side));
-                        let event = if pulled.collapse {
-                            (!model.is_collapsed).then_some(SplitEvent::Collapse)
-                        } else if model.is_collapsed {
-                            Some(SplitEvent::Expand)
-                        } else {
-                            ((pulled.commit - model.width).abs() > 0.01)
-                                .then_some(SplitEvent::Resize(pulled.commit))
-                        };
-                        if let (Some(event), Some(change)) = (event, &change) {
-                            change(event, window, cx);
-                        }
-                    });
-                },
-            )
-            .size_full()
-        };
+        let listen = SplitDragEvents::new(id.clone(), model, side, self.on_change.clone())
+            .absolute()
+            .inset_0();
 
         let hovered_id = id.clone();
         let down_id = id.clone();
         let click_change = self.on_change.clone();
         let key_change = self.on_change.clone();
+        let min_width = model
+            .collapsed
+            .map_or(model.min, |spine| spine.min(model.min));
+        let side_name = match side {
+            PanelSide::Left => "left",
+            PanelSide::Right => "right",
+        };
         let mut handle = div()
             .id(id.clone())
             .relative()
@@ -490,6 +479,12 @@ impl RenderOnce for Splitter {
             .cursor_col_resize()
             .track_focus(&focus)
             .tab_index(0)
+            .role(gpui::Role::Splitter)
+            .aria_label(format!("Resize {side_name} panel"))
+            .aria_orientation(gpui::Orientation::Vertical)
+            .aria_min_numeric_value(f64::from(min_width))
+            .aria_max_numeric_value(f64::from(model.max))
+            .aria_numeric_value(f64::from(model.resting()))
             .child(div().absolute().inset_0().child(bar))
             .on_hover(move |inside, _window, cx| {
                 let inside = *inside;
@@ -499,19 +494,22 @@ impl RenderOnce for Splitter {
                     changed
                 });
             })
-            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _window, cx| {
-                let x = f32::from(event.position.x);
-                let start = model.resting();
-                update(&down_id, cx, |state| {
-                    state.drag = Some(Dragging {
-                        origin: x,
-                        start,
-                        now: x,
-                        y: 0.0,
+            .on_mouse_down(
+                MouseButton::Left,
+                move |event: &MouseDownEvent, _window, cx| {
+                    let x = f32::from(event.position.x);
+                    let start = model.resting();
+                    update(&down_id, cx, |state| {
+                        state.drag = Some(Dragging {
+                            origin: x,
+                            start,
+                            now: x,
+                            y: 0.0,
+                        });
+                        true
                     });
-                    true
-                });
-            })
+                },
+            )
             .on_click(move |event: &ClickEvent, window, cx| {
                 if event.click_count() == 2
                     && let Some(change) = &click_change
@@ -520,11 +518,19 @@ impl RenderOnce for Splitter {
                 }
             })
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                let step = if event.keystroke.modifiers.shift { 32.0 } else { 8.0 };
+                let step = if event.keystroke.modifiers.shift {
+                    32.0
+                } else {
+                    8.0
+                };
                 let toward = if side == PanelSide::Left { 1.0 } else { -1.0 };
                 let event = match event.keystroke.key.as_str() {
-                    "right" => Some(SplitEvent::Resize((model.width + step * toward).clamp(model.min, model.max))),
-                    "left" => Some(SplitEvent::Resize((model.width - step * toward).clamp(model.min, model.max))),
+                    "right" => Some(SplitEvent::Resize(
+                        (model.width + step * toward).clamp(model.min, model.max),
+                    )),
+                    "left" => Some(SplitEvent::Resize(
+                        (model.width - step * toward).clamp(model.min, model.max),
+                    )),
                     "home" => Some(SplitEvent::Resize(model.min)),
                     "end" => Some(SplitEvent::Resize(model.max)),
                     "enter" if model.collapsed.is_some() => Some(if model.is_collapsed {
@@ -540,9 +546,142 @@ impl RenderOnce for Splitter {
                 }
             });
         if drag.is_some() {
-            handle = handle.child(div().absolute().inset_0().child(listen));
+            handle = handle.child(listen);
         }
         handle.children(readout)
+    }
+}
+
+/// Window-level move/up listeners for an active seam drag. The visible seam
+/// and its hit target remain ordinary GPUI Divs; this leaf exists only because
+/// a drag must keep following the pointer after it leaves the handle.
+struct SplitDragEvents {
+    style: StyleRefinement,
+    id: ElementId,
+    model: SplitModel,
+    side: PanelSide,
+    on_change: Option<Change>,
+}
+
+impl SplitDragEvents {
+    fn new(id: ElementId, model: SplitModel, side: PanelSide, on_change: Option<Change>) -> Self {
+        Self {
+            style: StyleRefinement::default(),
+            id,
+            model,
+            side,
+            on_change,
+        }
+    }
+}
+
+impl Styled for SplitDragEvents {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl IntoElement for SplitDragEvents {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for SplitDragEvents {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        let top = f32::from(bounds.origin.y);
+        let moved = self.id.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let x = f32::from(event.position.x);
+            let y = f32::from(event.position.y) - top;
+            update(&moved, cx, |state| match state.drag {
+                Some(drag) if drag.now != x || drag.y != y => {
+                    state.drag = Some(Dragging { now: x, y, ..drag });
+                    true
+                }
+                _ => false,
+            });
+        });
+        let released = self.id.clone();
+        let model = self.model;
+        let side = self.side;
+        let change = self.on_change.clone();
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let Some(drag) = split(&released, cx).drag else {
+                return;
+            };
+            let drag = Dragging {
+                now: f32::from(event.position.x),
+                ..drag
+            };
+            update(&released, cx, |state| {
+                state.drag = None;
+                true
+            });
+            let pulled = pull(&model, raw_width(&drag, side));
+            let event = if pulled.collapse {
+                (!model.is_collapsed).then_some(SplitEvent::Collapse)
+            } else if model.is_collapsed {
+                Some(SplitEvent::Expand)
+            } else {
+                ((pulled.commit - model.width).abs() > 0.01)
+                    .then_some(SplitEvent::Resize(pulled.commit))
+            };
+            if let (Some(event), Some(change)) = (event, &change) {
+                change(event, window, cx);
+            }
+        });
     }
 }
 
@@ -564,7 +703,10 @@ mod tests {
         let near = pull(&model, 430.0);
         let far = pull(&model, 900.0);
         assert!(near.shown > 420.0 && near.shown < 430.0, "{near:?}");
-        assert!(far.shown > near.shown && far.shown <= 420.0 + GIVE, "{far:?}");
+        assert!(
+            far.shown > near.shown && far.shown <= 420.0 + GIVE,
+            "{far:?}"
+        );
         assert!((far.commit - 420.0).abs() < 1e-4 && far.at_limit);
     }
 

@@ -136,10 +136,9 @@ pub use registry_forge::{
 };
 pub use registry_native::{
     CargoPublishTime, MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS,
-    MAX_REGISTRY_NATIVE_TEXT_BYTES,
-    REGISTRY_NATIVE_METADATA_VERSION, RegistryCargoMetadata, RegistryConanMetadata,
-    RegistryConanSourceAvailability, RegistryGoMetadata, RegistryGoRetract, RegistryGoSourceFacts,
-    RegistryMavenChecksum, RegistryMavenMetadata, RegistryNativeArtifact,
+    MAX_REGISTRY_NATIVE_TEXT_BYTES, REGISTRY_NATIVE_METADATA_VERSION, RegistryCargoMetadata,
+    RegistryConanMetadata, RegistryConanSourceAvailability, RegistryGoMetadata, RegistryGoRetract,
+    RegistryGoSourceFacts, RegistryMavenChecksum, RegistryMavenMetadata, RegistryNativeArtifact,
     RegistryNativeArtifactKind, RegistryNativeAvailability, RegistryNativeChecksum,
     RegistryNativeChecksumAlgorithm, RegistryNativeDetails, RegistryNativeDistTag,
     RegistryNativeEvidenceClaim, RegistryNativeFeature, RegistryNativeMetadata,
@@ -171,10 +170,10 @@ pub use surface::{
     RegistryPackageFactProof, RegistryPackageRecord, RegistryPackageSearchGroup,
     RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit,
     RegistrySearchRelease, ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
-    SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence,
-    SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan, SemanticVersionFreshness,
-    SemanticVersionRecord, SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeId,
-    TreeNodeRecord, TreeOpener, TreeSubject,
+    SemanticGenerationId, SemanticHistoryPublicationStatus, SemanticLanguageProfile,
+    SemanticLinkDelta, SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget,
+    SemanticSourceSpan, SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord,
+    SurfaceCommand, SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener, TreeSubject,
 };
 pub use view::{
     Basis, CommittedViewDelta, CompleteViewProjection, Coverage, CoverageCapability, Document,

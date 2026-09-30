@@ -2046,7 +2046,10 @@ mod tests {
             !locator_path.exists() && !pending_path.exists(),
             "V3 locator and pending marker unlink share the durable delete intent"
         );
-        assert!(commit_path.is_file() && payload_root_path.is_file() && indexed_path.is_file());
+        assert!(
+            !commit_path.exists() && !payload_root_path.exists() && indexed_path.is_file(),
+            "the V3 unlink cut follows commit and payload-root unlink but precedes index cleanup"
+        );
 
         let reopened = FileSemanticRangeStore::open(
             FileStore::open(&cas_root, 64 * 1024 * 1024).expect("cold reopen V3 FileStore"),

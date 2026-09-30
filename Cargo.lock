@@ -1402,6 +1402,7 @@ dependencies = [
  "backend-present",
  "backend-replication",
  "backend-runtime",
+ "base64 0.22.1",
  "blake3",
  "futures-executor",
  "futures-util",

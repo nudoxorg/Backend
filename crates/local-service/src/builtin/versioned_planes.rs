@@ -5,24 +5,29 @@
 //! FileStore object IDs, so the same cursor works across storage layouts.
 
 use super::{BuiltinModelError, SemanticAuthority};
-use backend_engine::builtin::ProductSemanticPublicationKey;
+use backend_engine::builtin::{ProductSemanticPublicationKey, SemanticPublicationClaim};
 use backend_extension_turso::{
     ReopenedCompilerMetadata, SelectedGeneration, VERSIONED_PLANE_SEGMENT_SCHEMA,
     VersionedPlaneMetadata,
 };
 use backend_replication::{
     ByteRange, IrHydrationRequest, SelectedGenerationSource, SelectedGenerationStamp,
-    SelectedNativeHistoryImage, SelectedNativeImagePublicationFence, SelectedNativeImageSource,
-    SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet,
-    SemanticTargetKey,
+    SelectedNativeHistoryBinding, SelectedNativeHistoryImage, SelectedNativeImagePublicationFence,
+    SelectedNativeImageSource, SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk,
+    SemanticManifestGet, SemanticTargetKey,
+};
+use backend_replication::{
+    FileSemanticRangeStore, HistoryCommitId, HistoryRefName, TransportLimits,
 };
 use backend_semantic::ir::{
-    SemanticImageIdentity, SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest,
+    JumboRopeLimits, SemanticImageIdentity, SemanticImageView, SemanticPlaneCatalog,
+    SemanticPlaneImageKey, SemanticPlaneManifest, SemanticPlaneSegmentBoundaryPolicy,
+    SemanticRangeRequest, SemanticTypedPlaneVerificationTierV2,
 };
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
 use core::fmt;
 use hashlink::LruCache;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLockReadGuard};
 
 const MAX_RANGE_BYTES: u64 = 16 * 1024;
 const MAX_SEGMENT_BYTES: u64 = backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES as u64;
@@ -230,6 +235,89 @@ pub(super) struct SemanticAuthoritySelectionSource<'authority> {
     key: ProductSemanticPublicationKey,
 }
 
+/// Owned read-only view for background history publication. It shares the
+/// exact selector lock used by the marker writer, but does not retain the
+/// mutable Turso authority or any owner-thread state.
+pub(super) struct OwnedSemanticAuthoritySelectionSource {
+    loader: Arc<super::semantic_authority::SelectedClosureImageLoader>,
+    store: FileStore,
+    image_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
+    key: ProductSemanticPublicationKey,
+}
+
+impl OwnedSemanticAuthoritySelectionSource {
+    #[must_use]
+    pub(super) fn new(
+        loader: Arc<super::semantic_authority::SelectedClosureImageLoader>,
+        store: FileStore,
+        key: ProductSemanticPublicationKey,
+        image_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
+    ) -> Self {
+        Self {
+            loader,
+            store,
+            image_readers,
+            key,
+        }
+    }
+
+    fn target(&self) -> Result<SemanticTargetKey, BuiltinModelError> {
+        SemanticTargetKey::new(
+            self.key.package().as_str(),
+            self.key.coordinate().as_str(),
+            self.key.profile(),
+        )
+        .map_err(|error| BuiltinModelError(format!("admit semantic target: {error}")))
+    }
+
+    fn current_selection(
+        &self,
+    ) -> Result<
+        (
+            SemanticPublicationClaim,
+            backend_extension_turso::SelectedGeneration,
+            SelectedVersionedPlanePublication,
+        ),
+        BuiltinModelError,
+    > {
+        let selections = self.loader.acquire_publication_read()?;
+        let (claim, selected) =
+            super::semantic_authority::SelectedClosureImageLoader::committed_pair_in(
+                &selections,
+                &self.key,
+            )?;
+        let publication =
+            SemanticAuthority::selected_plane_for_store(&self.store, &self.key, claim, &selected)?;
+        Ok((claim, selected, publication))
+    }
+}
+
+struct OwnedSemanticAuthorityPublicationFence<'a> {
+    _selections: RwLockReadGuard<'a, super::semantic_authority::SelectedClosureSnapshot>,
+    target: SemanticTargetKey,
+    stamp: SelectedGenerationStamp,
+    image: SemanticPlaneImageKey,
+    image_identity: SemanticImageIdentity,
+}
+
+impl SelectedNativeImagePublicationFence for OwnedSemanticAuthorityPublicationFence<'_> {
+    fn selected_target(&self) -> &SemanticTargetKey {
+        &self.target
+    }
+
+    fn selected_stamp(&self) -> SelectedGenerationStamp {
+        self.stamp
+    }
+
+    fn selected_image(&self) -> SemanticPlaneImageKey {
+        self.image
+    }
+
+    fn selected_image_identity(&self) -> SemanticImageIdentity {
+        self.image_identity
+    }
+}
+
 impl<'authority> SemanticAuthoritySelectionSource<'authority> {
     /// Binds one product target to the live local semantic authority.
     #[must_use]
@@ -355,6 +443,394 @@ impl VersionedPlaneSelectionResolver for SemanticAuthoritySelectionSource<'_> {
     fn current_selected_plane(&mut self) -> Result<SelectedVersionedPlanePublication, Self::Error> {
         self.authority.resolve_current_selected(&self.key)
     }
+}
+
+impl SelectedGenerationSource for OwnedSemanticAuthoritySelectionSource {
+    type Error = BuiltinModelError;
+
+    fn current_selected_generation(&mut self) -> Result<SelectedGenerationStamp, Self::Error> {
+        self.current_selection()
+            .map(|(_, _, publication)| publication.stamp())
+    }
+
+    fn selected_image_is_current(
+        &mut self,
+        expected_stamp: SelectedGenerationStamp,
+        image: SemanticPlaneImageKey,
+    ) -> Result<bool, Self::Error> {
+        let (claim, selected, publication) = self.current_selection()?;
+        if publication.stamp() != expected_stamp
+            || publication.metadata().artifact_for_image(image).is_none()
+        {
+            return Ok(false);
+        }
+        SemanticAuthority::selected_native_image_identity_for_store(
+            &self.store,
+            &self.key,
+            claim,
+            &selected,
+            image,
+        )?;
+        Ok(true)
+    }
+}
+
+impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
+    type PublicationFence<'fence>
+        = OwnedSemanticAuthorityPublicationFence<'fence>
+    where
+        Self: 'fence;
+
+    fn selected_semantic_target(&mut self) -> Result<SemanticTargetKey, Self::Error> {
+        self.target()
+    }
+
+    fn selected_native_image_identity(
+        &mut self,
+        image: SemanticPlaneImageKey,
+    ) -> Result<SemanticImageIdentity, Self::Error> {
+        let (claim, selected, publication) = self.current_selection()?;
+        if publication.metadata().artifact_for_image(image).is_none() {
+            return Err(BuiltinModelError(
+                "native image is absent from the committed selected catalog".to_owned(),
+            ));
+        }
+        SemanticAuthority::selected_native_image_identity_for_store(
+            &self.store,
+            &self.key,
+            claim,
+            &selected,
+            image,
+        )
+    }
+
+    fn acquire_publication_fence<'fence>(
+        &'fence mut self,
+        selected_image: &SelectedNativeHistoryImage<'_>,
+    ) -> Result<Self::PublicationFence<'fence>, Self::Error> {
+        let target = self.target()?;
+        if selected_image.target() != &target {
+            return Err(BuiltinModelError(
+                "typed V3 history target differs from its committed product key".to_owned(),
+            ));
+        }
+        let selections = self.loader.acquire_publication_read()?;
+        let (claim, selected) =
+            super::semantic_authority::SelectedClosureImageLoader::committed_pair_in(
+                &selections,
+                &self.key,
+            )?;
+        let publication =
+            SemanticAuthority::selected_plane_for_store(&self.store, &self.key, claim, &selected)?;
+        let image = selected_image.image_key();
+        if publication.stamp() != selected_image.selected_stamp()
+            || publication.metadata().artifact_for_image(image).is_none()
+        {
+            return Err(BuiltinModelError(
+                "typed V3 history image is no longer the committed product selection".to_owned(),
+            ));
+        }
+        let image_identity = SemanticAuthority::selected_native_image_identity_for_store(
+            &self.store,
+            &self.key,
+            claim,
+            &selected,
+            image,
+        )?;
+        if image_identity != selected_image.image_identity() {
+            return Err(BuiltinModelError(
+                "typed V3 history image identity differs from the committed product selection"
+                    .to_owned(),
+            ));
+        }
+        Ok(OwnedSemanticAuthorityPublicationFence {
+            _selections: selections,
+            target,
+            stamp: publication.stamp(),
+            image,
+            image_identity,
+        })
+    }
+}
+
+enum NativeHistoryPublicationError {
+    Superseded,
+    Refused(String),
+}
+
+pub(super) fn publish_native_history(
+    work: super::semantic_authority::NativeHistoryPublicationWork,
+) -> backend_engine::SemanticHistoryPublicationStatus {
+    let selection_id = work.selection_id;
+    match publish_native_history_commit(work) {
+        Ok(commit) => backend_engine::SemanticHistoryPublicationStatus::Published {
+            selection_id,
+            commit: *commit.as_bytes(),
+            reference: "selected-native-v3".to_owned(),
+        },
+        Err(NativeHistoryPublicationError::Superseded) => {
+            backend_engine::SemanticHistoryPublicationStatus::Superseded { selection_id }
+        }
+        Err(NativeHistoryPublicationError::Refused(reason)) => {
+            backend_engine::SemanticHistoryPublicationStatus::Refused {
+                selection_id,
+                reason,
+            }
+        }
+    }
+}
+
+fn publish_native_history_commit(
+    work: super::semantic_authority::NativeHistoryPublicationWork,
+) -> Result<HistoryCommitId, NativeHistoryPublicationError> {
+    let (claim, selected) = match work.loader.committed_pair(&work.key) {
+        Ok(pair) => pair,
+        Err(_) => return Err(NativeHistoryPublicationError::Superseded),
+    };
+    if claim != work.expected_claim {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let stamp = SemanticAuthority::selected_generation_stamp(&work.key, &selected)
+        .map_err(|error| NativeHistoryPublicationError::Refused(error.0))?;
+    if stamp != work.stamp {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let publication =
+        SemanticAuthority::selected_plane_for_store(&work.store, &work.key, claim, &selected)
+            .map_err(|error| NativeHistoryPublicationError::Refused(error.0))?;
+    let metadata = publication.metadata();
+    let catalog_len = usize::try_from(metadata.catalog_len()).map_err(|_| {
+        NativeHistoryPublicationError::Refused("selected catalog length exceeds usize".to_owned())
+    })?;
+    const MAX_NATIVE_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+    if catalog_len == 0 || catalog_len > MAX_NATIVE_CATALOG_BYTES {
+        return Err(NativeHistoryPublicationError::Refused(
+            "selected image catalog exceeds the bounded publication limit".to_owned(),
+        ));
+    }
+    let mut catalog_bytes = Vec::new();
+    catalog_bytes.try_reserve_exact(catalog_len).map_err(|_| {
+        NativeHistoryPublicationError::Refused("selected catalog allocation failed".to_owned())
+    })?;
+    catalog_bytes.resize(catalog_len, 0);
+    let mut catalog_offset = 0_usize;
+    while catalog_offset < catalog_len {
+        let chunk_len = (catalog_len - catalog_offset).min(16 * 1024);
+        let end = catalog_offset.checked_add(chunk_len).ok_or_else(|| {
+            NativeHistoryPublicationError::Refused("selected catalog range overflow".to_owned())
+        })?;
+        let output = catalog_bytes.get_mut(catalog_offset..end).ok_or_else(|| {
+            NativeHistoryPublicationError::Refused(
+                "selected catalog range is outside its buffer".to_owned(),
+            )
+        })?;
+        metadata
+            .write_catalog_range(catalog_offset as u64, output)
+            .map_err(|error| {
+                NativeHistoryPublicationError::Refused(format!(
+                    "read selected canonical catalog: {error}"
+                ))
+            })?;
+        catalog_offset = end;
+    }
+    let catalog = SemanticPlaneCatalog::decode(&catalog_bytes).map_err(|error| {
+        NativeHistoryPublicationError::Refused(format!(
+            "decode selected canonical catalog: {error}"
+        ))
+    })?;
+    if catalog.root() != metadata.catalog_root() || catalog.root() != stamp.catalog_root() {
+        return Err(NativeHistoryPublicationError::Refused(
+            "selected canonical catalog root differs from its marker stamp".to_owned(),
+        ));
+    }
+    let artifacts = metadata.artifacts();
+    if artifacts.len() != 1 {
+        return Err(NativeHistoryPublicationError::Refused(
+            "typed V3 publication requires exactly one selected semantic image".to_owned(),
+        ));
+    }
+    let image_key = artifacts[0].image_key();
+    let manifest = publication
+        .manifest(image_key)
+        .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
+    let mut source = OwnedSemanticAuthoritySelectionSource::new(
+        Arc::clone(&work.loader),
+        work.store.clone(),
+        work.key.clone(),
+        Arc::clone(&work.image_readers),
+    );
+    let binding = SelectedNativeHistoryBinding::bind(&mut source, catalog, image_key, manifest)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if binding.selected_stamp() != work.stamp {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let branch = HistoryRefName::new("selected-native-v3")
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    let mut limits = TransportLimits::default();
+    limits.max_chunk = 16 * 1024;
+    let history = FileSemanticRangeStore::open(work.store.clone(), limits)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if let Some(commit) = history
+        .selected_typed_v3_history_branch_current(&binding, &branch)
+        .map_err(NativeHistoryPublicationError::Refused)?
+    {
+        let ancestry = history
+            .history_ref_ancestry_proof(
+                binding.target(),
+                backend_replication::HistoryRefKind::Branch,
+                &branch,
+                commit,
+            )
+            .map_err(NativeHistoryPublicationError::Refused)?;
+        let replay = history
+            .replay_typed_v3_history(
+                binding.target(),
+                backend_replication::HistoryRefKind::Branch,
+                &branch,
+                commit,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .map_err(NativeHistoryPublicationError::Refused)?;
+        if replay.commit().identity() != commit
+            || replay.input_replay_status()
+                != backend_replication::TypedV3HistoryInputReplayStatus::Unproven
+        {
+            return Err(NativeHistoryPublicationError::Refused(
+                "cold typed V3 replay did not verify the exact selected commit as unproven input"
+                    .to_owned(),
+            ));
+        }
+        if source.current_selected_generation().ok() != Some(work.stamp) {
+            return Err(NativeHistoryPublicationError::Superseded);
+        }
+        return Ok(commit);
+    }
+    let plan = SemanticAuthority::selected_full_image_plan_for_store(
+        &work.store,
+        &work.key,
+        claim,
+        image_key,
+        &selected,
+        work.stamp,
+    )
+    .map_err(|error| NativeHistoryPublicationError::Refused(error.0))?;
+    let image_length = usize::try_from(plan.total_length).map_err(|_| {
+        NativeHistoryPublicationError::Refused("selected image length exceeds usize".to_owned())
+    })?;
+    if image_length == 0
+        || u64::try_from(image_length).unwrap_or(u64::MAX)
+            > backend_replication::MAX_SEMANTIC_IMAGE_BYTES
+    {
+        return Err(NativeHistoryPublicationError::Refused(
+            "selected image exceeds the 128 MiB publication bound".to_owned(),
+        ));
+    }
+    let mut image_bytes = Vec::new();
+    image_bytes.try_reserve_exact(image_length).map_err(|_| {
+        NativeHistoryPublicationError::Refused("selected image allocation failed".to_owned())
+    })?;
+    let mut image_offset = 0_u64;
+    while image_offset < plan.total_length {
+        let chunk_len = (plan.total_length - image_offset)
+            .min(super::selected_full_image::MAX_SELECTED_IMAGE_RANGE_BYTES);
+        let range = ByteRange::new(image_offset, chunk_len).map_err(|error| {
+            NativeHistoryPublicationError::Refused(format!(
+                "construct selected image range: {error}"
+            ))
+        })?;
+        let payload = work
+            .image_readers
+            .read_range(&work.store, &plan, range)
+            .map_err(|error| {
+                NativeHistoryPublicationError::Refused(format!(
+                    "read selected image from local CAS: {error:?}"
+                ))
+            })?
+            .ok_or_else(|| {
+                NativeHistoryPublicationError::Refused(
+                    "selected image is not resident in the local CAS".to_owned(),
+                )
+            })?;
+        if payload.len() != usize::try_from(chunk_len).unwrap_or(usize::MAX) {
+            return Err(NativeHistoryPublicationError::Refused(
+                "selected image range returned the wrong byte count".to_owned(),
+            ));
+        }
+        image_bytes.extend_from_slice(&payload);
+        image_offset = image_offset.checked_add(chunk_len).ok_or_else(|| {
+            NativeHistoryPublicationError::Refused("selected image offset overflow".to_owned())
+        })?;
+    }
+    if image_bytes.len() != image_length {
+        return Err(NativeHistoryPublicationError::Refused(
+            "selected image stream ended before the declared length".to_owned(),
+        ));
+    }
+    let image = SemanticImageView::reopen(&image_bytes).map_err(|error| {
+        NativeHistoryPublicationError::Refused(format!("reopen selected semantic image: {error}"))
+    })?;
+    let selected_image = binding
+        .bind_image(image)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+        .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
+    let policies = backend_replication::SemanticTypedPlaneBoundaryPoliciesV3::new(
+        policy, policy, policy, policy, policy, policy, policy,
+    );
+    let provenance = selected_history_provenance(&selected_image);
+    let receipt = match history.publish_selected_typed_v3_history_branch(
+        &selected_image,
+        branch,
+        provenance,
+        policies,
+        SemanticTypedPlaneVerificationTierV2::Standard,
+        JumboRopeLimits::default(),
+        &mut source,
+    ) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            if source.current_selected_generation().ok() != Some(work.stamp) {
+                return Err(NativeHistoryPublicationError::Superseded);
+            }
+            return Err(NativeHistoryPublicationError::Refused(error));
+        }
+    };
+    if source.current_selected_generation().ok() != Some(work.stamp) {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    receipt.current().ok_or_else(|| {
+        NativeHistoryPublicationError::Refused(
+            "typed V3 branch publication returned no current commit".to_owned(),
+        )
+    })
+}
+
+fn selected_history_provenance(
+    selected: &backend_replication::SelectedNativeHistoryImage<'_>,
+) -> [u8; 32] {
+    let target = selected.target();
+    let stamp = selected.selected_stamp();
+    let image = selected.image_key();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.locald.selected-native-v3.provenance.v1\0");
+    hasher.update(target.package().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(target.coordinate().as_bytes());
+    hasher.update(&<[u8; 2]>::from(target.profile()));
+    hasher.update(stamp.namespace());
+    hasher.update(&<[u8; 2]>::from(stamp.profile()));
+    hasher.update(stamp.source_coordinate());
+    hasher.update(&stamp.selection_revision().to_le_bytes());
+    hasher.update(stamp.selected_root());
+    hasher.update(stamp.closure_id());
+    hasher.update(stamp.catalog_root().as_bytes());
+    hasher.update(&image.artifact_ordinal().to_le_bytes());
+    hasher.update(image.semantic_generation().as_bytes());
+    hasher.update(image.manifest_root().as_bytes());
+    hasher.update(selected.image_identity().as_bytes());
+    *hasher.finalize().as_bytes()
 }
 
 /// Reads bounded canonical semantic-plane byte ranges from the selected CAS.
@@ -835,6 +1311,38 @@ pub(super) fn coordinate_identity(coordinate: &str) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.locald.versioned-plane.source-coordinate.v1\0");
     hasher.update(coordinate.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+pub(super) fn native_history_selection_id(
+    key: &ProductSemanticPublicationKey,
+    stamp: SelectedGenerationStamp,
+    image: Option<SemanticPlaneImageKey>,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.locald.native-history-selection.v1\0");
+    hasher.update(key.package().as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(key.coordinate().as_str().as_bytes());
+    hasher.update(&<[u8; 2]>::from(key.profile()));
+    hasher.update(stamp.namespace());
+    hasher.update(&<[u8; 2]>::from(stamp.profile()));
+    hasher.update(stamp.source_coordinate());
+    hasher.update(&stamp.selection_revision().to_le_bytes());
+    hasher.update(stamp.selected_root());
+    hasher.update(stamp.closure_id());
+    hasher.update(stamp.catalog_root().as_bytes());
+    match image {
+        Some(image) => {
+            hasher.update(&[1]);
+            hasher.update(&image.artifact_ordinal().to_le_bytes());
+            hasher.update(image.semantic_generation().as_bytes());
+            hasher.update(image.manifest_root().as_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
     *hasher.finalize().as_bytes()
 }
 

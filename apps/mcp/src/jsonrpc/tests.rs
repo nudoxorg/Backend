@@ -1304,18 +1304,20 @@ fn continuation_authority_binds_context_and_owner_payload() {
     let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
     let token = server.sign_cursor_token("pc1-owner-issued", b"query-a");
     assert_eq!(
-        server.verify_cursor_token(&token, b"query-a"),
+        server.verify_cursor_token(&token, b"query-a").as_deref(),
         Some("pc1-owner-issued")
     );
     // Verification is deliberately replayable: retrying a read page is safe,
     // while the MAC still prevents moving that page to another authority
     // context. This is the property a reconnecting MCP client needs.
     assert_eq!(
-        server.verify_cursor_token(&token, b"query-a"),
+        server.verify_cursor_token(&token, b"query-a").as_deref(),
         Some("pc1-owner-issued")
     );
     assert!(server.verify_cursor_token(&token, b"query-b").is_none());
-    let tampered = token.replace("pc1-owner-issued", "pc1-owner-tampered");
+    let mut tampered = token.clone();
+    let final_byte = tampered.pop().expect("MAC byte");
+    tampered.push(if final_byte == '0' { '1' } else { '0' });
     assert!(server.verify_cursor_token(&tampered, b"query-a").is_none());
     let other_workspace = Server::with_authority(Fake::default(), "/other".to_owned(), [8; 32]);
     assert!(
@@ -1328,7 +1330,7 @@ fn continuation_authority_binds_context_and_owner_payload() {
     // workspace and query context.
     let restarted = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
     assert_eq!(
-        restarted.verify_cursor_token(&token, b"query-a"),
+        restarted.verify_cursor_token(&token, b"query-a").as_deref(),
         Some("pc1-owner-issued")
     );
     let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
@@ -1881,7 +1883,8 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
                 command["cursor"] = json!(changed);
             }
             "expired" => {
-                let context_arguments = json!({"command": first_command.clone()})
+                let context_arguments_value = json!({"command": first_command.clone()});
+                let context_arguments = context_arguments_value
                     .as_object()
                     .expect("surface arguments");
                 let context =
