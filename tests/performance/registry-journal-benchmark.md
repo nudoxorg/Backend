@@ -14,6 +14,10 @@ and one local socket round trip, so it describes the actual command path rather
 than scorer-only time. The report also records executable hashes, source
 revision, journal bytes, projection bytes, and sampled daemon RSS. It does not
 build binaries or change the canonical journal, labels, or workspace template.
+Because current locald requires the copied advisory authority to be private,
+the runner changes only the private workspace copy to mode `0600` after
+verifying that it is a current-user-owned regular single-link file. It refuses
+links and leaves the prepared workspace template unchanged.
 
 Run only with prebuilt binaries from the assigned Nix shell and after receiving
 the measurement slot:
