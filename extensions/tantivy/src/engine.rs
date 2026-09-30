@@ -1927,6 +1927,15 @@ fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     backend_platform::durability::open_directory_nofollow(path)?.sync_all()
 }
 
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub(crate) use super::{
+        BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
+        ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint,
+        write_projection_manifest,
+    };
+}
+
 impl LexicalSource for TantivySource {
     type Error = TantivySourceError;
 
