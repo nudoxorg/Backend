@@ -73,6 +73,7 @@ pub(super) fn painted_extras(ledger: &Ledger, painted: &[gpui::PaintedText]) -> 
             TextSample {
                 key: bounds.key.clone(),
                 paint_clip: None,
+                scroll_ancestors: Vec::new(),
                 natural_width: bounds.width,
                 overflow: facet::probe::TextOverflow::Wrap,
                 content: line.text.to_string(),
@@ -591,6 +592,7 @@ mod tests {
             key: format!("text:{content}"),
             bounds: at(content, x, y, 80.0, 16.0),
             paint_clip: None,
+            scroll_ancestors: Vec::new(),
             natural_width: 80.0,
             overflow: TextOverflow::Clip,
             content: content.to_owned(),

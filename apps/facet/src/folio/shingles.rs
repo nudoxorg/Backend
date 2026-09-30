@@ -490,7 +490,7 @@ impl Element for Shingles {
         if probe::enabled(cx) {
             for (name, at, natural) in painted {
                 let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), SharedString::from(format!("region-{name}")));
-                publish(cx, &key, at, &name, label_role, natural);
+                publish(cx, &key, at, &name, label_role, natural, window);
             }
             // Where every shingle stands, for tests that rest on one.
             for (i, module) in modules.iter().enumerate() {
@@ -535,7 +535,7 @@ impl Element for Shingles {
                         gpui::size(px(text.width()), px(text.line_height())),
                     );
                     let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "plate".into());
-                    publish(cx, &key, at, &name, plate_role, text.width());
+                    publish(cx, &key, at, &name, plate_role, text.width(), window);
                 }
             }
         }
@@ -551,7 +551,7 @@ impl Element for Shingles {
             if probe::enabled(cx) {
                 let at = Bounds::new(gpui::point(px(x), px(base - name.ascent())), gpui::size(px(name.width()), px(name.line_height())));
                 let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-name".into());
-                publish(cx, &key, at, &module.name, self.measure.role(FOOT_NAME), name.width());
+                publish(cx, &key, at, &module.name, self.measure.role(FOOT_NAME), name.width(), window);
             }
             x += name.width() + 12.0 * scale;
             let more_words: SharedString = foot_more(module).into();
@@ -565,7 +565,7 @@ impl Element for Shingles {
                 if probe::enabled(cx) {
                     let at = Bounds::new(gpui::point(px(x), px(base - text.ascent())), gpui::size(px(text.width()), px(text.line_height())));
                     let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-doc".into());
-                    publish(cx, &key, at, doc, self.measure.role(FOOT_DOC), text.width());
+                    publish(cx, &key, at, doc, self.measure.role(FOOT_DOC), text.width(), window);
                 }
                 x += text.width() + 14.0 * scale;
             }
@@ -573,14 +573,14 @@ impl Element for Shingles {
             if probe::enabled(cx) {
                 let at = Bounds::new(gpui::point(px(x), px(base - more.ascent())), gpui::size(px(more.width()), px(more.line_height())));
                 let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-more".into());
-                publish(cx, &key, at, &more_words, self.measure.role(FOOT_MORE), more.width());
+                publish(cx, &key, at, &more_words, self.measure.role(FOOT_MORE), more.width(), window);
             }
             let gx = ox + width - go.width();
             go.paint(gx, base, window, cx);
             if probe::enabled(cx) {
                 let at = Bounds::new(gpui::point(px(gx), px(base - go.ascent())), gpui::size(px(go.width()), px(go.line_height())));
                 let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-go".into());
-                publish(cx, &key, at, &go_words, self.measure.role(FOOT_MORE), go.width());
+                publish(cx, &key, at, &go_words, self.measure.role(FOOT_MORE), go.width(), window);
             }
         }
 
@@ -707,8 +707,8 @@ pub fn foot_more(module: &ModuleFacts) -> String {
     }
 }
 
-fn publish(cx: &mut App, key: &ElementId, at: Bounds<Pixels>, content: &str, role: TypeRole, natural: f32) {
-    probe::record_text(
+fn publish(cx: &mut App, key: &ElementId, at: Bounds<Pixels>, content: &str, role: TypeRole, natural: f32, window: &Window) {
+    probe::record_text_in(
         cx,
         key,
         at,
@@ -716,6 +716,7 @@ fn publish(cx: &mut App, key: &ElementId, at: Bounds<Pixels>, content: &str, rol
             key: String::new(),
             bounds: probe::BoundsSample { key: String::new(), x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
             paint_clip: None,
+            scroll_ancestors: probe::current_scroll_ancestors(),
             natural_width: natural,
             overflow: TextOverflow::Clip,
             content: content.to_owned(),
@@ -725,6 +726,7 @@ fn publish(cx: &mut App, key: &ElementId, at: Bounds<Pixels>, content: &str, rol
             weight: role.weight,
             region: probe::current_region(),
         },
+        window,
     );
 }
 

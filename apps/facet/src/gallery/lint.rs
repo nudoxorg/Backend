@@ -19,7 +19,7 @@
 
 use super::json::Json;
 use crate::probe::Ledger;
-use crate::probe::rules::{overlap, stranded};
+use crate::probe::rules::{clipped_bounds, meaningfully_visible, overlap, stranded};
 pub use crate::probe::rules::{fully_visible, visible_bounds};
 use backend_gui_harness::{Viewport, contrast_ratio};
 use image::RgbaImage;
@@ -79,12 +79,20 @@ pub struct Lint {
 pub struct Coverage {
     /// Text boxes checked.
     pub texts: usize,
-    /// Text boxes with at least some painted area inside the window and clip.
+    /// Text boxes with at least 80% of each axis confirmed by the actual renderer mask.
     pub visible_texts: usize,
+    /// Text boxes with some actual renderer area, but too little for visual coverage.
+    pub partial_texts: usize,
+    /// Text boxes without an actual renderer-mask sample.
+    pub unknown_clip_texts: usize,
     /// Targets checked.
     pub targets: usize,
-    /// Targets with at least some area inside the window.
+    /// Targets with at least 80% of each axis confirmed by the actual renderer mask.
     pub visible_targets: usize,
+    /// Targets with some actual renderer area, but too little for visual coverage.
+    pub partial_targets: usize,
+    /// Targets without an actual renderer-mask sample.
+    pub unknown_clip_targets: usize,
     /// Text boxes whose contrast was measured.
     pub contrast: usize,
     /// Text boxes whose contrast could not be measured (1x, off-screen, empty).
@@ -173,10 +181,28 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
         }
         out.coverage.texts += 1;
         let visible = visible_bounds(text, width, height);
-        if visible.is_some() {
-            out.coverage.visible_texts += 1;
+        match (text.paint_clip.is_some(), visible.as_ref()) {
+            (false, _) => out.coverage.unknown_clip_texts += 1,
+            (true, Some(bounds)) if meaningfully_visible(&text.bounds, bounds) => {
+                out.coverage.visible_texts += 1;
+            }
+            (true, Some(_)) => out.coverage.partial_texts += 1,
+            (true, None) => {}
         }
-        if let Some(side) = stranded(text, &ledger.scrolls, width) {
+        let reachable_by_scroll = ledger
+            .scrolls
+            .iter()
+            .any(|scroll| scroll.reaches(&text.bounds, &text.scroll_ancestors));
+        if text.paint_clip.is_none() && !text.content.trim().is_empty() {
+            out.lints.push(Lint {
+                rule: Rule::Offscreen,
+                key: text.key.clone(),
+                detail: format!(
+                    "`{}` at ({:.1}, {:.1}) has no actual renderer clip sample, so visibility cannot be confirmed",
+                    text.content, text.bounds.x, text.bounds.y
+                ),
+            });
+        } else if let Some(side) = stranded(text, &ledger.scrolls, width) {
             out.lints.push(Lint {
                 rule: Rule::Offscreen,
                 key: text.key.clone(),
@@ -186,15 +212,15 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
                     text.content, text.bounds.x, text.bounds.y, text.bounds.width, text.bounds.height, side.name()
                 ),
             });
-        } else if visible.is_none()
-            && !text.content.trim().is_empty()
-            && !ledger.scrolls.iter().any(|scroll| scroll.reaches(&text.bounds))
+        } else if !text.content.trim().is_empty()
+            && !reachable_by_scroll
+            && !visible.as_ref().is_some_and(|bounds| meaningfully_visible(&text.bounds, bounds))
         {
             out.lints.push(Lint {
                 rule: Rule::Offscreen,
                 key: text.key.clone(),
                 detail: format!(
-                    "`{}` at ({:.1}, {:.1}) {:.1}x{:.1} is fully hidden by the window or an ancestor paint clip, and no scroll container's content reaches it",
+                    "`{}` at ({:.1}, {:.1}) {:.1}x{:.1} has less than 80% of each axis visible through the renderer clip, and no ancestor scroll container reaches it",
                     text.content, text.bounds.x, text.bounds.y, text.bounds.width, text.bounds.height
                 ),
             });
@@ -223,7 +249,7 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
             });
         }
         // Contrast from the pixels.
-        if visible.is_none() { out.coverage.hidden_texts += 1; }
+        if text.paint_clip.is_some() && visible.is_none() { out.coverage.hidden_texts += 1; }
         let measured = (viewport.scale == 2).then(|| visible.as_ref()).flatten()
             .and_then(|bounds| ink_contrast(image, viewport.scale, bounds.x, bounds.y, bounds.width, bounds.height));
         match measured {
@@ -282,19 +308,39 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
         }
         out.coverage.targets += 1;
         let b = &target.bounds;
-        if b.x < width && b.y < height && b.x + b.width > 0.0 && b.y + b.height > 0.0 {
-            out.coverage.visible_targets += 1;
+        let visible = target
+            .paint_clip
+            .as_ref()
+            .and_then(|clip| clipped_bounds(b, clip, width, height));
+        match (target.paint_clip.is_some(), visible.as_ref()) {
+            (false, _) => out.coverage.unknown_clip_targets += 1,
+            (true, Some(bounds)) if meaningfully_visible(b, bounds) => {
+                out.coverage.visible_targets += 1;
+            }
+            (true, Some(_)) => out.coverage.partial_targets += 1,
+            (true, None) => {}
         }
-        let reachable_by_scroll = ledger.scrolls.iter().any(|scroll| scroll.reaches(b));
-        if (target.state.focusable || target.state.clickable) && !b.within(width + 0.5, height + 0.5) && !reachable_by_scroll {
+        let reachable_by_scroll = ledger
+            .scrolls
+            .iter()
+            .any(|scroll| scroll.reaches(b, &target.scroll_ancestors));
+        if (target.state.focusable || target.state.clickable)
+            && (target.paint_clip.is_none()
+                || !visible.as_ref().is_some_and(|bounds| meaningfully_visible(b, bounds)))
+            && !reachable_by_scroll
+        {
+            let detail = if target.paint_clip.is_none() {
+                format!("focusable target at ({:.1}, {:.1}) has no actual renderer clip sample, so visibility cannot be confirmed", b.x, b.y)
+            } else {
+                format!(
+                    "focusable at ({:.1}, {:.1}) {:.1}x{:.1} has less than 80% of each axis visible through the renderer clip, and no ancestor scroll container reaches it",
+                    b.x, b.y, b.width, b.height
+                )
+            };
             out.lints.push(Lint {
                 rule: Rule::Offscreen,
                 key: target.key.clone(),
-                detail: format!(
-                    "focusable at ({:.1}, {:.1}) {:.1}x{:.1} is not inside the {width:.0}x{height:.0} \
-                     viewport, and no scroll container's content reaches it",
-                    b.x, b.y, b.width, b.height
-                ),
+                detail,
             });
         }
         if target.state.clickable && (b.width < 24.0 || b.height < 24.0) {
@@ -321,11 +367,15 @@ pub fn json(linted: &Linted) -> Json {
             Json::obj([
                 ("texts", Json::num(linted.coverage.texts as f64)),
                 ("visible_texts", Json::num(linted.coverage.visible_texts as f64)),
+                ("partial_texts", Json::num(linted.coverage.partial_texts as f64)),
+                ("unknown_clip_texts", Json::num(linted.coverage.unknown_clip_texts as f64)),
                 ("hidden_texts", Json::num(linted.coverage.hidden_texts as f64)),
                 ("occluded_texts", Json::num(linted.coverage.occluded_texts as f64)),
                 ("occluded_targets", Json::num(linted.coverage.occluded_targets as f64)),
                 ("targets", Json::num(linted.coverage.targets as f64)),
                 ("visible_targets", Json::num(linted.coverage.visible_targets as f64)),
+                ("partial_targets", Json::num(linted.coverage.partial_targets as f64)),
+                ("unknown_clip_targets", Json::num(linted.coverage.unknown_clip_targets as f64)),
                 ("contrast", Json::num(linted.coverage.contrast as f64)),
                 (
                     "contrast_skipped",
@@ -397,6 +447,8 @@ mod tests {
         TargetSample {
             key: key.to_owned(),
             bounds: bounds_sample,
+            paint_clip: Some(bounds(0.0, 0.0, 400.0, 300.0)),
+            scroll_ancestors: Vec::new(),
             state: Target {
                 focusable: true,
                 ..Target::default()
@@ -405,7 +457,7 @@ mod tests {
     }
 
     fn text_at(key: &str, rect: BoundsSample, clip: Option<BoundsSample>) -> crate::probe::TextSample {
-        crate::probe::TextSample { key: key.to_owned(), bounds: rect, paint_clip: clip,
+        crate::probe::TextSample { key: key.to_owned(), bounds: rect, paint_clip: Some(clip.unwrap_or_else(|| bounds(0.0, 0.0, 400.0, 300.0))), scroll_ancestors: Vec::new(),
             natural_width: 20.0, overflow: crate::probe::TextOverflow::Clip, content: "label".to_owned(),
             min_width: 20.0, line_height: 10.0, size: 12.0, weight: 400.0, region: Some("graph".to_owned()) }
     }
@@ -423,6 +475,8 @@ mod tests {
         let target = |key: &str, rect: BoundsSample| TargetSample {
             key: key.to_owned(),
             bounds: rect,
+            paint_clip: Some(bounds(0.0, 0.0, 400.0, 300.0)),
+            scroll_ancestors: Vec::new(),
             state: Target { clickable: true, ..Target::default() },
         };
         let ledger = Ledger {
@@ -472,10 +526,63 @@ mod tests {
             key: "scroll".to_owned(),
             viewport: bounds(0.0, 0.0, 80.0, 50.0),
             content: bounds(0.0, 0.0, 80.0, 150.0),
+            ancestors: Vec::new(),
         };
-        let reachable = Ledger { scrolls: vec![scroller], ..ledger };
+        let mut ledger = ledger;
+        ledger.texts[0].scroll_ancestors = vec!["scroll".to_owned()];
+        let reachable = Ledger { scrolls: vec![scroller.clone()], ..ledger.clone() };
         let result = lint(&blank(800,600), &reachable, Viewport { scale: 2, ..viewport() });
         assert!(!result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "hidden"), "a real scroll extent keeps the hidden row reachable: {:?}",result.lints);
+
+        let unrelated = Ledger { scrolls: vec![ScrollSample { key: "other-scroll".to_owned(), ..scroller }], ..ledger };
+        let result = lint(&blank(800,600), &unrelated, Viewport { scale: 2, ..viewport() });
+        assert!(result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "hidden"), "a geometrically matching but unrelated scroller cannot exempt clipped text: {:?}",result.lints);
+    }
+
+    #[test]
+    fn a_one_pixel_sliver_is_partial_and_does_not_cover_a_scene() {
+        let text = text_at("sliver", bounds(10.0, 10.0, 100.0, 20.0), Some(bounds(109.0, 10.0, 20.0, 20.0)));
+        let target = TargetSample {
+            key: "sliver-target".to_owned(),
+            bounds: bounds(10.0, 40.0, 100.0, 24.0),
+            paint_clip: Some(bounds(109.0, 40.0, 20.0, 24.0)),
+            scroll_ancestors: Vec::new(),
+            state: Target { focusable: true, ..Target::default() },
+        };
+        let result = lint(&blank(400, 300), &Ledger { texts: vec![text], targets: vec![target], ..Ledger::default() }, viewport());
+        assert_eq!((result.coverage.visible_texts, result.coverage.partial_texts), (0, 1));
+        assert_eq!((result.coverage.visible_targets, result.coverage.partial_targets), (0, 1));
+        assert!(result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "sliver"));
+        assert!(result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "sliver-target"));
+    }
+
+    #[test]
+    fn missing_renderer_clip_is_unknown_not_visible_evidence() {
+        let mut text = text_at("unknown-clip", bounds(10.0, 10.0, 80.0, 20.0), None);
+        text.paint_clip = None;
+        let mut target = focusable_at("unknown-target", bounds(10.0, 40.0, 80.0, 24.0));
+        target.paint_clip = None;
+        let result = lint(&blank(400, 300), &Ledger { texts: vec![text], targets: vec![target], ..Ledger::default() }, viewport());
+        assert_eq!((result.coverage.visible_texts, result.coverage.unknown_clip_texts), (0, 1));
+        assert_eq!((result.coverage.visible_targets, result.coverage.unknown_clip_targets), (0, 1));
+        assert!(result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "unknown-clip"));
+        assert!(result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "unknown-target"));
+    }
+
+    #[test]
+    fn a_target_inside_the_window_but_outside_its_actual_clip_is_not_visible() {
+        let mut target = focusable_at("clipped-target", bounds(20.0, 20.0, 80.0, 24.0));
+        target.paint_clip = Some(bounds(200.0, 200.0, 40.0, 40.0));
+        let unrelated = ScrollSample {
+            key: "unrelated-scroll".to_owned(),
+            viewport: bounds(0.0, 0.0, 400.0, 300.0),
+            content: bounds(0.0, 0.0, 400.0, 600.0),
+            ancestors: Vec::new(),
+        };
+        let result = lint(&blank(400, 300), &Ledger { targets: vec![target], scrolls: vec![unrelated], ..Ledger::default() }, viewport());
+        assert_eq!(result.coverage.visible_targets, 0);
+        assert_eq!(result.coverage.targets, 1);
+        assert!(result.lints.iter().any(|lint| lint.rule == super::Rule::Offscreen && lint.key == "clipped-target"), "the window rectangle alone cannot prove target visibility: {:?}", result.lints);
     }
 
     #[test]
@@ -527,12 +634,15 @@ mod tests {
     /// the coordinator's "long scrolling list" canary must pass.
     #[test]
     fn a_focusable_below_the_viewport_inside_a_scroll_containers_content_is_not_offscreen() {
+        let mut row = focusable_at("row", bounds(10.0, 340.0, 100.0, 24.0));
+        row.scroll_ancestors.push("list".to_owned());
         let ledger = Ledger {
-            targets: vec![focusable_at("row", bounds(10.0, 340.0, 100.0, 24.0))],
+            targets: vec![row],
             scrolls: vec![ScrollSample {
                 key: "list".to_owned(),
                 viewport: bounds(0.0, 0.0, 400.0, 300.0),
                 content: bounds(0.0, 0.0, 400.0, 500.0),
+                ancestors: Vec::new(),
             }],
             ..Ledger::default()
         };
@@ -559,6 +669,7 @@ mod tests {
                 key: "list".to_owned(),
                 viewport: bounds(0.0, 0.0, 400.0, 300.0),
                 content: bounds(0.0, 0.0, 400.0, 300.0),
+                ancestors: Vec::new(),
             }],
             ..Ledger::default()
         };
@@ -609,7 +720,8 @@ mod tests {
         let strip = |x: f32| TextSample {
             key: "strip-word".to_owned(),
             bounds: bounds(x, 40.0, 90.0, 20.0),
-            paint_clip: None,
+            paint_clip: Some(bounds(0.0, 0.0, 400.0, 300.0)),
+            scroll_ancestors: Vec::new(),
             natural_width: 90.0,
             overflow: TextOverflow::Wrap,
             content: "as_integer".to_owned(),
@@ -629,7 +741,9 @@ mod tests {
         assert!(finding.detail.contains("wholly past the right edge"), "{}", finding.detail);
         // Inside the window, or reached by a scroller, it is not.
         assert_eq!(offscreen(&Ledger { texts: vec![strip(100.0)], ..Ledger::default() }), 0);
-        let scroller = ScrollSample { key: "strip".to_owned(), viewport: bounds(0.0, 0.0, 400.0, 60.0), content: bounds(0.0, 0.0, 900.0, 60.0) };
-        assert_eq!(offscreen(&Ledger { texts: vec![strip(420.0)], scrolls: vec![scroller], ..Ledger::default() }), 0);
+        let scroller = ScrollSample { key: "strip".to_owned(), viewport: bounds(0.0, 0.0, 400.0, 60.0), content: bounds(0.0, 0.0, 900.0, 60.0), ancestors: Vec::new() };
+        let mut reached = strip(420.0);
+        reached.scroll_ancestors.push("strip".to_owned());
+        assert_eq!(offscreen(&Ledger { texts: vec![reached], scrolls: vec![scroller], ..Ledger::default() }), 0);
     }
 }

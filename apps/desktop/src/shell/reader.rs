@@ -1551,14 +1551,14 @@ impl Render for Reader {
         } else {
             Vec::new()
         };
-        let scroller = Reveal {
+        let scroller = facet::probe::scroll_scope("reader-scroll", Reveal {
             pending: Rc::clone(&self.reveal),
             targets: self.targets.clone(),
             scroll: self.scroll.clone(),
             frame: Rc::clone(&self.frame),
             land,
             child: scroller.into_any_element(),
-        };
+        });
         let mut root = div().relative().size_full();
         // Where you were: the row a Close came back to, tinted under the page.
         let tint = self.tint_now(cx);

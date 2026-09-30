@@ -580,7 +580,7 @@ impl Element for Ticker {
         if probe::enabled(cx) {
             for (n, (at, content, role, natural, kind)) in published.into_iter().enumerate() {
                 let key = ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{kind}-{n}")));
-                probe::record_text(
+                probe::record_text_in(
                     cx,
                     &key,
                     at,
@@ -588,6 +588,7 @@ impl Element for Ticker {
                         key: String::new(),
                         bounds: probe::BoundsSample { key: String::new(), x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
                         paint_clip: None,
+                        scroll_ancestors: probe::current_scroll_ancestors(),
                         natural_width: natural,
                         overflow: TextOverflow::Clip,
                         content,
@@ -597,6 +598,7 @@ impl Element for Ticker {
                         weight: role.weight,
                         region: probe::current_region(),
                     },
+                    window,
                 );
                 let _ = kind;
             }
