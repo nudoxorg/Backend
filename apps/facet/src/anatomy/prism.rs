@@ -83,14 +83,14 @@ fn mark_of(kind: Option<Kind>) -> Mark {
     }
 }
 
-fn row_mark(kind: Option<Kind>, measure: &Measure, color: gpui::Hsla) -> impl IntoElement {
+fn row_mark(kind: Option<Kind>, measure: &Measure, color: gpui::Hsla) -> gpui::AnyElement {
     let s = measure.scale();
     let shape = mark_of(kind);
     match shape {
         Mark::Square => div().flex_none().size(px(9.0 * s)).flex().items_center().justify_center()
-            .child(div().size(px(6.0 * s)).bg(color)),
-        Mark::Solid => crate::controls::diamond::diamond().flex_none().size(px(9.0 * s)).inset(0.7 * s).fill(color),
-        Mark::Open => crate::controls::diamond::diamond().flex_none().size(px(9.0 * s)).inset(0.7 * s).outline(color, 1.2),
+            .child(div().size(px(6.0 * s)).bg(color)).into_any_element(),
+        Mark::Solid => crate::controls::diamond::diamond().flex_none().size(px(9.0 * s)).inset(0.7 * s).fill(color).into_any_element(),
+        Mark::Open => crate::controls::diamond::diamond().flex_none().size(px(9.0 * s)).inset(0.7 * s).outline(color, 1.2).into_any_element(),
     }
 }
 
