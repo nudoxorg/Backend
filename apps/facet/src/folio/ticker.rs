@@ -55,7 +55,7 @@ pub struct TickerFacts {
     pub ticks: Vec<Tick>,
     /// The release you pin.
     pub pin: Option<usize>,
-    /// The newest release.
+    /// The newest uniquely established, non-yanked stable release.
     pub latest: Option<usize>,
     /// The release being read, when it is not the pin.
     pub reading: Option<usize>,
@@ -110,9 +110,7 @@ impl TickerFacts {
         // Registry versions are identities, not display labels: only exact
         // spelling can establish a pin or the release the host is reading.
         let pin = pin.and_then(|pin| ticks.iter().position(|t| t.version == pin));
-        // Only an explicit non-yanked fact establishes the newest release.
-        // Missing/conflicting status never silently becomes available.
-        let latest = ticks.iter().rposition(|t| t.yanked == RegistryFact::Known(false) && t.kind != Kind::Pre);
+        let latest = newest(&ticks);
         Self {
             ticks,
             pin,
@@ -202,6 +200,24 @@ impl TickerFacts {
             })
             .collect()
     }
+}
+
+/// The newest stable release is certain only when its yank status is known
+/// and no higher or equal-precedence identity could also be unyanked.
+fn newest(ticks: &[Tick]) -> Option<usize> {
+    let (index, latest) = ticks
+        .iter()
+        .enumerate()
+        .filter(|(_, tick)| tick.kind != Kind::Pre && tick.yanked == RegistryFact::Known(false))
+        .max_by(|(_, a), (_, b)| semver::cmp(&a.version, &b.version))?;
+    let could_be_newer = ticks.iter().enumerate().any(|(other, tick)| {
+        if other == index || tick.kind == Kind::Pre || tick.yanked == RegistryFact::Known(true) {
+            return false;
+        }
+        semver::cmp(&tick.version, &latest.version).is_gt()
+            || semver::cmp(&tick.version, &latest.version).is_eq()
+    });
+    (!could_be_newer).then_some(index)
 }
 
 /// The civil year of a day count since 1970-01-01.
@@ -816,7 +832,7 @@ mod tests {
             },
         ];
         let f = TickerFacts::new(&releases, None, "2026-09-28");
-        assert_eq!(f.latest, Some(0));
+        assert_eq!(f.latest, None, "an unresolved higher stable version prevents a newest label");
         assert_eq!(f.ticks[1].date, RegistryFact::Ambiguous);
         assert_eq!(f.ticks[1].yanked, RegistryFact::Ambiguous);
         assert_eq!(f.ticks[1].source, SourceAvailability::Ambiguous);
@@ -830,6 +846,24 @@ mod tests {
             indexed: RegistryFact::Missing,
         }];
         assert_eq!(TickerFacts::new(&unresolved, None, "2026-09-28").latest, None);
+    }
+
+    #[test]
+    fn a_known_yanked_latest_does_not_hide_the_newest_unyanked_release() {
+        let releases = [
+            Release { version: "1.0.0".to_owned(), date: RegistryFact::Missing, yanked: RegistryFact::Known(false), source: SourceAvailability::Available, indexed: RegistryFact::Known(true) },
+            Release { version: "2.0.0".to_owned(), date: RegistryFact::Missing, yanked: RegistryFact::Known(true), source: SourceAvailability::Available, indexed: RegistryFact::Known(true) },
+        ];
+        assert_eq!(TickerFacts::new(&releases, None, "2026-09-28").latest, Some(0));
+    }
+
+    #[test]
+    fn equal_precedence_unyanked_release_identities_do_not_choose_a_newest() {
+        let releases = [
+            Release { version: "1.0.0+build-a".to_owned(), date: RegistryFact::Missing, yanked: RegistryFact::Known(false), source: SourceAvailability::Available, indexed: RegistryFact::Known(true) },
+            Release { version: "1.0.0+build-b".to_owned(), date: RegistryFact::Missing, yanked: RegistryFact::Known(false), source: SourceAvailability::Available, indexed: RegistryFact::Known(true) },
+        ];
+        assert_eq!(TickerFacts::new(&releases, None, "2026-09-28").latest, None);
     }
 
     #[test]
