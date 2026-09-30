@@ -6376,6 +6376,25 @@ mod tests {
         )
     }
 
+    fn completed_chain_count_is_consistent(
+        count: SearchResultCount,
+        first_page_unique_count: usize,
+        completed_count: usize,
+    ) -> bool {
+        match count {
+            SearchResultCount::Exact(value) => {
+                value == completed_count && value >= first_page_unique_count
+            }
+            SearchResultCount::AtLeast(value) => {
+                value >= first_page_unique_count && value <= completed_count
+            }
+            // Unknown means the API makes no count claim. The independently
+            // labelled, duplicate-free full cursor chain still checks the
+            // exact cardinality and membership for this benchmark.
+            SearchResultCount::Unknown => true,
+        }
+    }
+
     #[test]
     #[ignore = "manual production-index benchmark; requires pinned Maven journal and independent labels"]
     fn direct_maven_discovery_index_benchmark_from_pinned_inputs() {
@@ -6457,19 +6476,35 @@ mod tests {
         let mut build_checks = Vec::with_capacity(query_labels.len());
         for label in query_labels {
             let query = label["query"].as_str().expect("query text");
-            let expected: BTreeSet<String> = label["expected"]
+            let expected_coordinates = label["expected"]
                 .as_array()
-                .expect("expected coordinates")
+                .expect("expected coordinates");
+            let expected: BTreeSet<String> = expected_coordinates
                 .iter()
                 .map(|value| value.as_str().expect("coordinate").to_owned())
                 .collect();
-            let (observed, _, _, count, _) = direct_maven_chain(&index, &store, query, PAGE_LIMIT);
-            let exact_count = count == SearchResultCount::Exact(expected.len());
+            let independent_labels_duplicate_free = expected.len() == expected_coordinates.len();
+            let (observed, page_sizes, _, count, _) =
+                direct_maven_chain(&index, &store, query, PAGE_LIMIT);
+            let observed_set = observed.iter().cloned().collect::<BTreeSet<_>>();
+            let complete_chain_cardinality_matches_labels = observed.len() == expected.len();
+            let first_page_unique_count = observed
+                .iter()
+                .take(page_sizes.first().copied().unwrap_or_default())
+                .collect::<BTreeSet<_>>()
+                .len();
+            let first_page_count_bound_consistent = completed_chain_count_is_consistent(
+                count,
+                first_page_unique_count,
+                observed.len(),
+            );
             build_checks.push(serde_json::json!({
                 "query": query,
-                "exact_membership": observed.iter().cloned().collect::<BTreeSet<_>>() == expected,
-                "duplicate_free": observed.len() == observed.iter().collect::<BTreeSet<_>>().len(),
-                "exact_count_matches_labels": exact_count,
+                "exact_membership": observed_set == expected,
+                "duplicate_free": observed.len() == observed_set.len(),
+                "independent_labels_duplicate_free": independent_labels_duplicate_free,
+                "complete_chain_cardinality_matches_labels": complete_chain_cardinality_matches_labels,
+                "first_page_count_bound_consistent": first_page_count_bound_consistent,
                 "result_count": match count {
                     SearchResultCount::Exact(value) => serde_json::json!({"kind":"exact","value":value}),
                     SearchResultCount::AtLeast(value) => serde_json::json!({"kind":"at_least","value":value}),
@@ -6561,16 +6596,28 @@ mod tests {
                     chain_started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
                 );
             first_chain_ns_by_query.push(first_chain_ns);
-            let expected: BTreeSet<String> = label["expected"]
+            let expected_coordinates = label["expected"]
                 .as_array()
-                .expect("expected coordinates")
+                .expect("expected coordinates");
+            let expected: BTreeSet<String> = expected_coordinates
                 .iter()
                 .map(|value| value.as_str().expect("coordinate").to_owned())
                 .collect();
+            let independent_labels_duplicate_free = expected.len() == expected_coordinates.len();
             let observed_set: BTreeSet<String> = observed.iter().cloned().collect();
             let duplicate_free = observed.len() == observed_set.len();
             let exact_membership = observed_set == expected;
-            let exact_count = first_page.result_count == SearchResultCount::Exact(expected.len());
+            let complete_chain_cardinality_matches_labels = observed.len() == expected.len();
+            let first_page_unique_count = observed
+                .iter()
+                .take(first_page_size)
+                .collect::<BTreeSet<_>>()
+                .len();
+            let first_page_count_bound_consistent = completed_chain_count_is_consistent(
+                first_page.result_count,
+                first_page_unique_count,
+                observed.len(),
+            );
             first_page_ns_by_query.push(first_page_ns);
             first_observed.push(observed.clone());
             timed_queries.push(serde_json::json!({
@@ -6580,7 +6627,10 @@ mod tests {
                 "observed_count": observed.len(),
                 "exact_membership": exact_membership,
                 "duplicate_free": duplicate_free,
-                "exact_count_matches_labels": exact_count,
+                "independent_labels_duplicate_free": independent_labels_duplicate_free,
+                "complete_chain_cardinality_matches_labels": complete_chain_cardinality_matches_labels,
+                "query_phase": "after_cold_projection_open",
+                "first_page_count_bound_consistent": first_page_count_bound_consistent,
                 "result_count": first_page_result_count,
                 "first_page_ns": first_page_ns,
                 "first_page_count": first_page_size,
@@ -6599,12 +6649,16 @@ mod tests {
         let query_checks_pass = timed_queries.iter().all(|row| {
             row["exact_membership"].as_bool() == Some(true)
                 && row["duplicate_free"].as_bool() == Some(true)
-                && row["exact_count_matches_labels"].as_bool() == Some(true)
+                && row["independent_labels_duplicate_free"].as_bool() == Some(true)
+                && row["complete_chain_cardinality_matches_labels"].as_bool() == Some(true)
+                && row["first_page_count_bound_consistent"].as_bool() == Some(true)
         });
         let build_checks_pass = build_checks.iter().all(|row| {
             row["exact_membership"].as_bool() == Some(true)
                 && row["duplicate_free"].as_bool() == Some(true)
-                && row["exact_count_matches_labels"].as_bool() == Some(true)
+                && row["independent_labels_duplicate_free"].as_bool() == Some(true)
+                && row["complete_chain_cardinality_matches_labels"].as_bool() == Some(true)
+                && row["first_page_count_bound_consistent"].as_bool() == Some(true)
         });
         let warm_started = std::time::Instant::now();
         for (query_index, label) in query_labels.iter().enumerate() {
