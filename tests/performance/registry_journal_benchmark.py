@@ -310,6 +310,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--locald", type=Path, required=True, help="prebuilt backend-locald executable")
     parser.add_argument("--cli", type=Path, required=True, help="prebuilt backend-cli executable")
+    parser.add_argument(
+        "--build-manifest",
+        type=Path,
+        required=True,
+        help="frozen runtime-build manifest for these exact binaries",
+    )
     parser.add_argument("--journal", type=Path, default=DEFAULT_JOURNAL)
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
     parser.add_argument("--workspace-template", type=Path, default=DEFAULT_WORKSPACE)
@@ -335,6 +341,19 @@ def main() -> int:
     project_template = (args.project_template or workspace_template.parent / "project").resolve(strict=True)
     locald_path = args.locald.resolve(strict=True)
     cli_path = args.cli.resolve(strict=True)
+    build_manifest_path = args.build_manifest.resolve(strict=True)
+    build_manifest = json.loads(build_manifest_path.read_text(encoding="utf-8"))
+    if build_manifest.get("schema") != "nudox.runtime-build-manifest.v1":
+        raise ValueError("runtime build manifest has an unsupported schema")
+    if not build_manifest.get("source", {}).get("clean"):
+        raise ValueError("runtime build manifest must identify a clean source revision")
+    for name, executable in (("backend-locald", locald_path), ("backend-cli", cli_path)):
+        recorded = build_manifest.get("executables", {}).get(name)
+        current = snapshot_executable(executable)
+        if not isinstance(recorded, dict) or any(
+            recorded.get(key) != current.get(key) for key in ("path", "sha256", "bytes")
+        ):
+            raise ValueError(f"{name} does not match the frozen runtime build manifest")
     output = args.output.resolve()
     if output.exists():
         parser.error(f"output already exists; choose a fresh path: {output}")
@@ -390,6 +409,7 @@ def main() -> int:
     first_owner_pid: int | None = None
     reopen_owner_pid: int | None = None
     owner_rss: int | None = None
+    owner_rss_sample_count = 0
     startup_ns = 0
     passes: dict[str, list[dict[str, Any]]] = {"initial": [], "reopen": []}
     projection_bytes_after_build: int | None = None
@@ -459,8 +479,9 @@ def main() -> int:
         workspace_bytes_after_build = tree_bytes(workspace)
         search_root = workspace / "registry-discovery" / "catalog-search-v1"
         projection_bytes_after_build = tree_bytes(search_root) if search_root.is_dir() else 0
-        first_exit = stop_owner(process)
         owner_rss = sampler.stop()
+        owner_rss_sample_count += len(sampler.values)
+        first_exit = stop_owner(process)
         process = None
         sampler = None
 
@@ -475,6 +496,7 @@ def main() -> int:
         for repetition in range(max(1, args.repetitions - 1)):
             passes["reopen"].append(measure_round(f"warm-{repetition + 1}", process))
         owner_rss = max(owner_rss or 0, sampler.stop() or 0) or None
+        owner_rss_sample_count += len(sampler.values)
         stop_owner(process)
         process = None
         sampler = None
@@ -520,6 +542,13 @@ def main() -> int:
             "independent_label_scope": labels.get("scope"),
             "locald": snapshot_executable(locald_path),
             "cli": snapshot_executable(cli_path),
+            "binary_source_commit": build_manifest["source"]["commit"],
+            "build_manifest": str(build_manifest_path),
+            "build_manifest_sha256": sha256(build_manifest_path),
+            "benchmark_runner": {
+                "path": str(Path(__file__).resolve()),
+                "sha256": sha256(Path(__file__).resolve()),
+            },
             "python": sys.version,
             "platform": platform.platform(),
             "machine": platform.machine(),
@@ -545,6 +574,7 @@ def main() -> int:
             "locald_pid_first_open": first_owner_pid,
             "locald_pid_cold_reopen": reopen_owner_pid,
             "sampled_peak_locald_rss_bytes_across_processes": owner_rss,
+            "sampled_locald_rss_samples": owner_rss_sample_count,
             "first_owner_exit": first_exit,
             "owner_startup_to_ready_ms": round(startup_ns / 1_000_000, 3),
             "health_first_open": first_health,
