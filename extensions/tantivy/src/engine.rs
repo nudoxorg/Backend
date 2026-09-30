@@ -1132,17 +1132,19 @@ impl TantivySource {
         let Some(plan) = self.plan_revision(next, budget)? else {
             return Ok(MaintainOutcome::RebuildRequired);
         };
-        if plan.deletes.is_empty() && plan.writes.is_empty() {
-            self.binding = next.binding();
-            self.coverage = next.coverage();
-            return Ok(MaintainOutcome::Applied(ProjectionRevision {
-                kind: ProjectionKind::Rebound,
-                rewritten_documents: 0,
-                retired_postings: 0,
-                added_postings: 0,
-            }));
+        match plan {
+            RevisionPlan::Rebound => {
+                self.binding = next.binding();
+                self.coverage = next.coverage();
+                Ok(MaintainOutcome::Applied(ProjectionRevision {
+                    kind: ProjectionKind::Rebound,
+                    rewritten_documents: 0,
+                    retired_postings: 0,
+                    added_postings: 0,
+                }))
+            }
+            RevisionPlan::Changed(plan) => self.commit_revision(next, plan),
         }
-        self.commit_revision(next, plan)
     }
 
     fn plan_revision(
@@ -1188,13 +1190,7 @@ impl TantivySource {
             .saturating_add(removed.len())
             .saturating_add(added.len());
         if rewritten_documents == 0 {
-            return Ok(Some(RevisionPlan {
-                rewritten_documents: 0,
-                retired_postings: 0,
-                deletes: Vec::new(),
-                writes: Vec::new(),
-                documents: self.documents.clone(),
-            }));
+            return Ok(Some(RevisionPlan::Rebound));
         }
         if rewritten_documents > budget.max_changed_documents {
             return Ok(None);
@@ -1278,19 +1274,19 @@ impl TantivySource {
                 fields: fields.to_vec(),
             });
         }
-        Ok(Some(RevisionPlan {
+        Ok(Some(RevisionPlan::Changed(RevisionChanges {
             rewritten_documents,
             retired_postings,
             deletes,
             writes,
             documents,
-        }))
+        })))
     }
 
     fn commit_revision(
         &mut self,
         next: &DocumentState,
-        mut plan: RevisionPlan,
+        mut plan: RevisionChanges,
     ) -> Result<MaintainOutcome, TantivySourceError> {
         let mut writer = self._index.writer(WRITER_MEMORY_BYTES)?;
         for ordinal in &plan.deletes {
@@ -3177,7 +3173,12 @@ impl LexicalSource for TantivySource {
     }
 }
 
-struct RevisionPlan {
+enum RevisionPlan {
+    Rebound,
+    Changed(RevisionChanges),
+}
+
+struct RevisionChanges {
     rewritten_documents: usize,
     retired_postings: u64,
     deletes: Vec<u64>,
