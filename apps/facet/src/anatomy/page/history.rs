@@ -46,14 +46,6 @@ fn exact_date(release: &crate::anatomy::history::Release) -> Option<&str> {
 /// order at equal spacing, without inventing dates for missing or conflicting
 /// facts.
 fn positions(history: &History, width: f32) -> Vec<f32> {
-    let days = |at: &str| -> Option<f64> {
-        let mut parts = at
-            .split(['-', 'T'])
-            .take(3)
-            .map(|part| part.parse::<f64>().ok());
-        let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
-        Some(y * 372.0 + m * 31.0 + d)
-    };
     let dated: Option<Vec<f64>> = history
         .releases
         .iter()
@@ -318,12 +310,43 @@ pub fn history(
 }
 
 fn days(at: &str) -> Option<f64> {
-    let mut parts = at
-        .split(['-', 'T'])
-        .take(3)
-        .map(|part| part.parse::<f64>().ok());
-    let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
-    Some(y * 372.0 + m * 31.0 + d)
+    let date = at.get(..10)?;
+    let tail = at.get(10..)?;
+    if date.as_bytes().get(4) != Some(&b'-')
+        || date.as_bytes().get(7) != Some(&b'-')
+        || (!tail.is_empty() && !tail.starts_with('T'))
+        || !date.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+        || !date.as_bytes()[5..7].iter().all(u8::is_ascii_digit)
+        || !date.as_bytes()[8..10].iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    let year = date.get(..4)?.parse::<i64>().ok()?;
+    let month = date.get(5..7)?.parse::<i64>().ok()?;
+    let day = date.get(8..10)?.parse::<i64>().ok()?;
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let last_day = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=last_day).contains(&day) {
+        return None;
+    }
+
+    // Gregorian civil date to a day ordinal. Release bars then reflect real
+    // elapsed days, including leap years and unequal month lengths.
+    let year = year - if month <= 2 { 1 } else { 0 };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_from_march = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_from_march + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some((era * 146_097 + day_of_era) as f64)
 }
 
 fn paint(
@@ -391,4 +414,21 @@ fn paint(
 /// The cap of a release that is the same: the quiet ink, a step up.
 fn palette_ink(quiet: Hsla) -> Hsla {
     quiet.opacity(0.9)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::days;
+
+    #[test]
+    fn history_dates_use_real_gregorian_day_spacing() {
+        let february_28 = days("2024-02-28").expect("valid date");
+        let february_29 = days("2024-02-29").expect("leap day");
+        let march_1 = days("2024-03-01T00:00:00Z").expect("ISO timestamp");
+        assert_eq!(february_29 - february_28, 1.0);
+        assert_eq!(march_1 - february_28, 2.0);
+        assert_eq!(days("2024-03-01"), Some(march_1));
+        assert!(days("2023-02-29").is_none());
+        assert!(days("2024-02-30").is_none());
+    }
 }
