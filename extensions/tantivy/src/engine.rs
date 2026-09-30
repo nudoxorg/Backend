@@ -1929,11 +1929,27 @@ fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    pub(crate) use super::{
-        BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
-        ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint,
-        write_projection_manifest,
-    };
+    pub(crate) const BINDING_FILE: &str = super::BINDING_FILE;
+    pub(crate) const DURABLE_ROOTS_DIRECTORY: &str = super::DURABLE_ROOTS_DIRECTORY;
+    pub(crate) const INTEGRITY_FILE: &str = super::INTEGRITY_FILE;
+    pub(crate) const MAX_PROJECTION_MANIFEST_BYTES: u64 = super::MAX_PROJECTION_MANIFEST_BYTES;
+    pub(crate) const ORDINAL_MAP_FILE: &str = super::ORDINAL_MAP_FILE;
+    pub(crate) const ORDINAL_MAP_MAGIC: &[u8] = super::ORDINAL_MAP_MAGIC;
+
+    pub(crate) fn hex_fingerprint(fingerprint: [u8; 32]) -> String {
+        super::hex_fingerprint(fingerprint)
+    }
+
+    pub(crate) fn projection_fingerprint(binding: crate::Binding) -> [u8; 32] {
+        super::projection_fingerprint(binding)
+    }
+
+    pub(crate) fn write_projection_manifest(
+        directory: &std::path::Path,
+        fingerprint: [u8; 32],
+    ) -> Result<(), super::TantivySourceError> {
+        super::write_projection_manifest(directory, fingerprint)
+    }
 }
 
 impl LexicalSource for TantivySource {
