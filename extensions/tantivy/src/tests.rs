@@ -1455,6 +1455,7 @@ fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
         [0x94; 32],
     );
     let mut source = TantivySource::build(&initial, Limits::default()).expect("initial source");
+    let _no_automatic_merges = crate::engine::test_support::no_automatic_merges_for_test();
     let (initial_edges, initial_work_units) =
         crate::engine::test_support::validate_posting_cover_with_work_budget(
             &source,
@@ -2572,11 +2573,12 @@ fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
         [0x91; 32],
     );
     let mut source = TantivySource::build(&initial, Limits::default()).expect("initial source");
+    let _no_automatic_merges = crate::engine::test_support::no_automatic_merges_for_test();
     let initial_segment = crate::engine::test_support::resident_segment_id(&source, stable_id)
         .expect("initial stable row address");
 
-    // The initial projection has one segment. Seven single-row commits bring it to the
-    // default LogMergePolicy threshold of eight small segments and force a real merge.
+    // Disable background merging so the fixture can explicitly select and merge all segments
+    // after these seven commits, independent of Tantivy's merge-policy timing or thresholds.
     for revision in 1_u8..=7 {
         let next = state_for(
             vec![
@@ -2601,6 +2603,24 @@ fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
         ));
     }
 
+    let selected = state_for(
+        vec![
+            (stable_id, vec![("name".into(), "stablecanary".into())]),
+            (changing_id, vec![("name".into(), "revision7".into())]),
+        ],
+        [0x98; 32],
+    );
+    let merged_input_segments =
+        crate::engine::test_support::force_merge_selected_segments_and_rebind(
+            &mut source,
+            &selected,
+            &[changing_id],
+        )
+        .expect("explicitly merge the selected Tantivy segments and rebind live rows");
+    assert!(
+        merged_input_segments >= 2,
+        "fixture must force a real merge over selected searchable segments"
+    );
     let merged_segment = crate::engine::test_support::resident_segment_id(&source, stable_id)
         .expect("rebound stable row address");
     assert_ne!(

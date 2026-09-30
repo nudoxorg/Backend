@@ -59,6 +59,11 @@ const MAX_POSTING_COVER_SCAN_WORK_UNITS: u64 = 100_000_000;
 const MAX_DURABLE_ROOT_SCAN_ENTRIES: usize = 65_536;
 static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_NO_MERGE_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// How a resident Tantivy projection absorbed a new document snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectionKind {
@@ -1410,6 +1415,10 @@ impl TantivySource {
         drop(old_searcher);
 
         let mut writer = self._index.writer(WRITER_MEMORY_BYTES)?;
+        #[cfg(test)]
+        if TEST_NO_MERGE_POLICY.with(std::cell::Cell::get) {
+            writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+        }
         for ordinal in &removed_ordinals {
             let _opstamp =
                 writer.delete_term(Term::from_field_u64(self.ordinal, u64::from(*ordinal)));
@@ -3515,6 +3524,117 @@ pub(crate) mod test_support {
     ) -> Result<std::collections::BTreeMap<String, (u64, [u8; 32])>, super::TantivySourceError>
     {
         super::projection_file_fingerprints(root, super::DurableCacheBudget::default())
+    }
+
+    pub(crate) struct NoAutomaticMergesForTest {
+        previous: bool,
+    }
+
+    pub(crate) fn no_automatic_merges_for_test() -> NoAutomaticMergesForTest {
+        let previous = super::TEST_NO_MERGE_POLICY.with(|enabled| enabled.replace(true));
+        NoAutomaticMergesForTest { previous }
+    }
+
+    impl Drop for NoAutomaticMergesForTest {
+        fn drop(&mut self) {
+            super::TEST_NO_MERGE_POLICY.with(|enabled| enabled.set(self.previous));
+        }
+    }
+
+    pub(crate) fn force_merge_selected_segments_and_rebind(
+        source: &mut super::TantivySource,
+        state: &super::DocumentState,
+        changed_documents: &[backend_semantic::EntityId],
+    ) -> Result<usize, super::TantivySourceError> {
+        source.ensure_live()?;
+        if source.binding != state.binding() {
+            return Err(super::Error::StaleRoot.into());
+        }
+
+        let searcher = source.reader.searcher();
+        let mut old_segment_ids = std::collections::HashSet::new();
+        old_segment_ids
+            .try_reserve(searcher.segment_readers().len())
+            .map_err(|_| super::Error::SizeLimit)?;
+        let mut segment_ids = Vec::new();
+        segment_ids
+            .try_reserve_exact(searcher.segment_readers().len())
+            .map_err(|_| super::Error::SizeLimit)?;
+        for segment in searcher.segment_readers() {
+            let segment_id = segment.segment_id();
+            if !old_segment_ids.insert(segment_id) {
+                return Err(super::TantivySource::corrupt(
+                    "merge fixture found duplicate searchable segment IDs",
+                )
+                .into());
+            }
+            segment_ids.push(segment_id);
+        }
+        drop(searcher);
+        if segment_ids.len() < 2 {
+            return Err(super::TantivySource::corrupt(
+                "merge fixture requires at least two explicit searchable segments",
+            )
+            .into());
+        }
+
+        let mut writer = source._index.writer(super::WRITER_MEMORY_BYTES)?;
+        writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+        let merged = writer.merge(&segment_ids).wait()?;
+        if merged.is_none() {
+            return Err(super::TantivySource::corrupt(
+                "explicit test merge produced no searchable segment",
+            )
+            .into());
+        }
+        writer.wait_merging_threads()?;
+        if let Err(error) = source.reader.reload() {
+            source.poisoned = true;
+            return Err(error.into());
+        }
+
+        let mut changed_ordinals = Vec::new();
+        changed_ordinals
+            .try_reserve_exact(changed_documents.len())
+            .map_err(|_| super::Error::SizeLimit)?;
+        for id in changed_documents {
+            let ordinal = source
+                .documents
+                .ordinal_for_entity(&source.identity_ordinals, *id)
+                .ok_or(super::Error::StaleRoot)?;
+            changed_ordinals.push(u32::try_from(ordinal).map_err(|_| super::Error::SizeLimit)?);
+        }
+        changed_ordinals.sort_unstable();
+
+        let fields = super::ProjectionFields {
+            raw_token: source.raw_token,
+            folded_token: source.folded_token,
+            field_raw_token: source.field_raw_token,
+            field_folded_token: source.field_folded_token,
+            ordinal: source.ordinal,
+            rank_material: source.rank_material,
+            rank_material_len: source.rank_material_len,
+        };
+        let mut documents = std::mem::take(&mut source.documents);
+        let rebound = super::bind_resident_document_addresses(
+            &source.reader,
+            &mut documents,
+            source.limits,
+            state,
+            fields,
+            &old_segment_ids,
+            &changed_ordinals,
+        );
+        source.documents = documents;
+        let binding_work = match rebound {
+            Ok(work) => work,
+            Err(error) => {
+                source.poisoned = true;
+                return Err(error);
+            }
+        };
+        source.last_binding_work = binding_work;
+        Ok(segment_ids.len())
     }
 }
 
