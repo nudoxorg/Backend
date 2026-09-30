@@ -341,6 +341,34 @@ impl WorkspaceRoot {
         file_from_handle(handle)
     }
 
+    /// Opens an existing regular private file for reading and writing, or
+    /// creates it exclusively when requested.
+    pub fn open_file_read_write_checked(&self, path: &[&str], create: bool) -> io::Result<File> {
+        let (parent, leaf) = self.parent_and_leaf(path)?;
+        let handle = match open_relative_with_share(
+            parent.handle.as_raw_handle().cast(),
+            leaf,
+            FILE_READ_ATTRIBUTES
+                | FILE_READ_DATA
+                | FILE_WRITE_DATA
+                | READ_CONTROL
+                | WRITE_DAC
+                | DELETE
+                | SYNCHRONIZE,
+            FILE_NON_DIRECTORY_FILE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        ) {
+            Ok(handle) => handle,
+            Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
+                return self.create_file_exclusive(path);
+            }
+            Err(error) => return Err(error),
+        };
+        ensure_regular_file_handle(handle.as_raw_handle())?;
+        ensure_private_handle(handle.as_raw_handle())?;
+        file_from_handle(handle)
+    }
+
     /// Atomically renames one checked regular file beneath this root. The
     /// destination's parent is opened component-by-component and the leaf is
     /// resolved by the kernel relative to that handle.
@@ -350,15 +378,63 @@ impl WorkspaceRoot {
         destination: &[&str],
         replace: bool,
     ) -> io::Result<()> {
+        self.rename_checked_entry(source, destination, replace, false)
+    }
+
+    /// Atomically renames one checked private directory beneath this root.
+    pub fn rename_directory_relative(
+        &self,
+        source: &[&str],
+        destination: &[&str],
+    ) -> io::Result<()> {
+        self.rename_checked_entry(source, destination, false, true)
+    }
+
+    /// Returns whether a checked direct child is a directory.
+    pub fn child_is_directory(&self, path: &[&str]) -> io::Result<bool> {
+        let (parent, leaf) = self.parent_and_leaf(path)?;
+        let handle = open_relative(
+            parent.handle.as_raw_handle().cast(),
+            leaf,
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
+            0,
+        )?;
+        let attributes = attributes(handle.as_raw_handle())?;
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(invalid_data("workspace child is a reparse point"));
+        }
+        let standard = standard_info(handle.as_raw_handle())?;
+        if standard.NumberOfLinks != 1 {
+            return Err(invalid_data("workspace child has multiple links"));
+        }
+        ensure_private_handle(handle.as_raw_handle())?;
+        Ok(standard.Directory)
+    }
+
+    fn rename_checked_entry(
+        &self,
+        source: &[&str],
+        destination: &[&str],
+        replace: bool,
+        directory: bool,
+    ) -> io::Result<()> {
         let (source_parent, source_leaf) = self.parent_and_leaf(source)?;
         let (destination_parent, destination_leaf) = self.parent_and_leaf(destination)?;
         let source_handle = open_relative(
             source_parent.handle.as_raw_handle().cast(),
             source_leaf,
             FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
-            FILE_NON_DIRECTORY_FILE,
+            if directory {
+                FILE_DIRECTORY_FILE
+            } else {
+                FILE_NON_DIRECTORY_FILE
+            },
         )?;
-        ensure_regular_file_handle(source_handle.as_raw_handle())?;
+        if directory {
+            ensure_directory_handle(source_handle.as_raw_handle())?;
+        } else {
+            ensure_regular_file_handle(source_handle.as_raw_handle())?;
+        }
         ensure_private_handle(source_handle.as_raw_handle())?;
         check_replace_destination(&destination_parent, destination_leaf, replace)?;
         let name = wide_component(destination_leaf)?;
@@ -426,8 +502,17 @@ impl WorkspaceRoot {
     /// Checks every direct child through an open, reparse-point handle and
     /// rejects links, foreign owners, special files, and non-private DACLs.
     pub fn read_dir_checked(&self, path: &[&str]) -> io::Result<Vec<DirEntry>> {
+        self.read_dir_checked_limited(path, usize::MAX)
+    }
+
+    /// Checks direct children through open handles with a cardinality ceiling.
+    pub fn read_dir_checked_limited(
+        &self,
+        path: &[&str],
+        maximum: usize,
+    ) -> io::Result<Vec<DirEntry>> {
         let directory = self.open_dir_checked(path)?;
-        let names = enumerate_names(directory.handle())?;
+        let names = enumerate_names(directory.handle(), maximum)?;
         let mut entries = Vec::with_capacity(names.len());
         for (name, enumerated_file_id) in names {
             validate_component(&name)?;
@@ -471,13 +556,28 @@ impl WorkspaceRoot {
     /// each child through pinned directory handles. Any unexpected entry or
     /// race fails closed; the directory itself is removed only when empty.
     pub fn remove_dir_tree(&self, path: &[&str]) -> io::Result<()> {
+        self.remove_dir_tree_limited(path, 1_000_000)
+    }
+
+    /// Removes a private directory tree under an explicit total-entry ceiling.
+    pub fn remove_dir_tree_limited(&self, path: &[&str], maximum_entries: usize) -> io::Result<()> {
         let (parent, leaf) = self.parent_and_leaf(path)?;
         let directory = match open_directory_child_with_delete(&parent, leaf) {
             Ok(directory) => directory,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
-        remove_tree_contents(&directory)?;
+        let mut visited = 0_usize;
+        remove_tree_contents(&directory, &mut visited, maximum_entries)?;
+        mark_delete(directory.handle.as_raw_handle())?;
+        flush_handle(parent.handle.as_raw_handle())
+    }
+
+    /// Removes one empty private child directory without following reparses.
+    pub fn remove_empty_dir(&self, path: &[&str]) -> io::Result<()> {
+        let (parent, leaf) = self.parent_and_leaf(path)?;
+        let directory = open_directory_child_with_delete(&parent, leaf)?;
+        let _ = enumerate_names(directory.handle.as_raw_handle().cast(), 0)?;
         mark_delete(directory.handle.as_raw_handle())?;
         flush_handle(parent.handle.as_raw_handle())
     }
@@ -1136,7 +1236,7 @@ fn identity_info(handle: *mut c_void) -> io::Result<FILE_ID_INFO> {
     }
 }
 
-fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
+fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<(String, i64)>> {
     let mut buffer = vec![0_u64; 8192];
     let mut restart = true;
     let mut names = Vec::new();
@@ -1211,6 +1311,12 @@ fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
             let name = String::from_utf16(wide)
                 .map_err(|_| invalid_data("workspace child name is not valid UTF-16"))?;
             if name != "." && name != ".." {
+                if names.len() >= maximum {
+                    return Err(io::Error::new(
+                        io::ErrorKind::FileTooLarge,
+                        "workspace directory entry limit exceeded",
+                    ));
+                }
                 names.push((name, entry.FileId));
             }
             if entry.NextEntryOffset == 0 {
@@ -1230,9 +1336,25 @@ fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
     Ok(names)
 }
 
-fn remove_tree_contents(directory: &Arc<DirectoryNode>) -> io::Result<()> {
-    let names = enumerate_names(directory.handle.as_raw_handle().cast())?;
+fn remove_tree_contents(
+    directory: &Arc<DirectoryNode>,
+    visited: &mut usize,
+    maximum_entries: usize,
+) -> io::Result<()> {
+    let names = enumerate_names(
+        directory.handle.as_raw_handle().cast(),
+        maximum_entries.saturating_sub(*visited),
+    )?;
     for (name, enumerated_file_id) in names {
+        *visited = (*visited)
+            .checked_add(1)
+            .filter(|count| *count <= maximum_entries)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "workspace directory tree entry limit exceeded",
+                )
+            })?;
         validate_component(&name)?;
         let handle = open_relative(
             directory.handle.as_raw_handle().cast(),
@@ -1270,7 +1392,7 @@ fn remove_tree_contents(directory: &Arc<DirectoryNode>) -> io::Result<()> {
                 handle,
                 _parent: Some(Arc::clone(directory)),
             });
-            remove_tree_contents(&child)?;
+            remove_tree_contents(&child, visited, maximum_entries)?;
             mark_delete(child.handle.as_raw_handle())?;
         } else {
             mark_delete(handle.as_raw_handle())?;

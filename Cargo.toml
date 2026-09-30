@@ -34,11 +34,13 @@ bolero = "0.13.4"
 bytes = { version = "1.10.1", default-features = false }
 derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
 fearless_simd = { version = "0.7.0", default-features = false }
+flate2 = "1.1.10"
+fs4 = { version = "0.13.1", default-features = false, features = ["sync"] }
 futures-core = { version = "0.3.31", default-features = false }
 futures-executor = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
-flate2 = "1.1.10"
 ignore = "0.4.33"
+libc = { version = "0.2.189", default-features = false }
 # Keep the entire CE family on one published GPUI type universe. Cargo.lock
 # records registry checksums for each of these exact versions.
 gpui = { package = "gpui-ce", version = "=0.2.2", default-features = false }

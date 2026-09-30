@@ -6,13 +6,18 @@
 //! cursor, metadata evidence, raw object, and terminal outcome.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::File,
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+};
+#[cfg(test)]
+use std::{
+    fs::{self, OpenOptions},
     time::Duration,
 };
 
+use backend_platform::directory::DirectoryCapability;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -137,48 +142,67 @@ struct StoredRecord {
 #[derive(Clone, Debug)]
 pub(super) struct AcquisitionReceiptStore {
     root: Arc<PathBuf>,
+    snapshots: DirectoryCapability,
+    deltas: DirectoryCapability,
+    records: DirectoryCapability,
+    heads: DirectoryCapability,
 }
 
 impl AcquisitionReceiptStore {
     pub(super) fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
         let requested_root = root.into();
-        validate_existing_directory_prefix(&requested_root)?;
-        match fs::symlink_metadata(&requested_root) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "acquisition receipt root is a symbolic link",
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir_all(&requested_root)?;
-            }
-            Err(error) => return Err(error),
-        }
-        let root = fs::canonicalize(requested_root)?;
-        validate_directory_chain(&root)?;
-        for directory in ["snapshots", "deltas", "records", "heads", "temps"] {
-            let path = root.join(directory);
-            match fs::create_dir(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-            validate_store_directory(&root, &path)?;
-        }
-        for directory in ["snapshots", "deltas", "records", "heads", "temps"] {
-            sync_directory(&root.join(directory))?;
-        }
-        sync_directory(&root)?;
-        if let Some(parent) = root
+        let root_name = requested_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid receipt root"))?;
+        let parent_path = requested_root
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            sync_directory(parent)?;
+            .unwrap_or(Path::new("."));
+        // Pin the parent before creating/opening the root. All receipt I/O
+        // below remains relative to these held handles, so an ancestor rename
+        // or replacement cannot redirect a later path-based operation.
+        let parent = DirectoryCapability::open(parent_path)?;
+        let (root_directory, created_root) = match parent.open_dir(root_name) {
+            Ok(directory) => {
+                directory.restrict_private()?;
+                directory.validate_private()?;
+                (directory, false)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                (parent.create_private_dir(root_name)?, true)
+            }
+            Err(error) => return Err(error),
+        };
+        let mut children = Vec::with_capacity(5);
+        for name in ["snapshots", "deltas", "records", "heads", "temps"] {
+            let child = match root_directory.open_dir(name) {
+                Ok(directory) => {
+                    directory.restrict_private()?;
+                    directory.validate_private()?;
+                    directory
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    root_directory.create_private_dir(name)?
+                }
+                Err(error) => return Err(error),
+            };
+            child.sync_all()?;
+            children.push(child);
         }
+        root_directory.sync_all()?;
+        if created_root {
+            parent.sync_all()?;
+        }
+        let [snapshots, deltas, records, heads, _temps]: [_; 5] = children
+            .try_into()
+            .map_err(|_| io::Error::other("receipt directory initialization failed"))?;
         Ok(Self {
-            root: Arc::new(root),
+            root: Arc::new(requested_root),
+            snapshots,
+            deltas,
+            records,
+            heads,
         })
     }
 
@@ -233,16 +257,16 @@ impl AcquisitionReceiptStore {
                 target: delta.target(),
                 changes: delta.changes(),
             };
-            let path = self.root.join("deltas").join(hex(delta.id().as_bytes()));
-            publish_json_immutable(&path, &body, &self.root.join("temps"))?;
+            let name = hex(delta.id().as_bytes());
+            publish_json_immutable_at(&self.deltas, &name, &body)?;
         }
         after(ReceiptPublishPhase::Delta)?;
 
         let body = self.body_for(&record);
         let id = Self::record_id(&body)?;
         let stored = StoredRecord { id, body };
-        let path = self.root.join("records").join(hex(id.as_bytes()));
-        publish_json_immutable(&path, &stored, &self.root.join("temps"))?;
+        let name = hex(id.as_bytes());
+        publish_json_immutable_at(&self.records, &name, &stored)?;
         after(ReceiptPublishPhase::Record)?;
 
         Ok(PreparedAcquisitionRecord {
@@ -265,9 +289,18 @@ impl AcquisitionReceiptStore {
     }
 
     fn publish_head(&self, prepared: &PreparedAcquisitionRecord) -> io::Result<()> {
-        let head = self.head_path(prepared.source_intent);
-        validate_store_directory(&self.root, head.parent().expect("head parent"))?;
-        atomic_replace(&head, &prepared.id.to_bytes(), &self.root.join("temps"))
+        atomic_replace_at(
+            &self.heads,
+            &format!("{}.head", hex(&prepared.source_intent)),
+            &prepared.id.to_bytes(),
+        )
+    }
+
+    #[cfg(test)]
+    fn head_path(&self, source_intent: [u8; ID_BYTES]) -> PathBuf {
+        self.root
+            .join("heads")
+            .join(format!("{}.head", hex(&source_intent)))
     }
 
     pub(super) fn recover(
@@ -336,9 +369,8 @@ impl AcquisitionReceiptStore {
         &self,
         source_intent: [u8; ID_BYTES],
     ) -> io::Result<Option<(AcquisitionRecordId, StoredRecordBody)>> {
-        let head = self.head_path(source_intent);
-        validate_store_directory(&self.root, head.parent().expect("head parent"))?;
-        let mut file = match backend_platform::durability::open_regular_file_nofollow(&head) {
+        let head = format!("{}.head", hex(&source_intent));
+        let mut file = match self.heads.open_file_read(&head) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
@@ -361,8 +393,8 @@ impl AcquisitionReceiptStore {
         let mut encoded_id = [0; ID_BYTES];
         encoded_id.copy_from_slice(&bytes[..ID_BYTES]);
         let id = AcquisitionRecordId::from_encoded(encoded_id);
-        let record_path = self.root.join("records").join(hex(id.as_bytes()));
-        let stored = read_bounded_json::<StoredRecord>(&self.root, &record_path)?;
+        let record_name = hex(id.as_bytes());
+        let stored = read_bounded_json_at::<StoredRecord>(&self.records, &record_name)?;
         if stored.id != id || Self::record_id(&stored.body)? != id {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -370,12 +402,6 @@ impl AcquisitionReceiptStore {
             ));
         }
         Ok(Some((id, stored.body)))
-    }
-
-    fn head_path(&self, source_intent: [u8; ID_BYTES]) -> PathBuf {
-        self.root
-            .join("heads")
-            .join(format!("{}.head", hex(&source_intent)))
     }
 
     fn body_for(&self, record: &AcquisitionRecoveryRecord) -> StoredRecordBody {
@@ -425,8 +451,9 @@ impl AcquisitionReceiptStore {
                 let Some(snapshot) = snapshot else {
                     return Ok(None);
                 };
-                let path = self.root.join("snapshots").join(hex(snapshot.as_bytes()));
-                let snapshot_value = read_bounded_json::<SourceSnapshot>(&self.root, &path)?;
+                let name = hex(snapshot.as_bytes());
+                let snapshot_value =
+                    read_bounded_json_at::<SourceSnapshot>(&self.snapshots, &name)?;
                 snapshot_value.validate().map_err(invalid_data)?;
                 if snapshot_value.id() != snapshot {
                     return Err(io::Error::new(
@@ -446,8 +473,8 @@ impl AcquisitionReceiptStore {
                 let target = target_snapshot.as_ref().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "delta has no target snapshot")
                 })?;
-                let path = self.root.join("deltas").join(hex(delta_id.as_bytes()));
-                let stored = read_bounded_json::<StoredDelta>(&self.root, &path)?;
+                let name = hex(delta_id.as_bytes());
+                let stored = read_bounded_json_at::<StoredDelta>(&self.deltas, &name)?;
                 if stored.version != FORMAT_VERSION
                     || stored.base != base.id()
                     || stored.target != target.id()
@@ -493,11 +520,8 @@ impl AcquisitionReceiptStore {
 
     fn publish_snapshot(&self, snapshot: &SourceSnapshot) -> io::Result<()> {
         snapshot.validate().map_err(invalid_data)?;
-        let path = self
-            .root
-            .join("snapshots")
-            .join(hex(snapshot.id().as_bytes()));
-        publish_json_immutable(&path, snapshot, &self.root.join("temps"))
+        let name = hex(snapshot.id().as_bytes());
+        publish_json_immutable_at(&self.snapshots, &name, snapshot)
     }
 
     fn validate_record(&self, record: &AcquisitionRecoveryRecord) -> io::Result<()> {
@@ -576,10 +600,136 @@ impl AcquisitionReceiptStore {
     }
 }
 
-fn read_bounded_json<T: for<'de> Deserialize<'de>>(root: &Path, path: &Path) -> io::Result<T> {
-    read_bounded_json_with_limit(root, path, MAX_PRODUCT_FILE_BYTES)
+fn read_bounded_json_at<T: for<'de> Deserialize<'de>>(
+    directory: &DirectoryCapability,
+    name: &str,
+) -> io::Result<T> {
+    read_bounded_json_at_with_limit(directory, name, MAX_PRODUCT_FILE_BYTES)
 }
 
+fn read_bounded_json_at_with_limit<T: for<'de> Deserialize<'de>>(
+    directory: &DirectoryCapability,
+    name: &str,
+    limit: u64,
+) -> io::Result<T> {
+    let mut file = directory.open_file_read(name)?;
+    let initial_length = file.metadata()?.len();
+    if initial_length > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "acquisition product record exceeds bound",
+        ));
+    }
+    let value = serde_json::from_reader(Read::take(&mut file, limit.saturating_add(1)))
+        .map_err(invalid_data)?;
+    if file.metadata()?.len() != initial_length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "acquisition product record changed while reading",
+        ));
+    }
+    Ok(value)
+}
+
+fn publish_json_immutable_at<T: Serialize>(
+    directory: &DirectoryCapability,
+    name: &str,
+    value: &T,
+) -> io::Result<()> {
+    let temporary = format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let file = directory.create_file_exclusive(&temporary)?;
+    let mut writer = BoundedJsonWriter {
+        file,
+        written: 0,
+        limit: MAX_PRODUCT_FILE_BYTES,
+    };
+    let serialized = (|| {
+        serde_json::to_writer(&mut writer, value).map_err(json_error)?;
+        writer.file.sync_all()?;
+        Ok(())
+    })();
+    drop(writer);
+    if let Err(error) = serialized {
+        let _ = directory.remove_file(&temporary);
+        return Err(error);
+    }
+    match directory.rename(&temporary, name, false) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let compare = compare_capability_files(directory, &temporary, name);
+            let _ = directory.remove_file(&temporary);
+            compare?;
+            directory.sync_all()
+        }
+        Err(error) => {
+            let _ = directory.remove_file(&temporary);
+            Err(error)
+        }
+    }
+}
+
+fn compare_capability_files(
+    directory: &DirectoryCapability,
+    first_name: &str,
+    second_name: &str,
+) -> io::Result<()> {
+    let mut first = directory.open_file_read(first_name)?;
+    let mut second = directory.open_file_read(second_name)?;
+    let first_length = first.metadata()?.len();
+    let second_length = second.metadata()?.len();
+    if first_length != second_length || first_length > MAX_PRODUCT_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "content-addressed acquisition record collision",
+        ));
+    }
+    let mut first_bytes = [0_u8; 64 * 1024];
+    let mut second_bytes = [0_u8; 64 * 1024];
+    loop {
+        let first_read = first.read(&mut first_bytes)?;
+        let second_read = second.read(&mut second_bytes)?;
+        if first_read != second_read || first_bytes[..first_read] != second_bytes[..second_read] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "content-addressed acquisition record collision",
+            ));
+        }
+        if first_read == 0 {
+            return Ok(());
+        }
+    }
+}
+
+fn atomic_replace_at(directory: &DirectoryCapability, name: &str, bytes: &[u8]) -> io::Result<()> {
+    if bytes.len() as u64 > MAX_PRODUCT_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "acquisition product record exceeds bound",
+        ));
+    }
+    let temporary = format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let result = (|| {
+        let mut file = directory.create_file_exclusive(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        directory.rename(&temporary, name, true)
+    })();
+    if result.is_err() {
+        let _ = directory.remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(test)]
 fn read_bounded_json_with_limit<T: for<'de> Deserialize<'de>>(
     root: &Path,
     path: &Path,
@@ -605,34 +755,7 @@ fn read_bounded_json_with_limit<T: for<'de> Deserialize<'de>>(
     Ok(value)
 }
 
-fn publish_json_immutable<T: Serialize>(
-    path: &Path,
-    value: &T,
-    temp_root: &Path,
-) -> io::Result<()> {
-    let temp = write_json_temp(temp_root, value)?.0;
-    publish_temp_immutable(path, &temp)
-}
-
-fn publish_temp_immutable(path: &Path, temp: &Path) -> io::Result<()> {
-    validate_directory_chain(temp.parent().expect("temporary parent"))?;
-    validate_directory_chain(path.parent().expect("product parent"))?;
-    match fs::hard_link(temp, path) {
-        Ok(()) => sync_directory(path.parent().expect("product parent"))?,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            compare_existing_files(temp, path)?;
-            sync_directory(path.parent().expect("product parent"))?;
-        }
-        Err(error) => return Err(error),
-    }
-    let _ = fs::remove_file(temp);
-    Ok(())
-}
-
-fn write_json_temp<T: Serialize>(directory: &Path, value: &T) -> io::Result<(PathBuf, u64)> {
-    write_json_temp_with_limit(directory, value, MAX_PRODUCT_FILE_BYTES)
-}
-
+#[cfg(test)]
 fn write_json_temp_with_limit<T: Serialize>(
     directory: &Path,
     value: &T,
@@ -727,34 +850,7 @@ fn json_error(error: serde_json::Error) -> io::Error {
     io::Error::new(kind, error.to_string())
 }
 
-fn compare_existing_files(first: &Path, second: &Path) -> io::Result<()> {
-    let mut first = backend_platform::durability::open_regular_file_nofollow(first)?;
-    let mut second = backend_platform::durability::open_regular_file_nofollow(second)?;
-    if first.metadata()?.len() != second.metadata()?.len()
-        || first.metadata()?.len() > MAX_PRODUCT_FILE_BYTES
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "content-addressed acquisition record collision",
-        ));
-    }
-    let mut first_bytes = [0_u8; 64 * 1024];
-    let mut second_bytes = [0_u8; 64 * 1024];
-    loop {
-        let first_read = first.read(&mut first_bytes)?;
-        let second_read = second.read(&mut second_bytes)?;
-        if first_read != second_read || first_bytes[..first_read] != second_bytes[..second_read] {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "content-addressed acquisition record collision",
-            ));
-        }
-        if first_read == 0 {
-            return Ok(());
-        }
-    }
-}
-
+#[cfg(test)]
 fn validate_store_directory(root: &Path, directory: &Path) -> io::Result<()> {
     let relative = directory.strip_prefix(root).map_err(|_| {
         io::Error::new(
@@ -777,6 +873,7 @@ fn validate_store_directory(root: &Path, directory: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_directory_chain(directory: &Path) -> io::Result<()> {
     // Reject links in every component that exists when checked. These checks
     // do not pin ancestors across a later path operation; fully race-free
@@ -795,6 +892,7 @@ fn validate_directory_chain(directory: &Path) -> io::Result<()> {
     backend_platform::durability::open_directory_readonly_nofollow(directory).map(|_| ())
 }
 
+#[cfg(test)]
 fn validate_existing_directory_prefix(directory: &Path) -> io::Result<()> {
     let absolute = if directory.is_absolute() {
         directory.to_path_buf()
@@ -870,19 +968,7 @@ fn publish_immutable_with(
     Ok(())
 }
 
-fn atomic_replace(path: &Path, bytes: &[u8], temp_root: &Path) -> io::Result<()> {
-    validate_directory_chain(temp_root)?;
-    validate_directory_chain(path.parent().expect("product parent"))?;
-    let temp = write_temp(temp_root, bytes)?;
-    match backend_platform::durable::replace_file(&temp, path) {
-        Ok(()) => sync_directory(path.parent().expect("product parent")),
-        Err(error) => {
-            let _ = fs::remove_file(temp);
-            Err(error)
-        }
-    }
-}
-
+#[cfg(test)]
 fn write_temp(directory: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     validate_directory_chain(directory)?;
     let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -919,10 +1005,6 @@ fn compare_existing(path: &Path, expected: &[u8]) -> io::Result<()> {
         expected_offset += amount;
     }
     Ok(())
-}
-
-fn sync_directory(path: &Path) -> io::Result<()> {
-    backend_platform::durability::open_directory_nofollow(path)?.sync_all()
 }
 
 fn invalid_data(error: impl std::fmt::Display) -> io::Error {
@@ -1380,7 +1462,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn receipt_reads_reject_symlinked_heads_and_parent_directories() {
+    fn receipt_reads_stay_on_opened_directories_when_path_is_replaced() {
         use std::os::unix::fs::symlink;
 
         let root = temporary("symlinked-head");
@@ -1407,7 +1489,8 @@ mod tests {
         assert!(
             store
                 .recover(&request, record.owner_cursor, record.facts_frontier, 7)
-                .is_err()
+                .is_err(),
+            "leaf symlinks are refused even beneath a pinned directory"
         );
 
         fs::remove_file(&head).expect("remove symlink head");
@@ -1426,7 +1509,8 @@ mod tests {
         assert!(
             store
                 .recover(&request, record.owner_cursor, record.facts_frontier, 7)
-                .is_err()
+                .is_err(),
+            "leaf symlinks are refused for record reads"
         );
 
         fs::remove_file(&record_path).expect("remove symlink record");
@@ -1448,10 +1532,12 @@ mod tests {
         )
         .expect("external managed-looking head");
         symlink(&external_heads, &heads).expect("link heads directory externally");
-        assert!(
+        assert_eq!(
             store
                 .recover(&request, record.owner_cursor, record.facts_frontier, 7)
-                .is_err()
+                .expect("the opened heads directory remains the authority"),
+            Some(record),
+            "replacement parent symlinks cannot redirect a pinned receipt store"
         );
         fs::remove_dir_all(root).expect("cleanup");
     }

@@ -4,8 +4,8 @@ use super::model::VersionSyntax;
 use super::model::{
     Advisory, AdvisoryCategory, AdvisoryKey, AdvisorySchema, AdvisorySource, AffectedRange, Alias,
     CanonicalAdvisoryId, Evidence, EvidenceKind, MalwareCoverage, NativeAdvisoryId,
-    PackageIdentity, Reference, Severity, SeverityLevel, VersionEvent, VersionEventKind,
-    VersionMatcher,
+    OsvEcosystem, OsvFeedScope, PackageIdentity, Reference, Severity, SeverityLevel,
+    VersionEvent, VersionEventKind, VersionMatcher,
 };
 use super::version::{PackageNormalizationError, normalize_package};
 
@@ -84,16 +84,48 @@ pub fn parse_osv(bytes: &[u8], observed_at: u64) -> Result<Advisory, ParseError>
     parse_osv_value(&root, observed_at)
 }
 
+/// Parses one OSV object while retaining only product-supported ecosystems in
+/// the selected source scope. Unknown ecosystems are outside that scope; a
+/// global archive can therefore be streamed without pretending the resolver
+/// supports every ecosystem OSV publishes.
+pub fn parse_osv_scoped(
+    bytes: &[u8],
+    observed_at: u64,
+    scope: OsvFeedScope,
+) -> Result<Advisory, ParseError> {
+    if bytes.len() > MAX_ADVISORY_DOCUMENT_BYTES {
+        return Err(ParseError::BoundExceeded("document-bytes"));
+    }
+    let root: Value = serde_json::from_slice(bytes).map_err(|_| ParseError::InvalidJson)?;
+    parse_osv_value_scoped(&root, observed_at, scope)
+}
+
 /// Parses one already-decoded OSV object without serializing it again.
 ///
 /// This is `pub(crate)` so batch ingestion can retain the single decoder allocation and avoid
 /// an otherwise surprisingly expensive `Value -> Vec<u8> -> Value` round trip for every object.
 pub(crate) fn parse_osv_value(root: &Value, observed_at: u64) -> Result<Advisory, ParseError> {
+    parse_osv_value_inner(root, observed_at, None)
+}
+
+fn parse_osv_value_scoped(
+    root: &Value,
+    observed_at: u64,
+    scope: OsvFeedScope,
+) -> Result<Advisory, ParseError> {
+    parse_osv_value_inner(root, observed_at, Some(scope))
+}
+
+fn parse_osv_value_inner(
+    root: &Value,
+    observed_at: u64,
+    scope: Option<OsvFeedScope>,
+) -> Result<Advisory, ParseError> {
     let object = root.as_object().ok_or(ParseError::InvalidJson)?;
     let id = NativeAdvisoryId::new(AdvisorySource::Osv, text(object, "id")?)
         .map_err(|_| ParseError::InvalidIdentifier)?;
     let aliases = aliases(object, AdvisorySource::Osv);
-    let mut affected = osv_affected(object)?;
+    let mut affected = osv_affected(object, scope)?;
     // OSV permits equivalent package rows in any order.  Stable ordering makes the durable
     // object digest independent of transport/source-file ordering and lets downstream indexes
     // compare one compact prefix before touching the ranges.
@@ -449,7 +481,10 @@ fn ghsa_references(object: &Map<String, Value>) -> Box<[Reference]> {
     references.into_boxed_slice()
 }
 
-fn osv_affected(object: &Map<String, Value>) -> Result<Vec<AffectedRange>, ParseError> {
+fn osv_affected(
+    object: &Map<String, Value>,
+    scope: Option<OsvFeedScope>,
+) -> Result<Vec<AffectedRange>, ParseError> {
     let rows = object
         .get("affected")
         .and_then(Value::as_array)
@@ -465,6 +500,15 @@ fn osv_affected(object: &Map<String, Value>) -> Result<Vec<AffectedRange>, Parse
             .get("ecosystem")
             .and_then(Value::as_str)
             .ok_or(ParseError::MissingField("affected.package.ecosystem"))?;
+        if let Some(scope) = scope {
+            let selected = OsvEcosystem::parse(ecosystem).is_some_and(|ecosystem| match scope {
+                OsvFeedScope::All => true,
+                OsvFeedScope::Ecosystem(selected) => selected == ecosystem,
+            });
+            if !selected {
+                continue;
+            }
+        }
         let name = package
             .get("name")
             .and_then(Value::as_str)
