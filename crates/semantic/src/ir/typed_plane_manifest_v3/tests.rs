@@ -1,4 +1,7 @@
-use std::{cell::Cell, collections::BTreeMap};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, BTreeSet},
+};
 
 use backend_version::{
     CANONICAL_CUT_POLICY_VERSION, CANONICAL_TREE_ABI, CheckedCanonicalRoot, IdContext,
@@ -220,6 +223,7 @@ fn catalog_wire_and_root_match_independent_asymmetric_oracle() {
 struct MemoryNodes {
     bytes: BTreeMap<[u8; 32], Vec<u8>>,
     loads: Cell<usize>,
+    loaded_ids: RefCell<BTreeSet<[u8; 32]>>,
 }
 
 impl TreeNodeLoader<SemanticTypedPlaneRowRelationV3> for MemoryNodes {
@@ -234,6 +238,7 @@ impl TreeNodeLoader<SemanticTypedPlaneRowRelationV3> for MemoryNodes {
             .bytes
             .get(claim.as_bytes())
             .ok_or_else(|| "descriptor page missing".to_owned())?;
+        self.loaded_ids.borrow_mut().insert(*claim.as_bytes());
         PersistedTreeRoot::admit(claim, bytes)
             .map(|root| root.evidence().clone())
             .map_err(|error| error.to_string())
@@ -284,6 +289,7 @@ fn memory_nodes(index: &super::SemanticTypedPlaneFamilyIndexV3) -> MemoryNodes {
     MemoryNodes {
         bytes: nodes,
         loads: Cell::new(0),
+        loaded_ids: RefCell::default(),
     }
 }
 
@@ -332,6 +338,10 @@ fn cold_seek_is_path_bounded_and_closure_counts_exact_pages_and_rows() {
             .page_after(Some(after), Some(end), 13)
             .expect("exclusive continuation resumes without overlap");
         assert!(
+            next.work().loaded_nodes < family.node_closure().count(),
+            "each cold continuation loads fewer than the complete closure"
+        );
+        assert!(
             next.entries()
                 .iter()
                 .all(|(key, _)| *key > after && *key < end)
@@ -346,8 +356,8 @@ fn cold_seek_is_path_bounded_and_closure_counts_exact_pages_and_rows() {
         paginated, expected,
         "range pages have exact, gap-free coverage"
     );
-    let touched_for_seek = loader.loads.get();
-    assert!(touched_for_seek < family.node_closure().count());
+    let unique_pages_for_seek = loader.loaded_ids.borrow().len();
+    assert!(unique_pages_for_seek < family.node_closure().count());
 
     let mut seen_nodes = 0_usize;
     let mut seen_rows = 0_usize;
@@ -477,7 +487,10 @@ fn cold_batched_edit_emits_a_checked_new_root_and_changed_pages() {
             after: Some(reference(0xf4, 27, 0x1b)),
         },
     ];
-    let shape = LazyTreeMetadataShape::new(33, 74, 64, 1_024, 64, 8);
+    // The 32-row target stays in one leaf: its body is below the byte-anchor
+    // threshold and the count minimum is 64. Three spill siblings satisfy the
+    // shape's `max_entries / minimum_fanout + 2` bound.
+    let shape = LazyTreeMetadataShape::new(33, 74, 64, 64, 3, 1);
     let budget = LazyTreeUpdateBudget::new(8, 2_000_000, shape);
     let update = cold
         .prepare_update_bounded(&changes, budget)
@@ -500,6 +513,7 @@ fn cold_batched_edit_emits_a_checked_new_root_and_changed_pages() {
     let target_loader = MemoryNodes {
         bytes: target_nodes,
         loads: Cell::new(0),
+        loaded_ids: RefCell::default(),
     };
     let target_root = target_descriptor.tree_root();
     let target_root_bytes = target_loader
@@ -593,7 +607,13 @@ fn v3_update_work_counters_cover_noop_clustered_and_scattered_batches() {
     let family = index.family(RowFamily::Core);
     let flat_c005_bytes = 426 + 108 * 2_048;
     let flat_bridge_bytes = 72 * 2_048;
-    let shape = LazyTreeMetadataShape::new(33, 74, 64, 1_024, 64, 8);
+    // A branch entry encodes to 89 bytes (framed 33-byte key, framed 32-byte
+    // commitment, and row count), so the 65,536-byte node cap permits at most
+    // 736 children. A leaf entry encodes to 123 bytes, capping leaves at 532.
+    // With at most 2,148 rows (the estimator counts replacements as possible
+    // additions), minimum fanout 64 needs two levels; `736 / 64 + 2` gives a
+    // 13-node spill envelope.
+    let shape = LazyTreeMetadataShape::new(33, 74, 64, 736, 13, 2);
     let budget = LazyTreeUpdateBudget::new(100, 32_000_000, shape);
 
     let mut scenarios: Vec<(&str, Vec<TreeChange<SemanticTypedPlaneRowRelationV3>>)> = Vec::new();
