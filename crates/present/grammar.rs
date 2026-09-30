@@ -1090,7 +1090,7 @@ pub const GRAMMARS: [CommandGrammar; 47] = [
         positional: &[ArgumentSpec::required(
             "ticket",
             ArgumentKind::IndexJobTicket,
-            "Exact JSON ticket returned by index_start; do not edit its id, epoch, or package.",
+            "Exact JSON ticket returned by index_start; quote it as one shell argument and do not edit its id, epoch, or package.",
         )],
         options: &[],
         when: "Use from a command-line client when you want to wait for the exact job's terminal receipt instead of polling.",
@@ -1102,7 +1102,7 @@ pub const GRAMMARS: [CommandGrammar; 47] = [
         positional: &[ArgumentSpec::required(
             "ticket",
             ArgumentKind::IndexJobTicket,
-            "Exact JSON ticket returned by index_start; do not edit its id, epoch, or package.",
+            "Exact JSON ticket returned by index_start; quote it as one shell argument and do not edit its id, epoch, or package.",
         )],
         options: &[],
         when: "Use to request cancellation of one exact job; a requested status is not terminal, so keep polling its ticket.",
@@ -1114,7 +1114,7 @@ pub const GRAMMARS: [CommandGrammar; 47] = [
         positional: &[ArgumentSpec::required(
             "ticket",
             ArgumentKind::IndexJobTicket,
-            "Exact JSON ticket returned by index_start; do not edit its id, epoch, or package.",
+            "Exact JSON ticket returned by index_start; quote it as one shell argument and do not edit its id, epoch, or package.",
         )],
         options: &[ArgumentSpec::optional_with_json_name(
             "after-sequence",

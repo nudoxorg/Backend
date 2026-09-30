@@ -569,6 +569,7 @@ fn owner_index_job_commands_accept_exact_cli_ticket_operands() {
 
     let help = invoke::help_for(grammar_for("index_progress").expect("progress grammar"));
     assert!(help.contains("<TICKET>"));
+    assert!(help.contains("quote it as one shell argument"));
     assert!(help.contains("--after-sequence SEQUENCE"));
 }
 
