@@ -1004,7 +1004,10 @@ fn pluralise(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BergBlock, BergFacts, lines, place};
+    use super::{BergBlock, BergFacts, doors, lines, place};
+    use crate::measure::Measure;
+    use crate::theme::Facet;
+    use gpui::px;
 
     fn block(
         name: &str,
@@ -1093,4 +1096,27 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn keyboard_doors_cover_the_painted_blocks_at_double_text_size() {
+        let facts = sample();
+        let measure = Measure::new(px(480.0), &Facet { text_scale: 2.0, ..Facet::default() });
+        let targets = doors(&facts, &measure);
+        let (placed, height) = place(&facts, 240.0);
+        let surface_height = (height + 26.0) * 2.0;
+        assert_eq!(targets.len(), placed.len());
+        for (index, (target, block)) in targets.iter().zip(&placed).enumerate() {
+            let (x, y, w, h) = (
+                f32::from(target.origin.x),
+                f32::from(target.origin.y),
+                f32::from(target.size.width),
+                f32::from(target.size.height),
+            );
+            let (center_x, center_y) = ((block.x + block.w * 0.5) * 2.0, (block.y + block.h * 0.5) * 2.0);
+            assert!(w >= 24.0 && h >= 24.0, "block {index} has a usable keyboard/pointer door: {target:?}");
+            assert!(center_x >= x && center_x <= x + w && center_y >= y && center_y <= y + h, "door {index} missed its painted block center: {target:?} / {block:?}");
+            assert!(x >= 0.0 && y >= 0.0 && x + w <= 480.01 && y + h <= surface_height + 0.01, "door {index} escaped the exact berg layout: {target:?}");
+        }
+    }
+
 }
