@@ -45,9 +45,13 @@ ledger use the same held-parent storage rules.
 Share that ID with the index owner. The owner must have locald running to read
 the current product root or semantic selection before signing a grant.
 
-This release uses remote-index protocol and capability version 2. Reissue
-existing grant files after updating the owner; an older capability cannot be
-upgraded or broadened in place.
+This release uses remote-index protocol version 3 with the existing signed
+capability schema version 2. A product grant binds the exact selected view
+root. The authenticated Iroh owner admits producer coverage for its replies;
+the client requires the returned revision to match the grant and each typed
+query reply to match its requested basis. The owner checks both the view root
+and producer source before and after a query. Reissue a grant if its selected
+root changes; an older protocol client cannot connect to this owner.
 
 ```sh
 backend --workspace "$CLIENT_DATA" cluster client init --key-file "$CLIENT_DATA/remote-index-client.v1"

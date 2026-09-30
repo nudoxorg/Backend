@@ -43,7 +43,6 @@ capability_client=$client_data/product-read.cap
 semantic_capability_owner=$owner_data/semantic-read.cap
 semantic_capability_client=$client_data/semantic-read.cap
 semantic_store=$client_data/semantic-store
-semantic_coordinate=pkg:cargo/remote-index-fixture@0.1.0
 marker=remote_index_journey_marker
 locald_pid=
 
@@ -114,22 +113,149 @@ start_locald() {
 }
 
 start_locald
-"$backend_cli" --workspace "$owner_data" --project "$fixture" \
-  --endpoint "$endpoint" index "$fixture" >/dev/null
-
+if ! "$backend_cli" --workspace "$owner_data" --project "$fixture" \
+  --endpoint "$endpoint" --format json index_start "$fixture" \
+  >"$root/index-start.json" 2>"$root/index-start.err"; then
+  printf '%s\n' "typed index_start failed before a readiness ticket was issued" >&2
+  cat "$root/index-start.err" >&2
+  tail -n 80 "$root/locald.log" >&2
+  exit 1
+fi
+index_ticket=$(python3 - "$root/index-start.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    answer = json.load(f)
+job = answer.get("index_job")
+if not isinstance(job, dict) or job.get("kind") != "started":
+    raise SystemExit("index_start omitted its typed owner job projection")
+start = job.get("value")
+if not isinstance(start, dict) or start.get("state") not in ("started", "terminal"):
+    raise SystemExit("index_start returned an unrecognized typed state")
+data = start.get("data")
+if not isinstance(data, dict) or not isinstance(data.get("ticket"), dict):
+    raise SystemExit("index_start omitted the exact owner-issued ticket")
+print(json.dumps(data["ticket"], separators=(",", ":"), sort_keys=True))
+PY
+)
 indexed=false
-for _ in $(seq 1 180); do
-  if local_result=$("$backend_cli" --workspace "$owner_data" --project "$fixture" \
-    --endpoint "$endpoint" --format markdown search "$marker" --limit 20 2>/dev/null); then
-    if [[ "$local_result" == *"$marker"* ]]; then
+after_sequence=0
+last_index_attempt=0
+for attempt in $(seq 1 180); do
+  last_index_attempt=$attempt
+  if ! "$backend_cli" --workspace "$owner_data" --project "$fixture" \
+    --endpoint "$endpoint" --format json index_progress "$index_ticket" \
+    --after-sequence "$after_sequence" >"$root/index-progress.json" \
+    2>"$root/index-progress.err"; then
+    printf 'typed index_progress failed on attempt %s; refusing to retry a protocol or authority error\n' \
+      "$attempt" >&2
+    cat "$root/index-progress.err" >&2
+    exit 1
+  fi
+  python3 - "$root/index-progress.json" "$index_ticket" \
+    >"$root/index-progress-state" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    answer = json.load(f)
+expected_ticket = json.loads(sys.argv[2])
+job = answer.get("index_job")
+if not isinstance(job, dict) or job.get("kind") != "progress":
+    print("invalid")
+    raise SystemExit(0)
+observation = job.get("value")
+if not isinstance(observation, dict):
+    print("invalid")
+elif observation.get("state") == "pending":
+    page = observation.get("detail")
+    if not isinstance(page, dict) or page.get("ticket") != expected_ticket:
+        print("invalid")
+    else:
+        print("pending", page.get("next_sequence", 0), sep="\t")
+elif observation.get("state") == "terminal":
+    terminal = observation.get("detail")
+    if not isinstance(terminal, dict) or terminal.get("ticket") != expected_ticket:
+        print("invalid")
+    elif terminal.get("outcome", {}).get("state") == "published":
+        print("published")
+    else:
+        print("terminal-failed")
+elif observation.get("state") == "unknown":
+    print("unknown")
+else:
+    print("invalid")
+PY
+  IFS=$'\t' read -r progress_state next_sequence <"$root/index-progress-state"
+  case "$progress_state" in
+    pending)
+      after_sequence=$next_sequence
+      sleep 1
+      ;;
+    published)
       indexed=true
       break
-    fi
-  fi
-  sleep 1
+      ;;
+    *)
+      printf 'owner index job did not publish (state %s, attempt %s); typed receipt follows\n' \
+        "$progress_state" "$attempt" >&2
+      cat "$root/index-progress.json" >&2
+      exit 1
+      ;;
+  esac
 done
 if [[ "$indexed" != true ]]; then
-  printf '%s\n' "the real locald index did not publish the fixture marker" >&2
+  printf 'owner index job remained pending after %s typed progress attempts; last cursor %s\n' \
+    "$last_index_attempt" "$after_sequence" >&2
+  cat "$root/index-progress.json" >&2
+  exit 1
+fi
+if ! local_result=$("$backend_cli" --workspace "$owner_data" --project "$fixture" \
+  --endpoint "$endpoint" --format markdown search "$marker" --limit 20 \
+  2>"$root/local-search.err"); then
+  printf '%s\n' "the published job did not make the fixture marker queryable locally" >&2
+  cat "$root/local-search.err" >&2
+  exit 1
+fi
+if [[ "$local_result" != *"$marker"* ]]; then
+  printf '%s\n' "the published job omitted the fixture marker from the local product query" >&2
+  printf '%s\n' "$local_result" >&2
+  exit 1
+fi
+if ! "$backend_cli" --workspace "$owner_data" --project "$fixture" \
+  --endpoint "$endpoint" --format json semantic-versions "$fixture" \
+  >"$root/semantic-versions.json" 2>"$root/semantic-versions.err"; then
+  printf '%s\n' "typed semantic-versions could not read the selected fixture publication" >&2
+  cat "$root/semantic-versions.err" >&2
+  exit 1
+fi
+semantic_coordinate=$(python3 - "$root/semantic-versions.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    answer = json.load(f)
+records = answer.get("records")
+if not isinstance(records, list):
+    raise SystemExit("semantic-versions omitted its bounded record page")
+selected = [record for record in records if "selected" in record.get("tags", [])]
+if len(selected) != 1:
+    raise SystemExit(f"fixture expected one selected Rust semantic coordinate; got {len(selected)}")
+coordinate = selected[0].get("title")
+if not isinstance(coordinate, str) or not coordinate.startswith("pkg:cargo/"):
+    raise SystemExit("selected fixture coordinate is not the exact Cargo target")
+if "complete" not in selected[0].get("tags", []):
+    raise SystemExit("selected fixture semantic generation is not complete")
+print(coordinate)
+PY
+)
+printf 'using exact selected semantic coordinate %s\n' "$semantic_coordinate"
+if ! "$backend_cli" --workspace "$owner_data" --project "$fixture" \
+  --endpoint "$endpoint" --format markdown search "$marker" --limit 20 \
+  >"$root/local-search-after-semantic-versions.out" \
+  2>"$root/local-search-after-semantic-versions.err"; then
+  printf '%s\n' "local product revision/query lost proof after semantic-versions" >&2
+  cat "$root/local-search-after-semantic-versions.err" >&2
+  exit 1
+fi
+if ! grep -q "$marker" "$root/local-search-after-semantic-versions.out"; then
+  printf '%s\n' "fixture marker disappeared after semantic-versions" >&2
+  cat "$root/local-search-after-semantic-versions.out" >&2
   exit 1
 fi
 
@@ -149,10 +275,16 @@ fi
   --capability-file "$capability_owner" --operations search >/dev/null
 cp "$capability_owner" "$capability_client"
 chmod 600 "$capability_client"
-"$backend_cli" --workspace "$owner_data" --project "$fixture" \
+if ! "$backend_cli" --workspace "$owner_data" --project "$fixture" \
   --endpoint "$endpoint" cluster owner grant semantic create --client-peer "$client_peer" \
   --capability-file "$semantic_capability_owner" --package "$fixture" \
-  --coordinate "$semantic_coordinate" --profile rust-2024 >/dev/null
+  --coordinate "$semantic_coordinate" --profile rust-2024 \
+  >"$root/semantic-grant.out" 2>"$root/semantic-grant.err"; then
+  printf '%s\n' "semantic catalog grant failed on attempt 1 after the exact index job published; not retrying an untyped failure" >&2
+  cat "$root/semantic-grant.err" >&2
+  tail -n 80 "$root/locald.log" >&2
+  exit 1
+fi
 cp "$semantic_capability_owner" "$semantic_capability_client"
 chmod 600 "$semantic_capability_client"
 connect_report=$("$backend_cli" --workspace "$client_data" \

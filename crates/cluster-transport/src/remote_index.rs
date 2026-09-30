@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// Encrypted Iroh ALPN for a read-only remote index client session.
-pub const REMOTE_INDEX_ALPN: &[u8] = b"/backend/remote-index/2";
+pub const REMOTE_INDEX_ALPN: &[u8] = b"/backend/remote-index/3";
 /// Largest serialized remote-index capability or session hello.
 pub const MAX_REMOTE_INDEX_AUTH_BYTES: usize = 16 * 1024;
 /// Largest framed product or semantic message on one connection.
@@ -275,6 +275,11 @@ pub enum RemoteIndexOutcome {
     Payload(Box<[u8]>),
     /// The product grant's view root is no longer the owner's selected root.
     StaleProductRoot {
+        expected: [u8; 32],
+        observed: [u8; 32],
+    },
+    /// Producer coverage changed while the owner executed one query.
+    StaleProductSource {
         expected: [u8; 32],
         observed: [u8; 32],
     },
@@ -815,6 +820,22 @@ mod tests {
         assert_eq!(prepared.encoded.as_ref(), expected.as_slice());
         assert_eq!(prepared.wire_bytes(), expected.len() + 4);
         assert!(prepared.wire_bytes() > 64);
+    }
+
+    #[test]
+    fn stale_product_source_is_a_bounded_typed_response() {
+        let response = RemoteIndexResponse {
+            request_id: 18,
+            outcome: RemoteIndexOutcome::StaleProductSource {
+                expected: [5; 32],
+                observed: [6; 32],
+            },
+        };
+        let canonical = postcard::to_allocvec(&RemoteIndexMessage::Response(response.clone()))
+            .expect("canonical stale-source frame");
+        let prepared = prepare_remote_index_response(response).expect("prepared response");
+        assert_eq!(prepared.encoded.as_ref(), canonical.as_slice());
+        assert_eq!(prepared.wire_bytes(), canonical.len() + 4);
     }
 
     #[test]

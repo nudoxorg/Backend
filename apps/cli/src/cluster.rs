@@ -454,6 +454,12 @@ fn owner_grant_product(rest: &[String], options: &Options) -> Result<String, Fau
                 "product root changed while capturing the search snapshot; retry the grant",
             ));
         }
+        if confirmed_revision.source() != revision.source() {
+            return Err(usage(
+                "cluster owner grant product",
+                "product coverage source changed while capturing the search snapshot; retry the grant",
+            ));
+        }
         if confirmed_page.snapshot != page.snapshot {
             return Err(usage(
                 "cluster owner grant product",

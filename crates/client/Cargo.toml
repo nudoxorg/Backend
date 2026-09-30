@@ -14,6 +14,7 @@ backend-engine = { path = "../engine" }
 backend-library = { path = "../library" }
 backend-semantic = { path = "../semantic" }
 backend-replication = { path = "../replication" }
+blake3.workspace = true
 hashlink = "=0.12.2"
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "time"] }

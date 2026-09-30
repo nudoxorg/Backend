@@ -408,6 +408,8 @@ pub struct SessionContinuationState {
 pub struct Revision {
     /// Current immutable product view root.
     pub root: ViewStateRoot,
+    /// Exact owner source object whose producer coverage admitted this root.
+    source: backend_library::SemanticObject,
     certificate: WireCertificate,
     cursor: backend_library::Cursor,
 }
@@ -418,6 +420,12 @@ impl Revision {
     #[must_use]
     pub const fn cursor(&self) -> backend_library::Cursor {
         self.cursor
+    }
+
+    /// Returns the exact producer-coverage source object paired with this root.
+    #[must_use]
+    pub const fn source(&self) -> backend_library::SemanticObject {
+        self.source
     }
 }
 
@@ -567,6 +575,7 @@ impl Session {
         });
         Ok(Revision {
             root: receipt.root(),
+            source: receipt.source(),
             certificate,
             cursor: receipt.cursor(),
         })

@@ -6,8 +6,40 @@ use backend_engine::cluster_transport::{
     RemoteIndexOutcome, RemoteIndexRequest, RemoteIndexSession, RemoteIndexSessionHello, SecretKey,
     TransportError, bind_direct, connect_remote_index, remote_index_now,
 };
-use backend_library::{CommandDto, ReplyDto, decode_reply_body, encode_command_body};
+use backend_engine::{
+    ProducerObservationClaims, ProducerObservationVerifier, ScopeRoot, UntrustedProducerObservation,
+};
+use backend_library::{CommandDto, CommandReply, ReplyDto, encode_command_body};
 use std::net::SocketAddr;
+
+/// The owner-signed grant authenticates the Iroh peer; this verifier admits a
+/// bounded producer observation from that peer. `Revision` and product reply
+/// admission bind its output to the exact grant root and typed command basis.
+struct RemoteProductCoverageVerifier {}
+
+impl ProducerObservationVerifier for RemoteProductCoverageVerifier {
+    type Error = &'static str;
+
+    fn verify(
+        &self,
+        observation: &UntrustedProducerObservation,
+    ) -> Result<ProducerObservationClaims, Self::Error> {
+        if observation.scope_root().as_bytes() == &[0; 32]
+            || observation.producer_identity() == [0; 32]
+            || observation.context() == [0; 32]
+            || observation.evidence().is_empty()
+            || observation.evidence().len() > backend_library::MAX_COVERAGE_EVIDENCE
+        {
+            return Err("authenticated remote producer observation is invalid");
+        }
+        Ok(ProducerObservationClaims::new(
+            observation.producer_identity(),
+            observation.scope_root(),
+            observation.context(),
+            *blake3::hash(observation.evidence()).as_bytes(),
+        ))
+    }
+}
 
 /// Direct, no-relay product command transport with an owner-signed query grant.
 pub struct RemoteIndexCommandTransport {
@@ -116,11 +148,25 @@ impl CommandTransport for RemoteIndexCommandTransport {
                         backend_replication::ReplicationError::MessageTooLarge,
                     ));
                 }
-                let reply = decode_reply_body(&body).map_err(ClientError::Protocol)?;
+                let scope = self.capability.claims.product.as_ref().ok_or_else(|| {
+                    ClientError::Protocol(
+                        "remote product transport lost its signed product scope".to_owned(),
+                    )
+                })?;
+                let verifier = RemoteProductCoverageVerifier {};
+                let reply = backend_library::decode_reply_body_with_verifier(&body, &verifier)
+                    .map_err(ClientError::Protocol)?;
+                if let CommandReply::Revision(revision) = &reply.reply {
+                    let observed = revision.root().to_bytes();
+                    validate_revision_root(scope.view_root, observed)?;
+                }
                 admit_reply(&request, reply)
             }
             RemoteIndexOutcome::StaleProductRoot { expected, observed } => {
                 Err(ClientError::StaleRemoteRoot { expected, observed })
+            }
+            RemoteIndexOutcome::StaleProductSource { .. } => {
+                Err(ClientError::StaleRemoteCapability)
             }
             RemoteIndexOutcome::StaleProductSnapshot { .. } => {
                 Err(ClientError::StaleRemoteCapability)
@@ -141,6 +187,92 @@ impl CommandTransport for RemoteIndexCommandTransport {
     fn reconnect(&mut self) -> Result<(), ClientError> {
         self.session = None;
         self.open_session()
+    }
+}
+
+fn validate_revision_root(expected: [u8; 32], observed: [u8; 32]) -> Result<(), ClientError> {
+    if observed == expected {
+        Ok(())
+    } else {
+        Err(ClientError::StaleRemoteRoot { expected, observed })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn observation(scope: ScopeRoot) -> UntrustedProducerObservation {
+        UntrustedProducerObservation::new([1; 32], scope, [2; 32], b"owner-proof".to_vec())
+    }
+
+    #[test]
+    fn remote_product_verifier_accepts_bounded_observations_from_authenticated_owner() {
+        let verifier = RemoteProductCoverageVerifier {};
+        let scope_bytes = [3; 32];
+        verifier
+            .verify(&observation(ScopeRoot::from_bytes(scope_bytes)))
+            .expect("owner response at the signed scope");
+        verifier
+            .verify(&observation(ScopeRoot::from_bytes([4; 32])))
+            .expect("the authenticated owner may certify its producer source");
+    }
+
+    #[test]
+    fn remote_product_verifier_rejects_unbounded_or_ambiguous_observations() {
+        let verifier = RemoteProductCoverageVerifier {};
+        assert!(
+            verifier
+                .verify(&UntrustedProducerObservation::new(
+                    [1; 32],
+                    ScopeRoot::from_bytes([3; 32]),
+                    [2; 32],
+                    Vec::new(),
+                ))
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify(&UntrustedProducerObservation::new(
+                    [1; 32],
+                    ScopeRoot::from_bytes([0; 32]),
+                    [2; 32],
+                    b"owner-proof".to_vec(),
+                ))
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify(&UntrustedProducerObservation::new(
+                    [0; 32],
+                    ScopeRoot::from_bytes([3; 32]),
+                    [2; 32],
+                    b"owner-proof".to_vec(),
+                ))
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify(&UntrustedProducerObservation::new(
+                    [1; 32],
+                    ScopeRoot::from_bytes([3; 32]),
+                    [2; 32],
+                    vec![0; backend_library::MAX_COVERAGE_EVIDENCE + 1],
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn remote_revision_must_match_the_signed_view_root() {
+        assert!(validate_revision_root([7; 32], [7; 32]).is_ok());
+        assert_eq!(
+            validate_revision_root([7; 32], [8; 32]),
+            Err(ClientError::StaleRemoteRoot {
+                expected: [7; 32],
+                observed: [8; 32],
+            })
+        );
     }
 }
 

@@ -449,6 +449,9 @@ impl RemoteSemanticRangeConnection {
             RemoteIndexOutcome::StaleProductRoot { expected, observed } => {
                 Err(ClientError::StaleRemoteRoot { expected, observed })
             }
+            RemoteIndexOutcome::StaleProductSource { .. } => {
+                Err(ClientError::StaleRemoteCapability)
+            }
             RemoteIndexOutcome::StaleProductSnapshot { .. } => {
                 Err(ClientError::StaleRemoteCapability)
             }

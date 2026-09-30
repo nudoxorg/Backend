@@ -898,6 +898,7 @@ fn serve_product_request(
             },
         };
     }
+    let selected_source = revision.source().to_bytes();
     let index_search = matches!(
         &command.command,
         Command::Surface(SurfaceCommand::IndexSearch { .. })
@@ -933,17 +934,28 @@ fn serve_product_request(
     };
     let reply = match transport.request(command) {
         Ok(reply) => reply,
-        Err(backend_client::ClientError::StaleCursor) => {
-            let current_root = match product_revision(endpoint) {
-                Ok(revision) => revision.root().to_bytes(),
+        Err(backend_client::ClientError::StaleCursor)
+        | Err(backend_client::ClientError::BasisMismatch { .. }) => {
+            let current = match product_revision(endpoint) {
+                Ok(revision) => (revision.root().to_bytes(), revision.source().to_bytes()),
                 Err(()) => return owner_unavailable(request.request_id),
             };
+            let current_root = current.0;
             if current_root != scope.view_root {
                 return RemoteIndexResponse {
                     request_id: request.request_id,
                     outcome: RemoteIndexOutcome::StaleProductRoot {
                         expected: scope.view_root,
                         observed: current_root,
+                    },
+                };
+            }
+            if current.1 != selected_source {
+                return RemoteIndexResponse {
+                    request_id: request.request_id,
+                    outcome: RemoteIndexOutcome::StaleProductSource {
+                        expected: selected_source,
+                        observed: current.1,
                     },
                 };
             }
@@ -962,9 +974,9 @@ fn serve_product_request(
                     };
                 }
             }
-            // A cursor can also be malformed or bound to another query while
-            // both signed snapshots remain current. Do not mislabel that as a
-            // grant change or return owner diagnostics over the wire.
+            // A cursor or basis can be malformed even while both signed
+            // snapshots remain current. Do not mislabel that as a grant
+            // change or return owner diagnostics over the wire.
             return invalid(request.request_id);
         }
         Err(_) => return owner_unavailable(request.request_id),
@@ -984,6 +996,16 @@ fn serve_product_request(
             outcome: RemoteIndexOutcome::StaleProductRoot {
                 expected: scope.view_root,
                 observed: after_root,
+            },
+        };
+    }
+    let after_source = after.source().to_bytes();
+    if after_source != selected_source {
+        return RemoteIndexResponse {
+            request_id: request.request_id,
+            outcome: RemoteIndexOutcome::StaleProductSource {
+                expected: selected_source,
+                observed: after_source,
             },
         };
     }

@@ -821,6 +821,7 @@ dependencies = [
  "backend-library",
  "backend-replication",
  "backend-semantic",
+ "blake3",
  "hashlink",
  "serde_json",
  "tokio",
