@@ -443,11 +443,37 @@ fn first_examples(hits: &[Evidence], k: usize) -> Vec<Evidence> {
 /// The `.rs` files of a crate, in path order, skipping hidden and vendored
 /// directories and nested crates.
 fn rust_files(root: &Path) -> Vec<(PathBuf, Vec<String>)> {
-    fn walk(dir: &Path, root: &Path, out: &mut Vec<(PathBuf, Vec<String>)>) {
-        let Ok(read) = fs::read_dir(dir) else { return };
-        let mut entries: Vec<_> = read.filter_map(Result::ok).collect();
+    rust_files_cancellable(root, &mut || false).unwrap_or_default()
+}
+
+fn rust_files_cancellable(
+    root: &Path,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Option<Vec<(PathBuf, Vec<String>)>> {
+    fn walk(
+        dir: &Path,
+        root: &Path,
+        cancelled: &mut dyn FnMut() -> bool,
+        out: &mut Vec<(PathBuf, Vec<String>)>,
+    ) -> bool {
+        if cancelled() {
+            return false;
+        }
+        let Ok(read) = fs::read_dir(dir) else {
+            return true;
+        };
+        let mut entries = Vec::new();
+        for entry in read.filter_map(Result::ok) {
+            if cancelled() {
+                return false;
+            }
+            entries.push(entry);
+        }
         entries.sort_by_key(fs::DirEntry::file_name);
         for entry in entries {
+            if cancelled() {
+                return false;
+            }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             let Ok(kind) = entry.file_type() else {
@@ -461,7 +487,9 @@ fn rust_files(root: &Path) -> Vec<(PathBuf, Vec<String>)> {
                 {
                     continue;
                 }
-                walk(&path, root, out);
+                if !walk(&path, root, cancelled, out) {
+                    return false;
+                }
             } else if kind.is_file() && name.ends_with(".rs") {
                 let rel: Vec<String> = path
                     .strip_prefix(root)
@@ -475,16 +503,27 @@ fn rust_files(root: &Path) -> Vec<(PathBuf, Vec<String>)> {
                 out.push((path, rel));
             }
         }
+        true
     }
     let mut out = Vec::new();
-    walk(root, root, &mut out);
-    out
+    walk(root, root, cancelled, &mut out).then_some(out)
 }
 
 /// Reads the crate at `root`; `lib` is the crate's library file, relative
 /// to `root` (`src/lib.rs`).
 #[must_use]
 pub fn scan(root: &Path, lib: &str) -> Scan {
+    scan_cancellable(root, lib, || false).unwrap_or_default()
+}
+
+/// Reads the crate like [`scan`], stopping between filesystem entries when
+/// its owner no longer needs the result.
+#[must_use]
+pub fn scan_cancellable(
+    root: &Path,
+    lib: &str,
+    mut cancelled: impl FnMut() -> bool,
+) -> Option<Scan> {
     let lib_parts: Vec<&str> = Path::new(lib)
         .parent()
         .map(|p| {
@@ -497,7 +536,10 @@ pub fn scan(root: &Path, lib: &str) -> Scan {
     let (mut net, mut fs_hits, mut process, mut env, mut ffi) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut counts = [0usize; 5];
-    for (path, rel) in rust_files(root) {
+    for (path, rel) in rust_files_cancellable(root, &mut cancelled)? {
+        if cancelled() {
+            return None;
+        }
         let top = if rel.len() > 1 {
             rel[0].to_lowercase()
         } else {
@@ -526,8 +568,14 @@ pub fn scan(root: &Path, lib: &str) -> Scan {
             continue;
         }
         let Ok(bytes) = fs::read(&path) else { continue };
+        if cancelled() {
+            return None;
+        }
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let code = mask(&text, Literals::Keep);
+        if cancelled() {
+            return None;
+        }
         if in_src {
             out.sloc += text
                 .lines()
@@ -631,7 +679,7 @@ pub fn scan(root: &Path, lib: &str) -> Scan {
         count: counts[4],
         examples: first_examples(&ffi, EXAMPLES),
     };
-    out
+    (!cancelled()).then_some(out)
 }
 
 /// Lines of code in a crate's `src`: the same count as [`scan`]'s `sloc`,

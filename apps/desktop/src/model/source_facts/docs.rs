@@ -686,11 +686,31 @@ fn mod_decls(code: &str) -> Vec<(String, bool, usize)> {
     out
 }
 
-fn walk(dir: &Path, root: &Path, skip_nested: bool, out: &mut Vec<(PathBuf, Vec<String>)>) {
-    let Ok(read) = fs::read_dir(dir) else { return };
-    let mut entries: Vec<_> = read.filter_map(Result::ok).collect();
+fn walk(
+    dir: &Path,
+    root: &Path,
+    skip_nested: bool,
+    cancelled: &mut dyn FnMut() -> bool,
+    out: &mut Vec<(PathBuf, Vec<String>)>,
+) -> bool {
+    if cancelled() {
+        return false;
+    }
+    let Ok(read) = fs::read_dir(dir) else {
+        return true;
+    };
+    let mut entries = Vec::new();
+    for entry in read.filter_map(Result::ok) {
+        if cancelled() {
+            return false;
+        }
+        entries.push(entry);
+    }
     entries.sort_by_key(fs::DirEntry::file_name);
     for entry in entries {
+        if cancelled() {
+            return false;
+        }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         let Ok(kind) = entry.file_type() else {
@@ -704,7 +724,9 @@ fn walk(dir: &Path, root: &Path, skip_nested: bool, out: &mut Vec<(PathBuf, Vec<
             {
                 continue;
             }
-            walk(&path, root, skip_nested, out);
+            if !walk(&path, root, skip_nested, cancelled, out) {
+                return false;
+            }
         } else if kind.is_file() && name.ends_with(".rs") && name != "build.rs" {
             let stem = name.trim_end_matches(".rs");
             if is_test_file(stem) {
@@ -722,29 +744,55 @@ fn walk(dir: &Path, root: &Path, skip_nested: bool, out: &mut Vec<(PathBuf, Vec<
             out.push((path, rel));
         }
     }
+    true
 }
 
 /// The public names of the crate whose library root directory is `root`,
 /// by module, largest first.
 #[must_use]
 pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
+    items_cancellable(root, crate_dir, || false).unwrap_or_default()
+}
+
+/// Reads module declarations like [`items`], stopping between filesystem
+/// entries when the owning view no longer needs the result.
+#[must_use]
+pub fn items_cancellable(
+    root: &Path,
+    crate_dir: &Path,
+    mut cancelled: impl FnMut() -> bool,
+) -> Option<Vec<Module>> {
+    if cancelled() {
+        return None;
+    }
     if !root.is_dir() {
-        return Vec::new();
+        return Some(Vec::new());
     }
     let mut files = Vec::new();
-    walk(root, root, root == crate_dir, &mut files);
+    if !walk(root, root, root == crate_dir, &mut cancelled, &mut files) {
+        return None;
+    }
     let mut modules: Vec<Module> = Vec::new();
     let mut seen: Vec<(String, &'static str, String)> = Vec::new();
     let mut declared: HashMap<Vec<String>, HashMap<String, bool>> = HashMap::new();
     let mut contributed: Vec<(String, Vec<String>)> = Vec::new();
     let mut uses: Vec<(String, Vec<String>, Vec<(Vec<String>, String)>)> = Vec::new();
     for (path, rel) in files {
+        if cancelled() {
+            return None;
+        }
         let Ok(bytes) = fs::read(&path) else { continue };
+        if cancelled() {
+            return None;
+        }
         let text = String::from_utf8_lossy(&bytes).into_owned();
         if !text.contains("pub") && !text.contains("macro_export") {
             continue;
         }
         let code = mask(&text, Literals::Blank);
+        if cancelled() {
+            return None;
+        }
         let module = module_name(&rel);
         let full = full_module_path(&rel);
         for (name, public, _) in mod_decls(&code) {
@@ -775,6 +823,9 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
         let mut found: Vec<Item> = Vec::new();
         let mut i = 0;
         while i < bytes.len() {
+            if i % 1024 == 0 && cancelled() {
+                return None;
+            }
             let b = bytes[i];
             if matches!(b, b'{' | b'}' | b';') {
                 if b == b'{' {
@@ -898,6 +949,9 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
     // reach by path is public where it is re-exported.
     let mut reexporting: Vec<(String, Vec<String>)> = Vec::new();
     for (module, full, leaves) in &uses {
+        if cancelled() {
+            return None;
+        }
         if private(full) {
             continue;
         }
@@ -979,7 +1033,7 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
             .cmp(&a.items.len())
             .then_with(|| a.path.cmp(&b.path))
     });
-    modules
+    (!cancelled()).then_some(modules)
 }
 
 /// The key of a module by its full path: `lib` for the root, else its first
@@ -1192,7 +1246,28 @@ fn extern_header(header: &str) -> bool {
 /// included README, else the `///` on its `mod x;` in its parent.
 #[must_use]
 pub fn module_doc(root: &Path, root_file: &Path, name: &str) -> Option<Doc> {
-    let read = |p: &Path| fs::read_to_string(p).ok();
+    module_doc_cancellable(root, root_file, name, || false)
+}
+
+/// As [`module_doc`], checking whether the owning source read is still live
+/// between filesystem reads and module declarations.
+#[must_use]
+pub fn module_doc_cancellable(
+    root: &Path,
+    root_file: &Path,
+    name: &str,
+    mut cancelled: impl FnMut() -> bool,
+) -> Option<Doc> {
+    fn read(path: &Path, cancelled: &mut impl FnMut() -> bool) -> Option<String> {
+        if cancelled() {
+            return None;
+        }
+        let text = fs::read_to_string(path).ok()?;
+        (!cancelled()).then_some(text)
+    }
+    if cancelled() {
+        return None;
+    }
     let file_of = |segs: &[&str]| -> Option<PathBuf> {
         let base = segs
             .iter()
@@ -1208,7 +1283,10 @@ pub fn module_doc(root: &Path, root_file: &Path, name: &str) -> Option<Doc> {
         } else {
             root_file.to_path_buf()
         };
-        let text = read(&file)?;
+        let text = read(&file, &mut cancelled)?;
+        if cancelled() {
+            return None;
+        }
         return doc_of(first_paragraph(&inner_doc(
             &text,
             file.parent().unwrap_or(root),
@@ -1216,7 +1294,7 @@ pub fn module_doc(root: &Path, root_file: &Path, name: &str) -> Option<Doc> {
     }
     let segs: Vec<&str> = name.split("::").collect();
     if let Some(own) = file_of(&segs)
-        && let Some(text) = read(&own)
+        && let Some(text) = read(&own, &mut cancelled)
         && let Some(doc) = inner_doc(&text, own.parent().unwrap_or(root))
             .and_then(|d| first_paragraph(&d))
             .and_then(|p| doc_of(Some(p)))
@@ -1228,11 +1306,17 @@ pub fn module_doc(root: &Path, root_file: &Path, name: &str) -> Option<Doc> {
     } else {
         file_of(&segs[..segs.len() - 1])
     }?;
-    let text = read(&parent)?;
+    let text = read(&parent, &mut cancelled)?;
+    if cancelled() {
+        return None;
+    }
     let code = mask(&text, Literals::Blank);
     let lines: Vec<&str> = text.split('\n').collect();
     let last = *segs.last()?;
     for (decl, _, line) in mod_decls(&code) {
+        if cancelled() {
+            return None;
+        }
         if decl == last {
             let docs = outer_doc(&lines, line);
             if !docs.is_empty()

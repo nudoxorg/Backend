@@ -23,9 +23,11 @@ pub mod registry;
 pub mod scan;
 
 use crate::model::pages::PackageRef;
+use crate::runtime::offload::Cancellation;
 pub use facet::folio::berg::Basis;
 use gpui::{App, Global, SharedString};
 use std::collections::{HashMap, VecDeque};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -118,6 +120,9 @@ impl SourceFacts {
 pub enum Reading {
     /// The read is under way.
     Reading,
+    /// The bounded source-reader pool is full; the visible request will retry
+    /// after an obsolete worker exits.
+    Waiting,
     /// There is nothing to read, and why.
     Absent(SharedString),
     /// Read.
@@ -175,9 +180,13 @@ fn read_package(
     hints: &HashMap<String, String>,
     project: Option<&Path>,
     composition: Option<&crate::host::registry::Composition>,
+    cancellation: &Cancellation,
 ) -> Result<SourceFacts, SharedString> {
+    if cancellation.is_cancelled() {
+        return Err("This source read was superseded.".into());
+    }
     let root = root_of(package, composition)?;
-    read(&root, hints, project)
+    read_cancellable(&root, hints, project, Some(cancellation))
         .ok_or_else(|| "Its Cargo manifest or source files could not be read.".into())
 }
 
@@ -322,7 +331,8 @@ fn berg(
     hints: &HashMap<String, String>,
     lock: Option<&Lock>,
     basis: Basis,
-) -> Berg {
+    cancelled: &mut impl FnMut() -> bool,
+) -> Option<Berg> {
     const LAYERS: usize = 7;
     const LIMIT: usize = 600;
     let mut blocks: Vec<Block> = Vec::new();
@@ -347,6 +357,9 @@ fn berg(
     };
     let root_key = (name.to_owned(), version.to_owned());
     while !frontier.is_empty() && layer < LAYERS && blocks.len() < LIMIT {
+        if cancelled() {
+            return None;
+        }
         let mut next: Vec<(Option<usize>, Vec<Want>)> = Vec::new();
         for (parent, deps) in std::mem::take(&mut frontier) {
             for Want {
@@ -355,6 +368,9 @@ fn berg(
                 defaults,
             } in deps
             {
+                if cancelled() {
+                    return None;
+                }
                 let hint = hints
                     .get(&dep_name)
                     .map(String::as_str)
@@ -363,6 +379,9 @@ fn berg(
                     missing += 1;
                     continue;
                 };
+                if cancelled() {
+                    return None;
+                }
                 let key = (dep_name.clone(), dep_version.clone());
                 if key == root_key {
                     continue;
@@ -374,6 +393,9 @@ fn berg(
                         missing += 1;
                         continue;
                     };
+                    if cancelled() {
+                        return None;
+                    }
                     let at = blocks.len();
                     blocks.push(Block {
                         name: dep_name.clone(),
@@ -393,6 +415,9 @@ fn berg(
                                 .map(|m| manifest_wants(&m, defaults))
                                 .unwrap_or_default()
                         });
+                    if cancelled() {
+                        return None;
+                    }
                     next.push((Some(at), below));
                     at
                 };
@@ -408,13 +433,13 @@ fn berg(
         layer += 1;
     }
     let below = blocks.iter().map(|b| b.sloc).sum();
-    Berg {
+    Some(Berg {
         own,
         blocks,
         below,
         missing,
         basis,
-    }
+    })
 }
 
 /// Reads the package at `root` (its name and version are the manifest's).
@@ -425,8 +450,28 @@ pub fn read(
     hints: &HashMap<String, String>,
     project: Option<&Path>,
 ) -> Option<SourceFacts> {
+    read_cancellable(root, hints, project, None)
+}
+
+fn read_cancellable(
+    root: &Path,
+    hints: &HashMap<String, String>,
+    project: Option<&Path>,
+    cancellation: Option<&Cancellation>,
+) -> Option<SourceFacts> {
+    if cancellation.is_some_and(Cancellation::is_cancelled) {
+        return None;
+    }
     let manifest = manifest::read(root)?;
-    let scan = scan::scan(root, &manifest.lib);
+    if cancellation.is_some_and(Cancellation::is_cancelled) {
+        return None;
+    }
+    let scan = match cancellation {
+        Some(cancellation) => {
+            scan::scan_cancellable(root, &manifest.lib, || cancellation.is_cancelled())?
+        }
+        None => scan::scan(root, &manifest.lib),
+    };
     // A project's lock file is exact about what it builds. A registry crate
     // ships a lock of its own (its tests' world), which says nothing about
     // what a consumer builds, so a crate is read against the active
@@ -438,6 +483,9 @@ pub fn read(
         lock_above(root).or_else(|| project.and_then(lock_above))
     }
     .map(|lock| lock_table(&lock));
+    if cancellation.is_some_and(Cancellation::is_cancelled) {
+        return None;
+    }
     let locked = lock
         .as_ref()
         .filter(|_| registry_crate)
@@ -449,6 +497,7 @@ pub fn read(
     };
     let direct: Vec<Want> =
         locked.unwrap_or_else(|| manifest_wants(&manifest, manifest::DefaultFeatures::On));
+    let mut is_cancelled = || cancellation.is_some_and(Cancellation::is_cancelled);
     let berg = berg(
         &manifest.name,
         &manifest.version,
@@ -457,23 +506,31 @@ pub fn read(
         hints,
         lock.as_ref(),
         basis,
-    );
-    let dependency_lines = manifest
+        &mut is_cancelled,
+    )?;
+    let mut dependency_lines = Vec::new();
+    for dependency in manifest
         .dependencies
         .iter()
-        .filter(|d| d.need == manifest::Need::Optional)
-        .map(|d| {
-            let version = registry::pick(
-                &d.package,
-                &d.req,
-                hints.get(&d.package).map(String::as_str),
-            );
-            (
-                d.key.clone(),
-                version.and_then(|v| registry::sloc_of(&d.package, &v)),
-            )
-        })
-        .collect();
+        .filter(|dependency| dependency.need == manifest::Need::Optional)
+    {
+        if is_cancelled() {
+            return None;
+        }
+        let version = registry::pick(
+            &dependency.package,
+            &dependency.req,
+            hints.get(&dependency.package).map(String::as_str),
+        );
+        if is_cancelled() {
+            return None;
+        }
+        let lines = version.and_then(|version| registry::sloc_of(&dependency.package, &version));
+        if is_cancelled() {
+            return None;
+        }
+        dependency_lines.push((dependency.key.clone(), lines));
+    }
     let lib_root = {
         let dir = root
             .join(&manifest.lib)
@@ -482,7 +539,10 @@ pub fn read(
             .unwrap_or_else(|| root.join("src"));
         if dir.is_dir() { dir } else { root.join("src") }
     };
-    let modules = docs::items(&lib_root, root);
+    let modules = match cancellation {
+        Some(cancellation) => docs::items_cancellable(&lib_root, root, || is_cancelled())?,
+        None => docs::items(&lib_root, root),
+    };
     let root_file = {
         let lib = root.join(&manifest.lib);
         if lib.is_file() {
@@ -491,12 +551,24 @@ pub fn read(
             root.join("src").join("main.rs")
         }
     };
-    let docs = modules
-        .iter()
-        .filter_map(|m| {
-            docs::module_doc(&lib_root, &root_file, &m.path).map(|doc| (m.path.clone(), doc))
-        })
-        .collect();
+    let mut module_docs = HashMap::new();
+    for module in &modules {
+        if is_cancelled() {
+            return None;
+        }
+        if let Some(doc) = match cancellation {
+            Some(cancellation) => {
+                docs::module_doc_cancellable(&lib_root, &root_file, &module.path, || is_cancelled())
+            }
+            None => docs::module_doc(&lib_root, &root_file, &module.path),
+        } {
+            module_docs.insert(module.path.clone(), doc);
+        }
+    }
+    if is_cancelled() {
+        return None;
+    }
+    let docs = module_docs;
     Some(SourceFacts {
         root: root.to_path_buf(),
         manifest,
@@ -509,7 +581,7 @@ pub fn read(
 }
 
 enum Entry {
-    Reading,
+    Reading(Cancellation),
     Done(Reading),
 }
 
@@ -519,6 +591,7 @@ struct Slot {
     project: Option<Option<PathBuf>>,
     authority: Option<(PathBuf, Arc<str>, usize)>,
     expires_at: Option<Instant>,
+    flight: Option<u64>,
     entry: Entry,
 }
 
@@ -528,6 +601,7 @@ const SOURCE_FACTS_CAPACITY: usize = 24;
 struct Service {
     entries: HashMap<PackageRef, Slot>,
     order: VecDeque<PackageRef>,
+    next_flight: u64,
 }
 
 impl Service {
@@ -543,13 +617,15 @@ impl Service {
                 return None;
             }
             if matches!(&slot.entry, Entry::Done(_))
-                && slot.expires_at.is_some_and(|expires| Instant::now() >= expires)
+                && slot
+                    .expires_at
+                    .is_some_and(|expires| Instant::now() >= expires)
             {
                 return None;
             }
         }
         let reading = match &slot.entry {
-            Entry::Reading => Reading::Reading,
+            Entry::Reading(_) => Reading::Reading,
             Entry::Done(reading) => reading.clone(),
         };
         self.order.retain(|key| key != package);
@@ -557,20 +633,145 @@ impl Service {
         Some(reading)
     }
 
+    fn begin(
+        &mut self,
+        package: PackageRef,
+        project: Option<PathBuf>,
+        authority: Option<(PathBuf, Arc<str>, usize)>,
+    ) -> Option<(u64, Cancellation)> {
+        if let Some(slot) = self.entries.get(&package) {
+            if let Entry::Reading(cancellation) = &slot.entry {
+                cancellation.cancel();
+                return None;
+            }
+        }
+        self.remove(&package);
+        while self.entries.len() >= SOURCE_FACTS_CAPACITY {
+            let completed = self
+                .order
+                .iter()
+                .find(|key| {
+                    self.entries
+                        .get(*key)
+                        .is_some_and(|slot| matches!(&slot.entry, Entry::Done(_)))
+                })
+                .cloned();
+            if let Some(completed) = completed {
+                self.remove(&completed);
+            } else if let Some(oldest) = self.order.front().cloned() {
+                if let Some(Slot {
+                    entry: Entry::Reading(cancellation),
+                    ..
+                }) = self.entries.get(&oldest)
+                {
+                    cancellation.cancel();
+                }
+                return None;
+            } else {
+                return None;
+            }
+        }
+        self.next_flight = self.next_flight.wrapping_add(1).max(1);
+        let flight = self.next_flight;
+        let cancellation = Cancellation::default();
+        self.insert_slot(
+            package,
+            Slot {
+                project: Some(project),
+                authority,
+                expires_at: None,
+                flight: Some(flight),
+                entry: Entry::Reading(cancellation.clone()),
+            },
+        );
+        Some((flight, cancellation))
+    }
+
+    fn complete(&mut self, package: &PackageRef, flight: u64, result: Reading) {
+        let is_current = self
+            .entries
+            .get(package)
+            .is_some_and(|slot| slot.flight == Some(flight));
+        if !is_current {
+            return;
+        }
+        let cancelled = self.entries.get(package).is_some_and(|slot| {
+            matches!(&slot.entry, Entry::Reading(cancellation) if cancellation.is_cancelled())
+        });
+        if cancelled {
+            self.remove(package);
+            return;
+        }
+        if let Some(slot) = self.entries.get_mut(package) {
+            slot.entry = Entry::Done(result);
+            slot.expires_at = Some(Instant::now() + FACTS_TTL);
+            slot.flight = None;
+        }
+        self.order.retain(|key| key != package);
+        self.order.push_back(package.clone());
+    }
+
     fn insert(&mut self, package: PackageRef, slot: Slot) {
+        if let Some(Slot {
+            entry: Entry::Reading(cancellation),
+            ..
+        }) = self.entries.get(&package)
+        {
+            // A manual snapshot cannot replace an active flight: the worker
+            // keeps its bounded slot until its exact flight ticket returns.
+            cancellation.cancel();
+            return;
+        }
+        self.remove(&package);
+        if self.entries.len() >= SOURCE_FACTS_CAPACITY {
+            let completed = self
+                .order
+                .iter()
+                .find(|key| {
+                    self.entries
+                        .get(*key)
+                        .is_some_and(|slot| matches!(&slot.entry, Entry::Done(_)))
+                })
+                .cloned();
+            if let Some(completed) = completed {
+                self.remove(&completed);
+            } else {
+                return;
+            }
+        }
+        self.insert_slot(package, slot);
+    }
+
+    fn insert_slot(&mut self, package: PackageRef, slot: Slot) {
         self.order.retain(|key| key != &package);
         self.order.push_back(package.clone());
         self.entries.insert(package, slot);
-        while self.entries.len() > SOURCE_FACTS_CAPACITY {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            self.entries.remove(&oldest);
+    }
+
+    fn remove(&mut self, package: &PackageRef) {
+        if let Some(Slot {
+            entry: Entry::Reading(cancellation),
+            ..
+        }) = self.entries.get(package)
+        {
+            cancellation.cancel();
         }
+        self.entries.remove(package);
+        self.order.retain(|key| key != package);
     }
 }
 
 impl Global for Service {}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        for slot in self.entries.values() {
+            if let Entry::Reading(cancellation) = &slot.entry {
+                cancellation.cancel();
+            }
+        }
+    }
+}
 
 /// What the source on disk says about `package`, read against `project`'s
 /// lock file (the reader's active project). The first ask starts the read
@@ -597,19 +798,18 @@ pub fn reading(
     {
         return reading;
     }
-    cx.default_global::<Service>().insert(
-        package.clone(),
-        Slot {
-            project: Some(wanted.clone()),
-            authority: authority.clone(),
-            expires_at: None,
-            entry: Entry::Reading,
-        },
-    );
+    let Some((flight, cancellation)) =
+        cx.default_global::<Service>()
+            .begin(package.clone(), wanted.clone(), authority)
+    else {
+        return Reading::Waiting;
+    };
     #[cfg(test)]
     {
         let _ = package;
         let _ = hints;
+        let _ = flight;
+        let _ = cancellation;
     }
     #[cfg(not(test))]
     {
@@ -617,29 +817,25 @@ pub fn reading(
         let worker_package = key.clone();
         let read_for = wanted.clone();
         let worker_composition = composition.clone();
+        let work_cancellation = cancellation.clone();
         let work = cx.background_executor().spawn(async move {
-            read_package(
-                &worker_package,
-                &hints,
-                read_for.as_deref(),
-                worker_composition.as_ref(),
-            )
+            catch_unwind(AssertUnwindSafe(|| {
+                read_package(
+                    &worker_package,
+                    &hints,
+                    read_for.as_deref(),
+                    worker_composition.as_ref(),
+                    &work_cancellation,
+                )
+            }))
+            .unwrap_or_else(|_| Err("The source reader stopped unexpectedly.".into()))
         });
-        let completion_authority = authority;
         cx.spawn(async move |cx| {
             let facts = work.await;
             let _ = cx.update(|cx| {
                 let done =
                     facts.map_or_else(Reading::Absent, |facts| Reading::Ready(Arc::new(facts)));
-                cx.default_global::<Service>().insert(
-                    key,
-                    Slot {
-                        project: Some(wanted),
-                        authority: completion_authority,
-                        expires_at: Some(Instant::now() + FACTS_TTL),
-                        entry: Entry::Done(done),
-                    },
-                );
+                cx.default_global::<Service>().complete(&key, flight, done);
                 cx.refresh_windows();
             });
         })
@@ -658,6 +854,7 @@ pub fn install(package: &PackageRef, reading: Reading, cx: &mut App) {
             project: None,
             authority: None,
             expires_at: None,
+            flight: None,
             entry: Entry::Done(reading),
         },
     );

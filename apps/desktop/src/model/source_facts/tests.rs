@@ -5,9 +5,11 @@
 
 #![allow(clippy::expect_used, clippy::panic)]
 
-use super::docs::{first_paragraph, first_sentence};
+use super::docs::{first_paragraph, first_sentence, items_cancellable};
 use super::manifest::{self, Enabled};
-use super::scan::{Literals, mask, scan, sloc};
+use super::scan::{Literals, mask, scan, scan_cancellable, sloc};
+use super::{Entry, Reading, SOURCE_FACTS_CAPACITY, Service};
+use crate::model::pages::PackageRef;
 use facet::folio::state::{Build, Library, Unsafe};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +25,71 @@ fn krate(name: &str, files: &[(&str, &str)]) -> PathBuf {
         fs::write(at, body).expect("file");
     }
     dir
+}
+
+#[test]
+fn off_thread_source_walks_stop_when_their_owner_cancels() {
+    let dir = krate(
+        "cancelled",
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"cancelled\"\nversion = \"0.1.0\"\n",
+            ),
+            ("src/lib.rs", "pub mod nested;\n"),
+            ("src/nested.rs", "//! nested docs\npub fn run() {}\n"),
+        ],
+    );
+    assert!(
+        scan_cancellable(&dir, "src/lib.rs", || true).is_none(),
+        "the scanner must not return facts after cancellation"
+    );
+    assert!(
+        items_cancellable(&dir.join("src"), &dir, || true).is_none(),
+        "the module reader must not return facts after cancellation"
+    );
+}
+
+#[test]
+fn source_reader_bounds_flights_and_discards_obsolete_completions() {
+    let mut service = Service::default();
+    let mut first = None;
+    for index in 0..SOURCE_FACTS_CAPACITY {
+        let package =
+            PackageRef::parse(&format!("pkg:cargo/pressure-{index}@1.0.0")).expect("exact package");
+        let (flight, cancellation) = service
+            .begin(package.clone(), None, None)
+            .expect("within the flight bound");
+        if index == 0 {
+            first = Some((package, flight, cancellation));
+        }
+    }
+    assert_eq!(service.entries.len(), SOURCE_FACTS_CAPACITY);
+
+    let waiting = PackageRef::parse("pkg:cargo/pressure-overflow@1.0.0").expect("package");
+    assert!(service.begin(waiting.clone(), None, None).is_none());
+    assert_eq!(service.entries.len(), SOURCE_FACTS_CAPACITY);
+    let (obsolete, obsolete_flight, obsolete_cancel) = first.expect("first flight");
+    assert!(obsolete_cancel.is_cancelled());
+
+    // A canceled worker returns after a new request for that exact package
+    // has already started. Its old flight ticket must not overwrite the new
+    // in-flight entry.
+    service.remove(&obsolete);
+    let (replacement_flight, _) = service
+        .begin(obsolete.clone(), None, None)
+        .expect("a canceled slot is reusable");
+    assert_ne!(replacement_flight, obsolete_flight);
+    service.complete(
+        &obsolete,
+        obsolete_flight,
+        Reading::Absent("obsolete result".into()),
+    );
+    assert!(matches!(
+        service.entries.get(&obsolete).map(|slot| &slot.entry),
+        Some(Entry::Reading(_))
+    ));
+    assert_eq!(service.entries.len(), SOURCE_FACTS_CAPACITY);
 }
 
 #[test]

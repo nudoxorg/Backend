@@ -193,6 +193,9 @@ impl Folio {
         let source_words = |what: &str| -> SharedString {
             match &self.facts.source {
                 Reading::Reading => format!("Reading its source on disk for {what}.").into(),
+                Reading::Waiting => {
+                    format!("Waiting for an available source-read slot for {what}.").into()
+                }
                 Reading::Absent(why) => format!("{why} Nothing is read for {what}.").into(),
                 Reading::Ready(_) => SharedString::default(),
             }
