@@ -6,6 +6,8 @@
 
 use alloc::vec;
 
+#[cfg(feature = "mmap")]
+use crate::ir::DocInput;
 use crate::ir::{
     BorrowedTree, BuiltinType, CSharpFacts, CSharpMemberEffects, CSharpNullability,
     CSharpPartialRole, CSharpReferenceKind, CSharpVersion, ConcreteType, CorePayloadHash,
@@ -89,6 +91,37 @@ fn encoded(ir: &Ir) -> Result<alloc::vec::Vec<u8>, crate::ir::BuildError> {
     Ok(bytes)
 }
 
+#[cfg(feature = "mmap")]
+fn large_encoded_image() -> Vec<u8> {
+    let large_documentation = "selected native image mapping ".repeat(2_000);
+    let docs = [DocInput::Text(&large_documentation)];
+    let item = TreeItemInput {
+        name: b"mapped",
+        kind: ItemKind::Function,
+        visibility: Visibility::Public,
+        authority: authority(),
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &docs,
+        attributes: &[],
+        source: None,
+        extension: None,
+    };
+    let versions = [version(7)];
+    let items = [item];
+    let mut builder = IrBuilder::new();
+    builder
+        .add_borrowed_tree(BorrowedTree {
+            versions: &versions,
+            items: &items,
+            links: &[],
+        })
+        .expect("large mapped fixture builds");
+    encoded(&builder.finish().expect("large mapped IR finalizes"))
+        .expect("large mapped fixture encodes")
+}
+
 #[test]
 fn an_admission_proof_fails_closed_for_a_different_backing_allocation() {
     let image_a = encoded(&image(false).expect("first canonical IR builds"))
@@ -151,6 +184,174 @@ fn mapped_semantic_image_reopens_the_canonical_reader_without_heap_copy() {
     assert_eq!(mapped.view().canonical_entities().len(), 2);
     drop(mapped);
     fs::remove_file(path).expect("remove image fixture");
+}
+
+#[cfg(feature = "mmap")]
+#[test]
+fn mapped_image_range_loader_writes_exact_ranges_into_the_mapping() {
+    use crate::ir::{
+        GenerationId, SEMANTIC_IMAGE_MMAP_RANGE_BYTES, SemanticImageIdentity,
+        load_semantic_image_mmap_from_ranges,
+    };
+
+    let bytes = large_encoded_image();
+    assert!(bytes.len() > SEMANTIC_IMAGE_MMAP_RANGE_BYTES * 2);
+
+    let identity = SemanticImageIdentity::from_encoded_bytes(&bytes);
+    let generation = GenerationId::from_canonical_bytes(&bytes);
+    let mut read_calls = 0_u64;
+    let (mapped, metrics) = load_semantic_image_mmap_from_ranges(
+        u64::try_from(bytes.len()).expect("fixture length fits"),
+        identity,
+        generation,
+        bytes.len(),
+        |offset, output| {
+            read_calls += 1;
+            let start = usize::try_from(offset).expect("range offset fits");
+            let end = start.checked_add(output.len()).expect("range end fits");
+            output.copy_from_slice(bytes.get(start..end).expect("exact fixture range"));
+            Ok::<usize, ()>(output.len())
+        },
+        || false,
+    )
+    .expect("exact source ranges fill and fully verify the mapped image");
+
+    let expected_ranges = bytes.len().div_ceil(SEMANTIC_IMAGE_MMAP_RANGE_BYTES);
+    assert_eq!(
+        metrics.bytes_read,
+        u64::try_from(bytes.len()).expect("length fits")
+    );
+    assert_eq!(
+        usize::try_from(metrics.range_reads).expect("range count fits"),
+        expected_ranges
+    );
+    assert_eq!(read_calls, metrics.range_reads);
+    assert_eq!(mapped.identity(), identity);
+    assert_eq!(mapped.generation(), generation);
+    assert_eq!(mapped.view().canonical_entities().len(), 1);
+}
+
+#[cfg(feature = "mmap")]
+#[test]
+fn mapped_image_range_loader_rejects_short_and_truncated_sources() {
+    use crate::ir::{
+        GenerationId, MappedSemanticImageRangeError, SEMANTIC_IMAGE_MMAP_RANGE_BYTES,
+        SemanticImageIdentity, load_semantic_image_mmap_from_ranges,
+    };
+
+    let bytes = large_encoded_image();
+    let identity = SemanticImageIdentity::from_encoded_bytes(&bytes);
+    let generation = GenerationId::from_canonical_bytes(&bytes);
+    let total = u64::try_from(bytes.len()).expect("fixture length fits");
+    let short = load_semantic_image_mmap_from_ranges(
+        total,
+        identity,
+        generation,
+        bytes.len(),
+        |_offset, output| Ok::<usize, ()>(output.len().saturating_sub(1)),
+        || false,
+    );
+    assert!(matches!(
+        short,
+        Err(MappedSemanticImageRangeError::ShortRead {
+            offset: 0,
+            expected,
+            observed,
+        }) if expected == bytes.len().min(SEMANTIC_IMAGE_MMAP_RANGE_BYTES)
+            && observed + 1 == expected
+    ));
+
+    let source_length = bytes.len().saturating_sub(1);
+    let final_offset =
+        (source_length / SEMANTIC_IMAGE_MMAP_RANGE_BYTES) * SEMANTIC_IMAGE_MMAP_RANGE_BYTES;
+    let truncated = load_semantic_image_mmap_from_ranges(
+        total,
+        identity,
+        generation,
+        bytes.len(),
+        |offset, output| {
+            let start = usize::try_from(offset).expect("range offset fits");
+            let available = source_length.saturating_sub(start).min(output.len());
+            output[..available].copy_from_slice(&bytes[start..start + available]);
+            Ok::<usize, ()>(available)
+        },
+        || false,
+    );
+    assert!(matches!(
+        truncated,
+        Err(MappedSemanticImageRangeError::ShortRead {
+            offset,
+            expected,
+            observed,
+        }) if offset == u64::try_from(final_offset).expect("range offset fits")
+            && expected == bytes.len() - final_offset
+            && observed + 1 == expected
+    ));
+}
+
+#[cfg(feature = "mmap")]
+#[test]
+fn mapped_image_range_loader_rejects_corruption_and_stops_when_cancelled() {
+    use crate::ir::{
+        GenerationId, MappedSemanticImageError, MappedSemanticImageRangeError,
+        SEMANTIC_IMAGE_MMAP_RANGE_BYTES, SemanticImageIdentity,
+        load_semantic_image_mmap_from_ranges,
+    };
+
+    let bytes = large_encoded_image();
+    let identity = SemanticImageIdentity::from_encoded_bytes(&bytes);
+    let generation = GenerationId::from_canonical_bytes(&bytes);
+    let total = u64::try_from(bytes.len()).expect("fixture length fits");
+    let mut corrupt = bytes.clone();
+    corrupt[0] ^= 1;
+    let rejected = load_semantic_image_mmap_from_ranges(
+        total,
+        identity,
+        generation,
+        bytes.len(),
+        |offset, output| {
+            let start = usize::try_from(offset).expect("range offset fits");
+            let end = start.checked_add(output.len()).expect("range end fits");
+            output.copy_from_slice(corrupt.get(start..end).expect("exact corrupt range"));
+            Ok::<usize, ()>(output.len())
+        },
+        || false,
+    );
+    assert!(matches!(
+        rejected,
+        Err(MappedSemanticImageRangeError::Mapping(
+            MappedSemanticImageError::Identity { .. }
+        ))
+    ));
+
+    let mut read_calls = 0_u64;
+    let mut cancel_checks = 0_u64;
+    let cancelled = load_semantic_image_mmap_from_ranges(
+        total,
+        identity,
+        generation,
+        bytes.len(),
+        |offset, output| {
+            read_calls += 1;
+            let start = usize::try_from(offset).expect("range offset fits");
+            let end = start.checked_add(output.len()).expect("range end fits");
+            output.copy_from_slice(bytes.get(start..end).expect("exact fixture range"));
+            Ok::<usize, ()>(output.len())
+        },
+        || {
+            cancel_checks += 1;
+            cancel_checks >= 3
+        },
+    );
+    assert!(matches!(
+        cancelled,
+        Err(MappedSemanticImageRangeError::Cancelled)
+    ));
+    assert_eq!(
+        read_calls, 1,
+        "cancellation is checked between direct mapped reads"
+    );
+    assert!(bytes.len() > SEMANTIC_IMAGE_MMAP_RANGE_BYTES);
 }
 
 fn csharp_image() -> Result<Ir, crate::ir::BuildError> {

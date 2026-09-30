@@ -12,6 +12,9 @@ use backend_version::{ArtifactHasher, IrSemanticImageDomain, IrSemanticImageEnco
 
 use super::{FullSemanticImageError, view::SemanticImageView};
 
+/// Maximum bytes requested from one exact-range image source at a time.
+pub const SEMANTIC_IMAGE_MMAP_RANGE_BYTES: usize = 16 * 1024;
+
 /// One complete canonical image retained by a read-only operating-system mapping.
 pub struct MappedSemanticImage {
     mapping: Mmap,
@@ -39,6 +42,176 @@ impl MappedSemanticImage {
         SemanticImageView::reopen_proven(&self.mapping, self.proof)
             .expect("mapped image retains the exact immutable bytes admitted with its proof")
     }
+}
+
+/// Counters for a successful exact-range image load into anonymous mapped memory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MappedSemanticImageRangeMetrics {
+    /// Exact selected payload bytes copied into the mapping.
+    pub bytes_read: u64,
+    /// Number of bounded source-range calls used to fill the mapping.
+    pub range_reads: u64,
+}
+
+/// Failure while loading the exact selected image through a bounded range source.
+#[derive(Debug)]
+pub enum MappedSemanticImageRangeError<E> {
+    /// Mapping allocation or full image admission failed.
+    Mapping(MappedSemanticImageError),
+    /// The exact source range could not be read.
+    Read { offset: u64, source: E },
+    /// The source did not fill the requested exact range.
+    ShortRead {
+        /// Starting byte offset requested from the source.
+        offset: u64,
+        /// Exact range length requested.
+        expected: usize,
+        /// Number of bytes supplied by the source.
+        observed: usize,
+    },
+    /// The selected generation changed while ranges were being loaded.
+    Cancelled,
+}
+
+/// Loads a complete image into anonymous mapped memory using exact bounded ranges.
+///
+/// The source writes directly into the mapping's mutable slice: this path does
+/// not build a payload-sized `Vec`. Every range must be filled exactly. The
+/// final mapping is admitted against the selected image identity, canonical
+/// generation, and complete semantic-image grammar before it is returned.
+/// `is_cancelled` is checked before allocation, between each range, and before
+/// full image admission so stale work stops before it publishes any proof.
+pub fn load_semantic_image_mmap_from_ranges<E>(
+    total_length: u64,
+    expected_identity: SemanticImageIdentity,
+    expected_generation: GenerationId,
+    max_bytes: usize,
+    mut read_range: impl FnMut(u64, &mut [u8]) -> Result<usize, E>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<(MappedSemanticImage, MappedSemanticImageRangeMetrics), MappedSemanticImageRangeError<E>>
+{
+    if is_cancelled() {
+        return Err(MappedSemanticImageRangeError::Cancelled);
+    }
+    let mapping_length = usize::try_from(total_length).map_err(|source| {
+        MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileLength {
+            observed: total_length,
+            source,
+        })
+    })?;
+    if mapping_length == 0 {
+        return Err(MappedSemanticImageRangeError::Mapping(
+            MappedSemanticImageError::EmptyFile,
+        ));
+    }
+    if mapping_length > max_bytes {
+        return Err(MappedSemanticImageRangeError::Mapping(
+            MappedSemanticImageError::FileTooLarge {
+                observed: total_length,
+                max: max_bytes,
+            },
+        ));
+    }
+    let mut writable = MmapOptions::new()
+        .len(mapping_length)
+        .map_anon()
+        .map_err(|source| {
+            MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::Io {
+                phase: MappedSemanticImageIoPhase::Map,
+                source,
+            })
+        })?;
+
+    let mut offset = 0_u64;
+    let mut range_reads = 0_u64;
+    while offset < total_length {
+        if is_cancelled() {
+            return Err(MappedSemanticImageRangeError::Cancelled);
+        }
+        let remaining = total_length.checked_sub(offset).ok_or_else(|| {
+            MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileTooLarge {
+                observed: total_length,
+                max: max_bytes,
+            })
+        })?;
+        let count = usize::try_from(remaining.min(SEMANTIC_IMAGE_MMAP_RANGE_BYTES as u64))
+            .map_err(|source| {
+                MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileLength {
+                    observed: remaining,
+                    source,
+                })
+            })?;
+        let start = usize::try_from(offset).map_err(|source| {
+            MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileLength {
+                observed: offset,
+                source,
+            })
+        })?;
+        let end = start.checked_add(count).ok_or_else(|| {
+            MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileTooLarge {
+                observed: total_length,
+                max: max_bytes,
+            })
+        })?;
+        let output = writable.get_mut(start..end).ok_or_else(|| {
+            MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileTooLarge {
+                observed: total_length,
+                max: max_bytes,
+            })
+        })?;
+        range_reads = range_reads.checked_add(1).ok_or_else(|| {
+            MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileTooLarge {
+                observed: total_length,
+                max: max_bytes,
+            })
+        })?;
+        let observed = read_range(offset, output)
+            .map_err(|source| MappedSemanticImageRangeError::Read { offset, source })?;
+        if observed != count {
+            return Err(MappedSemanticImageRangeError::ShortRead {
+                offset,
+                expected: count,
+                observed,
+            });
+        }
+        offset = offset
+            .checked_add(u64::try_from(count).map_err(|_| {
+                MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileTooLarge {
+                    observed: total_length,
+                    max: max_bytes,
+                })
+            })?)
+            .ok_or_else(|| {
+                MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::FileTooLarge {
+                    observed: total_length,
+                    max: max_bytes,
+                })
+            })?;
+    }
+    if is_cancelled() {
+        return Err(MappedSemanticImageRangeError::Cancelled);
+    }
+
+    let mapping = writable.make_read_only().map_err(|source| {
+        MappedSemanticImageRangeError::Mapping(MappedSemanticImageError::Io {
+            phase: MappedSemanticImageIoPhase::Map,
+            source,
+        })
+    })?;
+    let image = admit_mapping(
+        mapping,
+        mapping_length,
+        expected_identity,
+        expected_generation,
+    )
+    .map_err(MappedSemanticImageRangeError::Mapping)?;
+    Ok((
+        image,
+        MappedSemanticImageRangeMetrics {
+            bytes_read: total_length,
+            range_reads,
+        },
+    ))
 }
 
 /// Filesystem phase retaining its original I/O source.

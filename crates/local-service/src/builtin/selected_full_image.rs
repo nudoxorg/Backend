@@ -184,15 +184,11 @@ impl Default for VerifiedLocalImageReaderCacheState {
 }
 
 impl VerifiedLocalImageReaderCache {
-    /// Opens and verifies one selected object once, then seeks bounded pages
-    /// through its retained file descriptor. `None` means the object is cold
-    /// in local CAS and may be supplied by the selected S3 route.
-    pub(super) fn read_range(
+    fn reader_for_plan(
         &self,
         store: &FileStore,
         plan: &SelectedFullImagePlan,
-        range: ByteRange,
-    ) -> Result<Option<Vec<u8>>, SelectedImageLocalReadError> {
+    ) -> Result<Option<Arc<Mutex<ArtifactObjectReader>>>, SelectedImageLocalReadError> {
         let schema = backend_extension_turso::COMPILER_SEMANTIC_IMAGE_SCHEMA;
         let key = VerifiedLocalImageReaderKey {
             closure_id: plan.closure_id,
@@ -267,7 +263,18 @@ impl VerifiedLocalImageReaderCache {
         // The LRU lock protects only admission and recency. Each retained
         // reader has its own lock, so independent images can read concurrently.
         drop(state);
+        Ok(Some(reader))
+    }
 
+    /// Opens and verifies one selected object once, then seeks bounded pages
+    /// through its retained file descriptor. `None` means the object is cold
+    /// in local CAS and may be supplied by the selected S3 route.
+    pub(super) fn read_range(
+        &self,
+        store: &FileStore,
+        plan: &SelectedFullImagePlan,
+        range: ByteRange,
+    ) -> Result<Option<Vec<u8>>, SelectedImageLocalReadError> {
         let count = usize::try_from(range.len).map_err(|_| {
             SelectedImageLocalReadError::Storage(
                 "selected semantic image page does not fit usize".to_owned(),
@@ -280,6 +287,43 @@ impl VerifiedLocalImageReaderCache {
             )
         })?;
         payload.resize(count, 0);
+        if self
+            .read_range_into(store, plan, range, &mut payload)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        Ok(Some(payload))
+    }
+
+    /// Reads one exact selected-image range directly into caller-owned memory.
+    /// This lets verified anonymous mappings receive CAS bytes without an
+    /// intermediate page-sized `Vec`.
+    pub(super) fn read_range_into(
+        &self,
+        store: &FileStore,
+        plan: &SelectedFullImagePlan,
+        range: ByteRange,
+        output: &mut [u8],
+    ) -> Result<Option<usize>, SelectedImageLocalReadError> {
+        let count = usize::try_from(range.len).map_err(|_| {
+            SelectedImageLocalReadError::Storage(
+                "selected semantic image page does not fit usize".to_owned(),
+            )
+        })?;
+        if count > output.len()
+            || range
+                .start
+                .checked_add(range.len)
+                .is_none_or(|end| end > plan.total_length)
+        {
+            return Err(SelectedImageLocalReadError::Storage(
+                "selected semantic image range is outside its caller buffer or image".to_owned(),
+            ));
+        }
+        let Some(reader) = self.reader_for_plan(store, plan)? else {
+            return Ok(None);
+        };
         let read = reader
             .lock()
             .map_err(|_| {
@@ -287,14 +331,14 @@ impl VerifiedLocalImageReaderCache {
                     "selected image object reader is poisoned".to_owned(),
                 )
             })?
-            .read_payload_range(range.start, &mut payload)
+            .read_payload_range(range.start, &mut output[..count])
             .map_err(SelectedImageLocalReadError::from)?;
         if read != count {
             return Err(SelectedImageLocalReadError::Storage(
                 "selected semantic image page was truncated".to_owned(),
             ));
         }
-        Ok(Some(payload))
+        Ok(Some(read))
     }
 }
 
@@ -781,6 +825,64 @@ mod tests {
             authority.metadata_resolves, 1,
             "multi-page reads resolve selected compiler metadata only once"
         );
+    }
+
+    #[test]
+    fn verified_local_reader_fills_caller_owned_ranges_without_page_allocation() {
+        let scratch = ScratchCas::new();
+        let payload = bytes();
+        let (store, plan, _) = put_image_object(&scratch.0, &payload);
+        let readers = VerifiedLocalImageReaderCache::default();
+        let range = ByteRange::new(13, 97).expect("valid exact output range");
+        let mut output = vec![0_u8; 97];
+
+        assert_eq!(
+            readers
+                .read_range_into(&store, &plan, range, &mut output)
+                .expect("verified range is read directly into caller memory"),
+            Some(output.len()),
+        );
+        assert_eq!(output, payload[13..110]);
+        assert!(matches!(
+            readers.read_range_into(&store, &plan, range, &mut [0_u8; 96]),
+            Err(SelectedImageLocalReadError::Storage(_))
+        ));
+    }
+
+    #[test]
+    fn verified_local_reader_rejects_a_truncated_object_after_open() {
+        let scratch = ScratchCas::new();
+        let payload = bytes();
+        let (store, plan, object_path) = put_image_object(&scratch.0, &payload);
+        let readers = VerifiedLocalImageReaderCache::default();
+        let prime = ByteRange::new(0, 1).expect("prime range");
+        let mut first = [0_u8; 1];
+        assert_eq!(
+            readers
+                .read_range_into(&store, &plan, prime, &mut first)
+                .expect("open and verify immutable object"),
+            Some(1),
+        );
+
+        let mut permissions = fs::metadata(&object_path)
+            .expect("read immutable object permissions")
+            .permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&object_path, permissions)
+            .expect("make fixture writable for truncation");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(object_path)
+            .expect("open object for truncation fixture");
+        file.set_len(0).expect("truncate opened object");
+        file.sync_all().expect("sync truncated object");
+
+        let range = ByteRange::new(1, 32).expect("post-truncation range");
+        let mut output = [0_u8; 32];
+        assert!(matches!(
+            readers.read_range_into(&store, &plan, range, &mut output),
+            Err(SelectedImageLocalReadError::Storage(_))
+        ));
     }
 
     #[test]

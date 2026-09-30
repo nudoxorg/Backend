@@ -9,9 +9,9 @@ use crate::{
     ir_producer_store::ProducedSelectedNativeTypedPlaneHistoryV3,
 };
 use backend_semantic::ir::{
-    GenerationId, JumboRopeLimits, SemanticImageIdentity, SemanticImageView, SemanticInputClaimV2,
-    SemanticIrPlane, SemanticPlaneCatalog, SemanticPlaneImageKey, SemanticPlaneKind,
-    SemanticPlaneManifest, SemanticTypedPlaneVerificationTierV2,
+    GenerationId, JumboRopeLimits, MappedSemanticImage, SemanticImageIdentity, SemanticImageView,
+    SemanticInputClaimV2, SemanticIrPlane, SemanticPlaneCatalog, SemanticPlaneImageKey,
+    SemanticPlaneKind, SemanticPlaneManifest, SemanticTypedPlaneVerificationTierV2,
     VerifiedTypedPlaneHistoryContentV3,
 };
 use backend_store::{
@@ -41,8 +41,9 @@ pub trait SelectedNativeImageSource: crate::SelectedGenerationSource {
     fn selected_semantic_target(&mut self) -> Result<crate::SemanticTargetKey, Self::Error>;
 
     /// Returns the authenticated full-image identity for one currently
-    /// selected image. The history bridge recomputes this identity from the
-    /// fully reopened image bytes before it produces or commits typed rows.
+    /// selected image. The history bridge verifies this identity against a
+    /// fully reopened image or its nonconstructible mapped-image proof before
+    /// it produces or commits typed rows.
     fn selected_native_image_identity(
         &mut self,
         image: SemanticPlaneImageKey,
@@ -77,8 +78,9 @@ pub trait SelectedNativeImagePublicationFence {
 ///
 /// This metadata-only proof supports idempotency checks before image bytes are
 /// read. It cannot publish history or recreate complete compiler-input
-/// authority; publication requires [`SelectedNativeHistoryImage`], which also
-/// verifies the reopened image bytes.
+/// authority; publication requires [`SelectedNativeHistoryImage`], which is
+/// bound through reopened image bytes or a fully admitted mapped-image proof.
+#[derive(Clone)]
 pub struct SelectedNativeHistoryBinding {
     target: crate::SemanticTargetKey,
     selection: crate::SelectedSemanticPlane,
@@ -175,6 +177,27 @@ impl SelectedNativeHistoryBinding {
         Ok(SelectedNativeHistoryImage {
             binding: self,
             image,
+        })
+    }
+
+    /// Binds an already fully admitted mapped image without rescanning its
+    /// bytes for identity or rerunning the complete grammar validator.
+    ///
+    /// `MappedSemanticImage` is nonconstructible outside the semantic image
+    /// admission boundary and retains both the verified bytes and their
+    /// complete-reader proof. The returned history image borrows that mapping;
+    /// callers must keep the mapping alive through production and publication.
+    pub fn bind_mapped_image<'bytes>(
+        &self,
+        image: &'bytes MappedSemanticImage,
+    ) -> Result<SelectedNativeHistoryImage<'bytes>, String> {
+        let expected_generation = self.selection.image().semantic_generation();
+        if image.identity() != self.image_identity || image.generation() != expected_generation {
+            return Err("mapped image differs from the committed selected image".to_owned());
+        }
+        Ok(SelectedNativeHistoryImage {
+            binding: self.clone(),
+            image: image.view(),
         })
     }
 
@@ -1623,6 +1646,21 @@ mod tests {
             .find_semantic_image(&target, selected.image())
             .expect("open selected native image")
             .expect("selected image is durable in the local store");
+        let selected_image_identity = selected_metadata.image_identity();
+        backend_semantic::ir::reset_semantic_image_validations();
+        let selected_mapped_image = selected_metadata
+            .bind_mapped_image(&selected_image)
+            .expect("bind the exact already-verified selected mapping");
+        assert_eq!(
+            selected_mapped_image.image_identity(),
+            selected_image_identity,
+        );
+        assert_eq!(
+            backend_semantic::ir::semantic_image_validations(),
+            0,
+            "binding reuses the mapping's nonconstructible full-grammar proof",
+        );
+        drop(selected_mapped_image);
         let wrong_generation = SemanticPlaneImageKey::new(
             selected.image().artifact_ordinal(),
             GenerationId::from_raw([0x98; 32]),
