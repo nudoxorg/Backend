@@ -73,6 +73,7 @@ pub(crate) enum RelationCompleteness {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RelationKindCoverage {
     pub(crate) observed: usize,
+    pub(crate) unavailable: usize,
     pub(crate) completeness: RelationCompleteness,
 }
 
@@ -97,9 +98,14 @@ impl Coverage {
                 .iter()
                 .map(|(kind, facts)| {
                     let coverage = match facts.completeness {
-                        RelationCompleteness::Unknown => "?",
+                        RelationCompleteness::Unknown => "unknown",
                     };
-                    format!("{} {}/{}", relation_name(*kind), facts.observed, coverage)
+                    format!(
+                        "{} {} observed, {} unavailable, completeness {coverage}",
+                        relation_name(*kind),
+                        facts.observed,
+                        facts.unavailable
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -285,6 +291,7 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
             Ok(SurfaceReply::Dependencies(DependencyFacts::Known(edges))) => {
                 for edge in edges.iter() {
                     let Some(target) = edge.target.resolved.as_ref() else {
+                        coverage.dependency_gaps += 1;
                         continue;
                     };
                     let exact = PackageRef::from_reference(target.clone());
@@ -292,6 +299,10 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
                         && !world_packages[index].deps.contains(to)
                     {
                         world_packages[index].deps.push(*to);
+                    } else if !package_index.contains_key(&exact) {
+                        // The owner supplied an exact dependency target that
+                        // this bounded graph did not represent.
+                        coverage.dependency_gaps += 1;
                     }
                 }
             }
@@ -410,6 +421,7 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
                     relation_candidates.push(symbol);
                 } else {
                     coverage.bounded = true;
+                    coverage.relation_gaps += 1;
                 }
             }
             match page.terminal {
@@ -466,20 +478,26 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
                     continue;
                 };
                 coverage.relation_roots += 1;
-                for relation in relations.iter() {
+                for (relation_index, relation) in relations.iter().enumerate() {
                     if edges.len() >= MAX_RELATIONS {
                         coverage.bounded = true;
+                        for omitted in &relations[relation_index..] {
+                            relation_gap(&mut coverage, omitted.relation);
+                        }
                         break 'relation_roots;
                     }
                     let (RowId::Symbol(from), RowId::Symbol(to)) = (relation.from, relation.to)
                     else {
+                        relation_gap(&mut coverage, relation.relation);
                         continue;
                     };
                     let (Some(&from), Some(&to)) = (symbol_keys.get(&from), symbol_keys.get(&to))
                     else {
+                        relation_gap(&mut coverage, relation.relation);
                         continue;
                     };
                     let Some(rel) = graph_relation(relation.relation) else {
+                        relation_gap(&mut coverage, relation.relation);
                         continue;
                     };
                     if semantic_edge_keys.insert((from, to, relation.relation))
@@ -551,6 +569,13 @@ fn package_order(
     ))
 }
 
+fn relation_gap(coverage: &mut Coverage, kind: SemanticLinkKind) {
+    coverage.relation_gaps += 1;
+    if let Some(facts) = coverage.relations_by_kind.get_mut(&kind) {
+        facts.unavailable += 1;
+    }
+}
+
 fn graph_kind(kind: DeclarationKind) -> Kind {
     match kind {
         DeclarationKind::Class | DeclarationKind::Struct => Kind::Struct,
@@ -603,7 +628,12 @@ fn module_path(file: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PACKAGES, PackageRef, retain_package};
+    use super::{
+        Coverage, MAX_PACKAGES, PackageRef, RelationCompleteness, RelationKindCoverage,
+        relation_gap, retain_package,
+    };
+    use backend_library::SemanticLinkKind;
+    use std::collections::BTreeMap;
 
     #[test]
     fn bounded_package_selection_keeps_the_current_project_even_when_it_is_last() {
@@ -622,6 +652,30 @@ mod tests {
             packages
                 .windows(2)
                 .all(|pair| { super::package_order(&pair[0], &pair[1], Some(&preferred)).is_lt() })
+        );
+    }
+
+    #[test]
+    fn relation_coverage_keeps_gaps_typed_and_completeness_unknown() {
+        let mut coverage = Coverage {
+            relations_by_kind: BTreeMap::from([(
+                SemanticLinkKind::Calls,
+                RelationKindCoverage::default(),
+            )]),
+            ..Coverage::default()
+        };
+        relation_gap(&mut coverage, SemanticLinkKind::Calls);
+
+        let calls = coverage
+            .relations_by_kind
+            .get(&SemanticLinkKind::Calls)
+            .expect("calls coverage");
+        assert_eq!(calls.unavailable, 1);
+        assert_eq!(calls.completeness, RelationCompleteness::Unknown);
+        assert!(
+            coverage
+                .words()
+                .contains("calls 0 observed, 1 unavailable, completeness unknown")
         );
     }
 }

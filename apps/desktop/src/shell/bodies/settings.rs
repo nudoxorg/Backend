@@ -248,7 +248,10 @@ fn registry(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         ctx,
     ));
     let root_words = ctx.say(source_root.as_ref().map_or_else(
-        || "Not set; the local reader uses the effective crates.io source under Cargo home.".to_owned(),
+        || {
+            "Not set; the local reader uses the effective crates.io source under Cargo home."
+                .to_owned()
+        },
         |path| path.display().to_string(),
     ));
     leaves.push(setting(
@@ -264,15 +267,26 @@ fn registry(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let offline = ctx.say("Explicit Add actions use the connected local service’s RegistryGateway. The desktop does not know its configured online/offline policy; start backend-locald with --registry-offline to disable network acquisition.");
     leaves.push(Leaf::new(quiet(offline, &measure, palette)));
     if source_root.is_none() {
-        let example = "NUDOX_CARGO_ROOT=/path/to/CARGO_HOME/registry/src/index.crates.io-…".to_owned();
+        let example =
+            "NUDOX_CARGO_ROOT=/path/to/CARGO_HOME/registry/src/index.crates.io-…".to_owned();
         let template_text = ctx.say(example.clone());
         leaves.push(Leaf::new(
             text(ty::MONO_SMALL, &measure, palette.ink2).child(template_text),
         ));
-        let copy = facet::controls::button("settings-copy-registry-root", "Copy setup template", &measure)
-            .ghost()
-            .on_click(move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(example.clone())));
-        leaves.push(setting("Authority resolution", copy.into_any_element(), ctx));
+        let copy = facet::controls::button(
+            "settings-copy-registry-root",
+            "Copy setup template",
+            &measure,
+        )
+        .ghost()
+        .on_click(move |_, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(example.clone()))
+        });
+        leaves.push(setting(
+            "Authority resolution",
+            copy.into_any_element(),
+            ctx,
+        ));
     }
     leaves
 }
@@ -458,16 +472,23 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             .into_any_element(),
         ctx,
     ));
-    let recheck = facet::controls::button(
-        "settings-recheck-mcp",
-        "Check again",
-        &measure,
-    )
-    .ghost()
-    .on_click(|_, cx| cx.refresh_windows());
+    let recheck = facet::controls::button("settings-recheck-mcp", "Check again", &measure)
+        .ghost()
+        .on_click(|_, cx| cx.refresh_windows());
     leaves.push(setting("Discovery", recheck.into_any_element(), ctx));
-    let Some(config) = mcp_config(snapshot) else {
-        let detail = ctx.say("Add a project and start the local service before configuring an MCP client. The desktop does not run an MCP server itself.");
+    let (project, data, endpoint) = owner_paths(snapshot);
+    let (Some(project), Some(data), Some(endpoint)) = (project, data, endpoint) else {
+        let detail = ctx.say("Add a project and start or reconnect to the local service before configuring an MCP client. Use Settings › Connections to test the desktop's local service link.");
+        leaves.push(Leaf::new(quiet(detail, &measure, palette)));
+        return leaves;
+    };
+    let Some(binary) = installed.as_deref() else {
+        let detail = ctx.say("Install backend-mcp beside Nudox, in ~/.cargo/bin, ~/.local/bin, a Homebrew or Nix bin directory, or on PATH. Then choose Check again to refresh discovery.");
+        leaves.push(Leaf::new(quiet(detail, &measure, palette)));
+        return leaves;
+    };
+    let Some(config) = mcp_config(&project, &data, &endpoint, binary) else {
+        let detail = ctx.say("The MCP setup paths could not be represented in the client configuration. Check the project and workspace paths in Settings › Diagnostics.");
         leaves.push(Leaf::new(quiet(detail, &measure, palette)));
         return leaves;
     };
@@ -595,20 +616,20 @@ fn owner_paths(snapshot: &AppSnapshot) -> (Option<PathBuf>, Option<PathBuf>, Opt
     (project, data, endpoint)
 }
 
-fn mcp_config(snapshot: &AppSnapshot) -> Option<String> {
-    let (project, data, endpoint) = owner_paths(snapshot);
-    let project = project?.to_str()?.to_owned();
-    let data = data?.to_str()?.to_owned();
-    let endpoint = endpoint?.to_str()?.to_owned();
-    let command = mcp_binary().map_or_else(
-        || "backend-mcp".to_owned(),
-        |path| path.to_string_lossy().into_owned(),
-    );
+fn mcp_config(project: &Path, data: &Path, endpoint: &Path, binary: &Path) -> Option<String> {
+    let project = project.to_str()?;
+    let data = data.to_str()?;
+    let endpoint = endpoint.to_str()?;
+    let binary = binary.to_str()?;
     let config = serde_json::json!({
         "mcpServers": {
             "nudox": {
-                "command": command,
-                "args": ["--project", project, "--workspace", data, "--endpoint", endpoint]
+                "command": binary,
+                "args": [
+                    "--project", project,
+                    "--workspace", data,
+                    "--endpoint", endpoint
+                ]
             }
         }
     });
@@ -621,16 +642,103 @@ fn mcp_binary() -> Option<PathBuf> {
     } else {
         "backend-mcp"
     };
-    if let Ok(current) = std::env::current_exe()
-        && let Some(sibling) = current.parent().map(|parent| parent.join(executable))
-        && sibling.is_file()
-    {
-        return Some(sibling);
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|current| current.parent().map(|parent| parent.join(executable)));
+    find_mcp_binary(
+        executable,
+        sibling,
+        std::env::var_os("PATH"),
+        std::env::var_os("CARGO_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+fn find_mcp_binary(
+    executable: &str,
+    sibling: Option<PathBuf>,
+    path: Option<std::ffi::OsString>,
+    cargo_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let mut candidates = sibling.into_iter().collect::<Vec<_>>();
+    if let Some(path) = path {
+        candidates.extend(
+            std::env::split_paths(&path)
+                .filter(|directory| directory.is_absolute())
+                .map(|directory| directory.join(executable)),
+        );
     }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|directory| directory.join(executable))
+    if let Some(cargo_home) = cargo_home.filter(|path| path.is_absolute()) {
+        candidates.push(cargo_home.join("bin").join(executable));
+    }
+    if let Some(home) = home.filter(|path| path.is_absolute()) {
+        candidates.extend(
+            [".cargo/bin", ".local/bin", ".nix-profile/bin"]
+                .into_iter()
+                .map(|directory| home.join(directory).join(executable)),
+        );
+    }
+    candidates.extend(
+        [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/run/current-system/sw/bin",
+            "/nix/var/nix/profiles/default/bin",
+        ]
+        .into_iter()
+        .map(|directory| PathBuf::from(directory).join(executable)),
+    );
+    let mut seen = std::collections::HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|candidate| seen.insert(candidate.clone()))
         .find(|candidate| candidate.is_file())
 }
 
 #[allow(dead_code)]
 fn _palette(_: &Palette, _: &Measure) {}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::find_mcp_binary;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn mcp_discovery_finds_a_user_install_outside_a_finder_path() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!("nudox-mcp-discovery-{nonce}"));
+        let binary = home.join(".cargo/bin/backend-mcp");
+        fs::create_dir_all(binary.parent().expect("binary directory")).expect("create bin");
+        fs::write(&binary, b"test executable").expect("write executable marker");
+
+        let found = find_mcp_binary(
+            "backend-mcp",
+            None,
+            Some("/usr/bin:/bin".into()),
+            None,
+            Some(home.clone()),
+        );
+
+        assert_eq!(found, Some(binary));
+        fs::remove_dir_all(home).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn mcp_discovery_does_not_use_a_relative_path_entry() {
+        let found = find_mcp_binary(
+            "nudox-test-no-mcp-binary",
+            None,
+            Some(PathBuf::from("relative/bin").into_os_string()),
+            None,
+            None,
+        );
+        assert!(found.is_none());
+    }
+}
