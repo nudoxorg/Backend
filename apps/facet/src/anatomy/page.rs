@@ -285,6 +285,20 @@ pub struct Door {
     pub from: bool,
 }
 
+impl Door {
+    /// The hover target keyboard focus should light for the element tracked
+    /// under `key`. Pointer and keyboard input use the same element id and
+    /// subject, so related occurrences answer identically.
+    #[must_use]
+    pub fn focus_target(&self, key: impl AsRef<str>) -> crate::hover::FocusTarget {
+        crate::hover::FocusTarget::new(hover_id(key.as_ref()), self.subject.clone())
+    }
+}
+
+fn hover_id(key: &str) -> ElementId {
+    ElementId::Name(SharedString::from(format!("{key}-hover")))
+}
+
 /// A fold's state: open or not, its clip motion, and its toggle.
 #[derive(Clone)]
 pub struct Fold {
@@ -367,7 +381,7 @@ pub fn named_as(
     // A row that opens a declaration carries its title's key: its name
     // becomes that page's title.
     let shared_key = title_key(door.subject.0.as_ref());
-    let mut lit = hover::hoverable(ElementId::Name(SharedString::from(format!("{key}-hover"))), door.subject.clone(), hue, move |lit| {
+    let mut lit = hover::hoverable(hover_id(&key), door.subject.clone(), hue, move |lit| {
         if share {
             crate::motion::shared::shared(shared_key, build(lit)).into_any_element()
         } else {
