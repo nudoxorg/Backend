@@ -1210,18 +1210,11 @@ impl QueryCoordinator {
         self.corpus.selected.document_order.len()
     }
 
-    /// Returns the exact workspace selected by the owner for this corpus.
-    #[must_use]
-    pub(crate) fn workspace_root(&self) -> WorkspaceRoot {
-        self.corpus.workspace
-    }
-
     /// Returns the typed workspace identity selected by this coordinator.
     #[must_use]
     pub(crate) const fn workspace_root(&self) -> WorkspaceRoot {
         self.corpus.workspace
     }
-
     /// Checks the non-root portion of a semantic binding against this exact
     /// selected view.  The read manifest and frontier include the immutable
     /// view identity, while the candidate root is derived from the document
