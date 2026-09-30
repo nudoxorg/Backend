@@ -470,7 +470,10 @@ impl RenderOnce for WeightCell {
         .edge(edge)
         .fill(mix(palette.plate.into(), palette.plate2.into(), hover))
         .w(self.width)
-        .h(self.height.at(scale))
+        // The caption is a fact, not decoration. At large text sizes it can
+        // take another line; keep the designed rest height but let the plate
+        // grow rather than cutting that line off at its lower bevel.
+        .min_h(self.height.at(scale))
         .child(glyph)
         .child(super::text::wrap(
             key(&self.id, "caption"),

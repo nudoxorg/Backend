@@ -44,6 +44,8 @@ use std::rc::Rc;
 struct Nav {
     /// The module open, by name.
     open: Option<SharedString>,
+    /// The release whose contents the open module belongs to.
+    reading_at: Option<SharedString>,
     /// The name a click on a shingle asked for.
     lit: Option<SharedString>,
     /// Whether the full berg is showing.
@@ -52,6 +54,8 @@ struct Nav {
     licence: Pose,
     /// The shingles of the module just opened, on their way to its cards.
     flight: Option<Flying>,
+    /// A different module chosen while the current carry is still returning.
+    pending: Option<Pending>,
     /// Where the open module's cards report their marks.
     marks: Marks,
 }
@@ -62,6 +66,140 @@ struct Flying {
     module: SharedString,
     stones: Rc<[Stone]>,
     carry: Carry,
+}
+
+/// A route requested while a different module's stones are returning home.
+#[derive(Clone, Debug)]
+struct Pending {
+    module: SharedString,
+    lit: Option<SharedString>,
+    stones: Option<Rc<[Stone]>>,
+}
+
+const CARRY_REST: f32 = 0.005;
+
+fn close_module(nav: &mut Nav, now: std::time::Instant) {
+    nav.open = None;
+    nav.lit = None;
+    nav.pending = None;
+    if let Some(flying) = nav.flight.as_mut()
+        && flying.carry.target() != 0.0
+    {
+        flying.carry.retarget(0.0, now);
+    }
+}
+
+fn read_release(nav: &mut Nav, reading_at: Option<SharedString>, now: std::time::Instant) {
+    if nav.reading_at != reading_at {
+        close_module(nav, now);
+        nav.reading_at = reading_at;
+    }
+}
+
+fn leave_for_symbol(nav: &mut Nav, now: std::time::Instant) {
+    let Some(module) = nav.open.clone() else { return };
+    let Some(flying) = nav.flight.as_ref() else { return };
+    if flying.module != module {
+        return;
+    }
+    queue_module(
+        nav,
+        Pending { module, lit: nav.lit.clone(), stones: None },
+        now,
+    );
+}
+
+fn queue_module(nav: &mut Nav, pending: Pending, now: std::time::Instant) {
+    nav.open = None;
+    nav.lit = None;
+    nav.pending = Some(pending);
+    if let Some(flying) = nav.flight.as_mut()
+        && flying.carry.target() != 0.0
+    {
+        flying.carry.retarget(0.0, now);
+    }
+}
+
+fn begin_carry(nav: &mut Nav, module: SharedString, stones: Vec<Stone>, now: std::time::Instant) {
+    if let Some(flying) = nav.flight.as_mut()
+        && flying.module == module
+    {
+        nav.pending = None;
+        flying.carry.retarget(1.0, now);
+        return;
+    }
+    if nav
+        .flight
+        .as_ref()
+        .is_some_and(|flying| !flying.carry.settled(now, CARRY_REST))
+    {
+        queue_module(nav, Pending { module, lit: None, stones: Some(stones.into()) }, now);
+        return;
+    }
+    nav.pending = None;
+    nav.flight = Some(Flying {
+        module,
+        stones: stones.into(),
+        carry: Carry::new(0.0, 1.0, now),
+    });
+}
+
+fn request_module(
+    nav: &mut Nav,
+    module: SharedString,
+    lit: Option<SharedString>,
+    now: std::time::Instant,
+) {
+    if let Some(flying) = nav.flight.as_mut()
+        && flying.module == module
+    {
+        nav.pending = None;
+        flying.carry.retarget(1.0, now);
+        nav.open = Some(module);
+        nav.lit = lit;
+        return;
+    }
+    if nav
+        .flight
+        .as_ref()
+        .is_some_and(|flying| !flying.carry.settled(now, CARRY_REST))
+    {
+        let stones = nav
+            .pending
+            .as_ref()
+            .filter(|pending| pending.module == module)
+            .and_then(|pending| pending.stones.clone());
+        queue_module(nav, Pending { module, lit, stones }, now);
+        return;
+    }
+    nav.flight = None;
+    nav.pending = None;
+    nav.open = Some(module);
+    nav.lit = lit;
+}
+
+fn finish_carry(nav: &mut Nav, now: std::time::Instant, reduced: bool) {
+    let returning = nav.flight.as_ref().is_some_and(|flying| flying.carry.target() == 0.0);
+    let landed = nav
+        .flight
+        .as_ref()
+        .is_some_and(|flying| flying.carry.settled(now, CARRY_REST));
+    if reduced || (returning && landed) {
+        nav.flight = None;
+        if let Some(pending) = nav.pending.take() {
+            nav.open = Some(pending.module.clone());
+            nav.lit = pending.lit;
+            if !reduced
+                && let Some(stones) = pending.stones
+            {
+                nav.flight = Some(Flying {
+                    module: pending.module,
+                    stones,
+                    carry: Carry::new(0.0, 1.0, now),
+                });
+            }
+        }
+    }
 }
 
 /// Everything the folio draws.
@@ -144,8 +282,10 @@ const BANNER_VERSION: TypeRole = TypeRole {
 impl Folio {
     fn state(&self, window: &mut Window, cx: &mut App) -> Entity<Nav> {
         let reopen = self.reopen.clone();
+        let reading_at = self.facts.at.clone();
         window.use_keyed_state(self.id.clone(), cx, move |_, _| Nav {
             open: reopen,
+            reading_at,
             ..Nav::default()
         })
     }
@@ -476,6 +616,164 @@ impl Folio {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{
+        Carry, Flying, Nav, Pending, Stone, begin_carry, close_module, finish_carry,
+        leave_for_symbol, read_release, request_module,
+    };
+    use gpui::Bounds;
+    use std::time::{Duration, Instant};
+
+    fn at(start: Instant, millis: u64) -> Instant {
+        start + Duration::from_millis(millis)
+    }
+
+    fn stone() -> Stone {
+        Stone { from: Bounds::default(), ink: gpui::Hsla::default() }
+    }
+
+    #[test]
+    fn escape_and_reopen_retarget_the_retained_carry_without_a_pose_or_velocity_jump() {
+        let start = Instant::now();
+        let stone = stone();
+        let mut nav = Nav {
+            open: Some("sync".into()),
+            flight: Some(Flying {
+                module: "sync".into(),
+                stones: vec![stone].into(),
+                carry: Carry::new(0.0, 1.0, start),
+            }),
+            ..Nav::default()
+        };
+
+        let close_at = at(start, 120);
+        let opening_pose = nav.flight.as_ref().unwrap().carry.sample(close_at);
+        close_module(&mut nav, close_at);
+        let closing_pose = nav.flight.as_ref().unwrap().carry.sample(close_at);
+        assert!((closing_pose.0 - opening_pose.0).abs() < 1e-5);
+        assert!((closing_pose.1 - opening_pose.1).abs() < 1e-4);
+        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 0.0);
+        assert_eq!(nav.flight.as_ref().unwrap().stones[0], stone);
+
+        let reopen_at = at(start, 180);
+        let before_reopen = nav.flight.as_ref().unwrap().carry.sample(reopen_at);
+        request_module(&mut nav, "sync".into(), Some("Mutex".into()), reopen_at);
+        let after_reopen = nav.flight.as_ref().unwrap().carry.sample(reopen_at);
+        assert!((after_reopen.0 - before_reopen.0).abs() < 1e-5);
+        assert!((after_reopen.1 - before_reopen.1).abs() < 1e-4);
+        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 1.0);
+        assert_eq!(nav.open.as_deref(), Some("sync"));
+        assert_eq!(nav.lit.as_deref(), Some("Mutex"));
+        assert!(nav.flight.as_ref().unwrap().carry.value(at(start, 1200)) > 0.99);
+    }
+
+    #[test]
+    fn changing_modules_finishes_the_old_return_before_starting_the_queued_carry() {
+        let start = Instant::now();
+        let destination = stone();
+        let mut nav = Nav {
+            open: Some("sync".into()),
+            flight: Some(Flying {
+                module: "sync".into(),
+                stones: vec![stone()].into(),
+                carry: Carry::new(0.0, 1.0, start),
+            }),
+            ..Nav::default()
+        };
+
+        let changed_at = at(start, 100);
+        begin_carry(&mut nav, "io".into(), vec![destination], changed_at);
+        request_module(&mut nav, "io".into(), Some("Read".into()), changed_at);
+        assert_eq!(nav.open, None);
+        assert_eq!(nav.pending.as_ref().map(|pending| pending.module.as_ref()), Some("io"));
+        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 0.0);
+
+        let landed_at = at(start, 1200);
+        finish_carry(&mut nav, landed_at, false);
+        assert_eq!(nav.open.as_deref(), Some("io"));
+        assert_eq!(nav.lit.as_deref(), Some("Read"));
+        assert!(nav.pending.is_none());
+        assert_eq!(nav.flight.as_ref().unwrap().module.as_ref(), "io");
+        assert_eq!(nav.flight.as_ref().unwrap().stones[0], destination);
+        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 1.0);
+        assert_eq!(nav.flight.as_ref().unwrap().carry.value(landed_at), 0.0);
+    }
+
+    #[test]
+    fn reduced_motion_lands_a_queued_route_at_its_endpoint() {
+        let start = Instant::now();
+        let mut nav = Nav {
+            flight: Some(Flying {
+                module: "sync".into(),
+                stones: vec![stone()].into(),
+                carry: Carry::new(0.0, 1.0, start),
+            }),
+            pending: Some(Pending { module: "io".into(), lit: None, stones: None }),
+            ..Nav::default()
+        };
+
+        finish_carry(&mut nav, at(start, 80), true);
+        assert_eq!(nav.open.as_deref(), Some("io"));
+        assert!(nav.flight.is_none());
+        assert!(nav.pending.is_none());
+    }
+
+    #[test]
+    fn leaving_for_a_symbol_returns_the_module_carry_and_restores_it_on_back() {
+        let start = Instant::now();
+        let mut nav = Nav {
+            open: Some("sync".into()),
+            lit: Some("Mutex".into()),
+            flight: Some(Flying {
+                module: "sync".into(),
+                stones: vec![stone()].into(),
+                carry: Carry::new(0.0, 1.0, start),
+            }),
+            ..Nav::default()
+        };
+
+        let left_at = at(start, 120);
+        let pose = nav.flight.as_ref().unwrap().carry.sample(left_at);
+        leave_for_symbol(&mut nav, left_at);
+        assert_eq!(nav.open, None);
+        assert_eq!(nav.pending.as_ref().and_then(|pending| pending.lit.as_deref()), Some("Mutex"));
+        assert_eq!(nav.flight.as_ref().unwrap().carry.sample(left_at), pose);
+
+        finish_carry(&mut nav, at(start, 1200), false);
+        assert_eq!(nav.open.as_deref(), Some("sync"));
+        assert_eq!(nav.lit.as_deref(), Some("Mutex"));
+        assert!(nav.flight.is_none());
+    }
+
+    #[test]
+    fn changing_release_retargets_the_retained_carry_back_to_the_new_map() {
+        let start = Instant::now();
+        let mut nav = Nav {
+            open: Some("sync".into()),
+            reading_at: Some("1.0".into()),
+            flight: Some(Flying {
+                module: "sync".into(),
+                stones: vec![stone()].into(),
+                carry: Carry::new(0.0, 1.0, start),
+            }),
+            ..Nav::default()
+        };
+
+        let changed_at = at(start, 120);
+        let pose = nav.flight.as_ref().unwrap().carry.sample(changed_at);
+        read_release(&mut nav, Some("2.0".into()), changed_at);
+        assert_eq!(nav.open, None);
+        assert_eq!(nav.reading_at.as_deref(), Some("2.0"));
+        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 0.0);
+        assert_eq!(nav.flight.as_ref().unwrap().carry.sample(changed_at).0, pose.0);
+
+        finish_carry(&mut nav, at(start, 1200), false);
+        assert!(nav.flight.is_none());
+        assert!(nav.pending.is_none());
+    }
+}
+
 /// A keyboard door for `target` around `element`: the shell's `j`/`k` walk to
 /// it and Enter runs `act` (only on the page the keyboard is on).
 pub(super) fn door(
@@ -554,6 +852,12 @@ impl RenderOnce for Folio {
         let facts = self.facts.clone();
         let nav = self.state(window, cx);
         let modules = self.map_modules();
+        let now = facet::motion::now(cx);
+        let reduce_motion = facet::motion::reduced(cx);
+        nav.update(cx, |nav, _| {
+            read_release(nav, facts.at.clone(), now);
+            finish_carry(nav, now, reduce_motion);
+        });
         let nav_value = nav.read(cx).clone();
         let open_at = nav_value
             .open
@@ -561,14 +865,16 @@ impl RenderOnce for Folio {
             .and_then(|name| facts.modules.iter().position(|m| m.name == name));
         // Shingles carried to the cards of the module just opened: how far
         // they have come (1: not flying, or landed).
-        let flying = nav_value
-            .flight
-            .clone()
-            .filter(|flying| open_at.is_some_and(|open| facts.modules[open].name == flying.module));
+        let flying = nav_value.flight.clone();
         let carried = flying
             .as_ref()
+            .filter(|flying| open_at.is_some_and(|open| facts.modules[open].name == flying.module))
             .map_or(1.0, |flying| progress(&flying.carry, cx));
-        if carried < 1.0 {
+        if !reduce_motion
+            && flying
+                .as_ref()
+                .is_some_and(|flying| !flying.carry.settled(now, CARRY_REST))
+        {
             request_frame(window, cx);
         }
 
@@ -722,11 +1028,7 @@ impl RenderOnce for Folio {
                         };
                         let now = facet::motion::now(cx);
                         carry_state.update(cx, |nav, _| {
-                            nav.flight = Some(Flying {
-                                module: name,
-                                stones: carrying.stones.into(),
-                                carry: Carry::new(0.0, 1.0, now),
-                            });
+                            begin_carry(nav, name, carrying.stones, now);
                         });
                     })
                     .on_open(move |module, item, _window, cx| {
@@ -735,9 +1037,9 @@ impl RenderOnce for Folio {
                             return;
                         };
                         let lit = item.and_then(|i| items.get(i)).cloned();
+                        let now = facet::motion::now(cx);
                         state.update(cx, |nav, cx| {
-                            nav.open = Some(name.clone());
-                            nav.lit = lit;
+                            request_module(nav, name.clone(), lit, now);
                             cx.notify();
                         });
                     });
@@ -746,12 +1048,12 @@ impl RenderOnce for Folio {
             Some(open) => self.open_module(open, &nav_value, &nav, &measure, carried),
         };
         // Esc folds the open module before the shell does anything of its own.
-        if open_at.is_some() && self.active {
+        if (open_at.is_some() || nav_value.pending.is_some()) && self.active {
             let state = nav.clone();
             self.targets.on_escape(Rc::new(move |_, cx| {
+                let now = facet::motion::now(cx);
                 state.update(cx, |nav, cx| {
-                    nav.open = None;
-                    nav.lit = None;
+                    close_module(nav, now);
                     cx.notify();
                 });
             }));
@@ -837,15 +1139,18 @@ impl RenderOnce for Folio {
             .flex_col()
             .w(measure.width())
             .gap(measure.space(Space::Wide));
-        // The shingles in the air paint last, above everything on the page.
-        let in_the_air = flying.filter(|_| carried < 1.0).map(|flying| {
-            flight(
-                key(&self.id, "flight"),
-                flying.stones,
-                nav_value.marks.clone(),
-                flying.carry,
-            )
-        });
+        // The shingles stay in the air while a close carries them back to the
+        // map, even after the module's cards have left the tree.
+        let in_the_air = flying
+            .filter(|flying| !flying.carry.settled(now, CARRY_REST))
+            .map(|flying| {
+                flight(
+                    key(&self.id, "flight"),
+                    flying.stones,
+                    nav_value.marks.clone(),
+                    flying.carry,
+                )
+            });
         if dedicated {
             return column
                 .children(ticker_block)
@@ -899,9 +1204,9 @@ impl Folio {
             .map(|(at, module)| {
                 let (state, name) = (nav.clone(), module.name.clone());
                 let act: Act = Rc::new(move |_, cx| {
+                    let now = facet::motion::now(cx);
                     state.update(cx, |nav, cx| {
-                        nav.open = Some(name.clone());
-                        nav.lit = None;
+                        request_module(nav, name.clone(), None, now);
                         cx.notify();
                     });
                 });
@@ -1091,23 +1396,24 @@ impl Folio {
         .current(Some(open))
         .on_pick(move |index, _window, cx| {
             if let Some(name) = pick_names.get(index) {
+                let now = facet::motion::now(cx);
                 pick_state.update(cx, |nav, cx| {
-                    nav.open = Some(name.clone());
-                    nav.lit = None;
+                    request_module(nav, name.clone(), None, now);
                     cx.notify();
                 });
             }
         })
         .on_close(move |_window, cx| {
+            let now = facet::motion::now(cx);
             close_state.update(cx, |nav, cx| {
-                nav.open = None;
-                nav.lit = None;
+                close_module(nav, now);
                 cx.notify();
             });
         });
         let links = self.links.clone();
         let targets = self.targets.clone();
         let active = self.active;
+        let route_state = nav.clone();
         let package = self.package.clone();
         let symbols: Vec<crate::model::pages::SymbolRef> =
             module.items.iter().map(|i| i.symbol.clone()).collect();
@@ -1123,12 +1429,13 @@ impl Folio {
             for (index, symbol) in symbols.iter().enumerate() {
                 let leave_id = PageTarget::Card(symbol.clone()).id();
                 let act: Act = {
-                    let (links, package_text, symbol, recall, leave_id) = (
+                    let (links, package_text, symbol, recall, leave_id, route_state) = (
                         links.clone(),
                         package_text.clone(),
                         symbol.clone(),
                         recall.clone(),
                         leave_id.clone(),
+                        route_state.clone(),
                     );
                     Rc::new(move |_, cx| {
                         // The page is left by this card: Back lands on it again.
@@ -1136,6 +1443,11 @@ impl Folio {
                         recall.focus(leave_id.clone());
                         recall.remember_leave(leaving, leave_id.clone());
                         if let Some(route) = symbol_route(&package_text, &symbol) {
+                            let now = facet::motion::now(cx);
+                            route_state.update(cx, |nav, cx| {
+                                leave_for_symbol(nav, now);
+                                cx.notify();
+                            });
                             links.dispatch(Intent::Navigate(route), cx);
                         }
                     })
@@ -1164,6 +1476,7 @@ impl Folio {
         .lit(lit)
         .on_open({
             let package_text = package_text.clone();
+            let route_state = route_state.clone();
             move |index, _window, cx| {
                 if let Some(symbol) = open_symbols.get(index)
                     && let Some(route) = symbol_route(&package_text, symbol)
@@ -1172,6 +1485,11 @@ impl Folio {
                     let leaving = open_links.snapshot(cx).route().clone();
                     click_recall.focus(id.clone());
                     click_recall.remember_leave(leaving, id);
+                    let now = facet::motion::now(cx);
+                    route_state.update(cx, |nav, cx| {
+                        leave_for_symbol(nav, now);
+                        cx.notify();
+                    });
                     open_links.dispatch(Intent::Navigate(route), cx);
                 }
             }

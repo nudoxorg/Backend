@@ -9,8 +9,8 @@
 use crate::tokens::TypeRole;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Font, FontStyle, FontWeight, Global,
-    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, SharedString, TextRun,
-    Window, px,
+    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Position, ScrollHandle,
+    SharedString, Style, TextRun, Window, px, size,
 };
 use std::cell::RefCell;
 
@@ -610,6 +610,88 @@ pub fn record_scroll_with_offset(
     offset: gpui::Point<Pixels>,
 ) {
     record_scroll_with_offset_value(cx, key, viewport, content, Some(ScrollOffset { x: f32::from(offset.x), y: f32::from(offset.y) }));
+}
+
+/// Measures a live GPUI scroll handle and publishes its viewport, reachable
+/// content extent, and current offset. Place it as a sibling immediately
+/// after the actual scrolling child, and wrap that child in [`scroll_scope`]
+/// with the same key. Both observations then come from the same native handle
+/// and the renderer's actual child ancestry.
+pub fn scroll_probe(key: impl Into<SharedString>, handle: ScrollHandle) -> impl IntoElement {
+    ScrollProbe { key: ElementId::Name(key.into()), handle }
+}
+
+struct ScrollProbe {
+    key: ElementId,
+    handle: ScrollHandle,
+}
+
+impl IntoElement for ScrollProbe {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for ScrollProbe {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.position = Position::Absolute;
+        style.size.width = px(0.0).into();
+        style.size.height = px(0.0).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        if !enabled(cx) {
+            return ();
+        }
+        let viewport = self.handle.bounds();
+        let reach = self.handle.max_offset();
+        let content = Bounds::new(
+            viewport.origin,
+            size(viewport.size.width + reach.x, viewport.size.height + reach.y),
+        );
+        record_scroll_with_offset(cx, &self.key, viewport, content, self.handle.offset());
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
 }
 
 fn record_scroll_with_offset_value(

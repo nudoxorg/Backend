@@ -12,9 +12,8 @@ use facet::icons::Kind;
 use facet::tokens::TypeRole;
 use facet::{Measure, Palette, Set as _};
 use gpui::{
-    App, Bounds, Context, Div, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
-    IntoElement, LayoutId, ParentElement, Pixels, Refineable, SharedString, Style, StyleRefinement,
-    Styled, Task, Window, div, px, size,
+    App, Context, Div, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, Task,
+    Window, div, px,
 };
 use std::time::Duration;
 
@@ -242,85 +241,6 @@ impl HoverIntent {
             links.cancel_prefetch(&key, cx);
         }
     }
-}
-
-/// Publishes a scroll container's viewport and full content extent to the
-/// probe ledger, so the harness's `offscreen` lint can tell rows reachable by
-/// scrolling from rows clipped away. Add it right after the container, as
-/// its sibling: the container has settled its scroll bounds by then.
-pub(crate) fn scroll_probe(key: &'static str, handle: gpui::ScrollHandle) -> impl IntoElement {
-    ScrollProbe { key, handle, style: StyleRefinement::default() }.absolute().size_0()
-}
-
-struct ScrollProbe {
-    key: &'static str,
-    handle: gpui::ScrollHandle,
-    style: StyleRefinement,
-}
-
-impl Styled for ScrollProbe {
-    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
-}
-
-impl IntoElement for ScrollProbe {
-    type Element = Self;
-    fn into_element(self) -> Self { self }
-}
-
-impl Element for ScrollProbe {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> { None }
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        let mut style = Style::default();
-        style.refine(&self.style);
-        (window.request_layout(style, [], cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        _request_layout: &mut (),
-        _window: &mut Window,
-        cx: &mut App,
-    ) {
-        if !facet::probe::enabled(cx) { return; }
-        let viewport = self.handle.bounds();
-        let reach = self.handle.max_offset();
-        let content = Bounds::new(
-            viewport.origin,
-            size(viewport.size.width + reach.x, viewport.size.height + reach.y),
-        );
-        facet::probe::record_scroll_with_offset(
-            cx,
-            &ElementId::Name(SharedString::new_static(self.key)),
-            viewport,
-            content,
-            self.handle.offset(),
-        );
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        _request_layout: &mut (),
-        _prepaint: &mut (),
-        _window: &mut Window,
-        _cx: &mut App,
-    ) {}
 }
 
 /// A key cap that shows over a shell-drawn control while ⌘ is held (facet

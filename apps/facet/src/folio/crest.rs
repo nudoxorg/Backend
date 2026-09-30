@@ -67,7 +67,7 @@ pub fn cell(id: &ElementId, label: &str, accent: Option<String>, note: Option<&s
                 .min_w_0()
                 .flex()
                 .justify_end()
-                .child(ellipsis(key(id, "note"), note.to_owned(), NOTE, palette.ink3, measure)),
+                .child(wrap(key(id, "note"), note.to_owned(), NOTE, palette.ink3, measure, None)),
         );
     }
     let mut edge = Edge::of(Bevel::Rest, palette);

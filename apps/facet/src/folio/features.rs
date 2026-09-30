@@ -3,7 +3,7 @@
 //! simulate either one.
 
 use super::berg::lines;
-use super::text::{key, one};
+use super::text::{key, one, wrap};
 use crate::measure::{Measure, Space};
 use crate::paint::geom::{Fill, Poly, pt};
 use crate::theme::ActiveFacet;
@@ -141,95 +141,6 @@ pub fn feature_preview(
     measure: &Measure,
 ) -> FeaturePreview {
     FeaturePreview { id: id.into(), facts, measure: *measure, width }
-}
-
-struct PreviewScrollProbe {
-    key: SharedString,
-    handle: ScrollHandle,
-    style: StyleRefinement,
-}
-
-impl Styled for PreviewScrollProbe {
-    fn style(&mut self) -> &mut StyleRefinement {
-        &mut self.style
-    }
-}
-
-impl IntoElement for PreviewScrollProbe {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
-impl Element for PreviewScrollProbe {
-    type RequestLayoutState = Style;
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Style) {
-        let mut style = Style::default();
-        style.refine(&self.style);
-        (window.request_layout(style.clone(), [], cx), style)
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut Style,
-        _: &mut Window,
-        cx: &mut App,
-    ) {
-        if !crate::probe::enabled(cx) {
-            return;
-        }
-        let viewport = self.handle.bounds();
-        let reach = self.handle.max_offset();
-        let content = Bounds::new(
-            viewport.origin,
-            gpui::size(viewport.size.width + reach.x, viewport.size.height + reach.y),
-        );
-        crate::probe::record_scroll_with_offset(
-            cx,
-            &ElementId::Name(self.key.clone()),
-            viewport,
-            content,
-            self.handle.offset(),
-        );
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut Style,
-        _: &mut (),
-        _: &mut Window,
-        _: &mut App,
-    ) {
-    }
-}
-
-fn scroll_probe(key: impl Into<SharedString>, handle: ScrollHandle) -> impl IntoElement {
-    PreviewScrollProbe { key: key.into(), handle, style: StyleRefinement::default() }
-        .absolute()
-        .size_0()
 }
 
 /// A padlock, `size` px, its shackle `open` (0 closed, 1 lifted).
@@ -491,7 +402,14 @@ impl RenderOnce for FeaturePreview {
         let mut head = div().flex().flex_wrap().items_baseline().gap_x(measure.space(Space::Snug));
         head = head
             .child(one(key(&self.id, "label"), "Features", LABEL, palette.ink3, &measure))
-            .child(one(key(&self.id, "profile"), "read only · manifest defaults", SMALL, palette.ink3, &measure))
+            .child(wrap(
+                key(&self.id, "profile"),
+                "read only · manifest defaults",
+                SMALL,
+                palette.ink3,
+                &measure,
+                None,
+            ))
             .child(one(key(&self.id, "on"), resolved.on.len().to_string(), NUMBER, palette.ink0, &measure))
             .child(one(key(&self.id, "of"), format!("of {} on", facts.names.len()), LABEL, palette.ink3, &measure));
         if !resolved.pulled.is_empty() {
@@ -544,7 +462,7 @@ impl RenderOnce for FeaturePreview {
             .w(self.width)
             .child(head)
             .child(row)
-            .child(scroll_probe(scroll_key, scroll))
+            .child(crate::probe::scroll_probe(scroll_key, scroll))
     }
 }
 

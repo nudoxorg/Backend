@@ -11,7 +11,7 @@ use super::listing::{Head, Releases, StepDoes, StepOut, Title};
 use super::row::{Do, Fold, Heading, Item, Mark, Row, Trailing};
 use crate::navigation::Intent;
 use crate::shell::focus::Zone;
-use crate::shell::kit::{kind_mark, scroll_probe, text};
+use crate::shell::kit::{kind_mark, text};
 use facet::icons::{self, IconSize, Kind, KindSize};
 use facet::tokens::fluid::SideForm;
 use facet::tokens::ty;
@@ -107,7 +107,7 @@ impl Shelf {
                         .children(self.sticky(measure, palette, cx)),
                 ),
             )
-            .child(scroll_probe(
+            .child(facet::probe::scroll_probe(
                 "shelf-rows",
                 self.scroll.0.borrow().base_handle.clone(),
             ))

@@ -1631,7 +1631,7 @@ impl Render for Reader {
             }
             _ => root = root.child(scroller),
         }
-        root.child(super::kit::scroll_probe("reader-scroll", self.scroll.clone()))
+        root.child(facet::probe::scroll_probe("reader-scroll", self.scroll.clone()))
             .child(glow)
             .text_color(palette.ink1.hsla())
             .font_family(facet::fonts::family(ty::BODY))
