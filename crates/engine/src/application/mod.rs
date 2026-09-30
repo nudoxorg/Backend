@@ -59,10 +59,10 @@ pub use self::documentation::{
     DocumentationTextPart, DocumentationType, DocumentationTypeView,
 };
 pub use self::embedding_provision::{
-    EmbeddingRuntimeError, EmbeddingRuntimeInstall, EmbeddingRuntimeLimits,
-    EmbeddingRuntimeProvision, EmbeddingRuntimeStatus, EmbeddingRuntimeSummary,
-    EmbeddingUnavailableReason, embedding_runtime_resident_credit_bytes, inspect_embedding_runtime,
-    install_embedding_runtime, remove_embedding_runtime,
+    EmbeddingRuntimeError, EmbeddingRuntimeInstall, EmbeddingRuntimeIoPhase,
+    EmbeddingRuntimeLimits, EmbeddingRuntimeProvision, EmbeddingRuntimeStatus,
+    EmbeddingRuntimeSummary, EmbeddingUnavailableReason, embedding_runtime_resident_credit_bytes,
+    inspect_embedding_runtime, install_embedding_runtime, remove_embedding_runtime,
 };
 pub use self::host::{
     LocalCompilerHost, LocalCompilerHostError, LocalHostDirectory, LocalHostDiscovery,
