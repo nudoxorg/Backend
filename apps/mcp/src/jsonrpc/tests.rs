@@ -1616,6 +1616,159 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
 }
 
 #[test]
+fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
+    for mutation in [
+        "query", "limit", "detail", "project", "session", "tamper", "expired", "raw",
+    ] {
+        let mut server = ready(Fake {
+            surface_index_search_pages: true,
+            ..Fake::default()
+        });
+        let first = call(
+            &mut server,
+            "backend.index_search",
+            &json!({"query":"maven","limit":1,"detail":"summary"}),
+        );
+        let cursor = first["structuredContent"]["nextCursor"]
+            .as_str()
+            .expect("first page carries a signed cursor")
+            .to_owned();
+        let mut arguments = json!({
+            "query": "maven",
+            "limit": 1,
+            "detail": "summary",
+            "cursor": cursor
+        });
+        match mutation {
+            "query" => arguments["query"] = json!("spring"),
+            "limit" => arguments["limit"] = json!(2),
+            "detail" => arguments["detail"] = json!("full"),
+            "project" => server.project = "/other-project".to_owned(),
+            "session" => server.cursor_secret = [8; 32],
+            "tamper" => {
+                let token = arguments["cursor"].as_str().expect("cursor token");
+                let mut changed = token.to_owned();
+                let final_byte = changed.pop().expect("MAC byte");
+                changed.push(if final_byte == '0' { '1' } else { '0' });
+                arguments["cursor"] = json!(changed);
+            }
+            "expired" => {
+                let context_arguments = json!({"query":"maven","limit":1,"detail":"summary"});
+                let context = continuation_context(
+                    PROJECT,
+                    "backend.index_search",
+                    context_arguments.as_object().expect("tool arguments"),
+                    Detail::Summary,
+                );
+                arguments["cursor"] = json!(server.sign_cursor_token_at(
+                    unix_seconds().saturating_sub(1),
+                    "maven-owner-v4",
+                    &context
+                ));
+            }
+            "raw" => arguments["cursor"] = json!("maven-owner-v4"),
+            _ => unreachable!(),
+        }
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.index_search","arguments":arguments}),
+        );
+        assert_eq!(response["error"]["code"], -32602, "mutation={mutation}");
+        assert_eq!(server.product.surface_index_search_seen.len(), 1);
+    }
+}
+
+#[test]
+fn index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools() {
+    let mut named = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let named_first = call(
+        &mut named,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1}),
+    );
+    let named_cursor = named_first["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("named tool cursor")
+        .to_owned();
+    let generic_replay = request(
+        &mut named,
+        "tools/call",
+        &json!({
+            "name": SURFACE_TOOL,
+            "arguments": {
+                "command": {
+                    "operation": "index-search",
+                    "query": "maven",
+                    "limit": 1,
+                    "cursor": named_cursor
+                }
+            }
+        }),
+    );
+    assert_eq!(generic_replay["error"]["code"], -32602);
+    assert_eq!(named.product.surface_index_search_seen.len(), 1);
+
+    let mut generic = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let generic_first = call(
+        &mut generic,
+        SURFACE_TOOL,
+        &json!({"command":{"operation":"index-search","query":"maven","limit":1}}),
+    );
+    let generic_cursor = generic_first["structuredContent"]["surface"]["data"]["next_cursor"]
+        .as_str()
+        .expect("generic surface cursor")
+        .to_owned();
+    let named_replay = request(
+        &mut generic,
+        "tools/call",
+        &json!({
+            "name": "backend.index_search",
+            "arguments": {"query":"maven","limit":1,"cursor":generic_cursor}
+        }),
+    );
+    assert_eq!(named_replay["error"]["code"], -32602);
+    assert_eq!(generic.product.surface_index_search_seen.len(), 1);
+}
+
+#[test]
+fn stale_named_index_search_cursor_is_a_restartable_refusal() {
+    let mut server = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let first = call(
+        &mut server,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1}),
+    );
+    let cursor = first["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("first page carries a cursor")
+        .to_owned();
+    server.product.surface_index_search_stale = true;
+    let response = call(
+        &mut server,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1,"cursor":cursor}),
+    );
+    assert_eq!(response["isError"], true);
+    assert_eq!(response["structuredContent"]["answer"], "fault");
+    assert_eq!(response["structuredContent"]["slug"], "cursor-mismatch");
+    assert!(text_of(&response).contains("restart the query"));
+    assert_eq!(
+        server.product.surface_index_search_seen,
+        vec![None, Some("maven-owner-v4".to_owned())]
+    );
+}
+
+#[test]
 fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
     for mutation in [
         "query", "limit", "detail", "project", "session", "tamper", "expired", "raw",
