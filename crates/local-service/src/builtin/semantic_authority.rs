@@ -44,7 +44,7 @@ use backend_version::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOCAL_BRANCH: &str = "locald";
@@ -360,6 +360,82 @@ struct SelectedClosureImageLoader {
     selections: RwLock<SelectedClosureSnapshot>,
 }
 
+/// Holds the serving-selector write lock from validation through the durable
+/// workspace-marker commit. The guard is consumed only after that marker is
+/// durable, preventing a native-history lease from crossing the commit gap.
+pub(crate) struct ProductSelectionPublication<'a> {
+    selections: RwLockWriteGuard<'a, SelectedClosureSnapshot>,
+    admitted: Vec<(
+        ProductSemanticPublicationKey,
+        SemanticPublicationClaim,
+        SelectedGeneration,
+    )>,
+}
+
+impl ProductSelectionPublication<'_> {
+    pub(crate) fn commit(self) -> Vec<(ProductSemanticPublicationKey, SelectedGeneration)> {
+        let Self {
+            mut selections,
+            admitted,
+        } = self;
+        for (key, claim, _) in &admitted {
+            selections.by_product.insert(key.clone(), *claim);
+        }
+        admitted
+            .into_iter()
+            .map(|(key, _, selected)| (key, selected))
+            .collect()
+    }
+}
+
+/// A read lease over the exact product selection used by native V3
+/// publication. Holding this value blocks the matching selector writer until
+/// the downstream history reference CAS has completed.
+pub(crate) struct CommittedSemanticSelectionLease<'a> {
+    authority: &'a SemanticAuthority,
+    key: ProductSemanticPublicationKey,
+    claim: SemanticPublicationClaim,
+    selected: SelectedGeneration,
+    _selections: RwLockReadGuard<'a, SelectedClosureSnapshot>,
+}
+
+impl CommittedSemanticSelectionLease<'_> {
+    pub(crate) fn selected_plane(
+        &self,
+    ) -> Result<super::versioned_planes::SelectedVersionedPlanePublication, BuiltinModelError> {
+        let reopened = reopen_selected_compiler_metadata(&self.authority.store, &self.selected)
+            .map_err(|error| {
+                BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
+            })?;
+        let (claim, _) = reopen_record(&self.authority.store, &self.selected)?;
+        if claim != self.claim {
+            return Err(BuiltinModelError(
+                "committed semantic claim differs from its retained closure".to_owned(),
+            ));
+        }
+        super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
+            &self.key,
+            &self.selected,
+            &reopened,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
+        })
+    }
+
+    pub(crate) fn selected_native_image_identity(
+        &self,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
+        self.authority.selected_native_image_identity_for(
+            &self.key,
+            self.claim,
+            &self.selected,
+            image,
+        )
+    }
+}
+
 impl SelectedClosureImageLoader {
     fn remember(
         &self,
@@ -412,9 +488,14 @@ impl SelectedClosureImageLoader {
         &self,
         entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
     ) -> Result<Vec<(ProductSemanticPublicationKey, SelectedGeneration)>, BuiltinModelError> {
-        let mut selections = self.selections.write().map_err(|_| {
-            BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
-        })?;
+        Ok(self.prepare_product_selections(entries)?.commit())
+    }
+
+    fn prepare_product_selections(
+        &self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    ) -> Result<ProductSelectionPublication<'_>, BuiltinModelError> {
+        let selections = self.acquire_publication_write()?;
         let mut seen = BTreeSet::new();
         let mut admitted = Vec::with_capacity(entries.len());
         for (key, claim) in entries {
@@ -435,37 +516,10 @@ impl SelectedClosureImageLoader {
                 })?;
             admitted.push((key, claim, selected));
         }
-        for (key, claim, _) in &admitted {
-            selections.by_product.insert(key.clone(), *claim);
-        }
-        Ok(admitted
-            .into_iter()
-            .map(|(key, _, selected)| (key, selected))
-            .collect())
-    }
-
-    fn validate_product_selections(
-        &self,
-        entries: &[(ProductSemanticPublicationKey, SemanticPublicationClaim)],
-    ) -> Result<(), BuiltinModelError> {
-        let selections = self.selections.read().map_err(|_| {
-            BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
-        })?;
-        let mut seen = BTreeSet::new();
-        for (key, claim) in entries {
-            if !seen.insert(key) {
-                return Err(BuiltinModelError(
-                    "product selection transaction contains a duplicate key".to_owned(),
-                ));
-            }
-            let binding = *claim.binding().identity.as_ref();
-            if !selections.by_binding.contains_key(&(key.clone(), binding)) {
-                return Err(BuiltinModelError(
-                    "product selection names a closure absent from admitted history".to_owned(),
-                ));
-            }
-        }
-        Ok(())
+        Ok(ProductSelectionPublication {
+            selections,
+            admitted,
+        })
     }
 
     fn committed(
@@ -482,6 +536,13 @@ impl SelectedClosureImageLoader {
         let selections = self.selections.read().map_err(|_| {
             BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
         })?;
+        Self::committed_pair_in(&selections, key)
+    }
+
+    fn committed_pair_in(
+        selections: &SelectedClosureSnapshot,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
         let claim = selections.by_product.get(key).copied().ok_or_else(|| {
             BuiltinModelError("product has no committed semantic selection".to_owned())
         })?;
@@ -495,6 +556,22 @@ impl SelectedClosureImageLoader {
                 )
             })?;
         Ok((claim, selected))
+    }
+
+    fn acquire_publication_read(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, SelectedClosureSnapshot>, BuiltinModelError> {
+        self.selections.read().map_err(|_| {
+            BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
+        })
+    }
+
+    fn acquire_publication_write(
+        &self,
+    ) -> Result<RwLockWriteGuard<'_, SelectedClosureSnapshot>, BuiltinModelError> {
+        self.selections.write().map_err(|_| {
+            BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
+        })
     }
 
     fn clear_product_selection(
@@ -943,6 +1020,23 @@ impl SemanticAuthority {
         })
     }
 
+    /// Borrows the serving-selector read lock for a publication that must
+    /// remain bound to this exact product marker through an external CAS.
+    pub(crate) fn committed_selection_lease(
+        &self,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<CommittedSemanticSelectionLease<'_>, BuiltinModelError> {
+        let selections = self.image_loader.acquire_publication_read()?;
+        let (claim, selected) = SelectedClosureImageLoader::committed_pair_in(&selections, key)?;
+        Ok(CommittedSemanticSelectionLease {
+            authority: self,
+            key: key.clone(),
+            claim,
+            selected,
+            _selections: selections,
+        })
+    }
+
     fn selected_generation_stamp(
         key: &ProductSemanticPublicationKey,
         selected: &SelectedGeneration,
@@ -1025,6 +1119,16 @@ impl SemanticAuthority {
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
         let (expected_claim, selected) = self.image_loader.committed_pair(key)?;
+        self.selected_native_image_identity_for(key, expected_claim, &selected, image)
+    }
+
+    fn selected_native_image_identity_for(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        selected: &SelectedGeneration,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
         let (actual_claim, _) = reopen_record(&self.store, &selected)?;
         if actual_claim != expected_claim {
             return Err(BuiltinModelError(
@@ -2498,25 +2602,41 @@ impl SemanticAuthority {
         self.image_loader.remember(key, claim, selected)
     }
 
-    /// Advances the process-local serving selector after the product root has
-    /// durably committed the matching semantic relation row.
-    pub(crate) fn commit_product_selections(
+    /// Acquires the serving-selector write lock and validates every candidate
+    /// before the caller commits the corresponding workspace-root intent.
+    pub(crate) fn prepare_product_selections(
+        &self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    ) -> Result<ProductSelectionPublication<'_>, BuiltinModelError> {
+        self.image_loader.prepare_product_selections(entries)
+    }
+
+    /// Commits one workspace intent while excluding readers of the selected
+    /// product marker, then installs its process-local claims under the same
+    /// selector lock. Native V3 history holds a read lease from this lock
+    /// through its branch compare-and-swap.
+    pub(crate) fn commit_product_selection_transaction<T>(
         &mut self,
         entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
-    ) -> Result<(), BuiltinModelError> {
-        let selected = self.image_loader.commit_product_selections(entries)?;
+        persist_marker: impl FnOnce() -> Result<T, BuiltinModelError>,
+    ) -> Result<T, BuiltinModelError> {
+        let publication = self.prepare_product_selections(entries)?;
+        let result = persist_marker()?;
+        let selected = publication.commit();
+        self.remember_product_selection_observations(selected);
+        Ok(result)
+    }
+
+    /// Records the projection-local freshness events after the matching
+    /// workspace selection marker and process-local selector have committed.
+    pub(crate) fn remember_product_selection_observations(
+        &mut self,
+        selected: Vec<(ProductSemanticPublicationKey, SelectedGeneration)>,
+    ) {
         for (key, selected) in selected {
             self.committed_observations
                 .insert(key, selected.observation().clone());
         }
-        Ok(())
-    }
-
-    pub(crate) fn validate_product_selections(
-        &self,
-        entries: &[(ProductSemanticPublicationKey, SemanticPublicationClaim)],
-    ) -> Result<(), BuiltinModelError> {
-        self.image_loader.validate_product_selections(entries)
     }
 
     pub(crate) fn freshness(
@@ -3212,6 +3332,50 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn committed_marker_writer_excludes_native_selection_readers_until_publication_finishes() {
+        let workspace = ScratchWorkspace::new();
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("open authority");
+        let reader_loader = Arc::clone(&authority.image_loader);
+        let (attempted_sender, attempted_receiver) = std::sync::mpsc::channel();
+        let (acquired_sender, acquired_receiver) = std::sync::mpsc::channel();
+        let mut reader = None;
+
+        authority
+            .commit_product_selection_transaction(Vec::new(), || {
+                reader = Some(std::thread::spawn(move || {
+                    attempted_sender
+                        .send(())
+                        .expect("signal selection read attempt");
+                    let _lease = reader_loader
+                        .acquire_publication_read()
+                        .expect("acquire committed selection read lease");
+                    acquired_sender
+                        .send(())
+                        .expect("signal selection read lease");
+                }));
+                attempted_receiver
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("reader attempts during durable marker callback");
+                assert!(
+                    acquired_receiver
+                        .recv_timeout(std::time::Duration::from_millis(30))
+                        .is_err(),
+                    "a V3 selection reader crossed the in-progress marker commit"
+                );
+                Ok(())
+            })
+            .expect("commit empty marker transaction");
+
+        acquired_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("selection reader proceeds after marker and selector publication");
+        reader
+            .expect("reader thread started")
+            .join()
+            .expect("selection reader thread completes");
     }
 
     struct RejectingS3Publisher {
