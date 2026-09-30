@@ -2654,8 +2654,8 @@ fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
     );
     assert_eq!(
         crate::engine::test_support::binding_work(&source),
-        (2, 4),
-        "the merged segment has two live rows; only the changed row needs four source-posting checks"
+        (2, 12),
+        "both merged rows rebind; revision8 has three identifier lexemes with four postings each"
     );
     assert_eq!(term_hits(&source, "stablecanary"), vec![stable_id]);
     for revision in 0..7 {
@@ -2663,6 +2663,9 @@ fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
     }
     assert!(term_hits(&source, "revision7").is_empty());
     assert_eq!(term_hits(&source, "revision8"), vec![changing_id]);
+    assert_eq!(term_hits(&source, "revision"), vec![changing_id]);
+    assert_eq!(term_hits(&source, "8"), vec![changing_id]);
+    assert!(term_hits(&source, "7").is_empty());
 }
 
 #[test]
