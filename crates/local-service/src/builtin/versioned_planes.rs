@@ -12,8 +12,8 @@ use backend_extension_turso::{
 };
 use backend_replication::{
     ByteRange, IrHydrationRequest, SelectedGenerationSource, SelectedGenerationStamp,
-    SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet,
-    SemanticTargetKey,
+    SelectedNativeImageSource, SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk,
+    SemanticManifestGet, SemanticTargetKey,
 };
 use backend_semantic::ir::{SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest};
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
@@ -264,6 +264,20 @@ impl SelectedGenerationSource for SemanticAuthoritySelectionSource<'_> {
         let current = self.current_selected_plane()?;
         Ok(current.stamp() == expected_stamp
             && current.metadata().artifact_for_image(image).is_some())
+    }
+}
+
+impl SelectedNativeImageSource for SemanticAuthoritySelectionSource<'_> {
+    fn selected_semantic_target(&mut self) -> Result<SemanticTargetKey, Self::Error> {
+        self.target()
+    }
+
+    fn selected_native_image_identity(
+        &mut self,
+        image: SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, Self::Error> {
+        self.authority
+            .selected_native_image_identity(&self.key, image)
     }
 }
 
