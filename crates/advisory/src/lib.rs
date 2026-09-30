@@ -185,6 +185,7 @@ unaffected = ["< 1.0.0"]
             etag: Some("x".to_owned()),
             last_modified: None,
             observed_at: 1,
+            expires_at: None,
             not_modified: false,
         };
         let checkpoint = journal
@@ -286,6 +287,7 @@ unaffected = ["< 1.0.0"]
             etag: Some("withdrawal-1".to_owned()),
             last_modified: None,
             observed_at: 10,
+            expires_at: None,
             not_modified: false,
         };
         journal

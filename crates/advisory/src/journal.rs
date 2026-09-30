@@ -62,6 +62,11 @@ pub struct FeedFreshness {
     pub last_modified: Option<String>,
     /// Local wall-clock observation in seconds.
     pub observed_at: u64,
+    /// Hard source-provided freshness deadline, when the authority supplied
+    /// Cache-Control or Expires metadata. Product policy may impose an earlier
+    /// deadline with its configured maximum age.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
     /// Whether this response carried a body or validated the previous body.
     pub not_modified: bool,
 }

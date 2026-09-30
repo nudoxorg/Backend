@@ -90,13 +90,13 @@ impl OsvEcosystem {
     }
 }
 
-/// Coverage scope asserted by a selected OSV source feed.
+/// Coverage scope selected by product policy for one OSV source.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OsvFeedScope {
-    /// A verified full-database export covering every ecosystem.
+    /// The configured source is selected to cover every ecosystem.
     All,
-    /// A verified per-ecosystem export.
+    /// The configured source is selected for this ecosystem.
     Ecosystem(OsvEcosystem),
 }
 

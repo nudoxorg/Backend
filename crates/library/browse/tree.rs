@@ -802,6 +802,9 @@ pub struct AdvisorySourceState {
     pub advisories: u64,
     /// When it was last observed, in Unix seconds.
     pub observed_at: u64,
+    /// Source-provided freshness deadline, in Unix seconds, when known.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
     /// Why the last refresh failed, when it did.
     pub error: Option<String>,
 }

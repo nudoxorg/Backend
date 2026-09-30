@@ -1,6 +1,68 @@
 use crate::{DependencyFacts, PackageDependencyRecord, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
 
+/// A Cargo registry publication time in its exact UTC wire form.
+///
+/// Cargo's sparse index uses exactly `YYYY-MM-DDThh:mm:ssZ`. This validates
+/// the calendar and clock fields while retaining the source spelling.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CargoPublishTime<'a>(&'a str);
+
+impl<'a> CargoPublishTime<'a> {
+    /// Parses an exact Cargo UTC timestamp with a valid Gregorian date/time.
+    #[must_use]
+    pub fn parse(value: &'a str) -> Option<Self> {
+        let bytes = value.as_bytes();
+        if bytes.len() != 20
+            || !value.is_ascii()
+            || bytes[4] != b'-'
+            || bytes[7] != b'-'
+            || bytes[10] != b'T'
+            || bytes[13] != b':'
+            || bytes[16] != b':'
+            || bytes[19] != b'Z'
+            || bytes.iter().enumerate().any(|(index, byte)| {
+                !matches!(index, 4 | 7 | 10 | 13 | 16 | 19) && !byte.is_ascii_digit()
+            })
+        {
+            return None;
+        }
+        let number = |start: usize, end: usize| value.get(start..end)?.parse::<u32>().ok();
+        let year = number(0, 4)?;
+        let month = number(5, 7)?;
+        let day = number(8, 10)?;
+        let hour = number(11, 13)?;
+        let minute = number(14, 16)?;
+        let second = number(17, 19)?;
+        if year == 0
+            || !(1..=12).contains(&month)
+            || !(0..=23).contains(&hour)
+            || !(0..=59).contains(&minute)
+            || !(0..=59).contains(&second)
+        {
+            return None;
+        }
+        let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let month_days = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if leap_year => 29,
+            2 => 28,
+            _ => return None,
+        };
+        if day == 0 || day > month_days {
+            return None;
+        }
+        Some(Self(value))
+    }
+
+    /// Original, validated Cargo wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'a str {
+        self.0
+    }
+}
+
 /// One versioned native metadata snapshot attached to an immutable release.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

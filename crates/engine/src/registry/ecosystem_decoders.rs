@@ -6,7 +6,7 @@
 //! never turns a missing claim into a fabricated checksum.
 
 use backend_library::{
-    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+    CargoPublishTime, DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
     RegistryNativeObservation, RegistryNativeVulnerability, admit_dependency_rows,
     collapse_dependency_rows, dependency_optional,
@@ -2507,27 +2507,12 @@ fn cargo_optional_text(
     if value.is_empty()
         || value.len() > maximum_bytes
         || value.contains('\0')
-        || (timestamp && !valid_cargo_publish_time(value))
+        || (timestamp && CargoPublishTime::parse(value).is_none())
         || (!timestamp && value.bytes().any(|byte| byte.is_ascii_whitespace()))
     {
         return Err(TransportFailure::Protocol);
     }
     Ok(Some(Arc::from(value.as_str())))
-}
-
-fn valid_cargo_publish_time(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() == 20
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes[10] == b'T'
-        && bytes[13] == b':'
-        && bytes[16] == b':'
-        && bytes[19] == b'Z'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16 | 19) || byte.is_ascii_digit())
 }
 
 fn npm_dist_tags(root: &Value) -> Result<Vec<NativeDistTag>, TransportFailure> {

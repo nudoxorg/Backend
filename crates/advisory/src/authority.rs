@@ -36,6 +36,9 @@ pub struct AuthorityFeed {
     pub mode: SyncMode,
     /// Whether a snapshot is complete and may retire absent objects.
     pub complete: bool,
+    /// Exact OSV scope selected for this feed. A scoped frontier is complete
+    /// only when this matches the source scope selected on the authority.
+    pub osv_scope: Option<OsvFeedScope>,
     /// Conditional response and observation evidence.
     pub freshness: FeedFreshness,
     /// Fully parsed source objects.
@@ -79,10 +82,12 @@ impl AuthorityFeed {
             // vouch that every other package is clean. The database is a
             // directory tree, admitted through [`Self::from_entries`].
             complete: source != AdvisorySource::RustSec,
+            osv_scope: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
                 observed_at,
+                expires_at: None,
                 not_modified: false,
             },
             entries,
@@ -110,10 +115,12 @@ impl AuthorityFeed {
             source,
             mode: SyncMode::Snapshot,
             complete: true,
+            osv_scope: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
                 observed_at,
+                expires_at: None,
                 not_modified: false,
             },
             entries,
@@ -132,10 +139,12 @@ impl AuthorityFeed {
             source,
             mode: SyncMode::Snapshot,
             complete: true,
+            osv_scope: None,
             freshness: FeedFreshness {
                 etag,
                 last_modified,
                 observed_at,
+                expires_at: None,
                 not_modified: true,
             },
             entries: Vec::new(),
@@ -278,6 +287,9 @@ pub struct AuthorityFrontier {
     pub last_modified: Option<String>,
     /// Local observation time in seconds.
     pub observed_at: u64,
+    /// Source-provided freshness deadline, when available.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
     /// Whether the source snapshot was complete.
     pub complete: bool,
     /// Whether the last refresh was usable.
@@ -442,6 +454,7 @@ impl AdvisoryAuthority {
         feed: AuthorityFeed,
     ) -> Result<&AuthorityFrontier, AuthorityApplyError> {
         let source = feed.source;
+        let feed_osv_scope = feed.osv_scope;
         for advisory in &feed.entries {
             if advisory.key.native.source != source {
                 return Err(AuthorityApplyError::SourceMismatch {
@@ -463,6 +476,8 @@ impl AdvisoryAuthority {
         let previous_frontier = self.frontiers.get(&source);
         let complete = if feed.freshness.not_modified {
             previous_frontier.is_some_and(|frontier| frontier.complete)
+        } else if source == AdvisorySource::Osv {
+            feed.complete && feed_osv_scope.is_some() && feed_osv_scope == self.osv_scope
         } else {
             feed.complete
         };
@@ -470,7 +485,7 @@ impl AdvisoryAuthority {
             if feed.freshness.not_modified {
                 previous_frontier.and_then(|frontier| frontier.osv_scope)
             } else {
-                self.osv_scope
+                feed_osv_scope
             }
         } else {
             None
@@ -497,6 +512,13 @@ impl AdvisoryAuthority {
             etag: checkpoint.freshness.etag.clone(),
             last_modified: checkpoint.freshness.last_modified.clone(),
             observed_at: checkpoint.freshness.observed_at,
+            expires_at: if feed.freshness.not_modified {
+                feed.freshness
+                    .expires_at
+                    .or_else(|| previous_frontier.and_then(|frontier| frontier.expires_at))
+            } else {
+                feed.freshness.expires_at
+            },
             complete,
             availability: AuthorityAvailability::Available,
             entries: u64::try_from(journal.iter().count()).unwrap_or(u64::MAX),
@@ -533,6 +555,7 @@ impl AdvisoryAuthority {
             // An outage is a new availability fact, not new advisory evidence. Keep the
             // previous observation time so cached evidence becomes stale on its original clock.
             observed_at: previous.map_or(observed_at, |value| value.observed_at),
+            expires_at: previous.and_then(|value| value.expires_at),
             complete: previous.is_some_and(|value| value.complete),
             availability: AuthorityAvailability::Unavailable,
             entries: previous.map_or(0, |value| value.entries),
@@ -626,7 +649,11 @@ impl AdvisoryAuthority {
                 complete = false;
                 partial = true;
             }
-            if now.saturating_sub(frontier.observed_at) > self.max_age_secs {
+            let policy_expiry = frontier.observed_at.saturating_add(self.max_age_secs);
+            let expires_at = frontier.expires_at.map_or(policy_expiry, |source| {
+                source.min(policy_expiry)
+            });
+            if now >= expires_at {
                 stale = true;
             }
             not_modified &= frontier.not_modified;
@@ -853,9 +880,17 @@ mod tests {
 
     #[test]
     fn source_batches_are_durable_and_exact_versioned() {
-        let feed = AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
-            .expect("OSV fixture");
+        let mut feed = AuthorityFeed::parse(
+            AdvisorySource::Osv,
+            &osv(),
+            10,
+            Some("a".into()),
+            None,
+        )
+        .expect("OSV fixture");
+        feed.osv_scope = Some(OsvFeedScope::All);
         let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_osv_scope(Some(OsvFeedScope::All));
         authority.apply(feed).expect("admit source");
         let package = super::super::normalize_package("cargo", "demo").expect("identity");
         let observation = authority.observe(&package, "1.0.0", false, false, 10, false);
@@ -871,17 +906,17 @@ mod tests {
         let mut authority = AdvisoryAuthority::new(100);
         authority.configure_sources([AdvisorySource::Osv]);
         authority.configure_osv_scope(Some(OsvFeedScope::Ecosystem(OsvEcosystem::Cargo)));
+        let mut cargo_feed = AuthorityFeed::parse(
+            AdvisorySource::Osv,
+            &osv_for("OSV-CARGO-1", "Cargo"),
+            10,
+            None,
+            None,
+        )
+        .expect("Cargo OSV feed");
+        cargo_feed.osv_scope = Some(OsvFeedScope::Ecosystem(OsvEcosystem::Cargo));
         authority
-            .apply(
-                AuthorityFeed::parse(
-                    AdvisorySource::Osv,
-                    &osv_for("OSV-CARGO-1", "Cargo"),
-                    10,
-                    None,
-                    None,
-                )
-                .expect("Cargo OSV feed"),
-            )
+            .apply(cargo_feed)
             .expect("admit Cargo OSV feed");
 
         let cargo = super::super::normalize_package("cargo", "demo").expect("Cargo identity");
@@ -902,21 +937,43 @@ mod tests {
         assert_eq!(not_yet_refreshed.coverage, AdvisoryCoverage::Partial);
         assert!(not_yet_refreshed.advisories.is_empty());
 
+        let mut pypi_feed = AuthorityFeed::parse(
+            AdvisorySource::Osv,
+            &osv_for("OSV-PYPI-1", "PyPI"),
+            11,
+            None,
+            None,
+        )
+        .expect("PyPI OSV feed");
+        pypi_feed.osv_scope = Some(OsvFeedScope::Ecosystem(OsvEcosystem::Pypi));
         authority
-            .apply(
-                AuthorityFeed::parse(
-                    AdvisorySource::Osv,
-                    &osv_for("OSV-PYPI-1", "PyPI"),
-                    11,
-                    None,
-                    None,
-                )
-                .expect("PyPI OSV feed"),
-            )
+            .apply(pypi_feed)
             .expect("admit PyPI OSV feed");
         let pypi_observation = authority.observe(&pypi, "1.0.0", false, false, 11, false);
         assert_eq!(pypi_observation.coverage, AdvisoryCoverage::Complete);
         assert_eq!(pypi_observation.advisories.len(), 1);
+    }
+
+    #[test]
+    fn osv_feed_scope_must_match_the_selected_source_policy() {
+        let mut feed = AuthorityFeed::from_entries(
+            AdvisorySource::Osv,
+            Vec::new(),
+            10,
+            None,
+            None,
+        );
+        feed.osv_scope = Some(OsvFeedScope::Ecosystem(OsvEcosystem::Cargo));
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(OsvFeedScope::Ecosystem(OsvEcosystem::Pypi)));
+        let frontier = authority.apply(feed).expect("record mismatched feed");
+        assert!(!frontier.complete);
+        let pypi = super::super::normalize_package("pypi", "demo").expect("PyPI identity");
+        assert_eq!(
+            authority.observe(&pypi, "1.0.0", false, false, 10, false).coverage,
+            AdvisoryCoverage::Partial
+        );
     }
 
     #[test]
@@ -950,6 +1007,7 @@ mod tests {
                     etag: None,
                     last_modified: None,
                     observed_at: 11,
+                    expires_at: None,
                     not_modified: false,
                 },
             })
@@ -1022,6 +1080,55 @@ mod tests {
     }
 
     #[test]
+    fn source_expiry_is_honored_and_capped_by_configured_max_age() {
+        let mut source_limited = AuthorityFeed::parse(
+            AdvisorySource::Osv,
+            &osv(),
+            10,
+            None,
+            None,
+        )
+        .expect("OSV fixture");
+        source_limited.freshness.expires_at = Some(20);
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.apply(source_limited).expect("admit source");
+        let package = super::super::normalize_package("cargo", "demo").expect("identity");
+        assert_eq!(
+            authority.observe(&package, "1.0.0", false, false, 19, false).freshness,
+            FreshnessState::Fresh
+        );
+        authority.mark_unavailable(AdvisorySource::Osv, 19);
+        assert_eq!(
+            authority.observe(&package, "1.0.0", false, false, 20, false).coverage,
+            AdvisoryCoverage::Unavailable
+        );
+        assert_eq!(
+            authority.observe(&package, "1.0.0", false, false, 20, false).freshness,
+            FreshnessState::Stale
+        );
+
+        let mut policy_limited = AuthorityFeed::parse(
+            AdvisorySource::Osv,
+            &osv(),
+            30,
+            None,
+            None,
+        )
+        .expect("second OSV fixture");
+        policy_limited.freshness.expires_at = Some(300);
+        authority.set_max_age_secs(5);
+        authority.apply(policy_limited).expect("refresh source");
+        assert_eq!(
+            authority.observe(&package, "1.0.0", false, false, 34, false).freshness,
+            FreshnessState::Fresh
+        );
+        assert_eq!(
+            authority.observe(&package, "1.0.0", false, false, 35, false).freshness,
+            FreshnessState::Stale
+        );
+    }
+
+    #[test]
     fn cold_persist_keeps_tombstones_and_alias_identity() {
         let path = std::env::temp_dir().join(format!(
             "nudox-advisory-authority-{}-{}.json",
@@ -1029,20 +1136,18 @@ mod tests {
             1_u64
         ));
         let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_osv_scope(Some(OsvFeedScope::All));
+        let mut initial =
+            AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
+                .expect("OSV fixture");
+        initial.osv_scope = Some(OsvFeedScope::All);
         authority
-            .apply(
-                AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
-                    .expect("OSV fixture"),
-            )
+            .apply(initial)
             .expect("admit source");
+        let mut empty = AuthorityFeed::from_entries(AdvisorySource::Osv, Vec::new(), 11, Some("b".into()), None);
+        empty.osv_scope = Some(OsvFeedScope::All);
         authority
-            .apply(AuthorityFeed::from_entries(
-                AdvisorySource::Osv,
-                Vec::new(),
-                11,
-                Some("b".into()),
-                None,
-            ))
+            .apply(empty)
             .expect("complete empty snapshot");
         authority.persist(&path).expect("persist");
 

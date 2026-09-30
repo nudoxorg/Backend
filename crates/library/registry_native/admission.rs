@@ -1,4 +1,7 @@
-use crate::{DependencyFacts, PackageDependencyRecord, ProductAdmissionError, RegistryEcosystem};
+use crate::{
+    CargoPublishTime, DependencyFacts, PackageDependencyRecord, ProductAdmissionError,
+    RegistryEcosystem,
+};
 
 use super::{
     MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS, REGISTRY_NATIVE_METADATA_VERSION,
@@ -81,6 +84,13 @@ fn validate_details(
         RegistryNativeDetails::Cargo(value) => {
             validate_artifacts(&value.artifacts)?;
             validate_optional_text(value.published_at.as_ref())?;
+            if value
+                .published_at
+                .as_deref()
+                .is_some_and(|published_at| CargoPublishTime::parse(published_at).is_none())
+            {
+                return Err(ProductAdmissionError::NativeMetadata);
+            }
             validate_optional_text(value.rust_version.as_ref())?;
             if schema_version == 1
                 && (value.published_at.is_some() || value.rust_version.is_some())

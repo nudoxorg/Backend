@@ -433,7 +433,7 @@ pub struct NativeRelease {
         backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
     /// Every file advertised for this release, including non-source files.
     pub artifacts: Box<[NativeArtifact]>,
-    /// Cargo feature declarations for this release.
+    /// Effective Cargo feature map with same-name members merged from both fields.
     pub features: Box<[NativeFeature]>,
     /// Raw Cargo `features2` declarations, separate from the effective union.
     pub features2: Box<[NativeFeature]>,
