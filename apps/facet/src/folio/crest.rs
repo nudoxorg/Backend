@@ -61,7 +61,14 @@ pub fn cell(id: &ElementId, label: &str, accent: Option<String>, note: Option<&s
     }
     if let Some(note) = note {
         // Where the fact was read from: never presented as an index fact.
-        head = head.child(div().flex_1()).child(one(key(id, "note"), note.to_owned(), NOTE, palette.ink3, measure));
+        head = head.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .justify_end()
+                .child(ellipsis(key(id, "note"), note.to_owned(), NOTE, palette.ink3, measure)),
+        );
     }
     let mut edge = Edge::of(Bevel::Rest, palette);
     edge.hi = palette.line3.into();
@@ -312,7 +319,7 @@ impl RenderOnce for Stamp {
         let glyph_of = if verdict.tone == Voice::Mint { Glyph::Shield } else { Glyph::Unsafe };
 
         // The expression: the judged option in full ink, the rest quiet.
-        let mut expression = div().flex().flex_wrap().items_center().gap_x(measure.space(Space::Snug));
+        let mut expression = div().min_w_0().flex().flex_wrap().items_center().gap_x(measure.space(Space::Snug));
         if verdict.expression.is_empty() {
             expression = expression.child(one(key(&self.id, "expr"), "no licence declared", EXPR, palette.ink3, &measure));
         }
@@ -332,6 +339,7 @@ impl RenderOnce for Stamp {
             .child(
                 div()
                     .flex()
+                    .min_w_0()
                     .flex_col()
                     .child(one(key(&self.id, "verdict"), verdict.word, VERDICT, tone, &measure))
                     .child(expression),

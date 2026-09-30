@@ -6,19 +6,19 @@
 
 use super::berg::{Basis, BergBlock, BergFacts, berg};
 use super::cards::{CardFacts, Change, symbol_card};
-use super::crest::stamp;
+use super::crest::{stamp, unread};
 use super::features::{FeatureFacts, FeatureNode, feature_preview};
 use super::fixture::{self, MPSC, TOML};
 use super::heads::{Place, Sighting, Signals, findings, heads};
 use super::shingles::{ModuleFacts, ShingleFacts, shingles};
-use super::state::{Extent, Fold, Names, Nominal, Pick, Time, Unsafe, Use};
+use super::state::{Extent, Nominal, Unsafe, Use};
 use super::ticker::{Release, TickerFacts, ticker};
+use crate::data::release::{RegistryFact, SourceAvailability};
 use crate::marks::badges::{Item, Lang};
 use crate::marks::license::LicenseFacts;
-use crate::data::release::{RegistryFact, SourceAvailability};
 use crate::overlay::{dialog, float};
-use crate::probe::{self, Ledger};
-use crate::theme::ActiveFacet;
+use crate::probe::{self, Ledger, TextOverflow};
+use crate::theme::{ActiveFacet, Facet, set_facet};
 use crate::tokens::Family;
 use gpui::{
     AnyElement, Context, IntoElement, Modifiers, MouseButton, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div,
@@ -281,7 +281,7 @@ fn the_ticker_label_rides_the_release_under_the_pointer_and_leaving_takes_it_awa
     advance(cx, 200);
     let label = text_at(cx, "label").map(|t| t.0).expect("a label rides the hot release");
     assert!(label.contains("1.28.0") && label.contains("2023-04-19") && label.contains("features") && label.contains("3.4 years ago") || label.contains("years ago"), "{label}");
-    assert!(label.ends_with("read"), "{label}");
+    assert!(label.ends_with("release indexed"), "{label}");
     move_to(cx, 5.0, 690.0);
     advance(cx, 300);
     assert!(text_at(cx, "label").is_none(), "the label outlived the pointer");
@@ -452,6 +452,21 @@ fn a_lone_finding_says_its_words_at_rest(cx: &mut TestAppContext) {
     });
     let rest = said(cx);
     assert!(rest.iter().any(|t| t == "Forbids unsafe code"), "the only finding is said, not just drawn: {rest:?}");
+}
+
+#[gpui::test]
+fn a_long_source_note_ellipsises_inside_a_narrow_cell_at_double_text_size(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(240.0));
+        unread("source", "Licence", "reading its source", px(240.0), &m)
+            .note("registry mirror · crates index · local source manifest, verified for this package")
+            .into_any_element()
+    });
+    let note = ledger(cx).texts.into_iter().find(|text| text.key.ends_with("-note")).expect("the source note is published from the rendered frame");
+    assert_eq!(note.overflow, TextOverflow::Ellipsis, "the note declares its native ellipsis treatment: {note:?}");
+    assert!(note.natural_width > note.bounds.width, "the fixture exercises real overflow: {note:?}");
+    assert!(note.bounds.x >= 20.0 && note.bounds.x + note.bounds.width <= 260.5, "the clipped note remains inside its 240px cell: {note:?}");
 }
 
 // ------------------------------------------------------------------ features
