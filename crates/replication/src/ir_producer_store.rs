@@ -2898,6 +2898,62 @@ mod tests {
     }
 
     #[test]
+    fn typed_v3_history_admission_reopens_real_producer_receipts() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("typed-v3-history-admission-cas");
+        let store =
+            FileStore::open(&store_path, 64 * 1024 * 1024).expect("open producer FileStore");
+        let reader = v3_fixture(V3FixtureShape::Base);
+        let produced = produce_v3(&store, &reader, V3FixtureShape::Base, 0x71);
+        let range_store = crate::ir_hydration_store::FileSemanticRangeStore::open(
+            store.clone(),
+            crate::TransportLimits {
+                max_chunk: 16 * 1024,
+                max_frame: 16 * 1024 + 192,
+                ..crate::TransportLimits::default()
+            },
+        )
+        .expect("open V3 history admission store");
+        let pin = range_store
+            .pin_typed_v3_history_admission()
+            .expect("pin producer FileStore");
+        let admission = range_store
+            .verify_produced_typed_v3(
+                &pin,
+                &produced,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .expect("cold-admit the exact real producer receipts");
+
+        assert_eq!(admission.content(), produced.verified_content());
+        assert_eq!(
+            admission.locator().validate().expect("validate V3 locator"),
+            *produced.manifest()
+        );
+        assert_eq!(
+            admission.root_claim().closure(),
+            backend_store::ArtifactClosureClaim::from_id(admission.closure())
+        );
+        assert_eq!(
+            admission.root_claim().locator(),
+            admission
+                .locator()
+                .identity()
+                .expect("derive V3 locator ID")
+        );
+        assert!(admission.metrics().closure_objects > 0);
+        assert_eq!(
+            admission.metrics().closure_objects,
+            admission.metrics().reopened_objects
+        );
+        assert_eq!(
+            admission.metrics().closure_payload_bytes,
+            admission.metrics().reopened_payload_bytes
+        );
+    }
+
+    #[test]
     fn v3_types_plan_uses_aggregate_rows_remaining_before_any_write() {
         let directory = TestDirectory::new();
         let cas_path = directory.0.join("v3-types-plan-budget-cas");
