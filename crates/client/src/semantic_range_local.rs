@@ -417,7 +417,7 @@ impl RemoteSemanticRangeConnection {
             })
         };
         let response = match result {
-            Ok(response) => response,
+            Ok(response) => Ok(response),
             Err(error) if retryable_remote_index_transport(&error) => {
                 self.reconnect()?;
                 let session = self.session.as_mut().ok_or_else(|| {
