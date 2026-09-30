@@ -2529,7 +2529,6 @@ fn valid_cargo_publish_time(value: &str) -> bool {
             .enumerate()
             .all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16 | 19) || byte.is_ascii_digit())
 }
-}
 
 fn npm_dist_tags(root: &Value) -> Result<Vec<NativeDistTag>, TransportFailure> {
     let Some(raw_tags) = root.get("dist-tags") else {
