@@ -978,14 +978,16 @@ impl QueryCoordinator {
             semantic_evidence.clone(),
         )?;
         let previous_state = if durable_root.is_some() {
+            let previous_view_capability = self
+                .corpus
+                .view
+                .capability()
+                .ok_or(QueryError::StaleViewBinding)?;
             Some(
                 prepare_corpus(
                     self.corpus.workspace,
                     self.corpus.view.clone(),
-                    self.corpus
-                        .view
-                        .capability()
-                        .ok_or(QueryError::StaleViewBinding)?,
+                    &previous_view_capability,
                     self.corpus.coverage,
                     self.corpus.semantic_evidence.clone(),
                 )?
@@ -1079,7 +1081,8 @@ impl QueryCoordinator {
     /// Returns [`QueryError::LexicalProvider`] if the admitted local Tantivy
     /// projection cannot serve a page.
     pub fn search_local(&self, query: LocalQuery) -> Result<LocalAnswer, QueryError> {
-        let mut top_matches = Vec::with_capacity(query.limit());
+        let mut top_matches: Vec<(EntityId, lexical::Relevance)> =
+            Vec::with_capacity(query.limit());
         let mut cursor = None;
         let mut reported_total = None;
         let mut seen_hits = 0usize;
@@ -1412,7 +1415,7 @@ fn validate_view_binding(
     view: &ViewRoot,
     expected_view_capability: &CoverageCapability,
 ) -> Result<(), QueryError> {
-    if view.capability() != Some(expected_view_capability) {
+    if view.capability().as_ref() != Some(expected_view_capability) {
         return Err(QueryError::StaleViewBinding);
     }
     Ok(())
