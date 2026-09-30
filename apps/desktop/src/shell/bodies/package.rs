@@ -133,6 +133,30 @@ pub(super) fn body(
         .known()
         .map(|tree| data::modules(tree, &name, ready.as_deref()))
         .unwrap_or_default();
+    let (ticker, ticker_note) =
+        if let Some(pin) = pin.as_ref().filter(|pin| pin.release().is_some()) {
+            match crate::runtime::releases::get(pin, snapshot.key(), at.as_deref(), cx) {
+                crate::runtime::releases::Read::Reading => (
+                    None,
+                    Some("Reading the exact local registry release history…".into()),
+                ),
+                crate::runtime::releases::Read::Unavailable(reason) => (
+                    None,
+                    Some(format!("Release history unavailable: {reason}").into()),
+                ),
+                crate::runtime::releases::Read::Ready(releases) => (
+                    data::ticker(
+                        &releases.krate,
+                        pin_version.as_deref(),
+                        at.as_ref().map(|at| at.as_str()),
+                        &today,
+                    ),
+                    releases.note.as_ref().map(|note| note.to_string().into()),
+                ),
+            }
+        } else {
+            (None, None)
+        };
     let facts = Rc::new(folio::Facts {
         name: name.clone().into(),
         at: at.as_ref().map(|at| at.as_str().to_owned().into()),
@@ -163,13 +187,8 @@ pub(super) fn body(
             },
         ),
         advisories: data::advisories(record),
-        ticker: data::ticker(
-            &dossier,
-            ready.as_deref(),
-            pin_version.as_deref(),
-            at.as_ref().map(|at| at.as_str()),
-            &today,
-        ),
+        ticker,
+        ticker_note,
         past,
     });
 

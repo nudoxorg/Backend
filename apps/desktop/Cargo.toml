@@ -23,9 +23,7 @@ anyhow.workspace = true
 # Unpacks a registry archive from the local cargo cache (`host::registry`).
 flate2.workspace = true
 backend-client = { path = "../../crates/client" }
-# `release-fixture`: the upgrade lens's stand-in data until the index serves
-# release diffs (`runtime::fixture_releases`).
-backend-facet = { path = "../facet", features = ["release-fixture"] }
+backend-facet = { path = "../facet" }
 backend-library = { path = "../../crates/library" }
 backend-local-service = { path = "../../crates/local-service" }
 backend-platform = { path = "../../crates/platform" }
@@ -38,6 +36,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"], opt
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+semver = "1.0.28"
 toml.workspace = true
 
 [features]
@@ -73,6 +72,9 @@ gpui_platform = { workspace = true, features = ["wgpu"] }
 
 [dev-dependencies]
 backend-gui-harness = { path = "../../tools/gui-harness" }
+# Prototype release fixtures are test-only; production release views read the
+# selected local registry and exact owner comparison.
+backend-facet = { path = "../facet", features = ["release-fixture"] }
 # `write_state_from_another_build`: the host test of a workspace an earlier build wrote.
 backend-local-service = { path = "../../crates/local-service", features = ["test-support"] }
 blake3.workspace = true

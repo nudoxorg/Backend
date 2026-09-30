@@ -265,7 +265,12 @@ impl Shelf {
         let package = self.crumbs.package().cloned();
         let release_data =
             package.as_ref().and_then(|package| {
-                match crate::runtime::releases::get(package, snapshot.key(), cx) {
+                match crate::runtime::releases::get(
+                    package,
+                    snapshot.key(),
+                    route.at().map(|at| at.as_str()),
+                    cx,
+                ) {
                     crate::runtime::releases::Read::Ready(data) => Some(data),
                     crate::runtime::releases::Read::Reading
                     | crate::runtime::releases::Read::Unavailable(_) => None,

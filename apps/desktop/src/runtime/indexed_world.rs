@@ -211,46 +211,36 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
             "the local index changed before the graph read began",
         ));
     }
-    let packages = match session
+    let package_snapshot = match session
         .packages()
         .map_err(|error| Arc::<str>::from(format!("could not read indexed packages: {error}")))?
         .reply
     {
-        CommandReply::Packages(snapshot) => snapshot
-            .root
-            .rows()
-            .iter()
-            .filter(|row| matches!(row.id, RowId::Package(_)))
-            .filter_map(|row| PackageRef::parse(&row.label).ok())
-            .collect::<Vec<_>>(),
+        CommandReply::Packages(snapshot) => snapshot,
         _ => {
             return Err(Arc::from(
                 "the local service returned an unexpected package listing",
             ));
         }
     };
+    let mut packages = Vec::with_capacity(MAX_PACKAGES);
+    let mut packages_total = 0usize;
+    for row in package_snapshot.root.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        let Ok(package) = PackageRef::parse(&row.label) else {
+            continue;
+        };
+        packages_total = packages_total.saturating_add(1);
+        retain_package(&mut packages, package, key.preferred.as_ref());
+    }
     if packages.is_empty() {
         return Err(Arc::from(
             "the current index has no packages to show in the graph",
         ));
     }
-    let mut packages = packages;
-    packages.sort_by(|left, right| {
-        (
-            key.preferred.as_ref() != Some(left),
-            !left.is_local(),
-            left.as_str(),
-        )
-            .cmp(&(
-                key.preferred.as_ref() != Some(right),
-                !right.is_local(),
-                right.as_str(),
-            ))
-    });
-    packages.dedup();
-    let packages_total = packages.len();
-    let bounded = packages.len() > MAX_PACKAGES;
-    packages.truncate(MAX_PACKAGES);
+    let bounded = packages_total > packages.len();
 
     let mut world_packages = Vec::with_capacity(packages.len());
     let mut package_index = BTreeMap::<PackageRef, u32>::new();
@@ -531,6 +521,36 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
     }))
 }
 
+fn retain_package(
+    packages: &mut Vec<PackageRef>,
+    candidate: PackageRef,
+    preferred: Option<&PackageRef>,
+) {
+    if packages.contains(&candidate) {
+        return;
+    }
+    let at = packages
+        .binary_search_by(|present| package_order(present, &candidate, preferred))
+        .unwrap_or_else(|at| at);
+    if at >= MAX_PACKAGES {
+        return;
+    }
+    packages.insert(at, candidate);
+    packages.truncate(MAX_PACKAGES);
+}
+
+fn package_order(
+    left: &PackageRef,
+    right: &PackageRef,
+    preferred: Option<&PackageRef>,
+) -> std::cmp::Ordering {
+    (preferred != Some(left), !left.is_local(), left.as_str()).cmp(&(
+        preferred != Some(right),
+        !right.is_local(),
+        right.as_str(),
+    ))
+}
+
 fn graph_kind(kind: DeclarationKind) -> Kind {
     match kind {
         DeclarationKind::Class | DeclarationKind::Struct => Kind::Struct,
@@ -579,4 +599,29 @@ fn module_path(file: Option<&str>) -> String {
         components.pop();
     }
     components.join("::")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_PACKAGES, PackageRef, retain_package};
+
+    #[test]
+    fn bounded_package_selection_keeps_the_current_project_even_when_it_is_last() {
+        let mut packages = Vec::new();
+        let preferred = PackageRef::parse("pkg:cargo/project@1.0.0").expect("project release");
+        for number in 0..(MAX_PACKAGES + 20) {
+            let coordinate = format!("pkg:cargo/crate-{number:03}@1.0.0");
+            let candidate = PackageRef::parse(&coordinate).expect("registry package");
+            retain_package(&mut packages, candidate, Some(&preferred));
+        }
+        retain_package(&mut packages, preferred.clone(), Some(&preferred));
+
+        assert_eq!(packages.len(), MAX_PACKAGES);
+        assert_eq!(packages.first(), Some(&preferred));
+        assert!(
+            packages
+                .windows(2)
+                .all(|pair| { super::package_order(&pair[0], &pair[1], Some(&preferred)).is_lt() })
+        );
+    }
 }

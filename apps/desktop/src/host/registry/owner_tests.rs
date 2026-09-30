@@ -402,6 +402,7 @@ fn a_projects_packages_are_indexed_by_the_owner_and_their_pages_read_their_real_
     let composition = Composition {
         endpoint: owner.host.endpoint().to_path_buf(),
         source: Arc::new(source.clone()),
+        authority: Arc::from("test-authority"),
         refusals: None,
     };
     let id = crate::core::LocalProjectId::from_path(&project).expect("project id");
@@ -827,6 +828,7 @@ fn a_package_the_compiler_could_not_finish_still_says_so_after_a_relaunch() {
     let composition = Composition {
         endpoint: owner.host.endpoint().to_path_buf(),
         source: Arc::new(source),
+        authority: Arc::from("test-authority"),
         refusals: Some(refusals.clone()),
     };
     // serde_core 1.0.229: the compiler stops on a generic parameter it cannot
@@ -900,6 +902,7 @@ fn a_relaunch_lands_what_the_owner_lists_before_it_lists_the_projects_packages()
     let composition = Composition {
         endpoint: owner.host.endpoint().to_path_buf(),
         source: Arc::new(source),
+        authority: Arc::from("test-authority"),
         refusals: None,
     };
     let equivalent = Release::new("equivalent", "1.0.2").expect("release");
@@ -999,6 +1002,7 @@ fn search_child() {
     let composition = Composition {
         endpoint: host.endpoint().to_path_buf(),
         source: Arc::new(source),
+        authority: Arc::from("test-authority"),
         refusals: None,
     };
     for (name, version) in [
@@ -1219,6 +1223,7 @@ fn an_earlier_release_is_read_from_its_own_tree_once_it_is_added() {
     let composition = Composition {
         endpoint: owner.host.endpoint().to_path_buf(),
         source: source.clone(),
+        authority: Arc::from("test-authority"),
         refusals: None,
     };
     crate::host::registry::install(composition.clone());

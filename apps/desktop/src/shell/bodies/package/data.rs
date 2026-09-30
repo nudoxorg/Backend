@@ -14,7 +14,7 @@ use facet::folio::cards::Change;
 use facet::folio::crest::{Advisories, Silence};
 use facet::folio::features::{FeatureFacts, FeatureNode};
 use facet::folio::heads::{Place, Sighting, Signals};
-use facet::folio::state::{Build, Extent, Names, Standing as ReleaseStanding};
+use facet::folio::state::{Build, Extent};
 use facet::folio::ticker::{Release, TickerFacts};
 use facet::icons::Kind;
 use facet::marks::badges::Lang;
@@ -140,7 +140,8 @@ pub(super) const fn lang_of(language: backend_present::Language) -> Lang {
         Language::Go => Lang::Go,
         Language::Java => Lang::Java,
         Language::CSharp => Lang::Csharp,
-        Language::C | Language::Cxx => Lang::Cpp,
+        Language::C => Lang::C,
+        Language::Cxx => Lang::Cpp,
         Language::Rust => Lang::Rust,
         Language::Unknown => Lang::Unknown,
     }
@@ -677,7 +678,7 @@ pub(super) fn past(
         at: at.to_owned().into(),
         ..Past::default()
     };
-    let release_data = match crate::runtime::releases::get(package, root, cx) {
+    let release_data = match crate::runtime::releases::get(package, root, Some(at), cx) {
         crate::runtime::releases::Read::Reading => {
             out.note = Some("Checking the exact local release comparison…".to_owned());
             return out;
@@ -788,63 +789,36 @@ pub(super) fn past(
     out
 }
 
-/// The ticker for a dossier: local registry release facts, and the pin from
-/// the route. Read names stay tied to the exact owner package list.
+/// The ticker from the exact local registry provider. Facts remain tied to
+/// the authority and owner revision used to read the release history.
 pub(super) fn ticker(
-    dossier: &PackageDossier,
-    source: Option<&SourceFacts>,
+    krate: &facet::data::release::Crate,
     pin: Option<&str>,
     reading: Option<&str>,
     today: &str,
 ) -> Option<Rc<TickerFacts>> {
-    // Every release the registry's index cache knows, dated; the ones the
-    // index has read are the ones whose names the page can show. This holds
-    // for a crate the library indexed from an unpacked registry directory
-    // too, whose version list the dossier does not carry: the pin is the
-    // release whose names are read then.
-    if let Some(published) = source.map(|s| &s.releases).filter(|r| r.len() > 1) {
-        let versions = dossier.versions.known();
-        let same = |a: &str, b: &str| {
-            a == b || facet::marks::semver::short(a) == facet::marks::semver::short(b)
-        };
-        let read = |version: &str| match versions {
-            Some(list) => list
-                .iter()
-                .any(|entry| same(entry.version.as_ref(), version)),
-            None => pin.is_some_and(|pin| same(pin, version)),
-        };
-        let releases: Vec<Release> = published
-            .iter()
-            .map(|release| Release {
-                version: release.version.clone(),
-                date: release.date.clone(),
-                standing: release.standing,
-                names: if read(&release.version) {
-                    Names::Read
-                } else {
-                    Names::Unread
-                },
-            })
-            .collect();
-        return Some(Rc::new(
-            TickerFacts::new(&releases, pin, today).reading(reading),
-        ));
-    }
-    let versions = dossier.versions.known()?;
-    if versions.is_empty() {
+    if krate.versions.is_empty() {
         return None;
     }
-    let releases: Vec<Release> = versions
+    let releases: Vec<Release> = krate
+        .versions
         .iter()
         .map(|entry| Release {
-            version: entry.version.to_string(),
-            date: None,
-            standing: if entry.standing == Standing::Yanked {
-                ReleaseStanding::Yanked
-            } else {
-                ReleaseStanding::Available
+            version: entry.v.to_string(),
+            date: match &entry.at {
+                facet::data::release::RegistryFact::Known(date) => {
+                    facet::data::release::RegistryFact::Known(date.to_string())
+                }
+                facet::data::release::RegistryFact::Missing => {
+                    facet::data::release::RegistryFact::Missing
+                }
+                facet::data::release::RegistryFact::Ambiguous => {
+                    facet::data::release::RegistryFact::Ambiguous
+                }
             },
-            names: Names::Read,
+            yanked: entry.yanked.clone(),
+            source: entry.source,
+            indexed: entry.indexed.clone(),
         })
         .collect();
     Some(Rc::new(

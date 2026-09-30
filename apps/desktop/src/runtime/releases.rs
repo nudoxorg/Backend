@@ -7,7 +7,7 @@
 //! treated as evidence that another version has the same API.
 
 use crate::core::VersionedRoot;
-use crate::host::registry::{Availability, Composition, RegistryFact};
+use crate::host::registry::{Availability, Composition, RegistryFact, Release};
 use crate::model::pages::PackageRef;
 use crate::runtime::offload::{Answer, Memo};
 use backend_client::Session;
@@ -17,21 +17,29 @@ use facet::data::release::{
     Version, What,
 };
 use gpui::{Context, Global};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 const RELEASE_READS: usize = 12;
+const RELEASE_REFRESH: Duration = Duration::from_secs(15);
+const RELEASE_LIMIT: usize = 256;
+const DIFF_LIMIT: usize = 5_000;
 
-/// Exact key for a local release read. The owner endpoint and producer
-/// authority prevent data from another owner or an older index root from
-/// being presented as current.
+/// Exact key for a local release read. The owner endpoint, selected registry
+/// authority and immutable producer root prevent facts from another owner or
+/// authority from being presented as current.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ReleaseKey {
     package: PackageRef,
     root: VersionedRoot,
     endpoint: PathBuf,
+    /// The selected registry authority, captured when its owner starts.
+    authority: Arc<str>,
+    /// Only this exact requested release is compared with the pin.
+    compare_to: Option<String>,
 }
 
 /// A complete local registry listing, with only comparisons the owner
@@ -68,6 +76,7 @@ pub(crate) enum Read {
 pub(crate) fn get<T: 'static>(
     package: &PackageRef,
     root: VersionedRoot,
+    compare_to: Option<&str>,
     cx: &mut Context<T>,
 ) -> Read {
     let Some(composition) = crate::host::registry::composed() else {
@@ -80,9 +89,11 @@ pub(crate) fn get<T: 'static>(
         package: package.clone(),
         root,
         endpoint: composition.endpoint,
+        authority: composition.authority.clone(),
+        compare_to: compare_to.map(str::to_owned),
     };
     let memo = cx.global::<ReleaseReads>().0.clone();
-    match memo.get(&key, cx) {
+    match memo.get_expiring(&key, RELEASE_REFRESH, cx) {
         Answer::Reading => Read::Reading,
         Answer::Failed(fault) => Read::Unavailable(Arc::from(fault.to_string())),
         Answer::Ready(value) => match value.as_ref() {
@@ -94,7 +105,9 @@ pub(crate) fn get<T: 'static>(
 
 fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
     let composition = crate::host::registry::composed()
-        .filter(|composition| composition.endpoint == key.endpoint)
+        .filter(|composition| {
+            composition.endpoint == key.endpoint && composition.authority == key.authority
+        })
         .ok_or_else(|| {
             Arc::from("the local service connection changed before releases were read")
         })?;
@@ -119,128 +132,131 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
             "the local index changed before the release read began",
         ));
     }
-    let listed = match session
-        .packages()
-        .map_err(|error| Arc::<str>::from(format!("could not read indexed packages: {error}")))?
-        .reply
-    {
-        CommandReply::Packages(snapshot) => snapshot
-            .root
-            .rows()
+    let selected = key.compare_to.as_deref().and_then(|version| {
+        published
             .iter()
-            .filter_map(|row| match row.id {
-                backend_library::RowId::Package(_) => PackageRef::parse(&row.label).ok(),
-                _ => None,
-            })
-            .collect::<HashSet<_>>(),
-        _ => {
-            return Err(Arc::from(
-                "the local service returned an unexpected package listing",
-            ));
-        }
-    };
+            .find(|entry| entry.release.version.as_str() == version)
+    });
+    let pin_entry = published.iter().find(|entry| entry.release == pinned);
+    let (shown, truncated) = bounded_history(
+        &published,
+        [Some(&pinned), selected.map(|entry| &entry.release)],
+    );
 
-    let Some(from) = exact_owner_reference(&key.package, &listed, &composition) else {
-        return Err(Arc::from(
-            "the pinned registry release is not present in the local index",
-        ));
-    };
+    // Exact membership checks are limited to the pin and the one selected
+    // release. An absent package-list row is never inferred from a scan of
+    // every owner package, so unobserved entries stay explicitly unknown.
+    let mut indexed = HashMap::<String, FacetRegistryFact<bool>>::new();
+    let mut owner_refs = HashMap::<String, Option<PackageReference>>::new();
+    for entry in [pin_entry, selected].into_iter().flatten() {
+        let version = entry.release.version.as_str().to_owned();
+        if owner_refs.contains_key(&version) {
+            continue;
+        }
+        let reference = match &entry.availability {
+            Availability::Ambiguous { .. } | Availability::UnverifiedArchive(_) => None,
+            _ => exact_owner_reference(&mut session, &entry.release, &composition),
+        };
+        let fact = match &entry.availability {
+            Availability::Ambiguous { .. } => FacetRegistryFact::Ambiguous,
+            _ if reference.is_some() => FacetRegistryFact::Known(true),
+            _ => FacetRegistryFact::Missing,
+        };
+        indexed.insert(version.clone(), fact);
+        owner_refs.insert(version, reference);
+    }
+
     let mut diffs = Vec::new();
-    let mut any_unread_source = false;
-    let mut any_unindexed_source = false;
-    let mut ambiguous_sources = Vec::new();
-    let mut unverified_archives = Vec::new();
-    for release in published.iter().filter(|release| release.release != pinned) {
-        match &release.availability {
-            Availability::Download => {
-                any_unread_source = true;
-                continue;
+    let mut comparison_note = None;
+    if let Some(target) = selected {
+        if target.release == pinned {
+            diffs.push(ReleaseDiff {
+                from: pinned.version.as_str().to_owned().into(),
+                to: pinned.version.as_str().to_owned().into(),
+                changes: Vec::new(),
+                semver_slip: false,
+            });
+        } else if pin_entry.is_none() {
+            comparison_note = Some("the pinned release has no exact registry record".to_owned());
+        } else {
+            let from = owner_refs.get(pinned.version.as_str()).cloned().flatten();
+            let to = owner_refs
+                .get(target.release.version.as_str())
+                .cloned()
+                .flatten();
+            match (from, to) {
+                (Some(from), Some(to)) => match session.diff(from.clone(), to.clone()) {
+                    Ok(records)
+                        if records.len() <= DIFF_LIMIT
+                            && records.iter().all(|record| {
+                                record.change != DeclarationChange::Indeterminate
+                            }) =>
+                    {
+                        let changes = records
+                            .iter()
+                            .map(|record| {
+                                let (what, severity) = match record.change {
+                                    DeclarationChange::Added => (What::Added, Severity::Additive),
+                                    DeclarationChange::Removed => {
+                                        (What::Removed, Severity::Breaking)
+                                    }
+                                    DeclarationChange::Changed => {
+                                        (What::Changed, Severity::Breaking)
+                                    }
+                                    DeclarationChange::Indeterminate => {
+                                        unreachable!("checked above")
+                                    }
+                                };
+                                Change {
+                                    path: item_path(
+                                        record.label.as_str(),
+                                        from.as_str(),
+                                        to.as_str(),
+                                    )
+                                    .into(),
+                                    what,
+                                    severity,
+                                    before: None,
+                                    after: None,
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        diffs.push(ReleaseDiff {
+                            from: pinned.version.as_str().to_owned().into(),
+                            to: target.release.version.as_str().to_owned().into(),
+                            semver_slip: semver_slip(
+                                pinned.version.as_str(),
+                                target.release.version.as_str(),
+                                changes
+                                    .iter()
+                                    .any(|change| change.severity == Severity::Breaking),
+                            ),
+                            changes,
+                        });
+                    }
+                    Ok(_) => {
+                        comparison_note = Some(
+                            "the exact comparison is incomplete or exceeds the display limit"
+                                .to_owned(),
+                        );
+                    }
+                    Err(_) => {
+                        comparison_note = Some(
+                            "the owner has no exact comparison for the selected pair".to_owned(),
+                        );
+                    }
+                },
+                _ => {
+                    comparison_note = Some(
+                        "one or both exact releases are not indexed by the current owner"
+                            .to_owned(),
+                    );
+                }
             }
-            Availability::Archive(_) => {
-                // The archive is on disk but is not yet an indexed source
-                // tree. Indexing it is a user action, not a render side effect.
-                any_unindexed_source = true;
-                continue;
-            }
-            Availability::Ambiguous { indexes } => {
-                ambiguous_sources.extend(indexes.iter().map(|path| path.display().to_string()));
-                continue;
-            }
-            Availability::UnverifiedArchive(path) => {
-                unverified_archives.push(path.display().to_string());
-                continue;
-            }
-            Availability::Unpacked(_) => {}
         }
-        let Some(tree) = composition.source.tree_of(&release.release) else {
-            any_unindexed_source = true;
-            continue;
-        };
-        if !tree.join("Cargo.toml").is_file() {
-            any_unindexed_source = true;
-            continue;
-        }
-        let Some(to) = tree
-            .to_str()
-            .and_then(|tree| PackageRef::parse(tree).ok())
-            .filter(|candidate| listed.contains(candidate))
-            .and_then(|candidate| PackageReference::parse(candidate.as_str().to_owned()).ok())
-        else {
-            any_unindexed_source = true;
-            continue;
-        };
-        let from_owner = PackageReference::parse(from.as_str().to_owned())
-            .map_err(|_| Arc::<str>::from("the pinned package identity is invalid"))?;
-        let records = match session.diff(from_owner, to.clone()) {
-            Ok(records) => records,
-            Err(_) => {
-                any_unindexed_source = true;
-                continue;
-            }
-        };
-
-        // The facet model has no partial-diff state. Do not quietly discard
-        // overload ambiguity and then call the remainder a complete diff.
-        if records
-            .iter()
-            .any(|record| record.change == DeclarationChange::Indeterminate)
-        {
-            any_unindexed_source = true;
-            continue;
-        }
-        let changes = records
-            .iter()
-            .filter_map(|record| {
-                let (what, severity) = match record.change {
-                    DeclarationChange::Added => (What::Added, Severity::Additive),
-                    DeclarationChange::Removed => (What::Removed, Severity::Breaking),
-                    DeclarationChange::Changed => (What::Changed, Severity::Breaking),
-                    DeclarationChange::Indeterminate => return None,
-                };
-                Some(Change {
-                    path: item_path(record.label.as_str(), from.as_str(), to.as_str()).into(),
-                    what,
-                    severity,
-                    // DiffRecord currently carries identities and change
-                    // kinds, not captured before/after signature text.
-                    before: None,
-                    after: None,
-                })
-            })
-            .collect::<Vec<_>>();
-        let from_version = pinned.version.as_str();
-        let to_version = release.release.version.as_str();
-        let semver_slip = semver_cmp(from_version, to_version).is_lt()
-            && same_caret_class(from_version, to_version)
-            && changes
-                .iter()
-                .any(|change| change.severity == Severity::Breaking);
-        diffs.push(ReleaseDiff {
-            from: from_version.to_owned().into(),
-            to: to_version.to_owned().into(),
-            changes,
-            semver_slip,
-        });
+    } else if key.compare_to.is_some() {
+        comparison_note =
+            Some("the selected exact release is absent from the local registry listing".to_owned());
     }
     let after = session.revision().map_err(|error| {
         Arc::<str>::from(format!("could not confirm the index revision: {error}"))
@@ -251,7 +267,7 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
         ));
     }
 
-    let versions = published
+    let versions = shown
         .iter()
         .map(|entry| Version {
             v: entry.release.version.as_str().to_owned().into(),
@@ -267,6 +283,13 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
                 RegistryFact::Missing => FacetRegistryFact::Missing,
                 RegistryFact::Ambiguous => FacetRegistryFact::Ambiguous,
             },
+            indexed: indexed
+                .get(entry.release.version.as_str())
+                .cloned()
+                .unwrap_or_else(|| match &entry.availability {
+                    Availability::Ambiguous { .. } => FacetRegistryFact::Ambiguous,
+                    _ => FacetRegistryFact::Missing,
+                }),
             source: match &entry.availability {
                 Availability::Download => SourceAvailability::Unavailable,
                 Availability::Ambiguous { .. } => SourceAvailability::Ambiguous,
@@ -278,27 +301,29 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
         })
         .collect();
     let mut notes = Vec::<String>::new();
-    if any_unread_source {
-        notes.push("some releases need a download before they can be compared".to_owned());
+    if truncated {
+        notes.push(format!("showing up to {RELEASE_LIMIT} entries with the pin and selection retained; other releases are omitted"));
     }
-    if any_unindexed_source {
-        notes.push("some local releases have no exact indexed comparison".to_owned());
+    if let Some(note) = comparison_note {
+        notes.push(note);
     }
-    ambiguous_sources.sort();
-    ambiguous_sources.dedup();
-    if !ambiguous_sources.is_empty() {
-        notes.push(format!(
-            "some releases have conflicting registry sources ({}); resolve the Cargo registry authority",
-            ambiguous_sources.join(", ")
-        ));
+    if shown
+        .iter()
+        .any(|entry| matches!(&entry.availability, Availability::Download))
+    {
+        notes.push("some shown releases need their source added before comparison".to_owned());
     }
-    unverified_archives.sort();
-    unverified_archives.dedup();
-    if !unverified_archives.is_empty() {
-        notes.push(format!(
-            "some local archives have no trusted checksum and cannot be unpacked ({})",
-            unverified_archives.join(", ")
-        ));
+    if shown
+        .iter()
+        .any(|entry| matches!(&entry.availability, Availability::Ambiguous { .. }))
+    {
+        notes.push("some shown releases have conflicting registry sources; resolve the Cargo registry authority".to_owned());
+    }
+    if shown
+        .iter()
+        .any(|entry| matches!(&entry.availability, Availability::UnverifiedArchive(_)))
+    {
+        notes.push("some shown archives have no trusted checksum and cannot be read".to_owned());
     }
     let note = (!notes.is_empty()).then(|| Arc::from(notes.join(" · ")));
     Ok(Arc::new(ReleaseData {
@@ -317,33 +342,67 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
     }))
 }
 
-/// Finds the exact owner package identity for this release. A local cache
-/// root may be indexed under its canonical path even when the page was opened
-/// through its package URL; matching the version coordinate is explicit and
-/// ambiguity-safe.
+/// Returns the exact admitted tree path for this selected registry release.
+/// A cargo PURL contains a name and version but no registry identity, so it
+/// cannot prove which source authority the owner indexed. No owner-wide
+/// listing or same-coordinate fallback is used.
 fn exact_owner_reference(
-    package: &PackageRef,
-    listed: &HashSet<PackageRef>,
+    session: &mut Session,
+    release: &Release,
     composition: &Composition,
-) -> Option<PackageRef> {
-    if listed.contains(package) {
-        return Some(package.clone());
-    }
-    let pinned = package.release()?;
-    let matches = listed
-        .iter()
-        .filter(|candidate| candidate.release().as_ref() == Some(&pinned))
-        .cloned()
-        .collect::<Vec<_>>();
-    if matches.len() == 1 {
-        return matches.into_iter().next();
-    }
-    if matches.len() > 1 {
+) -> Option<PackageReference> {
+    if matches!(
+        composition.source.availability(release),
+        Availability::Ambiguous { .. } | Availability::UnverifiedArchive(_)
+    ) {
         return None;
     }
-    let tree = composition.source.tree_of(&pinned)?;
-    let candidate = PackageRef::parse(tree.to_str()?).ok()?;
-    listed.contains(&candidate).then_some(candidate)
+    if let Some(tree) = composition.source.tree_of(release)
+        && tree.join("Cargo.toml").is_file()
+        && let Some(path) = tree.to_str()
+        && owner_has_exact_outline(session, path)
+        && let Ok(reference) = PackageReference::parse(path.to_owned())
+    {
+        return Some(reference);
+    }
+    None
+}
+
+fn owner_has_exact_outline(session: &mut Session, coordinate: &str) -> bool {
+    session
+        .outline(coordinate)
+        .is_ok_and(|reply| matches!(reply.reply, CommandReply::Outline(_)))
+}
+
+fn bounded_history<'a>(
+    published: &'a [crate::host::registry::Published],
+    required: [Option<&Release>; 2],
+) -> (Vec<&'a crate::host::registry::Published>, bool) {
+    if published.len() <= RELEASE_LIMIT {
+        return (published.iter().collect(), false);
+    }
+    let mut indexes = (published.len() - RELEASE_LIMIT..published.len()).collect::<Vec<_>>();
+    let required = required
+        .into_iter()
+        .flatten()
+        .filter_map(|release| published.iter().position(|entry| &entry.release == release))
+        .collect::<HashSet<_>>();
+    for index in required.iter().copied() {
+        if !indexes.contains(&index) {
+            if let Some(remove) = indexes
+                .iter()
+                .position(|candidate| !required.contains(candidate))
+            {
+                indexes.remove(remove);
+            }
+            indexes.push(index);
+        }
+    }
+    indexes.sort_unstable();
+    (
+        indexes.into_iter().map(|index| &published[index]).collect(),
+        true,
+    )
 }
 
 fn item_path(label: &str, from: &str, to: &str) -> String {
@@ -358,33 +417,19 @@ fn item_path(label: &str, from: &str, to: &str) -> String {
         .to_owned()
 }
 
-/// Whether two exact versions occupy the same Cargo caret compatibility
-/// class. Invalid spellings conservatively never establish compatibility.
-fn same_caret_class(from: &str, to: &str) -> bool {
-    let (Some(a), Some(b)) = (parse_version(from), parse_version(to)) else {
+/// A breaking diff is a semver slip only when strict SemVer parsing proves
+/// the target falls under the source release's Cargo caret requirement.
+fn semver_slip(from: &str, to: &str, breaking: bool) -> bool {
+    if !breaking {
+        return false;
+    }
+    let (Ok(from), Ok(to)) = (semver::Version::parse(from), semver::Version::parse(to)) else {
         return false;
     };
-    match a {
-        (major, _, _) if major > 0 => a.0 == b.0,
-        (0, minor, _) if minor > 0 => b.0 == 0 && b.1 == minor,
-        (0, 0, patch) => b == (0, 0, patch),
-        _ => false,
+    if to <= from {
+        return false;
     }
-}
-
-fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let a = parse_version(a).unwrap_or_default();
-    let b = parse_version(b).unwrap_or_default();
-    a.cmp(&b)
-}
-
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let core = value.split(['+', '-']).next()?;
-    let mut parts = core.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
-    parts.next().is_none().then_some((major, minor, patch))
+    semver::VersionReq::parse(&format!("^{from}")).is_ok_and(|requirement| requirement.matches(&to))
 }
 
 // --------------------------------------------------------------------------
@@ -402,7 +447,8 @@ pub(crate) fn spelled(release: &Crate, version: &str) -> Option<gpui::SharedStri
 
 #[cfg(test)]
 mod tests {
-    use super::{item_path, same_caret_class};
+    use super::{bounded_history, item_path, semver_slip};
+    use crate::host::registry::{Availability, Published, RegistryFact, Release};
 
     #[test]
     fn item_names_keep_module_and_source_context_without_root_paths() {
@@ -421,12 +467,39 @@ mod tests {
     }
 
     #[test]
-    fn caret_classes_follow_zero_major_rules() {
-        assert!(same_caret_class("1.2.3", "1.9.0"));
-        assert!(!same_caret_class("1.2.3", "2.0.0"));
-        assert!(same_caret_class("0.3.1", "0.3.9"));
-        assert!(!same_caret_class("0.3.1", "0.4.0"));
-        assert!(same_caret_class("0.0.1", "0.0.1"));
-        assert!(!same_caret_class("0.0.1", "0.0.2"));
+    fn semver_slip_uses_strict_cargo_caret_compatibility() {
+        assert!(semver_slip("1.2.3", "1.9.0", true));
+        assert!(!semver_slip("1.2.3", "2.0.0", true));
+        assert!(semver_slip("0.3.1", "0.3.9", true));
+        assert!(!semver_slip("0.3.1", "0.4.0", true));
+        assert!(!semver_slip("0.0.1", "0.0.2", true));
+        assert!(!semver_slip("1.2.3-alpha.1", "1.2.4-beta.1", true));
+        assert!(!semver_slip("v1.2.3", "1.2.4", true));
+        assert!(!semver_slip("1.2.3+one", "1.2.3+two", true));
+        assert!(!semver_slip("1.2.3", "1.2.4", false));
+    }
+
+    #[test]
+    fn bounded_history_keeps_exact_pin_and_selection_identities() {
+        let published = (0..300)
+            .map(|minor| Published {
+                release: Release::new("sample", &format!("1.{minor}.0")).expect("release"),
+                date: RegistryFact::Missing,
+                yanked: RegistryFact::Missing,
+                availability: Availability::Download,
+            })
+            .collect::<Vec<_>>();
+        let pinned = Release::new("sample", "1.3.0").expect("pin");
+        let selected = Release::new("sample", "1.4.0").expect("selection");
+        let (shown, truncated) = bounded_history(&published, [Some(&pinned), Some(&selected)]);
+        let exact = shown
+            .iter()
+            .map(|entry| entry.release.version.as_str())
+            .collect::<Vec<_>>();
+        assert!(truncated);
+        assert_eq!(shown.len(), 256);
+        assert!(exact.contains(&"1.3.0"));
+        assert!(exact.contains(&"1.4.0"));
+        assert!(exact.contains(&"1.299.0"));
     }
 }

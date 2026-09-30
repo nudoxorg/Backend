@@ -58,7 +58,13 @@ pub(super) fn body(
     let package = route.package.as_str().to_owned();
     let companions = companions::gather(&companions::of(&page), ctx.links, ctx.active, cx);
     let root = ctx.links.snapshot(cx).key();
-    let (history, history_note) = history_of(&package, &page, root, cx);
+    let (history, history_note) = history_of(
+        &package,
+        &page,
+        route.at.as_ref().map(|at| at.as_str()),
+        root,
+        cx,
+    );
     let facts = facts::facts(&page, &package, &companions, &history);
     let view = facet::anatomy::symbol::compile(&facts);
     // What your packages do with it: the lines the page carries, read.
@@ -141,6 +147,7 @@ fn gem(page: &SymbolPage, view: &View, ctx: &Ctx<'_>) -> AnyElement {
 fn history_of(
     package: &str,
     page: &SymbolPage,
+    selected: Option<&str>,
     root: crate::core::VersionedRoot,
     cx: &mut Context<Reader>,
 ) -> (
@@ -151,7 +158,7 @@ fn history_of(
         return (facet::anatomy::history::History::default(), None);
     };
     let path = crate_path(pinned.display_name(), page.identity.coordinate.as_str());
-    match crate::runtime::releases::get(&pinned, root, cx) {
+    match crate::runtime::releases::get(&pinned, root, selected, cx) {
         crate::runtime::releases::Read::Reading => (
             facet::anatomy::history::History::default(),
             Some(std::sync::Arc::from(
@@ -273,7 +280,7 @@ fn upgrade(route: &SymbolRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> 
     let at = route.at.as_ref()?;
     let pinned = crate::model::pages::PackageRef::parse(route.package.as_str()).ok()?;
     let root = ctx.links.snapshot(cx).key();
-    match crate::runtime::releases::get(&pinned, root, cx) {
+    match crate::runtime::releases::get(&pinned, root, Some(at.as_str()), cx) {
         crate::runtime::releases::Read::Reading => {
             Some(release_note("Checking the exact release comparison…", ctx))
         }

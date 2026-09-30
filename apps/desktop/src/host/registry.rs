@@ -892,6 +892,10 @@ pub(crate) struct Composition {
     /// The owner's endpoint.
     pub(crate) endpoint: PathBuf,
     pub(crate) source: Arc<dyn RegistrySource>,
+    /// Exact Cargo cache authority chosen when this source was composed.
+    /// A new composition gets a new identity when the configured authority
+    /// changes; local-index facts also refresh on a short bounded interval.
+    pub(crate) authority: Arc<str>,
     /// Where the owner's words are kept for releases it listed but could not
     /// compile (`runtime::acquire::work::Refusals`), beside its workspace so
     /// they go wherever the index goes. `None`: not kept (tests).
@@ -915,10 +919,12 @@ pub(crate) fn publish(endpoint: &Path, data: &Path) {
     let Some(source) = CargoCache::from_env(data.join("registry-sources")) else {
         return;
     };
+    let authority: Arc<str> = source.authority_key().to_string().into();
     let refusals = Some(data.join("registry-sources").join("refusals.json"));
     install(Composition {
         endpoint: endpoint.to_path_buf(),
         source: Arc::new(source),
+        authority,
         refusals,
     });
 }

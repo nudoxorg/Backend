@@ -16,7 +16,7 @@ use facet::fluid::Modes;
 use facet::folio::berg::{BergFacts, berg as berg_view, weight};
 use facet::folio::cards::CardFacts;
 use facet::folio::crest::{self, Advisories, REST};
-use facet::folio::features::{FeatureFacts, features};
+use facet::folio::features::{FeatureFacts, feature_preview};
 use facet::folio::flight::{Marks, Stone, flight, progress};
 use facet::folio::heads::{Finding, heads, open_sheet};
 use facet::folio::module::module as module_view;
@@ -91,6 +91,8 @@ pub(super) struct Facts {
     pub advisories: Advisories,
     /// The releases.
     pub ticker: Option<Rc<TickerFacts>>,
+    /// Why the exact local release history is pending or incomplete.
+    pub ticker_note: Option<SharedString>,
     /// What the release being read did to the names.
     pub past: Option<Past>,
     /// How many names have a first sentence, of how many.
@@ -802,19 +804,30 @@ impl RenderOnce for Folio {
             .past
             .as_ref()
             .map(|past| self.banner(past, &measure, palette));
+        let ticker_note = facts.ticker_note.as_ref().map(|note| {
+            one(
+                key(&self.id, "ticker-note"),
+                note.clone(),
+                ty::SMALL,
+                palette.ink3,
+                &measure,
+            )
+        });
         // A big module is a page of its own: the package's hero, crest and
         // features step aside, the ticker stays (it is where versions live),
         // and the module's rail and cards take the room.
         let dedicated = open_at.is_some_and(|open| facts.modules[open].extent() == Extent::Page);
         // The banner is not the ticker's: with no ticker the past still says so.
-        let ticker_block = (ticker_row.is_some() || banner.is_some()).then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(measure.space(Space::Roomy))
-                .children(ticker_row)
-                .children(banner)
-        });
+        let ticker_block = (ticker_row.is_some() || ticker_note.is_some() || banner.is_some())
+            .then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(measure.space(Space::Roomy))
+                    .children(ticker_row)
+                    .children(ticker_note)
+                    .children(banner)
+            });
         let column = div()
             .id(self.id.clone())
             .flex()
@@ -937,25 +950,14 @@ impl Folio {
         doors(&self.targets, self.active && live, element, over)
     }
 
-    /// The features bar: every switch is a door, Enter flips it.
+    /// A read-only view of the manifest's default feature profile.
     fn features_bar(&self, facts_features: &Rc<FeatureFacts>, measure: &Measure) -> AnyElement {
-        let (targets, active) = (self.targets.clone(), self.active);
-        features(
+        feature_preview(
             key(&self.id, "features"),
             facts_features.clone(),
             measure.width(),
             measure,
         )
-        .wrap(move |_, name, act, chip| {
-            door(
-                &targets,
-                active,
-                &PageTarget::Feature(name.to_owned().into()),
-                name.to_owned(),
-                act,
-                chip,
-            )
-        })
         .into_any_element()
     }
 
