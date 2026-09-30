@@ -44,6 +44,7 @@ mod root;
 mod shelf;
 mod side;
 mod status;
+#[cfg(test)]
 mod symbol_links;
 mod system;
 mod text_fit;

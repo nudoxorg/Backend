@@ -21,7 +21,6 @@ use super::region::{Links, measured, new_region};
 use super::reveal::{HOLD, RevealHold};
 use super::shelf::Shelf;
 use super::status::Status;
-use super::symbol_links::{Request as SymbolLinkRequest, Step as SymbolLinkStep};
 use super::jump::route_symbol;
 use super::titlebar::Titlebar;
 use super::{kit, peeks};
@@ -104,8 +103,6 @@ pub struct Shell {
     ask_open: bool,
     /// An exact fixture-node link waiting for the index. Each new visit
     /// invalidates it even if Back later restores the same route.
-    symbol_link_generation: u64,
-    pending_symbol_link: Option<SymbolLinkRequest>,
     /// The system's appearance and text size, and the window's display.
     around: Surroundings,
     renders: u64,
@@ -212,8 +209,6 @@ impl Shell {
             peeking: None,
             pinned: 0,
             ask_open: false,
-            symbol_link_generation: 0,
-            pending_symbol_link: None,
             around: Surroundings {
                 dark: is_dark(window.appearance()),
                 text: 1.0,
@@ -479,7 +474,6 @@ impl Shell {
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
             StoreEvent::Snapshot(Branch::Route) => {
-                self.cancel_symbol_link(cx);
                 let route = self.links.snapshot(cx).route().clone();
                 if !super::bodies::graph::is_graph(&route) {
                     self.focus.focus(window, cx);
@@ -509,17 +503,12 @@ impl Shell {
                 self.sync_overlay(window, cx);
             }
             StoreEvent::Resource(key) => {
-                if self.pending_symbol_link.as_ref().is_some_and(|request| {
-                    matches!(key, PageKey::Package(package) if request.package.as_ref() == Some(package))
-                }) {
-                    self.resolve_symbol_link(cx);
-                }
                 // The open card reads the store each frame: redraw it.
                 if self.peeking.as_ref() == Some(key) {
                     cx.notify();
                 }
             }
-            StoreEvent::Snapshot(Branch::Root) => self.cancel_symbol_link(cx),
+            StoreEvent::Snapshot(Branch::Root) => {}
             StoreEvent::Snapshot(_) => {}
         }
     }
@@ -546,14 +535,7 @@ impl Shell {
         self.links.dispatch(Intent::OpenCommandPalette, cx);
     }
 
-    fn cancel_symbol_link(&mut self, cx: &mut Context<Self>) {
-        self.symbol_link_generation = self.symbol_link_generation.wrapping_add(1);
-        self.pending_symbol_link = None;
-        self.status.update(cx, |status, cx| status.set_opening(None, cx));
-    }
-
     fn find_symbol_link(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
-        self.cancel_symbol_link(cx);
         self.links.dispatch(
             Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
                 crate::navigation::BrowseRoute::Find(query),
@@ -563,10 +545,9 @@ impl Shell {
     }
 
     /// S2: the exact identity behind an anatomy link could not be resolved
-    /// (no admitted package, or no exact match in its complete outline).
+    /// by this revision's complete indexed graph.
     /// The link does not move the page; the Notice says so.
     fn symbol_link_unresolved(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
-        self.cancel_symbol_link(cx);
         let snapshot = self.links.snapshot(cx);
         let notice = crate::runtime::graph_focus::Notice {
             visit: snapshot.route().clone(),
@@ -577,42 +558,9 @@ impl Shell {
         self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
     }
 
-    /// A resource event may be for a previous route, release, or fixture.
-    /// Only the same generation and exact source identity can open a page.
-    fn resolve_symbol_link(&mut self, cx: &mut Context<Self>) {
-        let Some(request) = self.pending_symbol_link.take() else { return };
-        let snapshot = self.links.snapshot(cx);
-        let current = crate::runtime::fixture_world::link_world(cx);
-        if !request.accepts(
-            self.symbol_link_generation,
-            snapshot.route(),
-            snapshot.key(),
-            current.as_ref(),
-        ) {
-            return;
-        }
-        let Some(package) = &request.package else { self.symbol_link_unresolved(request.query, cx); return };
-        let resource = self.links.store.read(cx).package(package);
-        match request.step(&resource) {
-            SymbolLinkStep::Waiting => self.pending_symbol_link = Some(request),
-            SymbolLinkStep::Resolved(resolved) => {
-                self.cancel_symbol_link(cx);
-                if let Some(route) = kit::symbol_view_route(
-                    resolved.package.as_str(), &resolved.symbol, View::Page, resolved.line,
-                ) {
-                    self.links.dispatch(Intent::Navigate(route), cx);
-                } else {
-                    self.find_symbol_link(request.query, cx);
-                }
-            }
-            SymbolLinkStep::Find => self.symbol_link_unresolved(request.query, cx),
-        }
-    }
-
-    /// Follow a recorded node through exact indexed source identity. A
-    /// spelled path is only a contextual search, not an invented coordinate.
+    /// Follow a graph node through the exact locator captured with the
+    /// selected indexed world. A display name never becomes a symbol route.
     fn open_anatomy(&mut self, open: &facet::anatomy::Open, cx: &mut Context<Self>) {
-        self.cancel_symbol_link(cx);
         let node = match &open.target {
             facet::semantics::Target::Node(node) => *node,
             facet::semantics::Target::Path(path) => {
@@ -625,39 +573,67 @@ impl Shell {
             }
         };
         let snapshot = self.links.snapshot(cx);
-        let Some((world, identities)) = crate::runtime::fixture_world::link_world(cx) else { return };
-        let Some(request) = SymbolLinkRequest::new(
-            node,
-            snapshot.route().clone(),
-            snapshot.key(),
-            self.symbol_link_generation,
-            world,
-            identities,
-        ) else { return };
         if snapshot.route().at().is_some() {
-            // Fixture nodes describe the pinned world, not the viewed old
-            // release. Offer the index query without claiming an exact page.
-            self.find_symbol_link(request.query, cx);
+            self.links.store.update(cx, |store, cx| {
+                store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: "Historical graph identities are not available for this release.".into(),
+                    retry: None,
+                }), cx);
+            });
             return;
         }
-        if let Some(package) = crate::runtime::store::route_package(snapshot.route())
-        {
-            let dossier = self.links.store.read(cx).package(&package);
-            if let Ok(Some(dossier)) = super::bodies::graph::open_value(&dossier, snapshot.key())
-                && let Some(tree) = dossier.outline.known()
-                && let Some(symbol) = crate::runtime::fixture_world::symbol_of(node, &package, tree, cx)
-                && let Some(route) = kit::symbol_route(package.as_str(), &symbol)
-            {
-                self.links.dispatch(Intent::Navigate(route), cx);
+        let Some(key) = crate::runtime::indexed_world::key(
+            snapshot.key(),
+            crate::runtime::hand::preferred(&snapshot),
+            cx,
+        ) else {
+            self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                visit: snapshot.route().clone(),
+                root: snapshot.key(),
+                message: "The local graph reader is not ready.".into(),
+                retry: None,
+            }), cx));
+            return;
+        };
+        let projection = match crate::runtime::indexed_world::get(&key, cx) {
+            crate::runtime::indexed_world::State::Ready(projection) => projection,
+            crate::runtime::indexed_world::State::Reading => {
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: "The current indexed graph is still being read.".into(),
+                    retry: None,
+                }), cx));
                 return;
             }
-        }
-        let Some(package) = request.package.clone() else { self.symbol_link_unresolved(request.query, cx); return };
-        let opening: SharedString = format!("Opening {}…", request.query.text).into();
-        self.status.update(cx, |status, cx| status.set_opening(Some(opening), cx));
-        self.pending_symbol_link = Some(request);
-        self.links.store.update(cx, |store, cx| { store.ensure(PageKey::Package(package), cx); });
-        self.resolve_symbol_link(cx);
+            crate::runtime::indexed_world::State::Unavailable(reason) => {
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: format!("The current indexed graph is unavailable: {reason}").into(),
+                    retry: None,
+                }), cx));
+                return;
+            }
+        };
+        let Some(resolved) = projection.identities.exact_node(node) else {
+            let name = projection.world.nodes.get(node as usize).map(|node| node.name.to_string()).unwrap_or_else(|| "graph node".to_owned());
+            if let Ok(query) = crate::model::pages::SearchQuery::new(&name, 200) {
+                self.symbol_link_unresolved(query, cx);
+            }
+            return;
+        };
+        let Some(route) = kit::symbol_view_route(
+            resolved.package.as_str(),
+            &resolved.symbol,
+            View::Page,
+            resolved.line,
+        ) else {
+            return;
+        };
+        self.links.dispatch(Intent::Navigate(route), cx);
     }
 
     /// ⌘\: the shelf opens or closes; on a window too narrow to hold it the
@@ -1075,8 +1051,9 @@ impl Shell {
     /// Inside the open hand: ← / → walk the cards, ↵ goes, ⌫ lets go.
     /// Returns whether the key was the hand's.
     fn hand_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
-        let hand = self.links.snapshot(cx).session().hand.clone();
-        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let snapshot = self.links.snapshot(cx);
+        let hand = snapshot.session().hand.clone();
+        let view = crate::runtime::hand::hand_view_for(&hand, &snapshot, cx);
         let count = view.cards.len();
         if count == 0 {
             return false;
@@ -1111,8 +1088,9 @@ impl Shell {
 
     /// ⌘1–⌘5: go to the hand's nth card, in the order it is shown.
     pub(crate) fn hand_card(&mut self, n: usize, cx: &mut Context<Self>) {
-        let hand = self.links.snapshot(cx).session().hand.clone();
-        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let snapshot = self.links.snapshot(cx);
+        let hand = snapshot.session().hand.clone();
+        let view = crate::runtime::hand::hand_view_for(&hand, &snapshot, cx);
         let Some(card) = view.cards.get(n) else {
             return;
         };
@@ -1449,7 +1427,7 @@ impl Render for Shell {
         // The hand opened (the Row rung), just above the foot.
         let hand = snapshot.session().hand.clone();
         if self.hand_open && !hand.is_empty() {
-            let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+            let view = crate::runtime::hand::hand_view_for(&hand, &snapshot, cx);
             let measure = Measure::new(viewport.width, &facet);
             root = root.child(
                 div()
@@ -1561,9 +1539,6 @@ impl Render for Shell {
             .child(float)
     }
 }
-
-#[allow(dead_code)]
-fn _key(_: PageKey) {}
 
 /// The wall clock in unix ms (the hand's held and touched times).
 pub(crate) fn now_ms() -> u64 {

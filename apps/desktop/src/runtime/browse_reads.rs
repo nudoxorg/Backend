@@ -117,7 +117,10 @@ fn offer_releases(
         let availability = source.availability(&release);
         let description = match &availability {
             Availability::Unpacked(tree) => crate::model::source_facts::manifest::read(tree).and_then(|manifest| manifest.description).map(Arc::from),
-            Availability::Archive(_) | Availability::Download => None,
+            Availability::Archive(_)
+            | Availability::UnverifiedArchive(_)
+            | Availability::Ambiguous { .. }
+            | Availability::Download => None,
         };
         let name = Arc::from(release.name.as_str());
         let candidate = candidates.entry(package.clone()).or_insert_with(|| FindPackage { package, name, description: None, indexed: false, record: None, offer: None });

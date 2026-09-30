@@ -46,7 +46,10 @@ impl RegistrySource for Shelf {
     fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> {
         match self.availability(release) {
             Availability::Unpacked(root) => Ok(SourceTree { release: release.clone(), root, origin: Origin::Cargo }),
-            Availability::Archive(_) | Availability::Download => Err(SourceError::NeedsDownload(release.clone())),
+            Availability::Archive(_)
+            | Availability::UnverifiedArchive(_)
+            | Availability::Ambiguous { .. }
+            | Availability::Download => Err(SourceError::NeedsDownload(release.clone())),
         }
     }
 }
