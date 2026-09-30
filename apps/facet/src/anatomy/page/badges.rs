@@ -151,8 +151,8 @@ fn badge_el(key: &str, fact: &badges::Badge, m: &Measure, palette: &Palette) -> 
             content.clone(),
             mm.role(role),
             1.0,
-            TextOverflow::Clip,
-            div().set(role, &mm).text_color(color).whitespace_nowrap().child(content),
+            TextOverflow::Wrap,
+            div().set(role, &mm).text_color(color).min_w_0().child(content),
         );
         let mut body = cut()
             .chamfer(Chamfer::Px(3.0 * s))
@@ -160,10 +160,12 @@ fn badge_el(key: &str, fact: &badges::Badge, m: &Measure, palette: &Palette) -> 
             .plate(Plate::Flat)
             .fill(mix(pal.plate.into(), pal.plate2.into(), if open { 1.0 } else { 0.0 }))
             .flex()
+            .flex_wrap()
             .flex_none()
+            .max_w(mm.width())
             .items_center()
             .gap(mm.space(Space::Snug))
-            .h(px(21.0 * s))
+            .min_h(px(21.0 * s))
             .pl(mm.space(Space::Snug))
             .pr(mm.space(Space::Snug) + px(1.0))
             .child(badges::glyph(fact.glyph, 12.0 * s, ink))
@@ -202,23 +204,25 @@ fn can_group(caps: &[Cap], m: &Measure, palette: &Palette) -> AnyElement {
             .plate(Plate::Flat)
             .fill(mix(pal.plate.into(), pal.plate2.into(), if open { 1.0 } else { 0.0 }))
             .flex()
+            .flex_wrap()
             .flex_none()
+            .max_w(mm.width())
             .items_center()
             .gap(mm.space(Space::Snug))
-            .h(px(21.0 * s))
+            .min_h(px(21.0 * s))
             .px(mm.space(Space::Snug))
             .child(word("can"));
         for (n, cap) in caps.iter().enumerate() {
             let mark = cap_glyph(cap.glyph, 12.0 * s, if open { ink } else { pal.ink2.hsla() });
             if open {
                 let label = SharedString::from(cap.word.clone());
-                body = body.child(div().flex().items_center().gap(px(4.0 * s)).child(mark).child(probe::text(
+                body = body.child(div().min_w_0().flex().items_center().gap(px(4.0 * s)).child(mark).child(probe::text(
                     ElementId::Name(SharedString::from(format!("page-can-word-{n}"))),
                     label.clone(),
                     mm.role(WORD),
                     1.0,
-                    TextOverflow::Clip,
-                    div().set(WORD, &mm).text_color(pal.ink2.hsla()).whitespace_nowrap().child(label),
+                    TextOverflow::Wrap,
+                    div().set(WORD, &mm).text_color(pal.ink2.hsla()).min_w_0().child(label),
                 )));
             } else {
                 body = body.child(mark);
