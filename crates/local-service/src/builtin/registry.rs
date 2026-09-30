@@ -1783,12 +1783,15 @@ fn refresh_authority_source(
         let mut request = agent
             .get(&source.location)
             .header("accept-encoding", "identity");
+        let mut conditional_request_sent = false;
         if let Some(etag) = previous.and_then(|frontier| frontier.etag.as_deref()) {
             request = request.header("if-none-match", etag);
+            conditional_request_sent = true;
         }
         if let Some(last_modified) = previous.and_then(|frontier| frontier.last_modified.as_deref())
         {
             request = request.header("if-modified-since", last_modified);
+            conditional_request_sent = true;
         }
         let mut response = request.call().map_err(public_advisory_request_error)?;
         response_expires_at = advisory_http_expiry(
@@ -1820,6 +1823,11 @@ fn refresh_authority_source(
             .map(str::to_owned)
             .or_else(|| previous.and_then(|frontier| frontier.last_modified.clone()));
         if status == 304 {
+            if !conditional_request_sent {
+                return Err(
+                    "advisory source returned 304 without a conditional validator".to_owned(),
+                );
+            }
             (Vec::new(), etag, last_modified, true)
         } else if (200..300).contains(&status) {
             if is_osv_zip {
@@ -3165,6 +3173,69 @@ mod tests {
         assert!(error.len() <= 256);
         assert!(!error.contains("secret"));
         assert!(!error.contains("hidden"));
+    }
+
+    #[test]
+    fn advisory_304_without_a_sent_validator_cannot_refresh_prior_facts() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local authority");
+        let endpoint = format!("http://{}/advisories.json", listener.local_addr().unwrap());
+        let body = br#"{"schema_version":"1.3.1","id":"OSV-NO-VALIDATOR-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#
+            .to_vec();
+        let server = thread::spawn(move || {
+            for response in [
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .into_bytes(),
+                b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_vec(),
+            ]
+            .into_iter()
+            {
+                let (mut stream, _) = listener.accept().expect("accept authority request");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut buffer).expect("read request headers");
+                    assert_ne!(count, 0, "request headers complete");
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                assert!(
+                    !request.contains("if-none-match:") && !request.contains("if-modified-since:"),
+                    "both requests are unconditional because the first response had no validators"
+                );
+                stream.write_all(&response).expect("write HTTP response");
+                if response.starts_with(b"HTTP/1.1 200") {
+                    stream.write_all(&body).expect("write authority body");
+                }
+            }
+        });
+
+        let source = AdvisorySourceConfig {
+            source: backend_engine::advisory::AdvisorySource::Osv,
+            location: endpoint,
+        };
+        let scope = Some(backend_engine::advisory::OsvFeedScope::All);
+        let mut authority = backend_engine::advisory::AdvisoryAuthority::new(60_000);
+        authority.configure_sources([source.source]);
+        let directory = scratch();
+        let first = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory)
+            .expect("initial body without validators");
+        assert_eq!(first.etag, None);
+        assert_eq!(first.last_modified, None);
+        authority.apply(first).expect("select initial feed");
+        assert_eq!(authority.frontier(source.source).unwrap().etag, None);
+
+        let error = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory)
+            .expect_err("unconditional 304 cannot refresh old facts");
+        assert_eq!(
+            error,
+            "advisory source returned 304 without a conditional validator"
+        );
+        server.join().expect("authority server thread");
+        fs::remove_dir_all(directory).expect("remove fixture");
     }
 
     #[test]

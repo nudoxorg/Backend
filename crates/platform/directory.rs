@@ -56,26 +56,46 @@ impl std::fmt::Debug for DirectoryCapability {
 
 impl DirectoryCapability {
     /// Creates or opens a private directory at a local path, then retains a
-    /// handle to the resulting directory. Existing path components are walked
-    /// without following symbolic links or reparse points.
+    /// handle to the resulting directory. The parent must already exist; a
+    /// missing final component is created relative to the pinned parent so a
+    /// symlink cannot redirect directory creation.
     pub fn open_or_create_private(path: &Path) -> io::Result<Self> {
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty());
-        if let Some(parent) = parent {
-            std::fs::create_dir_all(parent)?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid("private directory has no valid final name"))?;
+        match Self::open(path) {
+            Ok(directory) => {
+                directory.restrict_private()?;
+                directory.validate_private()?;
+                Ok(directory)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let parent = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                let parent = Self::open(parent)?;
+                let directory = parent.create_private_dir(name)?;
+                directory.validate_private()?;
+                Ok(directory)
+            }
+            Err(error) => Err(error),
         }
+    }
+
+    /// Opens the supplied directory by walking its path without following
+    /// symbolic links or reparse points. Every later operation is relative to
+    /// that pinned handle.
+    pub fn open(path: &Path) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            std::fs::create_dir_all(path)?;
-            let directory = Self::open(path)?;
-            directory.restrict_private()?;
-            directory.validate_private()?;
-            return Ok(directory);
+            return open_unix_path(path).map(|handle| Self {
+                handle: Arc::new(handle),
+            });
         }
         #[cfg(windows)]
         {
-            crate::win32::workspace_fs::WorkspaceRoot::ensure_private_child_directory(path)?;
             return crate::win32::workspace_fs::WorkspaceRoot::open(path).map(|handle| Self {
                 handle: Arc::new(handle),
             });
@@ -83,30 +103,6 @@ impl DirectoryCapability {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = path;
-            Err(unsupported())
-        }
-    }
-
-    /// Resolves the supplied root once, then opens the resolved directory
-    /// without following links in the resulting path. Every later operation
-    /// is relative to that pinned handle.
-    pub fn open(path: &Path) -> io::Result<Self> {
-        let resolved = std::fs::canonicalize(path)?;
-        #[cfg(unix)]
-        {
-            return open_unix_path(&resolved).map(|handle| Self {
-                handle: Arc::new(handle),
-            });
-        }
-        #[cfg(windows)]
-        {
-            return crate::win32::workspace_fs::WorkspaceRoot::open(&resolved).map(|handle| Self {
-                handle: Arc::new(handle),
-            });
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = resolved;
             Err(unsupported())
         }
     }
@@ -596,17 +592,52 @@ fn open_unix_path(path: &Path) -> io::Result<File> {
             Mode::empty(),
         )?)
     };
+    #[cfg(target_os = "macos")]
+    let mut at_system_root = path.is_absolute();
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir => {
+                #[cfg(target_os = "macos")]
+                {
+                    at_system_root = true;
+                }
+            }
+            Component::CurDir => {}
             Component::Normal(name) => {
                 let child = openat(
                     &current,
                     name,
                     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                     Mode::empty(),
-                )?;
+                )
+                .or_else(|error| {
+                    #[cfg(target_os = "macos")]
+                    if at_system_root
+                        && matches!(name.to_str(), Some("var" | "tmp"))
+                        && error.kind() == io::ErrorKind::NotADirectory
+                    {
+                        // macOS exposes these stable system paths as symlinks
+                        // at `/var` and `/tmp`. Resolve only these two fixed
+                        // aliases through the held root handle; arbitrary
+                        // caller-controlled symlink components stay rejected.
+                        let private = openat(
+                            &current,
+                            "private",
+                            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        )?;
+                        return openat(
+                            &private,
+                            name,
+                            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        );
+                    }
+                    Err(error)
+                })?;
                 current = File::from(child);
+                #[cfg(target_os = "macos")]
+                at_system_root = false;
             }
             Component::ParentDir | Component::Prefix(_) => return Err(invalid("unsafe root path")),
         }
@@ -674,6 +705,51 @@ fn validate_regular_file(_file: &File) -> io::Result<()> {
 #[cfg(not(any(unix, windows)))]
 fn validate_private_file(_file: &File) -> io::Result<()> {
     Err(unsupported())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::DirectoryCapability;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch() -> PathBuf {
+        for _ in 0..64 {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "backend-platform-directory-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create directory capability fixture: {error}"),
+            }
+        }
+        panic!("directory capability fixture capacity exhausted");
+    }
+
+    #[test]
+    fn private_directory_creation_does_not_follow_symlinked_parent() {
+        let root = scratch();
+        let outside = root.join("outside");
+        fs::create_dir(&outside).expect("outside directory");
+        let link = root.join("link");
+        symlink(&outside, &link).expect("symlink parent");
+
+        let result = DirectoryCapability::open_or_create_private(&link.join("new"));
+        assert!(result.is_err(), "symlinked parent is refused");
+        assert!(
+            !outside.join("new").exists(),
+            "refused creation has no side effect through the symlink"
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
 }
 
 fn validate_component(name: &str) -> io::Result<()> {

@@ -709,7 +709,12 @@ impl OsvSnapshotBuilder {
             )?
             .ok_or(OsvSnapshotError::Busy)?,
         );
-        prune_orphan_stages(&root_directory)?;
+        // A completed generation can be left behind if publication into the
+        // authority journal failed after sealing. The exclusive root lease is
+        // held here, so collect every unreferenced generation before charging
+        // the next stage against the durable quota. Live snapshots hold shared
+        // generation leases and are preserved by the same collector.
+        prune_unreferenced_generations_locked(&root_directory, &BTreeSet::new())?;
         let existing_bytes = snapshot_storage_bytes(&root_directory)?;
         let maximum_root_bytes = maximum_stored_bytes.min(MAX_OSV_SNAPSHOT_STORAGE_BYTES);
         let index_reserve = maximum_packages
@@ -1268,25 +1273,6 @@ fn snapshot_storage_bytes(root: &DirectoryCapability) -> Result<u64, OsvSnapshot
     Ok(total)
 }
 
-fn prune_orphan_stages(root: &DirectoryCapability) -> Result<(), OsvSnapshotError> {
-    let entries = root.entries(MAX_OSV_STORAGE_ENTRIES)?;
-    for entry in entries {
-        let Some(name) = entry.name.to_str() else {
-            continue;
-        };
-        if !name.starts_with(".osv-stage-") {
-            continue;
-        }
-        if entry.kind != backend_platform::directory::EntryKind::Directory {
-            return Err(OsvSnapshotError::Invalid("snapshot staging entry"));
-        }
-        let stage = root.open_private_dir(name)?;
-        drop(stage);
-        root.remove_dir_all(name, MAX_OSV_STORAGE_ENTRIES)?;
-    }
-    Ok(())
-}
-
 fn prune_unreferenced_generations(
     root: &Path,
     retained: &BTreeSet<String>,
@@ -1310,6 +1296,15 @@ fn prune_unreferenced_generations_at(
         return Ok(false);
     };
 
+    prune_unreferenced_generations_locked(root, retained)
+}
+
+/// Collects stale staging trees and generations while the caller holds the
+/// exclusive root lease. Generation leases protect snapshots held by readers.
+fn prune_unreferenced_generations_locked(
+    root: &DirectoryCapability,
+    retained: &BTreeSet<String>,
+) -> Result<bool, OsvSnapshotError> {
     static DELETE_NONCE: AtomicU64 = AtomicU64::new(0);
     for item in root.entries(MAX_OSV_STORAGE_ENTRIES)? {
         let Some(name) = item.name.to_str() else {

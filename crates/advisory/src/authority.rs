@@ -508,21 +508,32 @@ impl AdvisoryAuthority {
         authority
             .rebuild_aliases()
             .map_err(AuthorityStorageError::AliasConflict)?;
-        let selected_snapshot_unavailable = authority
+        let selected_snapshot_error = authority
             .osv_snapshot
             .as_mut()
-            .is_some_and(|snapshot| snapshot.attach_root(osv_snapshot_root(path)).is_err());
-        if selected_snapshot_unavailable {
+            .and_then(|snapshot| snapshot.attach_root(osv_snapshot_root(path)).err());
+        if let Some(error) = selected_snapshot_error {
+            if matches!(&error, OsvSnapshotError::Busy) {
+                // A competing refresh may be between sealing and durable
+                // authority publication. Preserve the exact persisted
+                // selection and let the caller retry after its owner lease is
+                // released; treating this transient lock as corruption would
+                // overwrite known positive facts with an empty authority.
+                return Err(AuthorityStorageError::Snapshot(error));
+            }
             authority.osv_snapshot = None;
             if let Some(frontier) = authority.frontiers.get_mut(&AdvisorySource::Osv) {
                 frontier.availability = AuthorityAvailability::Unavailable;
             }
         }
-        let previous_snapshot_unavailable = authority
+        let previous_snapshot_error = authority
             .osv_previous_snapshot
             .as_mut()
-            .is_some_and(|snapshot| snapshot.attach_root(osv_snapshot_root(path)).is_err());
-        if previous_snapshot_unavailable {
+            .and_then(|snapshot| snapshot.attach_root(osv_snapshot_root(path)).err());
+        if let Some(error) = previous_snapshot_error {
+            if matches!(&error, OsvSnapshotError::Busy) {
+                return Err(AuthorityStorageError::Snapshot(error));
+            }
             authority.osv_previous_snapshot = None;
         }
         authority.max_age_secs = max_age_secs;
@@ -566,7 +577,10 @@ impl AdvisoryAuthority {
         } else {
             parent
         };
-        fs::create_dir_all(parent).map_err(AuthorityStorageError::Io)?;
+        // State parents are established by the product owner before durable
+        // publication. Creating path components here would resolve them by
+        // pathname and could mutate a target behind a replaced symlink before
+        // the capability walk rejects it.
         let directory = DirectoryCapability::open(parent).map_err(AuthorityStorageError::Io)?;
         // A fixed sibling name turns a crash left behind by a previous process into a permanent
         // persistence outage.  A process-local nonce keeps concurrent writers independent while
@@ -1409,8 +1423,13 @@ mod tests {
     }
 
     fn osv_for(id: &str, ecosystem: &str) -> Vec<u8> {
+        let range_type = if ecosystem == "Cargo" {
+            "SEMVER"
+        } else {
+            "ECOSYSTEM"
+        };
         format!(
-            r#"{{"schema_version":"1.3.1","id":"{id}","modified":"2026-01-02T00:00:00Z","affected":[{{"package":{{"ecosystem":"{ecosystem}","name":"demo"}},"ranges":[{{"type":"SEMVER","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
+            r#"{{"schema_version":"1.3.1","id":"{id}","modified":"2026-01-02T00:00:00Z","affected":[{{"package":{{"ecosystem":"{ecosystem}","name":"demo"}},"ranges":[{{"type":"{range_type}","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
         )
         .into_bytes()
     }
@@ -1956,6 +1975,104 @@ mod tests {
             !orphan.exists(),
             "unselected complete generation is reclaimed before the next quota calculation"
         );
+    }
+
+    #[test]
+    fn next_snapshot_builder_reclaims_same_process_unselected_generation() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
+        let mut first = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("first builder");
+        first.push(&advisory).expect("stage advisory");
+        let orphan = first
+            .finish(*blake3::hash(b"finished before failed selection").as_bytes())
+            .expect("seal unselected generation");
+        let orphan_path = directory.path().join(orphan.generation_id());
+        drop(orphan);
+        assert!(
+            orphan_path.is_dir(),
+            "finished generation is initially present"
+        );
+
+        let _next = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("next refresh starts after cleanup");
+        assert!(
+            !orphan_path.exists(),
+            "unselected generation is removed before quota accounting"
+        );
+    }
+
+    #[test]
+    fn busy_snapshot_root_does_not_downgrade_a_durable_selection() {
+        let directory = tempfile::tempdir().expect("authority directory");
+        let authority_path = directory.path().join("authority.json");
+        let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
+        let mut builder = super::super::OsvSnapshotBuilder::create(
+            &snapshot_root,
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("initial builder");
+        builder.push(&advisory).expect("stage advisory");
+        let snapshot = builder
+            .finish(*blake3::hash(b"selected durable generation").as_bytes())
+            .expect("seal selected generation");
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority
+            .apply(AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None))
+            .expect("select generation");
+        authority
+            .persist(&authority_path)
+            .expect("persist selection");
+        let original_state = fs::read(&authority_path).expect("read durable selection");
+
+        let _refresh = super::super::OsvSnapshotBuilder::create(
+            &snapshot_root,
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("concurrent refresh holds the root lease");
+        assert!(matches!(
+            AdvisoryAuthority::open(&authority_path, 100),
+            Err(AuthorityStorageError::Snapshot(OsvSnapshotError::Busy))
+        ));
+        assert_eq!(
+            fs::read(&authority_path).expect("selection remains readable"),
+            original_state,
+            "busy readers cannot rewrite the selected authority as unavailable"
+        );
+
+        drop(_refresh);
+        let reopened = AdvisoryAuthority::open(&authority_path, 100).expect("retry after refresh");
+        let package = super::super::normalize_package("cargo", "demo").expect("identity");
+        let observed = reopened.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(observed.coverage, AdvisoryCoverage::Complete);
+        assert_eq!(observed.advisories.len(), 1);
     }
 
     #[test]
