@@ -2,32 +2,33 @@
 
 use crate::{
     Binding, Cursor, DocumentState, Error, FieldSelection, LexicalPage, LexicalSource, Limits,
-    MatchMode, OverlayLimits, Query, QueryRequest, QueryVersion, RankedHit, Relevance,
-    SchemaVersion, compare_ranked_hits,
+    MatchMode, OverlayLimits, Query, QueryRequest, RankedHit, Relevance, SchemaVersion,
+    compare_ranked_hits,
 };
 use backend_semantic::EntityId;
 use backend_version::CoverageWitness;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::{
     collections::BTreeMap, fs, fs::File, io::Read, path::Path,
     sync::atomic::Ordering as AtomicOrdering,
 };
-use tantivy::collector::{Collector, SegmentCollector};
-use tantivy::columnar::ColumnValues;
+use tantivy::columnar::BytesColumn;
 use tantivy::{
-    DocId, Index, IndexReader, Score, Term, doc,
-    query::{BooleanQuery, FuzzyTermQuery, Occur, Query as TantivyQuery, TermQuery},
-    schema::{FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema},
+    DocAddress, DocId, DocSet, Index, IndexReader, TERMINATED, TantivyDocument, Term,
+    query::{
+        AllQuery, BooleanQuery, EnableScoring, FuzzyTermQuery, Occur, Query as TantivyQuery,
+        Scorer, TermQuery,
+    },
+    schema::{BytesOptions, FAST, Field, INDEXED, IndexRecordOption, STRING, Schema},
 };
 
 const WRITER_MEMORY_BYTES: usize = 15_000_000;
-const BINDING_FILE: &str = "backend-binding-v2";
-const INTEGRITY_FILE: &str = "backend-files-v2";
+const BINDING_FILE: &str = "backend-binding-v3";
+const INTEGRITY_FILE: &str = "backend-files-v3";
 const ORDINAL_MAP_FILE: &str = "backend-ordinals-v1";
-const INTEGRITY_MAGIC: &[u8] = b"backend-tantivy-files-v2\0";
+const INTEGRITY_MAGIC: &[u8] = b"backend-tantivy-files-v3\0";
 const ORDINAL_MAP_MAGIC: &[u8] = b"backend-tantivy-ordinals-v1\0";
-const DURABLE_ROOTS_DIRECTORY: &str = "v2";
+const DURABLE_ROOTS_DIRECTORY: &str = "v3";
 const DURABLE_ROOT_LEASE: &str = ".backend-root-reader.lock";
 const MAX_RETAINED_DURABLE_ROOTS: usize = 4;
 const DEFAULT_DURABLE_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -36,6 +37,12 @@ const MAX_PROJECTION_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ORDINAL_MAP_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ORDINAL_SLOTS: usize = 4_000_000;
 const ORDINAL_MAP_RECORD_BYTES: usize = 8 + 32 + 32 + 4 + 32;
+const RANK_MATERIAL_MAGIC: &[u8] = b"tantivy-rank-v1\0";
+const RANK_MATERIAL_FIELD: &str = "rank_material";
+const RANK_MATERIAL_LENGTH_FIELD: &str = "rank_material_bytes";
+const FIELD_RAW_TOKEN: &str = "field_raw_token";
+const FIELD_FOLDED_TOKEN: &str = "field_folded_token";
+const MAX_RANK_MATERIAL_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_RANK_SCRATCH_BYTES: usize = 1024 * 1024 * 1024;
 const DEFAULT_RETAINED_RANK_BYTES: usize = 64 * 1024 * 1024;
 const RANK_SCRATCH_BYTES_PER_MATCH: usize = 320;
@@ -120,12 +127,12 @@ impl Default for DurableCacheBudget {
     }
 }
 
-/// Per-source bounds for exact lexical rank construction and retention.
+/// Per-source bounds for exact lexical query scratch and explicit
+/// all-results materialization.
 ///
-/// The scratch allowance covers collector maps, intersections, and the
-/// compact rank snapshot under construction. Each source retains at most one
-/// query snapshot; independently retained source snapshots consume their own
-/// configured allowance.
+/// Page queries retain only one row payload and their bounded top page. The
+/// retained allowance applies to [`TantivySource::search`], which explicitly
+/// returns every exact hit. Independently live sources have separate limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RankSnapshotBudget {
     max_scratch_bytes: usize,
@@ -133,7 +140,7 @@ pub struct RankSnapshotBudget {
 }
 
 impl RankSnapshotBudget {
-    /// Creates nonzero scratch and retained-rank allowances.
+    /// Creates nonzero scratch and all-results allowances.
     #[must_use]
     pub const fn new(max_scratch_bytes: usize, max_retained_bytes: usize) -> Option<Self> {
         if max_scratch_bytes == 0 || max_retained_bytes == 0 {
@@ -146,13 +153,13 @@ impl RankSnapshotBudget {
         }
     }
 
-    /// Returns the exact-query build scratch allowance.
+    /// Returns the exact-query page scratch allowance.
     #[must_use]
     pub const fn max_scratch_bytes(self) -> usize {
         self.max_scratch_bytes
     }
 
-    /// Returns the retained compact-rank allowance.
+    /// Returns the all-results search allowance.
     #[must_use]
     pub const fn max_retained_bytes(self) -> usize {
         self.max_retained_bytes
@@ -191,6 +198,7 @@ struct DocumentTable {
 struct OrdinalDocument {
     ordinal: u32,
     document: LiveDocument,
+    address: Option<DocAddress>,
 }
 
 #[derive(Clone, Copy)]
@@ -212,11 +220,15 @@ impl DocumentTable {
     }
 
     fn get(&self, ordinal: usize) -> Option<&LiveDocument> {
+        self.get_entry(ordinal).map(|entry| &entry.document)
+    }
+
+    fn get_entry(&self, ordinal: usize) -> Option<&OrdinalDocument> {
         let ordinal = u32::try_from(ordinal).ok()?;
         self.live
             .binary_search_by_key(&ordinal, |entry| entry.ordinal)
             .ok()
-            .map(|index| &self.live[index].document)
+            .map(|index| &self.live[index])
     }
 
     fn iter(&self) -> impl Iterator<Item = (usize, &LiveDocument)> {
@@ -297,246 +309,81 @@ pub struct TantivySource {
     reader: IndexReader,
     raw_token: Field,
     folded_token: Field,
-    ranking_token: Field,
-    field_name: Field,
+    field_raw_token: Field,
+    field_folded_token: Field,
     ordinal: Field,
-    rank_weight: Field,
-    rank_bytes: Field,
+    rank_material: Field,
+    rank_material_len: Field,
     documents: DocumentTable,
     identity_ordinals: Vec<IdentityOrdinal>,
     _root_lease: Option<File>,
     poisoned: bool,
     rank_budget: RankSnapshotBudget,
-    rank_cache: Mutex<Option<CachedRank>>,
     rank_evaluations: AtomicU64,
+    rank_docs_visited: AtomicU64,
+    rank_peak_scratch_bytes: AtomicU64,
 }
 
-struct CachedRank {
-    binding: Binding,
-    query: QueryVersion,
-    total: usize,
-    ranks: RankStorage,
+struct TopHits {
+    hits: Vec<RankedHit>,
+    limit: usize,
 }
 
-#[derive(Clone, Copy)]
-struct CompactRelevance([u8; 9]);
-
-impl CompactRelevance {
-    fn from_relevance(relevance: Relevance) -> Self {
-        let (matched_bytes, term_bytes, field_weight, matched_clauses) = relevance.rank_parts();
-        let mut bytes = [0_u8; 9];
-        bytes[..4].copy_from_slice(&matched_bytes.to_le_bytes());
-        bytes[4..8].copy_from_slice(&term_bytes.to_le_bytes());
-        // Current field weights are 1..=4 and query admission caps clauses at
-        // sixteen, so both values fit losslessly in the final byte.
-        bytes[8] = u8::try_from(field_weight).unwrap_or(u8::MAX)
-            | (u8::try_from(matched_clauses.saturating_add(1))
-                .unwrap_or(u8::MAX)
-                .checked_shl(3)
-                .unwrap_or(u8::MAX));
-        Self(bytes)
+impl TopHits {
+    fn new(limit: usize) -> Result<Self, TantivySourceError> {
+        let mut hits = Vec::new();
+        hits.try_reserve_exact(limit)
+            .map_err(|_| Error::SizeLimit)?;
+        Ok(Self { hits, limit })
     }
 
-    fn relevance(self) -> Result<Relevance, TantivySourceError> {
-        let matched_bytes =
-            u32::from_le_bytes(self.0[..4].try_into().map_err(|_| Error::MalformedInput)?);
-        let term_bytes =
-            u32::from_le_bytes(self.0[4..8].try_into().map_err(|_| Error::MalformedInput)?);
-        let field_weight = u16::from(self.0[8] & 0b0000_0111);
-        let matched_clauses = u16::from(self.0[8] >> 3)
-            .checked_sub(1)
-            .ok_or(Error::MalformedInput)?;
-        if matched_clauses == 0 {
-            return Ok(Relevance::all_documents());
-        }
-        Relevance::from_rank_parts(matched_bytes, term_bytes, field_weight, matched_clauses)
-            .map_err(Into::into)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct CompactRankEntry {
-    ordinal: u32,
-    relevance: CompactRelevance,
-}
-
-enum RankStorage {
-    Sparse {
-        by_ordinal: Box<[CompactRankEntry]>,
-        rank_order: Box<[u32]>,
-    },
-    Dense {
-        by_ordinal: Box<[[u8; 10]]>,
-        rank_order: Box<[u32]>,
-    },
-}
-
-impl RankStorage {
-    fn from_entries(
-        mut entries: Vec<(usize, Relevance)>,
-        documents: &DocumentTable,
-        budget: RankSnapshotBudget,
-    ) -> Result<Self, TantivySourceError> {
-        for (ordinal, _) in &entries {
-            if documents.get(*ordinal).is_none() {
-                return Err(Error::MalformedInput.into());
-            }
-        }
-        entries.sort_unstable_by(
-            |(left_ordinal, left_relevance), (right_ordinal, right_relevance)| {
-                let left_id = documents.get(*left_ordinal).map(|document| document.id);
-                let right_id = documents.get(*right_ordinal).map(|document| document.id);
-                match (left_id, right_id) {
-                    (Some(left_id), Some(right_id)) => compare_ranked_hits(
-                        RankedHit {
-                            document: left_id,
-                            relevance: *left_relevance,
-                        },
-                        RankedHit {
-                            document: right_id,
-                            relevance: *right_relevance,
-                        },
-                    ),
-                    _ => std::cmp::Ordering::Equal,
+    fn consider(&mut self, hit: RankedHit) {
+        if self.hits.len() < self.limit {
+            self.hits.push(hit);
+            let mut child = self.hits.len() - 1;
+            while child > 0 {
+                let parent = (child - 1) / 2;
+                if !compare_ranked_hits(self.hits[parent], self.hits[child]).is_lt() {
+                    break;
                 }
-            },
-        );
-        let sparse_bytes = entries
-            .len()
-            .checked_mul(
-                std::mem::size_of::<CompactRankEntry>()
-                    .checked_add(std::mem::size_of::<u32>())
-                    .ok_or(Error::SizeLimit)?,
-            )
-            .ok_or(Error::SizeLimit)?;
-        let dense_bytes = usize::try_from(documents.slot_count)
-            .map_err(|_| Error::SizeLimit)?
-            .checked_mul(10)
-            .and_then(|bytes| {
-                entries
-                    .len()
-                    .checked_mul(std::mem::size_of::<u32>())
-                    .and_then(|order| bytes.checked_add(order))
-            })
-            .ok_or(Error::SizeLimit)?;
-        let retained_bytes = dense_bytes.min(sparse_bytes);
-        if retained_bytes > budget.max_retained_bytes {
-            return Err(TantivySourceError::RankSnapshotBudgetExceeded {
-                budget_bytes: budget.max_retained_bytes,
-                required_bytes: retained_bytes,
-            });
+                self.hits.swap(parent, child);
+                child = parent;
+            }
+            return;
         }
-        let rank_order = entries
-            .iter()
-            .map(|(ordinal, _)| u32::try_from(*ordinal).map_err(|_| Error::SizeLimit))
-            .collect::<Result<Vec<_>, _>>()?;
-        if dense_bytes < sparse_bytes {
-            let mut dense = vec![[0_u8; 10]; documents.slot_count as usize];
-            for (ordinal, relevance) in entries {
-                let slot = dense.get_mut(ordinal).ok_or(Error::SizeLimit)?;
-                slot[..9].copy_from_slice(&CompactRelevance::from_relevance(relevance).0);
-                slot[9] = 1;
-            }
-            Ok(Self::Dense {
-                by_ordinal: dense.into_boxed_slice(),
-                rank_order: rank_order.into_boxed_slice(),
-            })
-        } else {
-            let mut sparse = Vec::with_capacity(entries.len());
-            for (ordinal, relevance) in entries {
-                sparse.push(CompactRankEntry {
-                    ordinal: u32::try_from(ordinal).map_err(|_| Error::SizeLimit)?,
-                    relevance: CompactRelevance::from_relevance(relevance),
-                });
-            }
-            sparse.sort_unstable_by_key(|entry| entry.ordinal);
-            Ok(Self::Sparse {
-                by_ordinal: sparse.into_boxed_slice(),
-                rank_order: rank_order.into_boxed_slice(),
-            })
-        }
-    }
-
-    fn get(&self, ordinal: usize) -> Result<Option<Relevance>, TantivySourceError> {
-        match self {
-            Self::Sparse { by_ordinal, .. } => {
-                let ordinal = u32::try_from(ordinal).map_err(|_| Error::SizeLimit)?;
-                by_ordinal
-                    .binary_search_by_key(&ordinal, |entry| entry.ordinal)
-                    .ok()
-                    .map(|index| by_ordinal[index].relevance.relevance())
-                    .transpose()
-            }
-            Self::Dense { by_ordinal, .. } => {
-                let Some(entry) = by_ordinal.get(ordinal) else {
-                    return Ok(None);
+        if self
+            .hits
+            .first()
+            .is_some_and(|worst| compare_ranked_hits(hit, *worst).is_lt())
+        {
+            self.hits[0] = hit;
+            let mut parent = 0;
+            loop {
+                let left = parent * 2 + 1;
+                if left >= self.hits.len() {
+                    break;
+                }
+                let right = left + 1;
+                let worse_child = if right < self.hits.len()
+                    && compare_ranked_hits(self.hits[left], self.hits[right]).is_lt()
+                {
+                    right
+                } else {
+                    left
                 };
-                if entry[9] == 0 {
-                    return Ok(None);
+                if !compare_ranked_hits(self.hits[parent], self.hits[worse_child]).is_lt() {
+                    break;
                 }
-                let mut compact = [0_u8; 9];
-                compact.copy_from_slice(&entry[..9]);
-                CompactRelevance(compact).relevance().map(Some)
+                self.hits.swap(parent, worse_child);
+                parent = worse_child;
             }
         }
     }
 
-    fn ranked_at(&self, position: usize) -> Result<Option<(usize, Relevance)>, TantivySourceError> {
-        let rank_order = match self {
-            Self::Sparse { rank_order, .. } | Self::Dense { rank_order, .. } => rank_order,
-        };
-        let Some(ordinal) = rank_order.get(position) else {
-            return Ok(None);
-        };
-        let ordinal = usize::try_from(*ordinal).map_err(|_| Error::SizeLimit)?;
-        Ok(self.get(ordinal)?.map(|relevance| (ordinal, relevance)))
-    }
-
-    #[cfg(test)]
-    fn byte_len(&self) -> usize {
-        match self {
-            Self::Sparse {
-                by_ordinal,
-                rank_order,
-            } => {
-                by_ordinal.len() * std::mem::size_of::<CompactRankEntry>()
-                    + rank_order.len() * std::mem::size_of::<u32>()
-            }
-            Self::Dense {
-                by_ordinal,
-                rank_order,
-            } => {
-                by_ordinal.len() * std::mem::size_of::<[u8; 10]>()
-                    + rank_order.len() * std::mem::size_of::<u32>()
-            }
-        }
-    }
-
-    fn for_each(
-        &self,
-        mut visit: impl FnMut(usize, Relevance) -> Result<(), TantivySourceError>,
-    ) -> Result<(), TantivySourceError> {
-        match self {
-            Self::Sparse { by_ordinal, .. } => {
-                for entry in by_ordinal.iter() {
-                    visit(
-                        usize::try_from(entry.ordinal).map_err(|_| Error::SizeLimit)?,
-                        entry.relevance.relevance()?,
-                    )?;
-                }
-            }
-            Self::Dense { by_ordinal, .. } => {
-                for (ordinal, entry) in by_ordinal.iter().enumerate() {
-                    if entry[9] == 0 {
-                        continue;
-                    }
-                    let mut compact = [0_u8; 9];
-                    compact.copy_from_slice(&entry[..9]);
-                    visit(ordinal, CompactRelevance(compact).relevance()?)?;
-                }
-            }
-        }
-        Ok(())
+    fn into_sorted(mut self) -> Vec<RankedHit> {
+        self.hits
+            .sort_unstable_by(|left, right| compare_ranked_hits(*left, *right));
+        self.hits
     }
 }
 
@@ -582,10 +429,10 @@ pub enum TantivySourceError {
         /// Encoded size required by the selected live documents.
         required_bytes: u64,
     },
-    /// An exact query's compact rank state or bounded construction scratch
+    /// An exact query's bounded scratch or explicit all-results output
     /// exceeds this source's configured query-memory budget.
     RankSnapshotBudgetExceeded {
-        /// Configured scratch or retained-rank allowance.
+        /// Configured query-scratch or all-results allowance.
         budget_bytes: usize,
         /// Bytes required by the exact query snapshot or conservative build bound.
         required_bytes: usize,
@@ -618,7 +465,7 @@ impl std::fmt::Display for TantivySourceError {
                 required_bytes,
             } => write!(
                 formatter,
-                "exact lexical rank needs {required_bytes} bytes, above its {budget_bytes}-byte query budget",
+                "exact lexical query needs {required_bytes} bytes, above its {budget_bytes}-byte query budget",
             ),
         }
     }
@@ -718,20 +565,9 @@ impl TantivySource {
             return Err(Error::SchemaDrift.into());
         }
         let reader = index.reader()?;
-        let expected_tokens = state
-            .iter()
-            .flat_map(|(_, fields)| fields.iter())
-            .flat_map(|(_, text)| searchable_tokens(&text))
-            .count();
-        let indexed_tokens =
-            usize::try_from(reader.searcher().num_docs()).map_err(|_| Error::SizeLimit)?;
-        if indexed_tokens != expected_tokens {
-            return Err(Self::corrupt(
-                "indexed token count does not match bound state",
-            ));
-        }
-        let documents =
+        let mut documents =
             read_ordinal_map(state, projection_fingerprint(state.binding()), directory)?;
+        bind_document_addresses(&reader, &mut documents, limits)?;
         let fields = projected.fields;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
@@ -742,18 +578,19 @@ impl TantivySource {
             reader,
             raw_token: fields.raw_token,
             folded_token: fields.folded_token,
-            ranking_token: fields.ranking_token,
-            field_name: fields.field_name,
+            field_raw_token: fields.field_raw_token,
+            field_folded_token: fields.field_folded_token,
             ordinal: fields.ordinal,
-            rank_weight: fields.rank_weight,
-            rank_bytes: fields.rank_bytes,
+            rank_material: fields.rank_material,
+            rank_material_len: fields.rank_material_len,
             documents,
             identity_ordinals,
             _root_lease: None,
             poisoned: false,
             rank_budget: RankSnapshotBudget::default(),
-            rank_cache: Mutex::new(None),
             rank_evaluations: AtomicU64::new(0),
+            rank_docs_visited: AtomicU64::new(0),
+            rank_peak_scratch_bytes: AtomicU64::new(0),
         })
     }
 
@@ -1133,7 +970,14 @@ impl TantivySource {
         let mut live = Vec::new();
         for (document, document_fields) in state.iter() {
             let document_ordinal = u64::try_from(live.len()).map_err(|_| Error::SizeLimit)?;
-            let postings = write_fields(&writer, &fields, document_ordinal, document_fields)?;
+            let postings = write_document(
+                &writer,
+                &fields,
+                document_ordinal,
+                document,
+                document_fields,
+                rank_material_limit(limits),
+            )?;
             live.push(OrdinalDocument {
                 ordinal: u32::try_from(document_ordinal).map_err(|_| Error::SizeLimit)?,
                 document: LiveDocument {
@@ -1141,18 +985,20 @@ impl TantivySource {
                     fields_digest: document_fields_digest(document_fields),
                     postings,
                 },
+                address: None,
             });
         }
-        let documents = DocumentTable::from_live(
+        let mut documents = DocumentTable::from_live(
             u32::try_from(live.len()).map_err(|_| Error::SizeLimit)?,
             live,
         )?;
-        let identity_ordinals = documents.identity_index();
         writer.commit()?;
         // Join background merges so no thread is still rewriting the index
         // directory once the source is handed out.
         writer.wait_merging_threads()?;
         let reader = index.reader()?;
+        bind_document_addresses(&reader, &mut documents, limits)?;
+        let identity_ordinals = documents.identity_index();
         Ok(Self {
             binding: state.binding(),
             coverage: state.coverage(),
@@ -1161,55 +1007,62 @@ impl TantivySource {
             reader,
             raw_token: fields.raw_token,
             folded_token: fields.folded_token,
-            ranking_token: fields.ranking_token,
-            field_name: fields.field_name,
+            field_raw_token: fields.field_raw_token,
+            field_folded_token: fields.field_folded_token,
             ordinal: fields.ordinal,
-            rank_weight: fields.rank_weight,
-            rank_bytes: fields.rank_bytes,
+            rank_material: fields.rank_material,
+            rank_material_len: fields.rank_material_len,
             documents,
             identity_ordinals,
             _root_lease: None,
             poisoned: false,
             rank_budget: RankSnapshotBudget::default(),
-            rank_cache: Mutex::new(None),
             rank_evaluations: AtomicU64::new(0),
+            rank_docs_visited: AtomicU64::new(0),
+            rank_peak_scratch_bytes: AtomicU64::new(0),
         })
     }
 
-    /// Returns the number of token postings visible to the current reader.
+    /// Returns the exact token-posting count represented by live entity rows.
     #[must_use]
     pub fn indexed_postings(&self) -> u64 {
-        self.reader.searcher().num_docs()
+        self.documents.live.iter().fold(0_u64, |total, entry| {
+            total.saturating_add(u64::from(entry.document.postings))
+        })
     }
 
-    /// Replaces the per-source exact-query scratch and retained-rank budget.
-    /// Configure this before the first query. The source retains only one
-    /// query snapshot at a time; separately live sources have separate
-    /// allowances.
+    /// Replaces the per-source page-scratch and all-results memory budget.
     #[must_use]
     pub fn with_rank_snapshot_budget(mut self, budget: RankSnapshotBudget) -> Self {
         self.rank_budget = budget;
         self
     }
 
-    /// Counts full ranking passes caused by a page miss.
-    ///
-    /// A later page of the same binding and query reuses the retained rank.
+    /// Counts complete exact Tantivy scans performed for query answers.
     #[must_use]
     pub fn rank_evaluations(&self) -> u64 {
         self.rank_evaluations.load(Ordering::Relaxed)
     }
 
-    /// Drops the retained rank so the next page computes it again.
+    /// Counts matched Tantivy row documents scored across exact query scans.
+    #[must_use]
+    pub fn rank_docs_visited(&self) -> u64 {
+        self.rank_docs_visited.load(Ordering::Relaxed)
+    }
+
+    /// Highest source-owned query scratch observed across completed scans.
+    #[must_use]
+    pub fn rank_peak_scratch_bytes(&self) -> u64 {
+        self.rank_peak_scratch_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Retained rank snapshots are no longer used; this compatibility method
+    /// is intentionally a no-op.
     ///
     /// # Errors
     ///
-    /// Returns a corrupt-projection error when the rank lock is poisoned.
+    /// Retained rank snapshots are not used by this source.
     pub fn clear_rank_cache(&self) -> Result<(), TantivySourceError> {
-        self.rank_cache
-            .lock()
-            .map_err(|_| Self::corrupt("rank cache lock poisoned"))?
-            .take();
         Ok(())
     }
 
@@ -1240,10 +1093,6 @@ impl TantivySource {
         budget: OverlayLimits,
     ) -> Result<MaintainOutcome, TantivySourceError> {
         self.ensure_live()?;
-        self.rank_cache
-            .lock()
-            .map_err(|_| Self::corrupt("rank cache lock poisoned"))?
-            .take();
         let Some(plan) = self.plan_revision(next, budget)? else {
             return Ok(MaintainOutcome::RebuildRequired);
         };
@@ -1415,15 +1264,22 @@ impl TantivySource {
         let fields = ProjectionFields {
             raw_token: self.raw_token,
             folded_token: self.folded_token,
-            ranking_token: self.ranking_token,
-            field_name: self.field_name,
+            field_raw_token: self.field_raw_token,
+            field_folded_token: self.field_folded_token,
             ordinal: self.ordinal,
-            rank_weight: self.rank_weight,
-            rank_bytes: self.rank_bytes,
+            rank_material: self.rank_material,
+            rank_material_len: self.rank_material_len,
         };
         let mut replacements = Vec::with_capacity(plan.writes.len());
         for write in plan.writes {
-            let postings = write_fields(&writer, &fields, write.ordinal, &write.fields)?;
+            let postings = write_document(
+                &writer,
+                &fields,
+                write.ordinal,
+                write.id,
+                &write.fields,
+                rank_material_limit(self.limits),
+            )?;
             added_postings = added_postings
                 .checked_add(u64::from(postings))
                 .ok_or(Error::SizeLimit)?;
@@ -1434,6 +1290,7 @@ impl TantivySource {
                     fields_digest: write.fields_digest,
                     postings,
                 },
+                address: None,
             });
         }
         writer.commit()?;
@@ -1445,7 +1302,18 @@ impl TantivySource {
             self.poisoned = true;
             return Err(error.into());
         }
-        self.documents = plan.documents.merge_replacements(replacements)?;
+        let mut documents = match plan.documents.merge_replacements(replacements) {
+            Ok(documents) => documents,
+            Err(error) => {
+                self.poisoned = true;
+                return Err(error.into());
+            }
+        };
+        if let Err(error) = bind_document_addresses(&self.reader, &mut documents, self.limits) {
+            self.poisoned = true;
+            return Err(error);
+        }
+        self.documents = documents;
         self.identity_ordinals = self.documents.identity_index();
         self.binding = next.binding();
         self.coverage = next.coverage();
@@ -1457,39 +1325,48 @@ impl TantivySource {
         }))
     }
 
-    /// Materializes every exact match in canonical rank order.
+    /// Materializes every exact match in canonical rank order, subject to the
+    /// explicitly configured all-results memory budget.
     ///
     /// # Errors
     ///
-    /// Returns a typed query-admission, index-read, or projection-integrity failure.
+    /// Returns a typed query-admission, index-read, projection-integrity, or
+    /// result-memory budget failure.
     pub fn search(&self, query: &Query) -> Result<Vec<RankedHit>, TantivySourceError> {
         self.ensure_live()?;
         query.validate(self.limits)?;
-        self.with_ranked_snapshot(query, |snapshot| {
-            let mut hits = Vec::with_capacity(snapshot.total);
-            snapshot.ranks.for_each(|ordinal, relevance| {
-                let document = self
-                    .documents
-                    .get(ordinal)
-                    .map(|document| document.id)
-                    .ok_or_else(|| Self::corrupt("rank ordinal is outside the binding"))?;
-                hits.push(RankedHit {
-                    document,
-                    relevance,
+        let max_hits = self
+            .documents
+            .live
+            .len()
+            .min(self.rank_budget.max_retained_bytes / std::mem::size_of::<RankedHit>());
+        let mut hits = Vec::new();
+        hits.try_reserve_exact(max_hits.min(64))
+            .map_err(|_| Error::SizeLimit)?;
+        self.scan_ranked_hits(query, 0, |hit| {
+            if hits.len() == max_hits {
+                return Err(TantivySourceError::RankSnapshotBudgetExceeded {
+                    budget_bytes: self.rank_budget.max_retained_bytes,
+                    required_bytes: hits
+                        .len()
+                        .saturating_add(1)
+                        .saturating_mul(std::mem::size_of::<RankedHit>()),
                 });
-                Ok(())
-            })?;
-            hits.sort_unstable_by(|left, right| compare_ranked_hits(*left, *right));
-            Ok(hits)
-        })
+            }
+            if hits.len() == hits.capacity() {
+                let next_capacity = hits.capacity().max(8).saturating_mul(2).min(max_hits);
+                hits.try_reserve_exact(next_capacity.saturating_sub(hits.len()))
+                    .map_err(|_| Error::SizeLimit)?;
+            }
+            hits.push(hit);
+            Ok(())
+        })?;
+        hits.sort_unstable_by(|left, right| compare_ranked_hits(*left, *right));
+        Ok(hits)
     }
 
-    /// Visits exact query matches once in stable ordinal order without
-    /// constructing a result array. This is not display order; each hit
-    /// carries its exact rank for bounded caller-side composition.
-    ///
-    /// The cached query rank is compact ordinal metadata scoped to this
-    /// selected binding; callers can compose a bounded answer in one pass.
+    /// Visits each exact match once in Tantivy's stable document traversal
+    /// order. The scanner retains one row payload and no all-hit rank map.
     ///
     /// # Errors
     ///
@@ -1501,25 +1378,17 @@ impl TantivySource {
     ) -> Result<usize, TantivySourceError> {
         self.ensure_live()?;
         query.validate(self.limits)?;
-        self.with_ranked_snapshot(query, |snapshot| {
-            snapshot.ranks.for_each(|ordinal, relevance| {
-                let document = self
-                    .documents
-                    .get(ordinal)
-                    .map(|document| document.id)
-                    .ok_or_else(|| Self::corrupt("rank ordinal is outside the binding"))?;
-                visit(RankedHit {
-                    document,
-                    relevance,
-                });
-                Ok(())
-            })?;
-            Ok(snapshot.total)
-        })
+        let mut total = 0usize;
+        self.scan_ranked_hits(query, 0, |hit| {
+            visit(hit);
+            total = total.checked_add(1).ok_or(Error::SizeLimit)?;
+            Ok(())
+        })?;
+        Ok(total)
     }
 
-    /// Resolves a bounded set of candidate identities against exact lexical
-    /// relevance without paging through the result set.
+    /// Resolves exact query relevance for a bounded candidate set by direct
+    /// ordinal-to-document lookup, without scanning the query result set.
     ///
     /// # Errors
     ///
@@ -1535,192 +1404,346 @@ impl TantivySource {
         if candidates.len() > self.limits.max_page {
             return Err(Error::SizeLimit.into());
         }
-        if candidates.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        self.with_ranked_snapshot(query, |snapshot| {
-            let mut relevance = BTreeMap::new();
-            for candidate in candidates.iter().copied() {
-                let Some(ordinal) = self
-                    .documents
-                    .ordinal_for_entity(&self.identity_ordinals, candidate)
-                else {
-                    continue;
-                };
-                if let Some(score) = snapshot.ranks.get(ordinal)? {
-                    relevance.insert(candidate, score);
-                }
-            }
-            Ok(relevance)
-        })
-    }
-
-    fn query_clause_candidates(
-        &self,
-        term: &str,
-        query: &Query,
-        max_rows: usize,
-    ) -> Result<BTreeMap<u64, Relevance>, TantivySourceError> {
-        let engine_query = self.compile_clause(term, query);
         let searcher = self.reader.searcher();
-        if usize::try_from(searcher.num_docs()).is_err() {
-            return Err(Error::SizeLimit.into());
-        }
-        if searcher.num_docs() == 0 {
-            return Ok(BTreeMap::new());
-        }
-        let collector = ClauseRankCollector {
-            term_bytes: term.len(),
-            max_rows,
-            admitted_rows: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        };
-        let ranked_ordinals = searcher
-            .search(engine_query.as_ref(), &collector)?
-            .map_err(|error| match error {
-                ClauseRankError::Capacity => {
-                    let required_bytes = max_rows
-                        .saturating_add(1)
-                        .saturating_mul(RANK_SCRATCH_BYTES_PER_MATCH);
-                    TantivySourceError::RankSnapshotBudgetExceeded {
-                        budget_bytes: self.rank_budget.max_scratch_bytes,
-                        required_bytes,
-                    }
-                }
-                ClauseRankError::Contract(error) => TantivySourceError::Contract(error),
-            })?;
-        for ordinal in ranked_ordinals.keys() {
-            let ordinal = usize::try_from(*ordinal).map_err(|_| Error::SizeLimit)?;
-            if self.documents.get(ordinal).is_none() {
-                return Err(Self::corrupt("posting ordinal is outside the binding"));
+        let mut relevance = BTreeMap::new();
+        let mut scratch = Vec::new();
+        let mut best = Vec::new();
+        best.try_reserve_exact(query.terms.len())
+            .map_err(|_| Error::SizeLimit)?;
+        let clause_bytes = query
+            .terms
+            .len()
+            .checked_mul(std::mem::size_of::<Option<Relevance>>())
+            .ok_or(Error::SizeLimit)?;
+        let result_bound_bytes = candidates.len().checked_mul(128).ok_or(Error::SizeLimit)?;
+        ensure_rank_scratch_capacity(
+            clause_bytes
+                .checked_add(result_bound_bytes)
+                .ok_or(Error::SizeLimit)?,
+            self.rank_budget.max_scratch_bytes,
+        )?;
+        self.record_rank_scratch(clause_bytes.saturating_add(result_bound_bytes));
+        for candidate in candidates.iter().copied() {
+            let Some(ordinal) = self
+                .documents
+                .ordinal_for_entity(&self.identity_ordinals, candidate)
+            else {
+                continue;
+            };
+            let Some(entry) = self.documents.live.get(
+                self.documents
+                    .live
+                    .binary_search_by_key(&(ordinal as u32), |entry| entry.ordinal)
+                    .map_err(|_| Self::corrupt("candidate ordinal is absent"))?,
+            ) else {
+                return Err(Self::corrupt("candidate ordinal is absent").into());
+            };
+            let address = entry
+                .address
+                .ok_or_else(|| Self::corrupt("candidate document address is not bound"))?;
+            let segment = searcher
+                .segment_readers()
+                .get(address.segment_ord as usize)
+                .ok_or_else(|| Self::corrupt("candidate segment address is missing"))?;
+            let payloads = segment
+                .fast_fields()
+                .bytes(RANK_MATERIAL_FIELD_NAME)?
+                .ok_or_else(|| Self::corrupt("rank payload fast field is missing"))?;
+            let payload_length = segment
+                .fast_fields()
+                .u64(RANK_MATERIAL_LENGTH_FIELD_NAME)?
+                .values
+                .get_val(address.doc_id);
+            let payload_length = usize::try_from(payload_length).map_err(|_| Error::SizeLimit)?;
+            if payload_length == 0 || payload_length > MAX_RANK_MATERIAL_BYTES {
+                return Err(Self::corrupt("rank payload length is outside its bound").into());
+            }
+            let required = clause_bytes
+                .checked_add(result_bound_bytes)
+                .ok_or(Error::SizeLimit)?
+                .checked_add(payload_length)
+                .ok_or(Error::SizeLimit)?;
+            ensure_rank_scratch_capacity(required, self.rank_budget.max_scratch_bytes)?;
+            if scratch.capacity() < payload_length {
+                scratch
+                    .try_reserve_exact(payload_length.saturating_sub(scratch.len()))
+                    .map_err(|_| Error::SizeLimit)?;
+            }
+            let retained_scratch = clause_bytes
+                .checked_add(result_bound_bytes)
+                .ok_or(Error::SizeLimit)?
+                .checked_add(scratch.capacity())
+                .ok_or(Error::SizeLimit)?;
+            ensure_rank_scratch_capacity(retained_scratch, self.rank_budget.max_scratch_bytes)?;
+            self.record_rank_scratch(retained_scratch);
+            let material = material_for_doc(&payloads, address.doc_id, &mut scratch)?;
+            if material.len() != payload_length {
+                return Err(Self::corrupt("rank payload length disagrees with its column").into());
+            }
+            let score =
+                self.score_rank_material(query, ordinal as u32, address, material, &mut best)?;
+            if let Some(score) = score {
+                relevance.insert(candidate, score);
             }
         }
-        Ok(ranked_ordinals)
+        Ok(relevance)
     }
 
-    fn compile_clause(&self, term: &str, query: &Query) -> Box<dyn TantivyQuery> {
-        let token_field = match query.case {
-            crate::CaseSensitivity::Sensitive => self.raw_token,
-            crate::CaseSensitivity::FoldAscii => self.folded_token,
-        };
-        let token = Term::from_field_text(token_field, term);
-        let token_query: Box<dyn TantivyQuery> = match query.match_mode {
-            MatchMode::Exact => Box::new(TermQuery::new(token, IndexRecordOption::Basic)),
-            MatchMode::Prefix => Box::new(FuzzyTermQuery::new_prefix(token, 0, true)),
-        };
-        match &query.fields {
-            FieldSelection::All => token_query,
-            FieldSelection::Only(field) => Box::new(BooleanQuery::new(vec![
-                (Occur::Must, token_query),
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        Term::from_field_text(self.field_name, field),
-                        IndexRecordOption::Basic,
-                    )),
-                ),
-            ])),
+    fn compile_query(&self, query: &Query) -> Box<dyn TantivyQuery> {
+        if query.terms.is_empty() {
+            return Box::new(AllQuery);
         }
+        let clauses = query
+            .terms
+            .iter()
+            .map(|term| {
+                let (field, value) = match (&query.fields, query.case) {
+                    (FieldSelection::All, crate::CaseSensitivity::Sensitive) => {
+                        (self.raw_token, term.clone())
+                    }
+                    (FieldSelection::All, crate::CaseSensitivity::FoldAscii) => {
+                        (self.folded_token, term.clone())
+                    }
+                    (FieldSelection::Only(field), crate::CaseSensitivity::Sensitive) => {
+                        (self.field_raw_token, field_token_prefix(field, term))
+                    }
+                    (FieldSelection::Only(field), crate::CaseSensitivity::FoldAscii) => {
+                        (self.field_folded_token, field_token_prefix(field, term))
+                    }
+                };
+                let token = Term::from_field_text(field, &value);
+                let token_query: Box<dyn TantivyQuery> = match query.match_mode {
+                    MatchMode::Exact => Box::new(TermQuery::new(token, IndexRecordOption::Basic)),
+                    MatchMode::Prefix => Box::new(FuzzyTermQuery::new_prefix(token, 0, true)),
+                };
+                (Occur::Must, token_query)
+            })
+            .collect();
+        Box::new(BooleanQuery::new(clauses))
     }
 
-    fn with_ranked_snapshot<R>(
+    fn scan_ranked_hits(
         &self,
         query: &Query,
-        use_snapshot: impl FnOnce(&CachedRank) -> Result<R, TantivySourceError>,
-    ) -> Result<R, TantivySourceError> {
-        let mut guard = self
-            .rank_cache
-            .lock()
-            .map_err(|_| Self::corrupt("rank cache lock poisoned"))?;
-        if !guard
-            .as_ref()
-            .is_some_and(|cached| cached.binding == self.binding && cached.query == query.version)
-        {
-            // Release a different query's retained arrays before allocating
-            // the next bounded rank snapshot.
-            guard.take();
-            let snapshot = self.build_rank_snapshot(query)?;
-            *guard = Some(snapshot);
-            self.rank_evaluations.fetch_add(1, Ordering::Relaxed);
+        extra_scratch_bytes: usize,
+        mut visit: impl FnMut(RankedHit) -> Result<(), TantivySourceError>,
+    ) -> Result<usize, TantivySourceError> {
+        let searcher = self.reader.searcher();
+        let engine_query = self.compile_query(query);
+        let weight = engine_query.weight(EnableScoring::disabled_from_searcher(&searcher))?;
+        let mut material = Vec::new();
+        let mut best = Vec::new();
+        best.try_reserve_exact(query.terms.len())
+            .map_err(|_| Error::SizeLimit)?;
+        let clause_bytes = query
+            .terms
+            .len()
+            .checked_mul(std::mem::size_of::<Option<Relevance>>())
+            .ok_or(Error::SizeLimit)?;
+        let mut total = 0usize;
+        self.record_rank_scratch(clause_bytes.saturating_add(extra_scratch_bytes));
+        self.rank_evaluations.fetch_add(1, Ordering::Relaxed);
+        for (segment_ord, segment) in searcher.segment_readers().iter().enumerate() {
+            let ordinals = segment.fast_fields().u64(ORDINAL_FIELD)?;
+            let payload_lengths = segment.fast_fields().u64(RANK_MATERIAL_LENGTH_FIELD)?;
+            let payloads = segment
+                .fast_fields()
+                .bytes(RANK_MATERIAL_FIELD_NAME)?
+                .ok_or_else(|| Self::corrupt("rank payload fast field is missing"))?;
+            let mut scorer = weight.scorer(segment, 1.0)?;
+            let mut doc = scorer.doc();
+            while doc != TERMINATED {
+                self.rank_docs_visited.fetch_add(1, Ordering::Relaxed);
+                let address = DocAddress::new(
+                    u32::try_from(segment_ord).map_err(|_| Error::SizeLimit)?,
+                    doc,
+                );
+                let length = usize::try_from(payload_lengths.values.get_val(doc))
+                    .map_err(|_| Error::SizeLimit)?;
+                if length == 0 || length > MAX_RANK_MATERIAL_BYTES {
+                    return Err(Self::corrupt("rank payload length is outside its bound").into());
+                }
+                let required = clause_bytes
+                    .checked_add(extra_scratch_bytes)
+                    .and_then(|bytes| bytes.checked_add(length))
+                    .ok_or(Error::SizeLimit)?;
+                ensure_rank_scratch_capacity(required, self.rank_budget.max_scratch_bytes)?;
+                self.record_rank_scratch(required);
+                if material.capacity() < length {
+                    material
+                        .try_reserve_exact(length.saturating_sub(material.len()))
+                        .map_err(|_| Error::SizeLimit)?;
+                }
+                let retained_scratch = clause_bytes
+                    .checked_add(extra_scratch_bytes)
+                    .and_then(|bytes| bytes.checked_add(material.capacity()))
+                    .ok_or(Error::SizeLimit)?;
+                ensure_rank_scratch_capacity(retained_scratch, self.rank_budget.max_scratch_bytes)?;
+                self.record_rank_scratch(retained_scratch);
+                let ordinal =
+                    u32::try_from(ordinals.values.get_val(doc)).map_err(|_| Error::SizeLimit)?;
+                let bytes = material_for_doc(&payloads, doc, &mut material)?;
+                if bytes.len() != length {
+                    return Err(
+                        Self::corrupt("rank payload length disagrees with its column").into(),
+                    );
+                }
+                if let Some(hit) =
+                    self.score_rank_material(query, ordinal, address, bytes, &mut best)?
+                {
+                    total = total.checked_add(1).ok_or(Error::SizeLimit)?;
+                    visit(hit)?;
+                }
+                doc = scorer.advance();
+            }
         }
-        let snapshot = guard
-            .as_ref()
-            .ok_or_else(|| Self::corrupt("rank snapshot was not retained"))?;
-        use_snapshot(snapshot)
+        Ok(total)
     }
 
-    fn build_rank_snapshot(&self, query: &Query) -> Result<CachedRank, TantivySourceError> {
-        let max_rows = self.rank_budget.max_scratch_bytes / RANK_SCRATCH_BYTES_PER_MATCH;
-        let entries = if query.terms.is_empty() {
-            let live_rows = self.documents.live.len();
-            ensure_rank_scratch_capacity(live_rows, self.rank_budget.max_scratch_bytes)?;
-            self.documents
-                .iter()
-                .map(|(ordinal, _)| (ordinal, Relevance::all_documents()))
-                .collect::<Vec<_>>()
-        } else {
-            let mut candidates = self.query_clause_candidates(&query.terms[0], query, max_rows)?;
-            for term in query.terms.iter().skip(1) {
-                let posting = self.query_clause_candidates(term, query, max_rows)?;
-                let mut intersection = BTreeMap::new();
-                for (ordinal, relevance) in candidates {
-                    if let Some(next) = posting.get(&ordinal) {
-                        intersection.insert(ordinal, relevance.combine(*next)?);
+    fn record_rank_scratch(&self, bytes: usize) {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        self.rank_peak_scratch_bytes
+            .fetch_max(bytes, Ordering::Relaxed);
+    }
+
+    fn score_rank_material(
+        &self,
+        query: &Query,
+        ordinal: u32,
+        address: DocAddress,
+        bytes: &[u8],
+        best: &mut Vec<Option<Relevance>>,
+    ) -> Result<Option<RankedHit>, TantivySourceError> {
+        let Some(entry) = self.documents.get_entry(ordinal as usize) else {
+            return Err(Self::corrupt("Tantivy ordinal is outside the selected binding").into());
+        };
+        if entry.address != Some(address) {
+            return Err(
+                Self::corrupt("Tantivy row address disagrees with the selected ordinal").into(),
+            );
+        }
+        let (payload_ordinal, id, digest, field_count, mut offset) =
+            parse_rank_material_header(bytes)?;
+        if payload_ordinal != ordinal
+            || id != *entry.document.id.as_bytes()
+            || digest != entry.document.fields_digest
+        {
+            return Err(Self::corrupt(
+                "Tantivy row identity disagrees with the selected generation",
+            )
+            .into());
+        }
+        if query.terms.is_empty() {
+            let postings = validate_rank_material_tail(bytes, offset, field_count, self.limits)?;
+            if postings != entry.document.postings {
+                return Err(
+                    Self::corrupt("rank payload posting count differs from ordinal map").into(),
+                );
+            }
+            return Ok(Some(RankedHit {
+                document: entry.document.id,
+                relevance: Relevance::all_documents(),
+            }));
+        }
+        if field_count > self.limits.max_fields_per_document {
+            return Err(Self::corrupt("rank payload has too many fields").into());
+        }
+        best.clear();
+        best.resize(query.terms.len(), None::<Relevance>);
+        let mut total_tokens = 0u32;
+        for _ in 0..field_count {
+            let field_len = read_material_u32(bytes, &mut offset)? as usize;
+            if field_len == 0 || field_len > self.limits.max_field_bytes {
+                return Err(Self::corrupt("rank payload field length is invalid").into());
+            }
+            let field_bytes = read_material_slice(bytes, &mut offset, field_len)?;
+            let field = std::str::from_utf8(field_bytes)
+                .map_err(|_| Self::corrupt("rank field name is not UTF-8"))?;
+            let weight = u16::from(read_material_u8(bytes, &mut offset)?);
+            if !(1..=4).contains(&weight) {
+                return Err(Self::corrupt("rank payload field weight is invalid").into());
+            }
+            let token_count = read_material_u32(bytes, &mut offset)?;
+            for _ in 0..token_count {
+                total_tokens = total_tokens.checked_add(1).ok_or(Error::SizeLimit)?;
+                let token_len = read_material_u32(bytes, &mut offset)? as usize;
+                if token_len == 0 || token_len > self.limits.max_field_bytes {
+                    return Err(Self::corrupt("rank payload token length is invalid").into());
+                }
+                let token_bytes = read_material_slice(bytes, &mut offset, token_len)?;
+                let token = std::str::from_utf8(token_bytes)
+                    .map_err(|_| Self::corrupt("rank token is not UTF-8"))?;
+                let ranking_bytes = read_material_u32(bytes, &mut offset)? as usize;
+                if ranking_bytes == 0 || ranking_bytes > self.limits.max_field_bytes {
+                    return Err(Self::corrupt("rank payload ranking length is invalid").into());
+                }
+                if !matches!(&query.fields, FieldSelection::Only(selected) if selected != field) {
+                    for (clause, term) in query.terms.iter().enumerate() {
+                        if query_token_matches(query, term, token) {
+                            let score = Relevance::new(term.len(), ranking_bytes, weight, 1)?;
+                            best[clause] =
+                                Some(best[clause].map_or(score, |current| current.max(score)));
+                        }
                     }
                 }
-                candidates = intersection;
             }
-            candidates
-                .into_iter()
-                .map(|(ordinal, relevance)| {
-                    Ok((
-                        usize::try_from(ordinal).map_err(|_| Error::SizeLimit)?,
-                        relevance,
-                    ))
-                })
-                .collect::<Result<Vec<_>, Error>>()?
+        }
+        if offset != bytes.len() || total_tokens != entry.document.postings {
+            return Err(
+                Self::corrupt("rank payload is malformed or has another posting count").into(),
+            );
+        }
+        let Some(mut relevance) = best.first().and_then(|value| *value) else {
+            return Ok(None);
         };
-        let total = entries.len();
-        ensure_rank_scratch_capacity(total, self.rank_budget.max_scratch_bytes)?;
-        let ranks = RankStorage::from_entries(entries, &self.documents, self.rank_budget)?;
-        Ok(CachedRank {
-            binding: self.binding,
-            query: query.version,
-            total,
-            ranks,
-        })
+        for clause in best.iter().skip(1) {
+            let Some(clause) = *clause else {
+                return Ok(None);
+            };
+            relevance = relevance.combine(clause)?;
+        }
+        Ok(Some(RankedHit {
+            document: entry.document.id,
+            relevance,
+        }))
     }
 }
 
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
-struct SearchableToken {
-    searchable: String,
-    ranking: String,
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct SearchableToken<'a> {
+    searchable: &'a str,
+    ranking_bytes: usize,
 }
 
-fn searchable_tokens(text: &str) -> Vec<SearchableToken> {
-    // The projection only needs canonical order after tokenization.  A tree
-    // allocates one node per token while this bounded vector can sort and
-    // deduplicate in place, retaining the same `(searchable, ranking)` set
-    // with fewer allocations and better locality during cold ingest.
+fn searchable_tokens(text: &str) -> Vec<SearchableToken<'_>> {
+    // Keep token text borrowed from the already-bounded source field. A tree
+    // allocates one node per token, while owned token strings duplicate the
+    // same input bytes many times for punctuation and identifier splits.
     let mut tokens = Vec::new();
     for raw in text.split_whitespace().filter(|token| !token.is_empty()) {
+        let first = tokens.len();
         tokens.push(SearchableToken {
-            searchable: raw.to_owned(),
-            ranking: raw.to_owned(),
+            searchable: raw,
+            ranking_bytes: raw.len(),
         });
         for identifier in raw.split(|character: char| !character.is_alphanumeric()) {
             if identifier.is_empty() {
                 continue;
             }
             tokens.push(SearchableToken {
-                searchable: identifier.to_owned(),
-                ranking: raw.to_owned(),
+                searchable: identifier,
+                ranking_bytes: raw.len(),
             });
             tokens.extend(identifier_words(identifier).map(|word| SearchableToken {
-                searchable: word.to_owned(),
-                ranking: raw.to_owned(),
+                searchable: word,
+                ranking_bytes: raw.len(),
             }));
         }
+        // Most plain identifiers yield the same term through all three
+        // paths. Deduplicate each whitespace token before retaining the
+        // field-wide canonical set, limiting transient duplicate entries.
+        tokens[first..].sort_unstable();
+        tokens[first..].dedup();
     }
     tokens.sort_unstable();
     tokens.dedup();
@@ -1764,42 +1787,43 @@ struct ProjectedSchema {
 struct ProjectionFields {
     raw_token: Field,
     folded_token: Field,
-    ranking_token: Field,
-    field_name: Field,
+    field_raw_token: Field,
+    field_folded_token: Field,
     ordinal: Field,
-    rank_weight: Field,
-    rank_bytes: Field,
+    rank_material: Field,
+    rank_material_len: Field,
 }
 
 fn projection_schema() -> ProjectedSchema {
     let mut schema = Schema::builder();
-    let raw_token = schema.add_text_field("raw_token", STRING | STORED);
+    let raw_token = schema.add_text_field("raw_token", STRING);
     let folded_token = schema.add_text_field("folded_token", STRING);
-    let ranking_token = schema.add_text_field("ranking_token", STORED);
-    let field_name = schema.add_text_field("field_name", STRING | STORED);
+    let field_raw_token = schema.add_text_field(FIELD_RAW_TOKEN, STRING);
+    let field_folded_token = schema.add_text_field(FIELD_FOLDED_TOKEN, STRING);
     // Indexed so a revision can delete one document's postings by ordinal.
-    // Fast columns carry the ordinal, field weight, and ranking length so a
-    // query can rank without loading stored fields.
-    let ordinal = schema.add_u64_field("document_ordinal", INDEXED | STORED | FAST);
-    let rank_weight = schema.add_u64_field("rank_weight", FAST);
-    let rank_bytes = schema.add_u64_field("rank_bytes", FAST);
+    // A row-native document contains every token for one semantic entity. The
+    // compact rank payload is stored as a bounded fast bytes column.
+    let ordinal = schema.add_u64_field("document_ordinal", INDEXED | FAST);
+    let rank_material =
+        schema.add_bytes_field(RANK_MATERIAL_FIELD, BytesOptions::default().set_fast());
+    let rank_material_len = schema.add_u64_field(RANK_MATERIAL_LENGTH_FIELD, FAST);
     ProjectedSchema {
         schema: schema.build(),
         fields: ProjectionFields {
             raw_token,
             folded_token,
-            ranking_token,
-            field_name,
+            field_raw_token,
+            field_folded_token,
             ordinal,
-            rank_weight,
-            rank_bytes,
+            rank_material,
+            rank_material_len,
         },
     }
 }
 
 fn projection_fingerprint(binding: Binding) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend-extension-tantivy/projection/v2");
+    hasher.update(b"backend-extension-tantivy/projection/v3");
     hasher.update(binding.workspace.as_bytes());
     hasher.update(binding.root.as_bytes());
     hasher.update(binding.recipe.as_bytes());
@@ -2061,6 +2085,7 @@ fn read_ordinal_map(
         documents.push(OrdinalDocument {
             ordinal: u32::try_from(ordinal).map_err(|_| Error::SizeLimit)?,
             document: live,
+            address: None,
         });
     }
     if offset != bytes.len() || seen.iter().any(|admitted| !admitted) {
@@ -2883,14 +2908,9 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn rank_cache_bytes(
-        adapter: &super::TantivyAdapter,
+        _adapter: &super::TantivyAdapter,
     ) -> Result<usize, super::TantivySourceError> {
-        let guard = adapter
-            .source()
-            .rank_cache
-            .lock()
-            .map_err(|_| super::TantivySource::corrupt("rank cache lock poisoned"))?;
-        Ok(guard.as_ref().map_or(0, |rank| rank.ranks.byte_len()))
+        Ok(0)
     }
 
     pub(crate) fn ordinal_residency(source: &super::TantivySource) -> (u32, usize, usize) {
@@ -2926,7 +2946,14 @@ pub(crate) mod test_support {
         let projected = super::projection_schema();
         let index = super::Index::create_in_dir(directory, projected.schema)?;
         let writer = index.writer(super::WRITER_MEMORY_BYTES)?;
-        let postings = super::write_fields(&writer, &projected.fields, u64::from(ordinal), fields)?;
+        let postings = super::write_document(
+            &writer,
+            &projected.fields,
+            u64::from(ordinal),
+            id,
+            fields,
+            super::MAX_RANK_MATERIAL_BYTES,
+        )?;
         writer.commit()?;
         writer.wait_merging_threads()?;
         let fingerprint = super::projection_fingerprint(state.binding());
@@ -2939,6 +2966,7 @@ pub(crate) mod test_support {
                     fields_digest: super::document_fields_digest(fields),
                     postings,
                 },
+                address: None,
             }],
         )?;
         super::write_ordinal_map(directory, fingerprint, &documents)?;
@@ -2997,75 +3025,87 @@ impl LexicalSource for TantivySource {
         {
             return Err(Error::InvalidCursor.into());
         }
-        self.with_ranked_snapshot(&request.query, |snapshot| {
-            let offset = request.cursor.map_or(0, Cursor::offset);
-            let after = request.cursor.and_then(Cursor::after_hit);
-            if offset > snapshot.total {
-                return Err(Error::InvalidCursor.into());
-            }
-            match after {
-                Some(after) => {
-                    if offset == 0 {
-                        return Err(Error::InvalidCursor.into());
+        let offset = request.cursor.map_or(0, Cursor::offset);
+        let after = request.cursor.and_then(Cursor::after_hit);
+        if after.is_none() && offset != 0 || after.is_some() && offset == 0 {
+            return Err(Error::InvalidCursor.into());
+        }
+        let heap_bytes = request
+            .limit
+            .checked_mul(std::mem::size_of::<RankedHit>())
+            .ok_or(Error::SizeLimit)?;
+        ensure_rank_scratch_capacity(
+            heap_bytes
+                .checked_add(
+                    request
+                        .query
+                        .terms
+                        .len()
+                        .checked_mul(std::mem::size_of::<Option<Relevance>>())
+                        .ok_or(Error::SizeLimit)?,
+                )
+                .ok_or(Error::SizeLimit)?,
+            self.rank_budget.max_scratch_bytes,
+        )?;
+        let mut page = TopHits::new(request.limit)?;
+        let mut eligible = 0usize;
+        let mut before_boundary = 0usize;
+        let mut boundary_seen = false;
+        let total = self.scan_ranked_hits(&request.query, heap_bytes, |hit| {
+            let after_boundary = match after {
+                Some(boundary) => match compare_ranked_hits(hit, boundary) {
+                    std::cmp::Ordering::Less => {
+                        before_boundary = before_boundary.checked_add(1).ok_or(Error::SizeLimit)?;
+                        false
                     }
-                    let (ordinal, relevance) = snapshot
-                        .ranks
-                        .ranked_at(offset - 1)?
-                        .ok_or(Error::InvalidCursor)?;
-                    let selected = self
-                        .documents
-                        .get(ordinal)
-                        .ok_or_else(|| Self::corrupt("rank ordinal is outside the binding"))?;
-                    let boundary = RankedHit {
-                        document: selected.id,
-                        relevance,
-                    };
-                    if boundary != after {
-                        return Err(Error::InvalidCursor.into());
+                    std::cmp::Ordering::Equal => {
+                        if hit != boundary || boundary_seen {
+                            return Err(Error::InvalidCursor.into());
+                        }
+                        boundary_seen = true;
+                        false
                     }
-                }
-                None if offset != 0 => return Err(Error::InvalidCursor.into()),
-                None => {}
-            }
-            let end = offset
-                .checked_add(request.limit)
-                .ok_or(Error::SizeLimit)?
-                .min(snapshot.total);
-            let mut hits = Vec::with_capacity(end.saturating_sub(offset));
-            for position in offset..end {
-                let (ordinal, relevance) = snapshot
-                    .ranks
-                    .ranked_at(position)?
-                    .ok_or_else(|| Self::corrupt("rank ordering is incomplete"))?;
-                let selected = self
-                    .documents
-                    .get(ordinal)
-                    .ok_or_else(|| Self::corrupt("rank ordinal is outside the binding"))?;
-                hits.push(RankedHit {
-                    document: selected.id,
-                    relevance,
-                });
-            }
-            let next = if end < snapshot.total {
-                let after = hits.last().copied().ok_or(Error::InvalidCursor)?;
-                Some(Cursor::after(
-                    self.binding,
-                    request.query.version,
-                    end,
-                    after,
-                ))
-            } else {
-                None
+                    std::cmp::Ordering::Greater => true,
+                },
+                None => true,
             };
-            Ok(LexicalPage {
-                schema: SchemaVersion::CURRENT,
-                binding: self.binding,
-                query: request.query.version,
-                hits,
-                next,
-                total: snapshot.total,
-                coverage: self.coverage,
-            })
+            if !after_boundary {
+                return Ok(());
+            }
+            eligible = eligible.checked_add(1).ok_or(Error::SizeLimit)?;
+            page.consider(hit);
+            Ok(())
+        })?;
+        if offset > total
+            || after.is_some_and(|_| !boundary_seen || before_boundary != offset.saturating_sub(1))
+        {
+            return Err(Error::InvalidCursor.into());
+        }
+        if eligible != total.saturating_sub(offset) {
+            return Err(
+                Self::corrupt("keyset cursor does not partition the exact result set").into(),
+            );
+        }
+        let hits = page.into_sorted();
+        let next = if eligible > hits.len() {
+            let last = hits.last().copied().ok_or(Error::InvalidCursor)?;
+            Some(Cursor::after(
+                self.binding,
+                request.query.version,
+                offset.checked_add(hits.len()).ok_or(Error::SizeLimit)?,
+                last,
+            ))
+        } else {
+            None
+        };
+        Ok(LexicalPage {
+            schema: SchemaVersion::CURRENT,
+            binding: self.binding,
+            query: request.query.version,
+            hits,
+            next,
+            total,
+            coverage: self.coverage,
         })
     }
 }
@@ -3118,43 +3158,151 @@ fn posting_count(fields: &[(String, String)]) -> Result<u32, Error> {
     Ok(postings)
 }
 
-fn write_fields(
+fn rank_material_limit(limits: Limits) -> usize {
+    limits
+        .max_total_text_bytes
+        .saturating_mul(4)
+        .saturating_add(limits.max_fields_per_document.saturating_mul(16))
+        .min(MAX_RANK_MATERIAL_BYTES)
+}
+
+fn field_token_prefix(field: &str, token: &str) -> String {
+    format!("{}:{field}{token}", field.len())
+}
+
+fn field_token_value(field: &str, token: &str, folded: bool) -> String {
+    if folded {
+        field_token_prefix(field, &token.to_ascii_lowercase())
+    } else {
+        field_token_prefix(field, token)
+    }
+}
+
+fn append_rank_material(
+    output: &mut Vec<u8>,
+    value: &[u8],
+    maximum: usize,
+) -> Result<(), TantivySourceError> {
+    let required = output
+        .len()
+        .checked_add(value.len())
+        .ok_or(Error::SizeLimit)?;
+    if required > maximum {
+        return Err(Error::SizeLimit.into());
+    }
+    output
+        .try_reserve(value.len())
+        .map_err(|_| Error::SizeLimit)?;
+    output.extend_from_slice(value);
+    Ok(())
+}
+
+fn append_rank_material_len(
+    output: &mut Vec<u8>,
+    value: usize,
+    maximum: usize,
+) -> Result<(), TantivySourceError> {
+    let mut value = u32::try_from(value).map_err(|_| Error::SizeLimit)?;
+    loop {
+        let continuation = value > 0x7f;
+        let byte = (value as u8 & 0x7f) | if continuation { 0x80 } else { 0 };
+        append_rank_material(output, &[byte], maximum)?;
+        if !continuation {
+            return Ok(());
+        }
+        value >>= 7;
+    }
+}
+
+fn write_document(
     writer: &tantivy::IndexWriter,
     fields: &ProjectionFields,
     document_ordinal: u64,
+    document_id: EntityId,
     document_fields: &[(String, String)],
+    maximum_material_bytes: usize,
 ) -> Result<u32, TantivySourceError> {
+    if document_fields.len() > u32::MAX as usize {
+        return Err(Error::SizeLimit.into());
+    }
+    let mut document = TantivyDocument::default();
+    let mut material = Vec::new();
+    append_rank_material(&mut material, RANK_MATERIAL_MAGIC, maximum_material_bytes)?;
+    append_rank_material(
+        &mut material,
+        &document_ordinal.to_le_bytes(),
+        maximum_material_bytes,
+    )?;
+    append_rank_material(
+        &mut material,
+        document_id.as_bytes(),
+        maximum_material_bytes,
+    )?;
+    append_rank_material(
+        &mut material,
+        &document_fields_digest(document_fields),
+        maximum_material_bytes,
+    )?;
+    append_rank_material_len(&mut material, document_fields.len(), maximum_material_bytes)?;
     let mut postings = 0u32;
     for (field, text) in document_fields {
-        let weight = u64::from(field_weight(field));
-        for token in searchable_tokens(text) {
+        let field_weight = field_weight(field);
+        if field.is_empty() || field_weight == 0 {
+            return Err(Error::MalformedInput.into());
+        }
+        let tokens = searchable_tokens(text);
+        append_rank_material_len(&mut material, field.len(), maximum_material_bytes)?;
+        append_rank_material(&mut material, field.as_bytes(), maximum_material_bytes)?;
+        append_rank_material(
+            &mut material,
+            &[u8::try_from(field_weight).map_err(|_| Error::SizeLimit)?],
+            maximum_material_bytes,
+        )?;
+        append_rank_material_len(&mut material, tokens.len(), maximum_material_bytes)?;
+        for token in tokens {
             postings = postings.checked_add(1).ok_or(Error::SizeLimit)?;
-            let ranking_bytes = u64::try_from(token.ranking.len()).map_err(|_| Error::SizeLimit)?;
-            writer.add_document(doc!(
-                fields.raw_token => token.searchable.as_str(),
-                fields.folded_token => token.searchable.to_ascii_lowercase(),
-                fields.ranking_token => token.ranking.as_str(),
-                fields.field_name => field.as_str(),
-                fields.ordinal => document_ordinal,
-                fields.rank_weight => weight,
-                fields.rank_bytes => ranking_bytes,
-            ))?;
+            let folded = token.searchable.to_ascii_lowercase();
+            document.add_text(fields.raw_token, token.searchable);
+            document.add_text(fields.folded_token, folded.as_str());
+            document.add_text(
+                fields.field_raw_token,
+                field_token_value(field, token.searchable, false),
+            );
+            document.add_text(
+                fields.field_folded_token,
+                field_token_value(field, token.searchable, true),
+            );
+            append_rank_material_len(
+                &mut material,
+                token.searchable.len(),
+                maximum_material_bytes,
+            )?;
+            append_rank_material(
+                &mut material,
+                token.searchable.as_bytes(),
+                maximum_material_bytes,
+            )?;
+            append_rank_material_len(&mut material, token.ranking_bytes, maximum_material_bytes)?;
         }
     }
+    document.add_u64(fields.ordinal, document_ordinal);
+    document.add_bytes(fields.rank_material, &material);
+    document.add_u64(
+        fields.rank_material_len,
+        u64::try_from(material.len()).map_err(|_| Error::SizeLimit)?,
+    );
+    writer.add_document(document)?;
     Ok(postings)
 }
 
 const ORDINAL_FIELD: &str = "document_ordinal";
-const WEIGHT_FIELD: &str = "rank_weight";
-const RANK_BYTES_FIELD: &str = "rank_bytes";
+const RANK_MATERIAL_FIELD_NAME: &str = "rank_material";
+const RANK_MATERIAL_LENGTH_FIELD_NAME: &str = "rank_material_bytes";
 
 fn ensure_rank_scratch_capacity(
-    row_count: usize,
+    required_bytes: usize,
     budget_bytes: usize,
 ) -> Result<(), TantivySourceError> {
-    let required_bytes = row_count
-        .checked_mul(RANK_SCRATCH_BYTES_PER_MATCH)
-        .ok_or(Error::SizeLimit)?;
     if required_bytes > budget_bytes {
         return Err(TantivySourceError::RankSnapshotBudgetExceeded {
             budget_bytes,
@@ -3164,142 +3312,251 @@ fn ensure_rank_scratch_capacity(
     Ok(())
 }
 
-enum ClauseRankError {
-    Contract(Error),
-    Capacity,
+fn material_for_doc<'a>(
+    payloads: &BytesColumn,
+    document: DocId,
+    material: &'a mut Vec<u8>,
+) -> Result<&'a [u8], TantivySourceError> {
+    let mut ords = payloads.term_ords(document);
+    let Some(term_ord) = ords.next() else {
+        return Err(TantivySource::corrupt("rank payload is missing").into());
+    };
+    if ords.next().is_some() {
+        return Err(TantivySource::corrupt("rank payload has multiple values").into());
+    }
+    material.clear();
+    if !payloads.ord_to_bytes(term_ord, material)? {
+        return Err(TantivySource::corrupt("rank payload term is missing").into());
+    }
+    Ok(material)
 }
 
-struct ClauseRankCollector {
-    term_bytes: usize,
-    max_rows: usize,
-    admitted_rows: Arc<std::sync::atomic::AtomicUsize>,
+fn parse_rank_material_header(
+    bytes: &[u8],
+) -> Result<(u32, [u8; 32], [u8; 32], usize, usize), TantivySourceError> {
+    if !bytes.starts_with(RANK_MATERIAL_MAGIC) {
+        return Err(TantivySource::corrupt("rank payload has an invalid format").into());
+    }
+    let mut offset = RANK_MATERIAL_MAGIC.len();
+    let ordinal = read_material_u32_64(bytes, &mut offset)?;
+    let id = read_material_array(bytes, &mut offset)?;
+    let digest = read_material_array(bytes, &mut offset)?;
+    let field_count =
+        usize::try_from(read_material_u32(bytes, &mut offset)?).map_err(|_| Error::SizeLimit)?;
+    Ok((ordinal, id, digest, field_count, offset))
 }
 
-struct ClauseRankSegment {
-    term_bytes: usize,
-    ordinals: Arc<dyn ColumnValues<u64>>,
-    weights: Arc<dyn ColumnValues<u64>>,
-    ranking_bytes: Arc<dyn ColumnValues<u64>>,
-    best: BTreeMap<u64, Relevance>,
-    error: Option<Error>,
-    capacity_exceeded: bool,
-    max_rows: usize,
-    admitted_rows: Arc<std::sync::atomic::AtomicUsize>,
+fn read_material_u8(bytes: &[u8], offset: &mut usize) -> Result<u8, TantivySourceError> {
+    let Some(value) = bytes.get(*offset).copied() else {
+        return Err(TantivySource::corrupt("rank payload is truncated").into());
+    };
+    *offset += 1;
+    Ok(value)
 }
 
-impl SegmentCollector for ClauseRankSegment {
-    type Fruit = Result<BTreeMap<u64, Relevance>, ClauseRankError>;
-
-    fn collect(&mut self, doc: DocId, _score: Score) {
-        if self.error.is_some() || self.capacity_exceeded {
-            return;
+fn read_material_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, TantivySourceError> {
+    let mut value = 0_u32;
+    for shift in (0..35).step_by(7) {
+        let byte = read_material_u8(bytes, offset)?;
+        if shift == 28 && byte & 0xf0 != 0 {
+            return Err(TantivySource::corrupt("rank payload integer overflows u32").into());
         }
-        let ordinal = self.ordinals.get_val(doc);
-        let weight = self.weights.get_val(doc);
-        let ranking_bytes = self.ranking_bytes.get_val(doc);
-        if weight == 0 || ranking_bytes == 0 {
-            self.error = Some(Error::MalformedInput);
-            return;
-        }
-        let Ok(weight) = u16::try_from(weight) else {
-            self.error = Some(Error::SizeLimit);
-            return;
-        };
-        let Ok(ranking_bytes) = usize::try_from(ranking_bytes) else {
-            self.error = Some(Error::SizeLimit);
-            return;
-        };
-        let relevance = match Relevance::new(self.term_bytes, ranking_bytes, weight, 1) {
-            Ok(relevance) => relevance,
-            Err(error) => {
-                self.error = Some(error);
-                return;
+        value |= u32::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            if shift > 0 && byte == 0 {
+                return Err(TantivySource::corrupt("rank payload integer is not canonical").into());
             }
-        };
-        self.best
-            .entry(ordinal)
-            .and_modify(|current| *current = (*current).max(relevance));
-        if !self.best.contains_key(&ordinal) {
-            let admitted =
-                self.admitted_rows
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                        (current < self.max_rows).then_some(current.saturating_add(1))
-                    });
-            if admitted.is_err() {
-                self.capacity_exceeded = true;
-                return;
-            }
-            self.best.insert(ordinal, relevance);
+            return Ok(value);
         }
     }
+    Err(TantivySource::corrupt("rank payload integer is too long").into())
+}
 
-    fn harvest(self) -> Self::Fruit {
-        if self.capacity_exceeded {
-            return Err(ClauseRankError::Capacity);
+fn read_material_u32_64(bytes: &[u8], offset: &mut usize) -> Result<u32, TantivySourceError> {
+    let end = offset.checked_add(8).ok_or(Error::SizeLimit)?;
+    let value = bytes
+        .get(*offset..end)
+        .and_then(|slice| slice.try_into().ok())
+        .map(u64::from_le_bytes)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| TantivySource::corrupt("rank payload ordinal is invalid"))?;
+    *offset = end;
+    Ok(value)
+}
+
+fn read_material_array<const N: usize>(
+    bytes: &[u8],
+    offset: &mut usize,
+) -> Result<[u8; N], TantivySourceError> {
+    let end = offset.checked_add(N).ok_or(Error::SizeLimit)?;
+    let value = bytes
+        .get(*offset..end)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or_else(|| TantivySource::corrupt("rank payload is truncated"))?;
+    *offset = end;
+    Ok(value)
+}
+
+fn read_material_slice<'a>(
+    bytes: &'a [u8],
+    offset: &mut usize,
+    length: usize,
+) -> Result<&'a [u8], TantivySourceError> {
+    let end = offset.checked_add(length).ok_or(Error::SizeLimit)?;
+    let value = bytes
+        .get(*offset..end)
+        .ok_or_else(|| TantivySource::corrupt("rank payload is truncated"))?;
+    *offset = end;
+    Ok(value)
+}
+
+fn validate_rank_material_tail(
+    bytes: &[u8],
+    mut offset: usize,
+    field_count: usize,
+    limits: Limits,
+) -> Result<u32, TantivySourceError> {
+    if field_count > limits.max_fields_per_document {
+        return Err(TantivySource::corrupt("rank payload has too many fields").into());
+    }
+    let mut postings = 0u32;
+    for _ in 0..field_count {
+        let field_len = usize::try_from(read_material_u32(bytes, &mut offset)?)
+            .map_err(|_| Error::SizeLimit)?;
+        if field_len == 0 || field_len > limits.max_field_bytes {
+            return Err(TantivySource::corrupt("rank payload field length is invalid").into());
         }
-        match self.error {
-            Some(error) => Err(ClauseRankError::Contract(error)),
-            None => Ok(self.best),
+        let field = read_material_slice(bytes, &mut offset, field_len)?;
+        std::str::from_utf8(field)
+            .map_err(|_| TantivySource::corrupt("rank field name is not UTF-8"))?;
+        let weight = read_material_u8(bytes, &mut offset)?;
+        if !(1..=4).contains(&weight) {
+            return Err(TantivySource::corrupt("rank payload field weight is invalid").into());
         }
+        let token_count = usize::try_from(read_material_u32(bytes, &mut offset)?)
+            .map_err(|_| Error::SizeLimit)?;
+        for _ in 0..token_count {
+            postings = postings.checked_add(1).ok_or(Error::SizeLimit)?;
+            let token_len = usize::try_from(read_material_u32(bytes, &mut offset)?)
+                .map_err(|_| Error::SizeLimit)?;
+            if token_len == 0 || token_len > limits.max_field_bytes {
+                return Err(TantivySource::corrupt("rank payload token length is invalid").into());
+            }
+            let token = read_material_slice(bytes, &mut offset, token_len)?;
+            std::str::from_utf8(token)
+                .map_err(|_| TantivySource::corrupt("rank token is not UTF-8"))?;
+            let ranking_bytes = usize::try_from(read_material_u32(bytes, &mut offset)?)
+                .map_err(|_| Error::SizeLimit)?;
+            if ranking_bytes == 0 || ranking_bytes > limits.max_field_bytes {
+                return Err(TantivySource::corrupt("rank payload token weight is invalid").into());
+            }
+        }
+    }
+    if offset != bytes.len() {
+        return Err(TantivySource::corrupt("rank payload has trailing bytes").into());
+    }
+    Ok(postings)
+}
+
+fn query_token_matches(query: &Query, term: &str, token: &str) -> bool {
+    let term = term.as_bytes();
+    let token = token.as_bytes();
+    match (query.case, query.match_mode) {
+        (crate::CaseSensitivity::Sensitive, MatchMode::Exact) => token == term,
+        (crate::CaseSensitivity::Sensitive, MatchMode::Prefix) => token.starts_with(term),
+        (crate::CaseSensitivity::FoldAscii, MatchMode::Exact) => token.eq_ignore_ascii_case(term),
+        (crate::CaseSensitivity::FoldAscii, MatchMode::Prefix) => token
+            .get(..term.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(term)),
     }
 }
 
-impl Collector for ClauseRankCollector {
-    type Fruit = Result<BTreeMap<u64, Relevance>, ClauseRankError>;
-    type Child = ClauseRankSegment;
-
-    fn for_segment(
-        &self,
-        _segment_local_id: tantivy::SegmentOrdinal,
-        segment: &tantivy::SegmentReader,
-    ) -> tantivy::Result<Self::Child> {
-        Ok(ClauseRankSegment {
-            term_bytes: self.term_bytes,
-            ordinals: fast_column(segment, ORDINAL_FIELD)?,
-            weights: fast_column(segment, WEIGHT_FIELD)?,
-            ranking_bytes: fast_column(segment, RANK_BYTES_FIELD)?,
-            best: BTreeMap::new(),
-            error: None,
-            capacity_exceeded: false,
-            max_rows: self.max_rows,
-            admitted_rows: Arc::clone(&self.admitted_rows),
-        })
+fn bind_document_addresses(
+    reader: &IndexReader,
+    documents: &mut DocumentTable,
+    limits: Limits,
+) -> Result<(), TantivySourceError> {
+    for entry in &mut documents.live {
+        entry.address = None;
     }
-
-    fn requires_scoring(&self) -> bool {
-        false
+    let searcher = reader.searcher();
+    let expected_docs = u64::try_from(documents.live.len()).map_err(|_| Error::SizeLimit)?;
+    if searcher.num_docs() != expected_docs {
+        return Err(TantivySource::corrupt("Tantivy row count disagrees with ordinal map").into());
     }
-
-    fn merge_fruits(
-        &self,
-        segment_fruits: Vec<<Self::Child as SegmentCollector>::Fruit>,
-    ) -> tantivy::Result<Self::Fruit> {
-        let mut merged: BTreeMap<u64, Relevance> = BTreeMap::new();
-        for fruit in segment_fruits {
-            let segment = match fruit {
-                Ok(segment) => segment,
-                Err(error) => return Ok(Err(error)),
-            };
-            for (ordinal, relevance) in segment {
-                merged
-                    .entry(ordinal)
-                    .and_modify(|current: &mut Relevance| *current = (*current).max(relevance))
-                    .or_insert(relevance);
+    let mut bound = 0usize;
+    let mut material = Vec::new();
+    for (segment_ord, segment) in searcher.segment_readers().iter().enumerate() {
+        let ordinals = segment.fast_fields().u64(ORDINAL_FIELD)?;
+        let payload_lengths = segment.fast_fields().u64(RANK_MATERIAL_LENGTH_FIELD_NAME)?;
+        let payloads = segment
+            .fast_fields()
+            .bytes(RANK_MATERIAL_FIELD_NAME)?
+            .ok_or_else(|| TantivySource::corrupt("rank payload fast field is missing"))?;
+        for doc in segment.doc_ids_alive() {
+            let ordinal =
+                u32::try_from(ordinals.values.get_val(doc)).map_err(|_| Error::SizeLimit)?;
+            let address = DocAddress::new(
+                u32::try_from(segment_ord).map_err(|_| Error::SizeLimit)?,
+                doc,
+            );
+            let payload_len = usize::try_from(payload_lengths.values.get_val(doc))
+                .map_err(|_| Error::SizeLimit)?;
+            if payload_len == 0 || payload_len > MAX_RANK_MATERIAL_BYTES {
+                return Err(TantivySource::corrupt("rank payload length is invalid").into());
             }
+            if material.capacity() < payload_len {
+                material
+                    .try_reserve_exact(payload_len.saturating_sub(material.len()))
+                    .map_err(|_| Error::SizeLimit)?;
+            }
+            let bytes = material_for_doc(&payloads, doc, &mut material)?;
+            if bytes.len() != payload_len {
+                return Err(TantivySource::corrupt(
+                    "rank payload length disagrees with its fast field",
+                )
+                .into());
+            }
+            let (payload_ordinal, id, digest, field_count, offset) =
+                parse_rank_material_header(bytes)?;
+            if payload_ordinal != ordinal {
+                return Err(TantivySource::corrupt(
+                    "rank payload ordinal disagrees with its fast field",
+                )
+                .into());
+            }
+            let postings = validate_rank_material_tail(bytes, offset, field_count, limits)?;
+            let index = documents
+                .live
+                .binary_search_by_key(&ordinal, |entry| entry.ordinal)
+                .map_err(|_| {
+                    TantivySource::corrupt("Tantivy row ordinal is not in the selected map")
+                })?;
+            let entry = documents
+                .live
+                .get_mut(index)
+                .ok_or_else(|| TantivySource::corrupt("Tantivy row ordinal is missing"))?;
+            if entry.address.is_some()
+                || id != *entry.document.id.as_bytes()
+                || digest != entry.document.fields_digest
+                || postings != entry.document.postings
+            {
+                return Err(TantivySource::corrupt(
+                    "Tantivy row identity or payload disagrees with the selected generation",
+                )
+                .into());
+            }
+            entry.address = Some(address);
+            bound = bound.checked_add(1).ok_or(Error::SizeLimit)?;
         }
-        Ok(Ok(merged))
     }
-}
-
-fn fast_column(
-    segment: &tantivy::SegmentReader,
-    name: &str,
-) -> tantivy::Result<Arc<dyn ColumnValues<u64>>> {
-    let column = segment
-        .fast_fields()
-        .u64_lenient(name)?
-        .ok_or_else(|| tantivy::TantivyError::FieldNotFound(name.to_owned()))?;
-    Ok(column.0.first_or_default_col(0))
+    if bound != documents.live.len() || documents.live.iter().any(|entry| entry.address.is_none()) {
+        return Err(TantivySource::corrupt(
+            "selected ordinal map has no exact Tantivy row address",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 impl crate::Adapter<TantivySource> {
@@ -3317,20 +3574,31 @@ impl crate::Adapter<TantivySource> {
         self.source_mut().maintain(next, budget)
     }
 
-    /// Returns token postings visible to the resident reader.
+    /// Returns the exact token-posting count represented by live rows.
     #[must_use]
     pub fn indexed_postings(&self) -> u64 {
         self.source().indexed_postings()
     }
 
-    /// Counts full ranking passes caused by a page miss on this adapter.
+    /// Counts complete exact Tantivy query scans on this adapter.
     #[must_use]
     pub fn rank_evaluations(&self) -> u64 {
         self.source().rank_evaluations()
     }
 
-    /// Visits every exact lexical hit while retaining only the source's
-    /// compact ordinal rank snapshot and caller-owned bounded state.
+    /// Counts query-matching row documents advanced by exact Tantivy scorers.
+    #[must_use]
+    pub fn rank_docs_visited(&self) -> u64 {
+        self.source().rank_docs_visited()
+    }
+
+    /// Returns the largest measured query scratch allocation for this adapter.
+    #[must_use]
+    pub fn rank_peak_scratch_bytes(&self) -> u64 {
+        self.source().rank_peak_scratch_bytes()
+    }
+
+    /// Visits every exact lexical hit while retaining only one row payload.
     ///
     /// # Errors
     ///
@@ -3358,11 +3626,11 @@ impl crate::Adapter<TantivySource> {
         self.source().relevance_for_candidates(query, candidates)
     }
 
-    /// Drops the retained rank so the next page computes it again.
+    /// Compatibility no-op; query pages do not retain all-match rank state.
     ///
     /// # Errors
     ///
-    /// Returns the source failure when the rank lock is poisoned.
+    /// Returns the source's no-op cache-clear result.
     pub fn clear_rank_cache(&self) -> Result<(), TantivySourceError> {
         self.source().clear_rank_cache()
     }

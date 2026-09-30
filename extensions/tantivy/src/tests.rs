@@ -897,11 +897,11 @@ fn concrete_tantivy_pages_after_global_ranking_and_fences_the_binding() {
         )))
     ));
     assert_eq!(first.total, 3);
-    assert_eq!(adapter.rank_evaluations(), 1);
+    assert_eq!(adapter.rank_evaluations(), 3);
 }
 
 #[test]
-fn a_short_page_keeps_the_full_total_and_reuses_the_rank() {
+fn a_short_page_keeps_the_full_total_with_one_bounded_scan_per_page() {
     let documents = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
         (document(2), vec![("name".into(), "alpine".into())]),
@@ -939,11 +939,11 @@ fn a_short_page_keeps_the_full_total_and_reuses_the_rank() {
     assert_eq!(second.total, 2);
     assert!(second.next.is_none());
     assert_ne!(first.hits[0].document, second.hits[0].document);
-    assert_eq!(adapter.rank_evaluations(), 1);
+    assert_eq!(adapter.rank_evaluations(), 2);
 }
 
 #[test]
-fn broad_keyset_pages_keep_only_compact_ordinal_rank_metadata() {
+fn broad_keyset_pages_keep_only_the_current_page_and_row_scratch() {
     let documents = (1..=128)
         .map(|ordinal| {
             (
@@ -983,15 +983,13 @@ fn broad_keyset_pages_keep_only_compact_ordinal_rank_metadata() {
         }
     }
     assert_eq!(observed, (1..=128).map(document).collect::<Vec<_>>());
-    assert_eq!(adapter.rank_evaluations(), 1);
-    assert!(
-        rank_cache_bytes(&adapter).expect("cache size") <= 128 * 16,
-        "the rank cache stores compact ordinal scores, not full identity-bearing hits"
-    );
+    assert_eq!(adapter.rank_evaluations(), 128);
+    assert_eq!(adapter.source().rank_docs_visited(), 128 * 128);
+    assert_eq!(rank_cache_bytes(&adapter).expect("retained rank bytes"), 0);
 }
 
 #[test]
-fn exact_rank_build_refuses_over_budget_before_retaining_a_snapshot() {
+fn exact_pages_stay_bounded_and_all_results_refuse_over_budget() {
     let documents = (1..=128)
         .map(|ordinal| {
             (
@@ -1013,24 +1011,31 @@ fn exact_rank_build_refuses_over_budget_before_retaining_a_snapshot() {
         );
     let adapter = Adapter::new(source, limits).expect("adapter");
     let query = Query::new(Vec::new(), limits).expect("all-documents query");
-    let error = adapter
+    let page = adapter
         .query(&QueryRequest {
             binding,
-            query,
+            query: query.clone(),
             cursor: None,
             limit: 1,
         })
-        .expect_err("the complete exact rank exceeds the configured budget");
-    let AdapterError::Provider(TantivySourceError::RankSnapshotBudgetExceeded {
+        .expect("bounded top page does not retain every exact hit");
+    assert_eq!(page.total, 128);
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(adapter.source().rank_docs_visited(), 128);
+    let error = adapter.source().search(&query).expect_err(
+        "the explicit all-results API must refuse output above its retained-byte budget",
+    );
+    let TantivySourceError::RankSnapshotBudgetExceeded {
         budget_bytes,
         required_bytes,
-    }) = error
+    } = error
     else {
-        panic!("the query should return its typed rank-budget refusal");
+        panic!("the all-results API should return its typed memory refusal");
     };
     assert_eq!(budget_bytes, 1024);
-    assert_eq!(required_bytes, 128 * 320);
-    assert_eq!(rank_cache_bytes(&adapter).expect("cache size"), 0);
+    assert!(required_bytes > budget_bytes);
+    assert_eq!(rank_cache_bytes(&adapter).expect("retained rank bytes"), 0);
+    assert!(adapter.source().rank_docs_visited() >= 128);
 }
 
 #[test]
@@ -1057,11 +1062,10 @@ fn sparse_cold_reopen_residency_scales_with_live_rows_not_historical_slots() {
 
     let source = TantivySource::open_in_dir(&state, Limits::default(), &directory)
         .expect("cold-open sparse ordinal root");
-    assert_eq!(
-        crate::engine::test_support::ordinal_residency(&source),
-        (slot_count, 1, 92),
-        "resident ordinal and identity arrays must allocate by live rows"
-    );
+    let (resident_slots, resident_rows, resident_bytes) =
+        crate::engine::test_support::ordinal_residency(&source);
+    assert_eq!((resident_slots, resident_rows), (slot_count, 1));
+    assert!(resident_bytes <= 128, "sparse residency is bounded by one live row");
     assert_eq!(
         source
             .search(&Query::new(vec!["sparse".into()], Limits::default()).expect("query"))
@@ -1109,7 +1113,7 @@ fn a_rare_query_uses_sparse_ranks_instead_of_a_corpus_sized_vector() {
         page.hits.iter().map(|hit| hit.document).collect::<Vec<_>>(),
         vec![document(73)]
     );
-    assert!(rank_cache_bytes(&adapter).expect("cache size") <= 32);
+    assert_eq!(rank_cache_bytes(&adapter).expect("retained rank bytes"), 0);
 }
 
 #[test]
@@ -1161,7 +1165,7 @@ fn concrete_tantivy_can_commit_its_projection_to_disk() {
     let source = TantivySource::build_in_dir(&state, Limits::default(), &directory)
         .expect("durable Tantivy projection");
     assert!(directory.join("meta.json").is_file());
-    assert!(directory.join("backend-binding-v2").is_file());
+    assert!(directory.join("backend-binding-v3").is_file());
     drop(source);
     let source = TantivySource::open_in_dir(&state, Limits::default(), &directory)
         .expect("reopen exact projection");
