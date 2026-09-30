@@ -256,12 +256,24 @@ pub(super) fn advance_history_gc(
             stats: HistoryGcStats::default(),
         });
     }
-    // Typed V2 admission stages each locator behind a durable marker while
-    // holding the history state lock. Reconcile only a bounded prefix here so
-    // a crash before commit admission cannot leave untracked sidecars behind.
+    // Typed admission stages each locator behind a durable marker while
+    // holding the history state lock. Reconcile bounded prefixes here so a
+    // crash before commit admission cannot leave untracked sidecars behind.
     let (mut processed, pending_locators_remain) =
         super::v2::reconcile_pending_typed_v2_locators(target_root, target)?;
     if pending_locators_remain {
+        return Ok(HistoryGcProgress {
+            processed_records: processed,
+            complete: false,
+            stats: HistoryGcStats::default(),
+        });
+    }
+    let (v3_processed, pending_v3_locators_remain) =
+        super::v3::reconcile_pending_typed_v3_locators(target_root, target)?;
+    processed = processed
+        .checked_add(v3_processed)
+        .ok_or_else(|| "semantic history GC work counter overflows".to_owned())?;
+    if pending_v3_locators_remain {
         return Ok(HistoryGcProgress {
             processed_records: processed,
             complete: false,

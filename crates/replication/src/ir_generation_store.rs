@@ -128,27 +128,29 @@ pub(super) fn trip_history_test_fault(point: HistoryTestFault) -> Result<(), Str
 
 mod history;
 pub(crate) use history::TypedV2HistoryLocator;
-pub(crate) use history::TypedV3HistoryLocator;
 pub(crate) use history::TypedV2HistoryPublicationAdmission;
 pub(crate) use history::TypedV2HistoryPublicationSnapshot;
+pub(crate) use history::TypedV3HistoryLocator;
+pub(crate) use history::TypedV3HistoryPublicationAdmission;
+pub(crate) use history::TypedV3HistoryPublicationSnapshot;
 pub use history::{
-    AdmittedHistoryCommit, BorrowedTypedLineageEdgeSetV1, HistoryAdmissionReceipt, HistoryCommitId, HistoryGcProgress,
-    HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization, HistoryProposalError,
-    HistoryRefAncestryProof, HistoryRefKind, HistoryRefName, HistoryRefUpdateReceipt,
-    HistoryReplay, HistoryReplayCursor, HistoryReplayEntry, HistorySegmentDeltas,
-    HistoryTypedV2JumboObject, HistoryTypedV2LocatorId, HistoryTypedV2RootClaim,
-    HistoryTypedV3LocatorId, HistoryTypedV3RootClaim,
-    HistoryTypedV2SegmentObject, MAX_HISTORY_REPLAY_COMMITS, SelectedHistoryRef,
-    LineageAttestationId, LineageAttestationVerifierV1, LineageCandidateGroupIdV1,
-    LineageConfirmationStatementV1,
-    LineageEdgeIterV1, LineageEdgeSetErrorV1, LineageEdgeV1, LineageEdgeViewV1,
-    LineageHistoryEvidenceV1, LineageKindV1, LineageSourceV1, LineageStatusV1,
-    LineageStatusViewV1, MAX_LINEAGE_CANDIDATES_PER_GROUP_V1,
-    MAX_TYPED_LINEAGE_EDGES_V1, MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES,
-    OwnedTypedLineageEdgeSetV1, RejectLineageConfirmationsV1, TypedV2HistoryReplay,
-    UnresolvedLineageReasonV1, UnpublishedHistoryProposal, UnprovenTypedLineageEdgeSetV1,
-    VerifiedLineageEdgeIterV1, VerifiedLineageEdgeViewV1, VerifiedLineageStatusV1,
-    VerifiedTypedLineageEdgeSetV1, VerifiedLineageRootV2,
+    AdmittedHistoryCommit, BorrowedTypedLineageEdgeSetV1, HistoryAdmissionReceipt, HistoryCommitId,
+    HistoryGcProgress, HistoryGcStats, HistoryGenerationRoot, HistoryMaterialization,
+    HistoryProposalError, HistoryRefAncestryProof, HistoryRefKind, HistoryRefName,
+    HistoryRefUpdateReceipt, HistoryReplay, HistoryReplayCursor, HistoryReplayEntry,
+    HistorySegmentDeltas, HistoryTypedV2JumboObject, HistoryTypedV2LocatorId,
+    HistoryTypedV2RootClaim, HistoryTypedV2SegmentObject, HistoryTypedV3LocatorId,
+    HistoryTypedV3RootClaim, LineageAttestationId, LineageAttestationVerifierV1,
+    LineageCandidateGroupIdV1, LineageConfirmationStatementV1, LineageEdgeIterV1,
+    LineageEdgeSetErrorV1, LineageEdgeV1, LineageEdgeViewV1, LineageHistoryEvidenceV1,
+    LineageKindV1, LineageSourceV1, LineageStatusV1, LineageStatusViewV1,
+    MAX_HISTORY_REPLAY_COMMITS, MAX_LINEAGE_CANDIDATES_PER_GROUP_V1,
+    MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES, MAX_TYPED_LINEAGE_EDGES_V1, OwnedTypedLineageEdgeSetV1,
+    RejectLineageConfirmationsV1, SelectedHistoryRef, TypedV2HistoryReplay,
+    TypedV3HistoryInputReplayStatus, TypedV3HistoryReplay, UnprovenTypedLineageEdgeSetV1,
+    UnpublishedHistoryProposal, UnresolvedLineageReasonV1, VerifiedLineageEdgeIterV1,
+    VerifiedLineageEdgeViewV1, VerifiedLineageRootV2, VerifiedLineageStatusV1,
+    VerifiedTypedLineageEdgeSetV1,
 };
 pub(super) use history::{AdmittedHistoryPayloadRoot, HistoryPayloadRoot};
 
@@ -4079,14 +4081,14 @@ mod tests {
         assert!(
             generations
                 .history_generation(&generation.target, commits[2])
-                .expect_err("V2 cannot be materialized through a V1 generation read")
-                .contains("typed V2 history requires proof-bearing cold replay")
+                .expect_err("typed history cannot be materialized through a V1 generation read")
+                .contains("typed history requires proof-bearing cold replay")
         );
         assert!(
             range_store
                 .replay_history(&generation.target, commits[2])
-                .expect_err("generic V1 replay cannot relabel a V2 commit")
-                .contains("typed V2 history requires typed replay")
+                .expect_err("generic V1 replay cannot relabel typed history")
+                .contains("typed history requires proof-bearing typed replay")
         );
         let mut history_gc = range_store
             .advance_history_gc(&generation.target)
@@ -4122,10 +4124,12 @@ mod tests {
             )
             .expect("cold-verify third-old V2 commit");
         assert_eq!(replay.commit().identity(), commits[0]);
-        assert!(replay
-            .manifest()
-            .content_root_claim()
-            .matches(replay.content().content_root()));
+        assert!(
+            replay
+                .manifest()
+                .content_root_claim()
+                .matches(replay.content().content_root())
+        );
         drop(replay);
 
         let _ = range_store
@@ -4296,8 +4300,14 @@ mod tests {
 
         let same_content_next =
             crate::ir_hydration_store::positive_v2_history_fixture_for_test_with_variants(8, 0);
-        assert_eq!(same_content_next.expected_content_root, positive.expected_content_root);
-        assert_ne!(same_content_next.expected_generation_root, positive.expected_generation_root);
+        assert_eq!(
+            same_content_next.expected_content_root,
+            positive.expected_content_root
+        );
+        assert_ne!(
+            same_content_next.expected_generation_root,
+            positive.expected_generation_root
+        );
         assert_eq!(same_content_next.objects.len(), positive.objects.len());
         for (before, after) in positive.objects.iter().zip(&same_content_next.objects) {
             assert_eq!(before.id(), after.id());
@@ -4405,8 +4415,14 @@ mod tests {
         ));
         if let crate::TypedV2HistoryResidencyReplay::Resident(view) = &second_miss {
             assert_eq!(view.commit().identity(), commit_id);
-            assert_eq!(view.content().content_root().as_bytes(), &positive.expected_content_root);
-            assert_eq!(view.content().generation_root().as_bytes(), &positive.expected_generation_root);
+            assert_eq!(
+                view.content().content_root().as_bytes(),
+                &positive.expected_content_root
+            );
+            assert_eq!(
+                view.content().generation_root().as_bytes(),
+                &positive.expected_generation_root
+            );
             assert_eq!(view.manifest_bytes(), positive.locator.manifest.as_slice());
             assert_eq!(view.segment_objects(), positive.locator.segments.as_slice());
             assert_eq!(view.jumbo_objects(), positive.locator.jumbo.as_slice());
@@ -4433,7 +4449,10 @@ mod tests {
         }
         drop(second_miss);
         assert_eq!(history_replay_load_counts().locator_decodes, 2);
-        assert_eq!(crate::ir_hydration_store::typed_v2_closure_reopen_count(), 2);
+        assert_eq!(
+            crate::ir_hydration_store::typed_v2_closure_reopen_count(),
+            2
+        );
 
         crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
         reset_history_replay_load_counts();
@@ -4454,7 +4473,10 @@ mod tests {
             crate::TypedV2HistoryResidencyReplay::Resident(_)
         ));
         assert_eq!(history_replay_load_counts().locator_decodes, 0);
-        assert_eq!(crate::ir_hydration_store::typed_v2_closure_reopen_count(), 0);
+        assert_eq!(
+            crate::ir_hydration_store::typed_v2_closure_reopen_count(),
+            0
+        );
         drop(warm);
         let metrics = residency.metrics();
         assert!(metrics.accounted_bytes <= metrics.byte_budget);
@@ -4496,12 +4518,18 @@ mod tests {
                 view.content().generation_root().as_bytes(),
                 &same_content_next.expected_generation_root
             );
-            assert_eq!(view.manifest_bytes(), same_content_next.locator.manifest.as_slice());
+            assert_eq!(
+                view.manifest_bytes(),
+                same_content_next.locator.manifest.as_slice()
+            );
             assert_eq!(
                 view.segment_objects(),
                 same_content_next.locator.segments.as_slice()
             );
-            assert_eq!(view.jumbo_objects(), same_content_next.locator.jumbo.as_slice());
+            assert_eq!(
+                view.jumbo_objects(),
+                same_content_next.locator.jumbo.as_slice()
+            );
             assert_eq!(view.payload_byte_len(), payload_bytes);
         }
         drop(shared_generation);
@@ -4510,7 +4538,10 @@ mod tests {
         assert_eq!(shared_metrics.payload_bytes_read, 2 * payload_bytes);
         assert_eq!(shared_metrics.resident_payload_bytes_reused, payload_bytes);
         assert_eq!(shared_metrics.resident_object_bytes, payload_bytes);
-        assert_eq!(shared_metrics.generation_wide_payload_bytes, 2 * payload_bytes);
+        assert_eq!(
+            shared_metrics.generation_wide_payload_bytes,
+            2 * payload_bytes
+        );
         assert_eq!(shared_metrics.deduplicated_payload_bytes, payload_bytes);
         assert_eq!(
             shared_metrics.shared_object_reuses,
@@ -4548,10 +4579,8 @@ mod tests {
             );
             let outcome = match result {
                 Ok(replay) => {
-                    let resident = matches!(
-                        &replay,
-                        crate::TypedV2HistoryResidencyReplay::Resident(_)
-                    );
+                    let resident =
+                        matches!(&replay, crate::TypedV2HistoryResidencyReplay::Resident(_));
                     drop(replay);
                     if resident {
                         Ok(())
@@ -4582,9 +4611,11 @@ mod tests {
             .join()
             .expect("concurrent warm lookup worker does not panic");
         residency = returned_cache;
-        assert!(warm_result
-            .expect_err("warm lookup rejects a moved ref tip")
-            .contains("history reference moved"));
+        assert!(
+            warm_result
+                .expect_err("warm lookup rejects a moved ref tip")
+                .contains("history reference moved")
+        );
         cold_range_store
             .publish_typed_v2_history_ref_cold(
                 &generation.target,
@@ -4600,10 +4631,9 @@ mod tests {
         // A cache hit is bound to the exact previously verified locator bytes
         // and may remain usable if its sidecar is externally replaced. A cold
         // cache must parse that sidecar and reject the damaged envelope.
-        let generation_files = LocalSemanticGenerationFiles::open(
-            &cas_root.join("semantic-hydration"),
-        )
-        .expect("open generation records to locate locator sidecar");
+        let generation_files =
+            LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
+                .expect("open generation records to locate locator sidecar");
         let locator_path = generation_files
             .target_root(&generation.target)
             .join("history")
@@ -4611,7 +4641,9 @@ mod tests {
             .join(format!("{}.locator", super::hex(commit_id.as_bytes())));
         let original_locator = fs::read(&locator_path).expect("read typed V2 locator bytes");
         let mut replaced_locator = original_locator.clone();
-        *replaced_locator.last_mut().expect("locator bytes are nonempty") ^= 1;
+        *replaced_locator
+            .last_mut()
+            .expect("locator bytes are nonempty") ^= 1;
         fs::write(&locator_path, &replaced_locator).expect("replace locator with damaged bytes");
         let mut cold_after_locator_replacement =
             crate::TypedV2HistoryResidencyCache::new(3 * 1024 * 1024, 8)
@@ -4812,9 +4844,14 @@ mod tests {
             crate::TypedV2HistoryResidencyReplay::Cold(_)
         ));
         assert_eq!(history_replay_load_counts().locator_decodes, 1);
-        assert_eq!(crate::ir_hydration_store::typed_v2_closure_reopen_count(), 1);
-        assert_eq!(cold_restart_residency.metrics().payload_bytes_read, payload_bytes);
-
+        assert_eq!(
+            crate::ir_hydration_store::typed_v2_closure_reopen_count(),
+            1
+        );
+        assert_eq!(
+            cold_restart_residency.metrics().payload_bytes_read,
+            payload_bytes
+        );
     }
 
     #[test]

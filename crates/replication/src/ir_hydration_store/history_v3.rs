@@ -1,15 +1,13 @@
-//! Exact local FileStore admission for complete producer-side typed V3 output.
-//!
-//! This establishes only the immutable payload closure and typed content
-//! proof. It intentionally stops before history commit/ref publication while
-//! V3 input declarations and read-closure authority are not yet replayable.
+//! Selected-image production, exact payload closure admission, durable history
+//! publication, and cold replay. Persisted V3 input claims remain opaque and
+//! cannot recreate read-closure authority.
 
 use super::{FileSemanticRangeStore, history_v2};
 use crate::ir_generation_store::{HistoryTypedV3RootClaim, TypedV3HistoryLocator};
 use crate::{DurableSemanticObjectAdmission, ProducedSemanticTypedPlaneV3};
 use backend_semantic::ir::{
-    JumboRopeLimits, SemanticInputClaimV2, SemanticTypedPlaneVerificationTierV2,
-    VerifiedTypedPlaneContentV2,
+    JumboRopeLimits, SemanticInputClaimV2, SemanticInputWitness,
+    SemanticTypedPlaneVerificationTierV2, VerifiedTypedPlaneContentV2,
 };
 use backend_store::{
     ClosureCompositionBudget, ClosureMembershipChange, GcPinGuard, ObjectId,
@@ -43,6 +41,12 @@ pub(crate) struct TypedV3HistoryAdmissionMetrics {
 pub(crate) struct TypedV3HistoryGcPin {
     store_root: PathBuf,
     _guard: GcPinGuard,
+}
+
+impl TypedV3HistoryGcPin {
+    fn into_guard(self) -> GcPinGuard {
+        self._guard
+    }
 }
 
 /// Verified receipt-derived V3 payload closure. This is not a history commit,
@@ -212,6 +216,341 @@ impl FileSemanticRangeStore {
             metrics,
         })
     }
+
+    /// Produces, verifies, and durably admits typed V3 history from the exact
+    /// owner-selected local native image. The live input witness must match
+    /// the selected generation's persisted input claim. This records that
+    /// claim for cold binding; it does not persist or recreate a read-closure
+    /// preimage, so read-frontier reuse remains unproven.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_selected_typed_v3_history_commit<S: crate::SelectedGenerationSource>(
+        &self,
+        target: &crate::SemanticTargetKey,
+        parents: &[crate::HistoryCommitId],
+        provenance: [u8; 32],
+        input_witness: SemanticInputWitness,
+        policies: crate::SemanticTypedPlaneBoundaryPoliciesV3,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+        source: &mut S,
+    ) -> Result<crate::HistoryAdmissionReceipt, String> {
+        if !input_witness.coverage().is_authorized_complete() {
+            return Err("typed V3 history requires a live complete owner input witness".to_owned());
+        }
+        let pin = self.pin_typed_v3_history_admission()?;
+        let selected = self.generations.current(target)?.ok_or_else(|| {
+            "no selected native generation is available for typed V3 history".to_owned()
+        })?;
+        let selected_id = selected.identity();
+        let selected_stamp = selected.selected_stamp();
+        let selected_image = selected.image();
+        let selected_image_identity = selected.image_identity();
+        let selected_manifest_root = selected.manifest().root();
+        let selected_build = selected.manifest().build();
+        let selected_input_claim = SemanticInputClaimV2::from_witness(&selected.manifest().input());
+        if selected_input_claim != SemanticInputClaimV2::from_witness(&input_witness) {
+            return Err(
+                "typed V3 input witness differs from the selected native generation claim"
+                    .to_owned(),
+            );
+        }
+        require_live_v3_selection(source, selected_stamp, selected_image)?;
+        let mapped = self
+            .find_semantic_image(target, selected_image)
+            .map_err(|error| format!("open selected native image for typed V3 history: {error}"))?
+            .ok_or_else(|| {
+                "selected native image is missing from the local image store".to_owned()
+            })?;
+        if mapped.identity() != selected_image_identity
+            || mapped.generation() != selected.semantic_generation()
+        {
+            return Err(
+                "selected native image identity differs from its generation record".to_owned(),
+            );
+        }
+        let produced = crate::ir_producer_store::produce_semantic_typed_plane_v3(
+            &self.store,
+            &mapped.view(),
+            selected_build,
+            input_witness,
+            policies,
+            tier,
+            jumbo_limits,
+        )?;
+        let admission = self.verify_produced_typed_v3(&pin, &produced, tier, jumbo_limits)?;
+        if produced.manifest().build() != selected_build
+            || produced.manifest().input_claim() != selected_input_claim
+        {
+            return Err(
+                "typed V3 producer manifest differs from the selected image input".to_owned(),
+            );
+        }
+        require_live_v3_selection(source, selected_stamp, selected_image)?;
+
+        let _state_lock = self.acquire_state_lock()?;
+        let current = self.generations.current(target)?.ok_or_else(|| {
+            "selected native generation disappeared during typed V3 production".to_owned()
+        })?;
+        if current.identity() != selected_id
+            || current.selected_stamp() != selected_stamp
+            || current.image() != selected_image
+            || current.image_identity() != selected_image_identity
+            || current.manifest().root() != selected_manifest_root
+        {
+            return Err("selected native generation changed during typed V3 production".to_owned());
+        }
+        let (_, pending_locators_remain) = self
+            .generations
+            .reconcile_pending_typed_v3_locators(target)?;
+        if pending_locators_remain {
+            return Err("typed V3 locator recovery remains bounded and must be retried".to_owned());
+        }
+        let locator_id = self
+            .generations
+            .typed_v3_locator_identity(admission.locator())?;
+        let closure_id = admission.closure();
+        let closure = backend_store::ArtifactClosureClaim::from_id(closure_id);
+        let proposal = self
+            .generations
+            .propose_typed_v3_history_commit(
+                target,
+                parents,
+                provenance,
+                admission.content(),
+                admission.locator(),
+                closure,
+                locator_id,
+            )
+            .map_err(|error| error.to_string())?;
+        let commit = proposal.identity();
+        self.generations
+            .stage_typed_v3_locator(target, commit, admission.locator())?;
+        let receipt = match self.generations.admit_typed_v3_history_proposal(
+            proposal,
+            crate::ir_generation_store::AdmittedHistoryPayloadRoot {
+                closure: closure_id,
+            },
+            source,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.generations
+                    .reconcile_typed_v3_locator_admission(target, commit)
+                    .map_err(|recovery| {
+                        format!("{error}; typed V3 locator recovery failed: {recovery}")
+                    })?;
+                return Err(error);
+            }
+        };
+        self.generations
+            .finish_typed_v3_locator_admission(target, commit)?;
+
+        let content = *admission.content();
+        let closure_claim = closure;
+        drop(admission);
+        drop(produced);
+        drop(mapped);
+        let guard = pin.into_guard();
+        receipt
+            .with_gc_pin(std::sync::Arc::new(guard))
+            .with_typed_v3_proof(
+                content,
+                input_witness,
+                closure_claim,
+                locator_id,
+                self.store.root().to_path_buf(),
+            )
+    }
+
+    /// Publishes a live V3 admission receipt with a named-ref compare-and-swap.
+    /// The exact local selected generation and owner authority are rechecked
+    /// under the shared state lock immediately before the CAS.
+    pub fn publish_typed_v3_history_ref<S: crate::SelectedGenerationSource>(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: crate::HistoryRefName,
+        expected: Option<crate::HistoryCommitId>,
+        admission: &crate::HistoryAdmissionReceipt,
+        source: &mut S,
+    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+        let proof = admission
+            .typed_v3_publication_admission(self.store.root())
+            .ok_or_else(|| {
+                "typed V3 publication requires a live same-store verifier receipt".to_owned()
+            })?;
+        let commit = admission.commit();
+        let _state_lock = self.acquire_state_lock()?;
+        let current = self.generations.current(target)?.ok_or_else(|| {
+            "selected native generation is missing at V3 ref publication".to_owned()
+        })?;
+        if current.identity() != commit.generation()
+            || current.selected_stamp() != commit.selected_stamp()
+            || current.manifest().root() != commit.manifest_root()
+        {
+            return Err("typed V3 commit no longer names the current local generation".to_owned());
+        }
+        require_live_v3_selection(source, current.selected_stamp(), current.image())?;
+        let receipt = self.generations.compare_and_swap_typed_v3_history_ref(
+            target,
+            kind,
+            name,
+            expected,
+            proof.identity(),
+            &proof,
+        )?;
+        Ok(receipt)
+    }
+
+    /// Cold-revalidates the full typed closure before publishing a V3 history
+    /// ref after process restart. The operation retains a fresh same-store GC
+    /// pin through the ref CAS and does not recreate input read-frontier proof.
+    pub fn publish_typed_v3_history_ref_cold(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: crate::HistoryRefName,
+        expected: Option<crate::HistoryCommitId>,
+        commit_id: crate::HistoryCommitId,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+    ) -> Result<crate::HistoryRefUpdateReceipt, String> {
+        let pin = self.pin_typed_v3_history_admission()?;
+        let snapshot = {
+            let _state_lock = self.acquire_state_lock()?;
+            self.generations
+                .typed_v3_publication_snapshot(target, commit_id)?
+        };
+        let manifest = snapshot.locator().validate()?;
+        let (content, closure) = verify_cold_v3_snapshot(
+            &self.store,
+            snapshot.claim(),
+            snapshot.locator(),
+            &manifest,
+            tier,
+            jumbo_limits,
+        )?;
+        let proof =
+            crate::ir_generation_store::TypedV3HistoryPublicationAdmission::from_cold_verification(
+                snapshot.identity(),
+                content,
+                manifest.input_claim(),
+                closure,
+                snapshot.claim().locator(),
+                &pin._guard,
+            );
+        let _state_lock = self.acquire_state_lock()?;
+        self.generations
+            .revalidate_typed_v3_publication_snapshot(target, &snapshot)?;
+        self.generations.compare_and_swap_typed_v3_history_ref(
+            target,
+            kind,
+            name,
+            expected,
+            snapshot.identity(),
+            &proof,
+        )
+    }
+
+    /// Cold-replays a V3 commit reachable from the exact supplied named-ref
+    /// tip. It validates the canonical manifest, V3 root claims, immutable
+    /// locator, every closure member, all seven typed families, and jumbo
+    /// ropes. The token explicitly exposes input authority as unproven.
+    pub fn replay_typed_v3_history(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        commit_id: crate::HistoryCommitId,
+        ancestry: &crate::HistoryRefAncestryProof,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+    ) -> Result<crate::TypedV3HistoryReplay, String> {
+        let pin = self.pin_typed_v3_history_admission()?;
+        let (commit, snapshot) = {
+            let _state_lock = self.acquire_state_lock()?;
+            self.validate_history_ref_proof(target, kind, name, commit_id, ancestry)?;
+            let commit = self.generations.history_commit(target, commit_id)?;
+            let snapshot = self
+                .generations
+                .typed_v3_publication_snapshot(target, commit_id)?;
+            (commit, snapshot)
+        };
+        let claim = snapshot.claim();
+        let locator = snapshot.locator().clone();
+        let manifest = locator.validate()?;
+        let (content, _) =
+            verify_cold_v3_snapshot(&self.store, claim, &locator, &manifest, tier, jumbo_limits)?;
+        {
+            let _state_lock = self.acquire_state_lock()?;
+            self.validate_history_ref_proof(target, kind, name, commit_id, ancestry)?;
+        }
+        Ok(crate::TypedV3HistoryReplay::new(
+            commit,
+            manifest,
+            content,
+            std::sync::Arc::new(pin.into_guard()),
+        ))
+    }
+}
+
+fn require_live_v3_selection<S: crate::SelectedGenerationSource>(
+    source: &mut S,
+    stamp: crate::SelectedGenerationStamp,
+    image: backend_semantic::ir::SemanticPlaneImageKey,
+) -> Result<(), String> {
+    let observed = source
+        .current_selected_generation()
+        .map_err(|error| format!("read current selection for typed V3 history: {error}"))?;
+    if observed != stamp {
+        return Err("typed V3 history selected-generation stamp is stale".to_owned());
+    }
+    if !source
+        .selected_image_is_current(stamp, image)
+        .map_err(|error| format!("verify current image for typed V3 history: {error}"))?
+    {
+        return Err("typed V3 history image is no longer selected".to_owned());
+    }
+    Ok(())
+}
+
+fn verify_cold_v3_snapshot(
+    store: &backend_store::FileStore,
+    claim: HistoryTypedV3RootClaim,
+    locator: &TypedV3HistoryLocator,
+    manifest: &backend_semantic::ir::SemanticTypedPlaneManifestV2,
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+) -> Result<
+    (
+        VerifiedTypedPlaneContentV2,
+        backend_store::ArtifactClosureClaim,
+    ),
+    String,
+> {
+    if manifest.content_root_claim().as_bytes() != claim.content_root_claim().as_bytes()
+        || manifest.generation_root_claim().as_bytes() != claim.generation_root_claim().as_bytes()
+    {
+        return Err("typed V3 commit roots differ from its cold manifest".to_owned());
+    }
+    let closure = claim.closure();
+    let (content, durable_closure, _, _) = history_v2::verify_typed_v2_history_payload_closure(
+        store,
+        closure,
+        locator.bridge(),
+        manifest,
+        tier,
+        jumbo_limits,
+    )?;
+    if durable_closure.as_bytes() != closure.as_bytes()
+        || !claim.content_root_claim().matches(content.content_root())
+        || !claim
+            .generation_root_claim()
+            .matches(content.generation_root())
+    {
+        return Err("typed V3 history root failed cold closure verification".to_owned());
+    }
+    Ok((content, closure))
 }
 
 struct ReceiptInventoryMetrics {
@@ -334,10 +673,30 @@ fn merge_inventory_entry(
 mod tests {
     use super::*;
     use crate::ir_generation_store::TypedV3HistoryLocator;
+    use crate::ir_hydration::DurableSemanticSegmentStore;
     use crate::ir_hydration_store::history_v2::verify_typed_v2_history_payload_closure;
-    use backend_semantic::ir::JumboRopeLimits;
+    use crate::{
+        DurableSemanticRangeStore, SelectedGenerationSource, SelectedSemanticPlane,
+        SemanticTypedPlaneBoundaryPoliciesV3,
+    };
+    use backend_semantic::ir::{
+        BorrowedTree, CoreDeclarationRows, CorePayloadHash, DeclarationFamilyId,
+        EntityAuthorityFacts, EntityVersion, FactAvailability, GenerationId, IrBuilder, ItemKind,
+        JumboRopeLimits, LanguageProfile, RustEdition, SemanticBuildIdentity,
+        SemanticImageIdentity, SemanticInputWitness, SemanticIrPlane, SemanticPlane,
+        SemanticPlaneCatalog, SemanticPlaneCatalogEntry, SemanticPlaneCoverageScope,
+        SemanticPlaneImageKey, SemanticPlaneManifest, SemanticPlaneSegment,
+        SemanticPlaneSegmentBoundaryPolicy, TreeItemInput, VariantFingerprint, Visibility,
+        encode_canonical_plane_family, encode_full_semantic_image, full_semantic_image_len,
+    };
+    use backend_semantic::vocabulary::Stage;
     use backend_store::{FileStore, TypedObject};
-    use backend_version::ObjectKey;
+    use backend_version::{
+        AdmittedProducerObservation, AuthorityScopeClaim, Coverage, CoverageAdmissionError,
+        CoverageWitness, ObjectKey, ObjectVersion, ProducerObservationClaims,
+        ProducerObservationVerifier, Schema, UntrustedProducerObservation, admit_complete_scope,
+        admit_producer_observation,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -363,6 +722,407 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    struct TestInputScope;
+
+    impl Schema for TestInputScope {
+        const DOMAIN: u8 = 0x53;
+        const TYPE: u16 = 0xfffc;
+        type Value = [u8; 32];
+
+        fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+            output.extend_from_slice(value);
+        }
+    }
+
+    struct TestCoverageVerifier;
+
+    impl ProducerObservationVerifier for TestCoverageVerifier {
+        type Error = CoverageAdmissionError;
+
+        fn verify(
+            &self,
+            observation: &UntrustedProducerObservation,
+        ) -> Result<ProducerObservationClaims, Self::Error> {
+            Ok(ProducerObservationClaims::new(
+                observation.producer_identity(),
+                observation.scope_root(),
+                observation.context(),
+                *blake3::hash(observation.evidence()).as_bytes(),
+            ))
+        }
+    }
+
+    fn complete_coverage(claim: AuthorityScopeClaim, nonce: u8) -> CoverageWitness {
+        let observation = UntrustedProducerObservation::new(
+            [0x61; 32],
+            claim.scope_root(),
+            [0x62; 32],
+            vec![nonce, nonce.wrapping_add(1)],
+        );
+        let producer: AdmittedProducerObservation =
+            admit_producer_observation(observation, &TestCoverageVerifier)
+                .expect("test producer observation is admitted");
+        CoverageWitness::Complete(
+            admit_complete_scope(claim, producer).expect("test coverage scope matches"),
+        )
+    }
+
+    fn live_input_witness() -> SemanticInputWitness {
+        live_input_witness_with_root([0x71; 32])
+    }
+
+    fn live_input_witness_with_root(input_root: [u8; 32]) -> SemanticInputWitness {
+        let version = ObjectVersion::<TestInputScope>::from_value(&[0x72; 32]);
+        let claim = AuthorityScopeClaim::from_object_version(version);
+        SemanticInputWitness::admitted(
+            input_root,
+            claim.scope_root(),
+            complete_coverage(claim, 0x73),
+        )
+        .expect("selected test input witness is complete")
+    }
+
+    struct TestSelectedSource {
+        stamp: crate::SelectedGenerationStamp,
+        image: SemanticPlaneImageKey,
+    }
+
+    impl SelectedGenerationSource for TestSelectedSource {
+        type Error = &'static str;
+
+        fn current_selected_generation(
+            &mut self,
+        ) -> Result<crate::SelectedGenerationStamp, Self::Error> {
+            Ok(self.stamp)
+        }
+
+        fn selected_image_is_current(
+            &mut self,
+            expected_stamp: crate::SelectedGenerationStamp,
+            image: SemanticPlaneImageKey,
+        ) -> Result<bool, Self::Error> {
+            Ok(expected_stamp == self.stamp && image == self.image)
+        }
+    }
+
+    fn selected_native_fixture(
+        directory: &TestDirectory,
+    ) -> (
+        FileSemanticRangeStore,
+        TestSelectedSource,
+        crate::SemanticTargetKey,
+        SemanticInputWitness,
+    ) {
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let target = crate::SemanticTargetKey::new(
+            "pkg:cargo/typed-v3-history-test@1.0.0",
+            "pkg:cargo/typed-v3-history-test@1.0.0",
+            profile,
+        )
+        .expect("test target");
+        let build = SemanticBuildIdentity::new(
+            [0x11; 32],
+            [0x12; 32],
+            profile,
+            Stage::LowerIr,
+            [0x13; 32],
+            [0x14; 32],
+            [0x15; 32],
+            [0x16; 32],
+        );
+        let input = live_input_witness();
+        let versions = [EntityVersion {
+            family: DeclarationFamilyId::from_raw([0x21; 16]),
+            variant: VariantFingerprint::from_raw([0x22; 16]),
+            core_payload: CorePayloadHash::from_raw([0x23; 16]),
+        }];
+        let items = [TreeItemInput {
+            name: b"one",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                members: FactAvailability::Captured,
+                documentation: FactAvailability::Captured,
+                attributes: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        }];
+        let mut builder = IrBuilder::new();
+        builder
+            .set_language_profile(profile)
+            .expect("set native test image profile");
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .expect("one-row native test image is valid");
+        let ir = builder.finish().expect("finish native test image");
+        let image_length = full_semantic_image_len(&ir).expect("plan native image");
+        let mut image_bytes = vec![0; image_length];
+        encode_full_semantic_image(&ir, &mut image_bytes).expect("encode native image");
+        let semantic_generation = GenerationId::from_canonical_bytes(&image_bytes);
+        let kind = backend_semantic::ir::SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let segments = encode_canonical_plane_family(
+            &ir,
+            &CoreDeclarationRows,
+            input,
+            backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+        )
+        .expect("encode the selected native core plane");
+        let descriptors = segments
+            .iter()
+            .map(|segment| segment.metadata().expect("build native segment claim"))
+            .collect::<Vec<SemanticPlaneSegment>>();
+        let claimed_plane = SemanticPlane::claimed(kind, descriptors.clone(), Coverage::Complete)
+            .expect("build native selected plane claim");
+        let plane_scope_version =
+            ObjectVersion::<SemanticPlaneCoverageScope>::from_value(&claimed_plane.root());
+        let plane_scope = AuthorityScopeClaim::from_object_version(plane_scope_version);
+        let plane =
+            SemanticPlane::admitted(kind, descriptors, complete_coverage(plane_scope, 0x74))
+                .expect("admit selected native plane coverage");
+        let manifest = SemanticPlaneManifest::new(semantic_generation, build, input, vec![plane])
+            .expect("build complete selected native manifest");
+        let image = SemanticPlaneImageKey::from_manifest(0, &manifest);
+        let image_identity = SemanticImageIdentity::from_encoded_bytes(&image_bytes);
+        let manifest_bytes = manifest.encode().expect("encode selected manifest");
+        let manifest_length = u32::try_from(manifest_bytes.len()).expect("test manifest fits");
+        let catalog = SemanticPlaneCatalog::new(vec![
+            SemanticPlaneCatalogEntry::new(image, manifest_length).expect("catalog entry"),
+        ])
+        .expect("selected native catalog");
+        let stamp = crate::SelectedGenerationStamp::checked(
+            [0x31; 16],
+            profile,
+            [0x32; 32],
+            1,
+            [0x33; 32],
+            [0x34; 32],
+            catalog.root(),
+        )
+        .expect("selected owner stamp");
+        let source = TestSelectedSource { stamp, image };
+        let store = FileStore::open(directory.0.join("selected-cas"), 64 * 1024 * 1024)
+            .expect("open selected V3 FileStore");
+        let mut range_store = FileSemanticRangeStore::open(
+            store,
+            crate::TransportLimits {
+                max_chunk: 16 * 1024,
+                max_frame: 16 * 1024 + 192,
+                ..crate::TransportLimits::default()
+            },
+        )
+        .expect("open selected V3 range store");
+        let total = u64::try_from(image_bytes.len()).expect("image length fits");
+        let resume = range_store
+            .stage_semantic_image_page(
+                &target,
+                image,
+                image_identity,
+                total,
+                crate::ByteRange::new(0, total).expect("image range"),
+                &image_bytes,
+            )
+            .expect("stage exact selected image");
+        range_store
+            .finish_semantic_image_transfer(&target, resume)
+            .expect("admit exact selected image");
+        let mut select_source = source_copy(&source);
+        let selection = SelectedSemanticPlane::select(&mut select_source, &manifest, image, kind)
+            .expect("select current native core plane");
+        for (segment, descriptor) in segments
+            .iter()
+            .zip(manifest.plane(kind).unwrap().segments())
+        {
+            let payload = segment.bytes();
+            let request = backend_semantic::ir::SemanticRangeRequest {
+                manifest_root: manifest.root(),
+                plane: kind,
+                segment_id: descriptor.id_claim(),
+                first_key: *descriptor.first_key(),
+                last_key: *descriptor.last_key(),
+                byte_length: descriptor.byte_length(),
+            };
+            let payload_length = u64::try_from(payload.len()).expect("segment length fits");
+            range_store
+                .stage_durable_range(
+                    selection,
+                    request,
+                    crate::ByteRange::new(0, payload_length).expect("segment byte range"),
+                    payload,
+                )
+                .expect("stage native core segment");
+            let admitted = descriptor
+                .admit(kind, payload)
+                .expect("native segment matches its canonical claim");
+            let mut verify = |bytes: &[u8]| {
+                descriptor
+                    .admit(kind, bytes)
+                    .map(|_| ())
+                    .map_err(|_| crate::ReplicationError::IdentityMismatch)
+            };
+            range_store
+                .commit_and_read(selection, admitted, payload, &mut verify)
+                .expect("persist selected native core segment");
+        }
+        range_store
+            .commit_local_generation(
+                &target,
+                &catalog,
+                image,
+                &manifest,
+                selection,
+                &mut source_copy(&source),
+            )
+            .expect("commit selected native generation");
+        (range_store, source, target, input)
+    }
+
+    fn source_copy(source: &TestSelectedSource) -> TestSelectedSource {
+        TestSelectedSource {
+            stamp: source.stamp,
+            image: source.image,
+        }
+    }
+
+    fn v3_test_policies() -> SemanticTypedPlaneBoundaryPoliciesV3 {
+        let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("V3 test boundary policy");
+        SemanticTypedPlaneBoundaryPoliciesV3::new(
+            policy, policy, policy, policy, policy, policy, policy,
+        )
+    }
+
+    #[test]
+    fn selected_native_v3_publication_cas_and_cold_replay() {
+        let directory = TestDirectory::create();
+        let (store, mut source, target, input) = selected_native_fixture(&directory);
+        let local_cache = crate::HistoryRefName::new("local-cache").expect("local ref name");
+        let prior = store
+            .history_ref(&target, crate::HistoryRefKind::Branch, &local_cache)
+            .expect("read selected local-cache history")
+            .expect("selected generation has a durable local-cache commit");
+        let provenance = [0x42; 32];
+        let mismatched_input = live_input_witness_with_root([0x7a; 32]);
+        assert!(
+            store
+                .admit_selected_typed_v3_history_commit(
+                    &target,
+                    &[prior.commit()],
+                    provenance,
+                    mismatched_input,
+                    v3_test_policies(),
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    JumboRopeLimits::default(),
+                    &mut source,
+                )
+                .is_err()
+        );
+        let admission = store
+            .admit_selected_typed_v3_history_commit(
+                &target,
+                &[prior.commit()],
+                provenance,
+                input,
+                v3_test_policies(),
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+                &mut source,
+            )
+            .expect("produce and admit selected native image as V3 history");
+        let commit_id = admission.commit().identity();
+        assert!(matches!(
+            admission.commit().generation_root(),
+            crate::HistoryGenerationRoot::TypedV3(_)
+        ));
+        let typed_branch = crate::HistoryRefName::new("typed-v3-live").expect("V3 branch name");
+        store
+            .publish_typed_v3_history_ref(
+                &target,
+                crate::HistoryRefKind::Branch,
+                typed_branch.clone(),
+                None,
+                &admission,
+                &mut source,
+            )
+            .expect("publish exact live V3 receipt with branch CAS");
+        drop(admission);
+        drop(store);
+
+        let cold_file_store = FileStore::open(directory.0.join("selected-cas"), 64 * 1024 * 1024)
+            .expect("cold reopen selected V3 FileStore");
+        let cold_store = FileSemanticRangeStore::open(
+            cold_file_store,
+            crate::TransportLimits {
+                max_chunk: 16 * 1024,
+                max_frame: 16 * 1024 + 192,
+                ..crate::TransportLimits::default()
+            },
+        )
+        .expect("cold reopen selected V3 range store");
+        let cold_tag = crate::HistoryRefName::new("typed-v3-cold").expect("cold tag name");
+        assert!(
+            cold_store
+                .publish_typed_v3_history_ref_cold(
+                    &target,
+                    crate::HistoryRefKind::Tag,
+                    cold_tag.clone(),
+                    Some(prior.commit()),
+                    commit_id,
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    JumboRopeLimits::default(),
+                )
+                .is_err()
+        );
+        cold_store
+            .publish_typed_v3_history_ref_cold(
+                &target,
+                crate::HistoryRefKind::Tag,
+                cold_tag,
+                None,
+                commit_id,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .expect("cold closure verification permits exact tag CAS");
+        let proof = cold_store
+            .history_ref_ancestry_proof(
+                &target,
+                crate::HistoryRefKind::Tag,
+                &crate::HistoryRefName::new("typed-v3-cold").expect("cold tag name"),
+                commit_id,
+            )
+            .expect("cold named ref proves commit ancestry");
+        let replay = cold_store
+            .replay_typed_v3_history(
+                &target,
+                crate::HistoryRefKind::Tag,
+                &crate::HistoryRefName::new("typed-v3-cold").expect("cold tag name"),
+                commit_id,
+                &proof,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .expect("cold replay verifies exact persisted typed closure");
+        assert_eq!(replay.commit().identity(), commit_id);
+        assert_eq!(replay.manifest().input_claim(), replay.input_claim());
+        assert_eq!(
+            replay.input_replay_status(),
+            crate::TypedV3HistoryInputReplayStatus::Unproven,
+            "cold replay must not recreate a read-frontier proof from a stored claim"
+        );
     }
 
     fn compose_fixture_closure(

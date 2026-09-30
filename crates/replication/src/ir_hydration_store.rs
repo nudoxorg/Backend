@@ -45,17 +45,17 @@ use super::ir_hydration_wire::{
 
 mod history_v2;
 mod history_v3;
-pub(crate) use history_v3::{
-    TypedV3HistoryAdmission, TypedV3HistoryAdmissionMetrics, TypedV3HistoryGcPin,
-};
-pub use history_v2::{
-    TypedV2HistoryResidencyCache, TypedV2HistoryResidencyMetrics,
-    TypedV2HistoryResidencyReplay, TypedV2HistoryResidentReplay,
-};
 #[cfg(test)]
 pub(crate) use history_v2::{
     PositiveV2HistoryFixture, positive_v2_history_fixture_for_test,
     positive_v2_history_fixture_for_test_with_variants,
+};
+pub use history_v2::{
+    TypedV2HistoryResidencyCache, TypedV2HistoryResidencyMetrics, TypedV2HistoryResidencyReplay,
+    TypedV2HistoryResidentReplay,
+};
+pub(crate) use history_v3::{
+    TypedV3HistoryAdmission, TypedV3HistoryAdmissionMetrics, TypedV3HistoryGcPin,
 };
 
 #[cfg(test)]

@@ -604,6 +604,7 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
         // Locator cleanup shares the commit delete intent so a crash cannot
         // leave an unaccounted unlink outside the durable retention counters.
         super::v2::remove_typed_v2_locator_for_commit(target_root, commit)?;
+        super::v3::remove_typed_v3_locator_for_commit(target_root, commit)?;
         remove_file(
             &target_root
                 .join("history")
@@ -1572,6 +1573,13 @@ pub(super) fn advance_retention(
                     } else {
                         staging.sync_all().map_err(super::display_io)?;
                         drop(staging);
+                        // Persist the exact rename recovery coordinates before
+                        // publishing the compacted index. A crash after rename
+                        // but before the enclosing retention-state write must
+                        // still be able to distinguish a published shorter
+                        // index from an unstarted compaction (especially when
+                        // the whole index fits in one bounded page).
+                        write_state(target_root, state)?;
                         fs::rename(&staging_path, &index_path).map_err(super::display_io)?;
                         backend_platform::durable::sync_parent(&index_path)
                             .map_err(super::display_io)?;
