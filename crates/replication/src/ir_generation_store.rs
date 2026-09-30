@@ -5497,6 +5497,9 @@ mod tests {
             .join("segment-map")
             .join(format!("{}.map", hex(orphan_segment.as_bytes())));
         assert!(map_path.exists());
+        let map_file_bytes = fs::metadata(&map_path)
+            .expect("read persisted map file size")
+            .len();
 
         arm_history_test_fault(HistoryTestFault::AfterHistoryMapUnlink);
         let interruption = loop {
@@ -5538,7 +5541,7 @@ mod tests {
             0
         );
         assert_eq!(progress.stats().reclaimed_maps(), 1);
-        assert_eq!(progress.stats().reclaimed_map_bytes(), 23);
+        assert_eq!(progress.stats().reclaimed_map_bytes(), map_file_bytes);
         assert!(!map_path.exists());
 
         let next_segment = backend_semantic::ir::UntrustedSemanticSegmentId::from_raw([0xa8; 32]);
