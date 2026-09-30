@@ -271,11 +271,11 @@ fn layout_sized(
     }
 }
 
-fn wrap_label(text: SharedString, role: TypeRole, width: f32, window: &Window) -> Vec<gpui::WrappedLine> {
+fn wrap_label(text: SharedString, role: TypeRole, ink: Hsla, width: f32, window: &Window) -> Vec<gpui::WrappedLine> {
     let run = TextRun {
         len: text.len(),
         font: font(role),
-        color: Hsla::default(),
+        color: ink,
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -291,7 +291,7 @@ fn wrap_label(text: SharedString, role: TypeRole, width: f32, window: &Window) -
 
 fn paint_wrapped(text: SharedString, role: TypeRole, ink: Hsla, width: f32, x: f32, y: f32, window: &mut Window, cx: &mut App) -> (f32, f32) {
     let natural = shape(text.clone(), role, ink, window).width();
-    let wrapped = wrap_label(text, role, width, window);
+    let wrapped = wrap_label(text, role, ink, width, window);
     let mut cursor = y;
     for line in &wrapped {
         line.paint(gpui::point(px(x), px(cursor)), px(role.line), TextAlign::Left, None, window, cx)
@@ -305,7 +305,7 @@ fn paint_wrapped(text: SharedString, role: TypeRole, ink: Hsla, width: f32, x: f
 }
 
 fn wrapped_line_count(text: &str, role: TypeRole, width: f32, window: &Window) -> usize {
-    wrap_label(text.to_owned().into(), role, width, window)
+    wrap_label(text.to_owned().into(), role, Hsla::default(), width, window)
         .iter()
         .map(|line| 1 + line.wrap_boundaries().len())
         .sum::<usize>()
@@ -663,7 +663,7 @@ impl Element for Shingles {
                 palette.ink1.into()
             };
             let natural = shape(module.name.clone(), label_role, ink, window);
-            let wrapped = wrap_label(module.name.clone(), label_role, label_width, window);
+            let wrapped = wrap_label(module.name.clone(), label_role, ink, label_width, window);
             let (lx, mut ly) = (ox + rx + pad, oy + ry + pad);
             for line in &wrapped {
                 line.paint(gpui::point(px(lx), px(ly)), px(label_role.line), TextAlign::Left, None, window, cx)
