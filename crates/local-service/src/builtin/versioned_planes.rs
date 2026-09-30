@@ -1706,6 +1706,174 @@ mod tests {
         ));
     }
 
+    struct FakeSelectedImageRangePublisher {
+        expected_selection: super::super::s3_publication::RemoteClosureSelection,
+        expected_object_id: [u8; 32],
+        expected_payload: Vec<u8>,
+        range_call: Mutex<
+            Option<(
+                super::super::s3_publication::RemoteClosureSelection,
+                [u8; 32],
+                backend_version::SchemaIdentity,
+                u64,
+                u64,
+                u64,
+            )>,
+        >,
+    }
+
+    impl super::super::s3_publication::SelectedClosurePublisher for FakeSelectedImageRangePublisher {
+        fn publish_closure(
+            &self,
+            _store: &FileStore,
+            _closure: backend_store::ClosureId,
+            _target_root: [u8; 32],
+            _expected_count: u64,
+            _budget: ArtifactBudget,
+            _publication_fence: super::super::s3_publication::PublicationFence,
+        ) -> Result<
+            super::super::s3_publication::ExactS3ClosureReceipt,
+            super::super::s3_publication::PublicationError,
+        > {
+            Err(super::super::s3_publication::PublicationError::Remote)
+        }
+
+        fn hydrate_object(
+            &self,
+            _store: &FileStore,
+            _selected: super::super::s3_publication::RemoteClosureSelection,
+            _object_id: UntrustedObjectId,
+            _expected_schema: backend_version::SchemaIdentity,
+            _expected_payload_len: u64,
+        ) -> Result<Vec<u8>, super::super::s3_publication::PublicationError> {
+            Err(super::super::s3_publication::PublicationError::Receipt)
+        }
+
+        fn hydrate_object_range(
+            &self,
+            _store: &FileStore,
+            selected: super::super::s3_publication::RemoteClosureSelection,
+            object_id: UntrustedObjectId,
+            expected_schema: backend_version::SchemaIdentity,
+            expected_payload_len: u64,
+            offset: u64,
+            length: u64,
+        ) -> Result<Vec<u8>, super::super::s3_publication::PublicationError> {
+            *self
+                .range_call
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                selected,
+                *object_id.as_bytes(),
+                expected_schema,
+                expected_payload_len,
+                offset,
+                length,
+            ));
+            if selected != self.expected_selection
+                || *object_id.as_bytes() != self.expected_object_id
+                || expected_schema != backend_extension_turso::COMPILER_SEMANTIC_IMAGE_SCHEMA
+                || expected_payload_len
+                    != u64::try_from(self.expected_payload.len()).unwrap_or(u64::MAX)
+            {
+                return Err(super::super::s3_publication::PublicationError::Receipt);
+            }
+            let end = offset
+                .checked_add(length)
+                .and_then(|end| usize::try_from(end).ok())
+                .ok_or(super::super::s3_publication::PublicationError::Receipt)?;
+            let start = usize::try_from(offset)
+                .map_err(|_| super::super::s3_publication::PublicationError::Receipt)?;
+            self.expected_payload
+                .get(start..end)
+                .map(<[u8]>::to_vec)
+                .ok_or(super::super::s3_publication::PublicationError::Receipt)
+        }
+
+        fn has_durable_selected_closure(
+            &self,
+            _store: &FileStore,
+            _selected: super::super::s3_publication::RemoteClosureSelection,
+        ) -> Result<bool, super::super::s3_publication::PublicationError> {
+            Ok(false)
+        }
+
+        fn verified_remote_segments(
+            &self,
+            _store: &FileStore,
+            _selected: &backend_extension_turso::SelectedGeneration,
+        ) -> Result<
+            Option<super::super::s3_publication::VerifiedRemoteSegmentSet>,
+            super::super::s3_publication::PublicationError,
+        > {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn selected_image_range_reader_hydrates_exact_remote_image_range_when_local_object_is_absent() {
+        let fixture = fixture();
+        let selection = remote_selection();
+        let payload = b"remote-only-selected-image".to_vec();
+        let object_id = [0xD7; 32];
+        let range_start = 5;
+        let range_len = 9;
+        let publisher = Arc::new(FakeSelectedImageRangePublisher {
+            expected_selection: selection,
+            expected_object_id: object_id,
+            expected_payload: payload.clone(),
+            range_call: Mutex::new(None),
+        });
+        let reader = SelectedClosureImageRangeReader::new(
+            fixture.store.clone(),
+            Arc::new(super::super::selected_full_image::VerifiedLocalImageReaderCache::default()),
+            Some(publisher.clone()),
+        );
+        let stamp = fixture.publication.stamp();
+        let plan = super::super::selected_full_image::SelectedFullImagePlan {
+            stamp,
+            image: fixture.image,
+            identity: SemanticImageIdentity::from_encoded_bytes(&payload),
+            total_length: u64::try_from(payload.len()).expect("payload length fits u64"),
+            object_id,
+            closure_id: *stamp.closure_id(),
+            remote_selection: selection,
+            environment: fixture.expected_environment,
+            target_platform: fixture.expected_target_platform,
+        };
+        let range = ByteRange {
+            start: range_start,
+            len: range_len,
+        };
+        let mut output = vec![0xEE; usize::try_from(range_len).expect("range fits usize")];
+
+        let count = reader
+            .read_range_into(&plan, range, &mut output)
+            .expect("read one verified remote image range");
+
+        assert_eq!(count, output.len());
+        assert_eq!(
+            output,
+            payload[usize::try_from(range_start).expect("offset fits usize")
+                ..usize::try_from(range_start + range_len).expect("end fits usize")]
+        );
+        assert_eq!(
+            *publisher
+                .range_call
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some((
+                selection,
+                object_id,
+                backend_extension_turso::COMPILER_SEMANTIC_IMAGE_SCHEMA,
+                u64::try_from(payload.len()).expect("payload length fits u64"),
+                range_start,
+                range_len,
+            )),
+            "fallback must request this selected closure member and exact bounded range"
+        );
+    }
+
     struct FakeS3Hydrator {
         expected_selection: super::super::s3_publication::RemoteClosureSelection,
         expected_object_id: [u8; 32],
