@@ -965,6 +965,7 @@ impl EmbeddingProducer {
             manifest,
             protocol,
             batch_runtime: None,
+            _batch_workspace: None,
         })
     }
 
