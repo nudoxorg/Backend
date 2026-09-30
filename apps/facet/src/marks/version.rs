@@ -82,11 +82,11 @@ pub struct Measured {
 
 impl Measured {
     fn diff(&self, v: &str) -> Option<&Diff> {
-        self.diffs.iter().find(|(x, _)| x == v || semver::short(x) == semver::short(v)).map(|(_, d)| d)
+        self.diffs.iter().find(|(x, _)| x == v).map(|(_, d)| d)
     }
 
     fn size(&self, v: &str) -> Option<usize> {
-        self.api_size.iter().find(|(x, _)| x == v || semver::short(x) == semver::short(v)).map(|(_, n)| *n)
+        self.api_size.iter().find(|(x, _)| x == v).map(|(_, n)| *n)
     }
 }
 
@@ -148,7 +148,7 @@ impl VersionFacts {
         if let (Some((m, through, diff)), Some(latest), Some(pin)) = (measured_after, &latest, &self.pin)
             && reading.behind.is_some_and(|b| b > 0)
         {
-            let whole = semver::short(&through) == semver::short(latest);
+            let whole = through.as_str() == latest.as_str();
             yours = Some(if diff.none() && whole {
                 match m.size(latest).or_else(|| m.size(pin)) {
                     Some(n) => format!(
@@ -242,6 +242,10 @@ impl VersionFacts {
         };
         (say, fact)
     }
+}
+
+fn release_index(releases: &[ReleaseFact], version: &str) -> Option<usize> {
+    releases.iter().position(|release| release.v == version)
 }
 
 /// What the number's card says.
@@ -382,7 +386,7 @@ impl RenderOnce for VersionMark {
                     .map_or_else(|| "age unknown".into(), |a| format!("{a} ago").into()),
             })
             .collect();
-        let index = |v: &str| sorted.iter().position(|r| r.v == v || semver::short(&r.v) == semver::short(v));
+        let index = |v: &str| release_index(&sorted, v);
         let pinned = facts.pin.as_deref().and_then(index);
         // The mark keeps its own scrub unless the page drives it.
         let own = window.use_keyed_state(ElementId::NamedChild(Arc::new(self.id.clone()), "scrub".into()), cx, |_, _| {
@@ -427,7 +431,7 @@ impl RenderOnce for VersionMark {
             let Some(i) = index(&also.v) else { continue };
             let (say, fact) = facts.also_lines(also);
             let v = semver::short(&also.v).to_owned();
-            if self.also_look.as_deref().is_some_and(|look| semver::short(look) == v) {
+            if self.also_look.as_deref() == Some(also.v.as_str()) {
                 also_look = Some(i);
             }
             teeth.push(AlsoTooth {
@@ -588,8 +592,32 @@ pub(crate) fn board_number(facts: &VersionFacts) -> Content {
 /// An also tooth's card content on its own (boards show it in place).
 #[cfg(feature = "gallery")]
 pub(crate) fn board_also(facts: &VersionFacts, v: &str) -> Option<Content> {
-    let also = facts.also.iter().find(|a| semver::short(&a.v) == semver::short(v))?.clone();
+    let also = facts.also.iter().find(|a| a.v == v)?.clone();
     let (say, fact) = facts.also_lines(&also);
     let v = semver::short(&also.v).to_owned();
     Some(Rc::new(move |measure: &Measure, _window: &mut Window, cx: &mut App| also_card(&v, &say, &fact, measure, cx)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Diff, Measured, release_index};
+    use crate::marks::semver::ReleaseFact;
+
+    #[test]
+    fn build_metadata_stays_part_of_release_identity() {
+        let releases = [
+            ReleaseFact::new("1.0.0+build-a", None, false),
+            ReleaseFact::new("1.0.0+build-b", None, false),
+        ];
+        assert_eq!(release_index(&releases, "1.0.0+build-b"), Some(1));
+        assert_eq!(release_index(&releases, "1.0.0"), None);
+
+        let measured = Measured {
+            diffs: vec![("1.0.0+build-a".to_owned(), Diff::default())],
+            api_size: vec![("1.0.0+build-a".to_owned(), 7)],
+            ..Measured::default()
+        };
+        assert!(measured.diff("1.0.0+build-b").is_none());
+        assert_eq!(measured.size("1.0.0+build-a"), Some(7));
+    }
 }
