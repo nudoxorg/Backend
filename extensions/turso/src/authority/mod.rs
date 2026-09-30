@@ -357,6 +357,10 @@ impl TursoAuthority {
             let barrier_epoch = i64_to_u64(row.get(2)?, "barrier_epoch")?;
             let barrier_fence = decode_hash(row.get(3)?, "barrier_fence")?;
             let retired_through_epoch = i64_to_u64(row.get(4)?, "retired_through_epoch")?;
+            if retired_through_epoch != terminal_epoch {
+                tx.rollback().await?;
+                return Err(AuthorityError::CorruptRecord("retired_through_epoch"));
+            }
             Some((
                 barrier_work_id,
                 barrier_epoch,
@@ -368,9 +372,9 @@ impl TursoAuthority {
         };
         drop(existing_rows);
 
-        let mut terminal_rows = tx
+        let mut active_rows = tx
             .query(
-                "SELECT state FROM backend_index_authority_attempts \
+                "SELECT attempt_id, state FROM backend_index_authority_attempts \
                  WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
                    AND plane_kind=?5 AND profile=?6 AND epoch=?7 AND attempt_fence=?8",
                 turso::params![
@@ -385,24 +389,125 @@ impl TursoAuthority {
                 ],
             )
             .await?;
-        let terminal_state = terminal_rows.next().await?.map(|row| row.get::<i64>(0));
-        drop(terminal_rows);
-        match terminal_state {
-            Some(Ok(0)) => {}
-            Some(Ok(_)) => {
+        let active_attempt = if let Some(row) = active_rows.next().await? {
+            let attempt_id = decode_array::<16>(row.get(0)?, "attempt_id")?;
+            let state: i64 = row.get(1)?;
+            match state {
+                0 => Some(attempt_id),
+                1 => {
+                    tx.rollback().await?;
+                    return Err(AuthorityError::StaleAttempt);
+                }
+                _ => return Err(AuthorityError::CorruptRecord("attempt_state")),
+            }
+        } else {
+            None
+        };
+        drop(active_rows);
+
+        let attempt_id = if let Some(attempt_id) = active_attempt {
+            attempt_id
+        } else {
+            // fd1 terminalizes non-published attempts into an immutable table.
+            // A durable NoResult debt may outlive that move, so recover only
+            // the unique epoch/fence tuple and never recreate a CandidateAttempt.
+            let mut terminal_rows = tx
+                .query(
+                    "SELECT attempt_id, terminal_reason \
+                     FROM backend_index_authority_attempt_terminals \
+                     WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                       AND plane_kind=?5 AND profile=?6 AND epoch=?7 AND attempt_fence=?8",
+                    turso::params![
+                        namespace.package.as_ref(),
+                        namespace.source.as_ref(),
+                        namespace.branch.as_ref(),
+                        namespace.environment.as_ref(),
+                        namespace.plane.sql_parts().0,
+                        namespace.plane.sql_parts().1,
+                        terminal_epoch_sql,
+                        terminal_fence.as_slice()
+                    ],
+                )
+                .await?;
+            let terminal = if let Some(row) = terminal_rows.next().await? {
+                let attempt_id = decode_array::<16>(row.get(0)?, "attempt_id")?;
+                let terminal_reason: i64 = row.get(1)?;
+                if !matches!(terminal_reason, 1..=4) {
+                    tx.rollback().await?;
+                    return Err(AuthorityError::CorruptRecord("terminal_reason"));
+                }
+                Some(attempt_id)
+            } else {
+                None
+            };
+            drop(terminal_rows);
+            let Some(attempt_id) = terminal else {
                 tx.rollback().await?;
                 return Err(AuthorityError::StaleAttempt);
-            }
-            Some(Err(error)) => return Err(error.into()),
-            None => {
-                tx.rollback().await?;
-                return Err(AuthorityError::StaleAttempt);
-            }
+            };
+            attempt_id
+        };
+
+        // Terminal status alone is not enough if authority is corrupt or a
+        // selected generation ever names this attempt. Never mint cleanup
+        // authority for a published candidate.
+        let mut selected_rows = tx
+            .query(
+                "SELECT EXISTS(\
+                    SELECT 1 FROM backend_index_authority_frontiers \
+                    WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                      AND plane_kind=?5 AND profile=?6 AND attempt_id=?7\
+                 ) OR EXISTS(\
+                    SELECT 1 FROM backend_index_authority_generation_history \
+                    WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                      AND plane_kind=?5 AND profile=?6 AND attempt_id=?7\
+                 )",
+                turso::params![
+                    namespace.package.as_ref(),
+                    namespace.source.as_ref(),
+                    namespace.branch.as_ref(),
+                    namespace.environment.as_ref(),
+                    namespace.plane.sql_parts().0,
+                    namespace.plane.sql_parts().1,
+                    attempt_id.as_slice()
+                ],
+            )
+            .await?;
+        let selected_row = selected_rows
+            .next()
+            .await?
+            .ok_or(AuthorityError::CorruptRecord("selected_attempt"))?;
+        let selected: i64 = selected_row.get(0)?;
+        drop(selected_rows);
+        if selected != 0 {
+            tx.rollback().await?;
+            return Err(AuthorityError::StaleAttempt);
         }
+
+        let mut scope_rows = tx
+            .query(
+                "SELECT attempt_epoch FROM backend_index_authority_scopes \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6",
+                namespace_params(namespace),
+            )
+            .await?;
+        let Some(scope_row) = scope_rows.next().await? else {
+            drop(scope_rows);
+            tx.rollback().await?;
+            return Err(AuthorityError::StaleAttempt);
+        };
+        let candidate_epoch: i64 = scope_row.get(0)?;
+        drop(scope_rows);
 
         if let Some((barrier_work_id, barrier_epoch, barrier_fence, retired_through_epoch)) =
             existing
+            && candidate_epoch < u64_to_i64(barrier_epoch)?
         {
+            // Retries at the same or older candidate epoch stay byte-for-byte
+            // idempotent. Once begin_attempt reaches this control epoch, the
+            // debt must receive a newer barrier so its ACK can retire only the
+            // original terminal epoch without consuming the new candidate.
             tx.commit().await?;
             return Ok(NoResultRetirementBarrier {
                 namespace: namespace.clone(),
@@ -416,20 +521,6 @@ impl TursoAuthority {
             });
         }
 
-        let mut scope_rows = tx
-            .query(
-                "SELECT attempt_epoch FROM backend_index_authority_scopes \
-                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
-                   AND plane_kind=?5 AND profile=?6",
-                namespace_params(namespace),
-            )
-            .await?;
-        let scope_row = scope_rows
-            .next()
-            .await?
-            .ok_or(AuthorityError::CorruptRecord("scope"))?;
-        let candidate_epoch: i64 = scope_row.get(0)?;
-        drop(scope_rows);
         let mut barrier_rows = tx
             .query(
                 "SELECT COALESCE(MAX(barrier_epoch), 0) \
@@ -468,29 +559,61 @@ impl TursoAuthority {
             terminal_fence,
             barrier_epoch,
         );
-        tx.execute(
-            "INSERT INTO backend_index_authority_no_result_barriers(\
-                package, source, branch, environment, plane_kind, profile, terminal_work_id, \
-                terminal_epoch, terminal_fence, barrier_work_id, barrier_epoch, barrier_fence, \
-                retired_through_epoch\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            turso::params![
-                namespace.package.as_ref(),
-                namespace.source.as_ref(),
-                namespace.branch.as_ref(),
-                namespace.environment.as_ref(),
-                namespace.plane.sql_parts().0,
-                namespace.plane.sql_parts().1,
-                terminal_work_id.as_slice(),
-                terminal_epoch_sql,
-                terminal_fence.as_slice(),
-                barrier_work_id.as_slice(),
-                barrier_epoch_sql,
-                barrier_fence.as_slice(),
-                terminal_epoch_sql
-            ],
-        )
-        .await?;
+        if existing.is_some() {
+            let affected = tx
+                .execute(
+                    "UPDATE backend_index_authority_no_result_barriers \
+                     SET barrier_work_id=?1, barrier_epoch=?2, barrier_fence=?3, \
+                         retired_through_epoch=?4 \
+                     WHERE package=?5 AND source=?6 AND branch=?7 AND environment=?8 \
+                       AND plane_kind=?9 AND profile=?10 AND terminal_epoch=?11 \
+                       AND terminal_fence=?12 AND terminal_work_id=?13",
+                    turso::params![
+                        barrier_work_id.as_slice(),
+                        barrier_epoch_sql,
+                        barrier_fence.as_slice(),
+                        terminal_epoch_sql,
+                        namespace.package.as_ref(),
+                        namespace.source.as_ref(),
+                        namespace.branch.as_ref(),
+                        namespace.environment.as_ref(),
+                        namespace.plane.sql_parts().0,
+                        namespace.plane.sql_parts().1,
+                        terminal_epoch_sql,
+                        terminal_fence.as_slice(),
+                        terminal_work_id.as_slice()
+                    ],
+                )
+                .await?;
+            if affected != 1 {
+                tx.rollback().await?;
+                return Err(AuthorityError::StaleAttempt);
+            }
+        } else {
+            tx.execute(
+                "INSERT INTO backend_index_authority_no_result_barriers(\
+                    package, source, branch, environment, plane_kind, profile, terminal_work_id, \
+                    terminal_epoch, terminal_fence, barrier_work_id, barrier_epoch, barrier_fence, \
+                    retired_through_epoch\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                turso::params![
+                    namespace.package.as_ref(),
+                    namespace.source.as_ref(),
+                    namespace.branch.as_ref(),
+                    namespace.environment.as_ref(),
+                    namespace.plane.sql_parts().0,
+                    namespace.plane.sql_parts().1,
+                    terminal_work_id.as_slice(),
+                    terminal_epoch_sql,
+                    terminal_fence.as_slice(),
+                    barrier_work_id.as_slice(),
+                    barrier_epoch_sql,
+                    barrier_fence.as_slice(),
+                    terminal_epoch_sql
+                ],
+            )
+            .await?;
+        }
         tx.commit().await?;
         Ok(NoResultRetirementBarrier {
             namespace: namespace.clone(),
