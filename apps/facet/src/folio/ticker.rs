@@ -327,23 +327,36 @@ pub fn ticker(id: impl Into<ElementId>, facts: Rc<TickerFacts>, measure: &Measur
 }
 
 /// Where the bar of release `tick` sits at rest, relative to the ticker's own
-/// corner, as a box a host can put a keyboard door on.
+/// corner, as a box a host can put a keyboard door on. An absent release has
+/// no target; callers must not invent a door at the origin.
 #[must_use]
-pub fn door(facts: &TickerFacts, measure: &Measure, tick: usize) -> Bounds<Pixels> {
+pub fn door(facts: &TickerFacts, measure: &Measure, tick: usize) -> Option<Bounds<Pixels>> {
     let s = measure.scale();
+    let width = f32::from(measure.width());
+    if !s.is_finite() || s <= 0.0 || !width.is_finite() || width <= 0.0 {
+        return None;
+    }
     let xs = facts.positions(f32::from(measure.width()), PAD * s);
-    let x = xs.get(tick).copied().unwrap_or(0.0);
-    // At least 24 px wide, centred on its bar: a target the pointer can hit
-    // (the bar itself is 10 px).
-    Bounds::new(gpui::point(px(x - 12.0 * s), px(TOP * s)), gpui::size(px(24.0 * s), px(BARS * s)))
+    let x = xs.get(tick).copied()?;
+    // At least 24 px wide when the viewport allows it, centred on the bar.
+    // On a narrower viewport the hit target stays inside the component clip.
+    let target_width = (24.0 * s).min(width);
+    let left = (x - target_width * 0.5).clamp(0.0, width - target_width);
+    Some(Bounds::new(
+        gpui::point(px(left), px(TOP * s)),
+        gpui::size(px(target_width), px(BARS * s)),
+    ))
 }
 
 impl Ticker {
     /// The release the host's keyboard stands on: its bar is hot, its label
     /// rides it (one keyboard system: the host's targets, not the element's).
     #[must_use]
-    pub const fn stand(mut self, tick: Option<usize>) -> Self {
-        self.stand = tick;
+    pub fn stand(mut self, tick: Option<usize>) -> Self {
+        self.stand = match tick {
+            Some(tick) if tick < self.facts.ticks.len() => Some(tick),
+            _ => None,
+        };
         self
     }
 
@@ -358,7 +371,8 @@ impl Ticker {
     /// Shows the pointer at `x` px from the ticker's left (scenes).
     #[must_use]
     pub fn rest(mut self, x: Option<f32>) -> Self {
-        self.rest = x;
+        let width = f32::from(self.measure.width()).max(0.0);
+        self.rest = x.filter(|x| x.is_finite()).map(|x| x.clamp(0.0, width));
         self
     }
 
@@ -439,11 +453,20 @@ impl Element for Ticker {
         let (radius, distortion) = (RADIUS * s, DISTORTION);
         let xs = facts.positions(width, pad);
 
-        let (pointer, motion) = {
+        let (stored_pointer, motion) = {
             let state = layout.state.read(cx);
             (state.pointer, state.motion.clone())
         };
-        let pointer = pointer.or(self.rest);
+        // A stored pointer coordinate belongs to the previous layout. When a
+        // resize or text zoom moves the ticker beneath a still pointer, use
+        // this frame's origin and the live window coordinate instead.
+        let pointer = if stored_pointer.is_some() {
+            hitbox
+                .is_hovered(window)
+                .then(|| (f32::from(window.mouse_position().x) - ox).clamp(0.0, width))
+        } else {
+            self.rest
+        };
         let magnify = motion.animate(ElementId::NamedChild(Arc::new(self.id.clone()), "magnify".into()), if pointer.is_some() { 1.0 } else { 0.0 }, spec::REVEAL, window, cx);
         let anchor = pointer.unwrap_or(0.0);
         let shown = |x: f32| x + (fisheye(x, anchor, radius, distortion) - x) * magnify;
@@ -451,7 +474,7 @@ impl Element for Ticker {
 
         // Which bar is hot: the nearest within reach of the pointer, or the
         // one the host's keyboard stands on.
-        let walk = self.stand;
+        let walk = self.stand.filter(|index| *index < facts.ticks.len());
         let hot = pointer
             .and_then(|p| {
                 sx.iter()
@@ -476,15 +499,20 @@ impl Element for Ticker {
         for (year, x) in facts.years(width, pad) {
             let words: SharedString = year.to_string().into();
             let t = shape(words.clone(), text_role, palette.ink3.into(), window);
-            let at = ox + shown(x) - t.width() * 0.5;
-            texts.push((t, at, base_y + 5.0 * s + text_role.size, words, text_role));
+            if t.width() <= width {
+                let at = (ox + shown(x) - t.width() * 0.5).clamp(ox, ox + width - t.width());
+                texts.push((t, at, base_y + 5.0 * s + text_role.size, words, text_role));
+            }
         }
         if !facts.dated() && facts.ticks.len() > 1 {
             for (i, x) in [(0, xs[0]), (facts.ticks.len() - 1, xs[xs.len() - 1])] {
                 let words = facts.ticks[i].version.clone();
                 let t = shape(words.clone(), text_role, palette.ink3.into(), window);
-                let at = if i == 0 { ox + x - 2.0 } else { ox + x - t.width() + 2.0 };
-                texts.push((t, at, base_y + 5.0 * s + text_role.size, words, text_role));
+                if t.width() <= width {
+                    let desired = if i == 0 { ox + x - 2.0 } else { ox + x - t.width() + 2.0 };
+                    let at = desired.clamp(ox, ox + width - t.width());
+                    texts.push((t, at, base_y + 5.0 * s + text_role.size, words, text_role));
+                }
             }
         }
 
@@ -512,7 +540,7 @@ impl Element for Ticker {
         }
 
         // The caret under the release being read.
-        if let Some(i) = facts.reading {
+        if let Some(i) = facts.reading.filter(|index| *index < facts.ticks.len()) {
             let x = ox + sx[i];
             let mut caret = Fill::new();
             caret.triangle(pt(x - 5.0 * s, base_y + 1.0), pt(x, base_y - 5.0 * s), pt(x + 5.0 * s, base_y + 1.0));
@@ -524,9 +552,11 @@ impl Element for Ticker {
         // when two would touch the later one keeps only its first word.
         let flag_y = base_y - (BARS - 1.0) * s - 2.0 * s;
         let mut spans: Vec<(f32, f32)> = Vec::new();
+        let pin = facts.pin.filter(|index| *index < facts.ticks.len());
+        let latest = facts.latest.filter(|index| *index < facts.ticks.len() && Some(*index) != pin);
         for (index, full, short, ink) in [
-            facts.pin.map(|i| (i, format!("your pin {}", facts.ticks[i].version), "pin".to_owned(), palette.mint.base)),
-            facts.latest.filter(|l| Some(*l) != facts.pin).map(|i| (i, format!("newest {}", facts.ticks[i].version), "newest".to_owned(), palette.amber.base)),
+            pin.map(|i| (i, format!("your pin {}", facts.ticks[i].version), "pin".to_owned(), palette.mint.base)),
+            latest.map(|i| (i, format!("newest {}", facts.ticks[i].version), "newest".to_owned(), palette.amber.base)),
         ]
         .into_iter()
         .flatten()
@@ -538,10 +568,17 @@ impl Element for Ticker {
             let place = |words: String, window: &Window| {
                 let words: SharedString = words.into();
                 let t = shape(words.clone(), text_role, ink.into(), window);
-                let at = if x + 3.0 * s - t.width() < ox { x - 3.0 * s } else { x + 3.0 * s - t.width() };
+                let desired = if x + 3.0 * s - t.width() < ox { x - 3.0 * s } else { x + 3.0 * s - t.width() };
+                let at = desired.clamp(ox, (ox + width - t.width()).max(ox));
                 (t, at, words)
             };
             let (mut t, mut at, mut words) = place(full, window);
+            if t.width() > width {
+                (t, at, words) = place(short, window);
+            }
+            if t.width() > width {
+                continue;
+            }
             let touches = |at: f32, w: f32, spans: &[(f32, f32)]| spans.iter().any(|(a, b)| at < *b + 6.0 * s && at + w > *a - 6.0 * s);
             if touches(at, t.width(), &spans) {
                 (t, at, words) = place(short, window);
@@ -587,9 +624,9 @@ impl Element for Ticker {
                 SourceAvailability::Ambiguous => ("source conflicts".into(), palette.ink2.into()),
                 SourceAvailability::UnverifiedArchive => ("archive unverified".into(), palette.ink2.into()),
             });
-            if facts.pin == Some(i) {
+            if pin == Some(i) {
                 parts.push(("your pin".into(), palette.mint.base.into()));
-            } else if facts.latest == Some(i) {
+            } else if latest == Some(i) {
                 parts.push(("newest".into(), palette.amber.base.into()));
             } else if let RegistryFact::Known(date) = &tick.date
                 && let Some(ago) = semver::ago(date, &facts.today)
@@ -824,8 +861,11 @@ fn bar_ink(facts: &TickerFacts, i: usize, hot: bool, palette: &Palette) -> Hsla 
 
 #[cfg(test)]
 mod tests {
-    use super::{Release, TickerFacts, TickerNavigation, civil_year, fisheye};
+    use super::{Release, TickerFacts, TickerNavigation, civil_year, door, fisheye, ticker};
     use crate::data::release::{RegistryFact, SourceAvailability};
+    use crate::measure::Measure;
+    use crate::theme::Facet;
+    use gpui::px;
 
     fn facts(releases: &[(&str, Option<&str>)], pin: &str) -> TickerFacts {
         let releases: Vec<Release> = releases
@@ -876,6 +916,21 @@ mod tests {
         for command in [TickerNavigation::Previous, TickerNavigation::Next, TickerNavigation::First, TickerNavigation::Last] {
             assert_eq!(empty.destination(None, command), None);
         }
+    }
+
+    #[test]
+    fn navigation_remains_in_range_when_release_snapshots_shrink_and_grow_under_key_input() {
+        let empty = TickerFacts::new(&[], None, "2026-09-28");
+        let one = facts(&[("1.0.0", None)], "1.0.0");
+        let many = facts(&[("0.8.0", None), ("1.0.0", None), ("1.0.1", None)], "1.0.0");
+
+        let mut selected = None;
+        for snapshot in [&empty, &one, &many, &empty, &many, &one, &empty] {
+            selected = snapshot.destination(selected, TickerNavigation::Next);
+            assert!(selected.is_none_or(|index| index < snapshot.ticks.len()), "selected {selected:?} in {} releases", snapshot.ticks.len());
+        }
+        assert_eq!(one.destination(Some(usize::MAX), TickerNavigation::Previous), Some(0));
+        assert_eq!(empty.destination(Some(0), TickerNavigation::Next), None);
     }
 
     #[test]
@@ -946,10 +1001,47 @@ mod tests {
         let measure = crate::Measure::new(gpui::px(600.0), &crate::theme::Facet::default());
         let xs = f.positions(f32::from(measure.width()), super::PAD * measure.scale());
         for (tick, x) in xs.iter().enumerate() {
-            let door = super::door(&f, &measure, tick);
+            let door = super::door(&f, &measure, tick).expect("one door per release");
             assert!(f32::from(door.size.width) >= 24.0 && f32::from(door.size.height) >= 24.0, "{tick}: {door:?}");
-            assert!((f32::from(door.center().x) - x).abs() < 0.01, "{tick}: centred on its bar at {x}: {door:?}");
+            assert!(f32::from(door.origin.x) <= *x && f32::from(door.right()) >= *x, "{tick}: target contains its bar at {x}: {door:?}");
         }
+    }
+
+    #[test]
+    fn zero_and_one_release_tickers_publish_only_real_bounded_targets_across_resizes_and_text_scales() {
+        let empty = TickerFacts::new(&[], None, "2026-09-28");
+        let one = facts(&[("1.0.0", None)], "1.0.0");
+        let many = facts(&[("0.5.11", None), ("0.8.23", None), ("1.0.0", None)], "0.8.23");
+
+        for (width, scale) in [(320.0, 0.85), (320.0, 1.0), (320.0, 2.0), (640.0, 2.0), (1440.0, 1.0), (2560.0, 2.0)] {
+            let mut facet = Facet::default();
+            facet.text_scale = scale;
+            let measure = Measure::new(px(width), &facet);
+            assert!(door(&empty, &measure, 0).is_none(), "empty ticker must not invent a target at width={width}, scale={scale}");
+            assert!(door(&one, &measure, 1).is_none(), "out-of-range release must not invent a target");
+
+            for (facts, count) in [(&one, 1), (&many, 3)] {
+                for index in 0..count {
+                    let bounds = door(facts, &measure, index).expect("each real release has a target");
+                    let left = f32::from(bounds.origin.x);
+                    let right = left + f32::from(bounds.size.width);
+                    assert!(left >= 0.0 && right <= width + 0.01, "target escaped {width}px viewport at {scale}x: {bounds:?}");
+                    assert!(f32::from(bounds.size.width) <= width + 0.01, "target wider than viewport: {bounds:?}");
+                    assert!(f32::from(bounds.size.height) >= 24.0 * scale - 0.01, "release target is too short at {scale}x: {bounds:?}");
+                    let x = facts.positions(width, super::PAD * scale)[index];
+                    assert!(left <= x && right >= x, "release {index} bar at {x} is outside its target: {bounds:?}");
+                }
+            }
+        }
+
+        let mut facet = Facet::default();
+        facet.text_scale = 2.0;
+        let measure = Measure::new(px(320.0), &facet);
+        let bounds = door(&one, &measure, 0).expect("the lone release remains focusable");
+        assert!((f32::from(bounds.center().x) - 160.0).abs() < 0.01, "one release remains centered after resize and text zoom: {bounds:?}");
+        assert_eq!(ticker("empty-ticker", std::rc::Rc::new(empty), &measure).stand(Some(0)).stand, None, "an empty ticker rejects a phantom semantic target");
+        assert_eq!(ticker("single-ticker", std::rc::Rc::new(one.clone()), &measure).stand(Some(0)).stand, Some(0), "the lone release remains a valid semantic target");
+        assert_eq!(ticker("single-ticker", std::rc::Rc::new(one), &measure).stand(Some(usize::MAX)).stand, None, "a stale target is cleared when new facts shrink the ticker");
     }
 
     #[test]
