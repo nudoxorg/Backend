@@ -8,7 +8,8 @@ use crate::{
 /// Explicit work performed by one lazy update.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LazyTreeWork {
-    /// Number of authenticated nodes fetched from the loader.
+    /// Number of authenticated node load requests made through the loader,
+    /// including hits served by an in-memory overlay.
     pub loaded_nodes: usize,
     /// Number of canonical nodes emitted into the changed frontier.
     pub rebuilt_nodes: usize,

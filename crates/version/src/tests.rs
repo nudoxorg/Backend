@@ -883,9 +883,8 @@ fn lazy_batch_falls_back_cleanly_on_width_and_leaf_cut_changes()
             IdContext::relation::<VariableRelation>(),
         )?;
         let baseline_lazy = LazyTree::open(&baseline_loader, baseline_claim)?;
-        let baseline_calls_before = baseline_loader.calls.get();
         let baseline = baseline_lazy.prepare_update_bounded(&changes, budget)?;
-        let baseline_reads = baseline_loader.calls.get() - baseline_calls_before;
+        let baseline_loaded_nodes = baseline.work().loaded_nodes;
         assert_eq!(
             baseline.target().node().as_bytes(),
             rebuilt.root().as_bytes()
@@ -898,13 +897,16 @@ fn lazy_batch_falls_back_cleanly_on_width_and_leaf_cut_changes()
             "{label} fallback must start from the original root without a partial overlay"
         );
         assert!(loader.calls.get() > calls_before);
-        assert_eq!(
-            update.work().loaded_nodes,
-            loader.calls.get() - calls_before
+        // The measured loader counts backing-store reads. LazyTreeWork also
+        // includes authenticated requests served from the update overlay.
+        let backing_store_reads = loader.calls.get() - calls_before;
+        assert!(
+            update.work().loaded_nodes >= backing_store_reads,
+            "{label} logical loader work must include backing-store reads"
         );
         assert!(
-            update.work().loaded_nodes > baseline_reads,
-            "{label} must exercise the sequential fallback after provisional shared-path work"
+            update.work().loaded_nodes > baseline_loaded_nodes,
+            "{label} must charge provisional shared-path loads before the sequential fallback"
         );
 
         let cold_nodes = rebuilt
