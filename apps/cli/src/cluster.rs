@@ -790,7 +790,7 @@ fn client_connect(rest: &[String], options: &Options) -> Result<String, Fault> {
         ));
     }
     Ok(format!(
-        "Connected to remote index {} at {}.\nAuthorized semantic target: {} at {} (profile {}).\nSelected revision: {}; root {}; catalog root {}.\nGrant: {}\n",
+        "Connected to remote index {} at {}.\nAuthorized semantic target: {} at {} (profile {:?}).\nSelected revision: {}; root {}; catalog root {}.\nGrant: {}\n",
         hex(owner.as_bytes()),
         address,
         scope.package,
@@ -919,7 +919,7 @@ fn client_semantic_catalog(rest: &[String], options: &Options) -> Result<String,
         .map(|entry| entry.image().artifact_ordinal())
         .collect::<Vec<_>>();
     Ok(format!(
-        "Remote semantic catalog admitted.\nTarget: {} at {} (profile {}).\nSelected revision: {}; root {}; catalog root {}.\nCatalog images: {}\nImage ordinals: {}\n",
+        "Remote semantic catalog admitted.\nTarget: {} at {} (profile {:?}).\nSelected revision: {}; root {}; catalog root {}.\nCatalog images: {}\nImage ordinals: {}\n",
         scope.package,
         scope.coordinate,
         profile,
@@ -935,9 +935,8 @@ fn client_semantic_catalog(rest: &[String], options: &Options) -> Result<String,
     ))
 }
 
-fn parse_product_operations(value: Option<&&str>) -> Result<Vec<RemoteIndexQueryOperation>, Fault> {
+fn parse_product_operations(value: Option<&str>) -> Result<Vec<RemoteIndexQueryOperation>, Fault> {
     let mut operations = value
-        .copied()
         .unwrap_or("search,names,document,source,outline,graph,related")
         .split(',')
         .map(parse_product_operation)
