@@ -12,9 +12,9 @@ use crate::anatomy::plan::{DeclKind, Fam, PagePlan, Sibling};
 use crate::anatomy::sigil::{Form, Sigil, sigil};
 use crate::hover;
 use crate::measure::Measure;
-use crate::paint::geom::{Poly, fill_poly};
+use crate::paint::{Chamfer, Edge, cut};
 use crate::tokens::{Palette, scale};
-use gpui::{AnyElement, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, StatefulInteractiveElement, Styled, canvas, div, px};
+use gpui::{AnyElement, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, StatefulInteractiveElement, Styled, div, px};
 
 /// The chip's kind word.
 const fn word(kind: DeclKind) -> &'static str {
@@ -86,25 +86,9 @@ fn window(strip: &[Sibling], room: f32, s: f32) -> (usize, usize) {
 }
 
 /// A chamfered chip plate: fill and a ring.
-fn plate(fill: Hsla, ring: Hsla, width_: f32, thick: f32) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-            let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-            let poly = Poly::chamfer(x + 0.5, y + 0.5, w - 1.0, h - 1.0, 5.0);
-            fill_poly(window, &poly, fill);
-            for edge in poly.stroke_ring(thick) {
-                fill_poly(window, &edge, ring);
-            }
-            let _ = width_;
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full()
-    .into_any_element()
+fn plate(fill: Hsla, ring: Hsla, _width: f32, thick: f32) -> AnyElement {
+    let edge = Edge { hi: ring, lo: ring, rim: thick, run: 0.0, light: ring, ghost: 0.0, hatch: ring };
+    cut().chamfer(Chamfer::Px(5.0)).edge(edge).fill(fill).absolute().top_0().left_0().size_full().into_any_element()
 }
 
 /// The strip, when the module has more than the symbol itself.

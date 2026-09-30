@@ -2,8 +2,8 @@
 //! gutter, the specimen hanging off it, and every section head a mark on the
 //! spine with its relations running out to the margins (DIRECTION.md §4).
 //!
-//! Text is laid out as elements; every stroke is painted by one [`ink`]
-//! canvas that reads the bounds the elements recorded as [`anchor`]s in
+//! Text is laid out as elements; the page ink and each compact mark are typed
+//! elements that read the bounds recorded as [`anchor`]s in
 //! prepaint, in the same frame. Anchor ids come from the plan (a section and
 //! an index into it), never from layout order, so they hold at every width.
 //!
@@ -48,7 +48,7 @@ use crate::tokens::{Palette, Tone, TypeRole, rhythm, scale};
 use gpui::{
     AnyElement, App, Bounds, ColorExt, Element, ElementId, Global, GlobalElementId, Hsla, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, ParentElement, PathBuilder, Pixels, Point, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, div, point, px,
+    StatefulInteractiveElement, Refineable, Style, StyleRefinement, Styled, Window, div, point, px,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -392,24 +392,7 @@ pub fn named_as(
 /// A dashed chamfered ring around what it sits in, with the word "from" on
 /// its edge: "you came from here".
 fn from_ring(hue: Hsla) -> AnyElement {
-    let ring = canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let (x, y) = (f32::from(bounds.origin.x) - 3.0, f32::from(bounds.origin.y) - 2.0);
-            let (w, h) = (f32::from(bounds.size.width) + 6.0, f32::from(bounds.size.height) + 4.0);
-            let c = 4.0;
-            let pts = [point(px(x + c), px(y)), point(px(x + w), px(y)), point(px(x + w), px(y + h - c)), point(px(x + w - c), px(y + h)), point(px(x), px(y + h)), point(px(x), px(y + c))];
-            let mut path = PathBuilder::stroke(px(1.2)).dash_array(&[px(3.0), px(2.5)]);
-            path.add_polygon(&pts, true);
-            if let Ok(path) = path.build() {
-                window.paint_path(path, hue.opacity(0.9));
-            }
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full();
+    let ring = FromRing { hue, style: StyleRefinement::default() }.absolute().top_0().left_0().size_full();
     // The word rides the ring's top edge, small, in the ring's own hue.
     let role = scale::LABEL_MONO;
     let tag = probe::text(
@@ -421,6 +404,49 @@ fn from_ring(hue: Hsla) -> AnyElement {
         crate::fonts::Typeset::typeset_at(div().whitespace_nowrap().text_color(hue), TypeRole { size: 9.5, line: 11.0, ..role }, 1.0).child("from"),
     );
     div().absolute().top_0().left_0().size_full().child(ring).child(div().absolute().top(px(-9.0)).right(px(6.0)).child(tag)).into_any_element()
+}
+
+/// The dashed chamfer around the chip the reader came from.
+struct FromRing {
+    hue: Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for FromRing {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for FromRing {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for FromRing {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let hue = self.hue;
+        style.paint(bounds, window, cx, |window, _| {
+            let (x, y) = (f32::from(bounds.origin.x) - 3.0, f32::from(bounds.origin.y) - 2.0);
+            let (w, h) = (f32::from(bounds.size.width) + 6.0, f32::from(bounds.size.height) + 4.0);
+            let c = 4.0;
+            let pts = [point(px(x + c), px(y)), point(px(x + w), px(y)), point(px(x + w), px(y + h - c)), point(px(x + w - c), px(y + h)), point(px(x), px(y + h)), point(px(x), px(y + c))];
+            let mut path = PathBuilder::stroke(px(1.2)).dash_array(&[px(3.0), px(2.5)]);
+            path.add_polygon(&pts, true);
+            if let Ok(path) = path.build() {
+                window.paint_path(path, hue.opacity(0.9));
+            }
+        });
+    }
 }
 
 // ------------------------------------------------------------------ text
@@ -480,9 +506,44 @@ pub(crate) fn glyph(head: &Tok, wrap: Wrap, palette: &Palette, scale: f32) -> An
     let kind = head.kind;
     let fam = head.fam;
     let size = 10.0 * scale;
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
+    TypeGlyph { kind, fam, wrap, color, size, style: StyleRefinement::default() }
+        .w(px(size)).h(px(size)).flex_none().into_any_element()
+}
+
+/// The small type-role glyph: value stone, contract diamond, or named plate.
+struct TypeGlyph {
+    kind: TokKind,
+    fam: Fam,
+    wrap: Wrap,
+    color: Hsla,
+    size: f32,
+    style: StyleRefinement,
+}
+
+impl Styled for TypeGlyph {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for TypeGlyph {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for TypeGlyph {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (kind, fam, wrap, color, size) = (self.kind, self.fam, self.wrap, self.color, self.size);
+        style.paint(bounds, window, cx, |window, _| {
             let o = bounds.origin;
             let s = size / 10.0;
             let shape = |dx: f32, dy: f32| -> Vec<Point<Pixels>> {
@@ -510,12 +571,8 @@ pub(crate) fn glyph(head: &Tok, wrap: Wrap, palette: &Palette, scale: f32) -> An
             let filled = wrap != Wrap::Maybe;
             if wrap == Wrap::List { draw(window, &shape(2.0, -2.0), filled, 0.5); }
             draw(window, &shape(0.0, 0.0), filled, 1.0);
-        },
-    )
-    .w(px(size))
-    .h(px(size))
-    .flex_none()
-    .into_any_element()
+        });
+    }
 }
 
 /// A neutral stone: a value's mark (values carry no hue).

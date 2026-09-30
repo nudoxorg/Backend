@@ -25,13 +25,13 @@ use super::{Doors, Geometry, said};
 use crate::anatomy::reach::{CrateUse, Instead, Line, Reach, Scope, Segment, SegmentKind};
 use crate::hover::{self, Lit, Subject};
 use crate::measure::{Measure, Set};
-use crate::paint::geom::{Poly, fill_poly};
+use crate::paint::{Chamfer, Edge, cut};
 use crate::probe::{self, TextOverflow};
 use crate::tokens::{Palette, rhythm, scale};
 use gpui::{
     AnyElement, App, Bounds, ColorExt, Element, ElementId, GlobalElementId, Global, Hsla, HighlightStyle, InspectorElementId, InteractiveElement,
     IntoElement, LayoutId, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, StyledText, UnderlineStyle,
-    Window, canvas, div, px,
+    Window, div, px,
 };
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -305,23 +305,8 @@ fn bar(segments: &[Segment], active: Option<&str>, geo: &Geometry, m: &Measure, 
 
 /// A chamfered plate behind its parent's content: fill and a 1 px ring.
 fn plate(fill: Hsla, ring: Hsla, chamfer: f32) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-            let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-            let poly = Poly::chamfer(x + 0.5, y + 0.5, w - 1.0, h - 1.0, chamfer);
-            fill_poly(window, &poly, fill);
-            for edge in poly.stroke_ring(1.0) {
-                fill_poly(window, &edge, ring);
-            }
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full()
-    .into_any_element()
+    let edge = Edge { hi: ring, lo: ring, rim: 1.0, run: 0.0, light: ring, ghost: 0.0, hatch: ring };
+    cut().chamfer(Chamfer::Px(chamfer)).edge(edge).fill(fill).absolute().top_0().left_0().size_full().into_any_element()
 }
 
 // ------------------------------------------------------------------ a crate
