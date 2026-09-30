@@ -854,18 +854,10 @@ impl CommandAdapter {
             let mut terminal = None;
             let mut legacy_reply = None;
             let work = std::mem::replace(&mut indexing.work, IndexJobWork::Transition);
-            // Snapshot every attempt owned by the active compile stage before
-            // matching consumes the worker/job values. If any terminal path
-            // wins, the owner closes these exact pending attempts; attempts
-            // already selected by Turso are harmless idempotent no-ops.
-            let mut terminal_attempts = match &work {
-                IndexJobWork::Compiling { job, profile, .. } => {
-                    let mut attempts = vec![profile.candidate_attempt().clone()];
-                    attempts.extend(job.pending_attempts());
-                    attempts
-                }
-                _ => Vec::new(),
-            };
+            // Candidate-attempt cleanup inventory is built only when a
+            // compiler stage actually reaches a terminal path. Healthy polls
+            // therefore do not allocate or clone the queued profile list.
+            let mut terminal_attempts = None;
             match work {
                 IndexJobWork::Acquiring(acquired) => match acquired.try_recv() {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -1020,6 +1012,9 @@ impl CommandAdapter {
                         return ready;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        let mut attempts = vec![profile.candidate_attempt().clone()];
+                        attempts.extend(job.pending_attempts());
+                        terminal_attempts = Some(attempts);
                         terminal = Some(backend_library::IndexJobOutcome::Failed(
                             backend_library::ProductText::from_static(
                                 "compiler worker ended without a terminal receipt",
@@ -1027,12 +1022,22 @@ impl CommandAdapter {
                         ));
                     }
                     Ok(_result) if indexing.cancelled.load(Ordering::Acquire) => {
+                        let mut attempts = vec![profile.candidate_attempt().clone()];
+                        attempts.extend(job.pending_attempts());
+                        terminal_attempts = Some(attempts);
                         terminal = Some(backend_library::IndexJobOutcome::Cancelled);
                     }
                     Ok(result) if deferred_compile_was_cancelled(&result) => {
+                        let mut attempts = vec![profile.candidate_attempt().clone()];
+                        attempts.extend(job.pending_attempts());
+                        terminal_attempts = Some(attempts);
                         terminal = Some(backend_library::IndexJobOutcome::Cancelled);
                     }
                     Ok(result) => {
+                        // The profile is consumed by admission below. Retain
+                        // only its compact attempt capability; clone the
+                        // queued list only if admission reports a terminal.
+                        let current_attempt = profile.candidate_attempt().clone();
                         let progress = (
                             backend_engine::SemanticLanguageProfile::new(profile.profile()),
                             profile.ordinal(),
@@ -1087,6 +1092,9 @@ impl CommandAdapter {
                                 }
                             }
                             Err(refusal) => {
+                                let mut attempts = vec![current_attempt];
+                                attempts.extend(job.pending_attempts());
+                                terminal_attempts = Some(attempts);
                                 terminal = Some(backend_library::IndexJobOutcome::Refused(
                                     bounded_index_detail(refusal),
                                 ));
@@ -1105,7 +1113,7 @@ impl CommandAdapter {
             if let Some(outcome) = terminal {
                 let outcome = if let Some(reason) = index_attempt_retirement_reason(&outcome) {
                     let mut retirement_failure = None;
-                    for attempt in terminal_attempts.drain(..) {
+                    for attempt in terminal_attempts.take().unwrap_or_default() {
                         if let Err(error) = self
                             .semantic_authority
                             .retire_candidate_attempt(&attempt, reason)

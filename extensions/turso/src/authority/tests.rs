@@ -152,14 +152,47 @@ fn retired_cancelled_attempt_reopens_terminal_without_moving_selected_head() {
             .record_source_observation(observation(SourceObservationValue::KnownCount(1), 100))
             .await
             .unwrap_or_else(|error| panic!("observe: {error}"));
+
+        // Establish a real nonempty selected head before the cancellation
+        // attempt. This proves cleanup preserves usable prior authority.
+        let selected_attempt = authority
+            .begin_attempt(&namespace(), [91; 32], &observed)
+            .await
+            .unwrap_or_else(|error| panic!("begin selected attempt: {error}"));
+        let selected_candidate = candidate(selected_attempt, 92, 93, 94, 93);
+        let selected_receipt = authority
+            .verify_closure(&selected_candidate, &AcceptVerifiedClosure)
+            .unwrap_or_else(|error| panic!("verify selected candidate: {error}"));
+        authority
+            .compare_and_select(selected_candidate, selected_receipt)
+            .await
+            .unwrap_or_else(|error| panic!("select prior generation: {error}"));
+
         let attempt = authority
-            .begin_attempt(&namespace(), [92; 32], &observed)
+            .begin_attempt(&namespace(), [95; 32], &observed)
             .await
             .unwrap_or_else(|error| panic!("begin: {error}"));
         let before = authority
             .selected_frontier(&namespace())
             .await
             .unwrap_or_else(|error| panic!("read initial head: {error}"));
+        assert!(before.is_some(), "fixture must have a selected generation");
+
+        let mut forged = attempt.clone();
+        forged.fence[0] ^= 1;
+        assert!(matches!(
+            authority
+                .retire_attempt(&forged, CandidateAttemptRetirementReason::Cancelled)
+                .await,
+            Err(AuthorityError::StaleAttempt)
+        ));
+        assert_eq!(
+            authority
+                .recover_candidate_attempt(&attempt.recovery_claim())
+                .await
+                .unwrap_or_else(|error| panic!("forged cleanup changed active attempt: {error}")),
+            attempt
+        );
 
         authority
             .retire_attempt(&attempt, CandidateAttemptRetirementReason::Cancelled)
@@ -175,6 +208,26 @@ fn retired_cancelled_attempt_reopens_terminal_without_moving_selected_head() {
                 .selected_frontier(&namespace())
                 .await
                 .unwrap_or_else(|error| panic!("read unchanged head: {error}")),
+            before
+        );
+        assert!(matches!(
+            authority
+                .recover_candidate_attempt(&attempt.recovery_claim())
+                .await,
+            Err(AuthorityError::StaleAttempt)
+        ));
+
+        // Reopen after dropping every connection. Neither the canceled active
+        // attempt nor a later cleanup reason can displace the prior head.
+        drop(authority);
+        let authority = TursoAuthority::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("cold reopen after cancellation: {error}"));
+        assert_eq!(
+            authority
+                .selected_frontier(&namespace())
+                .await
+                .unwrap_or_else(|error| panic!("read cold selected head: {error}")),
             before
         );
         assert!(matches!(
