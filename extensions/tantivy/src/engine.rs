@@ -365,7 +365,7 @@ impl TantivySource {
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
-        let version_root = cache_root.as_ref().join(DURABLE_ROOTS_DIRECTORY);
+        let version_root = cache_root.join(DURABLE_ROOTS_DIRECTORY);
         fs::create_dir_all(&version_root)?;
         let _version_directory =
             backend_platform::durability::open_directory_readonly_nofollow(&version_root)?;
