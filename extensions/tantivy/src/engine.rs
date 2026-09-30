@@ -1726,10 +1726,37 @@ fn is_volatile_projection_file(name: &str) -> bool {
 }
 
 fn is_nofollow_rejection(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::InvalidData | std::io::ErrorKind::FilesystemLoop
-    )
+    let loop_error = {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            error.raw_os_error() == Some(40)
+        }
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        {
+            error.raw_os_error() == Some(62)
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
+        {
+            false
+        }
+    };
+    error.kind() == std::io::ErrorKind::InvalidData || loop_error
 }
 
 fn is_projection_file_name(name: &str) -> bool {
@@ -1960,7 +1987,8 @@ fn prune_durable_roots(
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "durable root directory exceeds its entry bound",
-            ));
+            )
+            .into());
         }
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| {
@@ -1970,7 +1998,8 @@ fn prune_durable_roots(
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "durable root directory contains an unrecognized entry",
-            ));
+            )
+            .into());
         }
         let metadata = fs::symlink_metadata(entry.path())?;
         if !metadata.file_type().is_dir() {
@@ -2002,7 +2031,7 @@ fn prune_durable_roots(
                 live_roots = live_roots.saturating_sub(1);
             }
             Err(std::fs::TryLockError::WouldBlock) => {}
-            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
     }
     if retained_bytes > budget.max_bytes() {
@@ -2011,7 +2040,8 @@ fn prune_durable_roots(
             required_bytes: retained_bytes,
         });
     }
-    sync_directory(root)
+    sync_directory(root)?;
+    Ok(())
 }
 
 fn open_root_lease(root: &Path) -> Result<File, std::io::Error> {
