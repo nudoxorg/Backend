@@ -2440,6 +2440,121 @@ fn single_row_revision_reuses_large_resident_ordinal_tables() {
 }
 
 #[test]
+fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
+    let stable_id = document(1);
+    let changing_id = document(2);
+    let initial = state_for(
+        vec![
+            (stable_id, vec![("name".into(), "stablecanary".into())]),
+            (changing_id, vec![("name".into(), "revision0".into())]),
+        ],
+        [0x91; 32],
+    );
+    let mut source = TantivySource::build(&initial, Limits::default()).expect("initial source");
+    let initial_segment = crate::engine::test_support::resident_segment_id(&source, stable_id)
+        .expect("initial stable row address");
+
+    // The initial projection has one segment. Seven single-row commits bring it to the
+    // default LogMergePolicy threshold of eight small segments and force a real merge.
+    for revision in 1_u8..=7 {
+        let next = state_for(
+            vec![
+                (stable_id, vec![("name".into(), "stablecanary".into())]),
+                (
+                    changing_id,
+                    vec![("name".into(), format!("revision{revision}"))],
+                ),
+            ],
+            [0x91_u8.wrapping_add(revision); 32],
+        );
+        let outcome = source
+            .maintain(&next, OverlayLimits::default())
+            .expect("single-row revision");
+        assert!(matches!(
+            outcome,
+            MaintainOutcome::Applied(ProjectionRevision {
+                kind: ProjectionKind::Revised,
+                rewritten_documents: 1,
+                ..
+            })
+        ));
+    }
+
+    let merged_segment = crate::engine::test_support::resident_segment_id(&source, stable_id)
+        .expect("rebound stable row address");
+    assert_ne!(
+        initial_segment, merged_segment,
+        "the unchanged row must be rebound after Tantivy replaces its original segment"
+    );
+    assert_eq!(
+        crate::engine::test_support::binding_work(&source),
+        (2, 4),
+        "the merged segment has two live rows; only the changed row needs four source-posting checks"
+    );
+    assert_eq!(term_hits(&source, "stablecanary"), vec![stable_id]);
+    for revision in 0..7 {
+        assert!(term_hits(&source, &format!("revision{revision}")).is_empty());
+    }
+    assert_eq!(term_hits(&source, "revision7"), vec![changing_id]);
+}
+
+#[test]
+fn cold_tail_validation_filters_surplus_postings_and_measures_their_scan_work() {
+    static NEXT_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    const ROWS: usize = 128;
+    let sequence = NEXT_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-surplus-postings-{}-{sequence}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).expect("create forged projection directory");
+
+    let documents = (1..=ROWS)
+        .map(|ordinal| {
+            (
+                document(ordinal as u64),
+                vec![("name".into(), "authoritativemarker".into())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let state = state_for(documents, [0x92; 32]);
+    crate::engine::test_support::write_projection_with_surplus_posting_fixture(
+        &state,
+        &directory,
+        "name",
+        "forgedneedle",
+    )
+    .expect("write rows with one surplus Tantivy posting each");
+
+    // Cold binding checks that every source token is present and that the rank tail
+    // exactly matches authoritative fields. It currently does not enumerate/reject
+    // additional index terms, so the false candidates must be filtered by the scorer.
+    let source = TantivySource::open_in_dir(&state, Limits::default(), &directory)
+        .expect("cold-open rows whose authoritative tails are intact");
+    assert_eq!(
+        crate::engine::test_support::binding_work(&source),
+        (ROWS, ROWS * 4),
+        "cold binding validates each source row and all four expected posting projections"
+    );
+    let visited_before = source.rank_docs_visited();
+    let hits = source
+        .search(&Query::new(vec!["forgedneedle".into()], Limits::default()).expect("query"))
+        .expect("search forged term");
+    assert!(
+        hits.is_empty(),
+        "surplus postings must not create semantic hits"
+    );
+    assert_eq!(
+        source.rank_docs_visited() - visited_before,
+        ROWS as u64,
+        "one forged posting per row makes the scorer visit the entire live corpus"
+    );
+
+    drop(source);
+    std::fs::remove_dir_all(directory).expect("remove forged projection directory");
+}
+
+#[test]
 fn an_edit_past_the_budget_leaves_the_projection_unchanged() {
     let original = vec![
         (document(1), vec![("name".into(), "alpha".into())]),

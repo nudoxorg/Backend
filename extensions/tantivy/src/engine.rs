@@ -3139,6 +3139,18 @@ pub(crate) mod test_support {
         )
     }
 
+    pub(crate) fn resident_segment_id(
+        source: &super::TantivySource,
+        document: backend_semantic::EntityId,
+    ) -> Option<tantivy::index::SegmentId> {
+        source
+            .documents
+            .live
+            .iter()
+            .find(|entry| entry.document.id == document)
+            .and_then(|entry| entry.segment_id)
+    }
+
     pub(crate) fn write_sparse_durable_fixture(
         state: &super::DocumentState,
         directory: &std::path::Path,
@@ -3178,6 +3190,61 @@ pub(crate) mod test_support {
                 address: None,
                 segment_id: None,
             }],
+        )?;
+        super::write_ordinal_map(directory, fingerprint, &documents)?;
+        super::write_binding_stamp(directory, fingerprint)?;
+        super::write_projection_manifest(
+            directory,
+            fingerprint,
+            super::DurableCacheBudget::default(),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn write_projection_with_surplus_posting_fixture(
+        state: &super::DocumentState,
+        directory: &std::path::Path,
+        field: &str,
+        token: &str,
+    ) -> Result<(), super::TantivySourceError> {
+        let live_count = state.iter().count();
+        if live_count == 0 || live_count > super::MAX_ORDINAL_SLOTS {
+            return Err(super::Error::SizeLimit.into());
+        }
+        let projected = super::projection_schema();
+        let index = super::Index::create_in_dir(directory, projected.schema)?;
+        let mut writer = index.writer(super::WRITER_MEMORY_BYTES)?;
+        let mut live = Vec::new();
+        live.try_reserve_exact(live_count)
+            .map_err(|_| super::Error::SizeLimit)?;
+        for (ordinal, (id, fields)) in state.iter().enumerate() {
+            let ordinal = u64::try_from(ordinal).map_err(|_| super::Error::SizeLimit)?;
+            let postings = super::write_document_with_index_extras(
+                &writer,
+                &projected.fields,
+                ordinal,
+                id,
+                fields,
+                &[(field, token)],
+                super::rank_material_limit(super::Limits::default()),
+            )?;
+            live.push(super::OrdinalDocument {
+                ordinal: u32::try_from(ordinal).map_err(|_| super::Error::SizeLimit)?,
+                document: super::LiveDocument {
+                    id,
+                    fields_digest: super::document_fields_digest(fields),
+                    postings,
+                },
+                address: None,
+                segment_id: None,
+            });
+        }
+        writer.commit()?;
+        writer.wait_merging_threads()?;
+        let fingerprint = super::projection_fingerprint(state.binding());
+        let documents = super::DocumentTable::from_live(
+            u32::try_from(live_count).map_err(|_| super::Error::SizeLimit)?,
+            live,
         )?;
         super::write_ordinal_map(directory, fingerprint, &documents)?;
         super::write_binding_stamp(directory, fingerprint)?;
@@ -3618,6 +3685,26 @@ fn write_document(
     document_fields: &[(String, String)],
     maximum_material_bytes: usize,
 ) -> Result<u32, TantivySourceError> {
+    write_document_with_index_extras(
+        writer,
+        fields,
+        document_ordinal,
+        document_id,
+        document_fields,
+        &[],
+        maximum_material_bytes,
+    )
+}
+
+fn write_document_with_index_extras(
+    writer: &tantivy::IndexWriter,
+    fields: &ProjectionFields,
+    document_ordinal: u64,
+    document_id: EntityId,
+    document_fields: &[(String, String)],
+    extra_indexed_terms: &[(&str, &str)],
+    maximum_material_bytes: usize,
+) -> Result<u32, TantivySourceError> {
     if document_fields.len() > u32::MAX as usize {
         return Err(Error::SizeLimit.into());
     }
@@ -3681,6 +3768,28 @@ fn write_document(
             append_rank_material_len(&mut material, token.ranking_bytes, maximum_material_bytes)?;
         }
     }
+    // Adversarial durable-projection fixtures can add terms to Tantivy without
+    // adding them to the source-authoritative rank material. Production callers
+    // use `write_document`, which always passes an empty slice.
+    #[cfg(test)]
+    for &(field, token) in extra_indexed_terms {
+        if field.is_empty() || field_weight(field) == 0 || token.is_empty() {
+            return Err(Error::MalformedInput.into());
+        }
+        let folded = token.to_ascii_lowercase();
+        document.add_text(fields.raw_token, token);
+        document.add_text(fields.folded_token, folded.as_str());
+        document.add_text(
+            fields.field_raw_token,
+            field_token_value(field, token, false),
+        );
+        document.add_text(
+            fields.field_folded_token,
+            field_token_value(field, token, true),
+        );
+    }
+    #[cfg(not(test))]
+    debug_assert!(extra_indexed_terms.is_empty());
     document.add_u64(fields.ordinal, document_ordinal);
     document.add_bytes(fields.rank_material, &material);
     document.add_u64(
