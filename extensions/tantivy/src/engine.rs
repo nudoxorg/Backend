@@ -203,7 +203,7 @@ struct OrdinalDocument {
     ordinal: u32,
     document: LiveDocument,
     address: Option<DocAddress>,
-    segment_id: Option<tantivy::SegmentId>,
+    segment_id: Option<tantivy::index::SegmentId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -3554,15 +3554,6 @@ fn revision_document_bytes(fields: &[(String, String)]) -> Result<usize, Error> 
     Ok(bytes)
 }
 
-fn decimal_digits(mut value: usize) -> usize {
-    let mut digits = 1;
-    while value >= 10 {
-        value /= 10;
-        digits += 1;
-    }
-    digits
-}
-
 fn rank_material_limit(limits: Limits) -> usize {
     limits
         .max_total_text_bytes
@@ -4123,7 +4114,7 @@ fn bind_resident_document_addresses(
     limits: Limits,
     state: &DocumentState,
     fields: ProjectionFields,
-    old_segment_ids: &HashSet<tantivy::SegmentId>,
+    old_segment_ids: &HashSet<tantivy::index::SegmentId>,
     changed_ordinals: &[u32],
 ) -> Result<BindingWork, TantivySourceError> {
     let searcher = reader.searcher();
