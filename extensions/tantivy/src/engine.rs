@@ -28,13 +28,17 @@ use tantivy::{
 const WRITER_MEMORY_BYTES: usize = 15_000_000;
 const BINDING_FILE: &str = "backend-binding-v2";
 const INTEGRITY_FILE: &str = "backend-files-v2";
+const ORDINAL_MAP_FILE: &str = "backend-ordinals-v1";
 const INTEGRITY_MAGIC: &[u8] = b"backend-tantivy-files-v2\0";
+const ORDINAL_MAP_MAGIC: &[u8] = b"backend-tantivy-ordinals-v1\0";
 const DURABLE_ROOTS_DIRECTORY: &str = "v2";
 const DURABLE_ROOT_LEASE: &str = ".backend-root-reader.lock";
 const MAX_RETAINED_DURABLE_ROOTS: usize = 4;
 const MAX_DURABLE_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_PROJECTION_FILES: usize = 65_536;
 const MAX_PROJECTION_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ORDINAL_MAP_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ORDINAL_SLOTS: usize = 4_000_000;
 const MAX_DURABLE_ROOT_SCAN_ENTRIES: usize = 65_536;
 static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 
@@ -247,14 +251,11 @@ impl TantivySource {
                 "indexed token count does not match bound state",
             ));
         }
-        let mut documents = Vec::new();
-        for (document, fields) in state.iter() {
-            documents.push(Some(LiveDocument {
-                id: document,
-                fields_digest: document_fields_digest(fields),
-                postings: posting_count(fields)?,
-            }));
-        }
+        let documents = read_ordinal_map(
+            state,
+            projection_fingerprint(state.binding()),
+            directory,
+        )?;
         let fields = projected.fields;
         Ok(Self {
             binding: state.binding(),
@@ -301,6 +302,11 @@ impl TantivySource {
         let projected = projection_schema();
         let index = Index::create_in_dir(directory.as_ref(), projected.schema)?;
         let source = Self::populate(state, limits, index, projected.fields)?;
+        write_ordinal_map(
+            directory.as_ref(),
+            projection_fingerprint(state.binding()),
+            &source.documents,
+        )?;
         write_binding_stamp(
             directory.as_ref(),
             projection_fingerprint(state.binding()),
@@ -535,6 +541,11 @@ impl TantivySource {
                 return Err(error);
             }
         };
+        write_ordinal_map(
+            &staging,
+            projection_fingerprint(next.binding()),
+            &staged.documents,
+        )?;
         write_binding_stamp(&staging, projection_fingerprint(next.binding()))?;
         drop(staged);
         write_projection_manifest(&staging, projection_fingerprint(next.binding()))?;
@@ -737,6 +748,14 @@ impl TantivySource {
                 .ok_or(Error::SizeLimit)?;
         }
         if term_count > budget.max_terms {
+            return Ok(None);
+        }
+        let resulting_slots = self.documents.len().saturating_add(added.len());
+        // Stable ordinals leave holes after deletion. Compact through a
+        // complete rebuild before the sparse ordinal map grows without bound.
+        if resulting_slots > MAX_ORDINAL_SLOTS
+            || resulting_slots > next_fields.len().saturating_mul(2).saturating_add(65_536)
+        {
             return Ok(None);
         }
         let mut documents = self.documents.clone();
@@ -1153,6 +1172,125 @@ fn read_binding_stamp(directory: &Path) -> Result<[u8; 32], TantivySourceError> 
     Ok(binding)
 }
 
+fn write_ordinal_map(
+    directory: &Path,
+    fingerprint: [u8; 32],
+    documents: &[Option<LiveDocument>],
+) -> Result<(), TantivySourceError> {
+    if documents.len() > MAX_ORDINAL_SLOTS {
+        return Err(Error::SizeLimit.into());
+    }
+    let live_count = documents.iter().filter(|document| document.is_some()).count();
+    let record_bytes = live_count.checked_mul(8 + 32 + 32 + 4).ok_or(Error::SizeLimit)?;
+    let total_bytes = ORDINAL_MAP_MAGIC
+        .len()
+        .checked_add(32 + 8 + 8)
+        .and_then(|header| header.checked_add(record_bytes))
+        .ok_or(Error::SizeLimit)?;
+    if total_bytes as u64 > MAX_ORDINAL_MAP_BYTES {
+        return Err(Error::SizeLimit.into());
+    }
+    let mut bytes = Vec::with_capacity(total_bytes);
+    bytes.extend_from_slice(ORDINAL_MAP_MAGIC);
+    bytes.extend_from_slice(&fingerprint);
+    bytes.extend_from_slice(&u64::try_from(documents.len()).map_err(|_| Error::SizeLimit)?.to_le_bytes());
+    bytes.extend_from_slice(&u64::try_from(live_count).map_err(|_| Error::SizeLimit)?.to_le_bytes());
+    for (ordinal, document) in documents.iter().enumerate() {
+        let Some(document) = document else { continue };
+        bytes.extend_from_slice(&u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?.to_le_bytes());
+        bytes.extend_from_slice(document.id.as_bytes());
+        bytes.extend_from_slice(&document.fields_digest);
+        bytes.extend_from_slice(&document.postings.to_le_bytes());
+    }
+    debug_assert_eq!(bytes.len(), total_bytes);
+    let staging = directory.join(format!(".{ORDINAL_MAP_FILE}.tmp"));
+    let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&staging)?;
+    std::io::Write::write_all(&mut file, &bytes)?;
+    file.sync_all()?;
+    backend_platform::durable::replace_file(&staging, &directory.join(ORDINAL_MAP_FILE))?;
+    sync_directory(directory)?;
+    Ok(())
+}
+
+fn read_ordinal_map(
+    state: &DocumentState,
+    fingerprint: [u8; 32],
+    directory: &Path,
+) -> Result<Vec<Option<LiveDocument>>, TantivySourceError> {
+    let path = directory.join(ORDINAL_MAP_FILE);
+    let bytes = match read_bounded_regular_file(&path, MAX_ORDINAL_MAP_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(TantivySource::corrupt("durable projection has no ordinal map"));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(TantivySource::corrupt("durable projection ordinal map is malformed"));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !bytes.starts_with(ORDINAL_MAP_MAGIC) {
+        return Err(TantivySource::corrupt("durable projection ordinal map is malformed"));
+    }
+    let mut offset = ORDINAL_MAP_MAGIC.len();
+    if take_bytes::<32>(&bytes, &mut offset) != Some(fingerprint) {
+        return Err(TantivySource::corrupt("durable projection ordinal map has another root"));
+    }
+    let Some(slot_count) = take_u64(&bytes, &mut offset).and_then(|count| usize::try_from(count).ok()) else {
+        return Err(TantivySource::corrupt("durable projection ordinal map has an invalid slot count"));
+    };
+    let Some(live_count) = take_u64(&bytes, &mut offset).and_then(|count| usize::try_from(count).ok()) else {
+        return Err(TantivySource::corrupt("durable projection ordinal map has an invalid live count"));
+    };
+    let Some(expected_bytes) = live_count
+        .checked_mul(8 + 32 + 32 + 4)
+        .and_then(|records| offset.checked_add(records))
+    else {
+        return Err(TantivySource::corrupt("durable projection ordinal map size overflows"));
+    };
+    let expected = state.iter().collect::<Vec<_>>();
+    if slot_count > MAX_ORDINAL_SLOTS || live_count > slot_count
+        || live_count != expected.len() || expected_bytes != bytes.len()
+    {
+        return Err(TantivySource::corrupt("durable projection ordinal map has inconsistent counts"));
+    }
+    let mut seen = vec![false; expected.len()];
+    let mut documents = vec![None; slot_count];
+    for _ in 0..live_count {
+        let Some(ordinal) = take_u64(&bytes, &mut offset).and_then(|ordinal| usize::try_from(ordinal).ok()) else {
+            return Err(TantivySource::corrupt("durable projection ordinal map is truncated"));
+        };
+        let Some(id_bytes) = take_bytes::<32>(&bytes, &mut offset) else {
+            return Err(TantivySource::corrupt("durable projection ordinal identity is truncated"));
+        };
+        let Some(fields_digest) = take_bytes::<32>(&bytes, &mut offset) else {
+            return Err(TantivySource::corrupt("durable projection ordinal digest is truncated"));
+        };
+        let Some(postings) = take_u32(&bytes, &mut offset) else {
+            return Err(TantivySource::corrupt("durable projection ordinal posting count is truncated"));
+        };
+        if ordinal >= slot_count || documents[ordinal].is_some() {
+            return Err(TantivySource::corrupt("durable projection ordinal is duplicated or outside the map"));
+        }
+        let expected_index = expected.binary_search_by(|(id, _)| id.as_bytes().cmp(&id_bytes))
+            .map_err(|_| TantivySource::corrupt("durable projection ordinal names another document"))?;
+        if seen[expected_index] {
+            return Err(TantivySource::corrupt("durable projection ordinal document is duplicated"));
+        }
+        let (id, fields) = expected[expected_index];
+        let expected_digest = document_fields_digest(fields);
+        let expected_postings = posting_count(fields)?;
+        if fields_digest != expected_digest || postings != expected_postings {
+            return Err(TantivySource::corrupt("durable projection ordinal does not match its bound document"));
+        }
+        seen[expected_index] = true;
+        documents[ordinal] = Some(LiveDocument { id, fields_digest, postings });
+    }
+    if offset != bytes.len() || seen.iter().any(|admitted| !admitted) {
+        return Err(TantivySource::corrupt("durable projection ordinal map omits a bound document"));
+    }
+    Ok(documents)
+}
+
 fn write_projection_manifest(
     directory: &Path,
     fingerprint: [u8; 32],
@@ -1420,10 +1558,11 @@ fn is_volatile_projection_file(name: &str) -> bool {
             | ".tantivy-meta.lock"
     ) || name == format!(".{BINDING_FILE}.tmp")
         || name == format!(".{INTEGRITY_FILE}.tmp")
+        || name == format!(".{ORDINAL_MAP_FILE}.tmp")
 }
 
 fn is_projection_file_name(name: &str) -> bool {
-    if matches!(name, BINDING_FILE | "meta.json" | ".managed.json") {
+    if matches!(name, BINDING_FILE | ORDINAL_MAP_FILE | "meta.json" | ".managed.json") {
         return true;
     }
     let Some((segment, component)) = name.split_once('.') else {
@@ -1534,10 +1673,12 @@ fn copy_projection_tree(source: &Path, destination: &Path) -> Result<(), std::io
             || name == DURABLE_ROOT_LEASE
             || name == format!(".{BINDING_FILE}.tmp")
             || name == format!(".{INTEGRITY_FILE}.tmp")
+            || name == format!(".{ORDINAL_MAP_FILE}.tmp")
         {
             continue;
         }
         if name == BINDING_FILE
+            || name == ORDINAL_MAP_FILE
             || matches!(name.as_str(), ".tantivy-writer.lock" | ".tantivy-meta.lock")
         {
             copy_projection_file_nofollow(&source_path, &destination_path, metadata.len())?;
