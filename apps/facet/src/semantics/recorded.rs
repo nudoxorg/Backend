@@ -150,12 +150,247 @@ impl Language {
     }
 }
 
+/// Read a C declaration from the grammar tree. Declarator names are removed
+/// only by their syntax-node range; whitespace and token guessing cannot
+/// mistake a nested function-pointer parameter for the outer parameter name.
+fn c_pipe(signature: &str, expected: &str) -> Option<Pipe> {
+    if expected.is_empty() || !expected.bytes().all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+        || expected.as_bytes().first().is_some_and(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&tree_sitter_c::LANGUAGE.into()).ok()?;
+    let mut tree = parser.parse(signature, None)?;
+    // The source-signature producer keeps a function definition's header and
+    // strips its body. That leaves a declaration header without C's
+    // terminating semicolon. Retry with that grammar delimiter only when the
+    // original input is a syntax error and has no terminator; all projected
+    // names and types still come from byte ranges into the unchanged recorded
+    // source below.
+    if tree.root_node().has_error() && !signature.trim_end().ends_with(';') {
+        let parser_input = format!("{signature};");
+        tree = parser.parse(parser_input.as_str(), None)?;
+    }
+    let root = tree.root_node();
+    if root.has_error() || root.kind() != "translation_unit" { return None; }
+
+    let mut selected = None;
+    for index in 0..root.named_child_count() {
+        let top = root.named_child(index as u32)?;
+        if !matches!(top.kind(), "declaration" | "function_definition") { continue; }
+        for child_index in 0..top.named_child_count() {
+            let declarator = top.named_child(child_index as u32)?;
+            if !c_declarator_kind(declarator.kind()) { continue; }
+            let Some((identifier, path)) = c_declarator_path(declarator, signature) else { continue };
+            if c_node_text(signature, identifier)? != expected { continue; }
+
+            // The operator nearest the identifier determines what the name
+            // declares. A pointer nearer than a function means this is a
+            // function-pointer object, not a callable declaration.
+            let nearest = path.iter().enumerate().rev().find(|(_, node)| c_operator(node.kind()))?;
+            if nearest.1.kind() != "function_declarator" { return None; }
+            if selected.is_some() { return None; }
+            let function_at = nearest.0;
+            selected = Some((top, path, function_at));
+        }
+    }
+
+    let (declaration, path, function_at) = selected?;
+    let function = *path.get(function_at)?;
+    let parameters = function.child_by_field_name("parameters")?;
+    let scope = Scope::new(&Nowhere);
+    let mut inputs = Vec::new();
+    let mut variadic = false;
+    let mut parameter_count = 0;
+    for index in 0..parameters.named_child_count() {
+        let parameter = parameters.named_child(index as u32)?;
+        match parameter.kind() {
+            "parameter_declaration" => {
+                parameter_count += 1;
+                let (name, ty) = c_parameter(signature, parameter, inputs.len() + 1, &scope)?;
+                // In a prototype, the single unqualified `void` parameter is
+                // the grammar's spelling for an empty parameter list.
+                if ty.source.as_ref() == "void" {
+                    if parameter_count != 1 || parameters.named_child_count() != 1 {
+                        return None;
+                    }
+                    continue;
+                }
+                inputs.push(Input { name: name.into(), ty: Some(ty), receiver: None });
+            }
+            "variadic_parameter" => {
+                if variadic || index + 1 != parameters.named_child_count() { return None; }
+                variadic = true;
+            }
+            // An empty `()` and old-style identifier lists do not tell us the
+            // callable's input types. Do not present them as known ports.
+            _ => return None,
+        }
+    }
+    if parameter_count == 0 || (variadic && inputs.is_empty()) { return None; }
+
+    let does_not_return = (0..declaration.named_child_count()).any(|index| {
+        declaration.named_child(index as u32).is_some_and(|node| {
+            node.kind() == "type_qualifier"
+                && c_node_text(signature, node).is_some_and(|text| matches!(text.trim(), "_Noreturn" | "noreturn"))
+        })
+    });
+    let returns_void = (0..declaration.named_child_count()).any(|index| {
+        declaration.named_child(index as u32).is_some_and(|node| {
+            node.kind() == "type_specifier" && c_node_text(signature, node).is_some_and(|text| text.trim() == "void")
+        })
+    });
+    let base = c_base_type(signature, declaration)?;
+    let mut pointers = String::new();
+    for node in path.iter().take(function_at) {
+        match node.kind() {
+            "pointer_declarator" => {
+                let inner = c_declarator_child(*node)?;
+                pointers.push_str(c_node_text(signature, *node).and_then(|text| {
+                    let cut = inner.start_byte().checked_sub(node.start_byte())?;
+                    text.get(..cut)
+                })?);
+            }
+            "parenthesized_declarator" | "attributed_declarator" => {}
+            // A function cannot return an array or another function. More
+            // involved vendor declarators remain unavailable until their
+            // complete return type can be represented without inference.
+            _ => return None,
+        }
+    }
+    if does_not_return && (!returns_void || !pointers.is_empty()) { return None; }
+    let result = if pointers.is_empty() { base } else { format!("{base} {pointers}") };
+    let output = (!returns_void || !pointers.is_empty()).then(|| scope.spell_text(&result));
+    let mut flags = Vec::new();
+    if variadic { flags.push("accepts additional arguments"); }
+    if does_not_return { flags.push("does not return"); }
+    Some(Pipe { inputs, output, fails: None, wheres: Vec::new(), flags })
+}
+
+fn c_operator(kind: &str) -> bool {
+    matches!(kind, "function_declarator" | "pointer_declarator" | "array_declarator")
+}
+
+fn c_declarator_kind(kind: &str) -> bool {
+    matches!(kind,
+        "identifier" | "pointer_declarator" | "function_declarator" | "array_declarator"
+        | "parenthesized_declarator" | "attributed_declarator" | "abstract_pointer_declarator"
+        | "abstract_function_declarator" | "abstract_array_declarator" | "abstract_parenthesized_declarator")
+}
+
+fn c_declarator_child<'tree>(node: tree_sitter::Node<'tree>) -> Option<tree_sitter::Node<'tree>> {
+    if let Some(child) = node.child_by_field_name("declarator") { return Some(child); }
+    for index in 0..node.named_child_count() {
+        let child = node.named_child(index as u32)?;
+        if c_declarator_kind(child.kind()) && child.kind() != "identifier" { return Some(child); }
+    }
+    None
+}
+
+/// The ordered path follows only declarator fields, never parameter-list
+/// children. The final node is the operator immediately surrounding the name.
+fn c_declarator_path<'tree>(
+    node: tree_sitter::Node<'tree>,
+    source: &str,
+) -> Option<(tree_sitter::Node<'tree>, Vec<tree_sitter::Node<'tree>>)> {
+    if node.kind() == "identifier" { return Some((node, Vec::new())); }
+    if !c_declarator_kind(node.kind()) { return None; }
+    let child = c_declarator_child(node)?;
+    let (identifier, mut path) = c_declarator_path(child, source)?;
+    let _ = source.get(identifier.byte_range())?;
+    path.insert(0, node);
+    Some((identifier, path))
+}
+
+fn c_node_text<'source>(source: &'source str, node: tree_sitter::Node<'_>) -> Option<&'source str> {
+    source.get(node.byte_range())
+}
+
+/// Type specifiers and qualifiers form the base type. Storage classes affect
+/// declaration placement, not the parameter or result type.
+fn c_base_type(source: &str, declaration: tree_sitter::Node<'_>) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut types = 0;
+    for index in 0..declaration.named_child_count() {
+        let child = declaration.named_child(index as u32)?;
+        match child.kind() {
+            "type_specifier" => {
+                types += 1;
+                parts.push(c_node_text(source, child)?);
+            }
+            "type_qualifier" => {
+                let qualifier = c_node_text(source, child)?;
+                if !matches!(qualifier.trim(), "_Noreturn" | "noreturn") { parts.push(qualifier); }
+            }
+            "storage_class_specifier" | "compound_statement" => {}
+            "attribute_specifier" | "attribute_declaration" | "ms_declspec_modifier" | "ms_call_modifier" => return None,
+            kind if c_declarator_kind(kind) => {}
+            _ => return None,
+        }
+    }
+    (types == 1 && !parts.is_empty()).then(|| parts.join(" "))
+}
+
+fn c_parameter(
+    source: &str,
+    parameter: tree_sitter::Node<'_>,
+    ordinal: usize,
+    scope: &Scope<'_>,
+) -> Option<(String, crate::semantics::types::Spelled)> {
+    let mut specifiers = Vec::new();
+    let mut types = 0;
+    let mut declarator = None;
+    for index in 0..parameter.named_child_count() {
+        let child = parameter.named_child(index as u32)?;
+        match child.kind() {
+            "type_specifier" => {
+                types += 1;
+                specifiers.push(c_node_text(source, child)?);
+            }
+            "type_qualifier" => specifiers.push(c_node_text(source, child)?),
+            "storage_class_specifier" => {}
+            "attribute_specifier" | "attribute_declaration" | "ms_declspec_modifier" => return None,
+            kind if c_declarator_kind(kind) => {
+                if declarator.replace(child).is_some() { return None; }
+            }
+            _ => return None,
+        }
+    }
+    if types != 1 || specifiers.is_empty() { return None; }
+    let mut ty = specifiers.join(" ");
+    let name = if let Some(declarator) = declarator {
+        let text = c_node_text(source, declarator)?;
+        let mut spelling = text.to_owned();
+        let label = if let Some((identifier, _)) = c_declarator_path(declarator, source) {
+            let name = c_node_text(source, identifier)?.to_owned();
+            let range = identifier.byte_range();
+            let start = range.start.checked_sub(declarator.start_byte())?;
+            let end = range.end.checked_sub(declarator.start_byte())?;
+            spelling = format!("{}{}", text.get(..start)?, text.get(end..)?);
+            name
+        } else {
+            format!("argument {ordinal}")
+        };
+        if !spelling.trim().is_empty() {
+            ty.push(' ');
+            ty.push_str(spelling.trim());
+        }
+        label
+    } else {
+        format!("argument {ordinal}")
+    };
+    Some((name, scope.spell_text(&ty)))
+}
+
 /// Project one recorded declaration into named input ports, a success port,
 /// an alternative failure port, bounds and qualifier facts. This says nothing
 /// about interchangeability or behavior not expressed by the signature.
 #[must_use]
 pub fn callable(signature: &str, name: &str, language: Language) -> Option<Pipe> {
     if language == Language::Rust { return rust_pipe(signature, name); }
+    if language == Language::C { return c_pipe(signature, name); }
     let signature = declaration_start(signature)?;
     if matches!(language, Language::Unknown | Language::Cpp | Language::Go) || name.is_empty() { return None; }
     let named = signature.match_indices(name).find(|(at, _)| {
@@ -195,7 +430,7 @@ pub fn callable(signature: &str, name: &str, language: Language) -> Option<Pipe>
                 (parameter[..colon].trim(), parameter[colon + 1..].trim())
             }
             Language::Go => parameter.split_once(char::is_whitespace)?,
-            Language::Java | Language::CSharp | Language::Cpp | Language::C => {
+            Language::Java | Language::CSharp | Language::Cpp => {
                 let split = parameter.rfind(char::is_whitespace)?;
                 (parameter[split..].trim(), parameter[..split].trim())
             }
@@ -209,7 +444,7 @@ pub fn callable(signature: &str, name: &str, language: Language) -> Option<Pipe>
         Language::Python => tail.strip_prefix("->")?.trim().strip_suffix(':').unwrap_or(tail.strip_prefix("->")?.trim()).trim(),
         Language::TypeScript => tail.strip_prefix(':')?.trim(),
         Language::Go => tail,
-        Language::Java | Language::CSharp | Language::Cpp | Language::C => {
+        Language::Java | Language::CSharp | Language::Cpp => {
             let prefix = signature[..named].trim();
             let mut angle = 0_i32; let mut start = 0;
             for (at, c) in prefix.char_indices().rev() {
@@ -220,6 +455,7 @@ pub fn callable(signature: &str, name: &str, language: Language) -> Option<Pipe>
             if matches!(result, "public" | "private" | "protected" | "static" | "virtual" | "override") || result.is_empty() { return None; }
             result
         }
+        Language::C | Language::Unknown => return None,
         _ => return None,
     };
     // Bodies, object-literal returns and trailing statements are unsupported.
@@ -257,6 +493,70 @@ mod tests {
         assert_eq!(java.output.unwrap().source.as_ref(), "String");
         assert!(callable("def size(items)", "size", Language::Python).is_none());
         assert!(callable("function size(items: Item)", "size", Language::TypeScript).is_none());
+    }
+
+    #[test]
+    fn c_uses_declarator_nodes_for_names_types_and_variadic_arity() {
+        let pointer = callable("const char *copy(const char *source);", "copy", Language::C).unwrap();
+        assert_eq!(pointer.inputs[0].name.as_ref(), "source");
+        assert_eq!(pointer.inputs[0].ty.as_ref().unwrap().source.as_ref(), "const char *");
+        assert_eq!(pointer.output.as_ref().unwrap().source.as_ref(), "const char *");
+
+        let definition = callable(
+            "static inline char *find(const char *text) { return (char *)text; }",
+            "find",
+            Language::C,
+        ).unwrap();
+        assert_eq!(definition.output.as_ref().unwrap().source.as_ref(), "char *");
+
+        let callback = callable(
+            "int apply(void *context, int (*callback)(const char *value, unsigned count));",
+            "apply",
+            Language::C,
+        ).unwrap();
+        assert_eq!(callback.inputs[1].name.as_ref(), "callback");
+        assert_eq!(callback.inputs[1].ty.as_ref().unwrap().source.as_ref(), "int (*)(const char *value, unsigned count)");
+
+        let array = callable("size_t fill(char destination[static 8], size_t capacity);", "fill", Language::C).unwrap();
+        assert_eq!(array.inputs[0].name.as_ref(), "destination");
+        assert_eq!(array.inputs[0].ty.as_ref().unwrap().source.as_ref(), "char [static 8]");
+
+        let qualified = callable("void accept(int * const * restrict value);", "accept", Language::C).unwrap();
+        assert_eq!(qualified.inputs[0].ty.as_ref().unwrap().source.as_ref(), "int * const * restrict");
+
+        let variadic = callable("int log_line(const char *format, ...);", "log_line", Language::C).unwrap();
+        assert_eq!(variadic.flags, vec!["accepts additional arguments"]);
+        assert_eq!(variadic.inputs[0].name.as_ref(), "format");
+
+        let terminating = callable("_Noreturn void fail(const char *reason);", "fail", Language::C).unwrap();
+        assert!(terminating.output.is_none());
+        assert!(terminating.flags.contains(&"does not return"));
+    }
+
+    #[test]
+    fn c_distinguishes_unnamed_void_empty_and_unprototyped_parameter_lists() {
+        let unnamed = callable("void consume(const char *, int);", "consume", Language::C).unwrap();
+        assert_eq!(unnamed.inputs[0].name.as_ref(), "argument 1");
+        assert_eq!(unnamed.inputs[1].name.as_ref(), "argument 2");
+        assert_eq!(unnamed.inputs[0].ty.as_ref().unwrap().source.as_ref(), "const char *");
+        assert!(unnamed.output.is_none());
+
+        let empty = callable("void reset(void);", "reset", Language::C).unwrap();
+        assert!(empty.inputs.is_empty());
+        assert!(empty.output.is_none());
+        assert!(callable("void unknown();", "unknown", Language::C).is_none());
+        assert!(callable("int (*not_callable)(int);", "not_callable", Language::C).is_none());
+        assert!(callable("int broken(int value", "broken", Language::C).is_none());
+        assert!(callable("/* expected */ int other(void);", "expected", Language::C).is_none());
+    }
+
+    #[test]
+    fn c_accepts_the_bodyless_definition_header_kept_by_the_signature_producer() {
+        let pipe = callable("static int count(const char *text)", "count", Language::C).unwrap();
+        assert_eq!(pipe.inputs[0].name.as_ref(), "text");
+        assert_eq!(pipe.inputs[0].ty.as_ref().unwrap().source.as_ref(), "const char *");
+        assert_eq!(pipe.output.as_ref().unwrap().source.as_ref(), "int");
+        assert!(callable("int count(const char *text", "count", Language::C).is_none());
     }
 
     #[test]

@@ -511,6 +511,14 @@ pinned Nix closure, identical canonical path mounts, matching OS/architecture,
 and identical verified dependency contents. Keep these values unchanged after
 enrollment; changing them requires a new scope report and worker grant.
 
+The repository's pinned development shell and `backend` command wrapper set
+`NUDOX_RUSTC` and `NUDOX_CARGO` from the same Fenix toolchain. If
+`NUDOX_CARGO_HOME` is not supplied explicitly, they use absolute `CARGO_HOME`
+when configured, otherwise `$HOME/.cargo` when `HOME` is absolute. The owner
+still checks the complete tuple at runtime; missing or relative Cargo-home
+configuration produces a typed Rust capability refusal. Desktop startup uses
+the selected toolchain provisioner to construct the same explicit tuple.
+
 ## 3. Configure addresses and open the direct Iroh path
 
 Choose stable private IP addresses and distinct UDP ports. In the examples,

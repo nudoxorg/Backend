@@ -16,7 +16,7 @@ pub use codec::RegistryNativeMetadataCodecError;
 pub use model::*;
 
 /// Current native metadata DTO schema.
-pub const REGISTRY_NATIVE_METADATA_VERSION: u16 = 1;
+pub const REGISTRY_NATIVE_METADATA_VERSION: u16 = 3;
 /// Maximum number of rows retained in one native metadata collection.
 pub const MAX_REGISTRY_NATIVE_ROWS: usize = 4_096;
 /// Maximum text extent retained in one metadata field.

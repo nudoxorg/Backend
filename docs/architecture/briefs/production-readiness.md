@@ -369,7 +369,8 @@ The owner flagged that typing "is getting worse". The known issues:
 ---
 
 ## Status after the finishers
-*(Filled in when F-Data and F-Shell report: each [F-…] item above as done with evidence, or not done with the reason.)*
+
+The 2026-09-29 inventory above is historical. The checkpoint below records what was integrated and tested, and the resumed-readiness ledger records subsequent verification. A feature's existence in source, an isolated unit test, and a passing installed-product journey are separate evidence; none substitutes for the others.
 
 ## Checkpoint verification — 2026-09-30
 
@@ -399,3 +400,30 @@ Eight desktop owner tests still need investigation. Focused runs refused cached 
 Five replication failures remain unresolved or unverified: corrupt unreferenced bridge-map admission, deleting the last branch reference, torn references/missing parents or generations, competing child-process reference CAS, and nonempty typed-V2 cold publication/replay/GC. The three focused passing repairs above concern fixture privacy/layout and physical map-byte accounting. They do not prove these five cases safe.
 
 The GUI process wrapper now uses the current live journey runner rather than the retired capture adapter. Its project-choice plan includes a restart and checks that the project remains on the shelf. This native journey has not been executed in this checkpoint. The full Facet suite and comprehensive visual/motion captures have also not been rerun. Existing GUI gaps remain in `gui-remaining.md` and the tracked inventories in `docs/reviews/gui-checkpoint-2026-09-30/`.
+
+## Resumed readiness — 2026-09-30
+
+The collected checkpoint was pushed to canonical at `f9c158af0dfc229c4567bf5cd725c5c0828043fa`. The following work is being integrated on the continuation worktree; this is not a release verdict.
+
+### Verified since the checkpoint
+
+- The complete replication library suite passed: **178 passed, 0 failed, 1 ignored**, in 287.20 seconds. The five outstanding cases received test repairs in `655701202`: valid-map checksum corruption, process-death GC recovery, strict missing-parent/generation validation without sweeping, competing child-process reference CAS, and proof-bearing typed-V2 cold publication/replay. The tests independently inspect durable file inventories and selected roots. A reclaimed-commit statistics discrepancy is still being investigated; physical reclamation does not prove reporting correctness.
+- Explicit `CARGO_BUILD_BUILD_DIR` no longer bypasses the shared build-capacity lease. The process-protocol regression suite passed for explicit-directory contention, preservation of caller placement, independent lanes, serialization, stale-process recovery, and cancellation. The saved Nix environment still requires explicit lane coordination until it incorporates this wrapper revision.
+- Current-source CLI, locald, and MCP binaries built successfully in the saved Nix shell. This proves buildability, not live ingest, restart, remote access, or GUI readiness.
+- Direct rust-analyzer workspace opening and source analysis of cached `toml 0.8.23/examples/decode.rs` succeed. Offline full Cargo metadata alone is therefore not the sufficient explanation for the owner refusal: rust-analyzer can use its no-dependencies fallback. The package boundary currently drops the concrete Rust authority diagnostic; the owner lane is fixing that before selecting a remedy.
+
+### Product acceptance work
+
+| Boundary | Verified gap | Required acceptance evidence |
+|---|---|---|
+| Owner/compiler | Some package errors lose their typed diagnostics; desktop cancellation does not name an owner-admitted job. | Real Add and cancel preserve synchronous CLI/MCP terminal behavior, expose stage/package progress, keep reads responsive, preserve prior selection on refusal/cancellation, and recover from process death. |
+| Persistent search | Semantic and discovery queries construct in-memory Tantivy indexes; durable Turso projection and durable Tantivy primitives exist separately. | Production serving binds persisted postings to the exact selected root, updates and deletes correctly, rejects stale/incomplete projections, and reproduces real queries after a cold process restart and backup restore. |
+| Typed IR history | V3 producer and bounded verifier exist, but the production writer still emits ordinal 1 MiB core segments. | Owner-selected native images produce typed stable-key segments, durable history/ref publication, cold replay, and client hydration. Admission binds exact source/capture/selection identity; unproven read-frontier coverage must remain unproven. Whole-family scans must not be described as changed-key compilation. |
+| Remote client | Authenticated Iroh compiler dispatch/results work; client queries and hydration are local Unix-socket operations. | An independently running authenticated Iroh client performs product queries and bounded verified range hydration, with exact selection binding, backpressure, interrupted transfer, restart/resume, and capability rejection. |
+| Embeddings | Verified external inference and separate embedding planes exist; native GPU inference and durable changed-content reuse are not established. | Real model/provider correctness, typed content/model/tokenizer keys, bounded batch buffers, changed/deleted vector publication, withdrawal and restart recovery, and measured cold/warm RAM/VRAM and work counts. |
+| Registries/advisories | Seven acquisition providers and typed facts exist, but browse-field/source completeness varies. | Real pinned packages from every supported registry, source-stamped missing/known-empty distinctions, yank and advisory changes, bounded refresh/backoff, and dependency/dependent consistency. |
+| GUI data | Releases and graph still have reachable fixture-backed production paths; Settings and several navigation paths remain incomplete. | Real owner-backed release comparisons, declarations and relations, Add/settings/MCP setup, all supported language labels/source views, keyboard/focus behavior, and persistence across ordinary first and second launches. |
+| GUI presentation | Comprehensive current captures, motion/resize evidence and native packaging checks have not passed. | Inspect actual pixels and crops across components/pages, themes, text scales and window widths; test transition reversal, settlement, focus and input; verify native menus, icon/version provenance, cold launch and diagnosable refusal. No new canvas drawing. |
+| Deployment/quality | Existing live backup and worker/hydration journeys exercise different pieces; search-quality corpora do not establish superiority. | One real compiler/index/client journey, running-ingest Turso backups with matching owner CAS/journals, cold restore without sidecars, seven-language CLI/MCP journeys, and independently judged same-scope search accuracy plus same-host timings. |
+
+Implementation lanes use separate worktrees. At most four Cargo/build lanes may run machine-wide, with one Cargo process and one compiler job per lane; source-only lanes wait for a handoff. Each slice is reviewed before integration, and integration requires current-source product journeys and visual inspection rather than accepting an agent's completion summary.

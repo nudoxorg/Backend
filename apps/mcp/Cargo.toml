@@ -26,6 +26,7 @@ backend-library = { path = "../../crates/library" }
 backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
+base64.workspace = true
 blake3.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true

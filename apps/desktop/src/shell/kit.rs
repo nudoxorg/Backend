@@ -12,8 +12,8 @@ use facet::icons::Kind;
 use facet::tokens::TypeRole;
 use facet::{Measure, Palette, Set as _};
 use gpui::{
-    App, Bounds, Context, Div, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled,
-    Task, canvas, div, fill, point, px, size,
+    App, Context, Div, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, Task,
+    Window, div, px,
 };
 use std::time::Duration;
 
@@ -190,21 +190,21 @@ pub(crate) fn pending(width: Pixels, role: TypeRole, measure: &Measure, palette:
     let role = measure.role(role);
     let tick: Hsla = palette.ink4.into();
     let height = px(role.line);
-    canvas(
-        |_, _, _| {},
-        move |bounds: Bounds<Pixels>, (), window, _| {
-            let top = bounds.origin.y + height * 0.25;
-            let tall = height * 0.5;
-            let mut x = bounds.origin.x;
-            let end = bounds.origin.x + bounds.size.width;
-            while x < end {
-                window.paint_quad(fill(Bounds::new(point(x, top), size(px(1.0), tall)), tick));
-                x += px(4.0);
-            }
-        },
-    )
-    .w(width)
-    .h(height)
+    let mut ticks = Vec::new();
+    let mut x = px(0.0);
+    while x < width {
+        ticks.push(
+            div()
+                .absolute()
+                .left(x)
+                .top(height * 0.25)
+                .w(px(1.0))
+                .h(height * 0.5)
+                .bg(tick),
+        );
+        x += px(4.0);
+    }
+    div().relative().w(width).h(height).children(ticks)
 }
 
 /// Hover intent for one region: after the pointer rests on a link for
@@ -241,29 +241,6 @@ impl HoverIntent {
             links.cancel_prefetch(&key, cx);
         }
     }
-}
-
-/// Publishes a scroll container's viewport and full content extent to the
-/// probe ledger, so the harness's `offscreen` lint can tell rows reachable by
-/// scrolling from rows clipped away. Add it right after the container, as
-/// its sibling: the container has settled its scroll bounds by then.
-pub(crate) fn scroll_probe(key: &'static str, handle: gpui::ScrollHandle) -> impl IntoElement {
-    canvas(
-        move |_, _, cx| {
-            if facet::probe::enabled(cx) {
-                let viewport = handle.bounds();
-                let reach = handle.max_offset();
-                let content = Bounds::new(
-                    viewport.origin,
-                    size(viewport.size.width + reach.x, viewport.size.height + reach.y),
-                );
-                facet::probe::record_scroll(cx, &gpui::ElementId::Name(SharedString::new_static(key)), viewport, content);
-            }
-        },
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .size_0()
 }
 
 /// A key cap that shows over a shell-drawn control while ⌘ is held (facet

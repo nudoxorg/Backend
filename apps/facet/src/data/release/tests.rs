@@ -1,7 +1,7 @@
 //! Content truth for the upgrade lens, against the fixture (a slice of the
 //! real toml and smallvec releases and this workspace's uses of them).
 
-use super::{Mark, What, fixture, lens, marked, summary};
+use super::{ComparisonStatus, Mark, SourceAvailability, What, fixture, lens, marked, summary};
 use crate::semantics::types::Nowhere;
 
 const TOML_PIN: &str = "0.8.23";
@@ -111,14 +111,55 @@ fn smallvec_1_16_0_to_1_16_1_changes_nothing() {
 }
 
 #[test]
-fn a_release_not_on_this_machine_is_said_so() {
+fn a_release_without_local_source_is_said_so_without_claiming_its_date_is_known() {
     let krate = toml();
-    let old = krate.versions.iter().find(|v| !v.local).expect("some toml release is date-only");
+    let old = krate
+        .versions
+        .iter()
+        .find(|v| v.source == SourceAvailability::Unavailable)
+        .expect("some toml release is date-only");
     let line = summary(krate, TOML_PIN, &old.v);
-    assert!(!line.local);
-    assert_eq!(line.words(&old.v), format!("{} is not on this machine; only its date is known", super::short(&old.v)));
+    assert_eq!(line.status, ComparisonStatus::SourceUnavailable);
+    assert_eq!(line.words(&old.v), format!("{} source is unavailable; its API comparison is unavailable", super::short(&old.v)));
     let lens = lens(krate, "toml::value::Value", &old.v, &Nowhere);
     assert!(!lens.compared() && lens.rows.is_empty());
+}
+
+#[test]
+fn a_local_release_without_the_exact_diff_is_not_called_absent_or_unchanged() {
+    let mut krate = toml().clone();
+    let local = krate
+        .versions
+        .iter()
+        .find(|version| version.source == SourceAvailability::Available && version.v.as_ref() != TOML_PIN)
+        .expect("a locally available release");
+    let target = local.v.to_string();
+    krate.diffs.retain(|diff| !(diff.from == TOML_PIN && diff.to == target));
+
+    let line = summary(&krate, TOML_PIN, &target);
+    assert_eq!(line.status, ComparisonStatus::DiffUnavailable);
+    assert_eq!(line.words(&target), format!("{} is on this machine; its comparison is unavailable", super::short(&target)));
+    let lens = lens(&krate, "toml::value::Value", &target, &Nowhere);
+    assert_eq!(lens.status, ComparisonStatus::DiffUnavailable);
+    assert!(!lens.compared());
+    assert!(lens.rows.is_empty());
+}
+
+#[test]
+fn ambiguous_and_unverified_sources_are_not_collapsed_to_missing_or_available() {
+    let mut krate = toml().clone();
+    let target = krate.versions.iter().find(|version| version.v.as_ref() != TOML_PIN).expect("a non-pinned release").v.to_string();
+    krate.diffs.retain(|diff| !(diff.from == TOML_PIN && diff.to == target));
+
+    krate.versions.iter_mut().find(|version| version.v.as_ref() == target).expect("the selected release").source = SourceAvailability::Ambiguous;
+    let ambiguous = summary(&krate, TOML_PIN, &target);
+    assert_eq!(ambiguous.status, ComparisonStatus::SourceAmbiguous);
+    assert!(ambiguous.words(&target).contains("multiple registry sources"));
+
+    krate.versions.iter_mut().find(|version| version.v.as_ref() == target).expect("the selected release").source = SourceAvailability::UnverifiedArchive;
+    let unverified = summary(&krate, TOML_PIN, &target);
+    assert_eq!(unverified.status, ComparisonStatus::SourceUnverified);
+    assert!(unverified.words(&target).contains("unverified source archive"));
 }
 
 #[test]

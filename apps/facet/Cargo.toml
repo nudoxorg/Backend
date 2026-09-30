@@ -24,6 +24,8 @@ required-features = ["gallery"]
 [dependencies]
 gpui.workspace = true
 gpui_component.workspace = true
+tree-sitter.workspace = true
+tree-sitter-c = "=0.24.2"
 sha2.workspace = true
 smallvec.workspace = true
 serde.workspace = true
@@ -35,7 +37,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"], opt
 default = ["highlight"]
 # Tree-sitter highlighting (`facet::code`) for the seven ecosystems' languages,
 # on the grammar versions the engine's frontends already pin.
-highlight = ["gpui_component/tree-sitter-rust", "gpui_component/tree-sitter-typescript", "gpui_component/tree-sitter-python", "gpui_component/tree-sitter-go", "gpui_component/tree-sitter-java", "gpui_component/tree-sitter-csharp", "gpui_component/tree-sitter-cpp"]
+highlight = ["gpui_component/tree-sitter-rust", "gpui_component/tree-sitter-typescript", "gpui_component/tree-sitter-python", "gpui_component/tree-sitter-go", "gpui_component/tree-sitter-java", "gpui_component/tree-sitter-csharp", "gpui_component/tree-sitter-c", "gpui_component/tree-sitter-cpp"]
 # Lane W-Float bring-up gate for new overlay modules (removed at the end).
 overlay-wip = []
 # The release fixture (toml, smallvec; ~395 KB embedded) outside the gallery:

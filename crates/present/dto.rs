@@ -17,7 +17,7 @@ use crate::fault::{Affordance, Fault};
 use crate::identity::Identity;
 use crate::outline::{OutlineEntry, OutlineTree};
 use crate::page::{Page, Prose, Source};
-use crate::product::ProductView;
+use crate::product::{IndexJobProjection, ProductView};
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
 use crate::signature::{Signature, Token};
@@ -732,6 +732,9 @@ pub struct ProductDto {
     /// Stable index-search snapshot and continuation metadata, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_search_page: Option<ProductIndexSearchPageDto>,
+    /// Exact owner-issued indexing ticket, observation, or terminal receipt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_job: Option<IndexJobProjection>,
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -773,6 +776,10 @@ pub struct ProductRecordDto {
     /// Source-scoped, version-specific lineage group for index search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_group: Option<backend_library::RegistryPackageSearchGroup>,
+    /// Exact owner-reported derived-history state for an immutable semantic
+    /// compiler generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_status: Option<backend_library::SemanticHistoryPublicationStatus>,
 }
 
 impl ProductDto {
@@ -793,6 +800,7 @@ impl ProductDto {
                     forge_package_detail: record.forge_package_detail().cloned(),
                     discovery: record.discovery_details().cloned(),
                     package_group: record.package_group().cloned(),
+                    history_status: record.history_status().cloned(),
                 })
                 .collect(),
             note: view.note().map(ToOwned::to_owned),
@@ -805,6 +813,7 @@ impl ProductDto {
                     result_count: page.result_count(),
                     next_cursor: page.next_cursor().map(ToOwned::to_owned),
                 }),
+            index_job: view.index_job().cloned(),
         }
     }
 }

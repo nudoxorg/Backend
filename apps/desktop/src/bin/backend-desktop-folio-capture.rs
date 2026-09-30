@@ -15,6 +15,10 @@
 //! ```
 //!
 //! `NUDOX_FOLIO_ONLY=<substring>` limits the run to matching shots.
+//! `NUDOX_FOLIO_TEXT_SCALE=200` captures the same shots at 200% text; the
+//! default is 100%. Each shot writes a manifest beside its native frames.
+//! Set `NUDOX_FOLIO_BUILD_REVISION` while compiling to embed the source commit
+//! that produced the binary; the manifest also records the checkout at capture.
 
 #![cfg(feature = "visual-harness")]
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines, missing_docs)]
@@ -38,12 +42,61 @@ use gpui::{App, AppContext as _, Entity, Modifiers, MouseButton, MouseDownEvent,
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use sha2::{Digest as _, Sha256};
+
+const TEXT_SCALES: [u16; 5] = [85, 100, 125, 150, 200];
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository root")
+}
+
+fn parse_text_scale(value: Option<&str>) -> Result<u16, String> {
+    let Some(value) = value else { return Ok(100) };
+    let percent = value.parse::<u16>().map_err(|_| format!("`{value}` is not a whole-number text scale"))?;
+    if !TEXT_SCALES.contains(&percent) {
+        return Err(format!("{percent}% is unsupported; choose one of {TEXT_SCALES:?}"));
+    }
+    Ok(percent)
+}
+
+fn requested_text_scale() -> Result<u16, String> {
+    match std::env::var_os("NUDOX_FOLIO_TEXT_SCALE") {
+        None => Ok(100),
+        Some(value) => parse_text_scale(Some(value.to_str().ok_or_else(|| "value is not valid Unicode".to_owned())?)),
+    }
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn git_output(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").arg("-C").arg(repo()).args(args).output().ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn binary_sha256() -> Option<String> {
+    static HASH: OnceLock<Option<String>> = OnceLock::new();
+    HASH.get_or_init(|| std::fs::read(std::env::current_exe().ok()?).ok().map(|bytes| sha256(&bytes))).clone()
+}
+
+fn appearance_name(appearance: AppearancePreference) -> &'static str {
+    match appearance {
+        AppearancePreference::Abyss => "abyss",
+        AppearancePreference::Glacier => "glacier",
+        AppearancePreference::System => "system",
+    }
+}
+
+fn release_of(route: &Route) -> Option<&str> {
+    match route {
+        Route::Package(route) => route.at.as_ref().map(ReleaseId::as_str),
+        _ => None,
+    }
 }
 
 /// The engine lane is not needed to read pages.
@@ -405,10 +458,49 @@ fn capture(shot: &Shot, key: VersionedRoot, out: &Path) {
     .expect("capture");
     let dir = out.join(&shot.name);
     std::fs::create_dir_all(&dir).expect("out dir");
+    let mut frame_manifest = Vec::with_capacity(set.frames.len());
     for record in &set.frames {
         let path = if set.frames.len() == 1 { out.join(format!("{}.png", shot.name)) } else { dir.join(format!("{}.png", record.label)) };
         record.image.save(&path).expect("png");
+        frame_manifest.push(serde_json::json!({
+            "label": record.label,
+            "time_ms": record.time_ms,
+            "file": path.strip_prefix(out).unwrap_or(&path).to_string_lossy(),
+            "width_px": record.image.width(),
+            "height_px": record.image.height(),
+            "rgba_sha256": sha256(record.image.as_raw()),
+        }));
     }
+    let source_root = directory(&shot.package);
+    let source_sha256 = source_root.as_deref().and_then(|root| backend_desktop::harness::journey::state::tree_hash(root).ok());
+    let manifest = serde_json::json!({
+        "schema": "backend-desktop-folio-capture/v1",
+        "renderer": "GPUI native draw",
+        "build_source_revision": option_env!("NUDOX_FOLIO_BUILD_REVISION"),
+        "checkout_revision_at_capture": git_output(&["rev-parse", "HEAD"]),
+        "worktree_dirty_at_capture": git_output(&["status", "--porcelain", "--untracked-files=all"]).is_some_and(|status| !status.is_empty()),
+        "binary_sha256": binary_sha256(),
+        "data_provenance": {
+            "source_root": source_root.as_ref().map(|root| root.to_string_lossy()),
+            "source_tree_sha256": source_sha256,
+            "owner_or_live_index_queried": false,
+            "description": "Production desktop shell and Facet components rendered with this harness's package reader. Source facts come from the resolved local crate tree; package/index/health values are harness fixtures, so this is visual evidence, not a live owner/index result."
+        },
+        "shot": {
+            "name": shot.name,
+            "package": shot.package.as_str(),
+            "release": release_of(&shot.route),
+            "route": format!("{:?}", shot.route),
+            "viewport_logical": {"width": shot.width, "height": shot.height},
+            "device_scale": 1,
+            "text_scale_percent": shot.percent,
+            "appearance": appearance_name(shot.appearance),
+            "frame_times_ms": shot.frames,
+        },
+        "frames": frame_manifest,
+    });
+    let manifest_path = if set.frames.len() == 1 { out.join(format!("{}.json", shot.name)) } else { dir.join("manifest.json") };
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).expect("manifest JSON")).expect("manifest");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());
 }
 
@@ -420,6 +512,13 @@ fn main() {
     let Ok(out) = std::env::var("NUDOX_FOLIO_OUT") else {
         eprintln!("set NUDOX_FOLIO_OUT to capture");
         return;
+    };
+    let percent = match requested_text_scale() {
+        Ok(percent) => percent,
+        Err(error) => {
+            eprintln!("invalid NUDOX_FOLIO_TEXT_SCALE: {error}");
+            return;
+        }
     };
     let out = PathBuf::from(out);
     std::fs::create_dir_all(&out).expect("out");
@@ -433,7 +532,7 @@ fn main() {
         name: name.to_owned(),
         width,
         height,
-        percent: 100,
+        percent,
         appearance: AppearancePreference::Abyss,
         route: route_of(package, None),
         package: package.clone(),
@@ -474,12 +573,35 @@ fn main() {
     shots.push(staged("tokio-berg", &tokio, vec![vec![], vec![Act::Click("weight-label")], vec![Act::Hover("berg-block-2")], vec![]]));
     shots.push(staged("tokio-stamp", &tokio, vec![vec![], vec![Act::Hover("licence-verdict")], vec![]]));
     shots.push(staged("tokio-ticker", &tokio, vec![vec![], vec![Act::Hover("bar-1.28.0")], vec![]]));
-    shots.push(staged("tokio-features", &tokio, vec![vec![], vec![Act::Click("=full")], vec![Act::Away], vec![]]));
+    // Feature previews are read-only. Keep the scene and repeated settled
+    // frame, without dispatching a stale click at a control that no longer
+    // exists.
+    shots.push(staged("tokio-features", &tokio, vec![vec![], vec![], vec![]]));
     shots.push(staged("toml-past", &toml, vec![vec![], vec![Act::Go(Intent::SetRelease(Some(ReleaseId::new("0.5.11").expect("release"))))], vec![Act::Hover("region-de")], vec![]]));
+    if percent != 100 {
+        for shot in &mut shots {
+            shot.name = format!("{}-text{percent}", shot.name);
+        }
+    }
     for shot in shots {
         if only.as_ref().is_some_and(|only| !shot.name.contains(only.as_str())) {
             continue;
         }
         capture(&shot, key, &out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TEXT_SCALES, parse_text_scale};
+
+    #[test]
+    fn folio_capture_text_scale_is_explicit_and_rejects_unlisted_values() {
+        assert_eq!(parse_text_scale(None), Ok(100));
+        for percent in TEXT_SCALES {
+            assert_eq!(parse_text_scale(Some(&percent.to_string())), Ok(percent));
+        }
+        assert!(parse_text_scale(Some("200.0")).is_err());
+        assert!(parse_text_scale(Some("175")).is_err());
     }
 }

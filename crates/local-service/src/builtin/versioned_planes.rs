@@ -1,24 +1,33 @@
-//! Current-head selection and bounded CAS reads for versioned semantic planes.
+//! Committed product selection and bounded CAS reads for versioned semantic planes.
 //!
-//! Turso's selected frontier is re-read for every request and once more before
-//! bytes are exposed. Logical semantic segment IDs stay separate from physical
+//! The workspace root selects the served generation. Turso's selected frontier
+//! is a repairable projection and cannot override that root. Logical semantic segment IDs stay separate from physical
 //! FileStore object IDs, so the same cursor works across storage layouts.
 
 use super::{BuiltinModelError, SemanticAuthority};
-use backend_engine::builtin::ProductSemanticPublicationKey;
+use backend_engine::builtin::{ProductSemanticPublicationKey, SemanticPublicationClaim};
 use backend_extension_turso::{
     ReopenedCompilerMetadata, SelectedGeneration, VERSIONED_PLANE_SEGMENT_SCHEMA,
     VersionedPlaneMetadata,
 };
 use backend_replication::{
     ByteRange, IrHydrationRequest, SelectedGenerationSource, SelectedGenerationStamp,
-    SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet,
+    SelectedNativeHistoryBinding, SelectedNativeHistoryImage, SelectedNativeImagePublicationFence,
+    SelectedNativeImageSource, SelectedTypedV3HistoryError, SemanticCatalogChunk,
+    SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet, SemanticTargetKey,
 };
-use backend_semantic::ir::{SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest};
+use backend_replication::{
+    FileSemanticRangeStore, HistoryCommitId, HistoryRefName, TransportLimits,
+};
+use backend_semantic::ir::{
+    JumboRopeLimits, SemanticImageIdentity, SemanticPlaneCatalog, SemanticPlaneImageKey,
+    SemanticPlaneManifest, SemanticPlaneSegmentBoundaryPolicy, SemanticRangeRequest,
+    SemanticTypedPlaneVerificationTierV2,
+};
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
 use core::fmt;
 use hashlink::LruCache;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLockReadGuard};
 
 const MAX_RANGE_BYTES: u64 = 16 * 1024;
 const MAX_SEGMENT_BYTES: u64 = backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES as u64;
@@ -29,11 +38,163 @@ const VERIFIED_SEGMENT_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const VERIFIED_SEGMENT_CACHE_ENTRIES: usize = 4_096;
 const OBJECT_READ_CHUNK_BYTES: usize = 16 * 1024;
 
+/// A worker-safe view of one selected-closure image range route. It retains
+/// only immutable storage handles and the existing bounded reader caches; the
+/// mutable Turso authority remains on the owner thread.
+pub(super) struct SelectedClosureImageRangeReader {
+    store: FileStore,
+    local_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
+    remote: Option<Arc<dyn super::s3_publication::SelectedClosurePublisher>>,
+}
+
+impl SelectedClosureImageRangeReader {
+    #[must_use]
+    pub(super) fn new(
+        store: FileStore,
+        local_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
+        remote: Option<Arc<dyn super::s3_publication::SelectedClosurePublisher>>,
+    ) -> Self {
+        Self {
+            store,
+            local_readers,
+            remote,
+        }
+    }
+
+    /// Fills one exact bounded range from the admitted local object or the
+    /// selected closure's verified remote route.
+    pub(super) fn read_range_into(
+        &self,
+        plan: &super::selected_full_image::SelectedFullImagePlan,
+        range: ByteRange,
+        output: &mut [u8],
+    ) -> Result<usize, SelectedImageRangeReadError> {
+        let output_len = u64::try_from(output.len()).map_err(|_| {
+            SelectedImageRangeReadError::Refused(
+                "selected image range buffer is too large".to_owned(),
+            )
+        })?;
+        if range.len == 0
+            || range.len > MAX_RANGE_BYTES
+            || range.len != output_len
+            || range.end().ok().is_none_or(|end| end > plan.total_length)
+        {
+            return Err(SelectedImageRangeReadError::Refused(
+                "selected image range is empty, oversized, or outside its admitted plan".to_owned(),
+            ));
+        }
+
+        match self
+            .local_readers
+            .read_range_into(&self.store, plan, range, output)
+        {
+            Ok(Some(count)) if count == output.len() => return Ok(count),
+            Ok(Some(_)) => {
+                return Err(SelectedImageRangeReadError::Refused(
+                    "local selected image range returned the wrong byte count".to_owned(),
+                ));
+            }
+            Ok(None) => {}
+            Err(super::selected_full_image::SelectedImageLocalReadError::CorruptEnvelope(_)) => {}
+            Err(
+                super::selected_full_image::SelectedImageLocalReadError::UnsafePath(reason)
+                | super::selected_full_image::SelectedImageLocalReadError::AuthorityMismatch(reason),
+            ) => {
+                return Err(SelectedImageRangeReadError::Refused(reason));
+            }
+            Err(super::selected_full_image::SelectedImageLocalReadError::Storage(reason)) => {
+                return Err(SelectedImageRangeReadError::Deferred(reason));
+            }
+        }
+
+        let Some(remote) = self.remote.as_deref() else {
+            return Err(SelectedImageRangeReadError::Deferred(
+                "selected semantic image is cold locally and no remote range route is configured"
+                    .to_owned(),
+            ));
+        };
+        let payload = remote
+            .hydrate_object_range(
+                &self.store,
+                plan.remote_selection,
+                UntrustedObjectId::from_bytes(plan.object_id),
+                backend_extension_turso::COMPILER_SEMANTIC_IMAGE_SCHEMA,
+                plan.total_length,
+                range.start,
+                range.len,
+            )
+            .map_err(SelectedImageRangeReadError::from_remote)?;
+        if payload.len() != output.len() {
+            return Err(SelectedImageRangeReadError::Refused(
+                "selected remote image range returned the wrong byte count".to_owned(),
+            ));
+        }
+        output.copy_from_slice(&payload);
+        Ok(output.len())
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum SelectedImageRangeReadError {
+    Deferred(String),
+    Refused(String),
+}
+
+impl SelectedImageRangeReadError {
+    fn from_remote(error: super::s3_publication::PublicationError) -> Self {
+        use super::s3_publication::PublicationError;
+
+        let detail = format!("{error:?}");
+        match error {
+            PublicationError::Configuration | PublicationError::Receipt => Self::Refused(
+                "selected remote image route failed its immutable admission".to_owned(),
+            ),
+            PublicationError::RemoteStore(error)
+            | PublicationError::RemoteHydration {
+                source: Some(error),
+                ..
+            } => {
+                let detail = error.to_string();
+                match error {
+                    backend_store_s3::RemoteStoreError::Unavailable
+                    | backend_store_s3::RemoteStoreError::Store(backend_store::StoreError::Io(_)) => {
+                        Self::Deferred(format!(
+                            "selected remote image range is unavailable: {detail}"
+                        ))
+                    }
+                    backend_store_s3::RemoteStoreError::Capability
+                    | backend_store_s3::RemoteStoreError::StaleFence
+                    | backend_store_s3::RemoteStoreError::Bounds
+                    | backend_store_s3::RemoteStoreError::Identity
+                    | backend_store_s3::RemoteStoreError::Protocol
+                    | backend_store_s3::RemoteStoreError::ExistingUnverified
+                    | backend_store_s3::RemoteStoreError::Store(_) => Self::Refused(format!(
+                        "selected remote image range failed immutable identity or scope validation: {detail}"
+                    )),
+                }
+            }
+            PublicationError::RemoteHydration {
+                operation,
+                source: None,
+            } => Self::Refused(format!(
+                "selected remote image range lost typed failure provenance during {operation:?}"
+            )),
+            PublicationError::Remote => Self::Refused(format!(
+                "selected remote image route failed without a retryable store error: {detail}"
+            )),
+            PublicationError::Store | PublicationError::ReceiptIo => Self::Deferred(format!(
+                "selected remote image range is temporarily unavailable: {detail}"
+            )),
+        }
+    }
+}
+
 /// Bounded process-local cache of bytes admitted from immutable CAS objects.
 ///
 /// The physical object ID is the reuse key: identical content is useful across
-/// selected generations. A hit is still checked against the *current* Turso
-/// selection and its exact logical segment identity before any bytes escape.
+/// selected generations. A hit is still checked against the *current committed
+/// product* selection and its exact logical segment identity before any bytes
+/// escape.
 #[derive(Debug, Default)]
 pub(super) struct VerifiedSegmentCache {
     state: Mutex<VerifiedSegmentCacheState>,
@@ -103,7 +264,7 @@ impl VerifiedSegmentCache {
     }
 }
 
-/// Metadata-only view of one exact Turso-selected compiler generation.
+/// Metadata-only view of one exact product-selected compiler generation.
 #[derive(Clone, Debug)]
 pub(super) struct SelectedVersionedPlanePublication {
     stamp: SelectedGenerationStamp,
@@ -179,7 +340,7 @@ impl SelectedVersionedPlanePublication {
         })
     }
 
-    /// Exact current-head stamp built from one Turso selected frontier.
+    /// Exact stamp built from the committed product selection.
     #[must_use]
     pub(super) const fn stamp(&self) -> SelectedGenerationStamp {
         self.stamp
@@ -214,7 +375,7 @@ impl SelectedVersionedPlanePublication {
 /// Live resolver for the selected semantic generation and its closure-backed
 /// plane inventory.
 pub(super) trait VersionedPlaneSelectionResolver: SelectedGenerationSource {
-    /// Re-reads Turso's current selected frontier and its exact metadata.
+    /// Re-reads the committed product selection and its exact metadata.
     fn current_selected_plane(&mut self) -> Result<SelectedVersionedPlanePublication, Self::Error>;
 }
 
@@ -225,6 +386,82 @@ pub(super) struct SemanticAuthoritySelectionSource<'authority> {
     key: ProductSemanticPublicationKey,
 }
 
+/// Owned read-only view for background history publication. It shares the
+/// exact selector lock used by the marker writer, but does not retain the
+/// mutable Turso authority or any owner-thread state.
+pub(super) struct OwnedSemanticAuthoritySelectionSource {
+    loader: Arc<super::semantic_authority::SelectedClosureImageLoader>,
+    store: FileStore,
+    key: ProductSemanticPublicationKey,
+}
+
+impl OwnedSemanticAuthoritySelectionSource {
+    #[must_use]
+    pub(super) fn new(
+        loader: Arc<super::semantic_authority::SelectedClosureImageLoader>,
+        store: FileStore,
+        key: ProductSemanticPublicationKey,
+    ) -> Self {
+        Self { loader, store, key }
+    }
+
+    fn target(&self) -> Result<SemanticTargetKey, BuiltinModelError> {
+        SemanticTargetKey::new(
+            self.key.package().as_str(),
+            self.key.coordinate().as_str(),
+            self.key.profile(),
+        )
+        .map_err(|error| BuiltinModelError(format!("admit semantic target: {error}")))
+    }
+
+    fn current_selection(
+        &self,
+    ) -> Result<
+        (
+            SemanticPublicationClaim,
+            backend_extension_turso::SelectedGeneration,
+            SelectedVersionedPlanePublication,
+        ),
+        BuiltinModelError,
+    > {
+        let selections = self.loader.acquire_publication_read()?;
+        let (claim, selected) =
+            super::semantic_authority::SelectedClosureImageLoader::committed_pair_in(
+                &selections,
+                &self.key,
+            )?;
+        let publication =
+            SemanticAuthority::selected_plane_for_store(&self.store, &self.key, claim, &selected)?;
+        Ok((claim, selected, publication))
+    }
+}
+
+pub(super) struct OwnedSemanticAuthorityPublicationFence<'a> {
+    _selections: RwLockReadGuard<'a, super::semantic_authority::SelectedClosureSnapshot>,
+    target: SemanticTargetKey,
+    stamp: SelectedGenerationStamp,
+    image: SemanticPlaneImageKey,
+    image_identity: SemanticImageIdentity,
+}
+
+impl SelectedNativeImagePublicationFence for OwnedSemanticAuthorityPublicationFence<'_> {
+    fn selected_target(&self) -> &SemanticTargetKey {
+        &self.target
+    }
+
+    fn selected_stamp(&self) -> SelectedGenerationStamp {
+        self.stamp
+    }
+
+    fn selected_image(&self) -> SemanticPlaneImageKey {
+        self.image
+    }
+
+    fn selected_image_identity(&self) -> SemanticImageIdentity {
+        self.image_identity
+    }
+}
+
 impl<'authority> SemanticAuthoritySelectionSource<'authority> {
     /// Binds one product target to the live local semantic authority.
     #[must_use]
@@ -233,6 +470,16 @@ impl<'authority> SemanticAuthoritySelectionSource<'authority> {
         key: ProductSemanticPublicationKey,
     ) -> Self {
         Self { authority, key }
+    }
+
+    /// Returns the canonical product target bound by this selected source.
+    pub(super) fn target(&self) -> Result<SemanticTargetKey, BuiltinModelError> {
+        SemanticTargetKey::new(
+            self.key.package().as_str(),
+            self.key.coordinate().as_str(),
+            self.key.profile(),
+        )
+        .map_err(|error| BuiltinModelError(format!("admit semantic target: {error}")))
     }
 }
 
@@ -255,10 +502,555 @@ impl SelectedGenerationSource for SemanticAuthoritySelectionSource<'_> {
     }
 }
 
+impl SelectedNativeImageSource for SemanticAuthoritySelectionSource<'_> {
+    type PublicationFence<'fence>
+        = SemanticAuthorityPublicationFence<'fence>
+    where
+        Self: 'fence;
+
+    fn selected_semantic_target(&mut self) -> Result<SemanticTargetKey, Self::Error> {
+        self.target()
+    }
+
+    fn selected_native_image_identity(
+        &mut self,
+        image: SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, Self::Error> {
+        self.authority
+            .selected_native_image_identity(&self.key, image)
+    }
+
+    fn acquire_publication_fence<'fence>(
+        &'fence mut self,
+        selected: &SelectedNativeHistoryImage<'_>,
+    ) -> Result<Self::PublicationFence<'fence>, Self::Error> {
+        let target = self.target()?;
+        if selected.target() != &target {
+            return Err(BuiltinModelError(
+                "typed V3 history target differs from its committed product key".to_owned(),
+            ));
+        }
+        let lease = self.authority.committed_selection_lease(&self.key)?;
+        let publication = lease.selected_plane()?;
+        let image = selected.image_key();
+        if publication.stamp() != selected.selected_stamp()
+            || publication.metadata().artifact_for_image(image).is_none()
+        {
+            return Err(BuiltinModelError(
+                "typed V3 history image is no longer the committed product selection".to_owned(),
+            ));
+        }
+        let image_identity = lease.selected_native_image_identity(image)?;
+        if image_identity != selected.image_identity() {
+            return Err(BuiltinModelError(
+                "typed V3 history image identity differs from the committed product selection"
+                    .to_owned(),
+            ));
+        }
+        Ok(SemanticAuthorityPublicationFence {
+            _lease: lease,
+            target,
+            stamp: publication.stamp(),
+            image,
+            image_identity,
+        })
+    }
+}
+
+pub(super) struct SemanticAuthorityPublicationFence<'a> {
+    _lease: super::semantic_authority::CommittedSemanticSelectionLease<'a>,
+    target: SemanticTargetKey,
+    stamp: SelectedGenerationStamp,
+    image: SemanticPlaneImageKey,
+    image_identity: SemanticImageIdentity,
+}
+
+impl SelectedNativeImagePublicationFence for SemanticAuthorityPublicationFence<'_> {
+    fn selected_target(&self) -> &SemanticTargetKey {
+        &self.target
+    }
+
+    fn selected_stamp(&self) -> SelectedGenerationStamp {
+        self.stamp
+    }
+
+    fn selected_image(&self) -> SemanticPlaneImageKey {
+        self.image
+    }
+
+    fn selected_image_identity(&self) -> SemanticImageIdentity {
+        self.image_identity
+    }
+}
+
 impl VersionedPlaneSelectionResolver for SemanticAuthoritySelectionSource<'_> {
     fn current_selected_plane(&mut self) -> Result<SelectedVersionedPlanePublication, Self::Error> {
         self.authority.resolve_current_selected(&self.key)
     }
+}
+
+impl SelectedGenerationSource for OwnedSemanticAuthoritySelectionSource {
+    type Error = BuiltinModelError;
+
+    fn current_selected_generation(&mut self) -> Result<SelectedGenerationStamp, Self::Error> {
+        self.current_selection()
+            .map(|(_, _, publication)| publication.stamp())
+    }
+
+    fn selected_image_is_current(
+        &mut self,
+        expected_stamp: SelectedGenerationStamp,
+        image: SemanticPlaneImageKey,
+    ) -> Result<bool, Self::Error> {
+        let (claim, selected, publication) = self.current_selection()?;
+        if publication.stamp() != expected_stamp
+            || publication.metadata().artifact_for_image(image).is_none()
+        {
+            return Ok(false);
+        }
+        SemanticAuthority::selected_native_image_identity_for_store(
+            &self.store,
+            &self.key,
+            claim,
+            &selected,
+            image,
+        )?;
+        Ok(true)
+    }
+}
+
+impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
+    type PublicationFence<'fence>
+        = OwnedSemanticAuthorityPublicationFence<'fence>
+    where
+        Self: 'fence;
+
+    fn selected_semantic_target(&mut self) -> Result<SemanticTargetKey, Self::Error> {
+        self.target()
+    }
+
+    fn selected_native_image_identity(
+        &mut self,
+        image: SemanticPlaneImageKey,
+    ) -> Result<SemanticImageIdentity, Self::Error> {
+        let (claim, selected, publication) = self.current_selection()?;
+        if publication.metadata().artifact_for_image(image).is_none() {
+            return Err(BuiltinModelError(
+                "native image is absent from the committed selected catalog".to_owned(),
+            ));
+        }
+        SemanticAuthority::selected_native_image_identity_for_store(
+            &self.store,
+            &self.key,
+            claim,
+            &selected,
+            image,
+        )
+    }
+
+    fn acquire_publication_fence<'fence>(
+        &'fence mut self,
+        selected_image: &SelectedNativeHistoryImage<'_>,
+    ) -> Result<Self::PublicationFence<'fence>, Self::Error> {
+        let target = self.target()?;
+        if selected_image.target() != &target {
+            return Err(BuiltinModelError(
+                "typed V3 history target differs from its committed product key".to_owned(),
+            ));
+        }
+        let selections = self.loader.acquire_publication_read()?;
+        let (claim, selected) =
+            super::semantic_authority::SelectedClosureImageLoader::committed_pair_in(
+                &selections,
+                &self.key,
+            )?;
+        let publication =
+            SemanticAuthority::selected_plane_for_store(&self.store, &self.key, claim, &selected)?;
+        let image = selected_image.image_key();
+        if publication.stamp() != selected_image.selected_stamp()
+            || publication.metadata().artifact_for_image(image).is_none()
+        {
+            return Err(BuiltinModelError(
+                "typed V3 history image is no longer the committed product selection".to_owned(),
+            ));
+        }
+        let image_identity = SemanticAuthority::selected_native_image_identity_for_store(
+            &self.store,
+            &self.key,
+            claim,
+            &selected,
+            image,
+        )?;
+        if image_identity != selected_image.image_identity() {
+            return Err(BuiltinModelError(
+                "typed V3 history image identity differs from the committed product selection"
+                    .to_owned(),
+            ));
+        }
+        Ok(OwnedSemanticAuthorityPublicationFence {
+            _selections: selections,
+            target,
+            stamp: publication.stamp(),
+            image,
+            image_identity,
+        })
+    }
+}
+
+enum NativeHistoryPublicationError {
+    Superseded,
+    Deferred(String),
+    Refused(String),
+}
+
+fn map_typed_history_publication_error(
+    error: SelectedTypedV3HistoryError,
+) -> NativeHistoryPublicationError {
+    match error {
+        SelectedTypedV3HistoryError::StaleSelection => NativeHistoryPublicationError::Superseded,
+        SelectedTypedV3HistoryError::RetryableAvailability { operation, detail } => {
+            NativeHistoryPublicationError::Deferred(format!("{operation:?}: {detail}"))
+        }
+        SelectedTypedV3HistoryError::Refused {
+            operation,
+            cause,
+            detail,
+        } => NativeHistoryPublicationError::Refused(format!(
+            "{operation:?} refused ({cause:?}): {detail}"
+        )),
+    }
+}
+
+pub(super) fn publish_native_history(
+    work: super::semantic_authority::NativeHistoryPublicationWork,
+) -> backend_engine::SemanticHistoryPublicationStatus {
+    let selection_id = work.selection_id;
+    match publish_native_history_commit(work) {
+        Ok(commit) => backend_engine::SemanticHistoryPublicationStatus::Published {
+            selection_id,
+            commit: *commit.as_bytes(),
+            reference: "selected-native-v3".to_owned(),
+        },
+        Err(NativeHistoryPublicationError::Superseded) => {
+            backend_engine::SemanticHistoryPublicationStatus::Superseded { selection_id }
+        }
+        Err(NativeHistoryPublicationError::Deferred(reason)) => {
+            backend_engine::SemanticHistoryPublicationStatus::Deferred {
+                selection_id,
+                reason,
+            }
+        }
+        Err(NativeHistoryPublicationError::Refused(reason)) => {
+            backend_engine::SemanticHistoryPublicationStatus::Refused {
+                selection_id,
+                reason,
+            }
+        }
+    }
+}
+
+fn publish_native_history_commit(
+    work: super::semantic_authority::NativeHistoryPublicationWork,
+) -> Result<HistoryCommitId, NativeHistoryPublicationError> {
+    let (claim, selected) = match work.loader.committed_pair(&work.key) {
+        Ok(pair) => pair,
+        Err(_) => return Err(NativeHistoryPublicationError::Superseded),
+    };
+    if claim != work.expected_claim {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let stamp = SemanticAuthority::selected_generation_stamp(&work.key, &selected)
+        .map_err(|error| NativeHistoryPublicationError::Refused(error.0))?;
+    if stamp != work.stamp {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let publication =
+        SemanticAuthority::selected_plane_for_store(&work.store, &work.key, claim, &selected)
+            .map_err(|error| NativeHistoryPublicationError::Refused(error.0))?;
+    let metadata = publication.metadata();
+    let catalog_len = usize::try_from(metadata.catalog_len()).map_err(|_| {
+        NativeHistoryPublicationError::Refused("selected catalog length exceeds usize".to_owned())
+    })?;
+    const MAX_NATIVE_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+    if catalog_len == 0 || catalog_len > MAX_NATIVE_CATALOG_BYTES {
+        return Err(NativeHistoryPublicationError::Refused(
+            "selected image catalog exceeds the bounded publication limit".to_owned(),
+        ));
+    }
+    let mut catalog_bytes = Vec::new();
+    catalog_bytes.try_reserve_exact(catalog_len).map_err(|_| {
+        NativeHistoryPublicationError::Refused("selected catalog allocation failed".to_owned())
+    })?;
+    catalog_bytes.resize(catalog_len, 0);
+    let mut catalog_offset = 0_usize;
+    while catalog_offset < catalog_len {
+        let chunk_len = (catalog_len - catalog_offset).min(16 * 1024);
+        let end = catalog_offset.checked_add(chunk_len).ok_or_else(|| {
+            NativeHistoryPublicationError::Refused("selected catalog range overflow".to_owned())
+        })?;
+        let output = catalog_bytes.get_mut(catalog_offset..end).ok_or_else(|| {
+            NativeHistoryPublicationError::Refused(
+                "selected catalog range is outside its buffer".to_owned(),
+            )
+        })?;
+        metadata
+            .write_catalog_range(catalog_offset as u64, output)
+            .map_err(|error| {
+                NativeHistoryPublicationError::Refused(format!(
+                    "read selected canonical catalog: {error}"
+                ))
+            })?;
+        catalog_offset = end;
+    }
+    let catalog = SemanticPlaneCatalog::decode(&catalog_bytes).map_err(|error| {
+        NativeHistoryPublicationError::Refused(format!(
+            "decode selected canonical catalog: {error}"
+        ))
+    })?;
+    if catalog.root() != metadata.catalog_root() || catalog.root() != stamp.catalog_root() {
+        return Err(NativeHistoryPublicationError::Refused(
+            "selected canonical catalog root differs from its marker stamp".to_owned(),
+        ));
+    }
+    let artifacts = metadata.artifacts();
+    if artifacts.len() != 1 {
+        return Err(NativeHistoryPublicationError::Refused(
+            "typed V3 publication requires exactly one selected semantic image".to_owned(),
+        ));
+    }
+    let image_key = artifacts[0].image_key();
+    let manifest = publication
+        .manifest(image_key)
+        .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
+    let mut source = OwnedSemanticAuthoritySelectionSource::new(
+        Arc::clone(&work.loader),
+        work.store.clone(),
+        work.key.clone(),
+    );
+    let binding = SelectedNativeHistoryBinding::bind(&mut source, catalog, image_key, manifest)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if binding.selected_stamp() != work.stamp {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let branch = HistoryRefName::new("selected-native-v3")
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    let mut limits = TransportLimits::default();
+    limits.max_chunk = 16 * 1024;
+    let history = FileSemanticRangeStore::open(work.store.clone(), limits)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if let Some(commit) = history
+        .selected_typed_v3_history_branch_current(&binding, &branch)
+        .map_err(NativeHistoryPublicationError::Refused)?
+    {
+        let ancestry = history
+            .history_ref_ancestry_proof(
+                binding.target(),
+                backend_replication::HistoryRefKind::Branch,
+                &branch,
+                commit,
+            )
+            .map_err(NativeHistoryPublicationError::Refused)?;
+        let replay = history
+            .replay_typed_v3_history(
+                binding.target(),
+                backend_replication::HistoryRefKind::Branch,
+                &branch,
+                commit,
+                &ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .map_err(NativeHistoryPublicationError::Refused)?;
+        if replay.commit().identity() != commit
+            || replay.input_replay_status()
+                != backend_replication::TypedV3HistoryInputReplayStatus::Unproven
+        {
+            return Err(NativeHistoryPublicationError::Refused(
+                "cold typed V3 replay did not verify the exact selected commit as unproven input"
+                    .to_owned(),
+            ));
+        }
+        if !work
+            .loader
+            .matches_committed_selection(&work.key, claim, work.stamp)
+        {
+            return Err(NativeHistoryPublicationError::Superseded);
+        }
+        return Ok(commit);
+    }
+    let plan = SemanticAuthority::selected_full_image_plan_for_store(
+        &work.store,
+        &work.key,
+        claim,
+        image_key,
+        &selected,
+        work.stamp,
+    )
+    .map_err(|error| NativeHistoryPublicationError::Refused(error.0))?;
+    if plan.total_length == 0 || plan.total_length > backend_replication::MAX_SEMANTIC_IMAGE_BYTES {
+        return Err(NativeHistoryPublicationError::Refused(
+            "selected image exceeds the 128 MiB publication bound".to_owned(),
+        ));
+    }
+    if !work
+        .loader
+        .matches_committed_selection(&work.key, claim, work.stamp)
+    {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let max_image_bytes =
+        usize::try_from(backend_replication::MAX_SEMANTIC_IMAGE_BYTES).map_err(|_| {
+            NativeHistoryPublicationError::Refused(
+                "selected image byte bound does not fit this process".to_owned(),
+            )
+        })?;
+    let (mapped_image, range_metrics) = backend_semantic::ir::load_semantic_image_mmap_from_ranges(
+        plan.total_length,
+        plan.identity,
+        image_key.semantic_generation(),
+        max_image_bytes,
+        |offset, output| {
+            if !work
+                .loader
+                .matches_committed_selection(&work.key, claim, work.stamp)
+            {
+                return Err(SelectedImageRangeReadError::Refused(
+                    "committed product selection moved during selected image read".to_owned(),
+                ));
+            }
+            let range_len = u64::try_from(output.len()).map_err(|_| {
+                SelectedImageRangeReadError::Refused(
+                    "selected image range length exceeds u64".to_owned(),
+                )
+            })?;
+            let range = ByteRange::new(offset, range_len).map_err(|error| {
+                SelectedImageRangeReadError::Refused(format!(
+                    "construct selected image range: {error}"
+                ))
+            })?;
+            work.image_ranges.read_range_into(&plan, range, output)
+        },
+        || {
+            !work
+                .loader
+                .matches_committed_selection(&work.key, claim, work.stamp)
+        },
+    )
+    .map_err(|error| match error {
+        backend_semantic::ir::MappedSemanticImageRangeError::Cancelled => {
+            NativeHistoryPublicationError::Superseded
+        }
+        backend_semantic::ir::MappedSemanticImageRangeError::Read { source, .. } => {
+            if !work
+                .loader
+                .matches_committed_selection(&work.key, claim, work.stamp)
+            {
+                NativeHistoryPublicationError::Superseded
+            } else {
+                match source {
+                    SelectedImageRangeReadError::Deferred(reason) => {
+                        NativeHistoryPublicationError::Deferred(reason)
+                    }
+                    SelectedImageRangeReadError::Refused(reason) => {
+                        NativeHistoryPublicationError::Refused(reason)
+                    }
+                }
+            }
+        }
+        backend_semantic::ir::MappedSemanticImageRangeError::ShortRead {
+            offset,
+            expected,
+            observed,
+        } => NativeHistoryPublicationError::Refused(format!(
+            "selected image range at {offset} returned {observed} of {expected} bytes"
+        )),
+        backend_semantic::ir::MappedSemanticImageRangeError::Mapping(error) => {
+            let detail = error.to_string();
+            match error {
+                backend_semantic::ir::MappedSemanticImageError::Io { .. } => {
+                    NativeHistoryPublicationError::Deferred(format!(
+                        "allocate or admit selected image mapping: {detail}"
+                    ))
+                }
+                _ => NativeHistoryPublicationError::Refused(format!(
+                    "admit mapped selected semantic image: {detail}"
+                )),
+            }
+        }
+    })?;
+    if range_metrics.bytes_read != plan.total_length
+        || range_metrics.identity_hash_bytes != plan.total_length
+    {
+        return Err(NativeHistoryPublicationError::Refused(
+            "selected image mapping did not account for its exact byte extent".to_owned(),
+        ));
+    }
+    let selected_image = binding
+        .bind_mapped_image(&mapped_image)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+        .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
+    let policies = backend_replication::SemanticTypedPlaneBoundaryPoliciesV3::new(
+        policy, policy, policy, policy, policy, policy, policy,
+    );
+    let provenance = selected_history_provenance(&selected_image);
+    let receipt = match history.publish_selected_typed_v3_history_branch(
+        &selected_image,
+        branch,
+        provenance,
+        policies,
+        SemanticTypedPlaneVerificationTierV2::Standard,
+        JumboRopeLimits::default(),
+        &mut source,
+    ) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            if !work
+                .loader
+                .matches_committed_selection(&work.key, claim, work.stamp)
+            {
+                return Err(NativeHistoryPublicationError::Superseded);
+            }
+            return Err(map_typed_history_publication_error(error));
+        }
+    };
+    if !work
+        .loader
+        .matches_committed_selection(&work.key, claim, work.stamp)
+    {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    receipt.current().ok_or_else(|| {
+        NativeHistoryPublicationError::Refused(
+            "typed V3 branch publication returned no current commit".to_owned(),
+        )
+    })
+}
+
+fn selected_history_provenance(
+    selected: &backend_replication::SelectedNativeHistoryImage<'_>,
+) -> [u8; 32] {
+    let target = selected.target();
+    let stamp = selected.selected_stamp();
+    let image = selected.image_key();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.locald.selected-native-v3.provenance.v1\0");
+    hasher.update(target.package().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(target.coordinate().as_bytes());
+    hasher.update(&<[u8; 2]>::from(target.profile()));
+    hasher.update(stamp.namespace());
+    hasher.update(&<[u8; 2]>::from(stamp.profile()));
+    hasher.update(stamp.source_coordinate());
+    hasher.update(&stamp.selection_revision().to_le_bytes());
+    hasher.update(stamp.selected_root());
+    hasher.update(stamp.closure_id());
+    hasher.update(stamp.catalog_root().as_bytes());
+    hasher.update(&image.artifact_ordinal().to_le_bytes());
+    hasher.update(image.semantic_generation().as_bytes());
+    hasher.update(image.manifest_root().as_bytes());
+    hasher.update(selected.image_identity().as_ref());
+    *hasher.finalize().as_bytes()
 }
 
 /// Reads bounded canonical semantic-plane byte ranges from the selected CAS.
@@ -495,8 +1287,8 @@ impl<'hydrator> VersionedPlaneService<'hydrator> {
     /// Serves one decoded wire range after rebinding it to current authority.
     ///
     /// This is the local RPC entry point. The wire's selected stamp is only a
-    /// claim: the resolver reconstructs the selected frontier and exact
-    /// manifest from Turso before the request is admitted.
+    /// claim: the resolver reconstructs the committed selection and exact
+    /// manifest before the request is admitted.
     pub(super) fn serve_range_claim<R: VersionedPlaneSelectionResolver>(
         &self,
         resolver: &mut R,
@@ -742,6 +1534,38 @@ pub(super) fn coordinate_identity(coordinate: &str) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+pub(super) fn native_history_selection_id(
+    key: &ProductSemanticPublicationKey,
+    stamp: SelectedGenerationStamp,
+    image: Option<SemanticPlaneImageKey>,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.locald.native-history-selection.v1\0");
+    hasher.update(key.package().as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(key.coordinate().as_str().as_bytes());
+    hasher.update(&<[u8; 2]>::from(key.profile()));
+    hasher.update(stamp.namespace());
+    hasher.update(&<[u8; 2]>::from(stamp.profile()));
+    hasher.update(stamp.source_coordinate());
+    hasher.update(&stamp.selection_revision().to_le_bytes());
+    hasher.update(stamp.selected_root());
+    hasher.update(stamp.closure_id());
+    hasher.update(stamp.catalog_root().as_bytes());
+    match image {
+        Some(image) => {
+            hasher.update(&[1]);
+            hasher.update(&image.artifact_ordinal().to_le_bytes());
+            hasher.update(image.semantic_generation().as_bytes());
+            hasher.update(image.manifest_root().as_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
 /// Selection, range, schema, or durable-CAS failure while serving a plane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum VersionedPlaneServiceError {
@@ -874,6 +1698,236 @@ mod tests {
     use std::time::Instant;
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn native_history_range_status_keeps_transient_and_integrity_failures_distinct() {
+        use super::super::s3_publication::{PublicationError, RemoteHydrationOperation};
+
+        assert!(matches!(
+            SelectedImageRangeReadError::from_remote(PublicationError::RemoteStore(
+                backend_store_s3::RemoteStoreError::Unavailable,
+            )),
+            SelectedImageRangeReadError::Deferred(_),
+        ));
+        assert!(matches!(
+            SelectedImageRangeReadError::from_remote(PublicationError::RemoteHydration {
+                operation: RemoteHydrationOperation::OpenEnvelope,
+                source: Some(backend_store_s3::RemoteStoreError::Identity),
+            }),
+            SelectedImageRangeReadError::Refused(_),
+        ));
+        assert!(matches!(
+            SelectedImageRangeReadError::from_remote(PublicationError::RemoteHydration {
+                operation: RemoteHydrationOperation::ReadPayload,
+                source: None,
+            }),
+            SelectedImageRangeReadError::Refused(_),
+        ));
+    }
+
+    #[test]
+    fn typed_v3_publication_failures_keep_retryability_separate_from_refusal() {
+        use backend_replication::{
+            SelectedTypedV3HistoryOperation as Operation, SelectedTypedV3HistoryRefusal as Refusal,
+        };
+
+        assert!(matches!(
+            map_typed_history_publication_error(SelectedTypedV3HistoryError::StaleSelection),
+            NativeHistoryPublicationError::Superseded,
+        ));
+        assert!(matches!(
+            map_typed_history_publication_error(
+                SelectedTypedV3HistoryError::RetryableAvailability {
+                    operation: Operation::CompareAndSwapRef,
+                    detail: "temporary store outage".to_owned(),
+                }
+            ),
+            NativeHistoryPublicationError::Deferred(reason)
+                if reason.contains("CompareAndSwapRef")
+        ));
+        assert!(matches!(
+            map_typed_history_publication_error(SelectedTypedV3HistoryError::Refused {
+                operation: Operation::VerifyPayloadClosure,
+                cause: Refusal::IntegrityFailure,
+                detail: "invalid closure".to_owned(),
+            }),
+            NativeHistoryPublicationError::Refused(reason)
+                if reason.contains("IntegrityFailure")
+        ));
+    }
+
+    struct FakeSelectedImageRangePublisher {
+        expected_selection: super::super::s3_publication::RemoteClosureSelection,
+        expected_object_id: [u8; 32],
+        expected_payload: Vec<u8>,
+        range_call: Mutex<
+            Option<(
+                super::super::s3_publication::RemoteClosureSelection,
+                [u8; 32],
+                backend_version::SchemaIdentity,
+                u64,
+                u64,
+                u64,
+            )>,
+        >,
+    }
+
+    impl super::super::s3_publication::SelectedClosurePublisher for FakeSelectedImageRangePublisher {
+        fn publish_closure(
+            &self,
+            _store: &FileStore,
+            _closure: backend_store::ClosureId,
+            _target_root: [u8; 32],
+            _expected_count: u64,
+            _budget: ArtifactBudget,
+            _publication_fence: super::super::s3_publication::PublicationFence,
+        ) -> Result<
+            super::super::s3_publication::ExactS3ClosureReceipt,
+            super::super::s3_publication::PublicationError,
+        > {
+            Err(super::super::s3_publication::PublicationError::Remote)
+        }
+
+        fn hydrate_object(
+            &self,
+            _store: &FileStore,
+            _selected: super::super::s3_publication::RemoteClosureSelection,
+            _object_id: UntrustedObjectId,
+            _expected_schema: backend_version::SchemaIdentity,
+            _expected_payload_len: u64,
+        ) -> Result<Vec<u8>, super::super::s3_publication::PublicationError> {
+            Err(super::super::s3_publication::PublicationError::Receipt)
+        }
+
+        fn hydrate_object_range(
+            &self,
+            _store: &FileStore,
+            selected: super::super::s3_publication::RemoteClosureSelection,
+            object_id: UntrustedObjectId,
+            expected_schema: backend_version::SchemaIdentity,
+            expected_payload_len: u64,
+            offset: u64,
+            length: u64,
+        ) -> Result<Vec<u8>, super::super::s3_publication::PublicationError> {
+            *self
+                .range_call
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                selected,
+                *object_id.as_bytes(),
+                expected_schema,
+                expected_payload_len,
+                offset,
+                length,
+            ));
+            if selected != self.expected_selection
+                || *object_id.as_bytes() != self.expected_object_id
+                || expected_schema != backend_extension_turso::COMPILER_SEMANTIC_IMAGE_SCHEMA
+                || expected_payload_len
+                    != u64::try_from(self.expected_payload.len()).unwrap_or(u64::MAX)
+            {
+                return Err(super::super::s3_publication::PublicationError::Receipt);
+            }
+            let end = offset
+                .checked_add(length)
+                .and_then(|end| usize::try_from(end).ok())
+                .ok_or(super::super::s3_publication::PublicationError::Receipt)?;
+            let start = usize::try_from(offset)
+                .map_err(|_| super::super::s3_publication::PublicationError::Receipt)?;
+            self.expected_payload
+                .get(start..end)
+                .map(<[u8]>::to_vec)
+                .ok_or(super::super::s3_publication::PublicationError::Receipt)
+        }
+
+        fn has_durable_selected_closure(
+            &self,
+            _store: &FileStore,
+            _selected: super::super::s3_publication::RemoteClosureSelection,
+        ) -> Result<bool, super::super::s3_publication::PublicationError> {
+            Ok(false)
+        }
+
+        fn verified_remote_segments(
+            &self,
+            _store: &FileStore,
+            _selected: &backend_extension_turso::SelectedGeneration,
+        ) -> Result<
+            Option<super::super::s3_publication::VerifiedRemoteSegmentSet>,
+            super::super::s3_publication::PublicationError,
+        > {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn selected_image_range_reader_hydrates_exact_remote_image_range_when_local_object_is_absent() {
+        let fixture = fixture();
+        let selection = remote_selection();
+        let payload = b"remote-only-selected-image".to_vec();
+        let object_id = [0xD7; 32];
+        let range_start = 5;
+        let range_len = 9;
+        let publisher = Arc::new(FakeSelectedImageRangePublisher {
+            expected_selection: selection,
+            expected_object_id: object_id,
+            expected_payload: payload.clone(),
+            range_call: Mutex::new(None),
+        });
+        let reader = SelectedClosureImageRangeReader::new(
+            fixture.store.clone(),
+            Arc::new(super::super::selected_full_image::VerifiedLocalImageReaderCache::default()),
+            Some(publisher.clone()),
+        );
+        let stamp = fixture.publication.stamp();
+        let plan = super::super::selected_full_image::SelectedFullImagePlan {
+            stamp,
+            image: fixture.image,
+            identity: SemanticImageIdentity::from_encoded_bytes(&payload),
+            total_length: u64::try_from(payload.len()).expect("payload length fits u64"),
+            object_id,
+            closure_id: *stamp.closure_id(),
+            remote_selection: selection,
+            environment: fixture.expected_environment,
+            target_platform: fixture.expected_target_platform,
+        };
+        let range = ByteRange {
+            start: range_start,
+            len: range_len,
+        };
+        let mut output = vec![0xEE; usize::try_from(range_len).expect("range fits usize")];
+
+        let count = reader
+            .read_range_into(&plan, range, &mut output)
+            .expect("read one verified remote image range");
+
+        assert_eq!(count, output.len());
+        assert_eq!(
+            output,
+            payload[usize::try_from(range_start).expect("offset fits usize")
+                ..usize::try_from(range_start + range_len).expect("end fits usize")]
+        );
+        assert_eq!(
+            *publisher
+                .range_call
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some((
+                selection,
+                object_id,
+                backend_extension_turso::COMPILER_SEMANTIC_IMAGE_SCHEMA,
+                u64::try_from(payload.len()).expect("payload length fits u64"),
+                range_start,
+                range_len,
+            )),
+            "fallback must request this selected closure member and exact bounded range"
+        );
+        let path = fixture.path.clone();
+        drop(reader);
+        drop(publisher);
+        drop(fixture);
+        fs::remove_dir_all(path).expect("remove selected image range fixture");
+    }
 
     struct FakeS3Hydrator {
         expected_selection: super::super::s3_publication::RemoteClosureSelection,

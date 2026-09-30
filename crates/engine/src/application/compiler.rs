@@ -10,9 +10,9 @@ use crate::compiler_read_observation_v2::{
     CompilerReadObservationProducerV2, CompilerReadObservationRecorderV2,
 };
 use crate::driver::{
-    CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment,
-    DeclarationScope, PackageDeclarationScopeFault, ToolchainSelection,
-    compile_semantic as compile_fused_semantic,
+    AuthorityFailure, CompileControl, CompileOutput, CompileRequest, CompileScratch,
+    CompiledFragment, DeclarationScope, PackageDeclarationScopeFault, ToolchainSelection,
+    compile_semantic as compile_fused_semantic, rust_authority_diagnostic,
 };
 use crate::publication::{
     OpenSemanticPublicationScratch, PreparedSemanticOutput, PublishControl, PublishedCompilation,
@@ -3254,6 +3254,32 @@ fn package_authority_terminal(
             toolchain,
             backend_library::interface::CompilerCause::DeadlineExceeded { diagnostic: None },
         ),
+        PackageAuthorityError::RustProject(cause) => {
+            // Package authority failures happen before driver scratch is leased.
+            // Reuse the driver's typed Rust projection with a fixed, path-free
+            // diagnostic buffer instead of flattening every Rust failure into
+            // Resolve/Authority with no explanation.
+            let mut diagnostic_bytes =
+                [0; backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES];
+            let diagnostic = rust_authority_diagnostic(Some(&mut diagnostic_bytes), &cause, false);
+            let failure = AuthorityFailure::Rust { diagnostic, cause };
+            let projection = failure.projection();
+            let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
+                projection.diagnostic.primary,
+                projection.diagnostic.observed,
+                projection.diagnostic.truncated,
+            );
+            compiler_attempt_terminal(
+                request,
+                source,
+                toolchain,
+                backend_library::interface::CompilerCause::Authority {
+                    phase: projection.phase,
+                    class: projection.class,
+                    diagnostic,
+                },
+            )
+        }
         cause => {
             let (phase, class) = package_authority_projection(&cause);
             compiler_attempt_terminal(
@@ -3316,7 +3342,7 @@ const fn package_authority_projection(
 
     match cause {
         PackageAuthorityError::SourceOutsidePackage { .. }
-        | PackageAuthorityError::TypeScriptEntryPath { .. }
+        | PackageAuthorityError::TypeScriptSourcePath { .. }
         | PackageAuthorityError::CompilationUnitMismatch { .. }
         | PackageAuthorityError::CompilationUnitSourceMismatch { .. }
         | PackageAuthorityError::RustToolchainExecutableMismatch { .. }
@@ -3395,17 +3421,22 @@ mod tests {
     };
 
     use crate::driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
-    use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest};
+    use backend_library::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CorrelationId, GenerateTarget,
+        PackageCompileRequest,
+    };
     use backend_semantic::registry::AdapterRoute;
     use backend_semantic::vocabulary::NativeTool;
     use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, RustEdition, Stage};
     use thiserror::Error;
 
-    use crate::application::{LocalToolchainSet, LocalToolchainSetError};
+    use crate::application::{LocalToolchainSet, LocalToolchainSetError, PackageAuthorityError};
+    use backend_frontend_rust::legacy::RustAuthorityError;
 
     use super::{
-        EmbeddingProvisioningFailure, PackageSource, PackageSourceSet, PackageSourceSetError,
-        StagedEmbeddingStatus, ToolchainRouteError, select_toolchain,
+        CompilerTerminal, EmbeddingProvisioningFailure, PackageSource, PackageSourceSet,
+        PackageSourceSetError, StagedEmbeddingStatus, ToolchainRouteError,
+        package_authority_terminal, request_source, select_toolchain,
     };
     use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
 
@@ -3443,6 +3474,69 @@ mod tests {
             Err(observed) => Err(RouteTestError::Route { observed }),
             Ok(_) => Err(RouteTestError::Accepted),
         }
+    }
+
+    #[test]
+    fn package_rust_detached_source_keeps_its_typed_scope_diagnostic() {
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::Rust(RustEdition::Rust2021),
+            stage: Stage::LowerIr,
+            source: "pub fn decode() {}",
+        };
+        let source = request_source(request).expect("small source has a u32 length");
+        let package = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(41),
+                profile: request.profile,
+                stage: request.stage,
+            },
+            PackageUrl::parse("pkg:cargo/toml@0.8.23").expect("canonical package URL"),
+        )
+        .expect("Rust profile matches Cargo package");
+        let target = CompilerPackageTargetV2::for_package(package.as_ref().clone()).target();
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::Rustc,
+            Path::new("/toolchain/bin/rustc"),
+            b"rustc 1.90.0",
+        )
+        .expect("absolute fixture toolchain path");
+
+        let terminal = package_authority_terminal(
+            target,
+            request,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
+            PackageAuthorityError::RustProject(RustAuthorityError::DetachedSource {
+                path: Path::new("/cache/toml-0.8.23/examples/decode.rs").to_path_buf(),
+                active_hir_roots:
+                    backend_frontend_rust::legacy::RustActiveHirRootInventory::default(),
+            }),
+        );
+        let CompilerTerminal::Compile {
+            cause:
+                CompilerCause::Authority {
+                    phase,
+                    class,
+                    diagnostic: Some(diagnostic),
+                },
+            ..
+        } = terminal
+        else {
+            panic!("Rust package refusal must keep its concrete authority projection");
+        };
+        assert_eq!(phase, AuthorityPhase::Resolve);
+        assert_eq!(class, AuthorityDiagnosticClass::SourceScope);
+        assert!(!diagnostic.truncated);
+        let message = &diagnostic.bytes[..diagnostic.byte_len];
+        assert_eq!(
+            message,
+            b"selected Rust source is cfg-inactive or detached from every active Cargo target."
+        );
+        assert!(
+            !message
+                .windows(b"/cache/".len())
+                .any(|window| window == b"/cache/")
+        );
     }
 
     #[test]

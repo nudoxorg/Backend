@@ -25,16 +25,15 @@ use crate::measure::Measure;
 use crate::motion::presence::{Act, Axis, Extent};
 use crate::motion::{Keys, Motion, Pose, Presence, spec};
 use crate::overlay::tooltip::Tipped;
-use crate::paint::geom::{Fill, Poly, pt};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
-use crate::tokens::motion::{GLIDE, STD};
 use crate::tokens::fluid::{BEADS, Beads};
+use crate::tokens::motion::{GLIDE, STD};
 use crate::tokens::{Face, Palette, TypeRole, geo};
 use gpui::{
-    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, layer, px,
-    svg,
+    AnyElement, App, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    KeyUpEvent, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, layer, px, svg,
 };
 use std::rc::Rc;
 
@@ -167,7 +166,10 @@ impl Titlebar {
 
     /// A bead was clicked: walk the thread to its page.
     #[must_use]
-    pub fn on_bead(mut self, handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static) -> Self {
+    pub fn on_bead(
+        mut self,
+        handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_bead = Some(Rc::new(handler));
         self
     }
@@ -332,85 +334,141 @@ fn bead_look(age: usize) -> (f32, f32) {
 }
 
 /// A painted bead: a diamond of half-diagonal `r`, filled or hollow.
-fn bead_art(color: Hsla, r: f32, hollow: bool, box_px: f32, s: f32) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let c = bounds.center();
-            let (cx, cy) = (f32::from(c.x), f32::from(c.y));
-            let poly = Poly::new([pt(cx, cy - r), pt(cx + r, cy), pt(cx, cy + r), pt(cx - r, cy)]);
-            let mut fill = Fill::new();
-            if hollow {
-                for piece in poly.offset(-0.75 * s).stroke_ring(1.5 * s) {
-                    fill.poly(&piece);
+fn bead_art(
+    color: Hsla,
+    r: f32,
+    hollow: bool,
+    box_px: f32,
+    s: f32,
+    focus: f32,
+    palette: &Palette,
+) -> AnyElement {
+    let inset = (box_px * 0.5 - r).max(0.0);
+    let mut bead =
+        crate::controls::diamond::diamond().inset(if hollow { inset + 0.75 * s } else { inset });
+    bead = if hollow {
+        bead.outline(color, 1.5 * s)
+    } else {
+        bead.fill(color)
+    };
+    bead = bead.flex_none().size(px(box_px));
+    if focus <= 0.001 {
+        return bead.into_any_element();
+    }
+    div()
+        .relative()
+        .flex_none()
+        .size(px(box_px))
+        .child(
+            crate::controls::diamond::diamond()
+                .outline(
+                    Hsla {
+                        alpha: focus * 0.72,
+                        ..palette.peri.base.into()
+                    },
+                    1.0 * s,
+                )
+                .absolute()
+                .left(px(-2.5 * s))
+                .top(px(-2.5 * s))
+                .size(px(box_px + 5.0 * s)),
+        )
+        .child(
+            crate::controls::diamond::diamond()
+                .outline(
+                    Hsla {
+                        alpha: focus,
+                        ..palette.peri_hi.into()
+                    },
+                    1.2 * s,
+                )
+                .absolute()
+                .left(px(-4.5 * s))
+                .top(px(-4.5 * s))
+                .size(px(box_px + 9.0 * s)),
+        )
+        .child(bead)
+        .into_any_element()
+}
+
+/// Gives titlebar actions real keyboard activation and a stable focus target.
+fn keyboard_button<E>(
+    element: E,
+    focus: &FocusHandle,
+    activate: Rc<dyn Fn(&mut Window, &mut App)>,
+) -> E
+where
+    E: StatefulInteractiveElement + InteractiveElement + Styled,
+{
+    element
+        .track_focus(focus)
+        .tab_index(0)
+        .on_key_down({
+            let activate = activate.clone();
+            move |event: &KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                if !event.keystroke.modifiers.modified() && key == "enter" && !event.is_held {
+                    activate(window, cx);
+                    cx.stop_propagation();
+                } else if !event.keystroke.modifiers.modified() && key == "space" {
+                    cx.stop_propagation();
                 }
-            } else {
-                fill.poly(&poly);
             }
-            fill.paint(window, color);
-        },
-    )
-    .flex_none()
-    .size(px(box_px))
-    .into_any_element()
+        })
+        .on_key_up({
+            let activate = activate.clone();
+            move |event: &KeyUpEvent, window, cx| {
+                if !event.keystroke.modifiers.modified() && event.keystroke.key == "space" {
+                    activate(window, cx);
+                    cx.stop_propagation();
+                }
+            }
+        })
+        .on_click(move |_, window, cx| {
+            if !window.last_input_was_keyboard() {
+                activate(window, cx);
+            }
+        })
 }
 
 /// A strand: a short line, solid or dashed.
 fn strand(color: Hsla, width: f32, dashed: bool, s: f32) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let y = f32::from(bounds.center().y) - 0.75 * s;
-            let x0 = f32::from(bounds.origin.x);
-            let w = f32::from(bounds.size.width);
-            let mut fill = Fill::new();
-            if dashed {
-                let mut x = x0;
-                while x < x0 + w {
-                    fill.poly(&Poly::rect(x, y, (3.0 * s).min(x0 + w - x), 1.5 * s));
-                    x += 6.0 * s;
-                }
-            } else {
-                fill.poly(&Poly::rect(x0, y, w, 1.5 * s));
-            }
-            fill.paint(window, color);
-        },
-    )
-    .flex_none()
-    .w(px(width))
-    .h(px(22.0 * s))
-    .into_any_element()
+    let hair = px(1.5 * s);
+    let line = if dashed {
+        let mut dashes = div().flex().gap(px(3.0 * s)).h(hair).overflow_hidden();
+        let mut remaining = width;
+        while remaining > 0.0 {
+            let dash = (3.0 * s).min(remaining);
+            dashes = dashes.child(div().flex_none().w(px(dash)).h(hair).bg(color));
+            remaining -= 6.0 * s;
+        }
+        dashes.into_any_element()
+    } else {
+        div().w(px(width)).h(hair).bg(color).into_any_element()
+    };
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .w(px(width))
+        .h(px(22.0 * s))
+        .child(line)
+        .into_any_element()
 }
 
 /// The painted stand-in for the platform's lights (galleries only).
 fn stand_in_lights(palette: &'static Palette, s: f32) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let cy = f32::from(bounds.center().y);
-            let x0 = f32::from(bounds.origin.x);
-            let r = 6.0 * s;
-            for (i, tone) in [palette.coral.base, palette.amber.base, palette.mint.base]
-                .into_iter()
-                .enumerate()
-            {
-                #[allow(clippy::cast_precision_loss)]
-                let cx = x0 + r + (i as f32) * 20.0 * s;
-                let points = (0..20).map(|k| {
-                    #[allow(clippy::cast_precision_loss)]
-                    let a = (k as f32) / 20.0 * std::f32::consts::TAU;
-                    pt(cx + r * a.cos(), cy + r * a.sin())
-                });
-                let mut fill = Fill::new();
-                fill.poly(&Poly::new(points));
-                fill.paint(window, Hsla::from(tone));
-            }
-        },
-    )
-    .flex_none()
-    .w(px(52.0 * s))
-    .h(px(12.0 * s))
-    .into_any_element()
+    let mut lights = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.0 * s))
+        .w(px(52.0 * s))
+        .h(px(12.0 * s));
+    for tone in [palette.coral.base, palette.amber.base, palette.mint.base] {
+        lights = lights.child(div().flex_none().size(px(12.0 * s)).rounded_full().bg(tone));
+    }
+    lights.into_any_element()
 }
 
 fn kind_glyph(kind: Kind, size: Pixels, palette: &Palette) -> AnyElement {
@@ -428,9 +486,20 @@ impl RenderOnce for Titlebar {
         let palette = cx.palette();
         let measure = self.measure;
         let s = measure.scale();
-        let plan = Plan::of(Modes::keyed(ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "beads".into()), window, cx).settle(&BEADS, measure.fluid_room()).mode);
+        let plan = Plan::of(
+            Modes::keyed(
+                ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "beads".into()),
+                window,
+                cx,
+            )
+            .settle(&BEADS, measure.fluid_room())
+            .mode,
+        );
         let id = self.id.clone();
-        let motion = Motion::scoped(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "tb".into()), cx);
+        let motion = Motion::scoped(
+            ElementId::NamedChild(std::sync::Arc::new(id.clone()), "tb".into()),
+            cx,
+        );
         let height = px(f32::from(geo::TITLEBAR) * s);
 
         // --- left: lights and the shelf toggle -------------------------
@@ -471,15 +540,23 @@ impl RenderOnce for Titlebar {
             let n = self.data.behind.len();
             self.data.behind[n.saturating_sub(plan.behind)..].to_vec()
         };
-        let behind_keys: Vec<ElementId> = shown_behind.iter().map(|bead| bead.key.clone()).collect();
+        let behind_keys: Vec<ElementId> =
+            shown_behind.iter().map(|bead| bead.key.clone()).collect();
         let behind = presence(&id, "behind", cx).sync(behind_keys, window, cx);
         let ahead_keys: Vec<ElementId> = if plan.ahead {
-            self.data.ahead.iter().take(1).map(|bead| bead.key.clone()).collect()
+            self.data
+                .ahead
+                .iter()
+                .take(1)
+                .map(|bead| bead.key.clone())
+                .collect()
         } else {
             vec![]
         };
         let ahead = presence(&id, "ahead", cx).sync(ahead_keys, window, cx);
         let bead_box = 22.0 * s;
+        // Keep small beads easy to hit even when the visual scale is compact.
+        let bead_hit = (24.0 * s).max(24.0);
         let strand_w = 18.0 * s;
         let live_w = 26.0 * s;
         let ink3: Hsla = palette.ink3.into();
@@ -515,25 +592,73 @@ impl RenderOnce for Titlebar {
             let (size, strength) = bead_look(age);
             // Older beads shrink and fade a step as the thread grows.
             let r = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "r".into()),
+                ElementId::NamedChild(
+                    std::sync::Arc::new(ElementId::NamedChild(
+                        std::sync::Arc::new(id.clone()),
+                        bead_name(&bead.key),
+                    )),
+                    "r".into(),
+                ),
                 size * 0.5 * std::f32::consts::SQRT_2 * s,
                 spec::LIFT,
                 window,
                 cx,
             );
             let alpha = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "a".into()),
+                ElementId::NamedChild(
+                    std::sync::Arc::new(ElementId::NamedChild(
+                        std::sync::Arc::new(id.clone()),
+                        bead_name(&bead.key),
+                    )),
+                    "a".into(),
+                ),
                 strength,
                 spec::REVEAL,
                 window,
                 cx,
             );
             let hue = super::with_alpha(bead.kind.hue(palette), alpha);
-            let bead_id = ElementId::NamedChild(std::sync::Arc::new(bead.key.clone()), "bead".into());
+            let bead_id =
+                ElementId::NamedChild(std::sync::Arc::new(bead.key.clone()), "bead".into());
+            let action = self.on_bead.clone().filter(|_| !item.is_leaving());
+            let focus = action.as_ref().map(|_| {
+                window.use_keyed_state(
+                    ElementId::NamedChild(std::sync::Arc::new(bead_id.clone()), "focus".into()),
+                    cx,
+                    |_, cx| cx.focus_handle().tab_stop(true),
+                )
+            });
+            let focus_handle = focus.as_ref().map(|state| state.read(cx).clone());
+            let focus_visible = focus_handle
+                .as_ref()
+                .is_some_and(|focus| focus.is_focused(window) && window.last_input_was_keyboard());
+            let focus_t = motion.animate(
+                ElementId::NamedChild(
+                    std::sync::Arc::new(ElementId::NamedChild(
+                        std::sync::Arc::new(id.clone()),
+                        bead_name(&bead.key).into(),
+                    )),
+                    "focus".into(),
+                ),
+                if focus_visible { 1.0 } else { 0.0 },
+                spec::HOVER,
+                window,
+                cx,
+            );
             let hovered = window.use_keyed_state(bead_id.clone(), cx, |_, _| false);
             let grow = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "grow".into()),
-                if *hovered.read(cx) && !item.is_leaving() { 1.25 } else { 1.0 },
+                ElementId::NamedChild(
+                    std::sync::Arc::new(ElementId::NamedChild(
+                        std::sync::Arc::new(id.clone()),
+                        bead_name(&bead.key),
+                    )),
+                    "grow".into(),
+                ),
+                if *hovered.read(cx) && !item.is_leaving() {
+                    1.25
+                } else {
+                    1.0
+                },
                 spec::LIFT,
                 window,
                 cx,
@@ -541,8 +666,14 @@ impl RenderOnce for Titlebar {
             let mut button = div()
                 .id(bead_id)
                 .flex_none()
-                .cursor_pointer()
-                .child(layer(bead_art(hue, r, false, bead_box, s)).scale(grow))
+                .size(px(bead_hit))
+                // Expand only the hit area; cancel the margin in layout so the
+                // measured thread keeps its original bead-and-strand width.
+                .mx(px((bead_box - bead_hit) * 0.5))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(layer(bead_art(hue, r, false, bead_box, s, focus_t, palette)).scale(grow))
                 .on_hover(move |inside, _window, cx| {
                     let inside = *inside;
                     hovered.update(cx, |value, cx| {
@@ -552,9 +683,14 @@ impl RenderOnce for Titlebar {
                         }
                     });
                 });
-            if let (Some(handler), false) = (self.on_bead.clone(), item.is_leaving()) {
+            if let (Some(handler), Some(focus)) = (action, focus_handle) {
                 let key = bead.key.clone();
-                button = button.on_click(move |_, window, cx| handler(&key, window, cx));
+                let activate: Rc<dyn Fn(&mut Window, &mut App)> =
+                    Rc::new(move |window, cx| handler(&key, window, cx));
+                button = keyboard_button(button, &focus, activate)
+                    .cursor_pointer()
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Back to {}", bead.name));
             }
             let button = button.tip(bead.name.clone());
             let is_last = age == 1;
@@ -564,12 +700,25 @@ impl RenderOnce for Titlebar {
                 strand(super::with_alpha(ink3, 0.7), strand_w, false, s)
             };
             thread = thread.child(
-                item.slot(div().flex().flex_none().items_center().child(button).child(tie)),
+                item.slot(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .child(button)
+                        .child(tie),
+                ),
             );
         }
 
         // The capsule.
-        let fill_t = motion.animate(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "fill".into()), if plan.fill { 1.0 } else { 0.0 }, spec::SETTLE, window, cx);
+        let fill_t = motion.animate(
+            ElementId::NamedChild(std::sync::Arc::new(id.clone()), "fill".into()),
+            if plan.fill { 1.0 } else { 0.0 },
+            spec::SETTLE,
+            window,
+            cx,
+        );
         let here_id = ElementId::NamedChild(std::sync::Arc::new(id.clone()), "here".into());
         thread = thread.child(capsule(
             &here_id,
@@ -590,23 +739,50 @@ impl RenderOnce for Titlebar {
                     .items_center()
                     .child(strand(palette.ink4.into(), strand_w, true, s))
                     .child({
+                        let bead_id = ElementId::NamedChild(
+                            std::sync::Arc::new(bead.key.clone()),
+                            "ahead".into(),
+                        );
+                        let action = self.on_bead.clone().filter(|_| !item.is_leaving());
+                        let focus = action.as_ref().map(|_| {
+                            window.use_keyed_state(
+                                ElementId::NamedChild(
+                                    std::sync::Arc::new(bead_id.clone()),
+                                    "focus".into(),
+                                ),
+                                cx,
+                                |_, cx| cx.focus_handle().tab_stop(true),
+                            )
+                        });
+                        let focus_handle = focus.as_ref().map(|state| state.read(cx).clone());
+                        let focus_visible = focus_handle.as_ref().is_some_and(|focus| {
+                            focus.is_focused(window) && window.last_input_was_keyboard()
+                        });
                         let mut button = div()
-                            .id(ElementId::NamedChild(
-                                std::sync::Arc::new(bead.key.clone()),
-                                "ahead".into(),
-                            ))
+                            .id(bead_id)
                             .flex_none()
-                            .cursor_pointer()
+                            .size(px(bead_hit))
+                            .mx(px((bead_box - bead_hit) * 0.5))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .child(bead_art(
                                 super::with_alpha(bead.kind.hue(palette), 0.7),
                                 11.0 * 0.5 * std::f32::consts::SQRT_2 * s,
                                 true,
                                 bead_box,
                                 s,
+                                if focus_visible { 1.0 } else { 0.0 },
+                                palette,
                             ));
-                        if let (Some(handler), false) = (self.on_bead.clone(), item.is_leaving()) {
+                        if let (Some(handler), Some(focus)) = (action, focus_handle) {
                             let key = bead.key.clone();
-                            button = button.on_click(move |_, window, cx| handler(&key, window, cx));
+                            let activate: Rc<dyn Fn(&mut Window, &mut App)> =
+                                Rc::new(move |window, cx| handler(&key, window, cx));
+                            button = keyboard_button(button, &focus, activate)
+                                .cursor_pointer()
+                                .role(gpui::Role::Button)
+                                .aria_label(format!("Forward to {}", bead.name));
                         }
                         button
                     })
@@ -629,9 +805,10 @@ impl RenderOnce for Titlebar {
             .items_center()
             .gap(px(6.0 * s))
             .children(self.data.buttons.iter().map(|spec| {
-                let mut button = icon_button(spec.id.clone(), spec.icon, spec.label.clone(), &measure)
-                    .size(IconButtonSize::Medium)
-                    .on(spec.on);
+                let mut button =
+                    icon_button(spec.id.clone(), spec.icon, spec.label.clone(), &measure)
+                        .size(IconButtonSize::Medium)
+                        .on(spec.on);
                 if let Some(key) = &spec.key {
                     button = button.key(key.clone());
                 }
@@ -644,6 +821,7 @@ impl RenderOnce for Titlebar {
 
         let mut bar = div()
             .id(id)
+            .role(gpui::Role::TitleBar)
             .flex()
             .flex_none()
             .items_center()
@@ -680,7 +858,10 @@ fn capsule(
 ) -> AnyElement {
     let palette = cx.palette();
     let s = measure.scale();
-    let motion = Motion::scoped(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "m".into()), cx);
+    let motion = Motion::scoped(
+        ElementId::NamedChild(std::sync::Arc::new(id.clone()), "m".into()),
+        cx,
+    );
     let hovered = window.use_keyed_state(id.clone(), cx, |_, _| false);
     let hover_t = motion.animate(
         ElementId::NamedChild(std::sync::Arc::new(id.clone()), "hover".into()),
@@ -689,8 +870,28 @@ fn capsule(
         window,
         cx,
     );
+    let focus_state = on_click.as_ref().map(|_| {
+        window.use_keyed_state(
+            ElementId::NamedChild(std::sync::Arc::new(id.clone()), "focus".into()),
+            cx,
+            |_, cx| cx.focus_handle().tab_stop(true),
+        )
+    });
+    let focus_handle = focus_state.as_ref().map(|state| state.read(cx).clone());
+    let focus_visible = focus_handle
+        .as_ref()
+        .is_some_and(|focus| focus.is_focused(window) && window.last_input_was_keyboard());
+    let focus_t = motion.animate(
+        ElementId::NamedChild(std::sync::Arc::new(id.clone()), "focus".into()),
+        if focus_visible { 1.0 } else { 0.0 },
+        spec::HOVER,
+        window,
+        cx,
+    );
     let rest = Edge::of(Bevel::Rest, palette);
-    let edge = rest.mix(Edge::of(Bevel::Peri, palette), hover_t * 0.35);
+    let edge = rest
+        .mix(Edge::of(Bevel::Peri, palette), hover_t * 0.35)
+        .mix(Edge::of(Bevel::Focus, palette), focus_t);
     let fill = mix(palette.plate2.into(), palette.plate3.into(), hover_t);
     let icon_px = measure.icon(14.0);
     let ghost: Hsla = palette.ink4.into();
@@ -770,22 +971,31 @@ fn capsule(
     };
     let key_cap = crate::controls::kbd::key_badge(&SharedString::from("K"), &motion, id, measure);
     let hovered_set = hovered.clone();
-    let mut plate = plate
-        .relative()
-        .child(key_cap)
-        .id(id.clone())
-        .cursor_pointer()
-        .on_hover(move |inside, _window, cx| {
-            let inside = *inside;
-            hovered_set.update(cx, |value, cx| {
-                if *value != inside {
-                    *value = inside;
-                    cx.notify();
-                }
+    let mut plate =
+        plate
+            .relative()
+            .child(key_cap)
+            .id(id.clone())
+            .on_hover(move |inside, _window, cx| {
+                let inside = *inside;
+                hovered_set.update(cx, |value, cx| {
+                    if *value != inside {
+                        *value = inside;
+                        cx.notify();
+                    }
+                });
             });
-        });
-    if let Some(handler) = on_click {
-        plate = plate.on_click(move |_, window, cx| handler(window, cx));
+    if let (Some(handler), Some(focus)) = (on_click, focus_handle) {
+        let label = match here {
+            Here::Page { name, .. } | Here::Place { name, .. } => format!("Open {name}"),
+            Here::Ask { prompt } => format!("Search: {prompt}"),
+        };
+        let activate: Rc<dyn Fn(&mut Window, &mut App)> =
+            Rc::new(move |window, cx| handler(window, cx));
+        plate = keyboard_button(plate, &focus, activate)
+            .cursor_pointer()
+            .role(gpui::Role::Button)
+            .aria_label(label);
     }
     // The capsule's share of the thread: a flex factor on a spring, so the
     // switch between "centred, at most 430" and "fills" is a glide.
@@ -805,7 +1015,10 @@ mod tests {
     #[test]
     fn the_thread_degrades_at_the_flow_targets_breakpoints() {
         let wide = Plan::at(1440.0);
-        assert_eq!((wide.behind, wide.ahead, wide.fill, wide.buttons), (3, true, false, true));
+        assert_eq!(
+            (wide.behind, wide.ahead, wide.fill, wide.buttons),
+            (3, true, false, true)
+        );
         // With no history the ladder reads its plain edges: at 1100 the oldest bead is there.
         assert_eq!(Plan::at(1100.0).behind, 3);
         assert_eq!(Plan::at(1099.5).behind, 2);

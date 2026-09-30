@@ -7,14 +7,19 @@ pub(crate) mod browse_views;
 pub mod client;
 pub mod coordinator;
 pub mod debug_page;
+#[cfg(test)]
 pub(crate) mod fixture_releases;
+#[cfg(any(test, feature = "visual-harness"))]
 pub(crate) mod fixture_world;
+pub(crate) mod hand;
+pub(crate) mod indexed_world;
 pub(crate) mod graph_focus;
 pub mod mailbox;
 pub mod mapping;
 pub(crate) mod offload;
 pub(crate) mod owner;
 pub mod page_mapping;
+pub(crate) mod releases;
 pub mod reads;
 pub(crate) mod snapshot;
 pub mod store;

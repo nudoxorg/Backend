@@ -472,21 +472,28 @@ impl RenderOnce for Button {
             content = content.child(glyph(mark, measure.icon(icon_px), ink));
         }
         if let Some(label) = self.label.clone() {
-            // Published to the probe like every other run of words, so the
-            // harness lints a button's words too (contrast on its own fill,
-            // clipping) and a journey reads them (GAPS.md D3).
-            content = content.child(crate::probe::text(
-                ElementId::Name(format!("button:{}:{label}", self.id).into()),
-                label.clone(),
-                measure.role(role),
-                1.0,
-                crate::probe::TextOverflow::Clip,
-                div()
-                    .set(role, &measure)
-                    .text_color(ink)
-                    .whitespace_nowrap()
-                    .child(label),
-            ));
+            let words = div()
+                .set(role, &measure)
+                .text_color(ink)
+                .whitespace_nowrap()
+                .child(label.clone());
+            // A busy button keeps the label's measured width beneath its
+            // hatch, but the words are fully transparent and are not
+            // published as visible evidence to the harness.
+            let words = if self.busy {
+                words.into_any_element()
+            } else {
+                crate::probe::text(
+                    ElementId::Name(format!("button:{}:{label}", self.id).into()),
+                    label.clone(),
+                    measure.role(role),
+                    1.0,
+                    crate::probe::TextOverflow::Clip,
+                    words,
+                )
+                .into_any_element()
+            };
+            content = content.child(words);
         }
 
         let pad = if self.label.is_some() {

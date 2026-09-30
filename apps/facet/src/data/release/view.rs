@@ -14,7 +14,7 @@
 //! Calm (§6.2): monochrome words; mint only under what is new, periwinkle
 //! only under the hit; ⌥ spells each signature's Rust source.
 
-use super::{Impacted, Lens, Mark, Marked, ROWS, Row, SITES, Summary, What};
+use super::{ComparisonStatus, Impacted, Lens, Mark, Marked, ROWS, Row, SITES, Summary, What};
 use crate::anatomy::{Deco, Line, Links, TypeInk, k, roles, stacked};
 use crate::data::door::Door;
 use crate::data::spell::spell;
@@ -70,12 +70,12 @@ fn said(key: ElementId, text: impl Into<SharedString>, role: TypeRole, color: Hs
 #[must_use]
 pub fn shelf_line(id: impl Into<ElementId>, summary: &Summary, from: &str, to: &str, measure: &Measure, palette: &Palette) -> AnyElement {
     let id: ElementId = id.into();
-    let mut line = spell(measure).id(id).row_gap(1.0);
+    let mut line = spell(measure).id(id.clone()).row_gap(1.0);
     let mut tips: Vec<AnyElementBuilder> = Vec::new();
     let (quiet, count) = (palette.ink3.hsla(), palette.ink1.hsla());
     let from = super::short(from).to_owned();
-    if !summary.local {
-        return line.text(summary.words(to), SHELF, quiet).into_any_element();
+    if summary.status != ComparisonStatus::Compared {
+        return said(id, summary.words(to), SHELF, quiet, measure);
     }
     let mut part = |line: crate::data::Spell, n: Option<usize>, words: String, says: String| {
         let k = tips.len();
@@ -328,9 +328,24 @@ impl RenderOnce for Section {
         let m = self.measure;
         let mut root = div().flex().flex_col().gap(k(&m, 8.0)).child(div().mb(m.space(Space::Tight)).child(self.heading(palette)));
         if !self.lens.compared() {
+            let explanation = match self.lens.status {
+                ComparisonStatus::SourceUnavailable => {
+                    format!("{} source is unavailable, so its API cannot be compared.", self.lens.to)
+                }
+                ComparisonStatus::DiffUnavailable => {
+                    format!("{} is on this machine, but this comparison is unavailable.", self.lens.to)
+                }
+                ComparisonStatus::SourceAmbiguous => {
+                    format!("{} matches multiple registry sources, so its API cannot be compared.", self.lens.to)
+                }
+                ComparisonStatus::SourceUnverified => {
+                    format!("{} has an unverified source archive, so its API cannot be compared.", self.lens.to)
+                }
+                ComparisonStatus::Compared => unreachable!("compared lenses continue into their rows"),
+            };
             return root.child(said(
                 child(&self.id, "absent"),
-                format!("{} is not on this machine, so its API cannot be compared; only its date is known.", self.lens.to),
+                explanation,
                 QUIET,
                 palette.ink3.hsla(),
                 &m,

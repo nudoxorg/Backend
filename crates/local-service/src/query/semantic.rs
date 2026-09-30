@@ -68,7 +68,18 @@ impl LocalAnswer {
         let Ok(result) = index.search_embedding(query, refill, semantic::Limits::default()) else {
             return self.unavailable_semantic(Freshness::Unknown);
         };
-        let composed = compose(&self, policy, &result);
+        let candidate_entities = result
+            .candidates
+            .iter()
+            .filter_map(|candidate| {
+                self.candidate_row(candidate.id)
+                    .map(|(entity, _)| entity)
+            })
+            .collect::<Vec<_>>();
+        let Ok(lexical) = self.lexical_relevance_for_candidates(&candidate_entities) else {
+            return self.unavailable_semantic(Freshness::Unknown);
+        };
+        let composed = compose(&self, policy, &result, &lexical);
         self.lanes.push(LaneReport {
             lane: Lane::Semantic,
             coverage: CoverageBasis::CandidateSubset {
@@ -124,7 +135,7 @@ fn refill_limit(answer: &LocalAnswer, policy: CompositionPolicy) -> usize {
         .saturating_mul(4)
         .max(desired)
         .min(semantic::Limits::default().max_page)
-        .min(answer.corpus.entities.len().max(1))
+        .min(answer.selected_row_count().max(1))
 }
 
 struct Composition {
@@ -138,8 +149,8 @@ fn compose(
     answer: &LocalAnswer,
     policy: CompositionPolicy,
     result: &semantic::VectorSearchResult,
+    lexical: &BTreeMap<backend_semantic::EntityId, backend_extension_tantivy::Relevance>,
 ) -> Composition {
-    let lexical = answer.matches.iter().copied().collect::<BTreeMap<_, _>>();
     let qualified = !answer.query.qualified_clauses().is_empty();
     let mut ranked = Vec::with_capacity(answer.query.limit());
     let mut admitted = BTreeSet::new();
@@ -147,15 +158,7 @@ fn compose(
     let mut suppressed = 0usize;
     let mut augmented = 0usize;
     for candidate in &result.candidates {
-        let Some(entity) = answer.corpus.candidates.get(&candidate.id).copied() else {
-            suppressed = suppressed.saturating_add(1);
-            continue;
-        };
-        let Some(row) = answer
-            .corpus
-            .entities
-            .get(&entity)
-            .and_then(|id| answer.corpus.view.row(*id))
+        let Some((entity, row)) = answer.candidate_row(candidate.id)
         else {
             suppressed = suppressed.saturating_add(1);
             continue;
@@ -190,20 +193,17 @@ fn compose(
             });
         }
     }
-    for (entity, relevance) in &answer.matches {
+    for local in &answer.rows {
         if ranked.len() == answer.query.limit() {
             break;
         }
-        if admitted.insert(*entity)
-            && let Some(row) = answer
-                .corpus
-                .entities
-                .get(entity)
-                .and_then(|id| answer.corpus.view.row(*id))
-        {
+        let Some(entity) = answer.entity_for_row(local.row.id) else {
+            continue;
+        };
+        if admitted.insert(entity) {
             ranked.push(RankedRow {
-                row,
-                lexical_relevance: Some(*relevance),
+                row: local.row.clone(),
+                lexical_relevance: local.lexical_relevance,
             });
         }
     }

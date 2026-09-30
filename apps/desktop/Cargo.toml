@@ -20,12 +20,11 @@ required-features = ["visual-harness"]
 
 [dependencies]
 anyhow.workspace = true
+async-channel.workspace = true
 # Unpacks a registry archive from the local cargo cache (`host::registry`).
 flate2.workspace = true
 backend-client = { path = "../../crates/client" }
-# `release-fixture`: the upgrade lens's stand-in data until the index serves
-# release diffs (`runtime::fixture_releases`).
-backend-facet = { path = "../facet", features = ["release-fixture"] }
+backend-facet = { path = "../facet" }
 backend-library = { path = "../../crates/library" }
 backend-local-service = { path = "../../crates/local-service" }
 backend-platform = { path = "../../crates/platform" }
@@ -38,6 +37,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"], opt
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+semver = "1.0.28"
 toml.workspace = true
 
 [features]
@@ -64,15 +64,22 @@ rustix = { version = "1.1.4", default-features = false, features = ["fs", "proce
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"] }
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSAccessibility", "NSWorkspace"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSNotification", "NSOperation", "NSString", "NSObject", "block2"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_platform = { workspace = true, features = ["x11", "wayland"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_platform = { workspace = true, features = ["wgpu"] }
+windows = { version = "=0.61.3", features = ["Foundation", "UI_ViewManagement"] }
 
 [dev-dependencies]
 backend-gui-harness = { path = "../../tools/gui-harness" }
+# Prototype release fixtures are test-only; production release views read the
+# selected local registry and exact owner comparison.
+backend-facet = { path = "../facet", features = ["release-fixture"] }
 # `write_state_from_another_build`: the host test of a workspace an earlier build wrote.
 backend-local-service = { path = "../../crates/local-service", features = ["test-support"] }
 blake3.workspace = true

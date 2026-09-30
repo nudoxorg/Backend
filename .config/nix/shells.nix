@@ -51,6 +51,19 @@ let
       export CARGO_TARGET_DIR="$PWD/.local/target"
       export CLIPPY_CONF_DIR="$PWD/.config"
       export BACKEND_WORKSPACE_SNAPSHOT="$PWD"
+      # Rust package authority is ExplicitOnly in the owner process. Pair the
+      # pinned rustc and Cargo above with an absolute per-user Cargo home so
+      # shells and tools launched from them use the same admitted tuple.
+      if [ -z "''${NUDOX_CARGO_HOME:-}" ]; then
+        case "''${CARGO_HOME:-}" in
+          /*) export NUDOX_CARGO_HOME="$CARGO_HOME" ;;
+          *)
+            case "''${HOME:-}" in
+              /*) export NUDOX_CARGO_HOME="$HOME/.cargo" ;;
+            esac
+            ;;
+        esac
+      fi
     '';
   };
   development = pkgs.mkShell (

@@ -555,6 +555,11 @@ impl From<CompilerRuntimeCause> for GoldenCompilerRuntimeCause {
     fn from(cause: CompilerRuntimeCause) -> Self {
         match cause {
             CompilerRuntimeCause::RequestInFlight => Self::RequestInFlight,
+            CompilerRuntimeCause::CommandQueueFull { .. }
+            | CompilerRuntimeCause::RequestAdmissionFull { .. }
+            | CompilerRuntimeCause::LaneQueueFull { .. }
+            | CompilerRuntimeCause::StagedOutputBudgetExceeded { .. }
+            | CompilerRuntimeCause::StagedOutputReservationOverflow => Self::QueueFull,
             CompilerRuntimeCause::QueueFull => Self::QueueFull,
             CompilerRuntimeCause::RequestOwnerStopped => Self::RequestOwnerStopped,
             CompilerRuntimeCause::ResponseOwnerStopped => Self::ResponseOwnerStopped,

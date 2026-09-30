@@ -289,6 +289,7 @@ fn acquisition_service_reuses_a_cached_release_after_not_modified() {
     assert_eq!(transport.archives, 1, "304 must reuse the durable archive");
 
     let before_lineage_epoch = service.policy_epoch();
+    let before_lineage_facts = service.facts_frontier();
     let published = service
         .published_packages()
         .into_iter()
@@ -310,7 +311,7 @@ fn acquisition_service_reuses_a_cached_release_after_not_modified() {
             vec![association.clone()].into_boxed_slice(),
         )
         .expect("link forge lineage");
-    assert_ne!(service.policy_epoch(), before_lineage_epoch);
+    assert_eq!(service.policy_epoch(), before_lineage_epoch);
     let linked = service
         .published_packages()
         .into_iter()
@@ -321,6 +322,7 @@ fn acquisition_service_reuses_a_cached_release_after_not_modified() {
         .expect("joined forge lineage");
     assert_eq!(joined.as_ref(), &[association.clone()]);
     let linked_facts_root = service.facts_frontier();
+    assert_ne!(linked_facts_root, before_lineage_facts);
 
     drop(service);
     let (recovered_owner, _) = RegistryOwner::open(
@@ -1847,11 +1849,13 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
     };
     let _ = poll_owner(&mut owner, &mut transport).expect("initial release");
     let first_epoch = owner.policy_epoch();
+    let first_facts_frontier = owner.facts_frontier();
     assert_ne!(first_epoch, 0);
     let first = owner.published(&coordinate).expect("published").artifact;
     let _ = poll_owner(&mut owner, &mut transport).expect("yank delta");
     let second_epoch = owner.policy_epoch();
-    assert_ne!(second_epoch, first_epoch);
+    assert_eq!(second_epoch, first_epoch);
+    assert_ne!(owner.facts_frontier(), first_facts_frontier);
     let current = owner.published(&coordinate).expect("updated");
     assert_eq!(transport.archive_fetches, 1);
     assert_eq!(current.artifact, first);
@@ -1945,6 +1949,16 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     let crate::acquisition::AcquisitionOutcome::Hit(first) = first else {
         panic!("initial acquisition must publish")
     };
+    let first_facts_frontier = first.snapshot.facts_frontier();
+    let first_record = service
+        .recover_product_record(&request)
+        .expect("recover first product receipt")
+        .expect("first acquisition must publish a durable product receipt");
+    assert!(matches!(
+        first_record.terminal,
+        crate::acquisition::AcquisitionProductTerminal::Published
+    ));
+    assert_eq!(first_record.facts_frontier, first_facts_frontier);
     let coordinate = PackageCoordinate::parse("pkg:cargo/demo@2.0.0").expect("coordinate");
     let admitted = service
         .published_package(&coordinate)
@@ -1981,7 +1995,23 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
             ..
         })
     ));
-    assert_ne!(service.policy_epoch(), epoch);
+    assert_eq!(service.policy_epoch(), epoch);
+    let updated_facts_frontier = service.facts_frontier();
+    assert_ne!(updated_facts_frontier, first_facts_frontier);
+    let updated_record = service
+        .recover_product_record(&request)
+        .expect("recover yanked product receipt")
+        .expect("yank must be durably recorded");
+    assert_eq!(updated_record.facts_frontier, updated_facts_frontier);
+    assert!(matches!(
+        updated_record.terminal,
+        crate::acquisition::AcquisitionProductTerminal::NegativeFact(
+            crate::acquisition::NegativeFact {
+                kind: crate::acquisition::NegativeFactKind::Yanked,
+                ..
+            }
+        )
+    ));
     assert_eq!(transport.pages, 2);
     assert_eq!(transport.archives, 1);
     assert!(matches!(
@@ -2033,6 +2063,127 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
         Some(admitted.metadata_evidence_digest())
     );
     assert!(durable.raw_object.is_some());
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() {
+    struct MutableAdvisory {
+        page: u8,
+        archive: Vec<u8>,
+    }
+
+    impl RegistryTransport for MutableAdvisory {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            self.page = self.page.saturating_add(1);
+            let advisory = (self.page > 1).then(|| {
+                let advisory = backend_advisory::parse_osv(
+                    br#"{"schema_version":"1.3.1","id":"OSV-SECURITY-REFRESH","modified":"2026-09-29T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"security-refresh"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#,
+                    2,
+                )
+                .expect("valid matching advisory fact");
+                backend_advisory::AdvisoryObservation {
+                    advisories: Box::new([advisory]),
+                    coverage: backend_advisory::AdvisoryCoverage::Complete,
+                    freshness: backend_advisory::FreshnessState::Fresh,
+                    offline: false,
+                    yanked: false,
+                    unlisted: false,
+                    malware: backend_advisory::MalwareCoverage::NotCovered,
+                }
+            });
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [self.page; 32],
+                packages: vec![RemotePackage {
+                    coordinate: PackageCoordinate::parse("pkg:cargo/security-refresh@1.0.0")
+                        .expect("coordinate"),
+                    integrity: transport::ArchiveIntegrity::Canonical(
+                        *CapabilityArtifactId::from_value(&self.archive).as_bytes(),
+                    ),
+                    provenance: ProvenanceDigest::from_authenticated_feed([self.page; 32]),
+                    facts: test_facts(),
+                    native_metadata: test_native_metadata(),
+                    advisory,
+                    dependency_facts: unavailable_dependency_facts(),
+                    archive_url: Arc::from("https://registry.example.test/security-refresh.crate"),
+                }],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("service-advisory-fact-refresh");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+    let owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::Warn,
+    });
+    let service = crate::acquisition::AcquisitionService::from_owner(
+        owner,
+        root.join("coordination"),
+    )
+    .expect("service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        "pkg:cargo/security-refresh@1.0.0",
+        1,
+        0,
+    )
+    .expect("request");
+    let mut transport = MutableAdvisory {
+        page: 0,
+        archive: b"security advisory fact transition".to_vec(),
+    };
+    let crate::acquisition::AcquisitionOutcome::Hit(first) =
+        service.acquire(&request, &mut transport)
+    else {
+        panic!("initial clean advisory observation must publish");
+    };
+    let first_epoch = first.receipt.policy_epoch;
+    let first_facts_frontier = service.facts_frontier();
+    assert!(service
+        .recover_product_record(&request)
+        .expect("recover initial product receipt")
+        .is_some());
+
+    assert!(matches!(
+        service.acquire(&request, &mut transport),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+            ..
+        })
+    ));
+    assert_eq!(service.policy_epoch(), first_epoch);
+    let updated_facts_frontier = service.facts_frontier();
+    assert_ne!(updated_facts_frontier, first_facts_frontier);
+    let updated = service
+        .recover_product_record(&request)
+        .expect("recover advisory-denial product receipt")
+        .expect("advisory denial must be durably recorded");
+    assert_eq!(updated.facts_frontier, updated_facts_frontier);
+    assert!(matches!(
+        updated.terminal,
+        crate::acquisition::AcquisitionProductTerminal::NegativeFact(
+            crate::acquisition::NegativeFact {
+                kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+                ..
+            }
+        )
+    ));
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -5231,18 +5382,34 @@ fn cargo_sparse_rows_retain_features_and_reject_typed_policy_shapes() {
         .expect("Cargo endpoint");
     let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
         .expect("adapter");
-    let row = br#"{"name":"demo","vers":"1.2.3","deps":[{"name":"serde","req":"^1","kind":"normal","optional":true,"features":["derive"]}],"cksum":"0000000000000000000000000000000000000000000000000000000000000000","features":{"default":["std","dep:serde"],"std":[]},"yanked":true,"links":"demo-sys"}
+    let row = br#"{"name":"demo","vers":"1.2.3","deps":[{"name":"serde","req":"^1","kind":"normal","optional":true,"features":["derive"]}],"cksum":"0000000000000000000000000000000000000000000000000000000000000000","features":{"default":["std","dep:serde"],"std":[]},"features2":{"default":["serde?/alloc"],"new":["dep:new"]},"pubtime":"2024-02-29T23:59:59Z","rust_version":"1.60","yanked":true,"links":"demo-sys"}
 "#;
     let releases = adapter.decode(row).expect("Cargo sparse row");
     assert_eq!(releases.len(), 1);
     let release = &releases[0];
     assert_eq!(release.facts.standing(), ReleaseStanding::Yanked);
-    assert_eq!(release.features().len(), 2);
+    assert_eq!(release.features().len(), 3);
     assert_eq!(release.features()[0].name(), "default");
     assert_eq!(
         release.features()[0].members(),
-        [Arc::from("dep:serde"), Arc::from("std")]
+        [
+            Arc::from("dep:serde"),
+            Arc::from("serde?/alloc"),
+            Arc::from("std")
+        ]
     );
+    assert_eq!(
+        release.features()[1].members(),
+        [Arc::from("dep:new")]
+    );
+    let backend_library::RegistryNativeDetails::Cargo(cargo) = &release.metadata().details else {
+        panic!("Cargo adapter must retain typed Cargo metadata");
+    };
+    assert_eq!(cargo.published_at.as_deref(), Some("2024-02-29T23:59:59Z"));
+    assert_eq!(cargo.rust_version.as_deref(), Some("1.60"));
+    assert_eq!(cargo.features2.len(), 2);
+    assert_eq!(cargo.features2[0].name, "default");
+    assert_eq!(cargo.features2[0].members.as_ref(), ["serde?/alloc"]);
     assert_eq!(release.artifacts().len(), 1);
     assert_eq!(
         release.artifacts()[0].kind(),
@@ -5251,6 +5418,11 @@ fn cargo_sparse_rows_retain_features_and_reject_typed_policy_shapes() {
     let malformed = br#"{"name":"demo","vers":"1.2.3","cksum":"0000000000000000000000000000000000000000000000000000000000000000","yanked":"true"}"#;
     assert!(matches!(
         adapter.decode(malformed),
+        Err(TransportFailure::Protocol)
+    ));
+    let malformed_time = br#"{"name":"demo","vers":"1.2.3","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"2024-02-30T23:59:59Z"}"#;
+    assert!(matches!(
+        adapter.decode(malformed_time),
         Err(TransportFailure::Protocol)
     ));
 }

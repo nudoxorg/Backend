@@ -593,8 +593,194 @@ fn assert_mcp_profile(output: &Output, purl: &str) {
     assert!(versions >= 1, "MCP profile omitted recorded versions");
 }
 
-fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) -> u64 {
+fn official_native_source_id(case: LiveCase) -> [u8; 32] {
+    let ecosystem = case
+        .ecosystem
+        .parse::<backend_library::RegistryEcosystem>()
+        .expect("supported live ecosystem");
+    let endpoint = backend_engine::registry::RegistryEndpoint::new(ecosystem, case.endpoint)
+        .expect("pinned official endpoint");
+    backend_engine::registry::RegistrySource::new(endpoint)
+        .id()
+        .as_bytes()
+}
+
+fn assert_expected_dependencies(
+    case: LiveCase,
+    facts: &DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
+    source_id: [u8; 32],
+) {
+    use backend_library::{DependencyScope, PackageGraphSourceAuthority};
+
+    match (case.ecosystem, facts) {
+        ("cargo", DependencyFacts::Known(rows)) => {
+            assert!(rows.iter().any(|row| {
+                row.target.name.as_str() == "ahash"
+                    && row.target.requirement.as_str() == "^0.8.7"
+            }));
+        }
+        ("npm", DependencyFacts::Known(rows)) => {
+            assert!(rows.iter().any(|row| {
+                row.target.name.as_str() == "@babel/types"
+                    && row.target.requirement.as_str() == "^7.26.8"
+            }));
+        }
+        ("pypi", DependencyFacts::Unknown(reason)) => {
+            assert!(!reason.as_str().is_empty());
+        }
+        ("maven", DependencyFacts::Known(rows)) => {
+            assert!(rows.iter().any(|row| {
+                row.target.name.as_str() == "junit:junit"
+                    && row.scope == DependencyScope::Development
+            }));
+        }
+        ("nuget", DependencyFacts::Unknown(reason)) => {
+            assert!(!reason.as_str().is_empty());
+        }
+        ("golang", DependencyFacts::Known(rows)) => {
+            assert!(rows.is_empty(), "the pinned go.mod has no require directives");
+        }
+        ("cpp", DependencyFacts::Unavailable(reason)) => {
+            assert!(!reason.as_str().is_empty());
+        }
+        (_, other) => panic!("unexpected dependency coverage for {}: {other:?}", case.lane),
+    }
+
+    if let DependencyFacts::Known(rows) = facts {
+        assert!(rows.iter().all(|row| {
+            row.source_authority
+                == PackageGraphSourceAuthority::Registry(
+                    backend_library::RegistryAuthorityId::from_configured_source(source_id),
+                )
+        }));
+    }
+}
+
+/// Checks fixed expectations independently authored from each pinned
+/// registry's public release document. The live path still fetches and admits
+/// every fact through the production native adapter and durable gateway.
+fn assert_expected_native_metadata(
+    case: LiveCase,
+    record: &backend_library::RegistryPackageRecord,
+) {
+    use backend_library::{
+        RegistryNativeArtifactKind, RegistryNativeAvailability, RegistryNativeChecksumAlgorithm,
+        RegistryNativeDetails, RegistryNativeObservation, RegistryNativeProvenance,
+    };
+
+    assert_eq!(
+        record.native_metadata.version,
+        backend_library::REGISTRY_NATIVE_METADATA_VERSION
+    );
+    assert!(matches!(
+        &record.native_metadata.availability,
+        RegistryNativeAvailability::Recorded
+    ));
+    match &record.native_metadata.provenance {
+        RegistryNativeProvenance::SourceDigest(digest) => assert_ne!(*digest, [0; 32]),
+        RegistryNativeProvenance::NotRecorded(reason) => {
+            panic!("pinned live source has no provenance: {reason}")
+        }
+    }
+
+    match (case.ecosystem, &record.native_metadata.details) {
+        ("cargo", RegistryNativeDetails::Cargo(metadata)) => {
+            let artifact = metadata.artifacts.first().expect("Cargo crate artifact");
+            assert_eq!(artifact.filename.as_str(), "hashbrown-0.14.5.crate");
+            assert_eq!(artifact.kind, RegistryNativeArtifactKind::CargoCrate);
+            assert_eq!(artifact.checksum.algorithm, RegistryNativeChecksumAlgorithm::Sha256);
+            assert_eq!(artifact.yanked, Some(false));
+            assert_eq!(metadata.published_at.as_deref(), Some("2024-04-28T18:32:09Z"));
+            assert_eq!(metadata.rust_version.as_deref(), Some("1.63.0"));
+            assert!(metadata
+                .features
+                .iter()
+                .any(|feature| feature.name == "default"));
+            assert!(metadata
+                .features2
+                .iter()
+                .any(|feature| feature.name == "nightly"));
+        }
+        ("npm", RegistryNativeDetails::Npm(metadata)) => {
+            let artifact = metadata.artifacts.first().expect("npm tarball artifact");
+            assert!(artifact.filename.ends_with("parser-7.26.8.tgz"));
+            assert_eq!(artifact.kind, RegistryNativeArtifactKind::NpmTarball);
+            assert_eq!(artifact.checksum.algorithm, RegistryNativeChecksumAlgorithm::Sha512);
+            assert!(!metadata.dist_tags.is_empty());
+        }
+        ("pypi", RegistryNativeDetails::Pypi(metadata)) => {
+            assert_eq!(metadata.requires_python.as_deref(), Some(">=3.8"));
+            assert!(metadata.artifacts.len() >= 2);
+            assert!(metadata.artifacts.iter().any(|artifact| {
+                artifact.filename == "tomli-2.2.1.tar.gz"
+                    && artifact.kind == RegistryNativeArtifactKind::PythonSdist
+                    && artifact.yanked == Some(false)
+            }));
+        }
+        ("maven", RegistryNativeDetails::Maven(metadata)) => {
+            let artifact = metadata.artifacts.first().expect("Maven JAR artifact");
+            assert!(artifact.filename.ends_with("jackson-annotations-2.16.1.jar"));
+            assert_eq!(artifact.kind, RegistryNativeArtifactKind::MavenJar);
+            assert!(matches!(
+                &metadata.checksum,
+                RegistryNativeObservation::Recorded(_)
+            ));
+            assert!(matches!(
+                &metadata.pom,
+                RegistryNativeObservation::Recorded(_)
+            ));
+            assert!(matches!(
+                &metadata.dependencies,
+                RegistryNativeObservation::Recorded(DependencyFacts::Known(rows))
+                    if rows.iter().any(|row| row.target.name.as_str() == "junit:junit")
+            ));
+        }
+        ("nuget", RegistryNativeDetails::Nuget(metadata)) => {
+            let artifact = metadata.artifacts.first().expect("NuGet package artifact");
+            assert!(artifact.filename.ends_with("nullable.1.3.1.nupkg"));
+            assert_eq!(artifact.kind, RegistryNativeArtifactKind::NugetPackage);
+            assert!(matches!(
+                &metadata.vulnerabilities,
+                RegistryNativeObservation::NotRecorded(_)
+            ));
+            assert!(matches!(
+                &metadata.dependencies,
+                RegistryNativeObservation::Recorded(DependencyFacts::Unknown(_))
+            ));
+        }
+        ("golang", RegistryNativeDetails::Golang(metadata)) => {
+            let source = match &metadata.source {
+                RegistryNativeObservation::Recorded(source) => source,
+                other => panic!("Go module source facts were not recorded: {other:?}"),
+            };
+            assert_eq!(source.module, "github.com/BurntSushi/toml");
+            assert_eq!(source.version, "v1.4.0");
+            assert!(metadata.retracts.is_empty());
+            assert_eq!(metadata.artifacts.len(), 1);
+            assert_eq!(metadata.artifacts[0].kind, RegistryNativeArtifactKind::GoSource);
+        }
+        ("cpp", RegistryNativeDetails::Cpp(metadata)) => {
+            assert_eq!(
+                metadata.source,
+                backend_library::RegistryConanSourceAvailability::Archive
+            );
+            assert!(metadata.artifacts.iter().any(|artifact| {
+                artifact.filename == "conan_sources.tgz"
+                    && artifact.kind == RegistryNativeArtifactKind::ConanSource
+            }));
+        }
+        (_, details) => panic!("{} produced wrong native metadata: {details:?}", case.lane),
+    }
+}
+
+fn assert_registry_facts(
+    case: LiveCase,
+    endpoint: &Path,
+    coordinate: &str,
+    package_name: &str,
+) -> u64 {
     let package = PackageReference::parse(coordinate).expect("registry package reference");
+    let source_id = official_native_source_id(case);
     let mut session = Session::connect(endpoint).expect("registry facts session connect");
     let record = match session
         .surface(SurfaceCommand::Package {
@@ -609,6 +795,23 @@ fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) 
             assert_eq!(record.name.as_str(), package_name);
             assert!(record.bytes > 0, "package details omitted archive bytes");
             assert_ne!(record.facts_version, [0; 32]);
+            let authority = record.authority.expect("registry source authority");
+            assert_eq!(authority.source, source_id);
+            assert_ne!(authority.source_facts_root, [0; 32]);
+            assert_ne!(authority.source_provenance, [0; 32]);
+            assert_eq!(authority.facts_version, record.facts_version);
+            assert_eq!(
+                authority.downloads,
+                backend_library::RegistryPackageFactCompleteness::Unsupported,
+                "these seven native release sources do not publish exact per-release downloads"
+            );
+            assert!(matches!(
+                &record.downloads,
+                RegistryDownloadCount::Unavailable(
+                    backend_library::RegistryFactAvailability::Unsupported
+                )
+            ));
+            assert_expected_native_metadata(case, record);
             match &record.downloads {
                 RegistryDownloadCount::Exact(_) | RegistryDownloadCount::Approximate(_) => {}
                 // A missing count is carried as typed source coverage, so the
@@ -668,7 +871,7 @@ fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) 
             package: package.clone(),
         })
         .expect("registry dependencies");
-    match dependencies {
+    let dependency_facts = match dependencies {
         SurfaceReply::Dependencies(DependencyFacts::Known(records)) => {
             assert!(records.iter().all(|record| {
                 record.source == package.clone()
@@ -676,13 +879,21 @@ fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) 
                     && record.evidence.frontier != [0; 32]
                     && record.evidence.provenance != [0; 32]
             }));
+            DependencyFacts::Known(records)
         }
-        SurfaceReply::Dependencies(DependencyFacts::Unknown(reason))
-        | SurfaceReply::Dependencies(DependencyFacts::Unavailable(reason)) => {
+        SurfaceReply::Dependencies(
+            facts @ (DependencyFacts::Unknown(_) | DependencyFacts::Unavailable(_)),
+        ) => {
+            let reason = match &facts {
+                DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => reason,
+                DependencyFacts::Known(_) => unreachable!("known dependency facts"),
+            };
             assert!(!reason.as_str().is_empty());
+            facts
         }
         reply => panic!("registry dependencies reply changed shape: {reply:?}"),
-    }
+    };
+    assert_expected_dependencies(case, &dependency_facts, source_id);
     let owner = session
         .surface(SurfaceCommand::Owner {
             owner: ProductText::new(package_name).expect("registry owner name"),
@@ -989,7 +1200,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
         } else {
             case.package_name
         };
-        let archive_bytes = assert_registry_facts(&endpoint, &coordinate, recorded_name);
+        let archive_bytes = assert_registry_facts(case, &endpoint, &coordinate, recorded_name);
         let profile = cli_surface(
             &endpoint,
             SurfaceCommand::PackageProfile {

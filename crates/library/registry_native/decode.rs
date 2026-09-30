@@ -22,27 +22,32 @@ pub(super) fn read_provenance(
 
 pub(super) fn read_details(
     reader: &mut CanonicalReader<'_>,
+    schema_version: u16,
 ) -> Result<RegistryNativeDetails, RegistryNativeMetadataCodecError> {
     Ok(match reader.take_u8()? {
         0 => {
             let artifacts = read_artifacts(reader)?;
-            let features = reader.take_count()?;
-            let mut values = Vec::with_capacity(features);
-            for _ in 0..features {
-                let name = reader.take_text()?;
-                let members = reader.take_count()?;
-                let mut entries = Vec::with_capacity(members);
-                for _ in 0..members {
-                    entries.push(reader.take_text()?);
-                }
-                values.push(RegistryNativeFeature {
-                    name,
-                    members: entries.into_boxed_slice(),
-                });
-            }
+            let features = read_features(reader)?;
+            let published_at = if schema_version >= 2 {
+                reader.take_optional_text()?
+            } else {
+                None
+            };
+            let rust_version = if schema_version >= 2 {
+                reader.take_optional_text()?
+            } else {
+                None
+            };
             RegistryNativeDetails::Cargo(RegistryCargoMetadata {
                 artifacts,
-                features: values.into_boxed_slice(),
+                features,
+                features2: if schema_version >= 3 {
+                    read_features(reader)?
+                } else {
+                    Box::new([])
+                },
+                published_at,
+                rust_version,
             })
         }
         1 => {
@@ -126,6 +131,26 @@ pub(super) fn read_details(
         },
         _ => return Err(RegistryNativeMetadataCodecError::Tag),
     })
+}
+
+fn read_features(
+    reader: &mut CanonicalReader<'_>,
+) -> Result<Box<[RegistryNativeFeature]>, RegistryNativeMetadataCodecError> {
+    let count = reader.take_count()?;
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name = reader.take_text()?;
+        let members = reader.take_count()?;
+        let mut entries = Vec::with_capacity(members);
+        for _ in 0..members {
+            entries.push(reader.take_text()?);
+        }
+        values.push(RegistryNativeFeature {
+            name,
+            members: entries.into_boxed_slice(),
+        });
+    }
+    Ok(values.into_boxed_slice())
 }
 
 fn read_artifacts(

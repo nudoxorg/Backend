@@ -188,6 +188,8 @@ pub struct Frame {
     pub image: image::RgbaImage,
     /// What the probe saw while drawing this frame (empty unless enabled).
     pub ledger: probe::Ledger,
+    /// GPUI's native text paint trace from this exact draw.
+    pub painted_texts: Vec<gpui::PaintedText>,
     /// What the frame carried (invalidations, draw time, viewport).
     pub drawn: Drawn,
     /// Exact declared scene state at this capture (probe-enabled runs only).
@@ -202,6 +204,8 @@ pub struct Tick<'a> {
     pub image: Option<&'a image::RgbaImage>,
     /// What the probe saw while drawing this frame.
     pub ledger: &'a probe::Ledger,
+    /// GPUI's native text paint trace from this exact draw.
+    pub painted_texts: &'a [gpui::PaintedText],
     /// The acts delivered at this instant, just before the frame.
     pub events: &'a [Event],
     /// Where the pointer is (None: outside the window).
@@ -533,10 +537,12 @@ fn run_with_timing_history(
             } else {
                 None
             };
+            let painted_texts = window.painted_texts().to_vec();
             let tick = Tick {
                 drawn: frame.drawn,
                 image: frame.image,
                 ledger: &ledger,
+                painted_texts: &painted_texts,
                 events: frame.events,
                 pointer: frame.pointer,
                 pressed: frame.pressed.is_some(),
@@ -580,6 +586,7 @@ pub fn observe(
                 time_ms: tick.drawn.at_ms,
                 image: image.clone(),
                 ledger: tick.ledger.clone(),
+                painted_texts: tick.painted_texts.to_vec(),
                 drawn: tick.drawn,
                 state: tick.state.clone(),
             });
@@ -602,6 +609,7 @@ pub fn capture(scene: &Scene, shot: &Shot) -> Result<Vec<Frame>, GalleryError> {
                 time_ms: tick.drawn.at_ms,
                 image: image.clone(),
                 ledger: tick.ledger.clone(),
+                painted_texts: tick.painted_texts.to_vec(),
                 drawn: tick.drawn,
                 state: tick.state.clone(),
             });

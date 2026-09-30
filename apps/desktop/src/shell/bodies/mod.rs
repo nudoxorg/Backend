@@ -18,6 +18,8 @@ mod source;
 mod state;
 mod symbol;
 
+use gpui::Window;
+
 /// How many declaration pages are still reading their lines (the harness
 /// waits for none before a capture).
 
@@ -241,6 +243,7 @@ pub(crate) fn build(
     store: &Pages,
     ctx: &mut Ctx<'_>,
     hover: &mut HoverIntent,
+    window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
     match overlay {
@@ -254,7 +257,7 @@ pub(crate) fn build(
         Route::Package(_) => package::body(route, snapshot, store, ctx, hover, cx),
         Route::Symbol(symbol) => match symbol.view {
             View::Page => symbol::body(route, symbol, store, ctx, hover, cx),
-            View::Code => source::body(route, symbol, store, ctx, cx),
+            View::Code => source::body(route, symbol, store, ctx, window, cx),
             View::Graph => graph::body(route, store, ctx),
         },
         Route::World => graph::body(route, store, ctx),

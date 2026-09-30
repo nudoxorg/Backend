@@ -1,8 +1,9 @@
-//! Local adapter between Turso's selected semantic closures and product views.
+//! Local adapter between Turso's retained semantic closures and product views.
 //!
-//! Turso owns the selected head and source observation. The workspace relation
-//! below is only a projection: startup rebuilds it from Turso before loading a
-//! cached view, and image misses reopen the exact selected FileStore closure.
+//! The committed workspace root is the serving selector. Turso retains source
+//! observations, candidate closures, and a repairable selected-head projection;
+//! startup reconciles that projection to the exact product claims before any
+//! query can reopen a semantic image.
 
 use super::s3_publication::{
     PublicationFence, RemoteClosureSelection, S3ClosurePublisher, SelectedClosurePublisher,
@@ -10,23 +11,22 @@ use super::s3_publication::{
 use super::versioned_planes::coordinate_identity;
 use super::{
     BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, generation_residence,
+    BuiltinSemanticRelation, BuiltinValidator, generation_residence,
 };
 use crate::compiler_trust::{TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerPolicy};
 use backend_engine::builtin::{
     PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    SemanticPublicationClaim, SemanticPublicationCoverage,
+    SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationSelection,
 };
 use backend_engine::cluster_transport::EndpointId;
 use backend_extension_turso::{
     AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
     CompilerImageMember, CompilerPublicationEnvelope, CompilerPublicationMetadata,
-    ExistingGenerationSelection, ProjectionKind, ReopenedCompilerMetadata, SelectedFrontier,
-    SelectedGeneration, SourceObservation, SourceObservationReceipt, SourceObservationValue,
-    SupersededAttemptProof, TursoAuthority, VersionedPlaneArtifactMetadata, VersionedPlaneMember,
-    VersionedPlaneMetadata, reopen_selected_compiler_metadata,
+    ExistingGenerationSelection, ProjectionKind, ReopenedCompilerMetadata, SelectedGeneration,
+    SourceObservation, SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
+    TursoAuthority, VersionedPlaneArtifactMetadata, VersionedPlaneMember, VersionedPlaneMetadata,
+    reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
 use backend_semantic::vocabulary::LanguageProfile;
@@ -41,11 +41,12 @@ use backend_version::{
     ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding, ObjectKey, ObjectVersion, Schema,
     SchemaIdentity,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const LOCAL_BRANCH: &str = "locald";
 const LOCAL_ENVIRONMENT: &str = "locald-product-v1";
@@ -58,6 +59,8 @@ const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_PUT_CALLS: usize = 1_000_000;
 const AUTHORITY_PAGE: usize = 512;
+const MAX_NATIVE_HISTORY_STATUS_ROWS: usize = 256;
+const NATIVE_HISTORY_QUEUE_CAPACITY: usize = 8;
 
 /// Durable identity retained before the owner sends a stored-result ACK.
 ///
@@ -347,13 +350,130 @@ fn artifact_budget() -> ArtifactBudget {
 type HistoryKey = (ProductSemanticPublicationKey, [u8; 32]);
 
 #[derive(Default)]
-struct SelectedClosureSnapshot {
+pub(super) struct SelectedClosureSnapshot {
     by_binding: BTreeMap<HistoryKey, SelectedGeneration>,
+    /// The product workspace root is the serving marker. Turso may contain a
+    /// newer candidate after a crash, but it is never served until this map is
+    /// advanced after the corresponding `BuiltinIntent` commits.
+    by_product: BTreeMap<ProductSemanticPublicationKey, SemanticPublicationClaim>,
 }
 
-struct SelectedClosureImageLoader {
+struct NativeHistoryStatusEntry {
+    key: ProductSemanticPublicationKey,
+    stamp: backend_replication::SelectedGenerationStamp,
+    status: backend_engine::SemanticHistoryPublicationStatus,
+    retry_attempts: u8,
+    retry_at: Option<Instant>,
+}
+
+#[derive(Default)]
+struct NativeHistoryOwnerState {
+    statuses: VecDeque<NativeHistoryStatusEntry>,
+    in_flight: HashSet<[u8; 32]>,
+    retry_after: Option<ProductSemanticPublicationKey>,
+}
+
+struct NativeHistoryCompletion {
+    key: ProductSemanticPublicationKey,
+    stamp: backend_replication::SelectedGenerationStamp,
+    selection_id: [u8; 32],
+    status: backend_engine::SemanticHistoryPublicationStatus,
+}
+
+pub(super) struct NativeHistoryPublicationWork {
+    pub(super) loader: Arc<SelectedClosureImageLoader>,
+    pub(super) store: FileStore,
+    pub(super) image_ranges: Arc<super::versioned_planes::SelectedClosureImageRangeReader>,
+    pub(super) key: ProductSemanticPublicationKey,
+    pub(super) expected_claim: SemanticPublicationClaim,
+    pub(super) stamp: backend_replication::SelectedGenerationStamp,
+    pub(super) selection_id: [u8; 32],
+}
+
+pub(super) struct SelectedClosureImageLoader {
     store: FileStore,
-    selections: RwLock<SelectedClosureSnapshot>,
+    pub(super) selections: RwLock<SelectedClosureSnapshot>,
+}
+
+/// Holds the serving-selector write lock from validation through the durable
+/// workspace-marker commit. The guard is consumed only after that marker is
+/// durable, preventing a native-history lease from crossing the commit gap.
+pub(crate) struct ProductSelectionPublication<'a> {
+    selections: RwLockWriteGuard<'a, SelectedClosureSnapshot>,
+    removals: Vec<ProductSemanticPublicationKey>,
+    admitted: Vec<(
+        ProductSemanticPublicationKey,
+        SemanticPublicationClaim,
+        SelectedGeneration,
+    )>,
+}
+
+impl ProductSelectionPublication<'_> {
+    pub(crate) fn commit(self) -> Vec<(ProductSemanticPublicationKey, SelectedGeneration)> {
+        let Self {
+            mut selections,
+            removals,
+            admitted,
+        } = self;
+        for key in removals {
+            selections.by_product.remove(&key);
+        }
+        for (key, claim, _) in &admitted {
+            selections.by_product.insert(key.clone(), *claim);
+        }
+        admitted
+            .into_iter()
+            .map(|(key, _, selected)| (key, selected))
+            .collect()
+    }
+}
+
+/// A read lease over the exact product selection used by native V3
+/// publication. Holding this value blocks the matching selector writer until
+/// the downstream history reference CAS has completed.
+pub(crate) struct CommittedSemanticSelectionLease<'a> {
+    authority: &'a SemanticAuthority,
+    key: ProductSemanticPublicationKey,
+    claim: SemanticPublicationClaim,
+    selected: SelectedGeneration,
+    _selections: RwLockReadGuard<'a, SelectedClosureSnapshot>,
+}
+
+impl CommittedSemanticSelectionLease<'_> {
+    pub(crate) fn selected_plane(
+        &self,
+    ) -> Result<super::versioned_planes::SelectedVersionedPlanePublication, BuiltinModelError> {
+        let reopened = reopen_selected_compiler_metadata(&self.authority.store, &self.selected)
+            .map_err(|error| {
+                BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
+            })?;
+        let (claim, _) = reopen_record(&self.authority.store, &self.selected)?;
+        if claim != self.claim {
+            return Err(BuiltinModelError(
+                "committed semantic claim differs from its retained closure".to_owned(),
+            ));
+        }
+        super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
+            &self.key,
+            &self.selected,
+            &reopened,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
+        })
+    }
+
+    pub(crate) fn selected_native_image_identity(
+        &self,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
+        self.authority.selected_native_image_identity_for(
+            &self.key,
+            self.claim,
+            &self.selected,
+            image,
+        )
+    }
 }
 
 impl SelectedClosureImageLoader {
@@ -367,10 +487,11 @@ impl SelectedClosureImageLoader {
         let mut selections = self.selections.write().map_err(|_| {
             BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
         })?;
-        selections
-            .by_binding
-            .entry((key, binding))
-            .or_insert(selected);
+        // A claim binds immutable bytes, while Turso's selected-generation
+        // number is projection-local and may advance when the same retained
+        // closure is reselected during recovery. Keep the latest exact event
+        // observed for that claim so range stamps match the reconciled head.
+        selections.by_binding.insert((key, binding), selected);
         Ok(())
     }
 
@@ -393,6 +514,195 @@ impl SelectedClosureImageLoader {
                     "semantic projection names a generation absent from Turso history".to_owned(),
                 )
             })
+    }
+
+    fn commit_product_selection(
+        &self,
+        key: ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<(), BuiltinModelError> {
+        self.commit_product_selections(vec![(key, claim)])
+            .map(|_| ())
+    }
+
+    fn commit_product_selections(
+        &self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    ) -> Result<Vec<(ProductSemanticPublicationKey, SelectedGeneration)>, BuiltinModelError> {
+        Ok(self.prepare_product_selections(entries)?.commit())
+    }
+
+    fn prepare_product_selections(
+        &self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    ) -> Result<ProductSelectionPublication<'_>, BuiltinModelError> {
+        self.prepare_product_selection_changes(entries, Vec::new())
+    }
+
+    fn prepare_product_selection_changes(
+        &self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+        removals: Vec<ProductSemanticPublicationKey>,
+    ) -> Result<ProductSelectionPublication<'_>, BuiltinModelError> {
+        let selections = self.acquire_publication_write()?;
+        let mut seen = BTreeSet::new();
+        let mut admitted = Vec::new();
+        admitted.try_reserve_exact(entries.len()).map_err(|_| {
+            BuiltinModelError("product selection admission allocation failed".to_owned())
+        })?;
+        for (key, claim) in entries {
+            if !seen.insert(key.clone()) {
+                return Err(BuiltinModelError(
+                    "product selection transaction contains a duplicate key".to_owned(),
+                ));
+            }
+            let binding = *claim.binding().identity.as_ref();
+            let selected = selections
+                .by_binding
+                .get(&(key.clone(), binding))
+                .cloned()
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "product selection names a closure absent from admitted history".to_owned(),
+                    )
+                })?;
+            admitted.push((key, claim, selected));
+        }
+        let mut checked_removals = Vec::new();
+        checked_removals
+            .try_reserve_exact(removals.len())
+            .map_err(|_| {
+                BuiltinModelError("product selection removal allocation failed".to_owned())
+            })?;
+        for key in removals {
+            if !seen.insert(key.clone()) {
+                return Err(BuiltinModelError(
+                    "product selection transaction both selects and removes one key".to_owned(),
+                ));
+            }
+            checked_removals.push(key);
+        }
+        Ok(ProductSelectionPublication {
+            selections,
+            removals: checked_removals,
+            admitted,
+        })
+    }
+
+    fn committed(
+        &self,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<SelectedGeneration, BuiltinModelError> {
+        self.committed_pair(key).map(|(_, selected)| selected)
+    }
+
+    pub(super) fn committed_pair(
+        &self,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        let selections = self.selections.read().map_err(|_| {
+            BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
+        })?;
+        Self::committed_pair_in(&selections, key)
+    }
+
+    /// Checks a worker's captured selection using only the committed in-memory
+    /// marker snapshot. The selected stamp binds the immutable closure and
+    /// catalog, so range loops never reopen Turso for each page.
+    pub(super) fn matches_committed_selection(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        expected_stamp: backend_replication::SelectedGenerationStamp,
+    ) -> bool {
+        self.committed_pair(key).is_ok_and(|(claim, selected)| {
+            claim == expected_claim
+                && SemanticAuthority::selected_generation_stamp(key, &selected)
+                    .is_ok_and(|stamp| stamp == expected_stamp)
+        })
+    }
+
+    pub(super) fn committed_pair_in(
+        selections: &SelectedClosureSnapshot,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        let claim = selections.by_product.get(key).copied().ok_or_else(|| {
+            BuiltinModelError("product has no committed semantic selection".to_owned())
+        })?;
+        let selected = selections
+            .by_binding
+            .get(&(key.clone(), *claim.binding().identity.as_ref()))
+            .cloned()
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "semantic projection names a generation absent from Turso history".to_owned(),
+                )
+            })?;
+        Ok((claim, selected))
+    }
+
+    pub(super) fn acquire_publication_read(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, SelectedClosureSnapshot>, BuiltinModelError> {
+        self.selections.read().map_err(|_| {
+            BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
+        })
+    }
+
+    fn product_selection_batch(
+        &self,
+        after: Option<&ProductSemanticPublicationKey>,
+        limit: usize,
+    ) -> Result<Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>, BuiltinModelError>
+    {
+        let selections = self.acquire_publication_read()?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(limit).map_err(|_| {
+            BuiltinModelError("native history retry batch allocation failed".to_owned())
+        })?;
+        match after {
+            Some(after) => {
+                rows.extend(
+                    selections
+                        .by_product
+                        .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+                        .take(limit)
+                        .map(|(key, claim)| (key.clone(), *claim)),
+                );
+            }
+            None => {
+                rows.extend(
+                    selections
+                        .by_product
+                        .iter()
+                        .take(limit)
+                        .map(|(key, claim)| (key.clone(), *claim)),
+                );
+            }
+        }
+        Ok(rows)
+    }
+
+    fn acquire_publication_write(
+        &self,
+    ) -> Result<RwLockWriteGuard<'_, SelectedClosureSnapshot>, BuiltinModelError> {
+        self.selections.write().map_err(|_| {
+            BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
+        })
+    }
+
+    fn clear_product_selection(
+        &self,
+        key: ProductSemanticPublicationKey,
+    ) -> Result<(), BuiltinModelError> {
+        self.selections
+            .write()
+            .map_err(|_| {
+                BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
+            })?
+            .by_product
+            .remove(&key);
+        Ok(())
     }
 }
 
@@ -733,7 +1043,7 @@ pub(crate) struct SemanticAuthority {
     authority: TursoAuthority,
     store: FileStore,
     workspace: PathBuf,
-    s3_publisher: Option<Box<dyn SelectedClosurePublisher>>,
+    s3_publisher: Option<Arc<dyn SelectedClosurePublisher>>,
     compiler_trust_policy: std::path::PathBuf,
     image_loader: Arc<SelectedClosureImageLoader>,
     verified_segments: Arc<super::versioned_planes::VerifiedSegmentCache>,
@@ -741,16 +1051,25 @@ pub(crate) struct SemanticAuthority {
     selected_image_plans: Arc<super::selected_full_image::SelectedFullImagePlanCache>,
     history: BTreeMap<HistoryKey, HistoryFact>,
     retained_generations: BTreeMap<HistoryKey, u64>,
-    latest_observations: BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>,
+    /// Only observations named by committed product selections are exposed as
+    /// semantic freshness. Newer candidate observations remain private until
+    /// their product intent commits.
+    committed_observations: BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>,
+    native_history_state: NativeHistoryOwnerState,
+    native_history_sender: SyncSender<NativeHistoryPublicationWork>,
+    native_history_completions: mpsc::Receiver<NativeHistoryCompletion>,
 }
 
 impl SemanticAuthority {
     pub(crate) fn open(workspace: &Path) -> Result<Self, BuiltinModelError> {
         let store = FileStore::open(workspace.join(CAS_DIRECTORY), 512 * 1024 * 1024)
             .map_err(|error| BuiltinModelError(format!("open semantic artifact CAS: {error:?}")))?;
-        let s3_publisher = S3ClosurePublisher::from_env(workspace)
-            .map_err(|error| BuiltinModelError(format!("configure owner S3 publication: {error}")))?
-            .map(|publisher| Box::new(publisher) as Box<dyn SelectedClosurePublisher>);
+        let s3_publisher: Option<Arc<dyn SelectedClosurePublisher>> =
+            S3ClosurePublisher::from_env(workspace)
+                .map_err(|error| {
+                    BuiltinModelError(format!("configure owner S3 publication: {error}"))
+                })?
+                .map(|publisher| Arc::new(publisher) as Arc<dyn SelectedClosurePublisher>);
         let authority =
             futures_executor::block_on(TursoAuthority::open(workspace.join(AUTHORITY_FILE)))
                 .map_err(|error| {
@@ -760,6 +1079,42 @@ impl SemanticAuthority {
             store: store.clone(),
             selections: RwLock::new(SelectedClosureSnapshot::default()),
         });
+        let native_history_state = NativeHistoryOwnerState::default();
+        let (native_history_sender, receiver) =
+            mpsc::sync_channel::<NativeHistoryPublicationWork>(NATIVE_HISTORY_QUEUE_CAPACITY);
+        let (completion_sender, native_history_completions) =
+            mpsc::sync_channel::<NativeHistoryCompletion>(NATIVE_HISTORY_QUEUE_CAPACITY);
+        std::thread::Builder::new()
+            .name("locald-native-history".to_owned())
+            .spawn(move || {
+                while let Ok(work) = receiver.recv() {
+                    let key = work.key.clone();
+                    let stamp = work.stamp;
+                    let selection_id = work.selection_id;
+                    let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        super::versioned_planes::publish_native_history(work)
+                    }))
+                    .unwrap_or_else(|_| {
+                        backend_engine::SemanticHistoryPublicationStatus::Refused {
+                            selection_id,
+                            reason: "native history worker terminated during publication"
+                                .to_owned(),
+                        }
+                    });
+                    if completion_sender
+                        .send(NativeHistoryCompletion {
+                            key,
+                            stamp,
+                            selection_id,
+                            status,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| BuiltinModelError(format!("start native history worker: {error}")))?;
         Ok(Self {
             authority,
             store,
@@ -776,7 +1131,10 @@ impl SemanticAuthority {
             ),
             history: BTreeMap::new(),
             retained_generations: BTreeMap::new(),
-            latest_observations: BTreeMap::new(),
+            committed_observations: BTreeMap::new(),
+            native_history_state,
+            native_history_sender,
+            native_history_completions,
         })
     }
 
@@ -798,16 +1156,24 @@ impl SemanticAuthority {
         )
     }
 
-    /// Resolves one product key from a freshly read Turso selected head and its exact closure.
-    ///
-    /// This deliberately does not consult the workspace relation or the image cache: those are
-    /// projections of the authority and can lag a crash between Turso selection and projection
-    /// repair.
+    /// Resolves one product key from the selection admitted by the committed
+    /// workspace root and its exact immutable closure. Turso's current head is
+    /// only a repairable projection and may include an uncommitted candidate.
     pub(crate) fn resolve_current_selected(
         &self,
         key: &ProductSemanticPublicationKey,
     ) -> Result<super::versioned_planes::SelectedVersionedPlanePublication, BuiltinModelError> {
-        let (selected, reopened) = self.reopen_current_selected_metadata(key)?;
+        let (expected, selected) = self.image_loader.committed_pair(key)?;
+        let reopened =
+            reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
+                BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
+            })?;
+        let (claim, _) = reopen_record(&self.store, &selected)?;
+        if claim != expected {
+            return Err(BuiltinModelError(
+                "committed semantic claim differs from its retained closure".to_owned(),
+            ));
+        }
         super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
             key, &selected, &reopened,
         )
@@ -816,92 +1182,231 @@ impl SemanticAuthority {
         })
     }
 
-    /// Reopens the exact current Turso selection and its compiler metadata.
-    fn reopen_current_selected_metadata(
+    /// Builds a Send+Sync source over the exact marker selector for a
+    /// background native-history publication. It owns only the shared
+    /// read-side selector and immutable CAS handle, never the Turso writer.
+    pub(crate) fn owned_history_selection_source(
         &self,
-        key: &ProductSemanticPublicationKey,
-    ) -> Result<(SelectedGeneration, ReopenedCompilerMetadata), BuiltinModelError> {
-        let frontier = self.current_selected_frontier(key)?;
-        let selected = self.selected_generation_for_frontier(key, &frontier)?;
-        let reopened =
-            reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
-                BuiltinModelError(format!("reopen selected semantic metadata: {error}"))
-            })?;
-        if !reopened.envelope().matches_selected(&selected) {
-            return Err(BuiltinModelError(
-                "selected semantic compiler envelope differs from Turso head".to_owned(),
-            ));
-        }
-        Ok((selected, reopened))
-    }
-
-    /// Reads only the current Turso head. This cheap check is repeated before
-    /// and after every full-image page; immutable compiler metadata is reopened
-    /// only when the bounded selected-image plan cache misses.
-    fn current_selected_frontier(
-        &self,
-        key: &ProductSemanticPublicationKey,
-    ) -> Result<SelectedFrontier, BuiltinModelError> {
-        let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
-        let frontier = futures_executor::block_on(self.authority.selected_frontier(&namespace))
-            .map_err(|error| {
-                BuiltinModelError(format!("read selected semantic frontier: {error}"))
-            })?
-            .ok_or_else(|| {
-                BuiltinModelError("semantic authority has no selected generation".to_owned())
-            })?;
-        if frontier.namespace().package() != key.package().as_str()
-            || frontier.namespace().source() != key.coordinate().as_str()
-        {
-            return Err(BuiltinModelError(
-                "selected semantic frontier targets another product".to_owned(),
-            ));
-        }
-        Ok(frontier)
-    }
-
-    fn selected_generation_for_frontier(
-        &self,
-        key: &ProductSemanticPublicationKey,
-        frontier: &SelectedFrontier,
-    ) -> Result<SelectedGeneration, BuiltinModelError> {
-        let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
-        let selected = futures_executor::block_on(
-            self.authority
-                .selected_generation(&namespace, frontier.generation()),
-        )
-        .map_err(|error| BuiltinModelError(format!("read selected semantic generation: {error}")))?
-        .ok_or_else(|| {
-            BuiltinModelError("selected semantic generation is absent from history".to_owned())
-        })?;
-        if Self::selected_generation_stamp(key, &selected)?
-            != Self::selected_frontier_stamp(key, frontier)?
-        {
-            return Err(BuiltinModelError(
-                "selected semantic history differs from the current Turso frontier".to_owned(),
-            ));
-        }
-        Ok(selected)
-    }
-
-    fn selected_frontier_stamp(
-        key: &ProductSemanticPublicationKey,
-        frontier: &SelectedFrontier,
-    ) -> Result<backend_replication::SelectedGenerationStamp, BuiltinModelError> {
-        let catalog_root = frontier.semantic_manifest_root().copied().ok_or_else(|| {
-            BuiltinModelError("selected compiler generation has no image catalog".to_owned())
-        })?;
-        Self::selected_stamp_from_fields(
+        key: ProductSemanticPublicationKey,
+    ) -> super::versioned_planes::OwnedSemanticAuthoritySelectionSource {
+        super::versioned_planes::OwnedSemanticAuthoritySelectionSource::new(
+            Arc::clone(&self.image_loader),
+            self.store.clone(),
             key,
-            frontier.namespace(),
-            frontier.generation(),
-            *frontier.target_root(),
-            *frontier.closure_id(),
-            catalog_root,
         )
     }
 
-    fn selected_generation_stamp(
+    /// Returns the sidecar status only for the exact generation still named
+    /// by the committed product marker.
+    pub(crate) fn native_history_status(
+        &mut self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
+        self.drain_native_history_completions()?;
+        let (selected_claim, selected) = self.image_loader.committed_pair(key)?;
+        if selected_claim != claim {
+            return Ok(backend_engine::SemanticHistoryPublicationStatus::NotSelected);
+        }
+        let stamp = Self::selected_generation_stamp(key, &selected)?;
+        let status = self.native_history_status_for_stamp(key, stamp);
+        let retry = match status {
+            None | Some(backend_engine::SemanticHistoryPublicationStatus::Superseded { .. }) => {
+                true
+            }
+            Some(backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }) => {
+                self.native_history_retry_ready(key, stamp)
+            }
+            _ => false,
+        };
+        if retry {
+            // Status rows are bounded. If an exact selected marker has aged
+            // out or was deferred/stale, re-enqueue from its immutable closure
+            // rather than leaving it absent from derived history.
+            self.schedule_native_history(key.clone(), claim)?;
+        }
+        Ok(self
+            .native_history_status_for_stamp(key, stamp)
+            .unwrap_or_else(|| {
+                let selection_id =
+                    super::versioned_planes::native_history_selection_id(key, stamp, None);
+                if self.native_history_state.in_flight.contains(&selection_id) {
+                    backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id }
+                } else {
+                    backend_engine::SemanticHistoryPublicationStatus::NotRequested { selection_id }
+                }
+            }))
+    }
+
+    fn native_history_status_for_stamp(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        stamp: backend_replication::SelectedGenerationStamp,
+    ) -> Option<backend_engine::SemanticHistoryPublicationStatus> {
+        self.native_history_state
+            .statuses
+            .iter()
+            .rev()
+            .find(|entry| entry.key == *key && entry.stamp == stamp)
+            .map(|entry| entry.status.clone())
+    }
+
+    fn native_history_retry_ready(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        stamp: backend_replication::SelectedGenerationStamp,
+    ) -> bool {
+        self.native_history_state
+            .statuses
+            .iter()
+            .rev()
+            .find(|entry| entry.key == *key && entry.stamp == stamp)
+            .is_some_and(|entry| {
+                entry
+                    .retry_at
+                    .is_none_or(|deadline| Instant::now() >= deadline)
+            })
+    }
+
+    /// Records one asynchronous history outcome against its exact product
+    /// marker stamp. The FIFO is bounded independently of V3 commit history.
+    fn record_native_history_status(
+        &mut self,
+        key: ProductSemanticPublicationKey,
+        stamp: backend_replication::SelectedGenerationStamp,
+        status: backend_engine::SemanticHistoryPublicationStatus,
+    ) {
+        let state = &mut self.native_history_state;
+        let previous_retry_attempts = state
+            .statuses
+            .iter()
+            .find(|entry| entry.key == key && entry.stamp == stamp)
+            .map_or(0, |entry| entry.retry_attempts);
+        if let Some(position) = state
+            .statuses
+            .iter()
+            .position(|entry| entry.key == key && entry.stamp == stamp)
+        {
+            state.statuses.remove(position);
+        }
+        let (retry_attempts, retry_at) = if matches!(
+            &status,
+            backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }
+        ) {
+            let attempts = previous_retry_attempts.saturating_add(1);
+            let exponent = u32::from(attempts.saturating_sub(1).min(7));
+            let delay_ms = 250_u64
+                .saturating_mul(1_u64.checked_shl(exponent).unwrap_or(128))
+                .min(30_000);
+            (
+                attempts,
+                Instant::now().checked_add(Duration::from_millis(delay_ms)),
+            )
+        } else {
+            (0, None)
+        };
+        state.statuses.push_back(NativeHistoryStatusEntry {
+            key,
+            stamp,
+            status,
+            retry_attempts,
+            retry_at,
+        });
+        while state.statuses.len() > MAX_NATIVE_HISTORY_STATUS_ROWS {
+            state.statuses.pop_front();
+        }
+    }
+
+    /// Applies completed history jobs on the owner thread, then retries a
+    /// bounded round-robin page of currently selected markers. The worker
+    /// never mutates selection or status state directly.
+    pub(crate) fn drain_native_history_completions(&mut self) -> Result<(), BuiltinModelError> {
+        loop {
+            let completion = match self.native_history_completions.try_recv() {
+                Ok(completion) => completion,
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+            };
+            self.native_history_state
+                .in_flight
+                .remove(&completion.selection_id);
+            let still_selected = self
+                .image_loader
+                .committed_pair(&completion.key)
+                .ok()
+                .and_then(|(_, selected)| {
+                    Self::selected_generation_stamp(&completion.key, &selected).ok()
+                })
+                == Some(completion.stamp);
+            if still_selected {
+                self.record_native_history_status(
+                    completion.key,
+                    completion.stamp,
+                    completion.status,
+                );
+            }
+        }
+        self.retry_selected_native_history_batch()
+    }
+
+    fn retry_selected_native_history_batch(&mut self) -> Result<(), BuiltinModelError> {
+        const RETRY_BATCH: usize = 32;
+        let cursor = self.native_history_state.retry_after.clone();
+        let mut rows = self
+            .image_loader
+            .product_selection_batch(cursor.as_ref(), RETRY_BATCH)?;
+        if rows.is_empty() && cursor.is_some() {
+            self.native_history_state.retry_after = None;
+            rows = self
+                .image_loader
+                .product_selection_batch(None, RETRY_BATCH)?;
+        }
+        let Some((last_key, _)) = rows.last() else {
+            return Ok(());
+        };
+        self.native_history_state.retry_after = Some(last_key.clone());
+        for (key, claim) in rows {
+            let (selected_claim, selected) = match self.image_loader.committed_pair(&key) {
+                Ok(selection) => selection,
+                Err(_) => continue,
+            };
+            if selected_claim != claim {
+                continue;
+            }
+            let stamp = Self::selected_generation_stamp(&key, &selected)?;
+            let status = self.native_history_status_for_stamp(&key, stamp);
+            let retry = match status {
+                None
+                | Some(backend_engine::SemanticHistoryPublicationStatus::Superseded { .. }) => true,
+                Some(backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }) => {
+                    self.native_history_retry_ready(&key, stamp)
+                }
+                _ => false,
+            };
+            if retry {
+                self.schedule_native_history(key, claim)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Borrows the serving-selector read lock for a publication that must
+    /// remain bound to this exact product marker through an external CAS.
+    pub(crate) fn committed_selection_lease(
+        &self,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<CommittedSemanticSelectionLease<'_>, BuiltinModelError> {
+        let selections = self.image_loader.acquire_publication_read()?;
+        let (claim, selected) = SelectedClosureImageLoader::committed_pair_in(&selections, key)?;
+        Ok(CommittedSemanticSelectionLease {
+            authority: self,
+            key: key.clone(),
+            claim,
+            selected,
+            _selections: selections,
+        })
+    }
+
+    pub(super) fn selected_generation_stamp(
         key: &ProductSemanticPublicationKey,
         selected: &SelectedGeneration,
     ) -> Result<backend_replication::SelectedGenerationStamp, BuiltinModelError> {
@@ -959,10 +1464,10 @@ impl SemanticAuthority {
         super::selected_full_image::SelectedFullImagePlan,
         super::selected_full_image::SelectedFullImageError,
     > {
-        let frontier = self.current_selected_frontier(key).map_err(|error| {
+        let (claim, selected) = self.image_loader.committed_pair(key).map_err(|error| {
             super::selected_full_image::SelectedFullImageError::Authority(error.0)
         })?;
-        let stamp = Self::selected_frontier_stamp(key, &frontier).map_err(|error| {
+        let stamp = Self::selected_generation_stamp(key, &selected).map_err(|error| {
             super::selected_full_image::SelectedFullImageError::Authority(error.0)
         })?;
         if stamp != expected_stamp {
@@ -970,26 +1475,156 @@ impl SemanticAuthority {
         }
         self.selected_image_plans
             .get_or_resolve(stamp, image, || {
-                self.resolve_selected_full_image_plan(key, image, &frontier, stamp)
+                self.resolve_selected_full_image_plan(key, claim, image, &selected, stamp)
             })
             .map_err(|error| super::selected_full_image::SelectedFullImageError::Authority(error.0))
+    }
+
+    /// Returns the identity of one image in the exact semantic selection
+    /// committed by the workspace root.
+    pub(crate) fn selected_native_image_identity(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
+        let (expected_claim, selected) = self.image_loader.committed_pair(key)?;
+        self.selected_native_image_identity_for(key, expected_claim, &selected, image)
+    }
+
+    fn selected_native_image_identity_for(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        selected: &SelectedGeneration,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
+        Self::selected_native_image_identity_for_store(
+            &self.store,
+            key,
+            expected_claim,
+            selected,
+            image,
+        )
+    }
+
+    pub(super) fn selected_native_image_identity_for_store(
+        store: &FileStore,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        selected: &SelectedGeneration,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
+        let (actual_claim, _) = reopen_record(store, selected)?;
+        if actual_claim != expected_claim {
+            return Err(BuiltinModelError(
+                "committed native image claim differs from its retained closure".to_owned(),
+            ));
+        }
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen committed native image metadata: {error}"))
+        })?;
+        if !reopened.envelope().matches_selected(selected) {
+            return Err(BuiltinModelError(
+                "committed native image envelope differs from its retained selection".to_owned(),
+            ));
+        }
+        let planes = reopened.metadata().versioned_planes().ok_or_else(|| {
+            BuiltinModelError("committed semantic generation has no image catalog".to_owned())
+        })?;
+        let selected_catalog_root = selected.semantic_catalog_root().copied().ok_or_else(|| {
+            BuiltinModelError(
+                "committed semantic generation has no selected image catalog".to_owned(),
+            )
+        })?;
+        if planes.catalog_root().as_bytes() != &selected_catalog_root {
+            return Err(BuiltinModelError(
+                "committed native image catalog differs from its selection".to_owned(),
+            ));
+        }
+        if planes.artifact_for_image(image).is_none() {
+            return Err(BuiltinModelError(
+                "native image is absent from the committed selected catalog".to_owned(),
+            ));
+        }
+        let member = reopened
+            .metadata()
+            .images()
+            .iter()
+            .find(|member| member.artifact_ordinal() == image.artifact_ordinal())
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "committed selected image has no compiler image member".to_owned(),
+                )
+            })?;
+        backend_semantic::ir::SemanticImageIdentity::try_from(*member.semantic_image_identity())
+            .map_err(|error| {
+                BuiltinModelError(format!(
+                    "committed semantic image identity is invalid: {error}"
+                ))
+            })
+    }
+
+    pub(super) fn selected_plane_for_store(
+        store: &FileStore,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        selected: &SelectedGeneration,
+    ) -> Result<super::versioned_planes::SelectedVersionedPlanePublication, BuiltinModelError> {
+        let (actual_claim, _) = reopen_record(store, selected)?;
+        if actual_claim != expected_claim {
+            return Err(BuiltinModelError(
+                "committed semantic claim differs from its retained closure".to_owned(),
+            ));
+        }
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
+        })?;
+        super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
+            key, selected, &reopened,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
+        })
     }
 
     fn resolve_selected_full_image_plan(
         &self,
         key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
         image: backend_semantic::ir::SemanticPlaneImageKey,
-        frontier: &SelectedFrontier,
+        selected: &SelectedGeneration,
         stamp: backend_replication::SelectedGenerationStamp,
     ) -> Result<super::selected_full_image::SelectedFullImagePlan, BuiltinModelError> {
-        let selected = self.selected_generation_for_frontier(key, frontier)?;
-        let reopened =
-            reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
-                BuiltinModelError(format!("reopen selected semantic metadata: {error}"))
-            })?;
+        Self::selected_full_image_plan_for_store(
+            &self.store,
+            key,
+            expected_claim,
+            image,
+            selected,
+            stamp,
+        )
+    }
+
+    pub(super) fn selected_full_image_plan_for_store(
+        store: &FileStore,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+        selected: &SelectedGeneration,
+        stamp: backend_replication::SelectedGenerationStamp,
+    ) -> Result<super::selected_full_image::SelectedFullImagePlan, BuiltinModelError> {
+        let (actual_claim, _) = reopen_record(store, selected)?;
+        if actual_claim != expected_claim {
+            return Err(BuiltinModelError(
+                "selected full image claim differs from the committed product root".to_owned(),
+            ));
+        }
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
+        })?;
         let publication =
             super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
-                key, &selected, &reopened,
+                key, selected, &reopened,
             )
             .map_err(|error| {
                 BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
@@ -1047,7 +1682,7 @@ impl SemanticAuthority {
             total_length,
             object_id: *image_member.object_id(),
             closure_id: *selected.closure_id(),
-            remote_selection: RemoteClosureSelection::from_selected(&selected),
+            remote_selection: RemoteClosureSelection::from_selected(selected),
             environment: *manifest.build().environment(),
             target_platform: *manifest.build().target_platform(),
         })
@@ -1472,7 +2107,6 @@ impl SemanticAuthority {
             && latest.observation().revision() == Some(input_digest)
             && latest.observation().value() == &SourceObservationValue::KnownCount(count)
         {
-            self.latest_observations.insert(key.clone(), latest.clone());
             return Ok(latest);
         }
         let observation = SourceObservation::new(
@@ -1487,8 +2121,6 @@ impl SemanticAuthority {
                 .map_err(|error| {
                     BuiltinModelError(format!("persist semantic source observation: {error}"))
                 })?;
-        self.latest_observations
-            .insert(key.clone(), receipt.clone());
         Ok(receipt)
     }
 
@@ -2394,6 +3026,155 @@ impl SemanticAuthority {
         self.image_loader.remember(key, claim, selected)
     }
 
+    /// Acquires the serving-selector write lock and validates every candidate
+    /// before the caller commits the corresponding workspace-root intent.
+    pub(crate) fn prepare_product_selections(
+        &self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    ) -> Result<ProductSelectionPublication<'_>, BuiltinModelError> {
+        self.image_loader.prepare_product_selections(entries)
+    }
+
+    /// Commits one workspace intent while excluding readers of the selected
+    /// product marker, then installs its process-local claims under the same
+    /// selector lock. Native V3 history holds a read lease from this lock
+    /// through its branch compare-and-swap.
+    pub(crate) fn commit_product_selection_transaction<T>(
+        &mut self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+        persist_marker: impl FnOnce() -> Result<T, BuiltinModelError>,
+    ) -> Result<T, BuiltinModelError> {
+        self.commit_product_selection_changes(entries, Vec::new(), persist_marker)
+    }
+
+    /// Commits one durable workspace transition and applies its complete
+    /// selected-key additions/removals under the same selector write lease.
+    pub(crate) fn commit_product_selection_changes<T>(
+        &mut self,
+        entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+        removals: Vec<ProductSemanticPublicationKey>,
+        persist_marker: impl FnOnce() -> Result<T, BuiltinModelError>,
+    ) -> Result<T, BuiltinModelError> {
+        let history_entries = entries.clone();
+        let observation_removals = removals.clone();
+        let publication = self
+            .image_loader
+            .prepare_product_selection_changes(entries, removals)?;
+        let result = persist_marker()?;
+        let selected = publication.commit();
+        self.remember_product_selection_observations(selected);
+        for key in observation_removals {
+            self.committed_observations.remove(&key);
+        }
+        for (key, claim) in history_entries {
+            let _ = self.schedule_native_history(key, claim);
+        }
+        Ok(result)
+    }
+
+    /// Snapshots the currently selected products for one package so a remove
+    /// intent can clear them atomically with its durable workspace marker.
+    pub(crate) fn selected_product_keys_for_package(
+        &self,
+        package: backend_engine::PackageKey,
+    ) -> Result<Vec<ProductSemanticPublicationKey>, BuiltinModelError> {
+        let selections = self.image_loader.acquire_publication_read()?;
+        Ok(selections
+            .by_product
+            .keys()
+            .filter(|key| key.package_key() == package)
+            .cloned()
+            .collect())
+    }
+
+    /// Queues bounded derived history work for one exact committed product
+    /// selection. A full queue is recorded as deferred and retried from the
+    /// selected-marker inventory as worker capacity becomes available.
+    pub(crate) fn schedule_native_history(
+        &mut self,
+        key: ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<(), BuiltinModelError> {
+        let (current_claim, selected) = self.image_loader.committed_pair(&key)?;
+        if current_claim != claim {
+            return Ok(());
+        }
+        let stamp = Self::selected_generation_stamp(&key, &selected)?;
+        let selection_id = super::versioned_planes::native_history_selection_id(&key, stamp, None);
+        if self.native_history_state.in_flight.contains(&selection_id) {
+            return Ok(());
+        }
+        if let Some(status) = self.native_history_status_for_stamp(&key, stamp)
+            && !matches!(
+                status,
+                backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }
+                    | backend_engine::SemanticHistoryPublicationStatus::Superseded { .. }
+            )
+        {
+            return Ok(());
+        }
+        self.native_history_state.in_flight.insert(selection_id);
+        let work = NativeHistoryPublicationWork {
+            loader: Arc::clone(&self.image_loader),
+            store: self.store.clone(),
+            image_ranges: Arc::new(
+                super::versioned_planes::SelectedClosureImageRangeReader::new(
+                    self.store.clone(),
+                    Arc::clone(&self.selected_image_readers),
+                    self.s3_publisher.clone(),
+                ),
+            ),
+            key: key.clone(),
+            expected_claim: claim,
+            stamp,
+            selection_id,
+        };
+        self.record_native_history_status(
+            key.clone(),
+            stamp,
+            backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id },
+        );
+        match self.native_history_sender.try_send(work) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                self.native_history_state.in_flight.remove(&selection_id);
+                self.record_native_history_status(
+                    key,
+                    stamp,
+                    backend_engine::SemanticHistoryPublicationStatus::Deferred {
+                        selection_id,
+                        reason: "native history worker queue is full; owner will retry".to_owned(),
+                    },
+                );
+                Ok(())
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.native_history_state.in_flight.remove(&selection_id);
+                self.record_native_history_status(
+                    key,
+                    stamp,
+                    backend_engine::SemanticHistoryPublicationStatus::Refused {
+                        selection_id,
+                        reason: "native history worker is unavailable".to_owned(),
+                    },
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Records the projection-local freshness events after the matching
+    /// workspace selection marker and process-local selector have committed.
+    pub(crate) fn remember_product_selection_observations(
+        &mut self,
+        selected: Vec<(ProductSemanticPublicationKey, SelectedGeneration)>,
+    ) {
+        for (key, selected) in selected {
+            self.committed_observations
+                .insert(key, selected.observation().clone());
+        }
+    }
+
     pub(crate) fn freshness(
         &self,
         key: &ProductSemanticPublicationKey,
@@ -2403,7 +3184,7 @@ impl SemanticAuthority {
         let Some(history) = self.history.get(&history_key) else {
             return backend_engine::SemanticVersionFreshness::Unverified;
         };
-        let Some(latest) = self.latest_observations.get(key) else {
+        let Some(latest) = self.committed_observations.get(key) else {
             return backend_engine::SemanticVersionFreshness::Unverified;
         };
         let selected_input = *history.selected.input_digest();
@@ -2455,9 +3236,6 @@ impl SemanticAuthority {
                 .map_err(|error| {
                     BuiltinModelError(format!("read latest semantic source observation: {error}"))
                 })?;
-        if let Some(latest) = latest.as_ref() {
-            self.latest_observations.insert(key.clone(), latest.clone());
-        }
         let intent = latest.as_ref().map_or(
             ExistingGenerationSelection::AcknowledgeHistorical,
             |latest| {
@@ -2509,8 +3287,8 @@ impl SemanticAuthority {
         Ok((selected, record))
     }
 
-    /// Rebuilds the workspace semantic relation from every locald-selected
-    /// Turso head before a persisted view journal can be admitted.
+    /// Reconciles the Turso projection to the semantic selections committed
+    /// in the workspace root before admitting a persisted view journal.
     pub(crate) fn reconcile_workspace(
         &mut self,
         daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
@@ -2523,8 +3301,63 @@ impl SemanticAuthority {
         if journey_trace {
             eprintln!("journey startup phase: reconcile_workspace begin");
         }
-        let mut desired =
+        let relation = daemon
+            .engine()
+            .daemon()
+            .owner()
+            .snapshot()
+            .relation::<BuiltinSemanticRelation>()
+            .map_err(|error| {
+                BuiltinModelError(format!("open semantic selection marker: {error}"))
+            })?;
+        let mut selected_rows =
             BTreeMap::<ProductSemanticPublicationKey, ProductSemanticPublicationRecord>::new();
+        let mut generation_rows = BTreeMap::<HistoryKey, ProductSemanticPublicationRecord>::new();
+        let mut relation_after = None;
+        loop {
+            let page = relation
+                .page(
+                    relation_after.as_ref(),
+                    backend_engine::MAX_SNAPSHOT_PAGE_ROWS,
+                )
+                .map_err(|error| {
+                    BuiltinModelError(format!("page semantic selection marker: {error}"))
+                })?;
+            for (key, record) in page.entries() {
+                if key.is_selected() {
+                    selected_rows.insert(key.clone(), record.clone());
+                } else {
+                    key.admit_record(record).map_err(|error| {
+                        BuiltinModelError(format!("validate semantic history row: {error}"))
+                    })?;
+                    let identity = match record {
+                        ProductSemanticPublicationRecord::Published { claim, .. } => {
+                            *claim.binding().identity.as_ref()
+                        }
+                        ProductSemanticPublicationRecord::Unavailable(_) => {
+                            return Err(BuiltinModelError(
+                                "immutable semantic generation row is unavailable".to_owned(),
+                            ));
+                        }
+                    };
+                    let base = ProductSemanticPublicationKey::new(
+                        key.package().clone(),
+                        key.coordinate().clone(),
+                        key.profile(),
+                    )
+                    .map_err(|error| BuiltinModelError(error.to_owned()))?;
+                    generation_rows.insert((base, identity), record.clone());
+                }
+            }
+            let Some(next) = page.next().cloned() else {
+                break;
+            };
+            relation_after = Some(next);
+        }
+
+        // Reopen authority history only to verify exact product references and
+        // make their closures available. Unreferenced generations are private
+        // candidates: they never create product history rows or serving heads.
         let mut after: Option<AuthorityNamespace> = None;
         loop {
             let page = futures_executor::block_on(
@@ -2532,7 +3365,7 @@ impl SemanticAuthority {
                     .selected_frontiers(after.as_ref(), AUTHORITY_PAGE),
             )
             .map_err(|error| {
-                BuiltinModelError(format!("enumerate semantic authority heads: {error}"))
+                BuiltinModelError(format!("enumerate semantic authority history: {error}"))
             })?;
             if page.is_empty() {
                 break;
@@ -2545,15 +3378,16 @@ impl SemanticAuthority {
                 let key = key_from_namespace(frontier.namespace())?;
                 let mut generation_after = None;
                 loop {
-                    let generations =
-                        futures_executor::block_on(self.authority.selected_generations(
+                    let generations = futures_executor::block_on(
+                        self.authority.selected_generations(
                             frontier.namespace(),
                             generation_after,
                             AUTHORITY_PAGE,
-                        ))
-                        .map_err(|error| {
-                            BuiltinModelError(format!("enumerate semantic history: {error}"))
-                        })?;
+                        ),
+                    )
+                    .map_err(|error| {
+                        BuiltinModelError(format!("enumerate semantic generation history: {error}"))
+                    })?;
                     if generations.is_empty() {
                         break;
                     }
@@ -2561,30 +3395,39 @@ impl SemanticAuthority {
                         generation_after = Some(selected.generation());
                         if journey_trace {
                             eprintln!(
-                                "journey startup phase: reopen selected generation {} begin",
+                                "journey startup phase: reopen semantic generation {} begin",
                                 selected.generation()
                             );
                         }
-                        let (claim, record) = reopen_record(&self.store, selected)?;
+                        let (claim, recovered) = reopen_record(&self.store, selected)?;
                         if journey_trace {
                             eprintln!(
-                                "journey startup phase: reopen selected generation {} complete",
+                                "journey startup phase: reopen semantic generation {} complete",
                                 selected.generation()
                             );
                         }
-                        let history_key = key
-                            .for_generation_bytes(*claim.binding().identity.as_ref())
-                            .map_err(|error| BuiltinModelError(error.to_owned()))?;
-                        if let Some(prior) = desired.insert(history_key.clone(), record.clone())
-                            && prior != record
+                        let identity = *claim.binding().identity.as_ref();
+                        let history_key = (key.clone(), identity);
+                        if let Some(ProductSemanticPublicationRecord::Published {
+                            coverage,
+                            claim: row_claim,
+                        }) = generation_rows.get(&history_key)
                         {
-                            return Err(BuiltinModelError(
-                                "Turso history rebound one immutable semantic generation"
-                                    .to_owned(),
-                            ));
+                            if *row_claim != claim {
+                                return Err(BuiltinModelError(
+                                    "product semantic history differs from its retained authority closure"
+                                        .to_owned(),
+                                ));
+                            }
+                            if let ProductSemanticPublicationRecord::Published {
+                                coverage: recovered_coverage,
+                                ..
+                            } = recovered
+                            {
+                                ensure_recovered_coverage_matches(*coverage, recovered_coverage)?;
+                            }
                         }
                         self.remember_selection(key.clone(), claim, selected.clone())?;
-                        let history_key = (key.clone(), *claim.binding().identity.as_ref());
                         self.history.insert(
                             history_key.clone(),
                             HistoryFact {
@@ -2598,130 +3441,144 @@ impl SemanticAuthority {
                         break;
                     }
                 }
-                let selected = futures_executor::block_on(
+                // The current Turso head is a projection that may be ahead of
+                // the durable workspace marker. Reopen it into the history
+                // cache, but never use it to synthesize a product selection.
+                let head = futures_executor::block_on(
                     self.authority
                         .selected_generation(frontier.namespace(), frontier.generation()),
                 )
                 .map_err(|error| {
-                    BuiltinModelError(format!("read semantic authority head: {error}"))
+                    BuiltinModelError(format!("read semantic authority projection head: {error}"))
                 })?
                 .ok_or_else(|| {
                     BuiltinModelError("semantic authority head is absent from history".to_owned())
                 })?;
-                if journey_trace {
-                    eprintln!(
-                        "journey startup phase: reopen selected head generation {} begin",
-                        selected.generation()
-                    );
-                }
-                let (claim, record) = reopen_record(&self.store, &selected)?;
-                if journey_trace {
-                    eprintln!(
-                        "journey startup phase: reopen selected head generation {} complete",
-                        selected.generation()
-                    );
-                }
-                desired.insert(key.clone(), record);
-                self.remember_selection(key.clone(), claim, selected)?;
-                if let Some(observation) = futures_executor::block_on(
-                    self.authority
-                        .latest_source_observation(frontier.namespace()),
-                )
-                .map_err(|error| {
-                    BuiltinModelError(format!("read latest semantic source observation: {error}"))
-                })? {
-                    self.latest_observations.insert(key, observation);
-                }
+                let (claim, _) = reopen_record(&self.store, &head)?;
+                let history_key = (key.clone(), *claim.binding().identity.as_ref());
+                self.remember_selection(key.clone(), claim, head.clone())?;
+                self.history
+                    .insert(history_key.clone(), HistoryFact { selected: head });
+                self.retained_generations
+                    .insert(history_key, frontier.generation());
             }
             if page.len() < AUTHORITY_PAGE {
                 break;
             }
         }
 
-        let relation = daemon
-            .engine()
-            .daemon()
-            .owner()
-            .snapshot()
-            .relation::<BuiltinSemanticRelation>()
-            .map_err(|error| BuiltinModelError(format!("open semantic projection: {error}")))?;
-        // Check the independently persisted typed coverage against the exact
-        // selected source-count and manifest evidence used to rebuild it. A
-        // disagreement means neither projection can safely be admitted.
-        for (key, desired_record) in &desired {
-            let Some(ProductSemanticPublicationRecord::Published {
-                coverage: existing_coverage,
-                claim: existing_claim,
-            }) = relation.lookup(key).map_err(|error| {
-                BuiltinModelError(format!("read semantic publication coverage: {error}"))
-            })?
-            else {
-                continue;
+        // Every durable immutable generation row must still have an exact
+        // retained closure. Missing history is a consistency failure; it must
+        // not be silently repaired from the newest authority head.
+        for (history_key, row) in &generation_rows {
+            let Some(fact) = self.history.get(history_key) else {
+                return Err(BuiltinModelError(
+                    "product semantic history is absent from retained authority records".to_owned(),
+                ));
             };
-            if let ProductSemanticPublicationRecord::Published { coverage, claim } = desired_record
-                && existing_claim == *claim
-            {
-                ensure_recovered_coverage_matches(existing_coverage, *coverage)?;
+            let (claim, _) = reopen_record(&self.store, &fact.selected)?;
+            let ProductSemanticPublicationRecord::Published {
+                claim: row_claim, ..
+            } = row
+            else {
+                return Err(BuiltinModelError(
+                    "immutable product semantic history is unavailable".to_owned(),
+                ));
+            };
+            if claim != *row_claim {
+                return Err(BuiltinModelError(
+                    "immutable product semantic history claim differs from its closure".to_owned(),
+                ));
             }
         }
-        let mut changes = BTreeMap::<
-            ProductSemanticPublicationKey,
-            Option<ProductSemanticPublicationRecord>,
-        >::new();
-        let mut relation_after = None;
-        loop {
-            let page = relation
-                .page(
-                    relation_after.as_ref(),
-                    backend_engine::MAX_SNAPSHOT_PAGE_ROWS,
-                )
-                .map_err(|error| BuiltinModelError(format!("page semantic projection: {error}")))?;
-            for (key, record) in page.entries() {
-                if let Some(desired_record) = desired.get(key) {
-                    if desired_record != record {
-                        changes.insert(key.clone(), Some(desired_record.clone()));
+
+        // Reconcile Turso to the exact selected claims in the committed product
+        // relation before serving any query. A candidate selected before a
+        // crash is rolled back here; a candidate whose product marker committed
+        // is selected here if the process died before finishing publication.
+        for (key, record) in selected_rows {
+            match record {
+                ProductSemanticPublicationRecord::Unavailable(_) => {
+                    self.image_loader.clear_product_selection(key.clone())?;
+                    self.committed_observations.remove(&key);
+                }
+                ProductSemanticPublicationRecord::Published { coverage, claim } => {
+                    let identity = *claim.binding().identity.as_ref();
+                    let history_key = (key.clone(), identity);
+                    let history_row = generation_rows.get(&history_key).ok_or_else(|| {
+                        BuiltinModelError(
+                            "committed semantic selection has no immutable history row".to_owned(),
+                        )
+                    })?;
+                    let ProductSemanticPublicationRecord::Published {
+                        coverage: history_coverage,
+                        claim: history_claim,
+                    } = history_row
+                    else {
+                        return Err(BuiltinModelError(
+                            "committed semantic history is unavailable".to_owned(),
+                        ));
+                    };
+                    if *history_claim != claim {
+                        return Err(BuiltinModelError(
+                            "committed semantic selection differs from immutable history"
+                                .to_owned(),
+                        ));
                     }
-                } else if matches!(record, ProductSemanticPublicationRecord::Unavailable(_)) {
-                    // A typed unavailable terminal records failed acquisition;
-                    // it is not an authoritative generation head and remains
-                    // a valid product status when no selected closure exists.
-                } else {
-                    changes.insert(key.clone(), None);
+                    ensure_recovered_coverage_matches(coverage, *history_coverage)?;
+
+                    let namespace =
+                        Self::namespace(key.package(), key.coordinate(), key.profile())?;
+                    let frontier =
+                        futures_executor::block_on(self.authority.selected_frontier(&namespace))
+                            .map_err(|error| {
+                                BuiltinModelError(format!("read semantic projection head: {error}"))
+                            })?
+                            .ok_or_else(|| {
+                                BuiltinModelError(
+                                    "committed semantic selection has no retained authority head"
+                                        .to_owned(),
+                                )
+                            })?;
+                    let head = futures_executor::block_on(
+                        self.authority
+                            .selected_generation(&namespace, frontier.generation()),
+                    )
+                    .map_err(|error| {
+                        BuiltinModelError(format!("read semantic projection generation: {error}"))
+                    })?
+                    .ok_or_else(|| {
+                        BuiltinModelError(
+                            "semantic projection head is absent from retained history".to_owned(),
+                        )
+                    })?;
+                    let (head_claim, _) = reopen_record(&self.store, &head)?;
+                    let selected = if head_claim == claim {
+                        head
+                    } else {
+                        self.select_existing(&key, claim)?.0
+                    };
+                    let (selected_claim, recovered) = reopen_record(&self.store, &selected)?;
+                    if selected_claim != claim {
+                        return Err(BuiltinModelError(
+                            "authority reconciliation selected another semantic generation"
+                                .to_owned(),
+                        ));
+                    }
+                    if let ProductSemanticPublicationRecord::Published {
+                        coverage: recovered_coverage,
+                        ..
+                    } = recovered
+                    {
+                        ensure_recovered_coverage_matches(coverage, recovered_coverage)?;
+                    }
+                    self.image_loader
+                        .commit_product_selection(key.clone(), claim)?;
+                    self.committed_observations
+                        .insert(key.clone(), selected.observation().clone());
+                    let _ = self.schedule_native_history(key, claim);
                 }
             }
-            let Some(next) = page.next().cloned() else {
-                break;
-            };
-            relation_after = Some(next);
-        }
-        for (key, record) in desired {
-            if relation
-                .lookup(&key)
-                .map_err(|error| BuiltinModelError(format!("read semantic projection: {error}")))?
-                != Some(record.clone())
-            {
-                changes.insert(key, Some(record));
-            }
-        }
-        let mut by_package =
-            BTreeMap::<backend_engine::PackageKey, (String, Vec<BuiltinSemanticChange>)>::new();
-        for (key, after) in changes {
-            let package = key.package_key();
-            let label = key.package().as_str().to_owned();
-            by_package
-                .entry(package)
-                .or_insert_with(|| (label, Vec::new()))
-                .1
-                .push(BuiltinSemanticChange { key, after });
-        }
-        for (package, (label, semantic_changes)) in by_package {
-            let intent = BuiltinIntent::index_with_semantics(
-                package,
-                label,
-                Vec::<BuiltinSourceChange>::new(),
-                semantic_changes,
-            )?;
-            super::commands::commit_builtin_intent(daemon, 0, &intent)?;
         }
         if journey_trace {
             eprintln!("journey startup phase: reconcile_workspace complete");
@@ -3014,6 +3871,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn committed_marker_writer_excludes_native_selection_readers_until_publication_finishes() {
+        let workspace = ScratchWorkspace::new();
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("open authority");
+        let reader_loader = Arc::clone(&authority.image_loader);
+        let (attempted_sender, attempted_receiver) = std::sync::mpsc::channel();
+        let (acquired_sender, acquired_receiver) = std::sync::mpsc::channel();
+        let mut reader = None;
+
+        authority
+            .commit_product_selection_transaction(Vec::new(), || {
+                let reader_thread_loader = Arc::clone(&reader_loader);
+                reader = Some(std::thread::spawn(move || {
+                    attempted_sender
+                        .send(())
+                        .expect("signal selection read attempt");
+                    let _lease = reader_thread_loader
+                        .acquire_publication_read()
+                        .expect("acquire committed selection read lease");
+                    acquired_sender
+                        .send(())
+                        .expect("signal selection read lease");
+                }));
+                attempted_receiver
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("reader attempts during durable marker callback");
+                assert!(
+                    matches!(
+                        reader_loader.selections.try_read(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ),
+                    "the durable marker callback must retain the serving-selector write lease"
+                );
+                Ok(())
+            })
+            .expect("commit empty marker transaction");
+
+        acquired_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("selection reader proceeds after marker and selector publication");
+        reader
+            .expect("reader thread started")
+            .join()
+            .expect("selection reader thread completes");
+    }
+
     struct RejectingS3Publisher {
         seen: Arc<std::sync::Mutex<Option<PublicationFence>>>,
     }
@@ -3097,7 +4000,7 @@ mod tests {
             .expect("store test selected object");
         let pin = builder.seal_pinned().expect("seal test selected closure");
         let seen = Arc::new(std::sync::Mutex::new(None));
-        authority.s3_publisher = Some(Box::new(RejectingS3Publisher {
+        authority.s3_publisher = Some(Arc::new(RejectingS3Publisher {
             seen: Arc::clone(&seen),
         }));
 

@@ -404,7 +404,7 @@ impl Element for HoverZone {
     ) -> Option<Hitbox> {
         self.frame.set(bounds);
         if let Some((key, target)) = &self.claim {
-            probe::record_target(cx, key, bounds, *target);
+            probe::record_target_in(cx, key, bounds, *target, window);
         }
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         self.child.prepaint(window, cx);

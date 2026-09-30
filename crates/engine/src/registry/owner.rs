@@ -733,7 +733,13 @@ impl RegistryOwner {
         matches!(self.policy, AcquisitionPolicy::Offline)
     }
 
-    /// Stable nonzero policy/advisory frontier digest for one source.
+    /// Stable nonzero configured policy digest for one source.
+    ///
+    /// Learned package facts have their own [`Self::facts_frontier`] and must
+    /// not advance this digest: an acquisition request is bound to the policy
+    /// that authorized the fetch, while the page it fetches necessarily adds
+    /// package facts. Keeping those identities separate lets the resulting
+    /// product receipt be published and recovered against the new facts root.
     #[must_use]
     pub fn policy_epoch(&self) -> u64 {
         let mut hasher = Hasher::new();
@@ -745,7 +751,6 @@ impl RegistryOwner {
             Some(backend_advisory::OfflinePolicy::Warn) => 2,
             Some(backend_advisory::OfflinePolicy::FailClosed) => 3,
         }]);
-        hasher.update(&self.facts_map.root());
         let digest = hasher.finalize();
         u64::from_be_bytes(
             digest.as_bytes()[..8]

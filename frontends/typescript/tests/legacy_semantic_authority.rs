@@ -54,6 +54,24 @@ fn typescript_profile_preserves_local_binding_and_utf16_coordinates()
 }
 
 #[test]
+fn authored_javascript_package_entry_is_admitted_by_lexical_authority() {
+    let source = "export class JavaScriptBeacon {\n  constructor(intensity) { this.intensity = intensity; }\n  illuminate() { return this.intensity; }\n}\n/** ORACLE/JAVASCRIPT: signal level thirty-four. */\nexport function JavaScriptBeaconEntry() { return new JavaScriptBeacon(34).illuminate(); }\n";
+    let arena = Allocator::default();
+    let module = analyze(TypeScriptSource::TypeScript, source, &arena)
+        .unwrap_or_else(|cause| panic!("authored JavaScript fixture rejected: {cause:?}"));
+    let declarations = module
+        .declarations()
+        .filter_map(|declaration| {
+            let start = usize::try_from(declaration.name.start).ok()?;
+            let end = usize::try_from(declaration.name.end).ok()?;
+            source.get(start..end)
+        })
+        .collect::<Vec<_>>();
+    assert!(declarations.contains(&"JavaScriptBeacon"));
+    assert!(declarations.contains(&"JavaScriptBeaconEntry"));
+}
+
+#[test]
 fn declaration_stream_lends_exact_source_names_and_closed_symbol_kinds()
 -> Result<(), AuthorityTestError> {
     let source = "interface Vessel {}\nconst rocket = 1;\nfunction launch() {}\n";
