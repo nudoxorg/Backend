@@ -31,8 +31,11 @@ path to avoid racing a compile. Manifest-changing commands such as `update`,
 such as `package` and `clean`, also stay on the conservative path. Unknown
 commands use the compiling path so a new Cargo subcommand cannot accidentally
 weaken isolation. An explicit
-`CARGO_BUILD_BUILD_DIR` is always preserved verbatim and bypasses the lease
-selection while retaining the existing compiler-cache setup.
+`CARGO_BUILD_BUILD_DIR` is always preserved verbatim. It still acquires the
+same worktree and host capacity leases, while leaving pooled build graphs and
+their affinity unchanged. An override cannot start a fifth compiler when the
+four configured slots are occupied. Explicit directories are caller-managed;
+callers must give each concurrently active worktree its own directory.
 
 Lease directories contain the owner PID, process start token, and canonical
 worktree path. A dead owner is reclaimed by an atomic rename before its lock

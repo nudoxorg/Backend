@@ -130,12 +130,11 @@ if [ ! -S "$SCCACHE_SERVER_UDS" ]; then
   fi
 fi
 
-# Explicit callers retain full control over placement. This check intentionally
-# happens after sccache setup, preserving the old wrapper's compiler-cache
-# behavior without ever changing the caller's build directory.
-if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then
-  exec @cargo@ "$@"
-fi
+# An override controls placement, never compiler concurrency. Explicit lanes
+# still acquire the worktree and host leases below, so a named directory cannot
+# accidentally bypass the memory ceiling. Their Cargo graph belongs to the
+# caller; acquiring a capacity slot must not reset or reassign a pooled graph.
+explicit_build_dir="${CARGO_BUILD_BUILD_DIR:-}"
 
 # cksum is present in the minimal Nix runtime and the length makes accidental
 # collisions much less likely than using the CRC alone. The key names only
@@ -243,6 +242,10 @@ acquire_slot() {
     printf '%s\n' "$$" > "$lock/pid"
     process_start_token "$$" > "$lock/start"
     printf '%s\n' "$workspace_root" > "$lock/workspace"
+    if [ -n "$explicit_build_dir" ]; then
+      selected="$explicit_build_dir"
+      return 0
+    fi
     slot_identity="$cache_root/affinity/slot-$candidate.owner"
     previous_workspace="$(cat "$slot_identity" 2>/dev/null || true)"
     # Cargo's intermediate graph is only reusable within one canonical
@@ -308,11 +311,12 @@ while [ -z "$selected" ]; do
   slot_waited="$((slot_waited + 1))"
 done
 
-if [ -n "$selected_slot" ]; then
+if [ -n "$selected_slot" ] && [ -z "$explicit_build_dir" ]; then
   affinity_tmp="$affinity_file.tmp.$$"
   printf '%s\n' "$selected_slot" > "$affinity_tmp"
   mv -f "$affinity_tmp" "$affinity_file"
-elif [ -z "$selected" ]; then
+fi
+if [ -z "$selected" ]; then
   # The warm-lane count is also the host-wide compiler concurrency ceiling.
   # Never manufacture an overflow lane: it defeats the memory bound precisely
   # when contention is highest. A caller may retry after a lease is released.
