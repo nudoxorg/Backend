@@ -6,11 +6,16 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     fmt, fs,
-    io::Read,
+    io::{self, Read},
     ops::Deref,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
-    time::Instant,
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use backend_semantic::vocabulary::{RustEdition, Stage};
@@ -46,6 +51,14 @@ const MAX_RUST_DOCUMENTATION_INPUTS: usize = 1024;
 
 /// Maximum combined bytes read for Rustdoc `include_str!` inputs in one operation.
 const MAX_RUST_DOCUMENTATION_INPUT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum retained stdout or stderr from one metadata subprocess.
+const MAX_CARGO_METADATA_STREAM_BYTES: usize = 64 * 1024 * 1024;
+
+/// Poll interval for cooperative Cargo metadata cancellation and deadline checks.
+const CARGO_METADATA_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+static CARGO_METADATA_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Finds literal source-relative include paths used by active Rustdoc attributes.
 ///
@@ -1400,6 +1413,28 @@ impl RustWorkspace {
         features: RustFeatureControl<'_>,
         control: RustAnalysisControl<'_>,
     ) -> Result<Self, RustAuthorityError> {
+        Self::open_with_features_and_metadata_policy(
+            root,
+            toolchain,
+            edition,
+            features,
+            RustCargoMetadataPolicy::Offline,
+            control,
+        )
+    }
+
+    /// Loads the Cargo graph under an explicit registry metadata policy.
+    ///
+    /// Online permits Cargo metadata to resolve missing registry state; Offline forbids network
+    /// access and fails closed when only `--no-deps` metadata is available.
+    pub fn open_with_features_and_metadata_policy(
+        root: impl AsRef<Path>,
+        toolchain: &RustToolchain,
+        edition: RustEdition,
+        features: RustFeatureControl<'_>,
+        metadata_policy: RustCargoMetadataPolicy,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<Self, RustAuthorityError> {
         control.check()?;
         let root = RustProject::validate_root(root)?;
         let cargo = toolchain
@@ -1410,6 +1445,15 @@ impl RustWorkspace {
             .cargo_home
             .as_ref()
             .ok_or(LoadError::MissingCargoConfiguration)?;
+        let metadata_gate = cargo_metadata_preflight(
+            &root,
+            cargo,
+            cargo_home,
+            toolchain,
+            features,
+            metadata_policy,
+            control,
+        )?;
         let path = toolchain.authority_path()?;
         let extra_env = [
             (
@@ -1445,13 +1489,29 @@ impl RustWorkspace {
             ("PATH".to_owned(), Some(path)),
         ]
         .into_iter()
+        .chain(metadata_gate.extra_env.iter().cloned())
         .collect();
         let config = CargoConfig {
             sysroot: Some(RustLibSource::Path(AbsPathBuf::assert_utf8(
                 toolchain.sysroot.clone(),
             ))),
             no_deps: false,
-            metadata_extra_args: vec!["--offline".to_owned()],
+            // The preflight resolved this same manifest, feature set, and network policy.
+            // `--locked` also keeps the analyzer's second Cargo invocation from mutating the
+            // user's lockfile between proof and graph construction.
+            metadata_extra_args: {
+                let mut args = match metadata_policy {
+                    RustCargoMetadataPolicy::Online => {
+                        vec!["--config".to_owned(), "net.offline=false".to_owned()]
+                    }
+                    RustCargoMetadataPolicy::Offline => vec!["--offline".to_owned()],
+                };
+                if metadata_gate.lockfile_exists {
+                    args.push("--locked".to_owned());
+                }
+                args.extend(metadata_gate.metadata_extra_args.iter().cloned());
+                args
+            },
             features: features.cargo_features(),
             extra_env,
             isolate_env: true,
@@ -1464,13 +1524,25 @@ impl RustWorkspace {
             num_worker_threads: 1,
             proc_macro_processes: 0,
         };
+        let metadata_failed = Arc::new(AtomicBool::new(false));
+        let metadata_failed_callback = Arc::clone(&metadata_failed);
         let (database, vfs, _proc_macros) =
-            ra_ap_load_cargo::load_workspace_at(&root, &config, &load, &|_| {}).map_err(
-                |source| RustAuthorityError::Workspace {
-                    root: root.clone(),
-                    source,
-                },
-            )?;
+            ra_ap_load_cargo::load_workspace_at(&root, &config, &load, &|message| {
+                if message.starts_with("cargo metadata: failed") {
+                    metadata_failed_callback.store(true, Ordering::Release);
+                }
+            })
+            .map_err(|source| RustAuthorityError::Workspace {
+                root: root.clone(),
+                source,
+            })?;
+        if metadata_failed.load(Ordering::Acquire) {
+            return Err(RustAuthorityError::CargoMetadataIncomplete {
+                root: root.clone(),
+                policy: metadata_policy,
+                cause: CargoMetadataIncompleteCause::AnalyzerUsedNoDependenciesFallback,
+            });
+        }
         control.check()?;
         Ok(Self {
             root,
@@ -2552,6 +2624,569 @@ pub struct RustFeatureControl<'features> {
     pub no_default_features: bool,
     /// Exact feature names requested by the caller.
     pub features: &'features [&'features str],
+}
+
+/// Registry network policy used while resolving Cargo metadata for one authority graph.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustCargoMetadataPolicy {
+    /// Permit Cargo metadata to fetch missing index and resolution state.
+    Online,
+    /// Forbid network access and refuse if only no-dependency metadata can be produced.
+    Offline,
+}
+
+/// Why full Cargo metadata could not prove a complete dependency and feature graph.
+#[derive(Debug, thiserror::Error)]
+pub enum CargoMetadataIncompleteCause {
+    /// The isolated Cargo metadata subprocess failed or emitted invalid data.
+    #[error("Cargo metadata preflight failed: {0}")]
+    Preflight(#[from] CargoMetadataPreflightError),
+    /// Rust-analyzer reported that it selected its no-dependencies fallback.
+    #[error("rust-analyzer selected its no-dependencies metadata fallback")]
+    AnalyzerUsedNoDependenciesFallback,
+}
+
+/// Concrete terminal from bounded Cargo metadata resolution.
+#[derive(Debug, thiserror::Error)]
+pub enum CargoMetadataPreflightError {
+    /// Cargo could not be started for an exact phase.
+    #[error("could not start Cargo {phase}: {source}")]
+    Spawn {
+        /// Metadata phase.
+        phase: &'static str,
+        /// Operating-system process creation failure.
+        #[source]
+        source: io::Error,
+    },
+    /// Cargo failed and returned its bounded diagnostic stream.
+    #[error("Cargo {phase} exited with {status}: {stderr}")]
+    CommandFailed {
+        /// Metadata phase.
+        phase: &'static str,
+        /// Exit status of the exact Cargo process.
+        status: String,
+        /// Bounded stderr returned by Cargo.
+        stderr: String,
+    },
+    /// Cargo output exceeded a fixed retained-stream bound.
+    #[error("Cargo {phase} output exceeded the {maximum}-byte {stream} limit")]
+    OutputLimit {
+        /// Metadata phase.
+        phase: &'static str,
+        /// Output stream that exceeded its bound.
+        stream: &'static str,
+        /// Maximum retained stream bytes.
+        maximum: usize,
+    },
+    /// Cargo returned invalid JSON for its metadata response.
+    #[error("Cargo {phase} returned invalid metadata JSON: {source}")]
+    InvalidJson {
+        /// Metadata phase.
+        phase: &'static str,
+        /// Exact JSON parser failure.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The full Cargo invocation returned no dependency resolution object.
+    #[error("Cargo full metadata did not contain a resolved dependency graph")]
+    MissingResolutionGraph,
+    /// Cargo could not identify the workspace root from no-deps metadata.
+    #[error("Cargo no-deps metadata omitted its workspace root")]
+    MissingWorkspaceRoot,
+    /// This selected Cargo is too old to safely redirect a missing lockfile.
+    #[error("Cargo {version} cannot resolve a project without creating {lockfile}")]
+    NoSafeLockfilePath {
+        /// Exact Cargo version output.
+        version: String,
+        /// Workspace lockfile that must remain absent.
+        lockfile: PathBuf,
+    },
+    /// Cargo reported an unusable version while a temporary lockfile was needed.
+    #[error("cannot determine whether selected Cargo supports isolated lockfiles: {output}")]
+    UnknownCargoVersion {
+        /// Exact Cargo version output.
+        output: String,
+    },
+    /// A temporary isolated lockfile location could not be created.
+    #[error("cannot create isolated Cargo lockfile: {source}")]
+    TemporaryLockfile {
+        /// Filesystem failure.
+        #[source]
+        source: io::Error,
+    },
+}
+
+/// Resolve full Cargo metadata before rust-analyzer may construct HIR roots.
+///
+/// A successful cargo metadata --no-deps response omits dependency resolution
+/// and active feature facts, so it cannot authorize semantic work. This gate
+/// requires the full JSON response to contain a concrete resolve.nodes graph.
+/// It uses the selected Cargo, feature set, network policy, and an isolated
+/// temporary lockfile when the project does not already have one.
+struct CargoMetadataGate {
+    lockfile_exists: bool,
+    metadata_extra_args: Vec<String>,
+    extra_env: Vec<(String, Option<String>)>,
+    _isolated_lockfile: Option<IsolatedCargoLockfile>,
+}
+
+fn cargo_metadata_preflight(
+    root: &Path,
+    cargo: &Path,
+    cargo_home: &Path,
+    toolchain: &RustToolchain,
+    features: RustFeatureControl<'_>,
+    policy: RustCargoMetadataPolicy,
+    control: RustAnalysisControl<'_>,
+) -> Result<CargoMetadataGate, RustAuthorityError> {
+    let manifest = root.join("Cargo.toml");
+    let mut no_deps_command = cargo_metadata_command(
+        cargo, cargo_home, toolchain, root, &manifest, features, policy,
+    )?;
+    no_deps_command.arg("--no-deps");
+    let no_deps_output = run_cargo_metadata_process(no_deps_command, control, "metadata --no-deps")
+        .map_err(|failure| metadata_process_failure(root, policy, failure))?;
+    let no_deps_json = parse_metadata_json("metadata --no-deps", &no_deps_output.stdout)
+        .map_err(|cause| metadata_incomplete(root, policy, cause))?;
+    let workspace_root = no_deps_json
+        .get("workspace_root")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            metadata_incomplete(
+                root,
+                policy,
+                CargoMetadataPreflightError::MissingWorkspaceRoot,
+            )
+        })?;
+    let workspace_root = if workspace_root.is_absolute() {
+        workspace_root
+    } else {
+        root.join(workspace_root)
+    };
+    let lockfile = workspace_root.join("Cargo.lock");
+    let lockfile_exists = lockfile.is_file();
+    let mut command = cargo_metadata_command(
+        cargo, cargo_home, toolchain, root, &manifest, features, policy,
+    )?;
+
+    let mut metadata_extra_args = Vec::new();
+    let mut extra_env = Vec::new();
+    let isolated_lockfile = if lockfile_exists {
+        command.arg("--locked");
+        None
+    } else {
+        let version_output = run_cargo_metadata_process(
+            {
+                let mut command = cargo_base_command(cargo, cargo_home, toolchain, root)?;
+                command.arg("--version");
+                command
+            },
+            control,
+            "--version",
+        )
+        .map_err(|failure| metadata_process_failure(root, policy, failure))?;
+        let version_text = String::from_utf8_lossy(&version_output.stdout)
+            .trim()
+            .to_owned();
+        let Some((major, minor, _patch)) = parse_cargo_version(&version_text) else {
+            return Err(metadata_incomplete(
+                root,
+                policy,
+                CargoMetadataPreflightError::UnknownCargoVersion {
+                    output: version_text,
+                },
+            ));
+        };
+        let isolated = IsolatedCargoLockfile::create().map_err(|source| {
+            metadata_incomplete(
+                root,
+                policy,
+                CargoMetadataPreflightError::TemporaryLockfile { source },
+            )
+        })?;
+        if major > 1 || (major == 1 && minor >= 95) {
+            command
+                .env("CARGO_RESOLVER_LOCKFILE_PATH", isolated.path.as_os_str())
+                .env("__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS", "nightly")
+                .arg("-Zunstable-options");
+            metadata_extra_args.push("-Zunstable-options".to_owned());
+            extra_env.push((
+                "CARGO_RESOLVER_LOCKFILE_PATH".to_owned(),
+                Some(isolated.path.to_string_lossy().into_owned()),
+            ));
+            extra_env.push((
+                "__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS".to_owned(),
+                Some("nightly".to_owned()),
+            ));
+        } else if major == 1 && minor >= 82 {
+            command
+                .arg("--lockfile-path")
+                .arg(&isolated.path)
+                .arg("-Zunstable-options")
+                .env("__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS", "nightly");
+            metadata_extra_args.extend([
+                "--lockfile-path".to_owned(),
+                isolated.path.to_string_lossy().into_owned(),
+                "-Zunstable-options".to_owned(),
+            ]);
+            extra_env.push((
+                "__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS".to_owned(),
+                Some("nightly".to_owned()),
+            ));
+        } else {
+            return Err(metadata_incomplete(
+                root,
+                policy,
+                CargoMetadataPreflightError::NoSafeLockfilePath {
+                    version: version_text,
+                    lockfile,
+                },
+            ));
+        }
+        Some(isolated)
+    };
+
+    let output = run_cargo_metadata_process(command, control, "metadata full")
+        .map_err(|failure| metadata_process_failure(root, policy, failure))?;
+    let metadata = parse_metadata_json("metadata full", &output.stdout)
+        .map_err(|cause| metadata_incomplete(root, policy, cause))?;
+    validate_resolution_graph(&metadata)
+        .map_err(|cause| metadata_incomplete(root, policy, cause))?;
+    control.check()?;
+    Ok(CargoMetadataGate {
+        lockfile_exists,
+        metadata_extra_args,
+        extra_env,
+        _isolated_lockfile: isolated_lockfile,
+    })
+}
+
+fn cargo_base_command(
+    cargo: &Path,
+    cargo_home: &Path,
+    toolchain: &RustToolchain,
+    root: &Path,
+) -> Result<Command, RustAuthorityError> {
+    let path = toolchain.authority_path()?;
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(root)
+        .env_clear()
+        .env("CARGO", cargo)
+        .env("CARGO_HOME", cargo_home)
+        .env("HOME", cargo_home)
+        .env("RUSTC", &toolchain.tool)
+        .env("PATH", path)
+        .env("CARGO_TERM_COLOR", "never")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(rustup_home) = &toolchain.rustup_home {
+        command.env("RUSTUP_HOME", rustup_home);
+    }
+    if let Some(rustup_toolchain) = &toolchain.rustup_toolchain {
+        command.env("RUSTUP_TOOLCHAIN", rustup_toolchain);
+    }
+    Ok(command)
+}
+
+fn cargo_metadata_command(
+    cargo: &Path,
+    cargo_home: &Path,
+    toolchain: &RustToolchain,
+    root: &Path,
+    manifest: &Path,
+    features: RustFeatureControl<'_>,
+    policy: RustCargoMetadataPolicy,
+) -> Result<Command, RustAuthorityError> {
+    let mut command = cargo_base_command(cargo, cargo_home, toolchain, root)?;
+    command
+        .arg("metadata")
+        .arg("--manifest-path")
+        .arg(manifest)
+        .arg("--format-version")
+        .arg("1");
+    match features.cargo_features() {
+        CargoFeatures::All => {
+            command.arg("--all-features");
+        }
+        CargoFeatures::Selected {
+            features,
+            no_default_features,
+        } => {
+            if no_default_features {
+                command.arg("--no-default-features");
+            }
+            if !features.is_empty() {
+                command.arg("--features").arg(features.join(","));
+            }
+        }
+    }
+    match policy {
+        RustCargoMetadataPolicy::Online => {
+            command
+                .arg("--config")
+                .arg("net.offline=false")
+                .env("CARGO_NET_OFFLINE", "false");
+        }
+        RustCargoMetadataPolicy::Offline => {
+            command.arg("--offline").env("CARGO_NET_OFFLINE", "true");
+        }
+    }
+    Ok(command)
+}
+
+fn parse_metadata_json(
+    phase: &'static str,
+    stdout: &[u8],
+) -> Result<serde_json::Value, CargoMetadataPreflightError> {
+    serde_json::from_slice(stdout)
+        .map_err(|source| CargoMetadataPreflightError::InvalidJson { phase, source })
+}
+
+fn validate_resolution_graph(
+    metadata: &serde_json::Value,
+) -> Result<(), CargoMetadataPreflightError> {
+    let Some(resolve) = metadata.get("resolve").filter(|value| !value.is_null()) else {
+        return Err(CargoMetadataPreflightError::MissingResolutionGraph);
+    };
+    if resolve
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .is_none()
+    {
+        return Err(CargoMetadataPreflightError::MissingResolutionGraph);
+    }
+    Ok(())
+}
+
+fn parse_cargo_version(output: &str) -> Option<(u64, u64, u64)> {
+    let version = output.split_whitespace().find(|part| {
+        part.chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+    })?;
+    let mut parts = version.split(|character| character == '.' || character == '-');
+    Some((
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ))
+}
+
+fn metadata_incomplete(
+    root: &Path,
+    policy: RustCargoMetadataPolicy,
+    cause: CargoMetadataPreflightError,
+) -> RustAuthorityError {
+    RustAuthorityError::CargoMetadataIncomplete {
+        root: root.to_path_buf(),
+        policy,
+        cause: CargoMetadataIncompleteCause::Preflight(cause),
+    }
+}
+
+enum CargoMetadataProcessFailure {
+    Cancelled,
+    Deadline,
+    Incomplete(CargoMetadataPreflightError),
+}
+
+fn metadata_process_failure(
+    root: &Path,
+    policy: RustCargoMetadataPolicy,
+    failure: CargoMetadataProcessFailure,
+) -> RustAuthorityError {
+    match failure {
+        CargoMetadataProcessFailure::Cancelled => RustAuthorityError::Cancelled,
+        CargoMetadataProcessFailure::Deadline => RustAuthorityError::DeadlineExceeded,
+        CargoMetadataProcessFailure::Incomplete(cause) => metadata_incomplete(root, policy, cause),
+    }
+}
+
+struct CargoMetadataOutput {
+    stdout: Vec<u8>,
+}
+
+fn run_cargo_metadata_process(
+    mut command: Command,
+    control: RustAnalysisControl<'_>,
+    phase: &'static str,
+) -> Result<CargoMetadataOutput, CargoMetadataProcessFailure> {
+    control.check().map_err(|error| match error {
+        RustAuthorityError::Cancelled => CargoMetadataProcessFailure::Cancelled,
+        _ => CargoMetadataProcessFailure::Deadline,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|source| {
+        CargoMetadataProcessFailure::Incomplete(CargoMetadataPreflightError::Spawn {
+            phase,
+            source,
+        })
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        CargoMetadataProcessFailure::Incomplete(CargoMetadataPreflightError::Spawn {
+            phase,
+            source: io::Error::other("Cargo stdout pipe was unavailable"),
+        })
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        CargoMetadataProcessFailure::Incomplete(CargoMetadataPreflightError::Spawn {
+            phase,
+            source: io::Error::other("Cargo stderr pipe was unavailable"),
+        })
+    })?;
+    let stdout_worker = spawn_cargo_reader(stdout);
+    let stderr_worker = spawn_cargo_reader(stderr);
+    let status = loop {
+        if control.cancelled.load(Ordering::Acquire) {
+            terminate_cargo(&mut child);
+            let _ = join_cargo_reader(stdout_worker);
+            let _ = join_cargo_reader(stderr_worker);
+            return Err(CargoMetadataProcessFailure::Cancelled);
+        }
+        if Instant::now() >= control.deadline {
+            terminate_cargo(&mut child);
+            let _ = join_cargo_reader(stdout_worker);
+            let _ = join_cargo_reader(stderr_worker);
+            return Err(CargoMetadataProcessFailure::Deadline);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(CARGO_METADATA_POLL_INTERVAL),
+            Err(source) => {
+                terminate_cargo(&mut child);
+                let _ = join_cargo_reader(stdout_worker);
+                let _ = join_cargo_reader(stderr_worker);
+                return Err(CargoMetadataProcessFailure::Incomplete(
+                    CargoMetadataPreflightError::Spawn { phase, source },
+                ));
+            }
+        }
+    };
+    let stdout = join_cargo_reader(stdout_worker).map_err(|source| {
+        CargoMetadataProcessFailure::Incomplete(CargoMetadataPreflightError::Spawn {
+            phase,
+            source,
+        })
+    })?;
+    let stderr = join_cargo_reader(stderr_worker).map_err(|source| {
+        CargoMetadataProcessFailure::Incomplete(CargoMetadataPreflightError::Spawn {
+            phase,
+            source,
+        })
+    })?;
+    if stdout.1 {
+        return Err(CargoMetadataProcessFailure::Incomplete(
+            CargoMetadataPreflightError::OutputLimit {
+                phase,
+                stream: "stdout",
+                maximum: MAX_CARGO_METADATA_STREAM_BYTES,
+            },
+        ));
+    }
+    if stderr.1 {
+        return Err(CargoMetadataProcessFailure::Incomplete(
+            CargoMetadataPreflightError::OutputLimit {
+                phase,
+                stream: "stderr",
+                maximum: MAX_CARGO_METADATA_STREAM_BYTES,
+            },
+        ));
+    }
+    if !status.success() {
+        return Err(CargoMetadataProcessFailure::Incomplete(
+            CargoMetadataPreflightError::CommandFailed {
+                phase,
+                status: status.to_string(),
+                stderr: String::from_utf8_lossy(&stderr.0).into_owned(),
+            },
+        ));
+    }
+    Ok(CargoMetadataOutput { stdout: stdout.0 })
+}
+
+fn spawn_cargo_reader(
+    mut reader: impl Read + Send + 'static,
+) -> JoinHandle<io::Result<(Vec<u8>, bool)>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut exceeded = false;
+        let mut chunk = [0_u8; 16 * 1024];
+        loop {
+            let read = reader.read(&mut chunk)?;
+            if read == 0 {
+                break;
+            }
+            let remaining = MAX_CARGO_METADATA_STREAM_BYTES.saturating_sub(bytes.len());
+            let retained = read.min(remaining);
+            bytes.extend_from_slice(&chunk[..retained]);
+            exceeded |= retained < read;
+        }
+        Ok((bytes, exceeded))
+    })
+}
+
+fn join_cargo_reader(
+    worker: JoinHandle<io::Result<(Vec<u8>, bool)>>,
+) -> io::Result<(Vec<u8>, bool)> {
+    worker
+        .join()
+        .map_err(|_| io::Error::other("Cargo output reader panicked"))?
+}
+
+fn terminate_cargo(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let process_group = format!("-{}", child.id());
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", "--", process_group.as_str()])
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+struct IsolatedCargoLockfile {
+    directory: PathBuf,
+    path: PathBuf,
+}
+
+impl IsolatedCargoLockfile {
+    fn create() -> io::Result<Self> {
+        for _ in 0..32 {
+            let sequence = CARGO_METADATA_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let directory = std::env::temp_dir().join(format!(
+                "backend-cargo-metadata-{}-{sequence}",
+                std::process::id()
+            ));
+            match fs::create_dir(&directory) {
+                Ok(()) => {
+                    return Ok(Self {
+                        path: directory.join("Cargo.lock"),
+                        directory,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate unique temporary Cargo metadata directory",
+        ))
+    }
+}
+
+impl Drop for IsolatedCargoLockfile {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
 }
 
 impl<'features> RustFeatureControl<'features> {
@@ -3771,6 +4406,18 @@ pub enum RustAuthorityError {
         #[source]
         source: anyhow::Error,
     },
+    /// Full Cargo dependency/feature resolution failed and rust-analyzer only had its `--no-deps`
+    /// fallback, which is not sufficient proof for semantic authority.
+    #[error("Cargo metadata resolution is incomplete for {root} under {policy:?} policy")]
+    CargoMetadataIncomplete {
+        /// Caller-selected project root.
+        root: PathBuf,
+        /// Exact policy that constrained Cargo metadata resolution.
+        policy: RustCargoMetadataPolicy,
+        /// Concrete Cargo or analyzer fallback cause.
+        #[source]
+        cause: CargoMetadataIncompleteCause,
+    },
     /// A workspace request disagreed with the exact keyed source path set.
     #[error("Rust workspace source path set does not match its operation key")]
     SessionFrontierMismatch,
@@ -3944,5 +4591,214 @@ mod read_frontier_budget_tests {
             "empty and duplicate results must not bypass the cap"
         );
         assert!(!advance_bounded_counter(&mut diagnostics_visited, maximum));
+    }
+
+    #[test]
+    fn offline_no_deps_metadata_fallback_is_refused() {
+        use super::{
+            CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustAnalysisControl,
+            RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl, RustToolchain,
+            RustWorkspace, SourceByteLimit,
+        };
+        use backend_semantic::vocabulary::RustEdition;
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-rust-metadata-fallback-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("fixture source directory");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"readiness-metadata-fallback\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n[dependencies]\nbackend-readiness-absent-metadata-fixture = \"=0.0.1\"\n",
+        )
+        .expect("fixture manifest");
+        std::fs::write(root.join("src/lib.rs"), "pub fn fixture() {}\n")
+            .expect("fixture library source");
+        let tool = std::env::var_os("RUSTC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("rustc"));
+        let toolchain = RustToolchain::discover(tool).expect("selected Rust toolchain");
+        let cancelled = AtomicBool::new(false);
+        let result = RustWorkspace::open_with_features_and_metadata_policy(
+            &root,
+            &toolchain,
+            RustEdition::Rust2021,
+            RustFeatureControl {
+                all_features: true,
+                no_default_features: false,
+                features: &[],
+            },
+            RustCargoMetadataPolicy::Offline,
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(1024 * 1024),
+                deadline: Instant::now() + std::time::Duration::from_secs(60),
+            },
+        );
+        assert!(
+            !root.join("Cargo.lock").exists(),
+            "metadata resolution must not write a lockfile into the project"
+        );
+        assert!(matches!(
+            &result,
+            Err(RustAuthorityError::CargoMetadataIncomplete {
+                policy: RustCargoMetadataPolicy::Offline,
+                cause: CargoMetadataIncompleteCause::Preflight(
+                    CargoMetadataPreflightError::CommandFailed {
+                        phase: "metadata full",
+                        ..
+                    }
+                ),
+                ..
+            })
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(matches!(
+            result,
+            Err(RustAuthorityError::CargoMetadataIncomplete {
+                policy: RustCargoMetadataPolicy::Offline,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn all_feature_metadata_owns_declared_example_and_gated_module_without_lock_mutation() {
+        use super::{
+            RustAnalysisControl, RustCargoMetadataPolicy, RustFeatureControl, RustToolchain,
+            RustWorkspace, SourceByteLimit,
+        };
+        use backend_semantic::vocabulary::RustEdition;
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-rust-all-feature-metadata-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("fixture source directory");
+        std::fs::create_dir_all(root.join("examples")).expect("fixture example directory");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            concat!(
+                "[package]\n",
+                "name = \"readiness_feature_metadata\"\n",
+                "version = \"0.1.0\"\n",
+                "edition = \"2021\"\n",
+                "[workspace]\n",
+                "[features]\n",
+                "default = []\n",
+                "display = []\n",
+                "[[example]]\n",
+                "name = \"feature_probe\"\n",
+                "path = \"examples/feature_probe.rs\"\n",
+                "required-features = [\"display\"]\n",
+            ),
+        )
+        .expect("fixture manifest");
+        let library = b"#[cfg(feature = \"display\")]\npub mod display;\n";
+        let gated_module = b"pub fn enabled() {}\n";
+        let example = b"fn main() { readiness_feature_metadata::display::enabled(); }\n";
+        let build_script = b"fn main() {}\n";
+        std::fs::write(root.join("src/lib.rs"), library).expect("fixture library");
+        std::fs::write(root.join("src/display.rs"), gated_module).expect("fixture module");
+        std::fs::write(root.join("examples/feature_probe.rs"), example).expect("fixture example");
+        std::fs::write(root.join("build.rs"), build_script).expect("fixture build script");
+        let tool = std::env::var_os("RUSTC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("rustc"));
+        let toolchain = RustToolchain::discover(tool).expect("selected Rust toolchain");
+        let cancelled = AtomicBool::new(false);
+        let control = || RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(1024 * 1024),
+            deadline: Instant::now() + std::time::Duration::from_secs(60),
+        };
+        let workspace = RustWorkspace::open_with_features_and_metadata_policy(
+            &root,
+            &toolchain,
+            RustEdition::Rust2021,
+            RustFeatureControl {
+                all_features: true,
+                no_default_features: false,
+                features: &[],
+            },
+            RustCargoMetadataPolicy::Offline,
+            control(),
+        )
+        .expect("complete all-features Cargo graph");
+        workspace
+            .analyze_source(root.join("src/display.rs"), gated_module, control(), |_| {
+                Ok(())
+            })
+            .expect("cfg-selected module has HIR ownership");
+        workspace
+            .analyze_source(
+                root.join("examples/feature_probe.rs"),
+                example,
+                control(),
+                |_| Ok(()),
+            )
+            .expect("declared example target has HIR ownership");
+        workspace
+            .analyze_source(root.join("build.rs"), build_script, control(), |_| Ok(()))
+            .expect("declared build-script target has HIR ownership");
+        assert!(
+            !root.join("Cargo.lock").exists(),
+            "metadata and analyzer loading must not write a lockfile into the project"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_metadata_preflight_kills_its_process_group_on_cancellation() {
+        use super::{
+            CargoMetadataProcessFailure, RustAnalysisControl, SourceByteLimit,
+            run_cargo_metadata_process,
+        };
+        use std::time::{Duration, Instant};
+        use std::{
+            process::{Command, Stdio},
+            sync::atomic::AtomicBool,
+            thread,
+        };
+
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let signal = std::sync::Arc::clone(&cancelled);
+        let cancelling_worker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(80));
+            signal.store(true, std::sync::atomic::Ordering::Release);
+        });
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 10"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let result = run_cargo_metadata_process(
+            command,
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(1024),
+                deadline: Instant::now() + Duration::from_secs(5),
+            },
+            "cancellation regression",
+        );
+        cancelling_worker.join().expect("cancellation worker");
+        assert!(matches!(
+            result,
+            Err(CargoMetadataProcessFailure::Cancelled)
+        ));
     }
 }

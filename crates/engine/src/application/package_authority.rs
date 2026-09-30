@@ -28,8 +28,8 @@ use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
 };
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustAuthorityError, RustFeatureControl, RustToolchain, RustWorkspace,
-    SourceByteLimit,
+    RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl,
+    RustToolchain, RustWorkspace, SourceByteLimit,
 };
 use backend_frontend_typescript::legacy::{
     CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
@@ -97,6 +97,8 @@ pub struct RustPackageAuthorityConfiguration<'config> {
     pub maximum_source_bytes: SourceByteLimit,
     /// Caller-selected Cargo feature policy.
     pub features: RustFeatureControl<'config>,
+    /// Registry metadata network policy for complete Cargo resolution.
+    pub metadata_policy: RustCargoMetadataPolicy,
 }
 
 /// Explicit Java authority inputs.  The source path is converted to a package
@@ -449,11 +451,12 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         maximum_source_bytes: configuration.maximum_source_bytes,
                     }
                 } else {
-                    let workspace = RustWorkspace::open_with_features(
+                    let workspace = RustWorkspace::open_with_features_and_metadata_policy(
                         request.package_root,
                         configuration.toolchain,
                         profile,
                         configuration.features,
+                        configuration.metadata_policy,
                         RustAnalysisControl {
                             cancelled: request.control.cancelled,
                             maximum_source_bytes: configuration.maximum_source_bytes,

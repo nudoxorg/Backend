@@ -988,6 +988,16 @@ pub(crate) fn rust_authority_diagnostic<'diagnostic>(
                 let _ = message.write_str("Rust Cargo workspace loading failed.");
             }
         }
+        RustError::CargoMetadataIncomplete { policy, .. } => {
+            let policy = match policy {
+                backend_frontend_rust::legacy::RustCargoMetadataPolicy::Online => "online",
+                backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline => "offline",
+            };
+            let _ = write!(
+                message,
+                "Full Cargo dependency and feature resolution is incomplete under the {policy} policy; no-dependency metadata cannot authorize Rust semantics."
+            );
+        }
         RustError::SourceNotLoaded { .. } => {
             let _ = message.write_str("rust-analyzer did not load the selected Cargo source.");
         }

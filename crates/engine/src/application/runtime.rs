@@ -28,7 +28,9 @@ use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_go::legacy::{ConfiguredGoOracle, GoOracleInvocationModeV1};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
-use backend_frontend_rust::legacy::{RustFeatureControl, RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{
+    RustCargoMetadataPolicy, RustFeatureControl, RustToolchain, SourceByteLimit,
+};
 use backend_frontend_typescript::legacy::{ExplicitTypeScriptChecker, TypeScriptInvocationModeV1};
 use backend_library::interface::{
     CompilerCapability, CompilerReadiness, CompilerRequest, CompilerRuntimeCause, CompilerTerminal,
@@ -894,6 +896,10 @@ fn package_authority_fingerprint(
             identity.update(&[
                 u8::from(rust.all_features),
                 u8::from(rust.no_default_features),
+                match rust.metadata_policy {
+                    RustCargoMetadataPolicy::Offline => 0,
+                    RustCargoMetadataPolicy::Online => 1,
+                },
             ]);
             update_string_list_identity(&mut identity, &rust.features);
         }
@@ -1078,10 +1084,14 @@ fn portable_invocation_options_digest(
     match profile.language() {
         Language::Rust => {
             let rust = authority.rust.as_ref()?;
-            options.update(b"rust-cargo-features-v1\0");
+            options.update(b"rust-cargo-authority-options-v2\0");
             options.update(&[
                 u8::from(rust.all_features),
                 u8::from(rust.no_default_features),
+                match rust.metadata_policy {
+                    RustCargoMetadataPolicy::Offline => 0,
+                    RustCargoMetadataPolicy::Online => 1,
+                },
             ]);
             update_string_list_identity(&mut options, &rust.features);
         }
@@ -1536,6 +1546,8 @@ pub struct LocalRuntimeRustAuthority {
     pub no_default_features: bool,
     /// Exact caller-selected feature names.
     pub features: Box<[Box<str>]>,
+    /// Cargo metadata network policy inherited from the owner acquisition settings.
+    pub metadata_policy: RustCargoMetadataPolicy,
 }
 
 /// Owned Java authority configuration retained for the worker lifetime.
@@ -2785,6 +2797,7 @@ fn run_worker_generation(
         RustPackageAuthorityConfiguration {
             toolchain: &rust.toolchain,
             maximum_source_bytes: rust.maximum_source_bytes,
+            metadata_policy: rust.metadata_policy,
             features: RustFeatureControl {
                 all_features: rust.all_features,
                 no_default_features: rust.no_default_features,

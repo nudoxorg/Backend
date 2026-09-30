@@ -1379,13 +1379,22 @@ pub(crate) fn compose_owner(
         compiler_root.join("embedding.config"),
     )
     .map_err(|error| ProcessError::Profile(format!("open compiler embedding runtime: {error}")))?;
+    let cargo_metadata_policy = match config.registry.policy {
+        backend_engine::registry::AcquisitionPolicy::Online => {
+            backend_frontend_rust::legacy::RustCargoMetadataPolicy::Online
+        }
+        backend_engine::registry::AcquisitionPolicy::Offline => {
+            backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline
+        }
+    };
     let compiler_host = backend_engine::application::LocalCompilerHost::new(
         embedded_host::EmbeddedCompilerEnvironment {
             data_root: compiler_root,
             supplied: config.compiler_environment.clone(),
         },
         backend_engine::application::LocalHostDiscovery::ExplicitOnly,
-    );
+    )
+    .with_rust_cargo_metadata_policy(cargo_metadata_policy);
     let compiler =
         match embedding.provisioning_failure() {
             Some(cause) => compiler_host

@@ -14,11 +14,12 @@ mod authority;
 mod purl;
 
 pub use self::authority::{
-    ByteSpan, MAX_RUST_WORKSPACE_SESSION_SOURCES, ModuleDeclaration, RustAnalysisControl,
-    RustAuthority, RustAuthorityError, RustDeclaration, RustDefinition, RustFeatureControl,
-    RustFieldAccess, RustInferredExpression, RustMethodCall, RustProject, RustReexport,
-    RustSourceScope, RustWorkspace, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
-    RustWorkspaceFilesystemOperation, RustWorkspaceFilesystemOutcome,
+    ByteSpan, CargoMetadataIncompleteCause, CargoMetadataPreflightError,
+    MAX_RUST_WORKSPACE_SESSION_SOURCES, ModuleDeclaration, RustAnalysisControl, RustAuthority,
+    RustAuthorityError, RustCargoMetadataPolicy, RustDeclaration, RustDefinition,
+    RustFeatureControl, RustFieldAccess, RustInferredExpression, RustMethodCall, RustProject,
+    RustReexport, RustSourceScope, RustWorkspace, RustWorkspaceEditorBufferObserver,
+    RustWorkspaceFile, RustWorkspaceFilesystemOperation, RustWorkspaceFilesystemOutcome,
     RustWorkspaceReadFrontierComplete, RustWorkspaceReadFrontierGap, RustWorkspaceReadFrontierGaps,
     RustWorkspaceReadFrontierObserver, RustWorkspaceReadFrontierSealReport,
     RustWorkspaceReadFrontierSummary, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
