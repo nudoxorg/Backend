@@ -1448,6 +1448,88 @@ fn cold_posting_cover_counts_distinct_edges_across_case_and_field_duplicates() {
 }
 
 #[test]
+fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
+    let id = document(20);
+    let initial = state_for(
+        vec![(id, vec![("name".into(), "initialtoken".into())])],
+        [0x94; 32],
+    );
+    let mut source = TantivySource::build(&initial, Limits::default()).expect("initial source");
+    let (initial_edges, initial_work_units) =
+        crate::engine::test_support::validate_posting_cover_with_work_budget(
+            &source,
+            &initial,
+            u64::MAX,
+        )
+        .expect("one live token is within the test budget");
+    assert_eq!(initial_edges, 4);
+    assert_eq!(
+        crate::engine::test_support::validate_posting_cover_with_work_budget(
+            &source,
+            &initial,
+            initial_work_units,
+        )
+        .expect("the exact live-only scan fits its measured lower-bound allowance"),
+        (initial_edges, initial_work_units)
+    );
+
+    let retired = state_for(
+        vec![(id, vec![("name".into(), "retiredtoken".into())])],
+        [0x95; 32],
+    );
+    source
+        .maintain(&retired, OverlayLimits::default())
+        .expect("first one-row revision");
+    let selected = state_for(
+        vec![(id, vec![("name".into(), "finaltoken".into())])],
+        [0x96; 32],
+    );
+    source
+        .maintain(&selected, OverlayLimits::default())
+        .expect("second one-row revision");
+    assert!(
+        crate::engine::test_support::deleted_document_count(source) > 0,
+        "fixture retains tombstoned rows with terms absent from selected live state"
+    );
+
+    let selected_baseline = TantivySource::build(&selected, Limits::default())
+        .expect("build a live-only source for the independent scan bound");
+    let (selected_live_edges, selected_live_work_units) =
+        crate::engine::test_support::validate_posting_cover_with_work_budget(
+            &selected_baseline,
+            &selected,
+            u64::MAX,
+        )
+        .expect("live-only source scan");
+    assert_eq!(selected_live_edges, 4);
+    assert_eq!(
+        selected_live_work_units, 60,
+        "independent bound: four term keys (10+10+16+16 bytes), four dictionary visits, and four posting edges"
+    );
+
+    let error = crate::engine::test_support::validate_posting_cover_with_work_budget(
+        &source,
+        &selected,
+        selected_live_work_units,
+    )
+    .expect_err("deleted-term traversal must share the same finite work budget");
+    assert!(matches!(
+        &error,
+        TantivySourceError::PostingCoverWorkExceeded {
+            maximum_units,
+            attempted_units
+        } if *maximum_units == selected_live_work_units && *attempted_units > *maximum_units
+    ));
+    assert!(
+        !crate::engine::test_support::definitively_corrupt(&error),
+        "resource refusal must preserve a potentially valid root"
+    );
+    assert_eq!(term_hits(source, "finaltoken"), vec![id]);
+    assert!(term_hits(source, "initialtoken").is_empty());
+    assert!(term_hits(source, "retiredtoken").is_empty());
+}
+
+#[test]
 fn cold_reopen_rejects_rank_material_changed_under_a_refreshed_manifest() {
     let authoritative_fields = vec![("name".into(), "map".into())];
     let documents = vec![(document(17), authoritative_fields.clone())];

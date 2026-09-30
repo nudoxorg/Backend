@@ -53,6 +53,9 @@ const RANK_SCRATCH_BYTES_PER_MATCH: usize = 320;
 const MAX_POSTING_COVER_SCRATCH_BYTES: usize = 256 * 1024 * 1024;
 // Conservative per-token charge for borrowed term references and tokenizer scratch.
 const POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN: usize = 96;
+// Cold admission charges each dictionary term, its key bytes, and each posting edge. A finite
+// limit keeps tombstone-heavy roots from requiring an unbounded validation walk.
+const MAX_POSTING_COVER_SCAN_WORK_UNITS: u64 = 100_000_000;
 const MAX_DURABLE_ROOT_SCAN_ENTRIES: usize = 65_536;
 static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 
@@ -433,6 +436,13 @@ pub enum TantivySourceError {
         /// Conservative temporary bytes required by the selected row.
         required_bytes: usize,
     },
+    /// Cold exact-posting validation exceeded its dictionary, term-byte, and posting allowance.
+    PostingCoverWorkExceeded {
+        /// Maximum scan-work units permitted during one cold validation.
+        maximum_units: u64,
+        /// First work-unit count that exceeded the maximum.
+        attempted_units: u64,
+    },
     /// Durable projections are immutable; updates must publish a new root.
     DurableProjectionImmutable,
 }
@@ -471,6 +481,13 @@ impl std::fmt::Display for TantivySourceError {
             } => write!(
                 formatter,
                 "cold posting validation needs {required_bytes} bytes, above its {budget_bytes}-byte scratch budget",
+            ),
+            Self::PostingCoverWorkExceeded {
+                maximum_units,
+                attempted_units,
+            } => write!(
+                formatter,
+                "cold posting validation exceeded its {maximum_units}-unit work budget at unit {attempted_units}",
             ),
             Self::DurableProjectionImmutable => write!(
                 formatter,
@@ -2697,6 +2714,7 @@ fn is_definitively_corrupt_root(error: &TantivySourceError) -> bool {
         TantivySourceError::OrdinalMapCapacityExceeded { .. } => false,
         TantivySourceError::RankSnapshotBudgetExceeded { .. } => false,
         TantivySourceError::PostingCoverBudgetExceeded { .. } => false,
+        TantivySourceError::PostingCoverWorkExceeded { .. } => false,
         TantivySourceError::DurableProjectionImmutable => false,
         TantivySourceError::Contract(_)
         | TantivySourceError::Backend(_)
@@ -3167,6 +3185,54 @@ pub(crate) mod test_support {
 
     pub(crate) fn posting_cover_edges_scanned(source: &super::TantivySource) -> u64 {
         source.last_binding_work.posting_cover_edges_scanned
+    }
+
+    pub(crate) fn validate_posting_cover_with_work_budget(
+        source: &super::TantivySource,
+        state: &super::DocumentState,
+        maximum_work_units: u64,
+    ) -> Result<(u64, u64), super::TantivySourceError> {
+        source.ensure_live()?;
+        if source.binding != state.binding() {
+            return Err(super::Error::StaleRoot.into());
+        }
+        let mut expected = super::PostingEdgeCounts::default();
+        for entry in &source.documents.live {
+            let fields = state.fields_for(entry.document.id).ok_or_else(|| {
+                super::TantivySource::corrupt(
+                    "test posting cover row is outside the selected document state",
+                )
+            })?;
+            expected.add(super::source_posting_edge_counts(
+                fields,
+                entry.document.postings,
+            )?)?;
+        }
+        let work = super::validate_exact_live_posting_cover(
+            &source.reader.searcher(),
+            super::projection_schema().fields,
+            expected,
+            maximum_work_units,
+        )?;
+        Ok((work.edges_scanned, work.units_scanned))
+    }
+
+    pub(crate) fn deleted_document_count(source: &super::TantivySource) -> u64 {
+        source
+            .reader
+            .searcher()
+            .segment_readers()
+            .iter()
+            .map(|segment| {
+                (0..segment.max_doc())
+                    .filter(|doc| segment.is_deleted(*doc))
+                    .count() as u64
+            })
+            .sum()
+    }
+
+    pub(crate) fn definitively_corrupt(error: &super::TantivySourceError) -> bool {
+        super::is_definitively_corrupt_root(error)
     }
 
     pub(crate) fn resident_segment_id(
@@ -4243,12 +4309,36 @@ fn compare_ascii_folded_terms(left: &str, right: &str) -> std::cmp::Ordering {
         .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PostingCoverScanWork {
+    edges_scanned: u64,
+    units_scanned: u64,
+}
+
+fn consume_posting_cover_work_unit(
+    scanned: &mut u64,
+    amount: u64,
+    maximum: u64,
+) -> Result<(), TantivySourceError> {
+    let attempted = scanned.checked_add(amount).ok_or(Error::SizeLimit)?;
+    if attempted > maximum {
+        return Err(TantivySourceError::PostingCoverWorkExceeded {
+            maximum_units: maximum,
+            attempted_units: attempted,
+        });
+    }
+    *scanned = attempted;
+    Ok(())
+}
+
 fn validate_exact_live_posting_cover(
     searcher: &tantivy::Searcher,
     fields: ProjectionFields,
     expected: PostingEdgeCounts,
-) -> Result<u64, TantivySourceError> {
+    maximum_work_units: u64,
+) -> Result<PostingCoverScanWork, TantivySourceError> {
     let mut total_edges_scanned = 0u64;
+    let mut total_work_units = 0u64;
     for (field, expected_edges) in [
         (fields.raw_token, expected.raw),
         (fields.folded_token, expected.folded),
@@ -4256,11 +4346,21 @@ fn validate_exact_live_posting_cover(
         (fields.field_folded_token, expected.field_folded),
     ] {
         let mut actual_edges = 0u64;
-        let mut scanned_edges = 0u64;
         for segment in searcher.segment_readers() {
             let inverted_index = segment.inverted_index(field)?;
             let mut terms = inverted_index.terms().stream()?;
-            while let Some((_, term_info)) = terms.next() {
+            while let Some((term, term_info)) = terms.next() {
+                // Charge the dictionary entry plus its key bytes; term iteration can otherwise
+                // hide a large amount of work behind a small number of very long forged terms.
+                let term_units = u64::try_from(term.len())
+                    .map_err(|_| Error::SizeLimit)?
+                    .checked_add(1)
+                    .ok_or(Error::SizeLimit)?;
+                consume_posting_cover_work_unit(
+                    &mut total_work_units,
+                    term_units,
+                    maximum_work_units,
+                )?;
                 let mut postings = inverted_index
                     .read_postings_from_terminfo(term_info, IndexRecordOption::Basic)?;
                 loop {
@@ -4268,7 +4368,9 @@ fn validate_exact_live_posting_cover(
                     if doc == TERMINATED {
                         break;
                     }
-                    scanned_edges = scanned_edges.checked_add(1).ok_or(Error::SizeLimit)?;
+                    consume_posting_cover_work_unit(&mut total_work_units, 1, maximum_work_units)?;
+                    total_edges_scanned =
+                        total_edges_scanned.checked_add(1).ok_or(Error::SizeLimit)?;
                     if !segment.is_deleted(doc) {
                         actual_edges = actual_edges.checked_add(1).ok_or(Error::SizeLimit)?;
                         if actual_edges > expected_edges {
@@ -4288,11 +4390,11 @@ fn validate_exact_live_posting_cover(
             )
             .into());
         }
-        total_edges_scanned = total_edges_scanned
-            .checked_add(scanned_edges)
-            .ok_or(Error::SizeLimit)?;
     }
-    Ok(total_edges_scanned)
+    Ok(PostingCoverScanWork {
+        edges_scanned: total_edges_scanned,
+        units_scanned: total_work_units,
+    })
 }
 
 fn bind_document_addresses(
@@ -4430,8 +4532,13 @@ fn bind_document_addresses(
         .into());
     }
     if validate_exact_posting_cover {
-        work.posting_cover_edges_scanned =
-            validate_exact_live_posting_cover(&searcher, fields, expected_postings)?;
+        work.posting_cover_edges_scanned = validate_exact_live_posting_cover(
+            &searcher,
+            fields,
+            expected_postings,
+            MAX_POSTING_COVER_SCAN_WORK_UNITS,
+        )?
+        .edges_scanned;
     }
     Ok(work)
 }
