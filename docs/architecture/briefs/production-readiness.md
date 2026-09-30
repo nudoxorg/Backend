@@ -370,3 +370,31 @@ The owner flagged that typing "is getting worse". The known issues:
 
 ## Status after the finishers
 *(Filled in when F-Data and F-Shell report: each [F-…] item above as done with evidence, or not done with the reason.)*
+
+## Checkpoint verification — 2026-09-30
+
+The current GUI, compiler, index, semantic-history, and storage work was collected into subsystem commits and integrated. The 45 pending GUI paths were split into eight commits. Seventeen superseded worktrees were preserved in 61 commits on local `codex/checkpoint-archive-20260930-*` branches; their obsolete implementations were not substituted for the current architecture. The local collection inventory and source backups are under `.local/checkpoints/2026-09-30-collect/`.
+
+These checks actually ran in the saved Nix shell, with one Cargo job per lane:
+
+| Check | Observed result |
+|---|---|
+| `backend-version --lib` | 102 passed |
+| `backend-semantic --lib` | 254 passed |
+| `backend-store --lib`, after the CAS oracle correction | 255 passed |
+| `backend-store --doc VerifiedObjectView` | The borrowed-view escape compile-fail test passed |
+| Materialization-policy Python model | 16 passed |
+| Common search-lane Python checks | 2 passed |
+| Frozen search provenance | 25 primary documents and 46 source records verified |
+| Full `backend-desktop --lib` run | 541 passed, 9 failed, 10 ignored |
+| Focused desktop fixture-world rerun, after shortening its Unix socket path | 1 passed |
+| Full `backend-replication --lib` run | 169 passed, 8 failed, 1 ignored |
+| Focused replication reruns after fixture repairs | Both map-count crash-window tests and the map-unlink/reclaimed-byte test passed |
+
+The full desktop and replication suites were not rerun after those focused repairs. Their original failure counts must not be presented as an all-green verdict.
+
+Eight desktop owner tests still need investigation. Focused runs refused cached `toml 0.8.23` at `examples/decode.rs` and `serde_core` at `build.rs`. The error is flattened by `PackageAuthorityError::RustProject(_)` into `Authority { phase: Resolve, class: Authority, diagnostic: None }`, so the concrete workspace/setup cause is lost. Debug read-frontier observation was not enabled in those runs. Offline metadata resolution is a hypothesis, not a confirmed cause; no speculative compiler performance change was made.
+
+Five replication failures remain unresolved or unverified: corrupt unreferenced bridge-map admission, deleting the last branch reference, torn references/missing parents or generations, competing child-process reference CAS, and nonempty typed-V2 cold publication/replay/GC. The three focused passing repairs above concern fixture privacy/layout and physical map-byte accounting. They do not prove these five cases safe.
+
+The GUI process wrapper now uses the current live journey runner rather than the retired capture adapter. Its project-choice plan includes a restart and checks that the project remains on the shelf. This native journey has not been executed in this checkpoint. The full Facet suite and comprehensive visual/motion captures have also not been rerun. Existing GUI gaps remain in `gui-remaining.md` and the tracked inventories in `docs/reviews/gui-checkpoint-2026-09-30/`.
