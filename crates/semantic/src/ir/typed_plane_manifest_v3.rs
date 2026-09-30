@@ -24,7 +24,7 @@
 //! may overlap it with tree construction); the cold zipper does not change
 //! that producer/aggregate memory profile.
 
-use std::{borrow::Bound, vec::Vec};
+use std::{ops::Bound, vec::Vec};
 
 use backend_version::{
     CanonicalRelation, CanonicalRootAdmissionError, CheckedCanonicalRoot, DEFAULT_CUT_POLICY,
@@ -414,8 +414,8 @@ pub struct SemanticTypedPlaneRangeCursorV3<'tree> {
     inner: V3RowTreeIter<'tree>,
 }
 
-impl Iterator for SemanticTypedPlaneRangeCursorV3<'_> {
-    type Item = SemanticTypedPlaneIndexEntryV3<'_>;
+impl<'tree> Iterator for SemanticTypedPlaneRangeCursorV3<'tree> {
+    type Item = SemanticTypedPlaneIndexEntryV3<'tree>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner
@@ -547,7 +547,7 @@ impl SemanticTypedPlaneIndexCatalogV3 {
             let family = RowFamily::from_code(reader.u8()?)
                 .ok_or(SemanticTypedPlaneIndexV3Error::FamilyTag)?;
             let has_profile = reader.u8()?;
-            let profile_bytes = reader
+            let profile_bytes: [u8; 2] = reader
                 .take(2)?
                 .try_into()
                 .map_err(|_| SemanticTypedPlaneIndexV3Error::Truncated)?;
