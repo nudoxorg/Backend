@@ -132,7 +132,7 @@ fn semantic_evidence_marked(
 fn local_answer_is_complete_and_ranked_before_optional_work() {
     let (workspace, view) = selected_view();
     let evidence = semantic_evidence(workspace, &view);
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     let coordinator = QueryCoordinator::new(
         workspace,
         view,
@@ -166,7 +166,7 @@ fn local_answer_is_complete_and_ranked_before_optional_work() {
 fn rows_and_evidence_that_do_not_pair_are_left_out_and_said_not_fatal() {
     let (workspace, view) = selected_view();
     let full = semantic_evidence(workspace, &view);
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     let missing = backend_engine::RowId::Symbol(backend_engine::symbol_key("alpha::prefix")).stable_key();
     let mut facts = full
         .facts()
@@ -212,7 +212,7 @@ fn query_tokenization_matches_document_unicode_whitespace() {
 
     let (workspace, view) = selected_view();
     let evidence = semantic_evidence(workspace, &view);
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     let coordinator = QueryCoordinator::new(
         workspace,
         view,
@@ -232,7 +232,7 @@ fn search_snapshot_owner_reuses_the_exact_published_selection() {
     let coverage = crate::builtin::admitted_coverage().expect("coverage");
     let mut owner = SearchSnapshotOwner::default();
     let evidence = semantic_evidence(workspace, &view);
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     let first = std::sync::Arc::as_ptr(
         &owner
             .select(
@@ -257,7 +257,7 @@ fn search_snapshot_owner_reuses_the_exact_published_selection() {
 #[test]
 fn search_selection_refuses_a_view_from_the_previous_workspace_frontier() {
     let (old_workspace, old_view) = selected_view();
-    let old_capability = old_view.capability().cloned().expect("old view capability");
+    let old_capability = old_view.capability().expect("old view capability");
     let coverage = crate::builtin::admitted_coverage().expect("coverage");
     let mut owner = SearchSnapshotOwner::default();
     owner
@@ -507,7 +507,7 @@ fn local_search_excludes_only_the_synthetic_result_slot() {
     let evidence = backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts)
         .expect("typed evidence");
 
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     let coordinator = QueryCoordinator::new(
         workspace,
         view,
@@ -676,7 +676,7 @@ fn qualified_owner_search_finds_the_named_method() {
     let evidence = backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts)
         .expect("typed evidence");
 
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     let coordinator = QueryCoordinator::new(
         workspace,
         view,
@@ -766,7 +766,7 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
     let (workspace, view) = selected_view();
     let coverage = crate::builtin::admitted_coverage().expect("coverage");
     let evidence = semantic_evidence(workspace, &view);
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     let coordinator = QueryCoordinator::new(workspace, view, capability, coverage, evidence)
         .expect("coordinator");
     let local = coordinator
@@ -919,7 +919,7 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
 fn evidence_only_refresh_rebinds_the_resident_lexical_index() {
     let (workspace, view) = selected_view();
     let coverage = crate::builtin::admitted_coverage().expect("coverage");
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     let mut owner = SearchSnapshotOwner::default();
     owner
         .select(
@@ -966,13 +966,13 @@ fn one_renamed_symbol_rewrites_only_that_lexical_document() {
     let coverage = crate::builtin::admitted_coverage().expect("coverage");
     let mut owner = SearchSnapshotOwner::default();
     let evidence = semantic_evidence(workspace, &view);
-    let capability = view.capability().cloned().expect("view capability");
+    let capability = view.capability().expect("view capability");
     owner
         .select(workspace, view, capability, coverage, evidence)
         .expect("cold snapshot");
     let (workspace, renamed) = selected_view_with_first_label("zephyr marker");
     let evidence = semantic_evidence(workspace, &renamed);
-    let capability = renamed.capability().cloned().expect("view capability");
+    let capability = renamed.capability().expect("view capability");
     owner
         .select(
             workspace,
