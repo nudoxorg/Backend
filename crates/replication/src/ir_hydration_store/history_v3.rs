@@ -73,7 +73,7 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
             return Err("typed V3 history metadata differs from the committed selection".to_owned());
         }
         let manifest_bytes = manifest
-            .canonical_bytes()
+            .encode()
             .map_err(|error| format!("encode selected typed V3 binding manifest: {error}"))?;
         let catalog_entry = catalog
             .entries()
@@ -976,6 +976,15 @@ mod tests {
         CoverageWitness::Complete(
             admit_complete_scope(claim, producer).expect("test coverage scope matches"),
         )
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        let mut output = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            write!(&mut output, "{byte:02x}").expect("write hex byte");
+        }
+        output
     }
 
     fn live_input_witness() -> SemanticInputWitness {

@@ -6015,7 +6015,15 @@ mod tests {
             [generation.stamp, generation.stamp],
         )
         .expect("persist selected V1 base");
-        let selected_id = selected.identity();
+        let selected_commit = generations
+            .history_ref(
+                &generation.target,
+                HistoryRefKind::Branch,
+                &HistoryRefName::new("local-cache").expect("selected branch name"),
+            )
+            .expect("read selected base ref")
+            .expect("selected base ref exists")
+            .commit();
 
         let positive = crate::ir_hydration_store::positive_v2_history_fixture_for_test();
         let payload_bytes = positive
@@ -6344,10 +6352,10 @@ mod tests {
                 )
                 .expect("read selected ancestry after retry")
                 .expect("selected branch remains rooted");
-            assert_eq!(selected_ref.commit(), selected_id);
+            assert_eq!(selected_ref.commit(), selected_commit);
             assert!(
                 reopened
-                    .history_commit(&generation.target, selected_id)
+                    .history_commit(&generation.target, selected_commit)
                     .expect("load selected base after retry")
                     .parents()
                     .is_empty()

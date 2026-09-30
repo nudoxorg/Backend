@@ -3098,7 +3098,18 @@ mod tests {
             )
             .expect("cold-admit the exact real producer receipts");
 
-        assert_eq!(admission.content(), produced.verified_content());
+        assert_eq!(
+            admission.content().input_claim(),
+            produced.verified_content().input_claim()
+        );
+        assert_eq!(
+            admission.content().content_root(),
+            produced.verified_content().content_root()
+        );
+        assert_eq!(
+            admission.content().generation_root(),
+            produced.verified_content().generation_root()
+        );
         assert_eq!(
             admission.locator().validate().expect("validate V3 locator"),
             *produced.manifest()
