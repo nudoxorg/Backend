@@ -202,4 +202,3 @@ fn crate_path(krate: &str, coordinate: &str) -> String {
     parts.extend(identity.trail().segments().iter().map(|segment| segment.as_str().to_owned()));
     parts.join("::")
 }
-
