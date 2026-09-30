@@ -181,6 +181,54 @@ pub struct DiscoveryAdvisory {
     pub fixed_in: DiscoveryFacet<Vec<String>>,
 }
 
+/// One feature declaration from a Cargo sparse-index row. `features` and
+/// `features2` remain separate because Cargo gives the latter newer feature
+/// syntax semantics.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CratesSparseFeature {
+    pub name: String,
+    pub members: Vec<String>,
+}
+
+/// One exact dependency declaration from a Cargo sparse-index row.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CratesSparseDependency {
+    pub name: String,
+    pub requirement: String,
+    #[serde(default)]
+    pub package: DiscoveryFacet<String>,
+    #[serde(default)]
+    pub features: DiscoveryFacet<Vec<String>>,
+    #[serde(default)]
+    pub optional: DiscoveryFacet<bool>,
+    #[serde(default)]
+    pub default_features: DiscoveryFacet<bool>,
+    #[serde(default)]
+    pub target: DiscoveryFacet<String>,
+    #[serde(default)]
+    pub kind: DiscoveryFacet<String>,
+    #[serde(default)]
+    pub registry: DiscoveryFacet<String>,
+}
+
+/// Cargo-specific release facts from one sparse-index version record.
+/// Missing arrays stay `Unknown`; an explicit empty array is `Known([])`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CratesSparseMetadata {
+    pub checksum: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub rust_version: DiscoveryFacet<String>,
+    #[serde(default)]
+    pub links: DiscoveryFacet<String>,
+    #[serde(default)]
+    pub features: DiscoveryFacet<Vec<CratesSparseFeature>>,
+    #[serde(default)]
+    pub features2: DiscoveryFacet<Vec<CratesSparseFeature>>,
+    #[serde(default)]
+    pub dependencies: DiscoveryFacet<Vec<CratesSparseDependency>>,
+}
+
 /// Optional package and release metadata retained with its source claim.
 /// Download counts are represented only when a feed reports a value for this
 /// exact release; package totals are not copied onto every version.
@@ -213,6 +261,9 @@ pub struct DiscoveryMetadata {
     /// Exact per-release download observation; absent is never zero.
     #[serde(default)]
     pub downloads: DiscoveryFacet<u64>,
+    /// Cargo sparse-index source record, when this release came from Cargo.
+    #[serde(default)]
+    pub cargo_sparse: DiscoveryFacet<CratesSparseMetadata>,
 }
 
 impl Default for DiscoveryMetadata {
@@ -227,6 +278,7 @@ impl Default for DiscoveryMetadata {
             yanked: DiscoveryFacet::Unknown,
             advisories: DiscoveryFacet::Unknown,
             downloads: DiscoveryFacet::Unknown,
+            cargo_sparse: DiscoveryFacet::Unknown,
         }
     }
 }
@@ -269,8 +321,22 @@ impl DiscoveryMetadata {
             }
             _ => true,
         };
+        let cargo_sparse_valid = match &self.cargo_sparse {
+            DiscoveryFacet::Known(metadata) => {
+                metadata.checksum.len() == 64
+                    && metadata.checksum.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && matches!(metadata.schema_version, 1 | 2)
+                    && cargo_string_facet_valid(&metadata.rust_version, 128)
+                    && cargo_string_facet_valid(&metadata.links, 256)
+                    && cargo_sparse_features_valid(&metadata.features)
+                    && cargo_sparse_features_valid(&metadata.features2)
+                    && cargo_sparse_dependencies_valid(&metadata.dependencies)
+            }
+            _ => true,
+        };
         if !lists_valid
             || !advisories_valid
+            || !cargo_sparse_valid
             || !text_valid(&self.description, 16 * 1024)
             || !text_valid(&self.license, 1024)
             || !text_valid(&self.published_at, 128)
@@ -279,6 +345,58 @@ impl DiscoveryMetadata {
             return Err(DiscoveryError::Bounds);
         }
         Ok(())
+    }
+}
+
+fn cargo_string_facet_valid(value: &DiscoveryFacet<String>, maximum_bytes: usize) -> bool {
+    !matches!(value, DiscoveryFacet::Known(text) if text.is_empty() || text.len() > maximum_bytes || text.contains('\0'))
+}
+
+fn cargo_sparse_features_valid(value: &DiscoveryFacet<Vec<CratesSparseFeature>>) -> bool {
+    match value {
+        DiscoveryFacet::Known(features) => {
+            features.len() <= 4096
+                && features.iter().all(|feature| {
+                    !feature.name.is_empty()
+                        && feature.name.len() <= 256
+                        && !feature.name.contains('\0')
+                        && feature.members.len() <= 4096
+                        && feature.members.iter().all(|member| {
+                            !member.is_empty() && member.len() <= 1024 && !member.contains('\0')
+                        })
+                })
+        }
+        _ => true,
+    }
+}
+
+fn cargo_sparse_dependencies_valid(
+    value: &DiscoveryFacet<Vec<CratesSparseDependency>>,
+) -> bool {
+    fn strings(value: &DiscoveryFacet<Vec<String>>) -> bool {
+        !matches!(value, DiscoveryFacet::Known(values) if values.len() > 256 || values.iter().any(|value| value.is_empty() || value.len() > 1024 || value.contains('\0')))
+    }
+    fn text(value: &DiscoveryFacet<String>, maximum: usize) -> bool {
+        !matches!(value, DiscoveryFacet::Known(value) if value.is_empty() || value.len() > maximum || value.contains('\0'))
+    }
+    match value {
+        DiscoveryFacet::Known(dependencies) => {
+            dependencies.len() <= 4096
+                && dependencies.iter().all(|dependency| {
+                    !dependency.name.is_empty()
+                        && dependency.name.len() <= 256
+                        && !dependency.name.contains('\0')
+                        && !dependency.requirement.is_empty()
+                        && dependency.requirement.len() <= 1024
+                        && !dependency.requirement.contains('\0')
+                        && text(&dependency.package, 256)
+                        && strings(&dependency.features)
+                        && text(&dependency.target, 1024)
+                        && text(&dependency.kind, 32)
+                        && text(&dependency.registry, 2048)
+                })
+        }
+        _ => true,
     }
 }
 
@@ -1667,18 +1785,47 @@ pub fn parse_crates_sparse_package(
             .get("yanked")
             .and_then(serde_json::Value::as_bool)
             .ok_or(DiscoveryError::Protocol)?;
+        let checksum = required_text(record, "cksum")?;
+        if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(DiscoveryError::Protocol);
+        }
+        let schema_version = match record.get("v") {
+            None => 1,
+            Some(value) => u32::try_from(value.as_u64().ok_or(DiscoveryError::Protocol)?)
+                .map_err(|_| DiscoveryError::Protocol)?,
+        };
+        if !matches!(schema_version, 1 | 2) {
+            return Err(DiscoveryError::Protocol);
+        }
+        let published_at = cargo_optional_string_facet(record, "pubtime", 128)?;
+        if let DiscoveryFacet::Known(timestamp) = &published_at
+            && !valid_cargo_publish_time(timestamp)
+        {
+            return Err(DiscoveryError::Protocol);
+        }
+        let cargo_sparse = CratesSparseMetadata {
+            checksum: checksum.to_ascii_lowercase(),
+            schema_version,
+            rust_version: cargo_optional_string_facet(record, "rust_version", 128)?,
+            links: cargo_optional_string_facet(record, "links", 256)?,
+            features: parse_cargo_sparse_features(record, "features")?,
+            features2: parse_cargo_sparse_features(record, "features2")?,
+            dependencies: parse_cargo_sparse_dependencies(record)?,
+        };
         let coordinate = PackageCoordinate::parse(format!("pkg:cargo/{name}@{version}"))
             .map_err(|_| DiscoveryError::InvalidIdentity)?;
         let mut metadata = DiscoveryMetadata::default();
         metadata.aliases = DiscoveryFacet::Absent;
         metadata.description = DiscoveryFacet::Absent;
         metadata.keywords = DiscoveryFacet::Absent;
-        metadata.license = DiscoveryFacet::Unknown;
-        metadata.published_at = DiscoveryFacet::Unknown;
+        metadata.license = DiscoveryFacet::Absent;
+        metadata.published_at = published_at;
         metadata.deprecation = DiscoveryFacet::Absent;
         metadata.yanked = DiscoveryFacet::Known(yanked);
         metadata.advisories = DiscoveryFacet::Unknown;
         metadata.downloads = DiscoveryFacet::Absent;
+        metadata.cargo_sparse = DiscoveryFacet::Known(cargo_sparse);
+        metadata.admit()?;
         releases.push(CratesSparseRelease {
             coordinate,
             standing: if yanked {
@@ -1822,6 +1969,197 @@ fn required_u64(
         .get(field)
         .and_then(serde_json::Value::as_u64)
         .ok_or(DiscoveryError::Protocol)
+}
+
+fn cargo_optional_string_facet(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    maximum_bytes: usize,
+) -> Result<DiscoveryFacet<String>, DiscoveryError> {
+    match object.get(field) {
+        None => Ok(DiscoveryFacet::Unknown),
+        Some(serde_json::Value::Null) => Ok(DiscoveryFacet::Absent),
+        Some(serde_json::Value::String(value))
+            if !value.is_empty() && value.len() <= maximum_bytes && !value.contains('\0') =>
+        {
+            Ok(DiscoveryFacet::Known(value.clone()))
+        }
+        Some(_) => Err(DiscoveryError::Protocol),
+    }
+}
+
+fn parse_cargo_sparse_features(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<DiscoveryFacet<Vec<CratesSparseFeature>>, DiscoveryError> {
+    let Some(value) = object.get(field) else {
+        return Ok(DiscoveryFacet::Unknown);
+    };
+    let features = value.as_object().ok_or(DiscoveryError::Protocol)?;
+    if features.len() > 4096 {
+        return Err(DiscoveryError::Bounds);
+    }
+    let mut parsed = Vec::with_capacity(features.len());
+    for (name, members) in features {
+        if name.is_empty() || name.len() > 256 || name.contains('\0') {
+            return Err(DiscoveryError::Bounds);
+        }
+        let members = members.as_array().ok_or(DiscoveryError::Protocol)?;
+        if members.len() > 4096 {
+            return Err(DiscoveryError::Bounds);
+        }
+        let members = members
+            .iter()
+            .map(|member| {
+                member
+                    .as_str()
+                    .filter(|value| {
+                        !value.is_empty() && value.len() <= 1024 && !value.contains('\0')
+                    })
+                    .map(str::to_owned)
+                    .ok_or(DiscoveryError::Protocol)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        parsed.push(CratesSparseFeature {
+            name: name.clone(),
+            members,
+        });
+    }
+    Ok(DiscoveryFacet::Known(parsed))
+}
+
+fn parse_cargo_sparse_dependencies(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<DiscoveryFacet<Vec<CratesSparseDependency>>, DiscoveryError> {
+    let Some(value) = object.get("deps") else {
+        return Ok(DiscoveryFacet::Unknown);
+    };
+    let dependencies = value.as_array().ok_or(DiscoveryError::Protocol)?;
+    if dependencies.len() > 4096 {
+        return Err(DiscoveryError::Bounds);
+    }
+    let mut parsed = Vec::with_capacity(dependencies.len());
+    for dependency in dependencies {
+        let dependency = dependency.as_object().ok_or(DiscoveryError::Protocol)?;
+        let name = required_text(dependency, "name")?;
+        let requirement = required_text(dependency, "req")?;
+        if name.len() > 256 || requirement.len() > 1024 {
+            return Err(DiscoveryError::Bounds);
+        }
+        let features = match dependency.get("features") {
+            None => DiscoveryFacet::Unknown,
+            Some(value) => {
+                let values = value.as_array().ok_or(DiscoveryError::Protocol)?;
+                if values.len() > 256 {
+                    return Err(DiscoveryError::Bounds);
+                }
+                DiscoveryFacet::Known(
+                    values
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .filter(|value| {
+                                    !value.is_empty()
+                                        && value.len() <= 1024
+                                        && !value.contains('\0')
+                                })
+                                .map(str::to_owned)
+                                .ok_or(DiscoveryError::Protocol)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            }
+        };
+        parsed.push(CratesSparseDependency {
+            name: name.to_owned(),
+            requirement: requirement.to_owned(),
+            package: cargo_optional_string_facet(dependency, "package", 256)?,
+            features,
+            optional: cargo_optional_bool_facet(dependency, "optional")?,
+            default_features: cargo_optional_bool_facet(dependency, "default_features")?,
+            target: cargo_optional_string_facet(dependency, "target", 1024)?,
+            kind: cargo_optional_string_facet(dependency, "kind", 32)?,
+            registry: cargo_optional_string_facet(dependency, "registry", 2048)?,
+        });
+    }
+    Ok(DiscoveryFacet::Known(parsed))
+}
+
+fn cargo_optional_bool_facet(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<DiscoveryFacet<bool>, DiscoveryError> {
+    match object.get(field) {
+        None => Ok(DiscoveryFacet::Unknown),
+        Some(serde_json::Value::Bool(value)) => Ok(DiscoveryFacet::Known(*value)),
+        Some(_) => Err(DiscoveryError::Protocol),
+    }
+}
+
+fn valid_cargo_publish_time(value: &str) -> bool {
+    let Some((date, time)) = value.split_once('T') else {
+        return false;
+    };
+    let Some(time) = time.strip_suffix('Z') else {
+        return false;
+    };
+    match time.split_once('.') {
+        Some((clock, fraction)) => {
+            !fraction.is_empty()
+                && fraction.len() <= 9
+                && fraction.bytes().all(|byte| byte.is_ascii_digit())
+                && valid_cargo_publish_clock(date, clock)
+        }
+        None => valid_cargo_publish_clock(date, time),
+    }
+}
+
+fn valid_cargo_publish_clock(date: &str, clock: &str) -> bool {
+    if date.len() != 10 || clock.len() != 8 {
+        return false;
+    }
+    let mut date_parts = date.split('-');
+    let (Some(year), Some(month), Some(day), None) = (
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+    ) else {
+        return false;
+    };
+    let (Ok(year), Ok(month), Ok(day)) = (
+        year.parse::<u32>(),
+        month.parse::<u32>(),
+        day.parse::<u32>(),
+    ) else {
+        return false;
+    };
+    let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap_year => 29,
+        2 => 28,
+        _ => return false,
+    };
+    let mut clock_parts = clock.split(':');
+    let (Some(hour), Some(minute), Some(second), None) = (
+        clock_parts.next(),
+        clock_parts.next(),
+        clock_parts.next(),
+        clock_parts.next(),
+    ) else {
+        return false;
+    };
+    let (Ok(hour), Ok(minute), Ok(second)) = (
+        hour.parse::<u32>(),
+        minute.parse::<u32>(),
+        second.parse::<u32>(),
+    ) else {
+        return false;
+    };
+    day > 0 && day <= days_in_month && hour <= 23 && minute <= 59 && second <= 59
 }
 
 fn parse_npm_cursor(cursor: &DiscoveryCursor) -> Result<u64, DiscoveryError> {
@@ -2202,7 +2540,7 @@ mod tests {
             crates_sparse_index_path("Serde"),
             Ok("se/rd/serde".to_owned())
         );
-        let sparse_index_fixture = br#"{"name":"serde","vers":"1.0.94","deps":[{"name":"serde_derive","req":"^1.0","features":[],"optional":true,"default_features":true,"target":null,"kind":"normal"},{"name":"serde_derive","req":"^1.0","features":[],"optional":false,"default_features":true,"target":null,"kind":"dev"}],"cksum":"076a696fdea89c19d3baed462576b8f6d663064414b5c793642da8dfeb99475b","features":{"alloc":["unstable"],"default":["std"],"derive":["serde_derive"],"rc":[],"std":[],"unstable":[]},"yanked":false,"pubtime":"2019-06-27T17:55:32Z"}
+        let sparse_index_fixture = br#"{"name":"serde","vers":"1.0.94","v":2,"deps":[{"name":"serde_derive","req":"^1.0","features":[],"optional":true,"default_features":true,"target":null,"kind":"normal"},{"name":"serde_derive","req":"^1.0","features":[],"optional":false,"default_features":true,"target":null,"kind":"dev"}],"cksum":"076a696fdea89c19d3baed462576b8f6d663064414b5c793642da8dfeb99475b","features":{"alloc":["unstable"],"default":["std"],"derive":["serde_derive"],"rc":[],"std":[],"unstable":[]},"features2":{"derive":["dep:serde_derive"],"new_api":["serde?/alloc"]},"yanked":false,"pubtime":"2019-06-27T17:55:32Z","rust_version":"1.56"}
 {"name":"serde","vers":"1.0.95","deps":[{"name":"serde_derive","req":"^1.0","features":[],"optional":true,"default_features":true,"target":null,"kind":"normal"},{"name":"serde_derive","req":"^1.0","features":[],"optional":false,"default_features":true,"target":null,"kind":"dev"}],"cksum":"e47a9fd6b2d2d2330b19b0b3e5248a170a5acd6356fd88c7bb30362ef9c70567","features":{"alloc":[],"default":["std"],"derive":["serde_derive"],"rc":[],"std":[],"unstable":[]},"yanked":true,"pubtime":"2019-07-16T17:25:50Z"}
 "#;
         let package = parse_crates_sparse_package(sparse_index_fixture, "serde", 10)
@@ -2226,12 +2564,64 @@ mod tests {
             package.releases[0].metadata.downloads,
             DiscoveryFacet::Absent
         );
+        assert_eq!(
+            package.releases[0].metadata.published_at,
+            DiscoveryFacet::Known("2019-06-27T17:55:32Z".to_owned())
+        );
+        let DiscoveryFacet::Known(cargo) = &package.releases[0].metadata.cargo_sparse else {
+            panic!("sparse record should retain Cargo metadata");
+        };
+        assert_eq!(cargo.schema_version, 2);
+        assert_eq!(cargo.rust_version, DiscoveryFacet::Known("1.56".to_owned()));
+        assert_eq!(cargo.features2, DiscoveryFacet::Known(vec![
+            CratesSparseFeature {
+                name: "derive".to_owned(),
+                members: vec!["dep:serde_derive".to_owned()],
+            },
+            CratesSparseFeature {
+                name: "new_api".to_owned(),
+                members: vec!["serde?/alloc".to_owned()],
+            },
+        ]));
+        let DiscoveryFacet::Known(dependencies) = &cargo.dependencies else {
+            panic!("sparse record should retain dependency declarations");
+        };
+        assert_eq!(dependencies.len(), 2);
+        assert_eq!(dependencies[0].name, "serde_derive");
+        assert_eq!(dependencies[0].optional, DiscoveryFacet::Known(true));
+        assert_eq!(dependencies[0].kind, DiscoveryFacet::Known("normal".to_owned()));
         let mutated_identity = std::str::from_utf8(sparse_index_fixture)
             .expect("fixture is UTF-8")
             .replacen("\"name\":\"serde\"", "\"name\":\"other\"", 1);
         assert_eq!(
             parse_crates_sparse_package(mutated_identity.as_bytes(), "serde", 10),
             Err(DiscoveryError::InvalidIdentity)
+        );
+    }
+
+    #[test]
+    fn cargo_sparse_known_empty_and_missing_dependency_sets_stay_distinct() {
+        let complete = br#"{"name":"demo","vers":"1.0.0","cksum":"0000000000000000000000000000000000000000000000000000000000000000","deps":[],"features":{},"yanked":false}"#;
+        let missing = br#"{"name":"demo","vers":"1.0.0","cksum":"0000000000000000000000000000000000000000000000000000000000000000","yanked":false}"#;
+        let complete = parse_crates_sparse_package(complete, "demo", 10)
+            .expect("explicit empty metadata is valid");
+        let missing = parse_crates_sparse_package(missing, "demo", 10)
+            .expect("sparse rows may omit optional metadata");
+        let DiscoveryFacet::Known(complete) = &complete.releases[0].metadata.cargo_sparse else {
+            panic!("complete Cargo row should be known");
+        };
+        let DiscoveryFacet::Known(missing) = &missing.releases[0].metadata.cargo_sparse else {
+            panic!("Cargo source identity is still known");
+        };
+        assert_eq!(complete.dependencies, DiscoveryFacet::Known(Vec::new()));
+        assert_eq!(complete.features, DiscoveryFacet::Known(Vec::new()));
+        assert_eq!(missing.dependencies, DiscoveryFacet::Unknown);
+        assert_eq!(missing.features, DiscoveryFacet::Unknown);
+        assert_eq!(missing.features2, DiscoveryFacet::Unknown);
+        assert_eq!(
+            missing.rust_version,
+            DiscoveryFacet::Unknown,
+            "the sparse row did not establish an MSRV"
         );
     }
 

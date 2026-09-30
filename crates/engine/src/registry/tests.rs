@@ -2127,11 +2127,11 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
         .expect("endpoint");
     let root = temporary("service-advisory-fact-refresh");
-    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
-        .expect("owner")
-        .with_advisory_gate(backend_advisory::AcquisitionGate {
-            offline: backend_advisory::OfflinePolicy::Warn,
-        });
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+    let owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::Warn,
+    });
     let service = crate::acquisition::AcquisitionService::from_owner(
         owner,
         root.join("coordination"),

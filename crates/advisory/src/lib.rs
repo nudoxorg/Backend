@@ -26,8 +26,9 @@ pub use journal::{
 pub use model::{
     Advisory, AdvisoryCategory, AdvisoryKey, AdvisorySchema, AdvisorySource, AdvisoryStatus,
     AffectedRange, Alias, AliasGraph, AliasGraphError, CanonicalAdvisoryId, Evidence, EvidenceKind,
-    FreshnessState, MalwareCoverage, NativeAdvisoryId, PackageIdentity, Reference, Severity,
-    SeverityLevel, VersionEvent, VersionEventKind, VersionMatcher, VersionSyntax,
+    FreshnessState, MalwareCoverage, NativeAdvisoryId, OsvEcosystem, OsvFeedScope,
+    PackageIdentity, Reference, Severity, SeverityLevel, VersionEvent, VersionEventKind,
+    VersionMatcher, VersionSyntax,
 };
 pub use parse::{
     GhsaParseError, MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, ParseError,

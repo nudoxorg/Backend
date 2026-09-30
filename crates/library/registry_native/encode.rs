@@ -58,7 +58,11 @@ pub(super) fn write_provenance(output: &mut Vec<u8>, value: &RegistryNativeProve
     }
 }
 
-pub(super) fn write_details(output: &mut Vec<u8>, value: &RegistryNativeDetails) {
+pub(super) fn write_details(
+    output: &mut Vec<u8>,
+    value: &RegistryNativeDetails,
+    schema_version: u16,
+) {
     match value {
         RegistryNativeDetails::Cargo(value) => {
             output.push(0);
@@ -69,6 +73,20 @@ pub(super) fn write_details(output: &mut Vec<u8>, value: &RegistryNativeDetails)
                 put_u32(output, feature.members.len());
                 for member in &feature.members {
                     put_text(output, member);
+                }
+            }
+            if schema_version >= 2 {
+                put_optional_text(output, value.published_at.as_deref());
+                put_optional_text(output, value.rust_version.as_deref());
+            }
+            if schema_version >= 3 {
+                put_u32(output, value.features2.len());
+                for feature in &value.features2 {
+                    put_text(output, &feature.name);
+                    put_u32(output, feature.members.len());
+                    for member in &feature.members {
+                        put_text(output, member);
+                    }
                 }
             }
         }

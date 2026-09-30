@@ -435,6 +435,12 @@ pub struct NativeRelease {
     pub artifacts: Box<[NativeArtifact]>,
     /// Cargo feature declarations for this release.
     pub features: Box<[NativeFeature]>,
+    /// Raw Cargo `features2` declarations, separate from the effective union.
+    pub features2: Box<[NativeFeature]>,
+    /// Original Cargo sparse-index publish time, when the row contains it.
+    pub published_at: Option<Arc<str>>,
+    /// Cargo's declared minimum supported Rust version, when present.
+    pub rust_version: Option<Arc<str>>,
     /// npm dist-tags observed with the packument.
     pub dist_tags: Arc<[NativeDistTag]>,
     /// Publisher reason attached to a yanked or deprecated release.
@@ -488,6 +494,19 @@ impl NativeRelease {
 
     fn set_features(&mut self, features: Vec<NativeFeature>) {
         self.features = features.into_boxed_slice();
+    }
+
+    fn set_features2(&mut self, features: Vec<NativeFeature>) {
+        self.features2 = features.into_boxed_slice();
+    }
+
+    fn set_cargo_release_metadata(
+        &mut self,
+        published_at: Option<Arc<str>>,
+        rust_version: Option<Arc<str>>,
+    ) {
+        self.published_at = published_at;
+        self.rust_version = rust_version;
     }
 
     fn set_dist_tags(&mut self, dist_tags: Arc<[NativeDistTag]>) {
@@ -544,6 +563,22 @@ impl NativeRelease {
                         })
                         .collect::<Vec<_>>()
                         .into_boxed_slice(),
+                    features2: self
+                        .features2
+                        .iter()
+                        .map(|feature| backend_library::RegistryNativeFeature {
+                            name: feature.name().to_owned(),
+                            members: feature
+                                .members()
+                                .iter()
+                                .map(|member| member.to_string())
+                                .collect::<Vec<_>>()
+                                .into_boxed_slice(),
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    published_at: self.published_at.as_deref().map(str::to_owned),
+                    rust_version: self.rust_version.as_deref().map(str::to_owned),
                 },
             ),
             RegistryEcosystem::Npm => {
@@ -1047,6 +1082,9 @@ impl EcosystemAdapter {
             ),
             artifacts: Box::new([]),
             features: Box::new([]),
+            features2: Box::new([]),
+            published_at: None,
+            rust_version: None,
             dist_tags: Arc::from([]),
             standing_reason: None,
             requires_python: None,
