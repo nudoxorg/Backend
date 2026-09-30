@@ -1206,7 +1206,7 @@ fn pluralise(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BergBlock, BergFacts, doors, lines, place, place_at_scale};
+    use super::{BergBlock, BergFacts, DOOR_SIZE, doors, lines, place, place_at_scale};
     use crate::measure::Measure;
     use crate::theme::Facet;
     use gpui::px;
