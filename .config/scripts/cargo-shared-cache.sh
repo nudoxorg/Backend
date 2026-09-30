@@ -142,9 +142,11 @@ if [ ! -S "$SCCACHE_SERVER_UDS" ]; then
 fi
 
 # An override names a role root, never an exact shared Cargo graph. Explicit
-# roots use a managed child for each leased slot so the host capacity limit and
-# worktree ownership checks remain in force.
+# roots retain up to four worktree-stamped graphs of their own. The host
+# capacity permit and each role-graph lease are independent: graph identity
+# must not change merely because the host scheduler grants another permit.
 explicit_build_dir="${CARGO_BUILD_BUILD_DIR:-}"
+explicit_graph_slot_count=4
 
 # cksum is present in the minimal Nix runtime and the length makes accidental
 # collisions much less likely than using the CRC alone. The key names only
@@ -155,10 +157,11 @@ affinity_file="$cache_root/affinity/$worktree_key"
 
 # Stamp every mutable target with the canonical worktree that produced it.
 # Explicit build directories are role roots, not permission to share one Cargo
-# graph: their actual graph lives below a leased slot and is retired only when
-# that managed slot changes owners. Explicit target directories keep their
-# exact caller-selected path when empty or already stamped for this worktree;
-# mismatched or unmarked non-empty directories are refused without mutation.
+# graph: up to four role-local graphs are independently leased and reused by
+# their owner even when the host capacity permit changes. Explicit target
+# directories keep their exact caller-selected path when empty or already
+# stamped for this worktree; mismatched or unmarked non-empty directories are
+# refused without mutation.
 claim_mutable_build_dir() {
   build_dir="$1"
   legacy_owner="${2:-}"
@@ -266,16 +269,33 @@ selected=""
 selected_lock=""
 selected_slot=""
 selected_lock_acquired=false
+selected_graph_lock=""
+selected_graph_slot=""
+selected_graph_lock_acquired=false
 released=false
 worktree_lock_acquired=false
 cargo_pid=""
 provenance_start=""
+
+release_explicit_graph_lock() {
+  if [ "$selected_graph_lock_acquired" = true ] && [ -n "$selected_graph_lock" ]; then
+    if [ ! -e "$selected_graph_lock/pid" ] \
+      || [ "$(cat "$selected_graph_lock/pid" 2>/dev/null || true)" = "$$" ]; then
+      rm -f "$selected_graph_lock/pid" "$selected_graph_lock/start" "$selected_graph_lock/workspace"
+      rmdir "$selected_graph_lock" 2>/dev/null || true
+    fi
+  fi
+  selected_graph_lock=""
+  selected_graph_slot=""
+  selected_graph_lock_acquired=false
+}
 
 # Invoked by the EXIT trap installed below.
 # shellcheck disable=SC2329
 release_all() {
   [ "$released" = true ] && return
   released=true
+  release_explicit_graph_lock
   if [ "$selected_lock_acquired" = true ] && [ -n "$selected_lock" ]; then
     rm -f "$selected_lock/pid" "$selected_lock/start" "$selected_lock/workspace"
     rmdir "$selected_lock" 2>/dev/null || true
@@ -347,6 +367,162 @@ wait_attempts_for() {
   else
     printf '%s\n' "$(((value + 49) / 50))"
   fi
+}
+
+acquire_explicit_graph_lock() {
+  candidate="$1"
+  lock="$explicit_graph_lock_root/slot-$candidate.lock"
+  if [ -L "$lock" ]; then
+    echo "nudox cargo: refusing symlinked role-graph lease" >&2
+    return 2
+  fi
+  if mkdir "$lock" 2>/dev/null; then
+    # Publish ownership before writing metadata so the EXIT trap can release
+    # a lease even if a signal lands during initialization.
+    selected_graph_lock="$lock"
+    selected_graph_slot="$candidate"
+    selected_graph_lock_acquired=true
+    printf '%s\n' "$$" > "$lock/pid"
+    process_start_token "$$" > "$lock/start"
+    printf '%s\n' "$workspace_root" > "$lock/workspace"
+    return 0
+  fi
+  recover_stale_lock "$lock" || true
+  if [ -L "$lock" ]; then
+    echo "nudox cargo: refusing symlinked role-graph lease" >&2
+    return 2
+  fi
+  if mkdir "$lock" 2>/dev/null; then
+    selected_graph_lock="$lock"
+    selected_graph_slot="$candidate"
+    selected_graph_lock_acquired=true
+    printf '%s\n' "$$" > "$lock/pid"
+    process_start_token "$$" > "$lock/start"
+    printf '%s\n' "$workspace_root" > "$lock/workspace"
+    return 0
+  fi
+  return 1
+}
+
+inspect_explicit_graph() {
+  graph_dir="$explicit_lane_root/slot-$1"
+  graph_stamp="$graph_dir/.nudox-worktree-root"
+  graph_state=""
+  graph_owner=""
+  if [ -L "$graph_dir" ]; then
+    echo "nudox cargo: refusing symlinked role graph" >&2
+    return 2
+  fi
+  if [ -e "$graph_dir" ] && [ ! -d "$graph_dir" ]; then
+    echo "nudox cargo: refusing non-directory role graph" >&2
+    return 2
+  fi
+  if [ ! -e "$graph_dir" ]; then
+    graph_state=empty
+    return 0
+  fi
+  if [ -L "$graph_stamp" ]; then
+    echo "nudox cargo: refusing symlinked role-graph stamp" >&2
+    return 2
+  fi
+  if [ -f "$graph_stamp" ]; then
+    graph_owner="$(cat "$graph_stamp" 2>/dev/null || true)"
+    if [ -z "$graph_owner" ]; then
+      echo "nudox cargo: refusing malformed role-graph stamp" >&2
+      return 2
+    fi
+    if [ "$graph_owner" = "$workspace_root" ]; then
+      graph_state=owned
+    else
+      graph_state=other
+    fi
+    return 0
+  fi
+  existing="$(find "$graph_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
+  if [ -n "$existing" ]; then
+    graph_state=unmarked
+  else
+    graph_state=empty
+  fi
+}
+
+select_explicit_graph() {
+  if [ -L "$explicit_build_dir" ]; then
+    echo "nudox cargo: refusing symlinked explicit build root" >&2
+    return 73
+  fi
+  explicit_lane_root="$explicit_build_dir/.nudox-cargo"
+  if [ -L "$explicit_lane_root" ]; then
+    echo "nudox cargo: refusing symlinked explicit build namespace" >&2
+    return 73
+  fi
+  explicit_graph_lock_root="$explicit_lane_root/leases"
+  if [ -L "$explicit_graph_lock_root" ]; then
+    echo "nudox cargo: refusing symlinked role-graph lease root" >&2
+    return 73
+  fi
+  mkdir -p "$explicit_graph_lock_root" || return 73
+
+  graph_wait_attempts="$(wait_attempts_for "$slot_wait_ms")"
+  graph_waited=0
+  while :; do
+    graph_busy_count=0
+    for mode in owned empty other; do
+      candidate=0
+      while [ "$candidate" -lt "$explicit_graph_slot_count" ]; do
+        graph_lock_status=0
+        acquire_explicit_graph_lock "$candidate" || graph_lock_status="$?"
+        if [ "$graph_lock_status" -eq 2 ]; then return 73; fi
+        if [ "$graph_lock_status" -ne 0 ]; then
+          graph_busy_count="$((graph_busy_count + 1))"
+          candidate="$((candidate + 1))"
+          continue
+        fi
+
+        inspect_status=0
+        inspect_explicit_graph "$candidate" || inspect_status="$?"
+        if [ "$inspect_status" -ne 0 ]; then
+          release_explicit_graph_lock
+          return 73
+        fi
+
+        # Unknown non-empty graph data is never adopted, erased, or silently
+        # bypassed. The caller must inspect/remove it explicitly before this
+        # role root can be used again.
+        if [ "$graph_state" = unmarked ]; then
+          release_explicit_graph_lock
+          echo "nudox cargo: refusing unmarked mutable role graph" >&2
+          return 73
+        fi
+
+        choose_graph=false
+        case "$mode:$graph_state" in
+          owned:owned|empty:empty|other:other) choose_graph=true ;;
+        esac
+        if [ "$choose_graph" = true ]; then
+          selected="$explicit_lane_root/slot-$candidate"
+          if ! claim_mutable_build_dir "$selected" "" refuse; then
+            release_explicit_graph_lock
+            return 73
+          fi
+          return 0
+        fi
+        release_explicit_graph_lock
+        candidate="$((candidate + 1))"
+      done
+    done
+
+    if [ "$graph_busy_count" -eq 0 ]; then
+      echo "nudox cargo: no safe role-graph slot is available" >&2
+      return 73
+    fi
+    if [ "$graph_waited" -ge "$graph_wait_attempts" ]; then
+      echo "nudox cargo: all role-graph slots are busy; waited ${slot_wait_ms}ms" >&2
+      return 75
+    fi
+    sleep 0.05
+    graph_waited="$((graph_waited + 1))"
+  done
 }
 
 worktree_wait_attempts="$(wait_attempts_for "$wait_ms")"
@@ -433,21 +609,18 @@ if [ -z "$selected_slot" ]; then
   echo "nudox cargo: all $slot_count build slots are busy; waited ${slot_wait_ms}ms" >&2
   exit 75
 elif [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
-  echo "nudox cargo: using warm build slot $selected_slot" >&2
+  if [ -n "$explicit_build_dir" ]; then
+    echo "nudox cargo: using host capacity permit $selected_slot" >&2
+  else
+    echo "nudox cargo: using warm build slot $selected_slot" >&2
+  fi
 fi
 
 if [ -n "$explicit_build_dir" ]; then
-  if [ -L "$explicit_build_dir" ]; then
-    echo "nudox cargo: refusing symlinked explicit build root" >&2
-    exit 73
+  select_explicit_graph || exit "$?"
+  if [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
+    echo "nudox cargo: using explicit role graph slot $selected_graph_slot" >&2
   fi
-  explicit_lane_root="$explicit_build_dir/.nudox-cargo"
-  if [ -L "$explicit_lane_root" ]; then
-    echo "nudox cargo: refusing symlinked explicit build namespace" >&2
-    exit 73
-  fi
-  selected="$explicit_lane_root/slot-$selected_slot"
-  if ! claim_mutable_build_dir "$selected" "" refuse; then exit 73; fi
 else
   selected="$cache_root/build/slot-$selected_slot"
   slot_identity="$cache_root/affinity/slot-$selected_slot.owner"

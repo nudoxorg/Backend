@@ -56,6 +56,10 @@ printf '%s\n' '#!/bin/sh' \
 'if [ "${1:-}" = --version ]; then printf "cargo 1.97.1-test\\n"; exit 0; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then' \
+  '  if [ -n "${NUDOX_TEST_REQUIRE_BUILD_MARKER:-}" ]; then' \
+  '    required_marker="$CARGO_BUILD_BUILD_DIR/$NUDOX_TEST_REQUIRE_BUILD_MARKER"' \
+  '    if [ ! -f "$required_marker" ] || [ "$(cat "$required_marker")" != "${NUDOX_TEST_EXPECT_BUILD_MARKER_CONTENT:-}" ]; then exit 44; fi' \
+  '  fi' \
   '  marker="$CARGO_BUILD_BUILD_DIR/fake-public-api.rmeta"' \
   '  if [ "${1:-}" = consumer ] && [ -f "$marker" ] && [ "$(cat "$marker")" != "$NUDOX_TEST_WORKTREE" ]; then exit 42; fi' \
 '  printf "%s\\n" "$NUDOX_TEST_WORKTREE" > "$marker"' \
@@ -389,8 +393,8 @@ assert_eq "$test_root/roots/a" "$(cat "$explicit_dir/.nudox-worktree-root")"
 assert_eq "$test_root/roots/a" "$(cat "$explicit_target/.nudox-worktree-root")"
 assert_eq 'preserve caller data' "$(cat "$explicit_build_root-sentinel")"
 
-# A different worktree may reuse a leased explicit build lane only after the
-# old stamped graph is retired. Reusing the exact target path is refused.
+# A different worktree gets another role-local graph while one is available;
+# reusing the exact target path is still refused.
 before_lines="$(wc -l < "$explicit_log" | tr -d ' ')"
 if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$explicit_log" \
   NUDOX_BUILD_CACHE_ROOT="$test_root/cache-explicit" NUDOX_CARGO_BUILD_SLOTS=1 \
@@ -399,10 +403,120 @@ if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$explicit_log" \
   "$test_root/wrapper" consumer; then
   fail "target directory stamped for another worktree was accepted"
 fi
-assert_eq "$test_root/roots/b" "$(cat "$explicit_dir/.nudox-worktree-root")"
+assert_eq "$test_root/roots/a" "$(cat "$explicit_dir/.nudox-worktree-root")"
+explicit_b_graph="$explicit_build_root/.nudox-cargo/slot-1"
+assert_eq "$test_root/roots/b" "$(cat "$explicit_b_graph/.nudox-worktree-root")"
 assert_eq "$test_root/roots/a" "$(cat "$explicit_target_root/.nudox-worktree-root")"
 assert_eq "$before_lines" "$(wc -l < "$explicit_log" | tr -d ' ')"
 assert_eq 'preserve caller data' "$(cat "$explicit_build_root-sentinel")"
+
+# The host permit number is independent of the role graph slot. Occupying the
+# worktree's deterministic first permit forces the next invocation to use the
+# other host permit, while the ownership stamp makes it reacquire graph 0 and
+# fake Cargo verifies the prior graph data survived intact.
+role_capacity_slot="$(printf '%s' "$test_root/roots/a" | cksum | awk '{print $1 % 2}')"
+role_alternate_capacity_slot="$((1 - role_capacity_slot))"
+role_capacity_lock="$test_root/cache-explicit/locks/slot-$role_capacity_slot.lock"
+mkdir -p "$role_capacity_lock"
+printf '%s\n' "$$" > "$role_capacity_lock/pid"
+printf 'warm role graph\n' > "$explicit_dir/warm-owner-graph.rmeta"
+role_reuse_log="$test_root/role-reuse.log"
+: > "$role_reuse_log"
+NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$role_reuse_log" \
+  NUDOX_TEST_REQUIRE_BUILD_MARKER=warm-owner-graph.rmeta \
+  NUDOX_TEST_EXPECT_BUILD_MARKER_CONTENT='warm role graph' \
+  NUDOX_TEST_CARGO_SLEEP=2 NUDOX_BUILD_CACHE_ROOT="$test_root/cache-explicit" \
+  NUDOX_CARGO_BUILD_SLOTS=2 NUDOX_CARGO_SLOT_WAIT_MS=0 \
+  CARGO_BUILD_BUILD_DIR="$explicit_build_root" CARGO_TARGET_DIR="$explicit_target_root" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
+role_reuse_pid="$!"
+role_reuse_waited=0
+while [ "$role_reuse_waited" -lt 80 ] \
+  && [ "$(wc -l < "$role_reuse_log" 2>/dev/null | tr -d ' ')" != 1 ]; do
+  sleep 0.05
+  role_reuse_waited="$((role_reuse_waited + 1))"
+done
+assert_file_lines "$role_reuse_log" 1
+assert_eq "$explicit_dir" "$(cut -d '|' -f 2 "$role_reuse_log")"
+[ -d "$test_root/cache-explicit/locks/slot-$role_alternate_capacity_slot.lock" ] \
+  || fail "role graph reacquisition did not use the alternate host permit"
+[ -d "$explicit_build_root/.nudox-cargo/leases/slot-0.lock" ] \
+  || fail "role graph lease was not independent of the host permit"
+wait "$role_reuse_pid"
+assert_eq 'warm role graph' "$(cat "$explicit_dir/warm-owner-graph.rmeta")"
+[ ! -d "$explicit_build_root/.nudox-cargo/leases/slot-0.lock" ] \
+  || fail "role graph lease remained after fake Cargo exited"
+rm -rf "$role_capacity_lock"
+
+# Distinct explicit roles own distinct role-local slot 0 graphs even while
+# simultaneous builds receive distinct global host permits.
+parallel_role_cache="$test_root/parallel-role-cache"
+parallel_role_log="$test_root/parallel-role.log"
+parallel_role_a="$test_root/parallel-role-a"
+parallel_role_b="$test_root/parallel-role-b"
+parallel_target_a="$test_root/parallel-target-a"
+parallel_target_b="$test_root/parallel-target-b"
+: > "$parallel_role_log"
+NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$parallel_role_log" \
+  NUDOX_BUILD_CACHE_ROOT="$parallel_role_cache" NUDOX_CARGO_BUILD_SLOTS=2 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=2 \
+  CARGO_BUILD_BUILD_DIR="$parallel_role_a" CARGO_TARGET_DIR="$parallel_target_a" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
+parallel_role_pid_a="$!"
+NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$parallel_role_log" \
+  NUDOX_BUILD_CACHE_ROOT="$parallel_role_cache" NUDOX_CARGO_BUILD_SLOTS=2 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=2 \
+  CARGO_BUILD_BUILD_DIR="$parallel_role_b" CARGO_TARGET_DIR="$parallel_target_b" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
+parallel_role_pid_b="$!"
+parallel_role_waited=0
+while [ "$parallel_role_waited" -lt 80 ] \
+  && [ "$(wc -l < "$parallel_role_log" | tr -d ' ')" != 2 ]; do
+  sleep 0.05
+  parallel_role_waited="$((parallel_role_waited + 1))"
+done
+assert_file_lines "$parallel_role_log" 2
+assert_eq "$parallel_role_a/.nudox-cargo/slot-0" \
+  "$(awk -F '|' -v root="$test_root/roots/a" '$1 == root { print $2; exit }' "$parallel_role_log")"
+assert_eq "$parallel_role_b/.nudox-cargo/slot-0" \
+  "$(awk -F '|' -v root="$test_root/roots/b" '$1 == root { print $2; exit }' "$parallel_role_log")"
+assert_eq 2 "$(find "$parallel_role_cache/locks" -maxdepth 1 -type d -name 'slot-*.lock' -print | wc -l | tr -d ' ')"
+parallel_permit_owners="$(for slot in 0 1; do cat "$parallel_role_cache/locks/slot-$slot.lock/workspace"; done | sort | tr '\n' ':')"
+assert_eq "$test_root/roots/a:$test_root/roots/b:" "$parallel_permit_owners"
+[ -d "$parallel_role_a/.nudox-cargo/leases/slot-0.lock" ] \
+  || fail "first role graph lacks its independent lease"
+[ -d "$parallel_role_b/.nudox-cargo/leases/slot-0.lock" ] \
+  || fail "second role graph lacks its independent lease"
+wait "$parallel_role_pid_a"
+wait "$parallel_role_pid_b"
+for parallel_role_root in "$parallel_role_a" "$parallel_role_b"; do
+  if find "$parallel_role_root/.nudox-cargo/leases" -type d -name 'slot-*.lock' -print -quit | grep . >/dev/null; then
+    fail "role graph lease remained after fake Cargo exited"
+  fi
+done
+
+# Explicit roots retain no more than four role-local graphs as worktrees come
+# and go. A fifth owner reuses a stamped graph under its independent lease.
+pool_cache="$test_root/role-pool-cache"
+pool_build_root="$test_root/role-pool-build"
+pool_log="$test_root/role-pool.log"
+: > "$pool_log"
+pool_index=1
+while [ "$pool_index" -le 5 ]; do
+  pool_workspace="$test_root/roots/pool-$pool_index"
+  pool_target="$test_root/pool-target-$pool_index"
+  mkdir -p "$pool_workspace"
+  NUDOX_TEST_WORKTREE="$pool_workspace" NUDOX_TEST_LOG="$pool_log" \
+    NUDOX_BUILD_CACHE_ROOT="$pool_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+    NUDOX_CARGO_SLOT_WAIT_MS=0 CARGO_BUILD_BUILD_DIR="$pool_build_root" \
+    CARGO_TARGET_DIR="$pool_target" SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+    "$test_root/wrapper" build
+  pool_graph_count="$(find "$pool_build_root/.nudox-cargo" -maxdepth 1 -type d -name 'slot-*' -print | wc -l | tr -d ' ')"
+  [ "$pool_graph_count" -le 4 ] || fail "role graph pool exceeded four retained graphs"
+  pool_index="$((pool_index + 1))"
+done
+assert_file_lines "$pool_log" 5
+assert_eq 4 "$(find "$pool_build_root/.nudox-cargo" -maxdepth 1 -type d -name 'slot-*' -print | wc -l | tr -d ' ')"
 
 # An unmarked non-empty managed child is refused rather than adopted/erased.
 refused_build_root="$test_root/refused-build"
@@ -474,6 +588,7 @@ assert_file_lines "$stale_log" 1
 signal_cache="$test_root/signal-cache"
 signal_log="$test_root/signal.log"
 signal_target="$test_root/signal-target"
+signal_build="$test_root/signal-build"
 signal_child_pid="$test_root/signal-child.pid"
 signal_child_done="$test_root/signal-child.done"
 signal_sleep="${NUDOX_TEST_SIGNAL_SLEEP:-1}"
@@ -481,20 +596,24 @@ NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$signal_log" \
   NUDOX_BUILD_CACHE_ROOT="$signal_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP="$signal_sleep" \
   NUDOX_TEST_CHILD_PID_FILE="$signal_child_pid" NUDOX_TEST_CHILD_DONE_FILE="$signal_child_done" \
-  CARGO_TARGET_DIR="$signal_target" SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  CARGO_BUILD_BUILD_DIR="$signal_build" CARGO_TARGET_DIR="$signal_target" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
   "$test_root/wrapper" build &
 signal_pid="$!"
 signal_waited=0
-while [ "$signal_waited" -lt 40 ] && [ ! -f "$signal_child_pid" ]; do
+while [ "$signal_waited" -lt 80 ] && [ ! -f "$signal_child_pid" ]; do
   sleep 0.05
   signal_waited="$((signal_waited + 1))"
 done
 kill -TERM "$signal_pid"
 signal_observed=0
 signal_waited=0
-while [ "$signal_waited" -lt 40 ] && [ ! -f "$signal_child_done" ]; do
+while [ "$signal_waited" -lt 80 ] && [ ! -f "$signal_child_done" ]; do
   if ! find "$signal_cache/locks" -type d -name 'worktree-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; then
     fail "cancelled compile released the lease before fake Cargo acknowledged TERM"
+  fi
+  if ! find "$signal_build/.nudox-cargo/leases" -type d -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; then
+    fail "cancelled compile released the role-graph lease before fake Cargo acknowledged TERM"
   fi
   sleep 0.05
   signal_waited="$((signal_waited + 1))"
@@ -504,6 +623,9 @@ if wait "$signal_pid"; then
 fi
 if find "$signal_cache/locks" -type d \( -name 'worktree-*.lock' -o -name 'slot-*.lock' \) -print -quit 2>/dev/null | grep . >/dev/null; then
   fail "cancelled compile left a lease behind"
+fi
+if find "$signal_build/.nudox-cargo/leases" -type d -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; then
+  fail "cancelled compile left its role-graph lease behind"
 fi
 [ -f "$signal_child_done" ] || fail "cancelled compile did not reap fake Cargo"
 signal_child="$(cat "$signal_child_pid")"
@@ -660,4 +782,4 @@ outputs = {item["path"]: item["sha256"] for item in value["outputs"]}
 assert outputs["debug/fake-bin"] == hashlib.sha256(b"test executable\n").hexdigest()
 PY
 
-echo "cargo-shared-cache: PASS (affinity, isolation, hard ceiling, stamps, provenance, exit propagation, stale recovery)"
+echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, stamps, provenance, exit propagation, stale recovery)"

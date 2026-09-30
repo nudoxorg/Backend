@@ -14,24 +14,33 @@ stamped with its canonical worktree root. An explicitly supplied
 `CARGO_TARGET_DIR` keeps its exact path when it is empty or already stamped for
 that worktree. A non-empty unmarked target, symlink, or stamp for a different
 root is refused without changing its contents. An explicit
-`CARGO_BUILD_BUILD_DIR` is a role root. The actual graph is placed in
-`.nudox-cargo/slot-N` below that root, with the same lease and stamp rules as
-the default pool. A non-empty unmarked managed child is refused without
-deleting its contents.
+`CARGO_BUILD_BUILD_DIR` is a role root. New invocations reuse only four stamped
+graphs (`slot-0` through `slot-3`) under `.nudox-cargo`, independently from the
+host-wide permit number. Higher-numbered graphs left by an older wrapper are
+ignored and left untouched.
+The wrapper finds a graph stamped for the current worktree before selecting an
+empty or replaceable graph, and holds a graph-specific lease while inspecting,
+resetting, or compiling it. Two different role roots may both use their own
+`slot-0` concurrently under distinct host permits. A non-empty unmarked graph
+is refused without deleting its contents.
 
-The pool size caps simultaneous Cargo invocations sharing
+The host permit pool caps simultaneous Cargo invocations sharing
 `NUDOX_BUILD_CACHE_ROOT`. Use the same cache root for every lane on a host;
 different roots have separate leases. When every lane is busy, another caller
 waits for `NUDOX_CARGO_SLOT_WAIT_MS` (five minutes by default) and exits with
-status 75 if no lane opens. It never creates an overflow lane. This caps
-invocations, not compiler memory: an explicit `CARGO_BUILD_JOBS` is preserved,
-and each invocation's workload has its own RAM cost.
+status 75 if no lane opens. It never creates an overflow lane. Explicit role
+graphs have their own four-slot retention bound; graph slots do not consume or
+name host permits. These bounds cap invocations, not compiler memory: an
+explicit `CARGO_BUILD_JOBS` is preserved, and each invocation's workload has
+its own RAM cost.
 
 Compiling commands also acquire a lease keyed by the canonical git worktree
-path. The first command records the warm lane it used in the cache affinity
-map. A second compile from that same worktree waits for the first command and
-reuses the remembered lane; it cannot silently create a second warm or
-overflow graph. Waiting is bounded by `NUDOX_CARGO_WORKTREE_WAIT_MS` (five
+path. For the default pool, the first command records the warm lane it used in
+the cache affinity map. A second compile from that same worktree waits for the
+first command and reuses the remembered lane; it cannot silently create a
+second warm or overflow graph. Explicit role graphs follow their worktree
+stamp across changes in the host permit number. Waiting is bounded by
+`NUDOX_CARGO_WORKTREE_WAIT_MS` (five
 minutes by default) and returns status 75 when the bound expires. If all warm
 lanes are occupied by other worktrees, the scheduler waits up to
 `NUDOX_CARGO_SLOT_WAIT_MS` and then returns status 75 without starting Cargo.
@@ -86,10 +95,10 @@ commands still receive a record and retain Cargo's exit status.
 Lease directories contain the owner PID, process start token, and canonical
 worktree path. A dead owner is reclaimed by an atomic rename before its lock
 is removed; when `ps` is available, a reused PID is rejected unless its start
-token still matches. Signal
-handlers forward cancellation to Cargo and release the slot and worktree
-leases through the single exit cleanup path. The affinity map is updated by a
-same-worktree lease and an atomic rename, so a killed process can leave only a
+token still matches. Signal handlers forward cancellation to Cargo and release
+host-capacity, role-graph, and worktree leases through the single exit cleanup
+path. The default-pool affinity map is updated by a same-worktree lease and an
+atomic rename, so a killed process can leave only a
 harmless temporary file. Warm lanes are retained for reuse, which bounds both
 the number of warm build graphs and simultaneous wrapped Cargo invocations.
 
