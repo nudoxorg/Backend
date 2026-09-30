@@ -15,9 +15,10 @@ use backend_extension_turso::{
     AuthorityNamespace, SelectedGeneration, TursoAuthority, reopen_selected_compiler_metadata,
 };
 use backend_replication::{
-    ByteRange, FileSemanticRangeStore, HydrationCredits, IrHydrationPoll, LocalControlLimits,
-    LocalControlRequest, SemanticRangeClientCheckpoint, SemanticRangeClientProgress,
-    SemanticRangeGet, SemanticRangeRequest, SemanticTargetKey, TransportLimits, encode_request,
+    ByteRange, DurableSemanticRangeStore, FileSemanticRangeStore, HydrationCredits,
+    IrHydrationPoll, LocalControlLimits, LocalControlRequest, SemanticRangeClientCheckpoint,
+    SemanticRangeClientProgress, SemanticRangeGet, SemanticRangeRequest, SemanticTargetKey,
+    TransportLimits, VerifiedSemanticSegment, encode_request,
 };
 use backend_semantic::ir::{
     GenerationId, SemanticIrPlane, SemanticManifestRoot, SemanticPlaneImageKey, SemanticPlaneKind,
@@ -794,15 +795,113 @@ fn exercise_remote_s3_range_interrupt(
         "stale generation request changed the selected native generation"
     );
 
+    let limits = TransportLimits {
+        max_chunk: 16 * 1024,
+        ..TransportLimits::default()
+    };
+    let corrupt_cas = FileStore::open(
+        workspace.join("remote-client-corrupt-range-cas"),
+        512 * 1024 * 1024,
+    )
+    .expect("open isolated client CAS for corrupted-range rejection");
+    let mut corrupt_store =
+        FileSemanticRangeStore::open(corrupt_cas, limits).expect("open corrupt range store");
+    let corrupt_ranges_before = s3.stats().corrupted_range_gets;
+    let corruption_refusal = transfer_remote_semantic_segment(
+        &mut client,
+        s3,
+        &target,
+        &manifest,
+        image,
+        kind,
+        &mut corrupt_store,
+        limits,
+        true,
+    )
+    .expect_err("a corrupted range cannot produce an admitted semantic segment");
+    assert!(
+        corruption_refusal.contains("SegmentIdentity")
+            || corruption_refusal.contains("OwnerUnavailable"),
+        "corrupt range was rejected for an unrelated reason: {corruption_refusal}"
+    );
+    assert_eq!(
+        s3.stats().corrupted_range_gets,
+        corrupt_ranges_before.saturating_add(1),
+        "the S3 fault injector did not corrupt exactly one real range response"
+    );
+    assert!(
+        client
+            .verified_local_segments(&manifest, image, kind, &mut corrupt_store)
+            .expect("check that corrupt bytes were not admitted as a segment")
+            .is_empty(),
+        "corrupted remote bytes appeared in the verified client segment set"
+    );
+    let verified_segment = transfer_remote_semantic_segment(
+        &mut client,
+        s3,
+        &target,
+        &manifest,
+        image,
+        kind,
+        &mut corrupt_store,
+        limits,
+        false,
+    )
+    .expect("retry and verify the selected segment after a corrupted range");
+    assert_eq!(
+        verified_segment.id().as_bytes(),
+        segment.id_claim().as_bytes(),
+        "clean retry admitted a segment other than the selected manifest claim"
+    );
+    let bytes = corrupt_store
+        .read_complete_segment(
+            verified_segment.selection(),
+            SemanticRangeRequest {
+                manifest_root: manifest.root(),
+                plane: kind,
+                segment_id: segment.id_claim(),
+                first_key: *segment.first_key(),
+                last_key: *segment.last_key(),
+                byte_length: segment.byte_length(),
+            },
+        )
+        .expect("read back the exactly selected segment from client CAS")
+        .expect("clean retry persisted a complete segment");
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("bounded selected segment length"),
+        segment.byte_length(),
+        "read-back length differs from the selected manifest"
+    );
+    assert_eq!(
+        independent_core_segment_hash(
+            segment.first_key(),
+            segment.last_key(),
+            segment.row_count(),
+            &bytes,
+        ),
+        *segment.id_claim().as_bytes(),
+        "independent BLAKE3 oracle differs from the selected segment claim"
+    );
+    let recovered = client
+        .verified_local_segments(&manifest, image, kind, &mut corrupt_store)
+        .expect("verify cleanly retried remote segment in client CAS");
+    assert!(
+        recovered
+            .iter()
+            .any(|id| id.as_bytes() == segment.id_claim().as_bytes()),
+        "clean retry did not produce the expected verified segment"
+    );
+    assert_eq!(
+        selected_generation(runtime, authority, namespace),
+        *selected,
+        "corruption refusal or clean retry changed the selected native generation"
+    );
+
     let client_store_path = workspace.join("remote-client-range-cas");
     let client_workspace = workspace.join("remote-client-state");
     private_directory(&client_workspace);
     let client_store = FileStore::open(client_store_path, 512 * 1024 * 1024)
         .expect("open independent remote client semantic CAS");
-    let limits = TransportLimits {
-        max_chunk: 16 * 1024,
-        ..TransportLimits::default()
-    };
     let mut range_store =
         FileSemanticRangeStore::open(client_store, limits).expect("open remote client range CAS");
     let have = client
@@ -1157,6 +1256,87 @@ fn request_unselected_generation(
     drop(session);
     runtime.block_on(endpoint.close());
     response.outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer_remote_semantic_segment(
+    client: &mut LocalSemanticIndexClient,
+    s3: &LoopbackS3,
+    target: &SemanticTargetKey,
+    manifest: &backend_semantic::ir::SemanticPlaneManifest,
+    image: SemanticPlaneImageKey,
+    kind: SemanticPlaneKind,
+    store: &mut FileSemanticRangeStore,
+    limits: TransportLimits,
+    corrupt_first_range: bool,
+) -> Result<VerifiedSemanticSegment, String> {
+    let have = client
+        .verified_local_segments(manifest, image, kind, store)
+        .map_err(|error| error.to_string())?;
+    let mut cursor = client
+        .new_cursor(manifest, image, kind, &have, limits)
+        .map_err(|error| error.to_string())?;
+    let mut partial = None;
+    let mut poll = client
+        .next_request(&mut cursor, None, HydrationCredits::new(1, 16 * 1024))
+        .map_err(|error| error.to_string())?;
+    if corrupt_first_range {
+        s3.corrupt_next_range_response();
+    }
+    loop {
+        match poll {
+            IrHydrationPoll::Request(request) => {
+                match client.request_and_accept(&mut cursor, &request, store, limits) {
+                    Ok(SemanticRangeClientProgress::Complete(segment)) => return Ok(segment),
+                    Ok(SemanticRangeClientProgress::Staged { coverage, .. }) => {
+                        partial = Some(coverage);
+                        poll = client
+                            .next_request(
+                                &mut cursor,
+                                partial.as_ref(),
+                                HydrationCredits::new(1, 16 * 1024),
+                            )
+                            .map_err(|error| error.to_string())?;
+                    }
+                    Err(error) => return Err(format!("{error:?}")),
+                }
+            }
+            IrHydrationPoll::VerifyLocal(request) => {
+                let verified = client
+                    .verify_local_segment(&mut cursor, &request, store)
+                    .map_err(|error| error.to_string())?;
+                return Ok(verified);
+            }
+            IrHydrationPoll::NoCredits => {
+                return Err("remote segment exhausted its bounded hydration credits".to_owned());
+            }
+            IrHydrationPoll::Exhausted => {
+                return Err("remote segment cursor exhausted before verification".to_owned());
+            }
+        }
+    }
+}
+
+fn independent_core_segment_hash(
+    first_key: &[u8; 32],
+    last_key: &[u8; 32],
+    row_count: u32,
+    payload: &[u8],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.semantic.ir.segment.v1\0");
+    hasher.update(&2_u16.to_be_bytes());
+    hasher.update(&[1, 1]);
+    hasher.update(first_key);
+    hasher.update(last_key);
+    hasher.update(&row_count.to_be_bytes());
+    hasher.update(
+        &u64::try_from(payload.len())
+            .expect("bounded canonical semantic segment length")
+            .to_be_bytes(),
+    );
+    hasher.update(payload);
+    *hasher.finalize().as_bytes()
 }
 
 fn run_storage_case(
