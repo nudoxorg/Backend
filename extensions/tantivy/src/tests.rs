@@ -7,6 +7,11 @@
 )]
 
 use super::*;
+use crate::engine::test_support::{
+    BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
+    ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint,
+    write_projection_manifest,
+};
 use backend_semantic::{Entity, EntityId, Source, entity_key};
 use backend_version::{
     AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationClaims,
