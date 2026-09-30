@@ -576,6 +576,13 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
     assert_eq!(cancel["inputSchema"]["required"], json!(["ticket"]));
     assert_eq!(cancel["annotations"]["readOnlyHint"], false);
     assert!(
+        tools
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .all(|tool| tool["name"] != "backend.index_await")
+    );
+    assert!(
         progress["description"]
             .as_str()
             .unwrap_or_default()
@@ -895,6 +902,43 @@ fn generic_surface_progress_and_cancel_keep_the_request_ticket_projection() {
         server.product.surface_commands.as_slice(),
         [SurfaceCommand::IndexCancel { ticket: seen }] if seen == &ticket
     ));
+}
+
+#[test]
+fn blocking_owner_await_is_not_exposed_over_mcp() {
+    let mut server = ready(Fake::default());
+    let response = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": "backend.index_await",
+            "arguments": { "ticket": ticket_value(&index_job_ticket()) }
+        }),
+    );
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(
+        response["error"]["message"],
+        "Use backend.index_progress for bounded polling"
+    );
+
+    let command = SurfaceCommand::IndexAwait {
+        ticket: index_job_ticket(),
+    };
+    let generic = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": SURFACE_TOOL,
+            "arguments": { "command": serde_json::to_value(command).expect("await command") }
+        }),
+    );
+    assert_eq!(generic["error"]["code"], -32602);
+    assert!(
+        generic["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("immediate bounded polling"))
+    );
+    assert!(server.product.surface_commands.is_empty());
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! The registry, home, and session surfaces, in the same shape as everything else.
 //!
-//! Twenty-four of the thirty-five registry rows answer with a
-//! [`SurfaceReply`] — registry packages, subscriptions, project folders,
+//! Many registry rows answer with a [`SurfaceReply`] — registry packages,
+//! subscriptions, project folders,
 //! session tree nodes, semantic generations, declaration diffs. Today both
 //! surfaces print those as pretty-printed JSON, which is the same failure as
 //! the outline: a wire value shown to a person.
@@ -2065,7 +2065,7 @@ mod tests {
         assert!(terminal.contains("Derived history was deferred and is retryable"));
         assert!(terminal.contains("bounded history worker queue is full"));
 
-        let answer = crate::Answer::Product(view.clone());
+        let answer = crate::Answer::Product(Box::new(view.clone()));
         for detail in [crate::Detail::Summary, crate::Detail::Full] {
             let payload =
                 crate::encode_answer(&answer, detail, None, crate::DEFAULT_RESPONSE_BUDGET_BYTES)

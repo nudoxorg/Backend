@@ -24,7 +24,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
     App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Style, Window, px,
+    LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Style, Window, px,
 };
 use std::rc::Rc;
 use std::sync::Arc;
@@ -299,8 +299,27 @@ const LABEL: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::MONO_SMALL };
 
 struct State {
     pointer: Option<f32>,
+    /// Last platform pointer position, independent of the current ticker layout.
+    last_pointer_position: Option<Point<Pixels>>,
+    /// The semantic release last observed by a pointer interaction. A
+    /// different current selection means keyboard input outran this pointer.
+    observed_stand: Option<ReleaseIdentity>,
     dragging: bool,
     motion: Motion,
+}
+
+/// A release target's identity across reordered or refreshed ticker snapshots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReleaseIdentity {
+    index: usize,
+    version: SharedString,
+}
+
+fn release_identity(facts: &TickerFacts, index: usize) -> Option<ReleaseIdentity> {
+    Some(ReleaseIdentity {
+        index,
+        version: facts.ticks.get(index)?.version.clone(),
+    })
 }
 
 /// The ticker (see [`ticker`]).
@@ -412,7 +431,13 @@ impl Element for Ticker {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, TickerLayout) {
-        let state = window.use_keyed_state("ticker", cx, |_, _| State { pointer: None, dragging: false, motion: Motion::new() });
+        let state = window.use_keyed_state("ticker", cx, |_, _| State {
+            pointer: None,
+            last_pointer_position: None,
+            observed_stand: None,
+            dragging: false,
+            motion: Motion::new(),
+        });
         let mut style = Style::default();
         style.size.width = px(f32::from(self.measure.width())).into();
         style.size.height = px(self.height()).into();
@@ -453,19 +478,25 @@ impl Element for Ticker {
         let (radius, distortion) = (RADIUS * s, DISTORTION);
         let xs = facts.positions(width, pad);
 
-        let (stored_pointer, motion) = {
+        let (stored_pointer, observed_stand, motion) = {
             let state = layout.state.read(cx);
-            (state.pointer, state.motion.clone())
+            (state.pointer, state.observed_stand.clone(), state.motion.clone())
         };
         // A stored pointer coordinate belongs to the previous layout. When a
         // resize or text zoom moves the ticker beneath a still pointer, use
         // this frame's origin and the live window coordinate instead.
-        let pointer = if stored_pointer.is_some() {
-            hitbox
-                .is_hovered(window)
-                .then(|| (f32::from(window.mouse_position().x) - ox).clamp(0.0, width))
+        let walk = self.stand.filter(|index| *index < facts.ticks.len());
+        let walk_identity = walk.and_then(|index| release_identity(&facts, index));
+        let pointer = if crate::hover::interaction_mode(observed_stand.as_ref(), walk_identity.as_ref()) == crate::hover::InteractionMode::Pointer {
+            if stored_pointer.is_some() {
+                hitbox
+                    .is_hovered(window)
+                    .then(|| (f32::from(window.mouse_position().x) - ox).clamp(0.0, width))
+            } else {
+                self.rest
+            }
         } else {
-            self.rest
+            None
         };
         let magnify = motion.animate(ElementId::NamedChild(Arc::new(self.id.clone()), "magnify".into()), if pointer.is_some() { 1.0 } else { 0.0 }, spec::REVEAL, window, cx);
         let anchor = pointer.unwrap_or(0.0);
@@ -474,8 +505,7 @@ impl Element for Ticker {
 
         // Which bar is hot: the nearest within reach of the pointer, or the
         // one the host's keyboard stands on.
-        let walk = self.stand.filter(|index| *index < facts.ticks.len());
-        let hot = pointer
+        let pointer_hot = pointer
             .and_then(|p| {
                 sx.iter()
                     .enumerate()
@@ -483,8 +513,8 @@ impl Element for Ticker {
                     .min_by(|a, b| a.1.total_cmp(&b.1))
                     .filter(|(_, d)| *d < 24.0 * s)
                     .map(|(i, _)| i)
-            })
-            .or(walk);
+            });
+        let hot = crate::hover::visible_target_by(pointer_hot, observed_stand.as_ref(), walk_identity.as_ref(), walk);
 
         // The axis.
         let mut axis = Fill::new();
@@ -574,14 +604,14 @@ impl Element for Ticker {
             };
             let (mut t, mut at, mut words) = place(full, window);
             if t.width() > width {
-                (t, at, words) = place(short, window);
+                (t, at, words) = place(short.clone(), window);
             }
             if t.width() > width {
                 continue;
             }
             let touches = |at: f32, w: f32, spans: &[(f32, f32)]| spans.iter().any(|(a, b)| at < *b + 6.0 * s && at + w > *a - 6.0 * s);
             if touches(at, t.width(), &spans) {
-                (t, at, words) = place(short, window);
+                (t, at, words) = place(short.clone(), window);
             }
             if touches(at, t.width(), &spans) {
                 continue;
@@ -728,20 +758,27 @@ impl Element for Ticker {
         // The pointer.
         let state = layout.state.clone();
         {
-            let (state, hitbox) = (state.clone(), hitbox.clone());
+            let (state, hitbox, walk_identity) = (state.clone(), hitbox.clone(), walk_identity.clone());
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Capture {
                     return;
                 }
                 let inside = hitbox.is_hovered(window);
                 let next = inside.then(|| f32::from(event.position.x) - ox);
-                let changed = {
+                let (changed, moved) = {
                     let current = state.read(cx);
-                    current.pointer != next && (next.is_some() || current.dragging || current.pointer.is_some())
+                    (
+                        current.pointer != next && (next.is_some() || current.dragging || current.pointer.is_some()),
+                        current.last_pointer_position != Some(event.position),
+                    )
                 };
-                if changed {
+                if changed || moved {
                     state.update(cx, |state, cx| {
                         state.pointer = next;
+                        state.last_pointer_position = Some(event.position);
+                        if moved {
+                            state.observed_stand = walk_identity.clone();
+                        }
                         cx.notify();
                     });
                 }
@@ -750,9 +787,14 @@ impl Element for Ticker {
         {
             let state = state.clone();
             window.on_mouse_event(move |_: &MouseExitEvent, phase, _window, cx| {
-                if phase == DispatchPhase::Capture && state.read(cx).pointer.is_some() {
+                if phase == DispatchPhase::Capture
+                    && (state.read(cx).pointer.is_some() || state.read(cx).last_pointer_position.is_some())
+                {
                     state.update(cx, |state, cx| {
                         state.pointer = None;
+                        // Re-entry is a new pointer interaction even when it
+                        // happens at the same window-relative coordinates.
+                        state.last_pointer_position = None;
                         cx.notify();
                     });
                 }
@@ -762,7 +804,8 @@ impl Element for Ticker {
             let facts = facts.clone();
             let travelling = Rc::new(std::cell::Cell::new(None::<usize>));
             {
-                let (state, hitbox, travel, travelling, facts) = (state.clone(), hitbox.clone(), travel.clone(), travelling.clone(), facts.clone());
+                let (state, hitbox, travel, travelling, facts, walk_identity) =
+                    (state.clone(), hitbox.clone(), travel.clone(), travelling.clone(), facts.clone(), walk_identity.clone());
                 let xs = xs.clone();
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hitbox.is_hovered(window) {
@@ -780,6 +823,8 @@ impl Element for Ticker {
                     state.update(cx, |state, cx| {
                         state.dragging = true;
                         state.pointer = Some(p);
+                        state.last_pointer_position = Some(event.position);
+                        state.observed_stand = hit.and_then(|index| release_identity(&facts, index)).or(walk_identity.clone());
                         cx.notify();
                     });
                     if let Some(i) = hit {
@@ -790,7 +835,8 @@ impl Element for Ticker {
                 });
             }
             {
-                let (state, hitbox, travel, travelling) = (state.clone(), hitbox.clone(), travel, travelling.clone());
+                let (state, hitbox, travel, travelling, facts) =
+                    (state.clone(), hitbox.clone(), travel, travelling.clone(), facts.clone());
                 let xs = xs.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble || !state.read(cx).dragging || !event.dragging() {
@@ -808,6 +854,10 @@ impl Element for Ticker {
                     if let Some(i) = hit
                         && travelling.get() != Some(i)
                     {
+                        state.update(cx, |state, cx| {
+                            state.observed_stand = release_identity(&facts, i);
+                            cx.notify();
+                        });
                         travelling.set(Some(i));
                         travel(i, window, cx);
                     }
@@ -861,7 +911,7 @@ fn bar_ink(facts: &TickerFacts, i: usize, hot: bool, palette: &Palette) -> Hsla 
 
 #[cfg(test)]
 mod tests {
-    use super::{Release, TickerFacts, TickerNavigation, civil_year, door, fisheye, ticker};
+    use super::{Release, ReleaseIdentity, TickerFacts, TickerNavigation, civil_year, door, fisheye, release_identity, ticker};
     use crate::data::release::{RegistryFact, SourceAvailability};
     use crate::measure::Measure;
     use crate::theme::Facet;
@@ -931,6 +981,68 @@ mod tests {
         }
         assert_eq!(one.destination(Some(usize::MAX), TickerNavigation::Previous), Some(0));
         assert_eq!(empty.destination(Some(0), TickerNavigation::Next), None);
+    }
+
+    #[test]
+    fn stale_pointer_target_yields_to_live_keyboard_selection_across_fast_snapshot_changes() {
+        let empty = TickerFacts::new(&[], None, "2026-09-28");
+        let one = facts(&[("1.0.0", None)], "1.0.0");
+        let many = facts(&[("0.8.0", None), ("1.0.0", None), ("1.0.1", None)], "1.0.0");
+
+        let mut selected = None;
+        let mut observed: Option<ReleaseIdentity> = None;
+        let stale_pointer = Some(0usize);
+        assert_eq!(
+            crate::hover::visible_target_by(None, None::<&ReleaseIdentity>, None::<&ReleaseIdentity>, selected),
+            None,
+            "empty ticker has no hot bar"
+        );
+
+        selected = one.destination(selected, TickerNavigation::Next);
+        assert_eq!(selected, Some(0), "the sole release remains a valid keyboard target");
+        let one_identity = selected.and_then(|index| release_identity(&one, index));
+        assert_eq!(
+            crate::hover::visible_target_by(stale_pointer, observed.as_ref(), one_identity.as_ref(), selected),
+            selected,
+            "keyboard entry wins over stale pointer state"
+        );
+
+        // Two fast semantic updates must never reveal the old pointer bar.
+        selected = many.destination(selected, TickerNavigation::Next);
+        assert_eq!(selected, Some(1));
+        let identity = selected.and_then(|index| release_identity(&many, index));
+        assert_eq!(crate::hover::visible_target_by(stale_pointer, observed.as_ref(), identity.as_ref(), selected), selected);
+        selected = many.destination(selected, TickerNavigation::Next);
+        assert_eq!(selected, Some(2));
+        let identity = selected.and_then(|index| release_identity(&many, index));
+        assert_eq!(crate::hover::visible_target_by(stale_pointer, observed.as_ref(), identity.as_ref(), selected), selected);
+
+        // The next actual pointer move records the current semantic selection;
+        // pointer hover resumes, until another keyboard move changes it.
+        observed = identity;
+        let identity = selected.and_then(|index| release_identity(&many, index));
+        assert_eq!(crate::hover::visible_target_by(stale_pointer, observed.as_ref(), identity.as_ref(), selected), stale_pointer);
+        selected = many.destination(selected, TickerNavigation::Previous);
+        assert_eq!(selected, Some(1));
+        let identity = selected.and_then(|index| release_identity(&many, index));
+        assert_eq!(crate::hover::visible_target_by(stale_pointer, observed.as_ref(), identity.as_ref(), selected), selected);
+
+        // A snapshot can replace a version at the same index. Its exact key
+        // changes even when the integer stand does not, so pointer state from
+        // the previous snapshot cannot silently claim the new release.
+        let refreshed = facts(&[("0.8.0", None), ("0.9.0", None), ("1.0.1", None)], "0.9.0");
+        let prior_identity = selected.and_then(|index| release_identity(&many, index));
+        let refreshed_identity = selected.and_then(|index| release_identity(&refreshed, index));
+        assert_ne!(prior_identity, refreshed_identity);
+        assert_eq!(
+            crate::hover::visible_target_by(Some(0), prior_identity.as_ref(), refreshed_identity.as_ref(), selected),
+            selected,
+            "a changed release identity at the same index is a keyboard-owned refresh"
+        );
+
+        selected = empty.destination(selected, TickerNavigation::Next);
+        assert_eq!(selected, None);
+        assert_eq!(crate::hover::visible_target_by(None, observed.as_ref(), None, selected), None, "an empty refreshed snapshot drops the old hot bar");
     }
 
     #[test]

@@ -134,6 +134,7 @@ impl SelectedClosureImageRangeReader {
     }
 }
 
+#[derive(Debug)]
 pub(super) enum SelectedImageRangeReadError {
     Deferred(String),
     Refused(String),
