@@ -6,12 +6,11 @@ use super::{
     LOCAL_CONTROL_VERSION, LocalControlError, LocalControlLimits, LocalControlRequest,
     LocalControlResponse, REPLICATE_PREFIX_BYTES, SEMANTIC_METADATA_PREFIX_BYTES,
     SEMANTIC_RANGE_PREFIX_BYTES, STATUS_ACCEPTED, STATUS_QUEUED, STATUS_REJECTED,
-    STATUS_SEMANTIC_METADATA_CHUNK, STATUS_SEMANTIC_RANGE_CHUNK, STATUS_SUBSCRIPTION,
-    STATUS_SEMANTIC_STALE_SELECTION,
-    SUBSCRIBE_PREFIX_BYTES, TAG_COMPLETE, TAG_REPLICATE, TAG_SEMANTIC_METADATA_GET,
-    TAG_SEMANTIC_RANGE_GET, TAG_SUBSCRIBE, TAG_SUBSCRIPTION_ACK, TAG_SUBSCRIPTION_CANCEL,
-    TAG_SUBSCRIPTION_CREDIT, TAG_SUBSCRIPTION_OPEN, TAG_SUBSCRIPTION_PAGE, TAG_SUBSCRIPTION_RENEW,
-    TAG_SUBSCRIPTION_RESUME, is_control,
+    STATUS_SEMANTIC_METADATA_CHUNK, STATUS_SEMANTIC_RANGE_CHUNK, STATUS_SEMANTIC_STALE_SELECTION,
+    STATUS_SUBSCRIPTION, SUBSCRIBE_PREFIX_BYTES, TAG_COMPLETE, TAG_REPLICATE,
+    TAG_SEMANTIC_METADATA_GET, TAG_SEMANTIC_RANGE_GET, TAG_SUBSCRIBE, TAG_SUBSCRIPTION_ACK,
+    TAG_SUBSCRIPTION_CANCEL, TAG_SUBSCRIPTION_CREDIT, TAG_SUBSCRIPTION_OPEN, TAG_SUBSCRIPTION_PAGE,
+    TAG_SUBSCRIPTION_RENEW, TAG_SUBSCRIPTION_RESUME, is_control,
 };
 use std::borrow::Cow;
 #[path = "../transport/local_subscription_codec.rs"]
@@ -329,9 +328,11 @@ pub fn encode_response(
                 Cow::Borrowed(payload.as_ref()),
             )
         }
-        LocalControlResponse::SemanticStaleSelection { .. } => {
-            (STATUS_SEMANTIC_STALE_SELECTION, None, Cow::Borrowed(&[][..]))
-        }
+        LocalControlResponse::SemanticStaleSelection { .. } => (
+            STATUS_SEMANTIC_STALE_SELECTION,
+            None,
+            Cow::Borrowed(&[][..]),
+        ),
     };
     output.push(status);
     output.extend_from_slice(&response.request_id().to_be_bytes());
