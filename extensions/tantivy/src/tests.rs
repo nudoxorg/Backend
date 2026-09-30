@@ -2577,8 +2577,8 @@ fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
     let initial_segment = crate::engine::test_support::resident_segment_id(&source, stable_id)
         .expect("initial stable row address");
 
-    // Disable background merging so the fixture can explicitly select and merge all segments
-    // after these seven commits, independent of Tantivy's merge-policy timing or thresholds.
+    // Disable background merging so the explicit test hook can merge the committed segments
+    // during the final maintenance call, independent of Tantivy's thresholds.
     for revision in 1_u8..=7 {
         let next = state_for(
             vec![
@@ -2606,17 +2606,24 @@ fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
     let selected = state_for(
         vec![
             (stable_id, vec![("name".into(), "stablecanary".into())]),
-            (changing_id, vec![("name".into(), "revision7".into())]),
+            (changing_id, vec![("name".into(), "revision8".into())]),
         ],
         [0x98; 32],
     );
+    let _force_merge = crate::engine::test_support::force_merge_next_maintenance_for_test();
+    let outcome = source
+        .maintain(&selected, OverlayLimits::default())
+        .expect("the final maintenance commit forces and rebinds a real segment merge");
+    assert!(matches!(
+        outcome,
+        MaintainOutcome::Applied(ProjectionRevision {
+            kind: ProjectionKind::Revised,
+            rewritten_documents: 1,
+            ..
+        })
+    ));
     let merged_input_segments =
-        crate::engine::test_support::force_merge_selected_segments_and_rebind(
-            &mut source,
-            &selected,
-            &[changing_id],
-        )
-        .expect("explicitly merge the selected Tantivy segments and rebind live rows");
+        crate::engine::test_support::forced_merge_input_count();
     assert!(
         merged_input_segments >= 2,
         "fixture must force a real merge over selected searchable segments"
@@ -2636,7 +2643,8 @@ fn real_tantivy_merge_rebinds_unchanged_rows_from_the_selected_generation() {
     for revision in 0..7 {
         assert!(term_hits(&source, &format!("revision{revision}")).is_empty());
     }
-    assert_eq!(term_hits(&source, "revision7"), vec![changing_id]);
+    assert!(term_hits(&source, "revision7").is_empty());
+    assert_eq!(term_hits(&source, "revision8"), vec![changing_id]);
 }
 
 #[test]

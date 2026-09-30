@@ -62,6 +62,8 @@ static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 std::thread_local! {
     static TEST_NO_MERGE_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_FORCE_MERGE_AFTER_NEXT_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_FORCED_MERGE_INPUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// How a resident Tantivy projection absorbed a new document snapshot.
@@ -1465,6 +1467,11 @@ impl TantivySource {
             self.poisoned = true;
             return Err(error.into());
         }
+        #[cfg(test)]
+        if let Err(error) = self.force_merge_after_commit_for_test() {
+            self.poisoned = true;
+            return Err(error);
+        }
         let mut documents = std::mem::take(&mut self.documents);
         documents
             .live
@@ -1517,6 +1524,41 @@ impl TantivySource {
             retired_postings,
             added_postings,
         }))
+    }
+
+    #[cfg(test)]
+    fn force_merge_after_commit_for_test(&mut self) -> Result<(), TantivySourceError> {
+        if !TEST_FORCE_MERGE_AFTER_NEXT_COMMIT.with(std::cell::Cell::replace(false)) {
+            return Ok(());
+        }
+        let searcher = self.reader.searcher();
+        let mut segment_ids = Vec::new();
+        segment_ids
+            .try_reserve_exact(searcher.segment_readers().len())
+            .map_err(|_| Error::SizeLimit)?;
+        for segment in searcher.segment_readers() {
+            segment_ids.push(segment.segment_id());
+        }
+        drop(searcher);
+        if segment_ids.len() < 2 {
+            return Err(Self::corrupt(
+                "forced merge fixture needs multiple committed segments",
+            )
+            .into());
+        }
+
+        let mut writer = self._index.writer(WRITER_MEMORY_BYTES)?;
+        writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+        if writer.merge(&segment_ids).wait()?.is_none() {
+            return Err(Self::corrupt(
+                "forced merge fixture failed to produce a searchable segment",
+            )
+            .into());
+        }
+        writer.wait_merging_threads()?;
+        self.reader.reload()?;
+        TEST_FORCED_MERGE_INPUTS.with(|inputs| inputs.set(segment_ids.len()));
+        Ok(())
     }
 
     /// Materializes every exact match in canonical rank order, subject to the
@@ -3541,100 +3583,26 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) fn force_merge_selected_segments_and_rebind(
-        source: &mut super::TantivySource,
-        state: &super::DocumentState,
-        changed_documents: &[backend_semantic::EntityId],
-    ) -> Result<usize, super::TantivySourceError> {
-        source.ensure_live()?;
-        if source.binding != state.binding() {
-            return Err(super::Error::StaleRoot.into());
-        }
+    pub(crate) struct ForceMergeNextMaintenanceForTest {
+        previous: bool,
+    }
 
-        let searcher = source.reader.searcher();
-        let mut old_segment_ids = std::collections::HashSet::new();
-        old_segment_ids
-            .try_reserve(searcher.segment_readers().len())
-            .map_err(|_| super::Error::SizeLimit)?;
-        let mut segment_ids = Vec::new();
-        segment_ids
-            .try_reserve_exact(searcher.segment_readers().len())
-            .map_err(|_| super::Error::SizeLimit)?;
-        for segment in searcher.segment_readers() {
-            let segment_id = segment.segment_id();
-            if !old_segment_ids.insert(segment_id) {
-                return Err(super::TantivySource::corrupt(
-                    "merge fixture found duplicate searchable segment IDs",
-                )
-                .into());
-            }
-            segment_ids.push(segment_id);
-        }
-        drop(searcher);
-        if segment_ids.len() < 2 {
-            return Err(super::TantivySource::corrupt(
-                "merge fixture requires at least two explicit searchable segments",
-            )
-            .into());
-        }
+    pub(crate) fn force_merge_next_maintenance_for_test() -> ForceMergeNextMaintenanceForTest {
+        let previous = super::TEST_FORCE_MERGE_AFTER_NEXT_COMMIT
+            .with(|requested| requested.replace(true));
+        super::TEST_FORCED_MERGE_INPUTS.with(|inputs| inputs.set(0));
+        ForceMergeNextMaintenanceForTest { previous }
+    }
 
-        let mut writer = source._index.writer(super::WRITER_MEMORY_BYTES)?;
-        writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
-        let merged = writer.merge(&segment_ids).wait()?;
-        if merged.is_none() {
-            return Err(super::TantivySource::corrupt(
-                "explicit test merge produced no searchable segment",
-            )
-            .into());
+    impl Drop for ForceMergeNextMaintenanceForTest {
+        fn drop(&mut self) {
+            super::TEST_FORCE_MERGE_AFTER_NEXT_COMMIT
+                .with(|requested| requested.set(self.previous));
         }
-        writer.wait_merging_threads()?;
-        if let Err(error) = source.reader.reload() {
-            source.poisoned = true;
-            return Err(error.into());
-        }
+    }
 
-        let mut changed_ordinals = Vec::new();
-        changed_ordinals
-            .try_reserve_exact(changed_documents.len())
-            .map_err(|_| super::Error::SizeLimit)?;
-        for id in changed_documents {
-            let ordinal = source
-                .documents
-                .ordinal_for_entity(&source.identity_ordinals, *id)
-                .ok_or(super::Error::StaleRoot)?;
-            changed_ordinals.push(u32::try_from(ordinal).map_err(|_| super::Error::SizeLimit)?);
-        }
-        changed_ordinals.sort_unstable();
-
-        let fields = super::ProjectionFields {
-            raw_token: source.raw_token,
-            folded_token: source.folded_token,
-            field_raw_token: source.field_raw_token,
-            field_folded_token: source.field_folded_token,
-            ordinal: source.ordinal,
-            rank_material: source.rank_material,
-            rank_material_len: source.rank_material_len,
-        };
-        let mut documents = std::mem::take(&mut source.documents);
-        let rebound = super::bind_resident_document_addresses(
-            &source.reader,
-            &mut documents,
-            source.limits,
-            state,
-            fields,
-            &old_segment_ids,
-            &changed_ordinals,
-        );
-        source.documents = documents;
-        let binding_work = match rebound {
-            Ok(work) => work,
-            Err(error) => {
-                source.poisoned = true;
-                return Err(error);
-            }
-        };
-        source.last_binding_work = binding_work;
-        Ok(segment_ids.len())
+    pub(crate) fn forced_merge_input_count() -> usize {
+        super::TEST_FORCED_MERGE_INPUTS.with(std::cell::Cell::get)
     }
 }
 
