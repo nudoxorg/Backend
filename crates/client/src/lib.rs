@@ -383,7 +383,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 #[cfg(any(unix, windows))]
 pub struct Session {
     endpoint: std::path::PathBuf,
-    transport: Box<dyn CommandTransport>,
+    transport: Box<dyn CommandTransport + Send>,
     next_request_id: u64,
     continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
 }
@@ -440,7 +440,7 @@ impl Session {
     /// Builds the same revision-aware product session over another admitted command transport.
     pub fn from_transport(
         endpoint: impl Into<std::path::PathBuf>,
-        transport: impl CommandTransport + 'static,
+        transport: impl CommandTransport + Send + 'static,
     ) -> Self {
         Self {
             endpoint: endpoint.into(),
