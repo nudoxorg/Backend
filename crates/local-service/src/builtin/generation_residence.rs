@@ -1806,12 +1806,13 @@ mod tests {
         let branch = HistoryRefName::new("selected-native-v3").expect("valid history branch");
         let writer_target = target.clone();
         let writer_branch = branch.clone();
+        let writer_key = key.clone();
         let writer = std::thread::spawn(move || {
             writer_started
                 .send(())
                 .expect("notify that generation B writer is starting");
             let update = authority.commit_product_selection_changes(
-                vec![(key.clone(), claim_b)],
+                vec![(writer_key, claim_b)],
                 Vec::new(),
                 || {
                     let history = FileSemanticRangeStore::open(
