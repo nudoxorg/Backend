@@ -159,7 +159,7 @@ different_dirs="$(cut -d '|' -f 2 "$different_log" | sort -u | wc -l | tr -d ' '
 assert_eq 2 "$different_dirs"
 [ "$elapsed" -le 2 ] || fail "independent worktrees were serialized (${elapsed}s)"
 
-# An explicit build-dir is never overwritten and bypasses the affinity lease.
+# An explicit build-dir is never overwritten and never claims a pooled graph.
 explicit_log="$test_root/explicit.log"
 NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$explicit_log" \
   NUDOX_BUILD_CACHE_ROOT="$test_root/explicit-cache" CARGO_BUILD_BUILD_DIR="$test_root/explicit-build" \
@@ -167,7 +167,10 @@ NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$explicit_log" \
 explicit_dir="$(cut -d '|' -f 2 "$explicit_log")"
 assert_eq "$test_root/explicit-build" "$explicit_dir"
 if find "$test_root/explicit-cache/locks" -mindepth 1 -print -quit 2>/dev/null | grep . >/dev/null; then
-  fail "explicit build-dir acquired a lease"
+  fail "explicit build-dir leaked a lease"
+fi
+if find "$test_root/explicit-cache/affinity" -type f -print -quit 2>/dev/null | grep . >/dev/null; then
+  fail "explicit build-dir changed pooled graph affinity"
 fi
 
 # A dead owner is recovered without waiting for the configured bound.
@@ -268,12 +271,37 @@ if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
   fail "busy build ceiling unexpectedly admitted another compiler"
 fi
 assert_file_lines "$ceiling_log" 1
+# Named directories obey the same ceiling, even though their intermediate
+# graph is caller-managed. Cargo must never run and its directory must stay
+# absent while another worktree owns the only slot.
+if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
+  NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$test_root/blocked-explicit-build" \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" check; then
+  fail "explicit directory bypassed the busy build ceiling"
+fi
+assert_file_lines "$ceiling_log" 1
+[ ! -d "$test_root/blocked-explicit-build" ] || fail "blocked explicit compile started Cargo"
 wait "$ceiling_owner"
 NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
   NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" check
 assert_file_lines "$ceiling_log" 2
+# After release the same explicit request starts normally without altering
+# the warm slot's previous owner or destroying its graph.
+pooled_owner="$(cat "$ceiling_cache/affinity/slot-0.owner")"
+pooled_marker="$(cat "$ceiling_cache/build/slot-0/fake-public-api.rmeta")"
+NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$ceiling_log" \
+  NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$test_root/blocked-explicit-build" \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" check
+assert_file_lines "$ceiling_log" 3
+assert_eq "$pooled_owner" "$(cat "$ceiling_cache/affinity/slot-0.owner")"
+assert_eq "$pooled_marker" "$(cat "$ceiling_cache/build/slot-0/fake-public-api.rmeta")"
+assert_eq "$test_root/blocked-explicit-build" "$(tail -n 1 "$ceiling_log" | cut -d '|' -f 2)"
 if find "$ceiling_cache/build" -maxdepth 1 -type d -name 'overflow-*' -print -quit 2>/dev/null | grep . >/dev/null; then
   fail "hard build ceiling created an overflow directory"
 fi

@@ -26,8 +26,9 @@ pub use journal::{
 pub use model::{
     Advisory, AdvisoryCategory, AdvisoryKey, AdvisorySchema, AdvisorySource, AdvisoryStatus,
     AffectedRange, Alias, AliasGraph, AliasGraphError, CanonicalAdvisoryId, Evidence, EvidenceKind,
-    FreshnessState, MalwareCoverage, NativeAdvisoryId, PackageIdentity, Reference, Severity,
-    SeverityLevel, VersionEvent, VersionEventKind, VersionMatcher, VersionSyntax,
+    FreshnessState, MalwareCoverage, NativeAdvisoryId, OsvEcosystem, OsvFeedScope,
+    PackageIdentity, Reference, Severity, SeverityLevel, VersionEvent, VersionEventKind,
+    VersionMatcher, VersionSyntax,
 };
 pub use parse::{
     GhsaParseError, MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, ParseError,
@@ -61,6 +62,28 @@ mod tests {
 
     fn object() -> Advisory {
         parse_osv(osv(r#"[{"introduced":"0"},{"fixed":"1.2.0"},{"introduced":"2.0.0"},{"last_affected":"2.1.0"},{"introduced":"3.0.0"},{"limit":"3.1.0"}]"#).as_bytes(), 7).expect("valid OSV")
+    }
+
+    fn aliased_object(id: &str, package: &str) -> Advisory {
+        let source = format!(
+            r#"{{"schema_version":"1.3.1","id":"{id}","aliases":["CVE-SHARED-1"],"affected":[{{"package":{{"ecosystem":"Cargo","name":"{package}"}},"ranges":[{{"type":"SEMVER","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
+        );
+        parse_osv(source.as_bytes(), 7).expect("valid aliased OSV")
+    }
+
+    fn complete_snapshot(entries: Vec<Advisory>) -> AdvisorySync {
+        AdvisorySync {
+            mode: SyncMode::Snapshot,
+            complete: true,
+            entries: entries.into_iter().map(AdvisoryDelta::Upsert).collect(),
+            freshness: FeedFreshness {
+                etag: None,
+                last_modified: None,
+                observed_at: 7,
+                expires_at: None,
+                not_modified: false,
+            },
+        }
     }
 
     #[test]
@@ -184,6 +207,7 @@ unaffected = ["< 1.0.0"]
             etag: Some("x".to_owned()),
             last_modified: None,
             observed_at: 1,
+            expires_at: None,
             not_modified: false,
         };
         let checkpoint = journal
@@ -237,6 +261,29 @@ unaffected = ["< 1.0.0"]
     }
 
     #[test]
+    fn complete_snapshot_admission_is_order_independent_and_failure_is_atomic() {
+        let left = aliased_object("OSV-A-1", "demo");
+        let right = aliased_object("OSV-Z-1", "demo");
+        let mut forward = AdvisoryJournal::new();
+        forward
+            .apply(complete_snapshot(vec![left.clone(), right.clone()]))
+            .expect("forward snapshot");
+        let mut reverse = AdvisoryJournal::new();
+        reverse
+            .apply(complete_snapshot(vec![right, left]))
+            .expect("reverse snapshot");
+        assert_eq!(forward, reverse);
+        assert!(forward.get(&CanonicalAdvisoryId("OSV-A-1".to_owned())).is_some());
+
+        let before = forward.clone();
+        let conflicting = aliased_object("OSV-BAD-1", "other");
+        assert!(forward
+            .apply(complete_snapshot(vec![aliased_object("OSV-NEXT-1", "demo"), conflicting]))
+            .is_err());
+        assert_eq!(forward, before, "a rejected feed must leave the old frontier intact");
+    }
+
+    #[test]
     fn gate_separates_yank_warning_from_vulnerability_block() {
         let observation = AdvisoryObservation {
             advisories: Box::new([object()]),
@@ -285,6 +332,7 @@ unaffected = ["< 1.0.0"]
             etag: Some("withdrawal-1".to_owned()),
             last_modified: None,
             observed_at: 10,
+            expires_at: None,
             not_modified: false,
         };
         journal

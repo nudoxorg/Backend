@@ -321,4 +321,11 @@ mod tests {
         assert_eq!(call.ports[0].ty.word, "text");
         assert!(call.fails.is_some());
     }
+
+    #[test]
+    fn the_header_keeps_c_separate_from_cpp() {
+        assert_eq!(Lang::from_name("c").tag(), "C");
+        assert_eq!(Lang::from_name("c++").tag(), "C++");
+        assert_eq!(Lang::from_name("h").tag(), "");
+    }
 }

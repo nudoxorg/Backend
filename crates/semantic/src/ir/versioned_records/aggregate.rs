@@ -819,8 +819,75 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2_with_segment_source<S>(
 where
     S: TypedPlaneSegmentSourceV2 + ?Sized,
 {
-    let input_witness = normalize_input_claim(input_witness)?;
-    verify_stream_manifest_claims(build, image_facts, input_witness, families, limits)?;
+    verify_semantic_typed_plane_inventory_v2_with_segment_source_inner(
+        build,
+        image_facts,
+        input_witness,
+        families,
+        source,
+        limits,
+        jumbo_admission,
+        InputClaimValidation::Complete,
+    )
+}
+
+/// Verifies the same complete seven-family inventory for durable semantic
+/// history while preserving its selected generation's claim-only input
+/// coverage state. The result is content evidence only; it does not establish
+/// current selection or authorize read-frontier reuse.
+pub(crate) fn verify_semantic_typed_plane_history_v3_with_segment_source<S>(
+    build: SemanticBuildIdentity,
+    image_facts: SemanticImageFacts,
+    input_claim: SemanticInputWitness,
+    families: &[SemanticTypedPlaneFamilyDescriptorV2; 7],
+    source: &mut S,
+    limits: SemanticTypedPlaneVerificationLimitsV2,
+    jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
+) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>
+where
+    S: TypedPlaneSegmentSourceV2 + ?Sized,
+{
+    verify_semantic_typed_plane_inventory_v2_with_segment_source_inner(
+        build,
+        image_facts,
+        input_claim,
+        families,
+        source,
+        limits,
+        jumbo_admission,
+        InputClaimValidation::PersistedHistory,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum InputClaimValidation {
+    Complete,
+    PersistedHistory,
+}
+
+fn verify_semantic_typed_plane_inventory_v2_with_segment_source_inner<S>(
+    build: SemanticBuildIdentity,
+    image_facts: SemanticImageFacts,
+    input_witness: SemanticInputWitness,
+    families: &[SemanticTypedPlaneFamilyDescriptorV2; 7],
+    source: &mut S,
+    limits: SemanticTypedPlaneVerificationLimitsV2,
+    mut jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
+    input_claim_validation: InputClaimValidation,
+) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>
+where
+    S: TypedPlaneSegmentSourceV2 + ?Sized,
+{
+    let input_witness =
+        normalize_input_claim_for_validation(input_witness, input_claim_validation)?;
+    verify_stream_manifest_claims(
+        build,
+        image_facts,
+        input_witness,
+        families,
+        limits,
+        input_claim_validation,
+    )?;
 
     let mut jumbo_documentation_row_count = 0_usize;
     let mut jumbo_documentation_reference_count = 0_u64;
@@ -1159,6 +1226,7 @@ fn verify_stream_manifest_claims(
     input_witness: SemanticInputWitness,
     families: &[SemanticTypedPlaneFamilyDescriptorV2; 7],
     limits: SemanticTypedPlaneVerificationLimitsV2,
+    input_claim_validation: InputClaimValidation,
 ) -> Result<(), SemanticTypedPlaneInventoryV2Error> {
     let expected_families = [
         SemanticIrPlane::Core,
@@ -1235,7 +1303,9 @@ fn verify_stream_manifest_claims(
             },
         });
     }
-    if input_witness.coverage().state() != backend_version::Coverage::Complete {
+    if matches!(input_claim_validation, InputClaimValidation::Complete)
+        && input_witness.coverage().state() != backend_version::Coverage::Complete
+    {
         return Err(SemanticTypedPlaneInventoryV2Error::IncompleteInputClaim);
     }
     validate_image_facts(build, image_facts)
@@ -1868,6 +1938,22 @@ fn normalize_input_claim(
     Ok(SemanticInputWitness::claimed(
         *input_witness.input_root(),
         input_witness.read_manifest_root(),
+    ))
+}
+
+fn normalize_input_claim_for_validation(
+    input_witness: SemanticInputWitness,
+    validation: InputClaimValidation,
+) -> Result<SemanticInputWitness, SemanticTypedPlaneInventoryV2Error> {
+    if matches!(validation, InputClaimValidation::Complete)
+        && input_witness.coverage().state() != backend_version::Coverage::Complete
+    {
+        return Err(SemanticTypedPlaneInventoryV2Error::IncompleteInputClaim);
+    }
+    Ok(SemanticInputWitness::claimed_state(
+        *input_witness.input_root(),
+        input_witness.read_manifest_root(),
+        input_witness.coverage().state(),
     ))
 }
 

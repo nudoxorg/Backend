@@ -14,8 +14,8 @@ use crate::semantics::types::{Piece, Spelled};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole};
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, PathBuilder, RenderOnce, SharedString,
-    Styled, Window, canvas, div, point, px,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window,
+    div, px,
 };
 use std::sync::Arc;
 
@@ -69,33 +69,12 @@ fn connector(measure: &Measure, palette: &Palette) -> impl IntoElement {
 }
 
 fn diamond(size: f32, color: gpui::Hsla, filled: bool, ring: Option<gpui::Hsla>) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let c = bounds.center();
-            let shape = |r: gpui::Pixels, b: &mut PathBuilder| {
-                b.move_to(point(c.x, c.y - r));
-                b.line_to(point(c.x + r, c.y));
-                b.line_to(point(c.x, c.y + r));
-                b.line_to(point(c.x - r, c.y));
-                b.close();
-            };
-            if let Some(ring) = ring {
-                let mut b = PathBuilder::fill();
-                shape(px(size * 0.5 + 3.5), &mut b);
-                if let Ok(path) = b.build() {
-                    window.paint_path(path, ring);
-                }
-            }
-            let mut b = if filled { PathBuilder::fill() } else { PathBuilder::stroke(px(1.3)) };
-            shape(px(size * 0.5), &mut b);
-            if let Ok(path) = b.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .flex_none()
-    .size(px(size + 8.0))
+    let mut body = div().relative().flex_none().size(px(size + 8.0));
+    if let Some(ring) = ring {
+        body = body.child(crate::controls::diamond::diamond().absolute().top_0().left_0().size_full().inset(0.5).fill(ring));
+    }
+    let inner = crate::controls::diamond::diamond().absolute().top_0().left_0().size_full().inset(4.0);
+    body.child(if filled { inner.fill(color) } else { inner.outline(color, 1.3) })
 }
 
 struct Ctx<'a> {

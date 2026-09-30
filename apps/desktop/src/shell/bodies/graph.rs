@@ -1,6 +1,6 @@
-//! The desktop's retained world graph. Until the index serves a world query,
-//! the map reads the prototype fixture (§8.5); page routes always resolve
-//! through the real read pool, never through an invented fixture coordinate.
+//! The desktop's retained world graph, projected from the exact selected
+//! index root. The map and the page routes share the producer's typed package
+//! and symbol coordinates; no prototype world supplies product data.
 
 pub(crate) mod identity;
 use identity::{IdentityAdapter, MatchFailure, ResolvedSymbol};
@@ -8,14 +8,15 @@ use identity::{IdentityAdapter, MatchFailure, ResolvedSymbol};
 use crate::core::{Activity, Resource, ResourceTerminal, VersionedRoot};
 use crate::model::pages::{PackageRef, PageKey, SearchContinuation, SearchQuery};
 use crate::navigation::{Intent, Route, View};
+use crate::runtime::indexed_world::{self, Coverage, Key as WorldKey};
 use crate::runtime::store::{Branch, StoreEvent, route_symbol};
 use crate::shell::region::Links;
-use facet::graph::{GraphView, NodeId, Start};
 #[cfg(test)]
 use facet::graph::World;
+use facet::graph::{GraphView, NodeId, Start};
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, IntoElement, ParentElement, Render,
-    Styled, Subscription, Task, Window, div, px,
+    Styled, Subscription, Window, div, px,
 };
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -28,8 +29,13 @@ use crate::runtime::ui_graph::GraphViewRequest;
 pub(crate) struct Map {
     links: Links,
     graph: Option<Entity<GraphView>>,
-    loading: Option<Task<()>>,
-    ready_scene: Option<(Arc<facet::graph::scene::Scene>, Arc<IdentityAdapter>)>,
+    ready_scene: Option<(
+        Arc<facet::graph::scene::Scene>,
+        Arc<IdentityAdapter>,
+        Coverage,
+    )>,
+    world_key: Option<WorldKey>,
+    coverage: Option<Coverage>,
     identities: Option<Arc<IdentityAdapter>>,
     /// The last tour ask flown (the store's ask number).
     toured: u64,
@@ -55,9 +61,11 @@ pub(crate) struct Map {
 /// Unit integration tests inject a versioned synthetic map. They never
 /// derive expected declaration values from the mutable live world fixture.
 #[cfg(test)]
+#[derive(Clone)]
 struct TestFixture {
     scene: Arc<facet::graph::scene::Scene>,
     identities: Arc<IdentityAdapter>,
+    coverage: Coverage,
 }
 #[cfg(test)]
 impl gpui::Global for TestFixture {}
@@ -110,17 +118,23 @@ pub(crate) fn install_test_fixture(cx: &mut App) {
     cx.set_global(TestFixture {
         scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
         identities,
+        coverage: Coverage::default(),
     });
 }
 
 /// Mounts `world` as the graph's fixture for the next map (tests): the
 /// same world the page's anatomy reads, joined by `identities`.
 #[cfg(test)]
-pub(crate) fn install_test_world(world: Arc<World>, identities: Arc<IdentityAdapter>, cx: &mut App) {
+pub(crate) fn install_test_world(
+    world: Arc<World>,
+    identities: Arc<IdentityAdapter>,
+    cx: &mut App,
+) {
     let layout = facet::graph::layout::layout_of(&world);
     cx.set_global(TestFixture {
         scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
         identities,
+        coverage: Coverage::default(),
     });
 }
 
@@ -137,8 +151,7 @@ impl Map {
                     map.invalidate_open();
                     map.error = None;
                     if event.is_branch(Branch::Root) {
-                        map.resolved.clear();
-                        map.routed_focus = None;
+                        map.reset_indexed_world(cx);
                     }
                     map.publish_focus(cx);
                 }
@@ -166,45 +179,23 @@ impl Map {
                 },
             )
         });
-        #[cfg(not(test))]
-        let injected: Option<(Arc<facet::graph::scene::Scene>, Arc<IdentityAdapter>)> = None;
         #[cfg(test)]
-        let injected = cx
-            .try_global::<TestFixture>()
-            .map(|fixture| (fixture.scene.clone(), fixture.identities.clone()));
-        let (loading, ready_scene) = if let Some(scene) = injected {
-            (None, Some(scene))
+        let (ready_scene, world_key) = if let Some(fixture) = cx.try_global::<TestFixture>().cloned() {
+            (
+                Some((fixture.scene, fixture.identities, fixture.coverage)),
+                None,
+            )
         } else {
-            let load = cx.background_executor().spawn(async {
-                // The fixture world is shared with the symbol page's anatomy.
-                let (world, identities) = crate::runtime::fixture_world::blocking()?;
-                let layout = facet::graph::layout::layout_of(&world);
-                Ok::<_, String>((
-                    Arc::new(facet::graph::scene::Scene::new(world, layout)),
-                    identities,
-                ))
-            });
-            let loading = cx.spawn(async move |map, cx| {
-                let loaded = load.await;
-                let _ = map.update(cx, |map, cx| {
-                    map.loading = None;
-                    match loaded {
-                        Ok(scene) => {
-                            // Creation needs the window, so retain the scene until render.
-                            map.ready_scene = Some(scene);
-                        }
-                        Err(error) => map.load_error = Some(error),
-                    }
-                    cx.notify();
-                });
-            });
-            (Some(loading), None)
+            (None, None)
         };
+        #[cfg(not(test))]
+        let (ready_scene, world_key) = (None, None);
         Self {
             links,
             graph: None,
-            loading,
             ready_scene,
+            world_key,
+            coverage: None,
             identities: None,
             entry_origin: None,
             painted_focus: None,
@@ -227,14 +218,96 @@ impl Map {
         }
     }
 
-    /// A capture waits for the mounted map's discovery index and any routed
-    /// lookup, as well as the fixture parsing/layout worker.
+    fn reset_indexed_world(&mut self, cx: &App) {
+        self.graph = None;
+        self.ready_scene = None;
+        self.world_key = None;
+        self.coverage = None;
+        self.identities = None;
+        self.resolved.clear();
+        self.routed_focus = None;
+        self.semantic_focus = None;
+        self.revealed_focus = None;
+        self._graph_events = None;
+        self.load_error = None;
+        self.toured = 0;
+        #[cfg(test)]
+        if let Some(fixture) = cx.try_global::<TestFixture>() {
+            self.ready_scene = Some((
+                fixture.scene.clone(),
+                fixture.identities.clone(),
+                fixture.coverage.clone(),
+            ));
+        }
+        #[cfg(not(test))]
+        let _ = cx;
+    }
+
+    fn request_world(&mut self, cx: &mut Context<Self>) {
+        if !self.visible {
+            return;
+        }
+        #[cfg(test)]
+        if cx.try_global::<TestFixture>().is_some()
+            && (self.graph.is_some() || self.ready_scene.is_some())
+        {
+            return;
+        }
+        let snapshot = self.links.snapshot(cx);
+        let preferred = snapshot
+            .workspace()
+            .active
+            .as_ref()
+            .or(snapshot.workspace().host.as_ref())
+            .and_then(|project| PackageRef::parse(project.as_str()).ok());
+        let Some(key) = indexed_world::key(snapshot.key(), preferred, cx) else {
+            self.graph = None;
+            self.ready_scene = None;
+            self.world_key = None;
+            self.coverage = None;
+            self.identities = None;
+            self.resolved.clear();
+            self.load_error = Some("Waiting for the local index connection.".into());
+            return;
+        };
+        if self.world_key.as_ref() != Some(&key) {
+            self.graph = None;
+            self.ready_scene = None;
+            self.coverage = None;
+            self.identities = None;
+            self.resolved.clear();
+            self.world_key = Some(key.clone());
+            self.load_error = None;
+        }
+        if self.graph.is_some() || self.ready_scene.is_some() {
+            return;
+        }
+        match indexed_world::get(&key, cx) {
+            indexed_world::State::Reading => self.load_error = None,
+            indexed_world::State::Waiting => {
+                self.load_error = Some("Waiting for an available graph-read slot…".to_owned());
+            }
+            indexed_world::State::Unavailable(reason) => {
+                self.load_error = Some(reason.to_string());
+            }
+            indexed_world::State::Ready(projection) => {
+                self.load_error = None;
+                self.ready_scene = Some((
+                    Arc::clone(&projection.scene),
+                    Arc::clone(&projection.identities),
+                    projection.coverage.clone(),
+                ));
+            }
+        }
+    }
+
+    /// A capture waits for the mounted map's indexed projection and any routed
+    /// lookup. An explicit unavailable state is terminal and capturable.
     pub(crate) fn ready(&self, cx: &App) -> bool {
         self.pending.is_none()
             && (!self.visible
                 || self.load_error.is_some()
-                || (self.loading.is_none()
-                    && self.ready_scene.is_none()
+                || (self.ready_scene.is_none()
                     && self.pending.is_none()
                     && self
                         .graph
@@ -254,7 +327,7 @@ impl Map {
                 let entity = graph.entity_id();
                 let graph = graph.read(cx);
                 format!(
-                    "fixture {} nodes, entity {entity:?}, focus {:?}, camera {:?}{}",
+                    "indexed {} declarations, entity {entity:?}, focus {:?}, camera {:?}{}",
                     graph.world().len(),
                     graph.focused(),
                     graph.camera(),
@@ -401,18 +474,18 @@ impl Map {
             && ask > self.toured
         {
             self.toured = ask;
-            let index = self.identities.as_ref().and_then(|identities| identities.packages_of(&package).first().copied());
-            let started = index.is_some_and(|index| graph.update(cx, |graph, cx| graph.start_tour(index, 0, cx)));
+            let index = self
+                .identities
+                .as_ref()
+                .and_then(|identities| identities.packages_of(&package).first().copied());
+            let started = index
+                .is_some_and(|index| graph.update(cx, |graph, cx| graph.start_tour(index, 0, cx)));
             if !started {
-                self.error = Some(format!("This graph fixture has no guided tour of {}.", package.display_name()));
+                self.error = Some(format!(
+                    "No indexed declaration tour is available for {}.",
+                    package.display_name()
+                ));
             }
-            return;
-        }
-        if let Some(at) = route.at() {
-            self.error = Some(format!(
-                "Graph fixture is pinned; release {} is not re-scoped by this map.",
-                at.as_str()
-            ));
             return;
         }
         if let Some(node) = self.revealed_focus.take() {
@@ -458,7 +531,7 @@ impl Map {
             }
         } else {
             self.error = Some(format!(
-                "This indexed declaration has {} exact matches in the graph fixture.",
+                "This indexed declaration has {} exact matches in the current graph.",
                 candidates.len()
             ));
         }
@@ -537,7 +610,7 @@ impl Map {
         use facet::graph::Kind as G;
         let snapshot = self.links.snapshot(cx);
         let focus = self.graph.as_ref().and_then(|graph| {
-            if !self.visible || !is_graph(snapshot.route()) || snapshot.route().at().is_some() {
+            if !self.visible || !is_graph(snapshot.route()) {
                 return None;
             }
             let graph = graph.read(cx);
@@ -548,6 +621,12 @@ impl Map {
                 .resolved
                 .get(&id)
                 .map(|resolved| (resolved.package.clone(), resolved.symbol.clone()))
+                .or_else(|| {
+                    self.identities
+                        .as_ref()?
+                        .exact_node(id)
+                        .map(|resolved| (resolved.package, resolved.symbol))
+                })
                 .or_else(|| {
                     let package = crate::runtime::store::route_package(snapshot.route())?;
                     let store = self.links.store.read(cx);
@@ -628,16 +707,6 @@ impl Map {
         if snapshot.overlay().is_some() {
             return;
         }
-        if self
-            .route
-            .as_ref()
-            .is_some_and(|route| route.at().is_some())
-        {
-            self.error = Some("This graph fixture cannot focus a symbol at the viewed release; return to your pin first.".into());
-            self.publish_focus(cx);
-            cx.notify();
-            return;
-        }
         let Some(graph) = self.graph.clone() else {
             return;
         };
@@ -689,22 +758,15 @@ impl Map {
         {
             return;
         }
-        if (origin == OpenOrigin::Graph && snapshot.route().at().is_some())
-            || (origin == OpenOrigin::Peek
-                && self
-                    .route
-                    .as_ref()
-                    .is_some_and(|route| route.at().is_some()))
-        {
-            self.error = Some("This graph fixture cannot open a symbol at the viewed release; return to your pin first.".into());
-            self.publish_focus(cx);
-            cx.notify();
-            return;
-        }
         self.error = None;
         self.invalidate_open();
         self.publish_focus(cx);
-        if let Some(resolved) = self.resolved.get(&node).cloned() {
+        if let Some(resolved) = self.resolved.get(&node).cloned().or_else(|| {
+            self.identities
+                .as_ref()
+                .and_then(|identities| identities.exact_node(node))
+        }) {
+            self.resolved.insert(node, resolved.clone());
             self.navigate(
                 resolved,
                 target,
@@ -890,7 +952,10 @@ impl Map {
 
 /// A last-good value cannot settle the latest root's open. Activity is
 /// checked first because an active retry retains its previous terminal too.
-pub(crate) fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Result<Option<&T>, String> {
+pub(crate) fn open_value<T>(
+    resource: &Resource<T>,
+    root: VersionedRoot,
+) -> Result<Option<&T>, String> {
     if matches!(
         resource.activity(),
         Activity::Waiting | Activity::Working | Activity::NotYet
@@ -911,7 +976,7 @@ pub(crate) fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Resu
     }
 }
 
-/// The map is deliberately a fixture until a typed world query exists.
+/// Whether this route asks for the shared indexed map.
 pub(crate) fn is_graph(route: &Route) -> bool {
     matches!(
         route,
@@ -1088,14 +1153,19 @@ impl gpui::Element for FocusMark {
             _ => facet::icons::Kind::Struct,
         };
         let Some((symbol, origin, previous_node)) = owner.update(cx, |map, _| {
-            let Some(resolved) = map.resolved.get(&node) else {
+            let resolved = map.resolved.get(&node).cloned().or_else(|| {
+                map.identities
+                    .as_ref()
+                    .and_then(|identities| identities.exact_node(node))
+            });
+            let Some(resolved) = resolved else {
                 // A producer-root change can remove the indexed join while
-                // the fixture's selected node remains. No old ghost survives.
+                // the selected node remains. No old ghost survives.
                 map.painted_focus = None;
                 return None;
             };
             Some((
-                resolved.symbol.clone(),
+                resolved.symbol,
                 map.entry_origin.take(),
                 map.painted_focus.map(|(node, _, _)| node),
             ))
@@ -1161,8 +1231,9 @@ impl gpui::Element for FocusMark {
 
 impl Render for Map {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some((scene, identities)) = self.ready_scene.take() {
+        if let Some((scene, identities, coverage)) = self.ready_scene.take() {
             self.identities = Some(identities);
+            self.coverage = Some(coverage);
             let owner = cx.entity().downgrade();
             let peek_owner = owner.clone();
             self.graph = Some(cx.new(|cx| {
@@ -1219,6 +1290,7 @@ impl Render for Map {
         {
             self.show(&route, None, window, cx);
         }
+        self.request_world(cx);
         let mut root = div().relative().size_full();
         if let Some(graph) = &self.graph {
             if self.focus_on_mount && self.visible {
@@ -1241,7 +1313,7 @@ impl Render for Map {
             root = root.flex().items_center().justify_center().child(
                 self.load_error
                     .clone()
-                    .unwrap_or_else(|| "Laying out the graph fixture…".into()),
+                    .unwrap_or_else(|| "Reading the indexed graph…".into()),
             );
         }
         let root = root.child(
@@ -1253,19 +1325,19 @@ impl Render for Map {
                 .bottom(px(8.0))
                 .right(px(16.0))
                 .max_w(gpui::relative(0.62))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_size(px(11.0))
+                .text_size(px(10.0))
                 .child(
                     self.load_error
                         .clone()
                         .or_else(|| self.error.clone())
                         .unwrap_or_else(|| {
                             if self.pending.is_some() {
-                                "Resolving this fixture symbol in the local index…".into()
+                                "Resolving this indexed symbol…".into()
                             } else {
-                                "Graph fixture · pages resolve through your local index".into()
+                                self.coverage
+                                    .as_ref()
+                                    .map(Coverage::words)
+                                    .unwrap_or_else(|| "Indexed graph".into())
                             }
                         }),
                 ),

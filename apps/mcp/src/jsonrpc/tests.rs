@@ -10,10 +10,14 @@
 
 use super::*;
 use backend_library::{
-    Basis, COMMANDS, CommandReply, Coverage, DeclarationKind, Document, Fragment, Freshness,
-    Frontier, Intent, Lane, Outline, OutlineExtent, OutlineNode, ProjectionPage, Reason, Row,
-    RowId, SourceAvailability, SourceExcerpt, SourceExcerptExtent, SourceLocation, ViewRoot,
-    ViewSnapshot, object_version, package_key, symbol_key, view_key, view_state_root,
+    Basis, COMMANDS, CommandReply, CompileExecutionIntent, Coverage, DeclarationKind, Document,
+    Fragment, Freshness, Frontier, IndexCancelReceipt, IndexCancelStatus, IndexJobObservation,
+    IndexJobOutcome, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal,
+    IndexJobTicket, IndexProgressPage, IndexSearchCursor, IndexSearchPage, IndexSearchResultCount,
+    IndexStartResult, Intent, Lane, Outline, OutlineExtent, OutlineNode, PackageReference,
+    ProjectionPage, Reason, Row, RowId, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
+    SourceLocation, SurfaceReply, ViewRoot, ViewSnapshot, object_version, package_key, symbol_key,
+    view_key, view_state_root,
 };
 use backend_present::{domain_name, grammar_for};
 
@@ -41,12 +45,34 @@ struct Fake {
     stale_cursor: bool,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
+    /// Exercise the opaque owner cursor family behind `backend.surface`.
+    surface_index_search_pages: bool,
+    /// Override the opaque owner cursor for size-boundary cases.
+    surface_index_search_owner_cursor: Option<String>,
+    /// Make the owner reject an index-search cursor as stale.
+    surface_index_search_stale: bool,
+    /// Owner cursors that reached the durable index-search surface.
+    surface_index_search_seen: Vec<Option<String>>,
+    /// Exact typed surface commands reaching the owner boundary.
+    surface_commands: Vec<SurfaceCommand>,
     /// Number of graph requests that reached the product boundary.
     graph_query_calls: usize,
 }
 
 fn basis() -> Basis {
     Basis::new(view_state_root(&[]), object_version(b"source"))
+}
+
+fn index_job_ticket() -> IndexJobTicket {
+    IndexJobTicket::new(
+        std::num::NonZeroU64::new(17).expect("nonzero ticket"),
+        [7; 16],
+        PackageReference::parse("pkg:cargo/serde@1.0.228").expect("pinned package"),
+    )
+}
+
+fn ticket_value(ticket: &IndexJobTicket) -> Value {
+    serde_json::to_value(ticket).expect("owner ticket serializes")
 }
 
 fn root(rows: Vec<Row>) -> ViewRoot {
@@ -211,10 +237,39 @@ impl Engine for Fake {
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+        self.surface_commands.push(command.clone());
         if let Some(reply) = self.surface_reply.take() {
             return Ok(reply);
         }
         match command {
+            SurfaceCommand::IndexSearch { cursor, .. } if self.surface_index_search_pages => {
+                self.surface_index_search_seen
+                    .push(cursor.as_ref().map(|cursor| cursor.as_str().to_owned()));
+                if cursor.is_some() && self.surface_index_search_stale {
+                    return Err(ClientError::StaleCursor);
+                }
+                let expected_cursor = self
+                    .surface_index_search_owner_cursor
+                    .as_deref()
+                    .unwrap_or("maven-owner-v4");
+                if let Some(cursor) = &cursor
+                    && cursor.as_str() != expected_cursor
+                {
+                    return Err(ClientError::Protocol(
+                        "fixture received a non-owner index-search cursor".to_owned(),
+                    ));
+                }
+                let next_cursor = cursor.is_none().then(|| {
+                    IndexSearchCursor::new(expected_cursor.to_owned()).expect("owner cursor")
+                });
+                Ok(SurfaceReply::IndexSearchPage(IndexSearchPage {
+                    snapshot: [42; 32],
+                    evaluated_at_millis: 17,
+                    hits: Box::new([]),
+                    next_cursor,
+                    result_count: IndexSearchResultCount::AtLeast(1),
+                }))
+            }
             SurfaceCommand::Subscriptions => Ok(SurfaceReply::Subscriptions(Box::new([]))),
             SurfaceCommand::References { target } => Ok(SurfaceReply::References {
                 target,
@@ -480,8 +535,366 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
             "backend.read",
             "backend.references",
             "backend.graph",
+            "backend.index_start",
+            "backend.index_progress",
+            "backend.index_cancel",
         ]
     );
+}
+
+#[test]
+fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let tools = &listed["result"]["tools"];
+
+    let start = tool_named(tools, INDEX_START_TOOL);
+    assert_eq!(start["inputSchema"]["required"], json!(["package"]));
+    assert_eq!(
+        start["inputSchema"]["properties"]["execution_intent"]["enum"],
+        json!(["interactive", "background"])
+    );
+    assert_eq!(start["annotations"]["readOnlyHint"], false);
+
+    let progress = tool_named(tools, INDEX_PROGRESS_TOOL);
+    assert_eq!(progress["inputSchema"]["required"], json!(["ticket"]));
+    assert_eq!(
+        progress["inputSchema"]["properties"]["ticket"]["properties"]["owner_epoch"]["minItems"],
+        16
+    );
+    assert_eq!(
+        progress["inputSchema"]["properties"]["after_sequence"]["default"],
+        0
+    );
+    assert_eq!(progress["annotations"]["readOnlyHint"], true);
+    assert_eq!(
+        progress["outputSchema"]["properties"]["surface"]["required"],
+        json!(["result", "data", "index_job"])
+    );
+
+    let cancel = tool_named(tools, INDEX_CANCEL_TOOL);
+    assert_eq!(cancel["inputSchema"]["required"], json!(["ticket"]));
+    assert_eq!(cancel["annotations"]["readOnlyHint"], false);
+    assert!(
+        progress["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown-after-restart")
+    );
+    assert!(
+        cancel["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not terminal")
+    );
+}
+
+#[test]
+fn index_start_keeps_the_exact_owner_ticket_and_routes_purls_to_the_owner_job_api() {
+    let ticket = index_job_ticket();
+    let reply = SurfaceReply::IndexStarted(IndexStartResult::Started {
+        ticket: ticket.clone(),
+        stage: IndexJobStage::Acquiring,
+    });
+    let fake = Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    };
+    let mut server = ready(fake);
+    let result = call(
+        &mut server,
+        INDEX_START_TOOL,
+        &json!({
+            "package": "pkg:cargo/serde@1.0.228",
+            "execution_intent": "background"
+        }),
+    );
+
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&reply).expect("typed reply");
+    assert_eq!(
+        result["structuredContent"]["surface"]["result"],
+        wire["result"]
+    );
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["kind"],
+        "started"
+    );
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        serde_json::to_value(IndexStartResult::Started {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Acquiring,
+        })
+        .expect("start projection")
+    );
+    assert!(text_of(&result).contains("stage acquiring"));
+    assert!(text_of(&result).contains(&ticket_value(&ticket).to_string()));
+    assert_context_bounded(&result);
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexStart {
+            package: PackageReference::Purl(package),
+            execution_intent: CompileExecutionIntent::Background,
+        }] if package.as_str() == "pkg:cargo/serde@1.0.228"
+    ));
+}
+
+#[test]
+fn index_progress_returns_bounded_events_and_the_exact_next_sequence() {
+    let ticket = index_job_ticket();
+    let profile =
+        backend_library::SemanticLanguageProfile::from_name("rust").expect("closed rust profile");
+    let reply = SurfaceReply::IndexProgress(IndexJobObservation::Pending(IndexProgressPage {
+        ticket: ticket.clone(),
+        stage: IndexJobStage::Compiling,
+        events: vec![IndexJobProgressEvent {
+            ticket: ticket.clone(),
+            sequence: 3,
+            kind: IndexJobProgressKind::ProfileStarted {
+                profile,
+                ordinal: 1,
+                total: 2,
+            },
+        }]
+        .into_boxed_slice(),
+        next_sequence: 3,
+        truncated: true,
+        has_more: false,
+    }));
+    let mut server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({ "ticket": ticket_value(&ticket), "after_sequence": 2 }),
+    );
+
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&reply).expect("typed observation");
+    assert_eq!(
+        result["structuredContent"]["surface"]["result"],
+        wire["result"]
+    );
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        wire["data"]
+    );
+    let text = text_of(&result);
+    assert!(text.contains("older progress events aged out"), "{text}");
+    assert!(text.contains("rust profile started"), "{text}");
+    assert!(text.contains("after_sequence 3"), "{text}");
+    assert!(text.contains(&ticket_value(&ticket).to_string()), "{text}");
+    assert_context_bounded(&result);
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexProgress {
+            ticket: seen,
+            after_sequence: 2,
+        }] if seen == &ticket
+    ));
+}
+
+#[test]
+fn index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget() {
+    let ticket = index_job_ticket();
+    let profile =
+        backend_library::SemanticLanguageProfile::from_name("rust").expect("closed rust profile");
+    let events = (1..=backend_library::MAX_INDEX_PROGRESS_EVENTS as u64)
+        .map(|sequence| IndexJobProgressEvent {
+            ticket: ticket.clone(),
+            sequence,
+            kind: IndexJobProgressKind::ProfileAdmitted {
+                profile,
+                ordinal: 1,
+                total: 1,
+            },
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let reply = SurfaceReply::IndexProgress(IndexJobObservation::Pending(IndexProgressPage {
+        ticket: ticket.clone(),
+        stage: IndexJobStage::Publishing,
+        events,
+        next_sequence: backend_library::MAX_INDEX_PROGRESS_EVENTS as u64,
+        truncated: true,
+        has_more: true,
+    }));
+    let mut server = ready(Fake {
+        surface_reply: Some(reply),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({ "ticket": ticket_value(&ticket), "after_sequence": 0 }),
+    );
+    assert_eq!(result["isError"], false);
+    assert_context_bounded(&result);
+    let text = text_of(&result);
+    assert!(text.contains("more events available"), "{text}");
+    assert!(text.contains("after_sequence 16"), "{text}");
+}
+
+#[test]
+fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
+    let ticket = index_job_ticket();
+    let unknown = SurfaceReply::IndexProgress(IndexJobObservation::Unknown {
+        ticket: ticket.clone(),
+        current_owner_epoch: [8; 16],
+    });
+    let mut server = ready(Fake {
+        surface_reply: Some(unknown.clone()),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({ "ticket": ticket_value(&ticket) }),
+    );
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&unknown).expect("unknown observation");
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        wire["data"]
+    );
+    assert!(text_of(&result).contains("unknown after owner restart"));
+
+    let terminal = SurfaceReply::IndexProgress(IndexJobObservation::Terminal(IndexJobTerminal {
+        ticket: ticket.clone(),
+        outcome: IndexJobOutcome::Refused(
+            backend_library::ProductText::new("compiler input was refused").expect("reason"),
+        ),
+    }));
+    server.product.surface_reply = Some(terminal.clone());
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({ "ticket": ticket_value(&ticket), "after_sequence": 3 }),
+    );
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&terminal).expect("terminal observation");
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        wire["data"]
+    );
+    let text = text_of(&result);
+    assert!(text.contains("outcome refused"), "{text}");
+    assert!(text.contains("compiler input was refused"), "{text}");
+}
+
+#[test]
+fn index_cancel_preserves_terminal_races_and_rejects_fabricated_tickets() {
+    let ticket = index_job_ticket();
+    let terminal = IndexJobTerminal {
+        ticket: ticket.clone(),
+        outcome: IndexJobOutcome::Published,
+    };
+    let reply = SurfaceReply::IndexCancellation(IndexCancelReceipt {
+        ticket: ticket.clone(),
+        status: IndexCancelStatus::Terminal(terminal),
+    });
+    let mut server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_CANCEL_TOOL,
+        &json!({ "ticket": ticket_value(&ticket) }),
+    );
+    assert_eq!(result["isError"], false);
+    let wire = serde_json::to_value(&reply).expect("terminal cancellation race");
+    assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        wire["data"]
+    );
+    assert!(text_of(&result).contains("outcome published"));
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexCancel { ticket: seen }] if seen == &ticket
+    ));
+
+    let requested = SurfaceReply::IndexCancellation(IndexCancelReceipt {
+        ticket: ticket.clone(),
+        status: IndexCancelStatus::Requested,
+    });
+    server.product.surface_reply = Some(requested.clone());
+    let result = call(
+        &mut server,
+        INDEX_CANCEL_TOOL,
+        &json!({ "ticket": ticket_value(&ticket) }),
+    );
+    assert_eq!(result["isError"], false);
+    let requested_wire = serde_json::to_value(&requested).expect("requested receipt");
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"],
+        requested_wire["data"]
+    );
+    let text = text_of(&result);
+    assert!(text.contains("cancellation was requested"), "{text}");
+    assert!(text.contains("cancellation ticket:"), "{text}");
+
+    let malformed = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": INDEX_CANCEL_TOOL,
+            "arguments": {
+                "ticket": {
+                    "id": 17,
+                    "owner_epoch": [7],
+                    "package": { "kind": "purl", "value": "pkg:cargo/serde@1.0.228" }
+                }
+            }
+        }),
+    );
+    assert_eq!(malformed["error"]["code"], -32602);
+    assert_eq!(server.product.surface_commands.len(), 2);
+}
+
+#[test]
+fn generic_surface_progress_and_cancel_keep_the_request_ticket_projection() {
+    let ticket = index_job_ticket();
+    let reply = SurfaceReply::IndexCancellation(IndexCancelReceipt {
+        ticket: ticket.clone(),
+        status: IndexCancelStatus::Requested,
+    });
+    let mut server = ready(Fake {
+        surface_reply: Some(reply),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        SURFACE_TOOL,
+        &json!({
+            "command": {
+                "operation": "index-cancel",
+                "ticket": ticket_value(&ticket)
+            }
+        }),
+    );
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["kind"],
+        "cancellation"
+    );
+    assert_eq!(
+        result["structuredContent"]["surface"]["index_job"]["value"]["ticket"],
+        ticket_value(&ticket)
+    );
+    assert!(text_of(&result).contains(&ticket_value(&ticket).to_string()));
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexCancel { ticket: seen }] if seen == &ticket
+    ));
 }
 
 #[test]
@@ -1267,18 +1680,20 @@ fn continuation_authority_binds_context_and_owner_payload() {
     let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
     let token = server.sign_cursor_token("pc1-owner-issued", b"query-a");
     assert_eq!(
-        server.verify_cursor_token(&token, b"query-a"),
+        server.verify_cursor_token(&token, b"query-a").as_deref(),
         Some("pc1-owner-issued")
     );
     // Verification is deliberately replayable: retrying a read page is safe,
     // while the MAC still prevents moving that page to another authority
     // context. This is the property a reconnecting MCP client needs.
     assert_eq!(
-        server.verify_cursor_token(&token, b"query-a"),
+        server.verify_cursor_token(&token, b"query-a").as_deref(),
         Some("pc1-owner-issued")
     );
     assert!(server.verify_cursor_token(&token, b"query-b").is_none());
-    let tampered = token.replace("pc1-owner-issued", "pc1-owner-tampered");
+    let mut tampered = token.clone();
+    let final_byte = tampered.pop().expect("MAC byte");
+    tampered.push(if final_byte == '0' { '1' } else { '0' });
     assert!(server.verify_cursor_token(&tampered, b"query-a").is_none());
     let other_workspace = Server::with_authority(Fake::default(), "/other".to_owned(), [8; 32]);
     assert!(
@@ -1291,7 +1706,7 @@ fn continuation_authority_binds_context_and_owner_payload() {
     // workspace and query context.
     let restarted = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
     assert_eq!(
-        restarted.verify_cursor_token(&token, b"query-a"),
+        restarted.verify_cursor_token(&token, b"query-a").as_deref(),
         Some("pc1-owner-issued")
     );
     let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
@@ -1436,6 +1851,485 @@ fn graph_continuation_round_trip_is_bounded_and_authorized() {
     assert_context_bounded(&second);
     assert_eq!(second["isError"], false);
     assert_eq!(second["structuredContent"]["terminal"], "complete");
+}
+
+#[test]
+fn surface_index_search_cursor_round_trips_through_the_mcp_projection() {
+    let mut first_server = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let first = call(
+        &mut first_server,
+        SURFACE_TOOL,
+        &json!({
+            "command": {
+                "operation": "index-search",
+                "query": "maven",
+                "limit": 1
+            },
+            "detail": "full"
+        }),
+    );
+    assert_eq!(first["isError"], false);
+    assert_context_bounded(&first);
+    let cursor = first["structuredContent"]["surface"]["data"]["next_cursor"]
+        .as_str()
+        .expect("index-search page carries a nested cursor")
+        .to_owned();
+    assert!(cursor.starts_with("mcp1-"));
+    assert!(!cursor.contains("maven-owner-v4"));
+    assert!(text_of(&first).contains(&cursor));
+    assert!(text_of(&first).contains("`command.cursor`"));
+    assert!(!text_of(&first).contains("`--cursor`"));
+    assert!(
+        !serde_json::to_string(&first)
+            .expect("tool result JSON")
+            .contains("maven-owner-v4")
+    );
+
+    let structured = &first["structuredContent"];
+    assert_eq!(structured["surface"]["result"], "index-search-page");
+    let measured = structured["budget"]["bytes"]
+        .as_u64()
+        .expect("typed surface carries measured bytes");
+    let measured = usize::try_from(measured).expect("measured bytes fit this host");
+    assert_eq!(
+        serde_json::to_vec(structured)
+            .expect("structured result JSON")
+            .len(),
+        measured,
+        "the signed cursor is inside the budgeted typed projection"
+    );
+    let final_reply_bytes = serde_json::to_vec(&first)
+        .expect("complete MCP response including Markdown")
+        .len();
+    assert!(
+        final_reply_bytes <= DEFAULT_RESPONSE_BUDGET_BYTES,
+        "structured surface and signed-token Markdown fit together: {final_reply_bytes}"
+    );
+
+    // The server-side MAC is portable across an MCP process restart when its
+    // authority secret and project selection are unchanged.
+    let mut restarted = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let second = call(
+        &mut restarted,
+        SURFACE_TOOL,
+        &json!({
+            "command": {
+                "operation": "index-search",
+                "query": "maven",
+                "limit": 1,
+                "cursor": cursor
+            },
+            "detail": "full"
+        }),
+    );
+    assert_eq!(second["isError"], false);
+    assert_eq!(
+        restarted.product.surface_index_search_seen,
+        vec![Some("maven-owner-v4".to_owned())]
+    );
+    assert!(second["structuredContent"]["surface"]["data"]["next_cursor"].is_null());
+    assert!(!text_of(&second).contains("next cursor"));
+}
+
+#[test]
+fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
+    for detail in ["summary", "full"] {
+        let mut server = ready(Fake {
+            surface_index_search_pages: true,
+            ..Fake::default()
+        });
+        let first = call(
+            &mut server,
+            "backend.index_search",
+            &json!({"query":"maven","limit":1,"detail":detail}),
+        );
+        assert_eq!(first["isError"], false, "detail={detail}");
+        assert_context_bounded(&first);
+        let cursor = first["structuredContent"]["index_search_page"]["next_cursor"]
+            .as_str()
+            .expect("product page carries the nested cursor")
+            .to_owned();
+        assert!(cursor.starts_with("mcp1-"));
+        assert_eq!(
+            first["structuredContent"]["nextCursor"].as_str(),
+            Some(cursor.as_str())
+        );
+        assert!(text_of(&first).contains(&cursor));
+        assert!(text_of(&first).contains("`backend.index_search`"));
+        assert!(
+            !serde_json::to_string(&first)
+                .expect("tool result JSON")
+                .contains("maven-owner-v4")
+        );
+        let structured = &first["structuredContent"];
+        let measured = usize::try_from(
+            structured["budget"]["bytes"]
+                .as_u64()
+                .expect("typed product carries measured bytes"),
+        )
+        .expect("measured bytes fit this host");
+        assert_eq!(
+            serde_json::to_vec(structured)
+                .expect("structured product JSON")
+                .len(),
+            measured,
+            "both signed cursor projections are inside the measured budget"
+        );
+
+        let second = call(
+            &mut server,
+            "backend.index_search",
+            &json!({
+                "query":"maven",
+                "limit":1,
+                "detail":detail,
+                "cursor":cursor
+            }),
+        );
+        assert_eq!(second["isError"], false, "detail={detail}");
+        assert_eq!(
+            server.product.surface_index_search_seen,
+            vec![None, Some("maven-owner-v4".to_owned())]
+        );
+        assert!(
+            second["structuredContent"]["index_search_page"]
+                .get("next_cursor")
+                .is_none()
+        );
+        assert!(second["structuredContent"].get("nextCursor").is_none());
+        assert!(!text_of(&second).contains("next cursor"));
+
+        // The MCP authority signature survives a process reconstruction when
+        // the persisted secret and selected project are unchanged.
+        let mut restarted = ready(Fake {
+            surface_index_search_pages: true,
+            ..Fake::default()
+        });
+        let after_restart = call(
+            &mut restarted,
+            "backend.index_search",
+            &json!({
+                "query":"maven",
+                "limit":1,
+                "detail":detail,
+                "cursor":cursor
+            }),
+        );
+        assert_eq!(after_restart["isError"], false, "detail={detail}");
+        assert_eq!(
+            restarted.product.surface_index_search_seen,
+            vec![Some("maven-owner-v4".to_owned())]
+        );
+        assert!(
+            after_restart["structuredContent"]
+                .get("nextCursor")
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn oversized_signed_index_search_cursor_projection_is_refused_without_truncation() {
+    let owner_cursor = "x".repeat(26 * 1024);
+    let mut server = ready(Fake {
+        surface_index_search_pages: true,
+        surface_index_search_owner_cursor: Some(owner_cursor.clone()),
+        ..Fake::default()
+    });
+    let response = call(
+        &mut server,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1,"detail":"summary"}),
+    );
+    assert_context_bounded(&response);
+    assert_eq!(response["isError"], true);
+    assert_eq!(response["structuredContent"]["answer"], "fault");
+    assert_eq!(response["structuredContent"]["cause"], "oversized");
+    assert!(
+        !serde_json::to_string(&response)
+            .expect("refusal JSON")
+            .contains(&owner_cursor)
+    );
+    assert!(!text_of(&response).contains(&owner_cursor));
+}
+
+#[test]
+fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
+    for mutation in [
+        "query", "limit", "detail", "project", "session", "tamper", "expired", "raw",
+    ] {
+        let mut server = ready(Fake {
+            surface_index_search_pages: true,
+            ..Fake::default()
+        });
+        let first = call(
+            &mut server,
+            "backend.index_search",
+            &json!({"query":"maven","limit":1,"detail":"summary"}),
+        );
+        let cursor = first["structuredContent"]["nextCursor"]
+            .as_str()
+            .expect("first page carries a signed cursor")
+            .to_owned();
+        let mut arguments = json!({
+            "query": "maven",
+            "limit": 1,
+            "detail": "summary",
+            "cursor": cursor
+        });
+        match mutation {
+            "query" => arguments["query"] = json!("spring"),
+            "limit" => arguments["limit"] = json!(2),
+            "detail" => arguments["detail"] = json!("full"),
+            "project" => server.project = "/other-project".to_owned(),
+            "session" => server.cursor_secret = [8; 32],
+            "tamper" => {
+                let token = arguments["cursor"].as_str().expect("cursor token");
+                let mut changed = token.to_owned();
+                let final_byte = changed.pop().expect("MAC byte");
+                changed.push(if final_byte == '0' { '1' } else { '0' });
+                arguments["cursor"] = json!(changed);
+            }
+            "expired" => {
+                let context_arguments = json!({"query":"maven","limit":1,"detail":"summary"});
+                let context = continuation_context(
+                    PROJECT,
+                    "backend.index_search",
+                    context_arguments.as_object().expect("tool arguments"),
+                    Detail::Summary,
+                );
+                arguments["cursor"] = json!(server.sign_cursor_token_at(
+                    unix_seconds().saturating_sub(1),
+                    "maven-owner-v4",
+                    &context
+                ));
+            }
+            "raw" => arguments["cursor"] = json!("maven-owner-v4"),
+            _ => unreachable!(),
+        }
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.index_search","arguments":arguments}),
+        );
+        assert_eq!(response["error"]["code"], -32602, "mutation={mutation}");
+        assert_eq!(server.product.surface_index_search_seen.len(), 1);
+    }
+}
+
+#[test]
+fn index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools() {
+    let mut named = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let named_first = call(
+        &mut named,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1}),
+    );
+    let named_cursor = named_first["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("named tool cursor")
+        .to_owned();
+    let generic_replay = request(
+        &mut named,
+        "tools/call",
+        &json!({
+            "name": SURFACE_TOOL,
+            "arguments": {
+                "command": {
+                    "operation": "index-search",
+                    "query": "maven",
+                    "limit": 1,
+                    "cursor": named_cursor
+                }
+            }
+        }),
+    );
+    assert_eq!(generic_replay["error"]["code"], -32602);
+    assert_eq!(named.product.surface_index_search_seen.len(), 1);
+
+    let mut generic = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let generic_first = call(
+        &mut generic,
+        SURFACE_TOOL,
+        &json!({"command":{"operation":"index-search","query":"maven","limit":1}}),
+    );
+    let generic_cursor = generic_first["structuredContent"]["surface"]["data"]["next_cursor"]
+        .as_str()
+        .expect("generic surface cursor")
+        .to_owned();
+    let named_replay = request(
+        &mut generic,
+        "tools/call",
+        &json!({
+            "name": "backend.index_search",
+            "arguments": {"query":"maven","limit":1,"cursor":generic_cursor}
+        }),
+    );
+    assert_eq!(named_replay["error"]["code"], -32602);
+    assert_eq!(generic.product.surface_index_search_seen.len(), 1);
+}
+
+#[test]
+fn stale_named_index_search_cursor_is_a_restartable_refusal() {
+    let mut server = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let first = call(
+        &mut server,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1}),
+    );
+    let cursor = first["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("first page carries a cursor")
+        .to_owned();
+    server.product.surface_index_search_stale = true;
+    let response = call(
+        &mut server,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1,"cursor":cursor}),
+    );
+    assert_eq!(response["isError"], true);
+    assert_eq!(response["structuredContent"]["answer"], "fault");
+    assert_eq!(response["structuredContent"]["slug"], "cursor-mismatch");
+    assert!(text_of(&response).contains("restart the query"));
+    assert_eq!(
+        server.product.surface_index_search_seen,
+        vec![None, Some("maven-owner-v4".to_owned())]
+    );
+}
+
+#[test]
+fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
+    for mutation in [
+        "query", "limit", "detail", "project", "session", "tamper", "expired", "raw",
+    ] {
+        let mut server = ready(Fake {
+            surface_index_search_pages: true,
+            ..Fake::default()
+        });
+        let first_command = json!({
+            "operation": "index-search",
+            "query": "maven",
+            "limit": 1
+        });
+        let first = call(
+            &mut server,
+            SURFACE_TOOL,
+            &json!({
+                "command": first_command.clone(),
+                "detail": "summary"
+            }),
+        );
+        let cursor = first["structuredContent"]["surface"]["data"]["next_cursor"]
+            .as_str()
+            .expect("index-search page carries a nested cursor")
+            .to_owned();
+        let mut command = json!({
+            "operation": "index-search",
+            "query": "maven",
+            "limit": 1,
+            "cursor": cursor
+        });
+        let mut detail = "summary";
+        match mutation {
+            "query" => command["query"] = json!("spring"),
+            "limit" => command["limit"] = json!(2),
+            "detail" => detail = "full",
+            "project" => server.project = "/other-project".to_owned(),
+            "session" => server.cursor_secret = [8; 32],
+            "tamper" => {
+                let token = command["cursor"].as_str().expect("cursor token");
+                let mut changed = token.to_owned();
+                let final_byte = changed.pop().expect("MAC byte");
+                changed.push(if final_byte == '0' { '1' } else { '0' });
+                command["cursor"] = json!(changed);
+            }
+            "expired" => {
+                let context_arguments_value = json!({"command": first_command.clone()});
+                let context_arguments = context_arguments_value
+                    .as_object()
+                    .expect("surface arguments");
+                let context =
+                    continuation_context(PROJECT, SURFACE_TOOL, context_arguments, Detail::Summary);
+                command["cursor"] = json!(server.sign_cursor_token_at(
+                    unix_seconds().saturating_sub(1),
+                    "maven-owner-v4",
+                    &context
+                ));
+            }
+            "raw" => command["cursor"] = json!("maven-owner-v4"),
+            _ => unreachable!(),
+        }
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({
+                "name": SURFACE_TOOL,
+                "arguments": {"command": command, "detail": detail}
+            }),
+        );
+        assert_eq!(response["error"]["code"], -32602, "mutation={mutation}");
+        assert_eq!(server.product.surface_index_search_seen.len(), 1);
+    }
+}
+
+#[test]
+fn stale_surface_index_search_cursor_is_reported_as_restartable() {
+    let mut first_server = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let first = call(
+        &mut first_server,
+        SURFACE_TOOL,
+        &json!({
+            "command": {
+                "operation": "index-search",
+                "query": "maven",
+                "limit": 1
+            }
+        }),
+    );
+    let cursor = first["structuredContent"]["surface"]["data"]["next_cursor"]
+        .as_str()
+        .expect("first page carries a cursor")
+        .to_owned();
+    let mut stale_owner = ready(Fake {
+        surface_index_search_pages: true,
+        surface_index_search_stale: true,
+        ..Fake::default()
+    });
+    let response = request(
+        &mut stale_owner,
+        "tools/call",
+        &json!({
+            "name": SURFACE_TOOL,
+            "arguments": {
+                "command": {
+                    "operation": "index-search",
+                    "query": "maven",
+                    "limit": 1,
+                    "cursor": cursor
+                }
+            }
+        }),
+    );
+    assert_eq!(response["error"]["code"], -32010);
+    assert_eq!(response["error"]["data"]["kind"], "stale_cursor");
 }
 
 #[test]

@@ -239,6 +239,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             all_features: true,
             no_default_features: false,
             features: Box::new([]),
+            metadata_policy: self.rust_cargo_metadata_policy,
         })
     }
 

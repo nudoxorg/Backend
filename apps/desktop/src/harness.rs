@@ -26,6 +26,7 @@
 //! intents in [`adapt`].
 
 use crate::core::{LocalProjectId, VersionedRoot};
+use crate::host::registry::{CargoCache, Release};
 use crate::model::pages::{PackageRef, SymbolRef};
 use crate::model::{
     AppSnapshot, AppearancePreference, ContrastPreference, DensityPreference, MotionPreference,
@@ -73,24 +74,29 @@ pub struct Refusal {
     pub reason: String,
 }
 
-/// What the fixture's pages are made of: how many roots the owner indexed
-/// afresh, how many it serves from a prior generation because it refused the
-/// refresh, and how many it has nothing to serve for.
+/// What the fixture's pages are made of: roots the owner reports ready,
+/// roots served from a prior generation after a refusal, roots with nothing
+/// to serve, and requests it explicitly refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Provenance {
-    /// Indexed and served as the owner just built them.
-    pub fresh: usize,
+    /// The owner accepted the request and reports a ready row.
+    pub ready: usize,
     /// Refused a refresh; served from what the owner kept.
     pub preserved: usize,
     /// Nothing to serve: the app's fault plate.
     pub failed: usize,
+    /// Requests the owner explicitly refused, whether or not it serves prior data.
+    pub refused: usize,
 }
 
 /// The fixture owner: a local index of fixed crates, shared by every boot in
 /// this process.
 pub struct Fixture {
     host: crate::DesktopHost,
+    state: PathBuf,
     projects: Vec<PathBuf>,
+    ready: Vec<PathBuf>,
+    refused: Vec<Refusal>,
     preserved: Vec<Refusal>,
     failed: Vec<Refusal>,
 }
@@ -100,6 +106,12 @@ impl Fixture {
     #[must_use]
     pub fn endpoint(&self) -> &Path {
         self.host.endpoint()
+    }
+
+    /// The owner-only state directory for this run.
+    #[must_use]
+    pub fn state_dir(&self) -> &Path {
+        &self.state
     }
 
     /// Every fixture root, indexed or not.
@@ -116,6 +128,20 @@ impl Fixture {
         &self.failed
     }
 
+    /// Roots whose latest index request the owner explicitly refused.
+    /// This is independent of whether it serves a prior generation
+    /// (`preserved`) or has no content to serve (`failed`).
+    #[must_use]
+    pub fn refused(&self) -> &[Refusal] {
+        &self.refused
+    }
+
+    /// Roots whose current index rows are Ready after an accepted request.
+    #[must_use]
+    pub fn ready(&self) -> &[PathBuf] {
+        &self.ready
+    }
+
     /// The roots whose refresh the owner refused and which it serves anyway,
     /// from the prior generation it kept. Their pages are real, not fresh: a
     /// capture of them is a capture of preserved data, and says so.
@@ -127,18 +153,20 @@ impl Fixture {
     /// What the pages are made of.
     #[must_use]
     pub fn provenance(&self) -> Provenance {
-        provenance(self.projects.len(), self.preserved.len(), self.failed.len())
+        provenance(self.ready.len(), self.preserved.len(), self.failed.len(), self.refused.len())
     }
 }
 
-/// `total` roots, of which `preserved` serve a prior generation and `failed`
-/// serve nothing; the rest are fresh.
-fn provenance(total: usize, preserved: usize, failed: usize) -> Provenance {
-    Provenance { fresh: total.saturating_sub(preserved + failed), preserved, failed }
+/// Ready, preserved and failed are disjoint served states. Refused requests
+/// are orthogonal: the owner can refuse while serving a preserved or failed
+/// row, so that count is not included in the other three.
+fn provenance(ready: usize, preserved: usize, failed: usize, refused: usize) -> Provenance {
+    Provenance { ready, preserved, failed, refused }
 }
 
 static FIXTURE: std::sync::OnceLock<std::sync::Mutex<Option<&'static Fixture>>> = std::sync::OnceLock::new();
 static STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static GENERATED_STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 static RESPONSIVE_STARTUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Native review windows paint immediately while fixture preparation runs.
@@ -147,16 +175,44 @@ pub fn responsive_startup() {
     RESPONSIVE_STARTUP.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Keeps this process's fixture index in `dir` instead of
-/// `.local/harness/desktop` (same roots, its own owner), so a long run such
-/// as a journey never contends with scene runs for the index's lock. Call
-/// it before the first [`fixture`]; later calls are ignored.
+/// Keeps this process's fixture index in `dir` instead of the generated
+/// per-run temporary state (same roots, its own owner), so a long run such
+/// as a journey never contends with scene runs for the index's lock. Call it
+/// before the first [`fixture`]; later calls are ignored.
 pub fn keep_index_in(dir: PathBuf) {
     let _ = STATE.set(dir);
 }
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn run_state_path(process_id: u32, start_nanos: u128) -> PathBuf {
+    std::env::temp_dir().join(format!("nudox-gui-harness-{process_id}-{start_nanos}"))
+}
+
+fn configured_state() -> PathBuf {
+    STATE
+        .get()
+        .cloned()
+        .or_else(|| std::env::var_os("NUDOX_HARNESS_STATE").map(PathBuf::from))
+        .unwrap_or_else(|| {
+            GENERATED_STATE
+                .get_or_init(|| {
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |duration| duration.as_nanos());
+                    run_state_path(std::process::id(), nanos)
+                })
+                .clone()
+        })
+}
+
+/// The shared exact Cargo source authority used by fixture indexing, journey
+/// source inputs, and refusal identities.
+pub(super) fn cargo_cache() -> Result<CargoCache, String> {
+    CargoCache::from_env(configured_state().join("data/registry-sources"))
+        .ok_or_else(|| "the Cargo source authority could not resolve CARGO_HOME or HOME".to_owned())
 }
 
 /// The pinned two-member workspace the `tree` route reads (`browse_tests.rs`
@@ -196,27 +252,12 @@ fn orbit_workspace(fixture: &Fixture) -> Result<WorkspaceState, String> {
     Ok(tree_workspace(&project))
 }
 
-/// A crate's unpacked source in the local cargo registry cache
-/// (`$CARGO_HOME/registry/src/<index>/<name-version>`): indexed offline,
-/// never fetched.
-fn registry_source(release: &str) -> Result<PathBuf, String> {
-    let home = std::env::var_os("CARGO_HOME").map_or_else(
-        || std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")),
-        |home| Some(PathBuf::from(home)),
-    );
-    let src = home
-        .ok_or_else(|| "neither CARGO_HOME nor HOME is set".to_owned())?
-        .join("registry/src");
-    let mut found = std::fs::read_dir(&src)
-        .map_err(|error| format!("{}: {error}", src.display()))?
-        .filter_map(|index| Some(index.ok()?.path().join(release)))
-        .filter(|path| path.join("Cargo.toml").is_file())
-        .collect::<Vec<_>>();
-    found.sort();
-    found.pop().map_or_else(
-        || Err(format!("{release} is not in the cargo registry cache under {}; fetch it once with cargo", src.display())),
-        |path| path.canonicalize().map_err(|error| format!("{}: {error}", path.display())),
-    )
+/// One exact release's unpacked source in the resolved local Cargo authority.
+/// Production and fixture paths share one resolver; ambiguity fails rather
+/// than choosing whichever matching directory is last.
+fn registry_source(cache: &CargoCache, stem: &str) -> Result<PathBuf, String> {
+    let release = Release::from_stem(stem).ok_or_else(|| format!("{stem} is not a Cargo release stem"))?;
+    cache.resolve_unpacked(&release).map(|source| source.root).map_err(|error| format!("{stem}: {error}"))
 }
 
 /// The owner's endpoint for the index in `data`: one per data directory,
@@ -271,6 +312,11 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
     let repo = repo()
         .canonicalize()
         .map_err(|error| format!("repository root: {error}"))?;
+    // Resolve fixture releases through the same authority as the owner. This
+    // selection is read-only and only accepts source trees Cargo already
+    // unpacked; archives and network-only releases are not fixture evidence.
+    let configured = configured_state();
+    let cache = cargo_cache()?;
     let projects = vec![
         repo.join("crates/present"),
         repo.join("frontends/rust/fixtures/rich_project"),
@@ -279,37 +325,35 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
         // indexed offline from the local cargo registry cache.
         repo.join("crates/runtime"),
         repo.join("frontends/rust/fixtures/toml_pin"),
-        registry_source("toml-0.8.23")?,
+        registry_source(&cache, "toml-0.8.23")?,
         // The five page2 symbol prototypes and package-comparison candidates.
         // Registry roots are pinned to the prototype extraction's exact
         // releases, and are resolved from the local Cargo cache only.
-        registry_source("serde_json-1.0.151")?,
-        registry_source("serde_core-1.0.229")?,
-        registry_source("smallvec-1.16.0")?,
-        registry_source("basic-toml-0.1.10")?,
-        registry_source("toml_edit-0.22.27")?,
+        registry_source(&cache, "serde_json-1.0.151")?,
+        registry_source(&cache, "serde_core-1.0.229")?,
+        registry_source(&cache, "smallvec-1.16.0")?,
+        registry_source(&cache, "basic-toml-0.1.10")?,
+        registry_source(&cache, "toml_edit-0.22.27")?,
         // The symbol page's record, in three languages (W-Page): toml's
         // Datetime (Rust), zod's issue shapes (TypeScript, a pinned excerpt)
         // and spf13/pflag (Go, a pinned copy). TypeScript and Go index through
         // the checker and oracle the development shell provides.
-        registry_source("toml_datetime-0.6.11")?,
+        registry_source(&cache, "toml_datetime-0.6.11")?,
         // The package page's richest subject (W-Folio): 25 features, 33 public
         // modules, network/files/programs/unsafe all read from its source.
-        registry_source("tokio-1.53.1")?,
+        registry_source(&cache, "tokio-1.53.1")?,
         repo.join("apps/desktop/tests/fixtures/lang/ts/zod"),
         repo.join("apps/desktop/tests/fixtures/lang/go/pflag"),
     ];
+    if projects.is_empty() {
+        return Err("the fixture plan contains no roots to index".to_owned());
+    }
     let mut preflight_roots = projects.clone();
     preflight_roots.push(browse_tree_root());
     preflight_fixture_manifests(&preflight_roots)?;
     progress("Preparing the fixture owner");
-    // `NUDOX_HARNESS_STATE` keeps a run's index (and its owner's advisory
-    // authority) apart from the shared one other runs use.
-    let configured = STATE
-        .get()
-        .cloned()
-        .or_else(|| std::env::var_os("NUDOX_HARNESS_STATE").map(PathBuf::from))
-        .unwrap_or_else(|| repo.join(".local/harness/desktop"));
+    // `NUDOX_HARNESS_STATE` lets a caller name its private run directory;
+    // without it, configured_state() makes a process-unique private directory.
     private_umask();
     let (host, endpoint, state) = match open_owner(&configured, &projects[0]) {
         Ok(opened) => opened,
@@ -344,7 +388,8 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
     // minutes per root for the same answer. What was refused before under the
     // same three is read back from the state directory and not asked again
     // (`refusals`).
-    let refusals = Refusals::load(&state, &projects);
+    let cargo_authority = cache.authority_key();
+    let refusals = Refusals::load(&state, &projects, &cargo_authority);
     let mut roots = index_roots(&mut session, &endpoint, &projects, &refusals, &progress)?;
     refusals.save(&roots.iter().filter_map(|root| match &root.reply {
         Reply::Refused(words) => Some((root.path.clone(), words.clone())),
@@ -355,17 +400,22 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
     let started = Instant::now();
     let rows = await_settled(&mut session, &mut roots)?;
     crate::runtime::trace::span("boot.index_settled", started, format_args!("{rows} rows"));
-    let (mut preserved, mut failed) = (Vec::new(), Vec::new());
+    let (mut ready, mut refused, mut preserved, mut failed) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for root in &roots {
+        if let Reply::Refused(reason) = &root.reply {
+            refused.push(Refusal { root: root.path.clone(), reason: reason.clone() });
+        }
         match &root.standing {
+            Standing::Ready => ready.push(root.path.clone()),
             Standing::Preserved(reason) => preserved.push(Refusal { root: root.path.clone(), reason: reason.clone() }),
             Standing::Failed(reason) => failed.push(Refusal { root: root.path.clone(), reason: reason.clone() }),
-            Standing::Ready | Standing::Pending => {}
+            Standing::Pending => return Err(format!("{} remained pending after the fixture index settled", root.path.display())),
         }
     }
-    report_provenance(projects.len(), &preserved, &failed);
+    report_provenance(projects.len(), &ready, &refused, &preserved, &failed);
     refuse_empty_index(projects.len(), &failed, EmptyIndex::from_env())?;
-    let fixture: &'static Fixture = Box::leak(Box::new(Fixture { host, projects, preserved, failed }));
+    report_once(format!("fixture owner state: {}", state.display()));
+    let fixture: &'static Fixture = Box::leak(Box::new(Fixture { host, state, projects, ready, refused, preserved, failed }));
     *cached = Some(fixture);
     Ok(fixture)
 }
@@ -424,7 +474,7 @@ fn index_roots(
         progress(&format!("Indexing {} ({}/{total})", project.file_name().and_then(|name| name.to_str()).unwrap_or("fixture"), index + 1));
         let reply = match refusals.recorded(project) {
             Some(reason) => {
-                report_root_refused(project, &format!("{reason} (refused earlier by this same owner, toolchain and root; not asked again)"));
+                report_root_refused(project, &format!("{reason} (refused earlier by this same owner, toolchain, Cargo authority and root; not asked again)"));
                 Reply::Refused(reason.to_owned())
             }
             None => {
@@ -443,36 +493,43 @@ fn index_roots(
 /// Polls the owner until every root is Ready, Preserved or Failed and the row
 /// count has held still for three polls. Returns the rows.
 fn await_settled(session: &mut Session, roots: &mut [Indexed]) -> Result<u64, String> {
+    if roots.is_empty() {
+        return Err("the fixture index wait received no roots".to_owned());
+    }
     let started = Instant::now();
     let (mut last_rows, mut stable, mut polls) = (0, 0, 0_u32);
     loop {
         polls += 1;
-        if let Ok(backend_library::CommandReply::Packages(snapshot)) = session.packages().map(|reply| reply.reply) {
-            let listing = if snapshot.root.rows().is_empty() && polls < LISTING_POLLS { Listing::Awaited } else { Listing::Settled };
-            for root in roots.iter_mut() {
-                let row = snapshot
-                    .root
-                    .rows()
-                    .iter()
-                    .find(|row| Some(row.label.as_str()) == root.path.to_str())
-                    .map(|row| Row { state: row.state, words: row_words(row) });
-                root.standing = standing(&root.reply, row.as_ref(), listing);
-                if let Standing::Failed(reason) = &root.standing {
-                    report_root_failed(&root.path, reason);
-                }
-            }
-            // With NUDOX_REVIEW_DIAGNOSTICS, say which roots are still not
-            // ready, and how, every ~10 s of waiting.
-            if polls.is_multiple_of(33) {
-                for root in roots.iter().filter(|root| root.standing != Standing::Ready) {
-                    review_diag(&format!("waiting on {}: {:?}", root.path.display(), root.standing));
-                }
+        let reply = session.packages().map_err(|error| format!("listing fixture packages: {error}"))?;
+        let snapshot = match reply.reply {
+            backend_library::CommandReply::Packages(snapshot) => snapshot,
+            other => return Err(format!("listing fixture packages returned an unexpected reply: {other:?}")),
+        };
+        let listing = if snapshot.root.rows().is_empty() && polls < LISTING_POLLS { Listing::Awaited } else { Listing::Settled };
+        for root in roots.iter_mut() {
+            let row = snapshot
+                .root
+                .rows()
+                .iter()
+                .find(|row| Some(row.label.as_str()) == root.path.to_str())
+                .map(|row| Row { state: row.state, words: row_words(row) });
+            root.standing = standing(&root.reply, row.as_ref(), listing);
+            if let Standing::Failed(reason) = &root.standing {
+                report_root_failed(&root.path, reason);
             }
         }
-        let rows = session.health().map_or(0, |health| health.row_count());
+        // With NUDOX_REVIEW_DIAGNOSTICS, say which roots are still not
+        // ready, and how, every ~10 s of waiting.
+        if polls.is_multiple_of(33) {
+            for root in roots.iter().filter(|root| root.standing != Standing::Ready) {
+                review_diag(&format!("waiting on {}: {:?}", root.path.display(), root.standing));
+            }
+        }
+        let health = session.health().map_err(|error| format!("reading fixture index health: {error}"))?;
+        let rows = health.row_count();
         // With every root failed there are no rows to wait for: the pages
         // are the app's fault plates and the wait is over once it is quiet.
-        let all_failed = roots.iter().all(|root| matches!(root.standing, Standing::Failed(_)));
+        let all_failed = !roots.is_empty() && roots.iter().all(|root| matches!(root.standing, Standing::Failed(_)));
         let standings = roots.iter().map(|root| root.standing.clone()).collect::<Vec<_>>();
         stable = if settled(&standings) && (rows > 0 || all_failed) && rows == last_rows { stable + 1 } else { 0 };
         last_rows = rows;
@@ -526,8 +583,10 @@ fn refuse_empty_index(total: usize, failed: &[Refusal], empty: EmptyIndex) -> Re
 
 /// Says once, on stderr, what the captures of this boot are made of: a run
 /// that captures preserved data (the owner refused the refresh and serves the
-/// prior generation) must not look like one that captured fresh data.
-fn report_provenance(total: usize, preserved: &[Refusal], failed: &[Refusal]) {
+/// prior generation) must not look like one whose owner reports Ready.
+fn report_provenance(total: usize, ready: &[PathBuf], refused: &[Refusal], preserved: &[Refusal], failed: &[Refusal]) {
+    report_once(format!("the owner refused {} of {total} fixture index requests", refused.len()));
+    report_once(format!("the owner reports {} of {total} fixture roots Ready", ready.len()));
     if failed.len() == total {
         report_once(format!("no fixture root is indexed ({total} of {total} failed): every package and symbol page shows the app's fault plate"));
     } else if !failed.is_empty() {
@@ -1363,10 +1422,16 @@ fn sample_state(cx: &mut App, _: &facet::probe::Ledger) -> gallery::json::Json {
         ("root", Json::str(format!("{:?}", snapshot.key()))),
         ("back", Json::num(snapshot.session().back.len() as f64)),
         ("graph", booted.shell.read(cx).graph_state(cx)),
+        ("fixture_state", booted.fixture.map(|fixture| Json::str(fixture.state_dir().display().to_string())).unwrap_or(Json::Null)),
         // What the pages are made of: a capture of preserved data says so.
         ("data", {
-            let data = booted.fixture.map_or(Provenance { fresh: 0, preserved: 0, failed: 0 }, Fixture::provenance);
-            Json::obj([("fresh", Json::num(data.fresh as f64)), ("preserved", Json::num(data.preserved as f64)), ("failed", Json::num(data.failed as f64))])
+            let data = booted.fixture.map_or(Provenance { ready: 0, preserved: 0, failed: 0, refused: 0 }, Fixture::provenance);
+            Json::obj([
+                ("ready", Json::num(data.ready as f64)),
+                ("preserved", Json::num(data.preserved as f64)),
+                ("failed", Json::num(data.failed as f64)),
+                ("refused", Json::num(data.refused as f64)),
+            ])
         }),
     ])
 }
@@ -1665,7 +1730,18 @@ pub fn scenes() -> Vec<Scene> {
 #[cfg(test)]
 mod tests {
     use super::route::{Target, View, parse};
-    use super::{browse_tree_root, repo};
+    use super::{browse_tree_root, repo, run_state_path};
+
+    #[test]
+    fn generated_fixture_state_is_unique_to_the_harness_run() {
+        let first = run_state_path(42, 1_000);
+        let second = run_state_path(42, 1_001);
+        let other_process = run_state_path(43, 1_000);
+        assert!(first.starts_with(std::env::temp_dir()));
+        assert_ne!(first, second, "separate starts in one process do not share an owner lock");
+        assert_ne!(first, other_process, "two harness processes do not share fixture state");
+        assert_ne!(first, repo().join(".local/harness/desktop"), "no implicit shared index fallback");
+    }
 
     #[test]
     fn route_words_parse_into_targets_and_reject_the_rest() {
@@ -2013,16 +2089,16 @@ mod tests {
             assert!(error.contains(said), "the failure does not say `{said}`: {error}");
         }
         assert!(refuse_empty_index(2, &all, EmptyIndex::Allow).is_ok(), "the fault plates are wanted");
-        assert!(refuse_empty_index(3, &all, EmptyIndex::Refuse).is_ok(), "a root that serves (fresh or preserved) makes the index not empty");
+        assert!(refuse_empty_index(3, &all, EmptyIndex::Refuse).is_ok(), "a root that serves Ready or Preserved data makes the index not empty");
         assert!(refuse_empty_index(0, &[], EmptyIndex::Refuse).is_ok(), "no roots asked, none refused");
     }
 
     #[test]
-    fn what_the_fixtures_pages_are_made_of_counts_fresh_preserved_and_failed_roots() {
+    fn fixture_provenance_keeps_request_refusal_separate_from_ready_failed_and_preserved() {
         use super::{Provenance, provenance};
-        assert_eq!(provenance(14, 0, 0), Provenance { fresh: 14, preserved: 0, failed: 0 });
-        assert_eq!(provenance(14, 13, 1), Provenance { fresh: 0, preserved: 13, failed: 1 });
-        assert_eq!(provenance(14, 3, 2), Provenance { fresh: 9, preserved: 3, failed: 2 });
+        assert_eq!(provenance(14, 0, 0, 0), Provenance { ready: 14, preserved: 0, failed: 0, refused: 0 });
+        assert_eq!(provenance(0, 13, 1, 14), Provenance { ready: 0, preserved: 13, failed: 1, refused: 14 });
+        assert_eq!(provenance(9, 3, 2, 4), Provenance { ready: 9, preserved: 3, failed: 2, refused: 4 });
     }
 
     /// An off-thread cache nobody told the harness about is still waited for:

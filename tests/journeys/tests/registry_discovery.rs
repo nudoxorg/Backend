@@ -236,7 +236,7 @@ fn fixture_body(kind: FeedKind, address: SocketAddr, mode: usize, path: &str) ->
                 .into_bytes(),
             ),
             "/index/se/rd/serde" => Some(
-                b"{\"name\":\"serde\",\"vers\":\"1.0.0\",\"yanked\":false}\n{\"name\":\"serde\",\"vers\":\"1.2.3\",\"yanked\":true}\n"
+                b"{\"name\":\"serde\",\"vers\":\"1.0.0\",\"cksum\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"deps\":[],\"features\":{},\"yanked\":false}\n{\"name\":\"serde\",\"vers\":\"1.2.3\",\"cksum\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"deps\":[],\"features\":{},\"yanked\":true}\n"
                     .to_vec(),
             ),
             _ => None,

@@ -1,4 +1,4 @@
-use backend_engine::{Row, RowId, ViewRoot, WorkspaceRoot};
+use backend_engine::{CoverageCapability, Row, RowId, ViewRoot, WorkspaceRoot};
 use backend_extension_tantivy as lexical;
 use backend_extension_trustfall::{SemanticQueryCorpus, SemanticQueryPresentation};
 use backend_semantic::{Entity, EntityId, Source};
@@ -121,7 +121,12 @@ fn kind_weight(kind: &str) -> u8 {
 impl Placement {
     #[cfg(test)]
     pub(crate) fn for_test(name: &str, package: &str, kind: &str, external: bool) -> Self {
-        Self { name: name.to_owned(), package: Some(package.to_owned()), external, kind: kind_weight(kind) }
+        Self {
+            name: name.to_owned(),
+            package: Some(package.to_owned()),
+            external,
+            kind: kind_weight(kind),
+        }
     }
 
     /// The key a match is ordered by (higher first): a declaration before a
@@ -129,7 +134,13 @@ impl Placement {
     /// typed, then in any case); a row whose package another word names; a
     /// kind that is the named thing before one that only mentions it.
     pub(crate) fn key(&self, words: &[String]) -> (bool, u8, bool, u8) {
-        placement_key(&self.name, self.package.as_deref(), self.external, self.kind, words)
+        placement_key(
+            &self.name,
+            self.package.as_deref(),
+            self.external,
+            self.kind,
+            words,
+        )
     }
 }
 
@@ -152,8 +163,7 @@ fn placement_key(
         });
     let package_named = package.is_some_and(|package| {
         words.iter().enumerate().any(|(at, word)| {
-            named.is_none_or(|(_, name_at)| at != name_at)
-                && word.eq_ignore_ascii_case(package)
+            named.is_none_or(|(_, name_at)| at != name_at) && word.eq_ignore_ascii_case(package)
         })
     });
     (
@@ -172,7 +182,11 @@ pub(crate) fn package_name(label: &str) -> &str {
     let last = label.rsplit(['/', '\\']).next().unwrap_or(label);
     let last = last.split_once('@').map_or(last, |(name, _)| name);
     match last.rsplit_once('-') {
-        Some((name, version)) if !name.is_empty() && version.starts_with(|c: char| c.is_ascii_digit()) => name,
+        Some((name, version))
+            if !name.is_empty() && version.starts_with(|c: char| c.is_ascii_digit()) =>
+        {
+            name
+        }
         _ => last,
     }
 }
@@ -407,12 +421,17 @@ impl SelectedCorpus {
         self.entity(entity).filter(|entry| entry.row == row)
     }
 
-    fn candidate(&self, candidate: backend_extension_qdrant::CandidateId) -> Option<SelectedEntity> {
+    fn candidate(
+        &self,
+        candidate: backend_extension_qdrant::CandidateId,
+    ) -> Option<SelectedEntity> {
         let order_index = self
             .candidate_order
             .binary_search_by_key(&candidate, |index| self.entities[*index].candidate)
             .ok()?;
-        self.entities.get(self.candidate_order[order_index]).copied()
+        self.entities
+            .get(self.candidate_order[order_index])
+            .copied()
     }
 
     fn fact_index(&self, evidence: &SemanticQueryCorpus, id: &str) -> Option<usize> {
@@ -425,11 +444,7 @@ impl SelectedCorpus {
 }
 
 impl Corpus {
-    fn placement_key(
-        &self,
-        entity: EntityId,
-        words: &[String],
-    ) -> Option<(bool, u8, bool, u8)> {
+    fn placement_key(&self, entity: EntityId, words: &[String]) -> Option<(bool, u8, bool, u8)> {
         let selected = self.selected.entity(entity)?;
         let presentation = self.semantic_evidence.facts()[selected.fact_index].presentation();
         let package = presentation
@@ -710,9 +725,11 @@ impl SearchSnapshotOwner {
         &mut self,
         workspace: WorkspaceRoot,
         view: ViewRoot,
+        expected_view_capability: CoverageCapability,
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<&QueryCoordinator, QueryError> {
+        validate_view_binding(&view, &expected_view_capability)?;
         if self.selected.as_ref().is_some_and(|selected| {
             selected.matches_selection(workspace, &view, coverage, &semantic_evidence)
         }) {
@@ -723,6 +740,7 @@ impl SearchSnapshotOwner {
             Some(selected) => selected.try_revise(
                 workspace,
                 &view,
+                &expected_view_capability,
                 coverage,
                 &semantic_evidence,
                 self.durable_root.as_deref(),
@@ -758,6 +776,7 @@ impl SearchSnapshotOwner {
         let (selected, action) = QueryCoordinator::new_with_durable_root(
             workspace,
             view,
+            &expected_view_capability,
             coverage,
             semantic_evidence,
             self.durable_root.clone(),
@@ -871,12 +890,14 @@ impl QueryCoordinator {
     pub fn new(
         workspace: WorkspaceRoot,
         view: ViewRoot,
+        expected_view_capability: CoverageCapability,
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<Self, QueryError> {
         Self::new_with_durable_root(
             workspace,
             view,
+            &expected_view_capability,
             coverage,
             semantic_evidence,
             None,
@@ -888,12 +909,19 @@ impl QueryCoordinator {
     fn new_with_durable_root(
         workspace: WorkspaceRoot,
         view: ViewRoot,
+        expected_view_capability: &CoverageCapability,
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
         durable_root: Option<PathBuf>,
         durable_budget: lexical::DurableCacheBudget,
     ) -> Result<(Self, lexical::DurableProjectionAction), QueryError> {
-        let prepared = prepare_corpus(workspace, view, coverage, semantic_evidence)?;
+        let prepared = prepare_corpus(
+            workspace,
+            view,
+            expected_view_capability,
+            coverage,
+            semantic_evidence,
+        )?;
         let (source, action) = match durable_root.as_deref() {
             Some(root) => lexical::TantivySource::open_or_build_in_dir_with_budget_and_action(
                 &prepared.state,
@@ -907,35 +935,50 @@ impl QueryCoordinator {
         .map_err(|_| QueryError::LexicalProvider)?;
         let lexical = lexical::TantivyAdapter::new(source, lexical::Limits::default())
             .map_err(|_| QueryError::LexicalProvider)?;
-        Ok((Self {
-            corpus: Arc::new(Corpus {
-                workspace: prepared.workspace,
-                view: prepared.view,
-                coverage: prepared.coverage,
-                lexical,
-                lexical_binding: prepared.binding,
-                selected: prepared.selected,
-                semantic_evidence: prepared.semantic_evidence,
-            }),
-        }, action))
+        Ok((
+            Self {
+                corpus: Arc::new(Corpus {
+                    workspace: prepared.workspace,
+                    view: prepared.view,
+                    coverage: prepared.coverage,
+                    lexical,
+                    lexical_binding: prepared.binding,
+                    selected: prepared.selected,
+                    semantic_evidence: prepared.semantic_evidence,
+                }),
+            },
+            action,
+        ))
     }
 
     fn try_revise(
         &mut self,
         workspace: WorkspaceRoot,
         view: &ViewRoot,
+        expected_view_capability: &CoverageCapability,
         coverage: CoverageWitness,
         semantic_evidence: &SemanticQueryCorpus,
         durable_root: Option<&Path>,
         durable_budget: lexical::DurableCacheBudget,
     ) -> Result<Option<SnapshotMaintenance>, QueryError> {
-        let prepared =
-            prepare_corpus(workspace, view.clone(), coverage, semantic_evidence.clone())?;
+        let prepared = prepare_corpus(
+            workspace,
+            view.clone(),
+            expected_view_capability,
+            coverage,
+            semantic_evidence.clone(),
+        )?;
         let previous_state = if durable_root.is_some() {
+            let previous_view_capability = self
+                .corpus
+                .view
+                .capability()
+                .ok_or(QueryError::StaleViewBinding)?;
             Some(
                 prepare_corpus(
                     self.corpus.workspace,
                     self.corpus.view.clone(),
+                    &previous_view_capability,
                     self.corpus.coverage,
                     self.corpus.semantic_evidence.clone(),
                 )?
@@ -971,9 +1014,7 @@ impl QueryCoordinator {
                         rewritten_documents: revision.rewritten_documents,
                     },
                 },
-                (None, lexical::DurableProjectionAction::Opened) => {
-                    SnapshotMaintenance::Restored
-                }
+                (None, lexical::DurableProjectionAction::Opened) => SnapshotMaintenance::Restored,
                 (None, _) => SnapshotMaintenance::Rebuilt,
             }
         } else {
@@ -991,8 +1032,7 @@ impl QueryCoordinator {
                     | lexical::TantivySourceError::DurableProjectionImmutable => {
                         QueryError::LexicalProvider
                     }
-                })?
-            {
+                })? {
                 lexical::MaintainOutcome::RebuildRequired => return Ok(None),
                 lexical::MaintainOutcome::Applied(revision) => match revision.kind {
                     lexical::ProjectionKind::Rebound => SnapshotMaintenance::Rebound,
@@ -1178,6 +1218,12 @@ impl QueryCoordinator {
         self.corpus.selected.document_order.len()
     }
 
+    /// Returns the typed workspace identity selected by this coordinator.
+    #[must_use]
+    pub(crate) fn workspace_root(&self) -> WorkspaceRoot {
+        self.corpus.workspace
+    }
+
     /// Checks the non-root portion of a semantic binding against this exact
     /// selected view.  The read manifest and frontier include the immutable
     /// view identity, while the candidate root is derived from the document
@@ -1285,9 +1331,11 @@ struct PreparedCorpus {
 fn prepare_corpus(
     workspace: WorkspaceRoot,
     view: ViewRoot,
+    expected_view_capability: &CoverageCapability,
     coverage: CoverageWitness,
     semantic_evidence: SemanticQueryCorpus,
 ) -> Result<PreparedCorpus, QueryError> {
+    validate_view_binding(&view, expected_view_capability)?;
     if !matches!(
         coverage,
         CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
@@ -1329,12 +1377,8 @@ fn prepare_corpus(
     .with_frontier(lexical::Frontier::from_value(
         view.frontier().root.as_bytes(),
     ));
-    let state = lexical::DocumentState::from_relation(
-        binding,
-        state,
-        lexical::Limits::default(),
-    )
-    .map_err(QueryError::Lexical)?;
+    let state = lexical::DocumentState::from_relation(binding, state, lexical::Limits::default())
+        .map_err(QueryError::Lexical)?;
     Ok(PreparedCorpus {
         workspace,
         view,
@@ -1344,6 +1388,16 @@ fn prepare_corpus(
         selected,
         semantic_evidence,
     })
+}
+
+fn validate_view_binding(
+    view: &ViewRoot,
+    expected_view_capability: &CoverageCapability,
+) -> Result<(), QueryError> {
+    if view.capability().as_ref() != Some(expected_view_capability) {
+        return Err(QueryError::StaleViewBinding);
+    }
+    Ok(())
 }
 
 fn collect_selected_documents(
@@ -1565,6 +1619,9 @@ pub enum QueryError {
     InvalidLimit,
     /// The selected source was not proven complete by its owner.
     IncompleteCoverage,
+    /// The selected view was not published against the exact workspace
+    /// snapshot selected by the caller.
+    StaleViewBinding,
     /// Two logical rows collapsed onto one cross-index identity.
     IdentityCollision,
     /// The selected view could not form a canonical lexical relation.
@@ -1587,6 +1644,9 @@ impl fmt::Display for QueryError {
             Self::EmptyQuery => formatter.write_str("query text is empty"),
             Self::InvalidLimit => formatter.write_str("query page limit is invalid"),
             Self::IncompleteCoverage => formatter.write_str("selected view coverage is incomplete"),
+            Self::StaleViewBinding => {
+                formatter.write_str("selected view is bound to another workspace snapshot")
+            }
             Self::IdentityCollision => formatter.write_str("cross-index identity collision"),
             Self::InvalidView => formatter.write_str("selected view is not a valid query corpus"),
             Self::InvalidSemanticEvidence => {

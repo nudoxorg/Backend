@@ -121,6 +121,7 @@ in
   NUDOX_PYREFLY = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYREFLY_BIN = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYTHON = "${compilers.python}/bin/python3";
+  NUDOX_CARGO = toolchains.stableCargo;
   NUDOX_RUSTC = "${toolchains.stable}/bin/rustc";
   NUDOX_TSC = "${compilers.typescript}/bin/tsc";
   NUDOX_TYPESCRIPT_MODULE_ROOT = "${compilers.typescript}/lib/node_modules";

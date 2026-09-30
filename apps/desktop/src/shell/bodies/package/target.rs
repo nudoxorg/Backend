@@ -32,8 +32,6 @@ pub(super) enum PageTarget {
     Heads,
     /// The weight glyph: Enter opens the berg.
     Weight,
-    /// A feature switch: Enter flips it.
-    Feature(SharedString),
     /// A release on the ticker: Enter travels to it.
     Release(Mark),
     /// A block of the open berg (an index into its blocks): Enter goes to that package.
@@ -45,7 +43,6 @@ pub(super) enum PageTarget {
 
 const MODULE: &str = "pkg-module-";
 const CARD: &str = "pkg-card-";
-const FEATURE: &str = "pkg-feature-";
 const RELEASE: &str = "pkg-release-";
 const BLOCK: &str = "pkg-block-";
 const DEPENDENCY: &str = "pkg-dep-";
@@ -59,7 +56,6 @@ impl PageTarget {
             Self::Licence => "pkg-licence".to_owned(),
             Self::Heads => "pkg-heads".to_owned(),
             Self::Weight => "pkg-weight".to_owned(),
-            Self::Feature(name) => format!("{FEATURE}{name}"),
             Self::Release(Mark::Pin) => format!("{RELEASE}pin"),
             Self::Release(Mark::Reading) => format!("{RELEASE}reading"),
             Self::Release(Mark::Newest) => format!("{RELEASE}newest"),
@@ -78,15 +74,15 @@ impl PageTarget {
         if let Some(symbol) = id.strip_prefix(CARD) {
             return SymbolRef::new(symbol).ok().map(Self::Card);
         }
-        if let Some(name) = id.strip_prefix(FEATURE) {
-            return Some(Self::Feature(name.to_owned().into()));
-        }
         if let Some(mark) = id.strip_prefix(RELEASE) {
             return match mark {
                 "pin" => Some(Self::Release(Mark::Pin)),
                 "reading" => Some(Self::Release(Mark::Reading)),
                 "newest" => Some(Self::Release(Mark::Newest)),
-                tick => tick.parse().ok().map(|tick| Self::Release(Mark::Breaking(tick))),
+                tick => tick
+                    .parse()
+                    .ok()
+                    .map(|tick| Self::Release(Mark::Breaking(tick))),
             };
         }
         if let Some(index) = id.strip_prefix(BLOCK) {
@@ -117,7 +113,6 @@ mod tests {
             PageTarget::Licence,
             PageTarget::Heads,
             PageTarget::Weight,
-            PageTarget::Feature("rt-multi-thread".into()),
             PageTarget::Release(Mark::Pin),
             PageTarget::Release(Mark::Reading),
             PageTarget::Release(Mark::Newest),
@@ -125,14 +120,35 @@ mod tests {
             PageTarget::Block(7),
             PageTarget::Dependency("serde_spanned".into()),
         ] {
-            assert_eq!(PageTarget::parse(&target.id()), Some(target.clone()), "{target:?}");
+            assert_eq!(
+                PageTarget::parse(&target.id()),
+                Some(target.clone()),
+                "{target:?}"
+            );
         }
-        assert_eq!(PageTarget::parse("tb-shelf"), None, "an id the page did not write is not a door");
+        assert_eq!(
+            PageTarget::parse("tb-shelf"),
+            None,
+            "an id the page did not write is not a door"
+        );
+        assert_eq!(
+            PageTarget::parse("pkg-feature-rt-multi-thread"),
+            None,
+            "a read-only feature preview is not a keyboard door"
+        );
     }
 
     #[test]
     fn the_module_and_card_ids_keep_the_spelling_the_shell_tests_walk() {
-        assert_eq!(PageTarget::Module("glyph".into()).id().as_ref(), "pkg-module-glyph");
-        assert_eq!(PageTarget::Card(SymbolRef::new("a::b").expect("symbol")).id().as_ref(), "pkg-card-a::b");
+        assert_eq!(
+            PageTarget::Module("glyph".into()).id().as_ref(),
+            "pkg-module-glyph"
+        );
+        assert_eq!(
+            PageTarget::Card(SymbolRef::new("a::b").expect("symbol"))
+                .id()
+                .as_ref(),
+            "pkg-card-a::b"
+        );
     }
 }

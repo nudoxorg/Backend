@@ -2,8 +2,8 @@
 //! gutter, the specimen hanging off it, and every section head a mark on the
 //! spine with its relations running out to the margins (DIRECTION.md §4).
 //!
-//! Text is laid out as elements; every stroke is painted by one [`ink`]
-//! canvas that reads the bounds the elements recorded as [`anchor`]s in
+//! Text is laid out as elements; the page ink and each compact mark are typed
+//! elements that read the bounds recorded as [`anchor`]s in
 //! prepaint, in the same frame. Anchor ids come from the plan (a section and
 //! an index into it), never from layout order, so they hold at every width.
 //!
@@ -20,6 +20,7 @@ mod fork;
 mod history;
 mod ink;
 mod lazy;
+mod plate;
 mod pipe;
 mod rails;
 mod socket;
@@ -48,7 +49,7 @@ use crate::tokens::{Palette, Tone, TypeRole, rhythm, scale};
 use gpui::{
     AnyElement, App, Bounds, ColorExt, Element, ElementId, Global, GlobalElementId, Hsla, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, ParentElement, PathBuilder, Pixels, Point, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, div, point, px,
+    StatefulInteractiveElement, Refineable, Style, StyleRefinement, Styled, Window, div, point, px,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -87,9 +88,8 @@ impl Geometry {
         let spine_off = if narrow { rhythm::SPINE_NARROW } else { rhythm::SPINE } * scale;
         let gem = if narrow { rhythm::GEM_NARROW } else { rhythm::GEM } * scale;
         let lead = spine_off + gem / 2.0;
-        let col_w = (f32::from(width) - lead * 2.0).clamp(240.0, rhythm::COLUMN * scale);
+        let col_w = (f32::from(width) - lead * 2.0).max(0.0).min(rhythm::COLUMN * scale);
         let col = (f32::from(width) - col_w) / 2.0;
-        let col = col.max(lead);
         let reach = (f32::from(width) - col - col_w + f32::from(margin)).max(0.0);
         Self { spine: px(col - spine_off), col: px(col), col_w: px(col_w), gem, reach: px(reach), scale }
     }
@@ -285,6 +285,20 @@ pub struct Door {
     pub from: bool,
 }
 
+impl Door {
+    /// The hover target keyboard focus should light for the element tracked
+    /// under `key`. Pointer and keyboard input use the same element id and
+    /// subject, so related occurrences answer identically.
+    #[must_use]
+    pub fn focus_target(&self, key: impl AsRef<str>) -> crate::hover::FocusTarget {
+        crate::hover::FocusTarget::new(hover_id(key.as_ref()), self.subject.clone())
+    }
+}
+
+fn hover_id(key: &str) -> ElementId {
+    ElementId::Name(SharedString::from(format!("{key}-hover")))
+}
+
 /// A fold's state: open or not, its clip motion, and its toggle.
 #[derive(Clone)]
 pub struct Fold {
@@ -305,6 +319,10 @@ pub trait Doors {
     fn fold(&self, key: &'static str) -> Option<Fold>;
     /// `element` as a keyboard target labelled `label`, opening `door`.
     fn track(&self, key: SharedString, label: SharedString, door: Option<&Door>, element: AnyElement) -> AnyElement;
+    /// A name that is both a pointer hover target and a semantic keyboard
+    /// target. Hosts must store this exact immutable identity with the target;
+    /// reconstructing it separately can make pointer and keyboard focus drift.
+    fn track_hoverable(&self, key: SharedString, label: SharedString, door: &Door, focus: crate::hover::FocusTarget, element: AnyElement) -> AnyElement;
     /// Records a string the page puts on screen.
     fn say(&self, text: &str);
     /// One level up from this page (its package, folding the page back into
@@ -330,6 +348,9 @@ impl Doors for Still {
         None
     }
     fn track(&self, _: SharedString, _: SharedString, _: Option<&Door>, element: AnyElement) -> AnyElement {
+        element
+    }
+    fn track_hoverable(&self, _: SharedString, _: SharedString, _: &Door, _: crate::hover::FocusTarget, element: AnyElement) -> AnyElement {
         element
     }
     fn say(&self, _: &str) {}
@@ -367,7 +388,8 @@ pub fn named_as(
     // A row that opens a declaration carries its title's key: its name
     // becomes that page's title.
     let shared_key = title_key(door.subject.0.as_ref());
-    let mut lit = hover::hoverable(ElementId::Name(SharedString::from(format!("{key}-hover"))), door.subject.clone(), hue, move |lit| {
+    let focus = door.focus_target(&key);
+    let mut lit = hover::hoverable_target(focus.clone(), hue, move |lit| {
         if share {
             crate::motion::shared::shared(shared_key, build(lit)).into_any_element()
         } else {
@@ -386,30 +408,13 @@ pub fn named_as(
     if let Some(open) = door.open.clone() {
         hit = hit.on_click(move |_, window, cx| open(window, cx));
     }
-    doors.track(key, SharedString::from(label.to_owned()), Some(&door), hit.into_any_element())
+    doors.track_hoverable(key, SharedString::from(label.to_owned()), &door, focus, hit.into_any_element())
 }
 
 /// A dashed chamfered ring around what it sits in, with the word "from" on
 /// its edge: "you came from here".
 fn from_ring(hue: Hsla) -> AnyElement {
-    let ring = canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let (x, y) = (f32::from(bounds.origin.x) - 3.0, f32::from(bounds.origin.y) - 2.0);
-            let (w, h) = (f32::from(bounds.size.width) + 6.0, f32::from(bounds.size.height) + 4.0);
-            let c = 4.0;
-            let pts = [point(px(x + c), px(y)), point(px(x + w), px(y)), point(px(x + w), px(y + h - c)), point(px(x + w - c), px(y + h)), point(px(x), px(y + h)), point(px(x), px(y + c))];
-            let mut path = PathBuilder::stroke(px(1.2)).dash_array(&[px(3.0), px(2.5)]);
-            path.add_polygon(&pts, true);
-            if let Ok(path) = path.build() {
-                window.paint_path(path, hue.opacity(0.9));
-            }
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full();
+    let ring = FromRing { hue, style: StyleRefinement::default() }.absolute().top_0().left_0().size_full();
     // The word rides the ring's top edge, small, in the ring's own hue.
     let role = scale::LABEL_MONO;
     let tag = probe::text(
@@ -421,6 +426,49 @@ fn from_ring(hue: Hsla) -> AnyElement {
         crate::fonts::Typeset::typeset_at(div().whitespace_nowrap().text_color(hue), TypeRole { size: 9.5, line: 11.0, ..role }, 1.0).child("from"),
     );
     div().absolute().top_0().left_0().size_full().child(ring).child(div().absolute().top(px(-9.0)).right(px(6.0)).child(tag)).into_any_element()
+}
+
+/// The dashed chamfer around the chip the reader came from.
+struct FromRing {
+    hue: Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for FromRing {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for FromRing {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for FromRing {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let hue = self.hue;
+        style.paint(bounds, window, cx, |window, _| {
+            let (x, y) = (f32::from(bounds.origin.x) - 3.0, f32::from(bounds.origin.y) - 2.0);
+            let (w, h) = (f32::from(bounds.size.width) + 6.0, f32::from(bounds.size.height) + 4.0);
+            let c = 4.0;
+            let pts = [point(px(x + c), px(y)), point(px(x + w), px(y)), point(px(x + w), px(y + h - c)), point(px(x + w - c), px(y + h)), point(px(x), px(y + h)), point(px(x), px(y + c))];
+            let mut path = PathBuilder::stroke(px(1.2)).dash_array(&[px(3.0), px(2.5)]);
+            path.add_polygon(&pts, true);
+            if let Ok(path) = path.build() {
+                window.paint_path(path, hue.opacity(0.9));
+            }
+        });
+    }
 }
 
 // ------------------------------------------------------------------ text
@@ -480,9 +528,44 @@ pub(crate) fn glyph(head: &Tok, wrap: Wrap, palette: &Palette, scale: f32) -> An
     let kind = head.kind;
     let fam = head.fam;
     let size = 10.0 * scale;
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
+    TypeGlyph { kind, fam, wrap, color, size, style: StyleRefinement::default() }
+        .w(px(size)).h(px(size)).flex_none().into_any_element()
+}
+
+/// The small type-role glyph: value stone, contract diamond, or named plate.
+struct TypeGlyph {
+    kind: TokKind,
+    fam: Fam,
+    wrap: Wrap,
+    color: Hsla,
+    size: f32,
+    style: StyleRefinement,
+}
+
+impl Styled for TypeGlyph {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for TypeGlyph {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for TypeGlyph {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (kind, fam, wrap, color, size) = (self.kind, self.fam, self.wrap, self.color, self.size);
+        style.paint(bounds, window, cx, |window, _| {
             let o = bounds.origin;
             let s = size / 10.0;
             let shape = |dx: f32, dy: f32| -> Vec<Point<Pixels>> {
@@ -510,12 +593,8 @@ pub(crate) fn glyph(head: &Tok, wrap: Wrap, palette: &Palette, scale: f32) -> An
             let filled = wrap != Wrap::Maybe;
             if wrap == Wrap::List { draw(window, &shape(2.0, -2.0), filled, 0.5); }
             draw(window, &shape(0.0, 0.0), filled, 1.0);
-        },
-    )
-    .w(px(size))
-    .h(px(size))
-    .flex_none()
-    .into_any_element()
+        });
+    }
 }
 
 /// A neutral stone: a value's mark (values carry no hue).
@@ -878,5 +957,9 @@ mod tests {
         let narrow = Geometry::new(px(640.0), px(20.0), 1.0);
         assert_eq!(narrow.col - narrow.spine, px(36.0), "the narrow spine sits 36 px left of the column");
         assert!(!narrow.margins(), "a narrow reader keeps its counts in the column");
+
+        let large_text_phone = Geometry::new(px(320.0), px(0.0), 2.0);
+        assert_eq!((large_text_phone.col, large_text_phone.col_w), (px(112.0), px(96.0)));
+        assert!(large_text_phone.col + large_text_phone.col_w <= px(320.0), "200% text keeps the column inside the reader");
     }
 }

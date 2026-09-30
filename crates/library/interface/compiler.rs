@@ -332,7 +332,33 @@ pub trait CompilerCapability {
 pub enum CompilerRuntimeCause {
     /// The exact package/target lane is already occupied by an incompatible operation.
     RequestInFlight,
-    /// A bounded compiler request or lane queue has no available admission slot.
+    /// The compiler owner's bounded command inbox has no available admission slot.
+    CommandQueueFull {
+        /// Number of commands the owner inbox can hold.
+        capacity: u16,
+    },
+    /// The owner's bounded set of admitted request tickets is full.
+    RequestAdmissionFull {
+        /// Maximum number of simultaneously admitted requests.
+        capacity: u16,
+    },
+    /// The exact compiler lane has no available job slot.
+    LaneQueueFull {
+        /// Number of jobs the selected lane can hold.
+        capacity: u16,
+    },
+    /// The exact output reservation exceeds the currently available staged-output byte budget.
+    StagedOutputBudgetExceeded {
+        /// Bytes requested by this package result.
+        requested_bytes: u64,
+        /// Bytes currently available to this package result.
+        available_bytes: u64,
+        /// Total staged-output byte budget capacity.
+        capacity_bytes: u64,
+    },
+    /// A bounded staged-output reservation could not be represented safely.
+    StagedOutputReservationOverflow,
+    /// Legacy untyped admission refusal retained for decoding older records.
     QueueFull,
     /// The compiler owner stopped before it could admit this request.
     RequestOwnerStopped,

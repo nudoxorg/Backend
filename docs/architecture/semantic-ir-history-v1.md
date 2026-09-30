@@ -59,6 +59,16 @@ restart-safe. Reaching the live-map limit returns backpressure before ref or
 `HistoryGcProgress::stats()` reports live and reclaimed map, commit, and
 generation-record counts and bytes.
 
+Retention state tag 11 is the unreleased exact-accounting format. It persists
+the durable byte length with each deletion intent and makes that accounting
+survive cold restart and interrupted index compaction. A state with the prior
+tag 10 is rejected before delete recovery or sweeping: this greenfield format
+has no migration path, and it does not reconstruct byte totals for deletions
+performed by an older epoch. Exact reclaimed-byte claims apply to work recorded
+in tag 11 state only. Index-compaction cursors are committed only after the
+staging file and its directory entry are durable, so restart can verify the
+exact output offset before either replacing or retaining the index.
+
 History GC acquires the FileStore's exclusive cross-process collection lease
 before `state.lock`, matching the shared-lease-then-`state.lock` order used by
 writers, admitted proposals, and historical readers. This protects bridge

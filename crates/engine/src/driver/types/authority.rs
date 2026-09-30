@@ -479,6 +479,7 @@ fn clang_class(cause: &backend_frontend_clang::legacy::CollectError) -> Authorit
 fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> AuthorityPhase {
     match cause {
         backend_frontend_rust::legacy::RustAuthorityError::Workspace { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::CargoMetadataIncomplete { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotLoaded { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::EditionMismatch { .. }

@@ -76,7 +76,10 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
         let cursor_secret = crate::jsonrpc::read_authority_secret(paths.authority_secret())?;
         let mut session =
             backend_client::Session::connect(&endpoint).map_err(|error| error.to_string())?;
-        session.index(&project).map_err(|error| error.to_string())?;
+        // Attaching to MCP must not change the owner's selected snapshot.
+        // Indexing is an explicit product operation exposed as `backend.index`;
+        // doing it here could silently publish changed working-tree bytes over
+        // a restored or otherwise intentionally pinned view.
         let stdin = io::stdin();
         let stdout = io::stdout();
         crate::jsonrpc::serve_stdio(

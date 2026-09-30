@@ -14,7 +14,7 @@ use backend_engine::application::{
     StagedEmbeddingStatus,
 };
 use backend_engine::driver::{ResolvedToolchain, ToolchainSelection};
-use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{RustCargoMetadataPolicy, RustToolchain, SourceByteLimit};
 use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompilePhase, PackageCompileRequest, PackageUrl,
 };
@@ -271,6 +271,7 @@ fn rust_package_staging_keeps_detached_sources_out_of_artifact_and_coverage_acco
         all_features: false,
         no_default_features: false,
         features: Box::new([]),
+        metadata_policy: RustCargoMetadataPolicy::Offline,
     };
     let configuration = LocalCompilerRuntimeConfiguration::new(
         LocalCompilerRuntimePaths::new(root.join("artifacts"), root.join("journal"), native_work)?,

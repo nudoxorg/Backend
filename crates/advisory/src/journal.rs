@@ -62,6 +62,11 @@ pub struct FeedFreshness {
     pub last_modified: Option<String>,
     /// Local wall-clock observation in seconds.
     pub observed_at: u64,
+    /// Hard source-provided freshness deadline, when the authority supplied
+    /// Cache-Control or Expires metadata. Product policy may impose an earlier
+    /// deadline with its configured maximum age.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
     /// Whether this response carried a body or validated the previous body.
     pub not_modified: bool,
 }
@@ -180,7 +185,27 @@ impl AdvisoryJournal {
         let mut candidate = self.clone();
         let mut seen = BTreeSet::new();
         let mut seen_native = BTreeSet::new();
-        for entry in sync.entries {
+        let mut entries = sync.entries;
+        // Complete source snapshots are sets even when their transport happens
+        // to enumerate members in a different order. Stable native-ID order
+        // makes alias canonicalization and the resulting journal digest
+        // reproducible across ZIP writers and re-fetches. Keep delta ordering,
+        // where operation order can carry meaning.
+        if sync.mode == SyncMode::Snapshot
+            && entries
+                .iter()
+                .all(|entry| matches!(entry, AdvisoryDelta::Upsert(_)))
+        {
+            entries.sort_by(|left, right| {
+                match (left, right) {
+                    (AdvisoryDelta::Upsert(left), AdvisoryDelta::Upsert(right)) => {
+                        left.key.native.id.cmp(&right.key.native.id)
+                    }
+                    _ => unreachable!("upserts only"),
+                }
+            });
+        }
+        for entry in entries {
             match entry {
                 AdvisoryDelta::Upsert(mut advisory) => {
                     let native = advisory.key.native.id.clone();
@@ -191,7 +216,7 @@ impl AdvisoryJournal {
                     }
                     let canonical = candidate
                         .aliases
-                        .admit(&advisory)
+                        .admit_staged(&advisory)
                         .map_err(AdvisoryJournalError::Conflict)?;
                     advisory.key.canonical = canonical.clone();
                     seen.insert(canonical.clone());

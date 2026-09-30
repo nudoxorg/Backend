@@ -20,15 +20,18 @@
 
 use backend_client::{ClientError, Session};
 use backend_library::{
-    AdmittedGraphQueryInput, GraphQueryPage, GraphQueryRow, GraphValue, HealthReport,
+    AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
+    HealthReport, IndexJobTicket, IndexSearchCursor, IndexSearchPage, PackageReference,
     PageContinuation, PageTerminal, ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot,
     encode_id,
 };
 use backend_present::{
-    Answer, BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Fault, Invocation,
-    Probe, Request, answer_paged, bounded_text, encode_answer, encode_serializable, fault_value,
-    grammar_for_tool, lower, markdown, oversized_fault, record_list,
+    Answer, BudgetExceeded, ContinuationCursor, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES,
+    Detail, Engine, Fault, Invocation, Probe, Request, answer_paged, bounded_text, encode_answer,
+    encode_serializable, fault_value, grammar_for_tool, lower, markdown, oversized_fault,
+    record_list,
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
     Serialize, Serializer,
     ser::{SerializeMap, SerializeSeq},
@@ -45,7 +48,9 @@ use codec::{
     empty_cursor, error_reply, json_depth_within, limit, no_extra, object, query_variables,
     read_line, string, success, valid_id, write_message,
 };
-use tools::{QUERY_TOOL, SURFACE_TOOL, list_tools};
+use tools::{
+    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, QUERY_TOOL, SURFACE_TOOL, list_tools,
+};
 
 #[cfg(feature = "token-budget")]
 pub(crate) use tools::token_budget_tools as token_budget_tools_projection;
@@ -567,8 +572,32 @@ impl<P: Product> Server<P> {
             Some(_) => return Err(RpcError::invalid("arguments must be an object")),
         };
         let detail = response_detail(name, arguments)?;
+        if name == SURFACE_TOOL {
+            let mut surface_arguments = arguments.clone();
+            surface_arguments.remove("detail");
+            let context = continuation_context(&self.project, name, &surface_arguments, detail);
+            return self.surface_tool(&surface_arguments, detail, &context);
+        }
+        if matches!(
+            name,
+            INDEX_START_TOOL | INDEX_PROGRESS_TOOL | INDEX_CANCEL_TOOL
+        ) {
+            let context = continuation_context(&self.project, name, arguments, detail);
+            return self.index_job_tool(name, arguments, detail, &context);
+        }
         let context = continuation_context(&self.project, name, arguments, detail);
-        let continuation = self.continuation(arguments, &context)?;
+        let index_search_tool =
+            grammar_for_tool(name).is_some_and(|grammar| grammar.name() == "index-search");
+        let index_search_cursor = if index_search_tool {
+            self.index_search_cursor(arguments, &context)?
+        } else {
+            None
+        };
+        let continuation = if index_search_tool {
+            None
+        } else {
+            self.continuation(arguments, &context)?
+        };
         if name == QUERY_TOOL {
             return self.query_tool(arguments, detail, continuation, &context);
         }
@@ -577,27 +606,35 @@ impl<P: Product> Server<P> {
         {
             return self.graph_tool(arguments, detail, continuation, &context);
         }
-        if name == SURFACE_TOOL {
-            if continuation.is_some() {
-                return Err(RpcError::invalid(
-                    "cursor is only valid for a paged search or graph query",
-                ));
-            }
-            let mut surface_arguments = arguments.clone();
-            surface_arguments.remove("detail");
-            return self.surface_tool(&surface_arguments, detail);
-        }
         let Some(grammar) = grammar_for_tool(name) else {
             return Err(RpcError::new(-32602, "Unknown tool"));
         };
         let mut command_arguments = arguments.clone();
         command_arguments.remove("detail");
-        command_arguments.remove("cursor");
+        if index_search_tool {
+            if let Some(cursor) = index_search_cursor {
+                command_arguments.insert(
+                    "cursor".to_owned(),
+                    Value::String(cursor.as_str().to_owned()),
+                );
+            }
+        } else {
+            command_arguments.remove("cursor");
+        }
         let planned = Invocation::from_json(grammar, &command_arguments)
             .and_then(|invocation| lower(&invocation, &self.project));
         match planned {
             Ok(request) => match answer_paged(&mut self.product, &request, continuation) {
-                Ok(answer) => self.rendered(&answer, detail, &context),
+                Ok(answer) => self.rendered(
+                    &answer,
+                    detail,
+                    &context,
+                    if index_search_tool {
+                        CursorTarget::McpIndexSearchTool
+                    } else {
+                        CursorTarget::CliOption
+                    },
+                ),
                 Err(fault) => Ok(refused(&fault)),
             },
             Err(fault) => Ok(refused(&fault)),
@@ -650,21 +687,86 @@ impl<P: Product> Server<P> {
             return Err(RpcError::tool("graph page reply changed shape"));
         };
         let answer = Answer::Records(Box::new(record_list(&coordinate, &page.snapshot)));
-        self.rendered(&answer, detail, context)
+        self.rendered(&answer, detail, context, CursorTarget::CliOption)
     }
 
     fn surface_tool(
         &mut self,
         arguments: &Map<String, Value>,
         detail: Detail,
+        context: &[u8],
     ) -> Result<Value, RpcError> {
         no_extra(arguments, &["command"])?;
         let encoded = arguments
             .get("command")
             .cloned()
             .ok_or_else(|| RpcError::invalid("command must be a tagged surface object"))?;
-        let command = serde_json::from_value::<SurfaceCommand>(encoded)
+        let mut command = serde_json::from_value::<SurfaceCommand>(encoded)
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        if let SurfaceCommand::IndexSearch {
+            cursor: Some(cursor),
+            ..
+        } = &mut command
+        {
+            *cursor = self.verified_index_search_cursor(cursor.as_str(), context)?;
+        }
+        command
+            .admit()
+            .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        let reply = self.product.surface(command).map_err(|error| match error {
+            ClientError::StaleCursor => RpcError::stale_cursor(),
+            other => RpcError::tool(other.to_string()),
+        })?;
+        self.surface_reply_result(&reply, detail, context)
+    }
+
+    fn index_job_tool(
+        &mut self,
+        name: &str,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        context: &[u8],
+    ) -> Result<Value, RpcError> {
+        let command = match name {
+            INDEX_START_TOOL => {
+                no_extra(arguments, &["package", "execution_intent", "detail"])?;
+                let spelling = string(arguments, "package")?.to_owned();
+                let package = PackageReference::parse(spelling)
+                    .map_err(|error| RpcError::invalid(error.to_string()))?;
+                let execution_intent = match arguments.get("execution_intent") {
+                    None => CompileExecutionIntent::Interactive,
+                    Some(value) => serde_json::from_value::<CompileExecutionIntent>(value.clone())
+                        .map_err(|_| {
+                            RpcError::invalid("execution_intent must be interactive or background")
+                        })?,
+                };
+                SurfaceCommand::IndexStart {
+                    package,
+                    execution_intent,
+                }
+            }
+            INDEX_PROGRESS_TOOL => {
+                no_extra(arguments, &["ticket", "after_sequence", "detail"])?;
+                let ticket = index_job_ticket(arguments)?;
+                let after_sequence = match arguments.get("after_sequence") {
+                    None => 0,
+                    Some(value) => value.as_u64().ok_or_else(|| {
+                        RpcError::invalid("after_sequence must be a non-negative integer")
+                    })?,
+                };
+                SurfaceCommand::IndexProgress {
+                    ticket,
+                    after_sequence,
+                }
+            }
+            INDEX_CANCEL_TOOL => {
+                no_extra(arguments, &["ticket", "detail"])?;
+                SurfaceCommand::IndexCancel {
+                    ticket: index_job_ticket(arguments)?,
+                }
+            }
+            _ => return Err(RpcError::new(-32602, "Unknown tool")),
+        };
         command
             .admit()
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
@@ -672,12 +774,35 @@ impl<P: Product> Server<P> {
             .product
             .surface(command)
             .map_err(|error| RpcError::tool(error.to_string()))?;
-        let view = backend_present::product_view(&reply);
+        self.surface_reply_result(&reply, detail, context)
+    }
+
+    fn surface_reply_result(
+        &mut self,
+        reply: &SurfaceReply,
+        detail: Detail,
+        context: &[u8],
+    ) -> Result<Value, RpcError> {
+        let view = backend_present::product_view(reply);
+        let view = match view.cursor_family().cloned() {
+            Some(cursor) => {
+                let token = self.issue_cursor(cursor, context)?;
+                view.project_cursor(token, CursorTarget::SurfaceCommand)
+            }
+            None => view,
+        };
+        let next_cursor = view.index_search_page().and_then(|page| page.next_cursor());
         let payload = match encode_serializable(
             "surface",
             detail,
             None,
-            SurfaceBody { surface: &reply },
+            SurfaceBody {
+                surface: SurfaceProjection {
+                    reply,
+                    next_cursor,
+                    index_job: view.index_job(),
+                },
+            },
             DEFAULT_RESPONSE_BUDGET_BYTES,
         ) {
             Ok(payload) => payload,
@@ -737,7 +862,7 @@ impl<P: Product> Server<P> {
             RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
         })?;
         self.product
-            .decode_continuation(owner_token)
+            .decode_continuation(&owner_token)
             .map(Some)
             .map_err(|error| match error {
                 ClientError::StaleCursor => RpcError::stale_cursor(),
@@ -747,15 +872,54 @@ impl<P: Product> Server<P> {
             })
     }
 
+    fn index_search_cursor(
+        &self,
+        arguments: &Map<String, Value>,
+        context: &[u8],
+    ) -> Result<Option<IndexSearchCursor>, RpcError> {
+        let Some(value) = arguments.get("cursor") else {
+            return Ok(None);
+        };
+        let token = value
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
+        self.verified_index_search_cursor(token, context).map(Some)
+    }
+
+    fn verified_index_search_cursor(
+        &self,
+        token: &str,
+        context: &[u8],
+    ) -> Result<IndexSearchCursor, RpcError> {
+        let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
+            RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
+        })?;
+        IndexSearchCursor::new(owner_token).map_err(|_| {
+            RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
+        })
+    }
+
     fn issue_continuation(
         &mut self,
         continuation: PageContinuation,
         context: &[u8],
     ) -> Result<String, RpcError> {
-        let owner_token = self
-            .product
-            .encode_continuation(continuation)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
+        self.issue_cursor(ContinuationCursor::Page(continuation), context)
+    }
+
+    fn issue_cursor(
+        &mut self,
+        cursor: ContinuationCursor,
+        context: &[u8],
+    ) -> Result<String, RpcError> {
+        let owner_token = match cursor {
+            ContinuationCursor::Page(continuation) => self
+                .product
+                .encode_continuation(continuation)
+                .map_err(|error| RpcError::tool(error.to_string()))?,
+            ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
+        };
         Ok(self.sign_cursor_token(&owner_token, context))
     }
 
@@ -764,15 +928,16 @@ impl<P: Product> Server<P> {
     }
 
     fn sign_cursor_token_at(&self, expiry: u64, owner_token: &str, context: &[u8]) -> String {
-        let body = format!("{expiry}-{owner_token}");
+        let encoded_owner = URL_SAFE_NO_PAD.encode(owner_token.as_bytes());
+        let body = format!("{expiry}-{encoded_owner}");
         let mac = self.cursor_mac(&body, context);
         format!("mcp1-{body}-{}", hex_bytes(&mac.as_bytes()[..16]))
     }
 
-    fn verify_cursor_token<'a>(&self, token: &'a str, context: &[u8]) -> Option<&'a str> {
+    fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Option<String> {
         let body = token.strip_prefix("mcp1-")?;
         let (body, encoded_mac) = body.rsplit_once('-')?;
-        let (expiry, owner_token) = body.split_once('-')?;
+        let (expiry, encoded_owner) = body.split_once('-')?;
         let expiry = expiry.parse::<u64>().ok()?;
         // Treat the expiry second as closed: a token is valid strictly before
         // its deadline. This avoids a one-second replay window at the exact
@@ -784,7 +949,7 @@ impl<P: Product> Server<P> {
         if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
             return None;
         }
-        Some(owner_token)
+        decode_cursor_owner(encoded_owner)
     }
 
     fn cursor_mac(&self, body: &str, context: &[u8]) -> blake3::Hash {
@@ -800,11 +965,19 @@ impl<P: Product> Server<P> {
         answer: &Answer,
         detail: Detail,
         context: &[u8],
+        cursor_target: CursorTarget,
     ) -> Result<Value, RpcError> {
         let next = answer
-            .continuation()
-            .map(|cursor| self.issue_continuation(cursor, context))
+            .cursor()
+            .map(|cursor| self.issue_cursor(cursor, context))
             .transpose()?;
+        let projected_product = match (answer, next.as_deref()) {
+            (Answer::Product(product), Some(token)) => Some(Answer::Product(Box::new(
+                (**product).clone().project_cursor(token, cursor_target),
+            ))),
+            _ => None,
+        };
+        let answer = projected_product.as_ref().unwrap_or(answer);
         let payload = match encode_answer(
             answer,
             detail,
@@ -851,9 +1024,10 @@ impl<P: Product> Server<P> {
     }
 }
 
-const INSTRUCTIONS: &str = "Index the repository before you answer questions about its code. \
-backend.index adds a project: pass its absolute path. Then call backend.packages. An empty shelf \
-means you have not indexed yet, and a lane that is not configured is not an empty codebase. Find \
+const INSTRUCTIONS: &str = "This server attaches to the current index without changing it. Index or \
+reindex a repository explicitly with backend.index and its absolute path, then call \
+backend.packages. An empty shelf means no project has been indexed yet, and a lane that is not \
+configured is not an empty codebase. Find \
 a coordinate with backend.search, or with backend.outline when you do not know the names. Copy \
 that coordinate verbatim into backend.document for the signature and docs, backend.source for \
 the body, backend.references for uses, and backend.graph for calls. Do not invent coordinates \
@@ -893,10 +1067,25 @@ fn continuation_context(
     canonical.insert("workspace", Value::String(workspace.to_owned()));
     for (key, value) in arguments {
         if key != "cursor" {
-            canonical.insert(key.as_str(), value.clone());
+            let value = if name == SURFACE_TOOL && key == "command" {
+                surface_command_without_cursor(value)
+            } else {
+                value.clone()
+            };
+            canonical.insert(key.as_str(), value);
         }
     }
     serde_json::to_vec(&canonical).unwrap_or_default()
+}
+
+fn surface_command_without_cursor(value: &Value) -> Value {
+    let mut command = value.clone();
+    if let Some(command) = command.as_object_mut()
+        && command.get("operation").and_then(Value::as_str) == Some("index-search")
+    {
+        command.remove("cursor");
+    }
+    command
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
@@ -906,6 +1095,26 @@ fn hex_bytes(bytes: &[u8]) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
+}
+
+const MAX_CURSOR_OWNER_ENCODED_BYTES: usize = backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+    .saturating_mul(4)
+    .saturating_add(2)
+    / 3;
+
+fn decode_cursor_owner(encoded: &str) -> Option<String> {
+    if encoded.len() > MAX_CURSOR_OWNER_ENCODED_BYTES {
+        return None;
+    }
+    let decoded = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    if decoded.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+        || URL_SAFE_NO_PAD.encode(&decoded) != encoded
+    {
+        return None;
+    }
+    String::from_utf8(decoded)
+        .ok()
+        .filter(|owner_token| !owner_token.is_empty())
 }
 
 /// Renders one answer: Markdown for a reader, the typed DTO for a program.
@@ -1275,6 +1484,14 @@ fn response_detail(tool: &str, arguments: &Map<String, Value>) -> Result<Detail,
         .ok_or_else(|| RpcError::invalid("detail must be summary, standard, or full"))
 }
 
+fn index_job_ticket(arguments: &Map<String, Value>) -> Result<IndexJobTicket, RpcError> {
+    let encoded = arguments
+        .get("ticket")
+        .cloned()
+        .ok_or_else(|| RpcError::invalid("ticket must be the exact owner-issued ticket object"))?;
+    serde_json::from_value(encoded).map_err(|error| RpcError::invalid(format!("ticket: {error}")))
+}
+
 /// Returns the smallest projection that fulfils a tool's advertised promise.
 ///
 /// A document or source lookup exists to return code, so reducing it to an
@@ -1291,7 +1508,82 @@ pub(super) fn default_detail(tool: &str) -> Detail {
 
 #[derive(Serialize)]
 struct SurfaceBody<'a> {
-    surface: &'a SurfaceReply,
+    surface: SurfaceProjection<'a>,
+}
+
+struct SurfaceProjection<'a> {
+    reply: &'a SurfaceReply,
+    next_cursor: Option<&'a str>,
+    index_job: Option<&'a backend_present::IndexJobProjection>,
+}
+
+impl Serialize for SurfaceProjection<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self.reply {
+            SurfaceReply::IndexSearchPage(page) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("result", "index-search-page")?;
+                map.serialize_entry(
+                    "data",
+                    &IndexSearchPageProjection {
+                        snapshot: &page.snapshot,
+                        evaluated_at_millis: page.evaluated_at_millis,
+                        hits: &page.hits,
+                        next_cursor: self.next_cursor,
+                        result_count: &page.result_count,
+                    },
+                )?;
+                map.end()
+            }
+            SurfaceReply::IndexStarted(data) => {
+                self.serialize_job(serializer, "index-started", data)
+            }
+            SurfaceReply::IndexTerminal(data) => {
+                self.serialize_job(serializer, "index-terminal", data)
+            }
+            SurfaceReply::IndexProgress(data) => {
+                self.serialize_job(serializer, "index-progress", data)
+            }
+            SurfaceReply::IndexCancellation(data) => {
+                self.serialize_job(serializer, "index-cancellation", data)
+            }
+            reply => reply.serialize(serializer),
+        }
+    }
+}
+
+impl SurfaceProjection<'_> {
+    fn serialize_job<S, D>(
+        &self,
+        serializer: S,
+        result: &'static str,
+        data: &D,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        D: Serialize,
+    {
+        let Some(index_job) = self.index_job else {
+            return self.reply.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("result", result)?;
+        map.serialize_entry("data", data)?;
+        map.serialize_entry("index_job", index_job)?;
+        map.end()
+    }
+}
+
+#[derive(Serialize)]
+struct IndexSearchPageProjection<'a> {
+    snapshot: &'a [u8; 32],
+    evaluated_at_millis: u64,
+    hits: &'a [backend_library::RegistrySearchHit],
+    next_cursor: Option<&'a str>,
+    result_count: &'a backend_library::IndexSearchResultCount,
 }
 
 #[cfg(test)]

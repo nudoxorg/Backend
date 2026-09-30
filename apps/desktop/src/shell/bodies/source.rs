@@ -12,7 +12,7 @@ use facet::tokens::ty;
 use facet::Space;
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div,
+    StatefulInteractiveElement, Styled, StyledText, Window, div,
 };
 
 /// Lines shown before and after the declaration.
@@ -24,6 +24,7 @@ pub(super) fn body(
     route: &SymbolRoute,
     store: &super::Pages,
     ctx: &mut Ctx<'_>,
+    window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
     let symbol = match crate::runtime::store::route_declaration(place) {
@@ -56,7 +57,7 @@ pub(super) fn body(
     match view.text.known() {
         Some(source) => {
             let note = margin(&view, store, &symbol, route, ctx);
-            let code = code(&view, source, ctx, cx);
+            let code = code(&view, source, ctx, window, cx);
             let leaf = Leaf::new(code);
             leaves.push(match note {
                 Some(note) => leaf.with_note(note),
@@ -77,7 +78,8 @@ fn code(
     view: &SourceView,
     source: &crate::model::pages::SourceText,
     ctx: &mut Ctx<'_>,
-    cx: &gpui::App,
+    window: &mut Window,
+    cx: &mut Context<Reader>,
 ) -> gpui::AnyElement {
     let measure = ctx.measure;
     let palette = ctx.palette;
@@ -104,6 +106,11 @@ fn code(
     }
     let shown = shown.trim_end_matches('\n').to_owned();
     ctx.say(shown.clone());
+    let language = code_language(view);
+    let shown: SharedString = shown.into();
+    let highlights = language
+        .and_then(|language| facet::code::highlight(language, shown.clone(), window, cx))
+        .map(|highlighted| highlighted.styles(&palette));
     // The number column holds the widest number; the code gets the rest and
     // soft-wraps at token boundaries — continuation lines carry no number.
     let role = measure.role(ty::CODE);
@@ -111,7 +118,7 @@ fn code(
     let gap = measure.space(Space::Gutter);
     let number_width = crate::shell::text_fit::text_width(&"0".repeat(digits), &role, cx);
     let columns = crate::shell::text_fit::columns(measure.width() - number_width - gap, &role, cx);
-    let lines = crate::shell::text_fit::wrap_code(&shown, &[], columns);
+    let lines = crate::shell::text_fit::wrap_code(&shown, highlights.as_deref().unwrap_or(&[]), columns);
     let above = from.saturating_sub(first_line);
     let below = last_line.saturating_sub(to);
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
@@ -135,7 +142,11 @@ fn code(
                         .justify_end()
                         .child(label),
                 )
-                .child(text(ty::CODE, &measure, palette.ink1).whitespace_nowrap().child(line.text)),
+                .child(
+                    text(ty::CODE, &measure, palette.ink1)
+                        .whitespace_nowrap()
+                        .child(StyledText::new(SharedString::from(line.text)).with_highlights(line.runs)),
+                ),
         );
     }
     column = column.child(rows);
@@ -143,6 +154,30 @@ fn code(
         column = column.child(quiet(format!("{below} lines below"), &measure, palette));
     }
     column.into_any_element()
+}
+
+/// The producer's language is authoritative. JavaScript is the TypeScript
+/// frontend's dialect, while C has its own grammar; unknown stays unstyled.
+fn code_language(view: &SourceView) -> Option<facet::code::Lang> {
+    use backend_present::Language;
+    use facet::code::Lang;
+
+    Some(match view.symbol.language {
+        Language::Rust => Lang::Rust,
+        Language::TypeScript => {
+            let javascript = view.symbol.path.as_deref().is_some_and(|path| {
+                [".js", ".jsx", ".mjs", ".cjs"].iter().any(|suffix| path.ends_with(suffix))
+            });
+            if javascript { Lang::JavaScript } else { Lang::TypeScript }
+        }
+        Language::Python => Lang::Python,
+        Language::Go => Lang::Go,
+        Language::Java => Lang::Java,
+        Language::CSharp => Lang::CSharp,
+        Language::C => Lang::C,
+        Language::Cxx => Lang::Cpp,
+        Language::Unknown => return None,
+    })
 }
 
 fn margin(

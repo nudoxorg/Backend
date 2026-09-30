@@ -26,8 +26,9 @@ use crate::paint::mix;
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
-    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, div, px,
+    AnyElement, App, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
+    IntoElement, LayoutId, ParentElement, Pixels, Refineable, RenderOnce, SharedString, Style,
+    StyleRefinement, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -236,13 +237,75 @@ fn ring_element(family: Family, size: f32, ink: Hsla, turn: f32) -> AnyElement {
 }
 
 fn nudged_ring(family: Family, size: f32, ink: Hsla, turn: f32, nudge: f32) -> AnyElement {
-    canvas(|_, _, _| {}, move |bounds, (), window, _| {
-        let bounds = gpui::Bounds::new(gpui::point(bounds.origin.x + px(nudge), bounds.origin.y), bounds.size);
-        glyph::ring(family, bounds, ink, turn, window);
-    })
-    .size(px(size))
-    .flex_none()
-    .into_any_element()
+    RingElement { family, size, ink, turn, nudge, style: StyleRefinement::default() }
+        .size(px(size))
+        .flex_none()
+        .into_any_element()
+}
+
+struct RingElement {
+    family: Family,
+    size: f32,
+    ink: Hsla,
+    turn: f32,
+    nudge: f32,
+    style: StyleRefinement,
+}
+
+impl Styled for RingElement {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for RingElement {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for RingElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = px(self.size).into();
+        style.size.height = px(self.size).into();
+        style.flex_shrink = 0.0;
+        style.refine(&self.style);
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: gpui::Bounds<Pixels>,
+        _request_layout: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {}
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: gpui::Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        let bounds = gpui::Bounds::new(gpui::point(bounds.origin.x + px(self.nudge), bounds.origin.y), bounds.size);
+        glyph::ring(self.family, bounds, self.ink, self.turn, window);
+    }
 }
 
 /// The rings of an expression: a choice is a row of rings, an `AND` links
