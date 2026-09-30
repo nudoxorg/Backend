@@ -10,7 +10,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
     App, Bounds, ColorExt as _, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, ParentElement, Pixels, Refineable, RenderOnce, SharedString, Style,
+    InteractiveElement, IntoElement, LayoutId, ParentElement, Pixels, Refineable, RenderOnce, SharedString, StatefulInteractiveElement, Style,
     ScrollHandle, StyleRefinement, Styled, Window, div, px,
 };
 use std::collections::{BTreeMap, BTreeSet};
