@@ -190,6 +190,21 @@ struct CompilerRuntimePanicWire {
 )]
 pub(crate) enum CompilerRuntimeCauseWire {
     RequestInFlight,
+    CommandQueueFull {
+        capacity: u16,
+    },
+    RequestAdmissionFull {
+        capacity: u16,
+    },
+    LaneQueueFull {
+        capacity: u16,
+    },
+    StagedOutputBudgetExceeded {
+        requested_bytes: u64,
+        available_bytes: u64,
+        capacity_bytes: u64,
+    },
+    StagedOutputReservationOverflow,
     QueueFull,
     RequestOwnerStopped,
     ResponseOwnerStopped,

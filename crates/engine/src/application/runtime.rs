@@ -47,6 +47,8 @@ use thiserror::Error;
 
 const COMPILER_LANE_COUNT: usize = 2;
 const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
+const COMMAND_QUEUE_CAPACITY: usize = 8;
+const COMPILER_LANE_QUEUE_CAPACITY: usize = 1;
 
 fn compiler_lane_count() -> usize {
     #[cfg(feature = "cluster-process-journey-hooks")]
@@ -1825,7 +1827,7 @@ impl LocalCompilerClient {
             &configuration,
         )));
         let capability_signal = Arc::new(CapabilitySignal::new());
-        let (command_tx, command_rx) = sync_channel(8);
+        let (command_tx, command_rx) = sync_channel(COMMAND_QUEUE_CAPACITY);
         let (probe_tx, probe_rx) = channel();
         let (startup_tx, startup_rx) = sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -2016,7 +2018,9 @@ impl LocalCompilerClient {
         match sender.try_send(command) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                return Err(facts.terminal(CompilerRuntimeCause::QueueFull));
+                return Err(facts.terminal(CompilerRuntimeCause::CommandQueueFull {
+                    capacity: u16::try_from(COMMAND_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                }));
             }
             Err(TrySendError::Disconnected(_)) => {
                 return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
@@ -2168,9 +2172,11 @@ impl LocalCompilerClient {
         }) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                return Err(PackageSemanticRuntimeError::Runtime(
-                    facts.terminal(CompilerRuntimeCause::QueueFull),
-                ));
+                return Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
+                    CompilerRuntimeCause::CommandQueueFull {
+                        capacity: u16::try_from(COMMAND_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                    },
+                )));
             }
             Err(TrySendError::Disconnected(_)) => {
                 return Err(PackageSemanticRuntimeError::Runtime(
@@ -2235,9 +2241,11 @@ impl LocalCompilerClient {
         }) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                return Err(PackageSemanticRuntimeError::Runtime(
-                    facts.terminal(CompilerRuntimeCause::QueueFull),
-                ));
+                return Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
+                    CompilerRuntimeCause::CommandQueueFull {
+                        capacity: u16::try_from(COMMAND_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                    },
+                )));
             }
             Err(TrySendError::Disconnected(_)) => {
                 return Err(PackageSemanticRuntimeError::Runtime(
@@ -2288,9 +2296,11 @@ impl LocalCompilerClient {
         }) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                return Err(PackageSemanticRuntimeError::Runtime(
-                    facts.terminal(CompilerRuntimeCause::QueueFull),
-                ));
+                return Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
+                    CompilerRuntimeCause::CommandQueueFull {
+                        capacity: u16::try_from(COMMAND_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                    },
+                )));
             }
             Err(TrySendError::Disconnected(_)) => {
                 return Err(PackageSemanticRuntimeError::Runtime(
@@ -2442,7 +2452,9 @@ impl<'shared> RequestLease<'shared> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if requests.len() >= MAX_ADMITTED_COMPILER_REQUESTS {
-            return Err(facts.terminal(CompilerRuntimeCause::QueueFull));
+            return Err(facts.terminal(CompilerRuntimeCause::RequestAdmissionFull {
+                capacity: u16::try_from(MAX_ADMITTED_COMPILER_REQUESTS).unwrap_or(u16::MAX),
+            }));
         }
         requests.insert((client_id, request_id), Arc::clone(&cancelled));
         Ok(Self {
@@ -2973,7 +2985,7 @@ fn run_worker_lanes(
         let (completion_tx, completion_rx) = sync_channel(lane_count);
         let mut lane_senders = Vec::with_capacity(lane_count);
         for (lane, scratch) in lane_scratches.into_iter().enumerate() {
-            let (sender, receiver) = sync_channel(1);
+            let (sender, receiver) = sync_channel(COMPILER_LANE_QUEUE_CAPACITY);
             let execution = base_execution
                 .clone()
                 .with_native_work_directory(native_root.join(format!("lane-{lane}")));
@@ -3117,15 +3129,15 @@ fn dispatch_runtime_command(
                 staged_output_reservation(request.source_count(), image_cap, 0, 0);
             let Some(reservation_bytes) = reservation_bytes else {
                 let _ = response.send(RuntimeEvent::Complete(Err(
-                    facts.terminal(CompilerRuntimeCause::QueueFull)
+                    facts.terminal(CompilerRuntimeCause::StagedOutputReservationOverflow)
                 )));
                 return;
             };
             let reservation = match budget.reserve(reservation_bytes) {
                 Ok(reservation) => reservation,
-                Err(_) => {
+                Err(full) => {
                     let _ = response.send(RuntimeEvent::Complete(Err(
-                        facts.terminal(CompilerRuntimeCause::QueueFull)
+                        facts.terminal(staged_output_budget_cause(full))
                     )));
                     return;
                 }
@@ -3140,7 +3152,13 @@ fn dispatch_runtime_command(
             match lane_queue.try_send(identity, job) {
                 Ok(_) => *in_flight = in_flight.saturating_add(1),
                 Err(LaneSendError::Full(job)) => {
-                    reject_lane_job(job, CompilerRuntimeCause::QueueFull);
+                    reject_lane_job(
+                        job,
+                        CompilerRuntimeCause::LaneQueueFull {
+                            capacity: u16::try_from(COMPILER_LANE_QUEUE_CAPACITY)
+                                .unwrap_or(u16::MAX),
+                        },
+                    );
                 }
                 Err(LaneSendError::Closed(job)) => {
                     reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
@@ -3296,15 +3314,15 @@ fn queue_package_sources(
     );
     let Some(reservation_bytes) = reservation_bytes else {
         response.send_error(PackageSemanticRuntimeError::Runtime(
-            facts.terminal(CompilerRuntimeCause::QueueFull),
+            facts.terminal(CompilerRuntimeCause::StagedOutputReservationOverflow),
         ));
         return;
     };
     let reservation = match budget.reserve(reservation_bytes) {
         Ok(reservation) => reservation,
-        Err(_) => {
+        Err(full) => {
             response.send_error(PackageSemanticRuntimeError::Runtime(
-                facts.terminal(CompilerRuntimeCause::QueueFull),
+                facts.terminal(staged_output_budget_cause(full)),
             ));
             return;
         }
@@ -3350,7 +3368,12 @@ fn queue_package_sources(
     match lane_queue.try_send(identity, job) {
         Ok(_) => *in_flight = in_flight.saturating_add(1),
         Err(LaneSendError::Full(job)) => {
-            reject_lane_job(job, CompilerRuntimeCause::QueueFull);
+            reject_lane_job(
+                job,
+                CompilerRuntimeCause::LaneQueueFull {
+                    capacity: u16::try_from(COMPILER_LANE_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                },
+            );
         }
         Err(LaneSendError::Closed(job)) => {
             reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
@@ -3390,6 +3413,16 @@ fn maximum_image_bytes(configuration: &LocalCompilerRuntimeConfiguration) -> usi
             .maximum_image_bytes
             .map_or(0, NonZeroUsize::get),
     )
+}
+
+fn staged_output_budget_cause(
+    full: crate::application::executor::StagedOutputFull,
+) -> CompilerRuntimeCause {
+    CompilerRuntimeCause::StagedOutputBudgetExceeded {
+        requested_bytes: u64::try_from(full.requested).unwrap_or(u64::MAX),
+        available_bytes: u64::try_from(full.available).unwrap_or(u64::MAX),
+        capacity_bytes: u64::try_from(full.capacity).unwrap_or(u64::MAX),
+    }
 }
 
 fn staged_output_reservation(
