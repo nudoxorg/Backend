@@ -10,7 +10,7 @@ use super::*;
 use crate::engine::test_support::{
     BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
     MAX_ORDINAL_MAP_BYTES, MAX_RETAINED_DURABLE_ROOTS,
-    ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint,
+    ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint, rank_cache_bytes,
     ordinal_map_capacity, write_projection_manifest,
 };
 use backend_semantic::{Entity, EntityId, Source, entity_key};
@@ -940,6 +940,134 @@ fn a_short_page_keeps_the_full_total_and_reuses_the_rank() {
     assert!(second.next.is_none());
     assert_ne!(first.hits[0].document, second.hits[0].document);
     assert_eq!(adapter.rank_evaluations(), 1);
+}
+
+#[test]
+fn broad_keyset_pages_keep_only_compact_ordinal_rank_metadata() {
+    let documents = (1..=128)
+        .map(|ordinal| {
+            (
+                document(ordinal),
+                vec![("name".into(), "commonquery token".into())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let (binding, coverage) = binding(&documents);
+    let limits = Limits {
+        max_page: 1,
+        ..Limits::default()
+    };
+    let state = DocumentState::new(binding, coverage, documents, limits).expect("state");
+    let adapter = Adapter::new(
+        TantivySource::build(&state, limits).expect("projection"),
+        limits,
+    )
+    .expect("adapter");
+    let query = Query::new(vec!["commonquery".into()], limits).expect("query");
+    let mut cursor = None;
+    let mut observed = Vec::new();
+    loop {
+        let page = adapter
+            .query(&QueryRequest {
+                binding,
+                query: query.clone(),
+                cursor,
+                limit: 1,
+            })
+            .expect("bounded keyset page");
+        assert_eq!(page.total, 128);
+        observed.extend(page.hits.iter().map(|hit| hit.document));
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(observed, (1..=128).map(document).collect::<Vec<_>>());
+    assert_eq!(adapter.rank_evaluations(), 1);
+    assert!(
+        rank_cache_bytes(&adapter).expect("cache size") <= 128 * 16,
+        "the rank cache stores compact ordinal scores, not full identity-bearing hits"
+    );
+}
+
+#[test]
+fn exact_rank_build_refuses_over_budget_before_retaining_a_snapshot() {
+    let documents = (1..=128)
+        .map(|ordinal| {
+            (
+                document(ordinal),
+                vec![("name".into(), "a bounded corpus row".into())],
+            )
+        })
+        .collect::<Vec<_>>();
+    let (binding, coverage) = binding(&documents);
+    let limits = Limits {
+        max_page: 1,
+        ..Limits::default()
+    };
+    let state = DocumentState::new(binding, coverage, documents, limits).expect("state");
+    let source = TantivySource::build(&state, limits)
+        .expect("projection")
+        .with_rank_snapshot_budget(
+            RankSnapshotBudget::new(1024, 1024).expect("nonzero query budget"),
+        );
+    let adapter = Adapter::new(source, limits).expect("adapter");
+    let query = Query::new(Vec::new(), limits).expect("all-documents query");
+    let error = adapter
+        .query(&QueryRequest {
+            binding,
+            query,
+            cursor: None,
+            limit: 1,
+        })
+        .expect_err("the complete exact rank exceeds the configured budget");
+    let AdapterError::Provider(TantivySourceError::RankSnapshotBudgetExceeded {
+        budget_bytes,
+        required_bytes,
+    }) = error
+    else {
+        panic!("the query should return its typed rank-budget refusal");
+    };
+    assert_eq!(budget_bytes, 1024);
+    assert_eq!(required_bytes, 128 * 320);
+    assert_eq!(rank_cache_bytes(&adapter).expect("cache size"), 0);
+}
+
+#[test]
+fn a_rare_query_uses_sparse_ranks_instead_of_a_corpus_sized_vector() {
+    let documents = (1..=128)
+        .map(|ordinal| {
+            let text = if ordinal == 73 {
+                "needle only-here"
+            } else {
+                "ordinary corpus row"
+            };
+            (document(ordinal), vec![("name".into(), text.into())])
+        })
+        .collect::<Vec<_>>();
+    let (binding, coverage) = binding(&documents);
+    let limits = Limits::default();
+    let state = DocumentState::new(binding, coverage, documents, limits).expect("state");
+    let adapter = Adapter::new(
+        TantivySource::build(&state, limits).expect("projection"),
+        limits,
+    )
+    .expect("adapter");
+    let query = Query::new(vec!["needle".into()], limits).expect("query");
+    let page = adapter
+        .query(&QueryRequest {
+            binding,
+            query,
+            cursor: None,
+            limit: 10,
+        })
+        .expect("rare query");
+    assert_eq!(page.total, 1);
+    assert_eq!(
+        page.hits.iter().map(|hit| hit.document).collect::<Vec<_>>(),
+        vec![document(73)]
+    );
+    assert!(rank_cache_bytes(&adapter).expect("cache size") <= 32);
 }
 
 #[test]

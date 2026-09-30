@@ -5,9 +5,9 @@ use backend_semantic::{Entity, EntityId, Source};
 use backend_version::{CoverageWitness, RelationState};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::num::NonZeroUsize;
 
 const MAX_SEMANTIC_DOCUMENT_PAGE_ROWS: usize = 256;
 
@@ -554,54 +554,27 @@ impl LocalAnswer {
             return Ok(relevance);
         }
 
-        let mut cursor = None;
-        let mut reported_total = None;
-        let mut seen_hits = 0usize;
-        loop {
-            let request = lexical::QueryRequest {
-                binding: self.corpus.lexical_binding,
-                query: self.query.lexical().clone(),
-                cursor,
-                limit: lexical::Limits::default().max_page,
-            };
-            let page = self
-                .corpus
-                .lexical
-                .query(&request)
-                .map_err(|_| QueryError::LexicalProvider)?;
-            if reported_total.is_some_and(|total| total != page.total) {
+        let requested = remaining.into_iter().collect::<Vec<_>>();
+        for (entity, score) in self
+            .corpus
+            .lexical
+            .relevance_for_candidates(self.query.lexical(), &requested)
+            .map_err(|_| QueryError::LexicalProvider)?
+        {
+            let Some(selected) = self.corpus.selected.entity(entity) else {
                 return Err(QueryError::LexicalProvider);
+            };
+            let row_id = selected.row.stable_key();
+            if self.query.qualified_clauses().is_empty()
+                || qualified_row_matches(
+                    row_id.as_str(),
+                    self.query.qualified_clauses(),
+                    &self.corpus.selected,
+                    &self.corpus.semantic_evidence,
+                )
+            {
+                relevance.insert(entity, score);
             }
-            reported_total = Some(page.total);
-            seen_hits = seen_hits
-                .checked_add(page.hits.len())
-                .ok_or(QueryError::CorpusLimit)?;
-            for hit in page.hits {
-                let Some(selected) = self.corpus.selected.entity(hit.document) else {
-                    return Err(QueryError::LexicalProvider);
-                };
-                if !remaining.remove(&hit.document) {
-                    continue;
-                }
-                let row_id = selected.row.stable_key();
-                if self.query.qualified_clauses().is_empty()
-                    || qualified_row_matches(
-                        row_id.as_str(),
-                        self.query.qualified_clauses(),
-                        &self.corpus.selected,
-                        &self.corpus.semantic_evidence,
-                    )
-                {
-                    relevance.insert(hit.document, hit.relevance);
-                }
-            }
-            cursor = page.next;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        if reported_total != Some(seen_hits) {
-            return Err(QueryError::LexicalProvider);
         }
         Ok(relevance)
     }
@@ -1013,7 +986,8 @@ impl QueryCoordinator {
                     | lexical::TantivySourceError::Io(_)
                     | lexical::TantivySourceError::Corrupt(_)
                     | lexical::TantivySourceError::BudgetExceeded { .. }
-                    | lexical::TantivySourceError::OrdinalMapCapacityExceeded { .. } => {
+                    | lexical::TantivySourceError::OrdinalMapCapacityExceeded { .. }
+                    | lexical::TantivySourceError::RankSnapshotBudgetExceeded { .. } => {
                         QueryError::LexicalProvider
                     }
                 })?
@@ -1057,34 +1031,26 @@ impl QueryCoordinator {
     /// Returns [`QueryError::LexicalProvider`] if the admitted local Tantivy
     /// projection cannot serve a page.
     pub fn search_local(&self, query: LocalQuery) -> Result<LocalAnswer, QueryError> {
-        let mut top_matches = Vec::with_capacity(query.limit());
-        let mut cursor = None;
-        let mut reported_total = None;
+        let mut top_matches: Vec<(EntityId, lexical::Relevance)> =
+            Vec::with_capacity(query.limit());
         let mut seen_hits = 0usize;
         let mut total_matches = 0usize;
+        let mut composition_failed = false;
         let words = query.words();
-        loop {
-            let request = lexical::QueryRequest {
-                binding: self.corpus.lexical_binding,
-                query: query.lexical().clone(),
-                cursor,
-                limit: lexical::Limits::default().max_page,
-            };
-            let page = self
-                .corpus
-                .lexical
-                .query(&request)
-                .map_err(|_| QueryError::LexicalProvider)?;
-            if reported_total.is_some_and(|total| total != page.total) {
-                return Err(QueryError::LexicalProvider);
-            }
-            reported_total = Some(page.total);
-            seen_hits = seen_hits
-                .checked_add(page.hits.len())
-                .ok_or(QueryError::CorpusLimit)?;
-            for hit in page.hits {
+        let exact_lexical_total = self
+            .corpus
+            .lexical
+            .for_each_ranked_hit(query.lexical(), |hit| {
                 let Some(selected) = self.corpus.selected.entity(hit.document) else {
-                    return Err(QueryError::LexicalProvider);
+                    composition_failed = true;
+                    return;
+                };
+                seen_hits = match seen_hits.checked_add(1) {
+                    Some(total) => total,
+                    None => {
+                        composition_failed = true;
+                        return;
+                    }
                 };
                 if !query.qualified_clauses().is_empty()
                     && !qualified_row_matches(
@@ -1094,11 +1060,15 @@ impl QueryCoordinator {
                         &self.corpus.semantic_evidence,
                     )
                 {
-                    continue;
+                    return;
                 }
-                total_matches = total_matches
-                    .checked_add(1)
-                    .ok_or(QueryError::CorpusLimit)?;
+                total_matches = match total_matches.checked_add(1) {
+                    Some(total) => total,
+                    None => {
+                        composition_failed = true;
+                        return;
+                    }
+                };
                 let ranked = (hit.document, hit.relevance);
                 let insertion = top_matches.partition_point(|known| {
                     let known_key = self.corpus.placement_key(known.0, words);
@@ -1116,13 +1086,9 @@ impl QueryCoordinator {
                         top_matches.pop();
                     }
                 }
-            }
-            cursor = page.next;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        if reported_total != Some(seen_hits) {
+            })
+            .map_err(|_| QueryError::LexicalProvider)?;
+        if composition_failed || exact_lexical_total != seen_hits {
             return Err(QueryError::LexicalProvider);
         }
         let mut rows = Vec::with_capacity(top_matches.len());

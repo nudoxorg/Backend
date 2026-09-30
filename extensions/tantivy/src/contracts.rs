@@ -96,6 +96,31 @@ impl Relevance {
         }
     }
 
+    pub(crate) const fn rank_parts(self) -> (u32, u32, u16, u16) {
+        (
+            self.matched_bytes,
+            self.term_bytes,
+            self.field_weight,
+            self.matched_clauses,
+        )
+    }
+
+    pub(crate) fn from_rank_parts(
+        matched_bytes: u32,
+        term_bytes: u32,
+        field_weight: u16,
+        matched_clauses: u16,
+    ) -> Result<Self, Error> {
+        let matched_bytes = usize::try_from(matched_bytes).map_err(|_| Error::SizeLimit)?;
+        let term_bytes = usize::try_from(term_bytes).map_err(|_| Error::SizeLimit)?;
+        let mut relevance = Self::new(matched_bytes, term_bytes, field_weight, 1)?;
+        relevance.matched_clauses = matched_clauses;
+        if matched_clauses == 0 {
+            return Err(Error::MalformedInput);
+        }
+        Ok(relevance)
+    }
+
     pub(crate) fn combine(self, other: Self) -> Result<Self, Error> {
         let weaker = if self < other { self } else { other };
         Ok(Self {
@@ -137,6 +162,15 @@ pub struct RankedHit {
     pub document: EntityId,
     /// Lossless recipe rank.
     pub relevance: Relevance,
+}
+
+/// Compares hits in the canonical page order: strongest relevance first,
+/// then stable entity identity ascending.
+pub(crate) fn compare_ranked_hits(left: RankedHit, right: RankedHit) -> Ordering {
+    right
+        .relevance
+        .cmp(&left.relevance)
+        .then_with(|| left.document.cmp(&right.document))
 }
 
 /// Canonicalizes query terms and derives their typed identity.
@@ -298,6 +332,7 @@ pub struct Cursor {
     binding: Binding,
     query: QueryVersion,
     offset: usize,
+    after: Option<RankedHit>,
 }
 
 impl Cursor {
@@ -309,6 +344,25 @@ impl Cursor {
             binding,
             query,
             offset,
+            after: None,
+        }
+    }
+
+    /// Creates the next cursor from an exact ranked boundary. The running
+    /// ordinal preserves adapter continuity checks; the hit binds the sort
+    /// position so a page never needs to retain or skip earlier results.
+    #[must_use]
+    pub(crate) const fn after(
+        binding: Binding,
+        query: QueryVersion,
+        offset: usize,
+        hit: RankedHit,
+    ) -> Self {
+        Self {
+            binding,
+            query,
+            offset,
+            after: Some(hit),
         }
     }
 
@@ -328,5 +382,11 @@ impl Cursor {
     #[must_use]
     pub(crate) const fn offset(self) -> usize {
         self.offset
+    }
+
+    /// Returns the exact last-ranked hit for keyset pagination.
+    #[must_use]
+    pub(crate) const fn after_hit(self) -> Option<RankedHit> {
+        self.after
     }
 }
