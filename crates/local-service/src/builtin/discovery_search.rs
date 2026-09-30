@@ -1988,6 +1988,7 @@ impl DiscoverySearchIndex {
         let expected_root = selected_discovery_root(store, forge_documents, source_pin_documents)?;
         let name = hex(&expected_root);
         let selected = version_root.join(&name);
+        let mut retire_selected_after_stage = false;
         if projection_path_exists(&selected)? {
             match verify_search_projection(&selected, expected_root, budget) {
                 Ok(true) => {
@@ -2005,7 +2006,7 @@ impl DiscoverySearchIndex {
                     prune_search_projections(&version_root, &selected, budget)?;
                     return Ok(index);
                 }
-                Ok(false) => remove_unpinned_search_projection(&selected)?,
+                Ok(false) => retire_selected_after_stage = true,
                 Err(error) => return Err(error),
             }
         }
@@ -2035,9 +2036,22 @@ impl DiscoverySearchIndex {
             return Err("discovery projection root disagrees with its source snapshot".to_owned());
         }
         drop(built);
-        write_search_projection_manifest(&staging, expected_root, budget)?;
-        sync_search_projection_tree(&staging)?;
-        fs::rename(&staging, &selected).map_err(|error| error.to_string())?;
+        let prepared = write_search_projection_manifest(&staging, expected_root, budget)
+            .and_then(|()| sync_search_projection_tree(&staging));
+        if let Err(error) = prepared {
+            let _ = remove_search_projection(&staging);
+            return Err(error);
+        }
+        if retire_selected_after_stage
+            && let Err(error) = remove_unpinned_search_projection(&selected)
+        {
+            let _ = remove_search_projection(&staging);
+            return Err(error);
+        }
+        if let Err(error) = fs::rename(&staging, &selected) {
+            let _ = remove_search_projection(&staging);
+            return Err(error.to_string());
+        }
         sync_search_directory(&version_root)?;
         let mut index = Self::build_from_sources(
             store,
@@ -7965,6 +7979,35 @@ mod tests {
         let manifest = latest_root.join(SEARCH_PROJECTION_MANIFEST);
         std::fs::remove_file(&manifest).expect("remove selected manifest");
         std::os::unix::fs::symlink(&external, &manifest).expect("install final symlink");
+        let tiny_budget = DurableCacheBudget::new(1).expect("nonzero cache budget");
+        let refused = DiscoverySearchIndex::open_forge_only_with_source_pins_at_with_budget(
+            &cache,
+            std::slice::from_ref(&latest_document),
+            &[],
+            tiny_budget,
+        );
+        assert!(
+            refused
+                .err()
+                .expect("source-backed rebuild must exceed the one-byte budget")
+                .contains("budget"),
+            "a rebuild capacity refusal should remain typed"
+        );
+        assert!(
+            latest_root.is_dir(),
+            "refusal must leave the selected path intact"
+        );
+        assert!(
+            std::fs::symlink_metadata(&manifest)
+                .expect("invalid manifest remains for retry")
+                .file_type()
+                .is_symlink(),
+            "a refused repair must not change the selected manifest entry"
+        );
+        assert_eq!(
+            std::fs::read(&external).expect("external target remains unchanged after refusal"),
+            b"outside bytes remain unchanged"
+        );
         let rebuilt = DiscoverySearchIndex::open_forge_only_with_source_pins_at(
             &cache,
             std::slice::from_ref(&latest_document),
