@@ -10,8 +10,9 @@
 //! - **Single-flight.** The first ask for a key starts its work on the
 //!   background executor and answers [`Answer::Reading`]; every ask until it
 //!   lands joins the one flight.
-//! - **Bounded.** At most `capacity` keys are kept; a full cache forgets the
-//!   least recently asked value that is not still being computed.
+//! - **Bounded.** At most `capacity` keys are retained or in flight. If every
+//!   slot is occupied by work, a new ask waits for capacity and its requester
+//!   is notified to retry; the memo never starts untracked work.
 //! - **Panic-safe.** The work runs under `catch_unwind`; a panic is one
 //!   typed [`Fault`] on that key, not a dead worker and a page that never
 //!   arrives (the rule `ReadPool` already keeps for its readers).
@@ -21,7 +22,7 @@
 //! - **Visible.** [`in_flight`] counts every flight of every memo in the
 //!   process, so a harness can wait for none before it captures.
 //!
-//! A value is shared as an `Arc`; the work is a pure `Fn(&K) -> V`.
+//! A value is shared as an `Arc`; the work is a pure `Fn(&K, &Cancellation) -> V`.
 
 use gpui::{App, Context, EntityId};
 use std::any::Any;
@@ -37,6 +38,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+struct InFlight;
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        // A detached UI completion may be dropped during app shutdown. Keep
+        // the process-wide harness count balanced on every exit path.
+        IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// How many values, in every memo in the process, are being computed or have
 /// been computed but not yet announced to the views that asked. (A harness
@@ -81,6 +92,9 @@ impl fmt::Display for Fault {
 pub(crate) enum Answer<V> {
     /// The work is running; the asker is notified when it lands.
     Reading,
+    /// The bounded memo is full of work. This key is not tracked yet; the
+    /// requester will be notified when a slot opens and should ask again.
+    Deferred,
     /// The value.
     Ready(Arc<V>),
     /// The work panicked. It stays this way until [`Memo::forget`].
@@ -108,17 +122,39 @@ struct Entry<V> {
     used: Tick,
     /// Cache age begins when work completes, not when a slow read starts.
     completed_at: Option<Instant>,
+    /// Forgotten reads remain in the bounded table until their worker exits.
+    /// Cooperative work can stop between blocking reads or bounded batches.
+    cancellation: Cancellation,
+    /// A forgotten result is discarded when the worker returns.
+    forgotten: bool,
     /// Who to tell when it lands (only while it is being read).
     askers: Vec<Asker>,
 }
 
 struct Inner<K, V> {
     entries: HashMap<K, Entry<V>>,
+    /// Requesters whose key could not be admitted while every slot was in
+    /// flight. The current visible route re-asks when notified.
+    retry_askers: Vec<Asker>,
     clock: Tick,
 }
 
 /// The work a memo does for one key: pure, and safe to run on any thread.
-type Work<K, V> = dyn Fn(&K) -> V + Send + Sync;
+type Work<K, V> = dyn Fn(&K, &Cancellation) -> V + Send + Sync;
+
+/// Cooperative cancellation for off-thread reads.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Cancellation(Arc<std::sync::atomic::AtomicBool>);
+
+impl Cancellation {
+    fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
 
 struct Shared<K, V> {
     inner: RefCell<Inner<K, V>>,
@@ -150,10 +186,20 @@ where
         capacity: NonZeroUsize,
         work: impl Fn(&K) -> V + Send + Sync + 'static,
     ) -> Self {
+        Self::new_cancellable(capacity, move |key, _| work(key))
+    }
+
+    /// As [`Memo::new`], with a token cooperative work can check between
+    /// blocking reads or bounded batches.
+    pub(crate) fn new_cancellable(
+        capacity: NonZeroUsize,
+        work: impl Fn(&K, &Cancellation) -> V + Send + Sync + 'static,
+    ) -> Self {
         Self {
             shared: Rc::new(Shared {
                 inner: RefCell::new(Inner {
                     entries: HashMap::new(),
+                    retry_askers: Vec::new(),
                     clock: Tick::default(),
                 }),
                 work: Arc::new(work),
@@ -195,9 +241,29 @@ where
         self.get(key, cx)
     }
 
+    /// Keeps values relevant to the current view identity. Completed stale
+    /// values are dropped immediately; stale flights keep their capacity
+    /// slot, receive cooperative cancellation, and discard their result when
+    /// they finish.
+    pub(crate) fn retain_keys(&self, mut keep: impl FnMut(&K) -> bool) {
+        let mut inner = self.shared.inner.borrow_mut();
+        inner.entries.retain(|key, entry| {
+            if keep(key) {
+                return true;
+            }
+            if matches!(entry.state, State::Reading) {
+                entry.forgotten = true;
+                entry.cancellation.cancel();
+                true
+            } else {
+                false
+            }
+        });
+    }
+
     /// The value for `key`, asked for by `asker`.
     pub(crate) fn ask(&self, key: &K, asker: Asker, cx: &mut App) -> Answer<V> {
-        {
+        let cancellation = {
             let mut inner = self.shared.inner.borrow_mut();
             inner.clock = inner.clock.next();
             let now = inner.clock;
@@ -207,25 +273,30 @@ where
                     State::Ready(value) => Answer::Ready(Arc::clone(value)),
                     State::Failed(fault) => Answer::Failed(fault.clone()),
                     State::Reading => {
-                        if !entry.askers.contains(&asker) {
-                            entry.askers.push(asker);
-                        }
+                        remember_asker(&mut entry.askers, asker, self.shared.capacity);
                         Answer::Reading
                     }
                 };
             }
-            inner.make_room(self.shared.capacity);
+            if !inner.make_room(self.shared.capacity) {
+                inner.defer(asker, self.shared.capacity);
+                return Answer::Deferred;
+            }
+            let cancellation = Cancellation::default();
             inner.entries.insert(
                 key.clone(),
                 Entry {
                     state: State::Reading,
                     used: now,
                     completed_at: None,
+                    cancellation: cancellation.clone(),
+                    forgotten: false,
                     askers: vec![asker],
                 },
             );
-        }
-        self.start(key.clone(), cx);
+            cancellation
+        };
+        self.start(key.clone(), cancellation, cx);
         Answer::Reading
     }
 
@@ -238,16 +309,21 @@ where
         }
     }
 
-    /// Forgets `key` (a failed one is asked again the next time).
+    /// Forgets `key` (a failed one is asked again the next time). A running
+    /// read keeps its slot until it exits, receives cancellation, and cannot
+    /// resurrect the forgotten value.
     #[cfg(test)]
     pub(crate) fn forget(&self, key: &K) {
         let mut inner = self.shared.inner.borrow_mut();
-        if inner
-            .entries
-            .get(key)
-            .is_some_and(|entry| !matches!(entry.state, State::Reading))
-        {
+        match inner.entries.get_mut(key) {
+            Some(entry) if matches!(entry.state, State::Reading) => {
+                entry.forgotten = true;
+                entry.cancellation.cancel();
+            }
+            Some(_) => {
             inner.entries.remove(key);
+        }
+            None => {}
         }
     }
 
@@ -258,7 +334,9 @@ where
         inner.clock = inner.clock.next();
         let now = inner.clock;
         if !inner.entries.contains_key(&key) {
-            inner.make_room(self.shared.capacity);
+            if !inner.make_room(self.shared.capacity) {
+                return;
+            }
         }
         inner.entries.insert(
             key,
@@ -266,6 +344,8 @@ where
                 state: State::Ready(Arc::new(value)),
                 used: now,
                 completed_at: Some(Instant::now()),
+                cancellation: Cancellation::default(),
+                forgotten: false,
                 askers: Vec::new(),
             },
         );
@@ -289,31 +369,31 @@ where
         self.shared.inner.borrow().entries.len()
     }
 
-    fn start(&self, key: K, cx: &mut App) {
+    fn start(&self, key: K, cancellation: Cancellation, cx: &mut App) {
         IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
+        let in_flight = InFlight;
         let work = Arc::clone(&self.shared.work);
         let owned = key.clone();
+        let work_cancellation = cancellation.clone();
         let task = cx.background_executor().spawn(async move {
-            std::panic::catch_unwind(AssertUnwindSafe(|| work(&owned)))
+            std::panic::catch_unwind(AssertUnwindSafe(|| work(&owned, &work_cancellation)))
                 .map_err(|panic| Fault::Panicked(describe(panic.as_ref())))
         });
         let shared = Rc::downgrade(&self.shared);
         cx.spawn(async move |cx| {
+            let _in_flight = in_flight;
             let outcome = task.await;
             cx.update(|cx| land(&shared, &key, outcome, cx));
-            // After the notification is queued: a harness that saw none in
-            // flight draws the frame the value is in.
-            IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+            // Dropping this completion task also balances IN_FLIGHT.
         })
         .detach();
     }
 }
 
 impl<K: Clone + Eq + Hash, V> Inner<K, V> {
-    /// Forgets the least recently asked value that is not being computed,
-    /// until there is room for one more. A cache full of flights in progress
-    /// overflows by exactly those flights, which end.
-    fn make_room(&mut self, capacity: NonZeroUsize) {
+    /// Forgets least recently asked completed values until there is room.
+    /// An in-flight entry is never evicted to admit untracked work.
+    fn make_room(&mut self, capacity: NonZeroUsize) -> bool {
         while self.entries.len() >= capacity.get() {
             let Some(oldest) = self
                 .entries
@@ -322,10 +402,48 @@ impl<K: Clone + Eq + Hash, V> Inner<K, V> {
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(key, _)| key.clone())
             else {
-                return;
+                return false;
             };
             self.entries.remove(&oldest);
         }
+        true
+    }
+
+    /// Remembers a bounded retry signal. When too many different views are
+    /// blocked, one `Everyone` signal replaces them: waking all windows once
+    /// lets each current route retry without an unbounded waiter list.
+    fn defer(&mut self, asker: Asker, capacity: NonZeroUsize) {
+        remember_asker(&mut self.retry_askers, asker, capacity);
+    }
+}
+
+impl<K, V> Drop for Shared<K, V> {
+    fn drop(&mut self) {
+        for entry in self.inner.get_mut().entries.values() {
+            if matches!(entry.state, State::Reading) {
+                entry.cancellation.cancel();
+            }
+        }
+    }
+}
+
+fn remember_asker(askers: &mut Vec<Asker>, asker: Asker, capacity: NonZeroUsize) {
+    if askers.contains(&Asker::Everyone) {
+        return;
+    }
+    if asker == Asker::Everyone {
+        askers.clear();
+        askers.push(Asker::Everyone);
+        return;
+    }
+    if askers.contains(&asker) {
+        return;
+    }
+    if askers.len() >= capacity.get() {
+        askers.clear();
+        askers.push(Asker::Everyone);
+    } else {
+        askers.push(asker);
     }
 }
 
@@ -337,20 +455,33 @@ where
     let Some(shared) = shared.upgrade() else {
         return;
     };
-    let askers = {
+    let (askers, retry_askers) = {
         let mut inner = shared.inner.borrow_mut();
-        let Some(entry) = inner.entries.get_mut(key) else {
-            return;
-        };
+        let forgotten = inner.entries.get(key).is_some_and(|entry| entry.forgotten);
+        let askers = if forgotten {
+            inner
+                .entries
+                .remove(key)
+                .map(|mut entry| std::mem::take(&mut entry.askers))
+        } else if let Some(entry) = inner.entries.get_mut(key) {
         entry.state = match outcome {
             Ok(value) => State::Ready(Arc::new(value)),
             Err(fault) => State::Failed(fault),
         };
         entry.completed_at = Some(Instant::now());
-        std::mem::take(&mut entry.askers)
+            Some(std::mem::take(&mut entry.askers))
+        } else {
+            None
     };
-    let mut told = Vec::with_capacity(askers.len());
-    for asker in askers {
+        let askers = askers.unwrap_or_default();
+        // A completed or forgotten flight opens one slot. Retrying askers
+        // compete through `ask`, which evicts only retained completed values
+        // and still enforces the same strict capacity.
+        let retry = std::mem::take(&mut inner.retry_askers);
+        (askers, retry)
+    };
+    let mut told = Vec::with_capacity(askers.len().saturating_add(retry_askers.len()));
+    for asker in askers.into_iter().chain(retry_askers) {
         if told.contains(&asker) {
             continue;
         }

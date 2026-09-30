@@ -608,6 +608,15 @@ impl Shell {
                 }), cx));
                 return;
             }
+            crate::runtime::indexed_world::State::Waiting => {
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: "Waiting for an available graph-read slot; this view will retry when one opens.".into(),
+                    retry: None,
+                }), cx));
+                return;
+            }
             crate::runtime::indexed_world::State::Unavailable(reason) => {
                 self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
                     visit: snapshot.route().clone(),

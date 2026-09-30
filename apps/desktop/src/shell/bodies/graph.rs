@@ -284,6 +284,9 @@ impl Map {
         }
         match indexed_world::get(&key, cx) {
             indexed_world::State::Reading => self.load_error = None,
+            indexed_world::State::Waiting => {
+                self.load_error = Some("Waiting for an available graph-read slot…".to_owned());
+            }
             indexed_world::State::Unavailable(reason) => {
                 self.load_error = Some(reason.to_string());
             }

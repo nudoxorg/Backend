@@ -9,7 +9,7 @@
 use crate::core::VersionedRoot;
 use crate::host::registry::{Availability, Composition, RegistryFact, Release};
 use crate::model::pages::PackageRef;
-use crate::runtime::offload::{Answer, Memo};
+use crate::runtime::offload::{Answer, Cancellation, Memo};
 use backend_client::Session;
 use backend_library::{CommandReply, DeclarationChange, PackageReference};
 use facet::data::release::{
@@ -56,7 +56,7 @@ impl Global for ReleaseReads {}
 
 impl ReleaseReads {
     fn new() -> Self {
-        Self(Memo::new(
+        Self(Memo::new_cancellable(
             NonZeroUsize::new(RELEASE_READS).expect("positive capacity"),
             read,
         ))
@@ -67,6 +67,9 @@ impl ReleaseReads {
 /// missing provider, while `Reading` means the exact request is in flight.
 pub(crate) enum Read {
     Reading,
+    /// Waiting for another bounded registry read to finish before this exact
+    /// key can start. The requester is notified when it should retry.
+    Waiting,
     Ready(Arc<ReleaseData>),
     Unavailable(Arc<str>),
 }
@@ -93,8 +96,15 @@ pub(crate) fn get<T: 'static>(
         compare_to: compare_to.map(str::to_owned),
     };
     let memo = cx.global::<ReleaseReads>().0.clone();
+    let endpoint = key.endpoint.clone();
+    let authority = key.authority.clone();
+    let root = key.root;
+    memo.retain_keys(|previous| {
+        previous.endpoint == endpoint && previous.authority == authority && previous.root == root
+    });
     match memo.get_expiring(&key, RELEASE_REFRESH, cx) {
         Answer::Reading => Read::Reading,
+        Answer::Deferred => Read::Waiting,
         Answer::Failed(fault) => Read::Unavailable(Arc::from(fault.to_string())),
         Answer::Ready(value) => match value.as_ref() {
             Ok(data) => Read::Ready(Arc::clone(data)),
@@ -103,7 +113,8 @@ pub(crate) fn get<T: 'static>(
     }
 }
 
-fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
+fn read(key: &ReleaseKey, cancellation: &Cancellation) -> Result<Arc<ReleaseData>, Arc<str>> {
+    ensure_active(cancellation)?;
     let composition = crate::host::registry::composed()
         .filter(|composition| {
             composition.endpoint == key.endpoint && composition.authority == key.authority
@@ -116,6 +127,7 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
         .release()
         .ok_or_else(|| Arc::from("this package is not an exact registry release"))?;
     let published = composition.source.releases(&pinned.name);
+    ensure_active(cancellation)?;
     if published.is_empty() {
         return Err(Arc::from(
             "the local registry index has no release records for this package",
@@ -127,6 +139,7 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
     let revision = session
         .revision()
         .map_err(|error| Arc::<str>::from(format!("could not read the index revision: {error}")))?;
+    ensure_active(cancellation)?;
     if revision.root != key.root.root() {
         return Err(Arc::from(
             "the local index changed before the release read began",
@@ -149,6 +162,7 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
     let mut indexed = HashMap::<String, FacetRegistryFact<bool>>::new();
     let mut owner_refs = HashMap::<String, Option<PackageReference>>::new();
     for entry in [pin_entry, selected].into_iter().flatten() {
+        ensure_active(cancellation)?;
         let version = entry.release.version.as_str().to_owned();
         if owner_refs.contains_key(&version) {
             continue;
@@ -185,7 +199,9 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
                 .cloned()
                 .flatten();
             match (from, to) {
-                (Some(from), Some(to)) => match session.diff(from.clone(), to.clone()) {
+                (Some(from), Some(to)) => {
+                    ensure_active(cancellation)?;
+                    match session.diff(from.clone(), to.clone()) {
                     Ok(records)
                         if records.len() <= DIFF_LIMIT
                             && records.iter().all(|record| {
@@ -196,7 +212,9 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
                             .iter()
                             .map(|record| {
                                 let (what, severity) = match record.change {
-                                    DeclarationChange::Added => (What::Added, Severity::Additive),
+                                        DeclarationChange::Added => {
+                                            (What::Added, Severity::Additive)
+                                        }
                                     DeclarationChange::Removed => {
                                         (What::Removed, Severity::Breaking)
                                     }
@@ -242,10 +260,12 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
                     }
                     Err(_) => {
                         comparison_note = Some(
-                            "the owner has no exact comparison for the selected pair".to_owned(),
+                                "the owner has no exact comparison for the selected pair"
+                                    .to_owned(),
                         );
                     }
-                },
+                    }
+                }
                 _ => {
                     comparison_note = Some(
                         "one or both exact releases are not indexed by the current owner"
@@ -258,6 +278,7 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
         comparison_note =
             Some("the selected exact release is absent from the local registry listing".to_owned());
     }
+    ensure_active(cancellation)?;
     let after = session.revision().map_err(|error| {
         Arc::<str>::from(format!("could not confirm the index revision: {error}"))
     })?;
@@ -340,6 +361,14 @@ fn read(key: &ReleaseKey) -> Result<Arc<ReleaseData>, Arc<str>> {
         }),
         note,
     }))
+}
+
+fn ensure_active(cancellation: &Cancellation) -> Result<(), Arc<str>> {
+    if cancellation.is_cancelled() {
+        Err(Arc::from("the exact release read was superseded"))
+    } else {
+        Ok(())
+    }
 }
 
 /// Returns the exact admitted tree path for this selected registry release.

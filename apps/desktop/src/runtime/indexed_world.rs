@@ -7,7 +7,7 @@
 
 use crate::core::VersionedRoot;
 use crate::model::pages::{PackageRef, SymbolRef};
-use crate::runtime::offload::{Answer, Memo};
+use crate::runtime::offload::{Answer, Cancellation, Memo};
 use crate::shell::bodies::graph::identity::{IdentityAdapter, ResolvedSymbol};
 use backend_client::Session;
 use backend_library::{
@@ -48,7 +48,10 @@ pub(crate) struct Projection {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Coverage {
     pub(crate) packages: usize,
-    pub(crate) packages_total: usize,
+    /// Exact total when the package page completed; `None` when the owner
+    /// reported a continuation and the graph intentionally stopped early.
+    pub(crate) packages_total: Option<usize>,
+    pub(crate) package_rows_scanned: usize,
     pub(crate) declarations: usize,
     pub(crate) relations: usize,
     pub(crate) relation_roots: usize,
@@ -111,11 +114,15 @@ impl Coverage {
                 .join(", ");
             words.push_str(&format!(" · relation coverage unknown by kind: {kinds}"));
         }
-        if self.bounded || self.packages < self.packages_total {
+        if self.bounded {
+            if let Some(total) = self.packages_total {
+                words.push_str(&format!(" · bounded from {total} indexed packages"));
+            } else {
             words.push_str(&format!(
-                " · bounded from {} indexed packages",
-                self.packages_total
+                    " · bounded after {} package rows; the owner reports more",
+                    self.package_rows_scanned
             ));
+        }
         }
         words
     }
@@ -156,7 +163,7 @@ impl Global for Reads {}
 
 impl Reads {
     fn new() -> Self {
-        Self(Memo::new(
+        Self(Memo::new_cancellable(
             NonZeroUsize::new(WORLD_READS).expect("positive capacity"),
             read,
         ))
@@ -165,6 +172,7 @@ impl Reads {
 
 pub(crate) enum State {
     Reading,
+    Waiting,
     Ready(Arc<Projection>),
     Unavailable(Arc<str>),
 }
@@ -178,9 +186,12 @@ pub(crate) fn key<T: 'static>(
     if cx.try_global::<Reads>().is_none() {
         cx.set_global(Reads::new());
     }
+    let endpoint = composition.endpoint.clone();
+    let memo = cx.global::<Reads>().0.clone();
+    memo.retain_keys(|previous| previous.endpoint == endpoint && previous.root == root);
     Some(Key {
         root,
-        endpoint: composition.endpoint,
+        endpoint,
         preferred,
     })
 }
@@ -192,6 +203,7 @@ pub(crate) fn get<T: 'static>(key: &Key, cx: &mut Context<T>) -> State {
     let memo = cx.global::<Reads>().0.clone();
     match memo.get(key, cx) {
         Answer::Reading => State::Reading,
+        Answer::Deferred => State::Waiting,
         Answer::Failed(fault) => State::Unavailable(Arc::from(fault.to_string())),
         Answer::Ready(value) => match value.as_ref() {
             Ok(world) => State::Ready(Arc::clone(world)),
@@ -200,7 +212,8 @@ pub(crate) fn get<T: 'static>(key: &Key, cx: &mut Context<T>) -> State {
     }
 }
 
-fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
+fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>, Arc<str>> {
+    ensure_active(cancellation)?;
     let composition = crate::host::registry::composed()
         .filter(|composition| composition.endpoint == key.endpoint)
         .ok_or_else(|| {
@@ -212,33 +225,56 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
     let before = session.revision().map_err(|error| {
         Arc::<str>::from(format!("could not read the graph's index root: {error}"))
     })?;
+    ensure_active(cancellation)?;
     if before.root != key.root.root() {
         return Err(Arc::from(
             "the local index changed before the graph read began",
         ));
     }
-    let package_snapshot = match session
-        .packages()
-        .map_err(|error| Arc::<str>::from(format!("could not read indexed packages: {error}")))?
-        .reply
+    let mut packages = Vec::with_capacity(MAX_PACKAGES);
+    let mut package_rows_scanned = 0usize;
+    if let Some(preferred) = key.preferred.as_ref() {
+        // The selected project is admitted independently by exact package
+        // coordinate, so a bounded first page cannot make a later local root
+        // disappear from its own graph.
+        ensure_active(cancellation)?;
+        if matches!(session.outline_page(preferred.as_str(), 1, None), Ok(reply)
+            if matches!(reply.reply, CommandReply::ProjectionPage(_)))
     {
-        CommandReply::Packages(snapshot) => snapshot,
+            packages.push(preferred.clone());
+        }
+    }
+    ensure_active(cancellation)?;
+    let package_page_limit = MAX_PACKAGES.saturating_sub(usize::from(!packages.is_empty()));
+    let package_page_limit = u16::try_from(package_page_limit)
+        .map_err(|_| Arc::<str>::from("the package graph page limit is invalid"))?;
+    let package_page = session
+        .package_page(package_page_limit, None)
+        .map_err(|error| Arc::<str>::from(format!("could not read indexed packages: {error}")))?;
+    ensure_active(cancellation)?;
+    let package_page = match package_page.reply {
+        CommandReply::ProjectionPage(page) => page,
         _ => {
             return Err(Arc::from(
-                "the local service returned an unexpected package listing",
+                "the local service returned an unexpected package page",
             ));
         }
     };
-    let mut packages = Vec::with_capacity(MAX_PACKAGES);
-    let mut packages_total = 0usize;
-    for row in package_snapshot.root.rows() {
+    package_rows_scanned = package_page.snapshot.root.rows().len();
+    let package_total = match package_page.terminal {
+        PageTerminal::Complete => Some(package_rows_scanned),
+        PageTerminal::More(_) => None,
+        PageTerminal::Cancelled => {
+            return Err(Arc::from("the owner cancelled its package graph page"));
+        }
+    };
+    for row in package_page.snapshot.root.rows() {
         if !matches!(row.id, RowId::Package(_)) {
             continue;
         }
         let Ok(package) = PackageRef::parse(&row.label) else {
             continue;
         };
-        packages_total = packages_total.saturating_add(1);
         retain_package(&mut packages, package, key.preferred.as_ref());
     }
     if packages.is_empty() {
@@ -246,7 +282,7 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
             "the current index has no packages to show in the graph",
         ));
     }
-    let bounded = packages_total > packages.len();
+    let bounded = package_total.is_none() || package_rows_scanned > packages.len();
 
     let mut world_packages = Vec::with_capacity(packages.len());
     let mut package_index = BTreeMap::<PackageRef, u32>::new();
@@ -276,7 +312,8 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
 
     let mut coverage = Coverage {
         packages: packages.len(),
-        packages_total,
+        packages_total: package_total,
+        package_rows_scanned,
         bounded,
         ..Coverage::default()
     };
@@ -286,6 +323,7 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
             .insert(kind, RelationKindCoverage::default());
     }
     for (index, package) in packages.iter().enumerate() {
+        ensure_active(cancellation)?;
         let reference = package.reference().clone();
         match session.surface(SurfaceCommand::Dependencies { package: reference }) {
             Ok(SurfaceReply::Dependencies(DependencyFacts::Known(edges))) => {
@@ -329,6 +367,7 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
             .map_err(|_| Arc::<str>::from("the package graph is too large"))?;
         let mut continuation: Option<PageContinuation> = None;
         for page_index in 0..OUTLINE_PAGES {
+            ensure_active(cancellation)?;
             if nodes.len() >= MAX_DECLARATIONS {
                 coverage.bounded = true;
                 break 'packages;
@@ -467,6 +506,7 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
     let mut edge_keys = HashSet::<(u32, u32, u16)>::new();
     let mut semantic_edge_keys = HashSet::<(u32, u32, SemanticLinkKind)>::new();
     'relation_roots: for symbol in relation_candidates {
+        ensure_active(cancellation)?;
         match session.related(symbol.as_str()) {
             Ok(reply) => {
                 let CommandReply::Graph(snapshot) = reply.reply else {
@@ -479,6 +519,9 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
                 };
                 coverage.relation_roots += 1;
                 for (relation_index, relation) in relations.iter().enumerate() {
+                    if relation_index % 128 == 0 {
+                        ensure_active(cancellation)?;
+                    }
                     if edges.len() >= MAX_RELATIONS {
                         coverage.bounded = true;
                         for omitted in &relations[relation_index..] {
@@ -515,6 +558,7 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
     }
     coverage.relations = edges.len();
 
+    ensure_active(cancellation)?;
     let after = session.revision().map_err(|error| {
         Arc::<str>::from(format!("could not confirm the graph's index root: {error}"))
     })?;
@@ -537,6 +581,14 @@ fn read(key: &Key) -> Result<Arc<Projection>, Arc<str>> {
         identities,
         coverage,
     }))
+}
+
+fn ensure_active(cancellation: &Cancellation) -> Result<(), Arc<str>> {
+    if cancellation.is_cancelled() {
+        Err(Arc::from("the indexed graph read was superseded"))
+    } else {
+        Ok(())
+    }
 }
 
 fn retain_package(

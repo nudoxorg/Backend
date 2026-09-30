@@ -20,6 +20,7 @@ use facet::marks::{DepFacts, DepKind, Eco, EcoFacts, dep_line, ecosystem_mark};
 use facet::tokens::fluid::PACKAGE_GEM;
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div,
     px,

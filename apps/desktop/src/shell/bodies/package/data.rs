@@ -683,6 +683,10 @@ pub(super) fn past(
             out.note = Some("Checking the exact local release comparison…".to_owned());
             return out;
         }
+        crate::runtime::releases::Read::Waiting => {
+            out.note = Some("Waiting for an available release-read slot…".to_owned());
+            return out;
+        }
         crate::runtime::releases::Read::Unavailable(reason) => {
             out.note = Some(reason.to_string());
             return out;

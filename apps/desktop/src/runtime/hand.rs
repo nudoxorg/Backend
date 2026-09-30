@@ -119,6 +119,9 @@ pub(crate) fn hand_view_for<T: 'static>(
         indexed_world::State::Reading => {
             return standing_apart(hand.held(), Some(Arc::from("Reading declarations and relations from the current index…")));
         }
+        indexed_world::State::Waiting => {
+            return standing_apart(hand.held(), Some(Arc::from("Waiting for an available index-read slot before reading declarations and relations…")));
+        }
         indexed_world::State::Unavailable(reason) => {
             return standing_apart(hand.held(), Some(Arc::from(format!("The current index graph is unavailable: {reason}"))));
         }
@@ -146,6 +149,7 @@ pub(crate) fn hand_view_for<T: 'static>(
             Some((held, view)) if same_held(&held, hand.held()) && view.status.is_some() => view,
             _ => standing_apart(hand.held(), Some(Arc::from("Ordering these cards from indexed relations…"))),
         },
+        Answer::Deferred => standing_apart(hand.held(), Some(Arc::from("Waiting for an available index-read slot before arranging these cards…"))),
         Answer::Failed(fault) => standing_apart(
             hand.held(),
             Some(Arc::from(format!("Could not order these cards from indexed relations: {fault}"))),
