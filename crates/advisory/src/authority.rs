@@ -472,7 +472,7 @@ impl AdvisoryAuthority {
         if path_metadata.len() > maximum_state_bytes {
             return Err(AuthorityStorageError::BoundExceeded);
         }
-        let file = match fs::File::open(path) {
+        let file = match super::osv_snapshot::open_readonly_nofollow(path) {
             Ok(file) => file,
             Err(error) => return Err(AuthorityStorageError::Io(error)),
         };
@@ -528,10 +528,6 @@ impl AdvisoryAuthority {
             parent
         };
         fs::create_dir_all(parent).map_err(AuthorityStorageError::Io)?;
-        let bytes = serde_json::to_vec(self).map_err(AuthorityStorageError::Encode)?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > self.maximum_state_bytes {
-            return Err(AuthorityStorageError::BoundExceeded);
-        }
         // A fixed sibling name turns a crash left behind by a previous process into a permanent
         // persistence outage.  A process-local nonce keeps concurrent writers independent while
         // the final rename remains the single atomic publication point.
@@ -544,15 +540,55 @@ impl AdvisoryAuthority {
             std::process::id(),
             PERSIST_NONCE.fetch_add(1, Ordering::Relaxed)
         ));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
             .open(&temporary)
             .map_err(AuthorityStorageError::Io)?;
-        file.write_all(&bytes).map_err(AuthorityStorageError::Io)?;
-        file.sync_all().map_err(AuthorityStorageError::Io)?;
+        let (encoded, exceeded, write_error) = {
+            let mut writer = BoundedStateWriter {
+                file: &mut file,
+                written: 0,
+                maximum: self.maximum_state_bytes,
+                exceeded: false,
+                write_error: None,
+            };
+            let encoded = serde_json::to_writer(&mut writer, self);
+            (encoded, writer.exceeded, writer.write_error)
+        };
+        if exceeded {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(AuthorityStorageError::BoundExceeded);
+        }
+        if let Some(kind) = write_error {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(AuthorityStorageError::Io(std::io::Error::new(
+                kind,
+                "authority state write failed",
+            )));
+        }
+        if let Err(error) = encoded {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(AuthorityStorageError::Encode(error));
+        }
+        if let Err(error) = file.sync_all() {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(AuthorityStorageError::Io(error));
+        }
         drop(file);
-        fs::rename(temporary, path).map_err(AuthorityStorageError::Io)?;
+        fs::rename(&temporary, path).map_err(|error| {
+            let _ = fs::remove_file(&temporary);
+            AuthorityStorageError::Io(error)
+        })?;
         // The file is durable before the rename; syncing the directory makes the name update
         // durable as well on filesystems which otherwise allow a power loss between the two.
         let durable = match OpenOptions::new().read(true).open(parent) {
@@ -1176,6 +1212,53 @@ impl std::fmt::Display for AuthorityStorageError {
 }
 impl std::error::Error for AuthorityStorageError {}
 
+struct BoundedStateWriter<'a> {
+    file: &'a mut fs::File,
+    written: u64,
+    maximum: u64,
+    exceeded: bool,
+    write_error: Option<std::io::ErrorKind>,
+}
+
+impl Write for BoundedStateWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let length = u64::try_from(buffer.len()).unwrap_or(u64::MAX);
+        if self
+            .written
+            .checked_add(length)
+            .is_none_or(|next| next > self.maximum)
+        {
+            self.exceeded = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                "advisory authority state exceeds its byte limit",
+            ));
+        }
+        match self.file.write(buffer) {
+            Ok(written) => {
+                self.written = self
+                    .written
+                    .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+                Ok(written)
+            }
+            Err(error) => {
+                self.write_error = Some(error.kind());
+                Err(error)
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.file.flush() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.write_error = Some(error.kind());
+                Err(error)
+            }
+        }
+    }
+}
+
 /// Authority state could not admit one complete source transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorityApplyError {
@@ -1477,6 +1560,43 @@ mod tests {
             Err(OsvSnapshotError::Busy)
         ));
         drop(builder);
+    }
+
+    #[test]
+    fn attached_osv_index_mutation_cannot_change_a_lookup_to_clean() {
+        let directory = tempfile::tempdir().expect("snapshot root");
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
+        let mut builder = super::super::OsvSnapshotBuilder::create(
+            directory.path(),
+            scope,
+            10,
+            10,
+            10,
+            1024 * 1024,
+        )
+        .expect("snapshot builder");
+        builder.push(&advisory).expect("stage advisory");
+        let snapshot = builder
+            .finish(*blake3::hash(b"index mutation regression").as_bytes())
+            .expect("seal snapshot");
+        let generation = snapshot.generation_id().to_owned();
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority
+            .apply(AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None))
+            .expect("select snapshot");
+
+        let index_path = directory.path().join(generation).join("package-index.bin");
+        let mut bytes = fs::read(&index_path).expect("read package index");
+        bytes[0] ^= 1;
+        fs::write(index_path, bytes).expect("mutate on-disk package index");
+
+        let package = super::super::normalize_package("cargo", "demo").expect("identity");
+        let observation = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Complete);
+        assert_eq!(observation.advisories.len(), 1);
     }
 
     #[test]

@@ -9,7 +9,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -217,6 +217,10 @@ pub struct OsvSnapshotRef {
     /// until the authority journal has durably selected this generation.
     #[serde(skip)]
     pending_root_lease: Option<Arc<FileLease>>,
+    /// Verified, sorted records retained in memory so a later on-disk index
+    /// mutation cannot turn a lookup into false clean coverage.
+    #[serde(skip)]
+    index_records: Option<Arc<Vec<[u8; PACKAGE_INDEX_RECORD_BYTES as usize]>>>,
 }
 
 impl PartialEq for OsvSnapshotRef {
@@ -292,9 +296,9 @@ impl OsvSnapshotRef {
             &root.join(OSV_ROOT_LOCK),
             true,
             LeaseMode::Shared,
-            true,
+            false,
         )?
-        .ok_or(OsvSnapshotError::Invalid("snapshot owner lease unavailable"))?;
+        .ok_or(OsvSnapshotError::Busy)?;
         let directory = root.join(&self.generation);
         let directory_metadata = fs::symlink_metadata(&directory)?;
         if directory_metadata.file_type().is_symlink()
@@ -407,7 +411,7 @@ impl OsvSnapshotRef {
         if index_metadata.len() != expected_len {
             return Err(OsvSnapshotError::Invalid("package index length"));
         }
-        validate_package_index(
+        let index_records = validate_package_index(
             &index_path,
             self.package_index_digest,
             self.package_count,
@@ -417,6 +421,7 @@ impl OsvSnapshotRef {
         self.directory = directory;
         self.index_verified = true;
         self.lease = Some(lease);
+        self.index_records = Some(Arc::new(index_records));
         Ok(())
     }
 
@@ -482,7 +487,11 @@ impl OsvSnapshotRef {
         {
             return Err(OsvSnapshotError::Invalid("package posting file"));
         }
-        let file = File::open(path)?;
+        let file = open_readonly_nofollow(&path)?;
+        let opened_metadata = file.metadata()?;
+        if opened_metadata.len() != entry.bytes || !private_permissions(&opened_metadata) {
+            return Err(OsvSnapshotError::Invalid("package posting file changed"));
+        }
         let mut reader = BufReader::new(file);
         let mut hasher = blake3::Hasher::new();
         let mut line = Vec::with_capacity(4096);
@@ -534,20 +543,19 @@ impl OsvSnapshotRef {
     }
 
     fn find_package(&self, key: &[u8; 32]) -> Result<Option<PackageIndexEntry>, OsvSnapshotError> {
-        let index_path = self.directory.join("package-index.bin");
-        let mut index = File::open(index_path)?;
-        let mut low = 0_u64;
-        let mut high = self.package_count;
-        let mut buffer = [0_u8; PACKAGE_INDEX_RECORD_BYTES as usize];
+        let records = self
+            .index_records
+            .as_ref()
+            .ok_or(OsvSnapshotError::Invalid("verified package index missing"))?;
+        let mut low = 0_usize;
+        let mut high = records.len();
         while low < high {
             let middle = low + (high - low) / 2;
-            let offset = middle
-                .checked_mul(PACKAGE_INDEX_RECORD_BYTES)
-                .ok_or(OsvSnapshotError::Invalid("package index offset overflow"))?;
-            index.seek(SeekFrom::Start(offset))?;
-            index.read_exact(&mut buffer)?;
+            let buffer = records
+                .get(middle)
+                .ok_or(OsvSnapshotError::Invalid("package index lookup bounds"))?;
             match buffer[..32].cmp(key) {
-                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Less => low = middle.saturating_add(1),
                 std::cmp::Ordering::Greater => high = middle,
                 std::cmp::Ordering::Equal => {
                     return Ok(Some(PackageIndexEntry {
@@ -582,6 +590,50 @@ struct PackageIndexEntry {
 struct PackageWriter {
     writer: BufWriter<File>,
     touched: u64,
+}
+
+struct CappedRowWriter {
+    bytes: Vec<u8>,
+    maximum: usize,
+    exceeded: bool,
+}
+
+impl CappedRowWriter {
+    fn new(maximum: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(maximum.min(8192)),
+            maximum,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for CappedRowWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let Some(next_len) = self.bytes.len().checked_add(buffer.len()) else {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "OSV row exceeds its encoding limit",
+            ));
+        };
+        if next_len > self.maximum {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "OSV row exceeds its encoding limit",
+            ));
+        }
+        self.bytes
+            .try_reserve(buffer.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::OutOfMemory, "OSV row allocation failed"))?;
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Bounded writer for one unpublished OSV source generation.
@@ -735,7 +787,14 @@ impl OsvSnapshotBuilder {
             let mut row = advisory.clone();
             row.key.canonical = CanonicalAdvisoryId(row.key.native.id.clone());
             row.affected = Box::new([affected.clone()]);
-            let bytes = serde_json::to_vec(&row)?;
+            let mut encoded = CappedRowWriter::new(MAX_OSV_SNAPSHOT_ROW_BYTES);
+            if let Err(error) = serde_json::to_writer(&mut encoded, &row) {
+                if encoded.exceeded {
+                    return Err(OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes));
+                }
+                return Err(OsvSnapshotError::Encoding(error));
+            }
+            let bytes = encoded.bytes;
             if bytes.len().saturating_add(1) > MAX_OSV_SNAPSHOT_ROW_BYTES {
                 return Err(OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes));
             }
@@ -930,6 +989,7 @@ impl OsvSnapshotBuilder {
             index_verified: false,
             lease: None,
             pending_root_lease: None,
+            index_records: None,
         };
         if published_with_staged_lease {
             reference.attach_root_with_lease(
@@ -1022,24 +1082,25 @@ fn hex(bytes: &[u8]) -> String {
 
 fn read_manifest(directory: &Path) -> Result<OsvSnapshotManifest, OsvSnapshotError> {
     let path = directory.join("manifest.json");
-    let metadata = fs::symlink_metadata(&path)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || !private_permissions(&metadata)
-        || metadata.len() > 4096
-    {
+    let mut file = open_readonly_nofollow(&path)?;
+    let metadata = file.metadata()?;
+    if !private_permissions(&metadata) || metadata.len() > 4096 {
         return Err(OsvSnapshotError::Invalid("snapshot manifest file"));
     }
-    let bytes = fs::read(path)?;
+    let mut bytes = Vec::with_capacity(4096);
+    file.take(4097).read_to_end(&mut bytes)?;
+    if bytes.len() > 4096 {
+        return Err(OsvSnapshotError::Invalid("snapshot manifest file"));
+    }
     serde_json::from_slice(&bytes).map_err(OsvSnapshotError::Encoding)
 }
 
 fn digest_file(path: &Path) -> Result<[u8; 32], OsvSnapshotError> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || !private_permissions(&metadata) {
+    let mut file = open_readonly_nofollow(path)?;
+    let metadata = file.metadata()?;
+    if !private_permissions(&metadata) {
         return Err(OsvSnapshotError::Invalid("snapshot data file"));
     }
-    let mut file = File::open(path)?;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -1058,8 +1119,14 @@ fn validate_package_index(
     package_count: u64,
     expected_rows: u64,
     expected_bytes: u64,
-) -> Result<(), OsvSnapshotError> {
-    let mut file = File::open(path)?;
+) -> Result<Vec<[u8; PACKAGE_INDEX_RECORD_BYTES as usize]>, OsvSnapshotError> {
+    let mut file = open_readonly_nofollow(path)?;
+    let count = usize::try_from(package_count)
+        .map_err(|_| OsvSnapshotError::Invalid("package index count conversion"))?;
+    let mut records = Vec::new();
+    records
+        .try_reserve_exact(count)
+        .map_err(|_| OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes))?;
     let mut hasher = blake3::Hasher::new();
     let mut record = [0_u8; PACKAGE_INDEX_RECORD_BYTES as usize];
     let mut previous = None;
@@ -1094,6 +1161,7 @@ fn validate_package_index(
         bytes = bytes
             .checked_add(package_bytes)
             .ok_or(OsvSnapshotError::Invalid("package byte total overflow"))?;
+        records.push(record);
     }
     if *hasher.finalize().as_bytes() != expected_digest
         || rows != expected_rows
@@ -1101,7 +1169,7 @@ fn validate_package_index(
     {
         return Err(OsvSnapshotError::Invalid("package index digest or totals"));
     }
-    Ok(())
+    Ok(records)
 }
 
 fn create_private_file(path: &Path) -> Result<File, OsvSnapshotError> {
@@ -1126,6 +1194,58 @@ fn create_private_lock_file(path: &Path) -> Result<File, OsvSnapshotError> {
     options.open(path).map_err(OsvSnapshotError::Io)
 }
 
+pub(crate) fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_no_follow(&mut options);
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a regular non-symlink file",
+        ));
+    }
+    Ok(file)
+}
+
+fn open_readwrite_nofollow(path: &Path, create: bool) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(create);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    configure_no_follow(&mut options);
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a regular non-symlink file",
+        ));
+    }
+    Ok(file)
+}
+
+fn configure_no_follow(options: &mut OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(std::os::windows::fs::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = options;
+    }
+}
+
 fn open_lease_file(path: &Path, create: bool) -> Result<File, OsvSnapshotError> {
     match fs::symlink_metadata(path) {
         Ok(metadata)
@@ -1144,14 +1264,7 @@ fn open_lease_file(path: &Path, create: bool) -> Result<File, OsvSnapshotError> 
         }
         Err(_) => {}
     }
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(create);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options.open(path)?;
+    let file = open_readwrite_nofollow(path, create)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || !private_permissions(&metadata) {
         return Err(OsvSnapshotError::Invalid("snapshot lease file"));
