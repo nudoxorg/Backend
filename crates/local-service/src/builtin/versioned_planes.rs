@@ -726,6 +726,8 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
         if image_identity != selected_image.image_identity() {
             return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
         }
+        #[cfg(test)]
+        self.loader.wait_at_native_history_fence_gate();
         Ok(OwnedSemanticAuthorityPublicationFence {
             _selections: selections,
             target,

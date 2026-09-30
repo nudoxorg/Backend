@@ -472,6 +472,53 @@ impl GenerationFixture {
     fn key(&self) -> &backend_engine::builtin::ProductSemanticPublicationKey {
         &self.key
     }
+
+    fn stage_selected_generation(
+        &self,
+        replacement: bool,
+    ) -> Result<backend_engine::application::StagedSemanticPackage, String> {
+        use backend_engine::application::{OwnedPackageSource, OwnedPackageSourceSet};
+        use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest};
+        use backend_semantic::vocabulary::{CStandard, LanguageProfile, Stage};
+
+        const ALPHA: &str = "int alpha(void) { return 1; }\n";
+        const BETA: &str = "int beta(void) { return 2; }\n";
+        const GAMMA: &str = "int gamma(void) { return 3; }\n";
+        let package_url = self.key.coordinate().clone();
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(if replacement { 45 } else { 44 }),
+                profile: LanguageProfile::C(CStandard::C23),
+                stage: Stage::LowerIr,
+            },
+            package_url,
+        )
+        .map_err(|error| format!("build selected-history compiler request: {error:?}"))?;
+        let (package_root, sources) = if replacement {
+            (
+                self.root.join("replacement"),
+                vec![
+                    OwnedPackageSource::new("src/gamma.c", GAMMA)
+                        .map_err(|error| error.to_string())?,
+                ],
+            )
+        } else {
+            (
+                self.root.join("package"),
+                vec![
+                    OwnedPackageSource::new("src/alpha.c", ALPHA)
+                        .map_err(|error| error.to_string())?,
+                    OwnedPackageSource::new("src/beta.c", BETA)
+                        .map_err(|error| error.to_string())?,
+                ],
+            )
+        };
+        let sources = OwnedPackageSourceSet::new(request, package_root, sources.into_boxed_slice())
+            .map_err(|error| format!("admit selected-history package sources: {error}"))?;
+        self.client()?
+            .compile_package_sources_staged(sources)
+            .map_err(|error| format!("stage selected-history compiler output: {error}"))
+    }
 }
 
 impl Drop for GenerationFixture {
@@ -779,7 +826,10 @@ mod tests {
     use super::{
         GenerationKey, SelectedSemanticImageLoader, SemanticGenerationResidence, resident_weight,
     };
-    use backend_engine::builtin::{ProductSemanticPublicationKey, SemanticPublicationClaim};
+    use backend_engine::builtin::{
+        ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
+        SemanticPublicationCoverage,
+    };
     use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
     use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
     use std::sync::{Arc, Mutex};
@@ -1535,5 +1585,398 @@ mod tests {
         for (expected, observed) in source.images().iter().zip(reopened.iter()) {
             assert_eq!(expected.as_ref(), observed.as_ref());
         }
+    }
+
+    fn admit_staged_candidate(
+        authority: &mut super::super::semantic_authority::SemanticAuthority,
+        key: &ProductSemanticPublicationKey,
+        staged: &backend_engine::application::StagedSemanticPackage,
+        source_count: u64,
+    ) -> SemanticPublicationClaim {
+        let observation = authority
+            .observe(key, *staged.input_witness().input_root(), source_count)
+            .expect("persist exact staged source observation");
+        let attempt = authority
+            .begin_candidate_attempt(key, &observation)
+            .expect("begin exact staged candidate attempt");
+        authority
+            .publish_staged(key, attempt, staged, |_| Ok(()))
+            .expect("admit immutable staged semantic candidate")
+            .0
+    }
+
+    fn marker_intent(
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+        sources: &[(&str, &str)],
+        removed_paths: &[&str],
+    ) -> super::super::BuiltinIntent {
+        use super::super::{BuiltinSemanticChange, BuiltinSourceChange};
+        use backend_compile::SourceLanguage;
+
+        let package = key.package_key();
+        let label = key.package().as_str();
+        let project = package.to_bytes();
+        let mut files = sources
+            .iter()
+            .map(|(path, contents)| {
+                let identity = *blake3::hash(contents.as_bytes()).as_bytes();
+                let key = backend_engine::product_source_file_key(project, path);
+                let row = backend_engine::ProductSourceRecord::file_within_row_capacity(
+                    project,
+                    *path,
+                    SourceLanguage::C,
+                    identity,
+                    [0x62; 32],
+                    Vec::new(),
+                )
+                .expect("admit source file row");
+                (key, path, identity, row)
+            })
+            .collect::<Vec<_>>();
+        files.sort_by_key(|(file_key, _, _, _)| *file_key);
+        let file_keys = files
+            .iter()
+            .map(|(file_key, _, _, _)| *file_key)
+            .collect::<Vec<_>>();
+        let mut source_hasher = blake3::Hasher::new();
+        source_hasher.update(b"native-history-marker-source-frontier.v1\0");
+        for (_, path, identity, _) in &files {
+            source_hasher.update(path.as_bytes());
+            source_hasher.update(&[0]);
+            source_hasher.update(identity);
+        }
+        let project_row = backend_engine::ProductSourceRecord::project(
+            label,
+            *source_hasher.finalize().as_bytes(),
+            file_keys,
+        )
+        .expect("admit source project row");
+        let mut source_changes = vec![BuiltinSourceChange {
+            key: project,
+            after: Some(project_row),
+        }];
+        source_changes.extend(
+            files
+                .into_iter()
+                .map(|(file_key, _, _, row)| BuiltinSourceChange {
+                    key: file_key,
+                    after: Some(row),
+                }),
+        );
+        source_changes.extend(removed_paths.iter().map(|path| BuiltinSourceChange {
+            key: backend_engine::product_source_file_key(project, path),
+            after: None,
+        }));
+
+        let generation = key
+            .for_generation_bytes(*claim.binding().identity.as_ref())
+            .expect("derive immutable generation relation key");
+        let record = ProductSemanticPublicationRecord::Published {
+            coverage: SemanticPublicationCoverage::Complete,
+            claim,
+        };
+        super::super::BuiltinIntent::index_with_semantics(
+            package,
+            label,
+            source_changes,
+            vec![
+                BuiltinSemanticChange {
+                    key: generation,
+                    after: Some(record.clone()),
+                },
+                BuiltinSemanticChange {
+                    key: key.clone(),
+                    after: Some(record),
+                },
+            ],
+        )
+        .expect("construct source-plus-semantic workspace marker intent")
+    }
+
+    #[test]
+    fn native_history_cas_holds_the_committed_marker_lease_across_two_generations() {
+        if !run_with_explicit_clang_fixture() {
+            return;
+        }
+
+        use backend_engine::application::StagedSemanticPackage;
+        use backend_engine::{DaemonConfig, RelationAdmissionRegistry};
+        use backend_library::TypedV3HistoryInputReplayStatus;
+        use backend_replication::{
+            FileSemanticRangeStore, HistoryRefKind, HistoryRefName, SemanticTargetKey,
+            TransportLimits,
+        };
+        use backend_semantic::ir::{JumboRopeLimits, SemanticTypedPlaneVerificationTierV2};
+        use std::time::{Duration, Instant};
+
+        const SOURCE_A: [(&str, &str); 2] = [
+            ("src/alpha.c", "int alpha(void) { return 1; }\n"),
+            ("src/beta.c", "int beta(void) { return 2; }\n"),
+        ];
+        const SOURCE_B: [(&str, &str); 1] = [("src/gamma.c", "int gamma(void) { return 3; }\n")];
+
+        let fixture = super::open_generation_fixture().expect("real Clang compiler fixture");
+        let key = fixture.key().clone();
+        let staged_a: StagedSemanticPackage = fixture
+            .stage_selected_generation(false)
+            .expect("stage generation A with the real compiler");
+        let staged_b: StagedSemanticPackage = fixture
+            .stage_selected_generation(true)
+            .expect("stage generation B with the real compiler");
+        let marker_workspace = fixture.root.join("selected-product-workspace");
+        std::fs::create_dir_all(&marker_workspace).expect("create selected product workspace");
+
+        let profile = super::super::profile_descriptor(super::super::BuiltinProfile::Product)
+            .expect("admit product profile");
+        let dispatcher = super::super::builtin_dispatcher(Some([0x79; 32]), profile, 1)
+            .expect("configure product owner");
+        let registry = RelationAdmissionRegistry::new()
+            .with_relation::<super::super::BuiltinWorkspaceRelation>()
+            .expect("register source relation")
+            .with_relation::<super::super::BuiltinSemanticRelation>()
+            .expect("register semantic relation");
+        let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+            &marker_workspace,
+            super::super::BuiltinModel,
+            super::super::genesis().expect("checked genesis"),
+            dispatcher,
+            DaemonConfig::default(),
+            registry,
+        )
+        .expect("open product workspace owner");
+        let mut authority =
+            super::super::semantic_authority::SemanticAuthority::open(&marker_workspace)
+                .expect("open product semantic authority");
+
+        // Retain B before selecting A. Its immutable admitted closure is
+        // available later, but neither Turso's candidate nor this row can
+        // serve B until the matching workspace intent commits.
+        let claim_b = admit_staged_candidate(
+            &mut authority,
+            &key,
+            &staged_b,
+            u64::try_from(SOURCE_B.len()).expect("source B count"),
+        );
+        let claim_a = admit_staged_candidate(
+            &mut authority,
+            &key,
+            &staged_a,
+            u64::try_from(SOURCE_A.len()).expect("source A count"),
+        );
+        assert_ne!(claim_a, claim_b, "compiler generations must differ");
+        let intent_a = marker_intent(&key, claim_a, &SOURCE_A, &[]);
+        let intent_b = marker_intent(&key, claim_b, &SOURCE_B, &["src/alpha.c", "src/beta.c"]);
+
+        let (fence_reached, fence_reached_result) = std::sync::mpsc::sync_channel(1);
+        let (fence_release, fence_release_result) = std::sync::mpsc::sync_channel(1);
+        authority.install_native_history_fence_gate(fence_reached, fence_release_result);
+        authority
+            .commit_product_selection_changes(vec![(key.clone(), claim_a)], Vec::new(), || {
+                super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent_a)
+            })
+            .expect("commit source A and selected semantic claim A together");
+        let stamp_a = authority
+            .resolve_current_selected(&key)
+            .expect("resolve committed generation A")
+            .stamp();
+
+        // The test-only gate is reached from the real V3 publication source
+        // after it has acquired the same by-product read guard used by the
+        // serving selector. It pauses the actual async publisher before the
+        // replication API can begin the commit/ref CAS sequence.
+        fence_reached_result
+            .recv_timeout(Duration::from_secs(60))
+            .expect("real V3 publication acquires the committed selection fence");
+        let loader = authority.native_history_loader_for_test();
+        assert!(
+            authority.native_history_reader_holds_selector(),
+            "the production V3 fence must retain the product selector read lease"
+        );
+
+        let (writer_probe, writer_probe_result) = std::sync::mpsc::sync_channel(1);
+        loader.install_native_history_writer_probe(writer_probe);
+        let (writer_started, writer_started_result) = std::sync::mpsc::sync_channel(1);
+        let store = authority.store();
+        let target = SemanticTargetKey::new(
+            key.package().as_str(),
+            key.coordinate().as_str(),
+            key.profile(),
+        )
+        .expect("derive selected history target");
+        let branch = HistoryRefName::new("selected-native-v3").expect("valid history branch");
+        let writer_target = target.clone();
+        let writer_branch = branch.clone();
+        let writer = std::thread::spawn(move || {
+            writer_started
+                .send(())
+                .expect("notify that generation B writer is starting");
+            let update = authority.commit_product_selection_changes(
+                vec![(key.clone(), claim_b)],
+                Vec::new(),
+                || {
+                    let history = FileSemanticRangeStore::open(
+                        store.clone(),
+                        TransportLimits::default(),
+                    )
+                    .map_err(|error| {
+                        super::super::BuiltinModelError(format!(
+                            "open history after generation A CAS: {error}"
+                        ))
+                    })?;
+                    let selected = history
+                        .history_ref(
+                            &writer_target,
+                            HistoryRefKind::Branch,
+                            &writer_branch,
+                        )
+                        .map_err(|error| {
+                            super::super::BuiltinModelError(format!(
+                                "read V3 branch after generation A CAS: {error}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            super::super::BuiltinModelError(
+                                "workspace marker writer passed the V3 fence before its branch CAS"
+                                    .to_owned(),
+                            )
+                        })?;
+                    let commit_a = selected.commit();
+                    let ancestry = history
+                        .history_ref_ancestry_proof(
+                            &writer_target,
+                            HistoryRefKind::Branch,
+                            &writer_branch,
+                            commit_a,
+                        )
+                        .map_err(|error| {
+                            super::super::BuiltinModelError(format!(
+                                "prove generation A on the V3 branch: {error}"
+                            ))
+                        })?;
+                    let replay = history
+                        .replay_typed_v3_history(
+                            &writer_target,
+                            HistoryRefKind::Branch,
+                            &writer_branch,
+                            commit_a,
+                            &ancestry,
+                            SemanticTypedPlaneVerificationTierV2::Standard,
+                            JumboRopeLimits::default(),
+                        )
+                        .map_err(|error| {
+                            super::super::BuiltinModelError(format!(
+                                "cold-replay generation A before marker B: {error}"
+                            ))
+                        })?;
+                    if replay.commit().selected_stamp() != stamp_a
+                        || !replay.commit().parents().is_empty()
+                        || replay.input_replay_status()
+                            != TypedV3HistoryInputReplayStatus::Unproven
+                    {
+                        return Err(super::super::BuiltinModelError(
+                            "generation A branch commit has the wrong stamp, ancestry, or input status"
+                                .to_owned(),
+                        ));
+                    }
+                    super::super::commands::commit_builtin_intent(&mut daemon, 2, &intent_b)?;
+                    Ok(commit_a)
+                },
+            );
+            (authority, daemon, update)
+        });
+
+        writer_started_result
+            .recv_timeout(Duration::from_secs(2))
+            .expect("generation B writer starts while generation A fence is held");
+        assert_eq!(
+            writer_probe_result
+                .recv_timeout(Duration::from_secs(2))
+                .expect("writer reaches the production selection write path"),
+            true,
+            "the real marker writer must observe the native-history read lease blocking its write"
+        );
+        assert!(
+            loader.native_history_reader_holds_selector(),
+            "the marker writer must remain excluded until V3 branch CAS completes"
+        );
+        // Let the admitted V3 publisher continue. The writer callback itself
+        // independently reads and cold-replays A before it can durably install
+        // B, so moving the product marker ahead of branch CAS fails this test.
+        fence_release
+            .send(())
+            .expect("release V3 publisher after writer has blocked on the marker lease");
+
+        let (mut authority, daemon, commit_a) = writer.join().expect("join product marker writer");
+        let commit_a = commit_a.expect("generation B marker commits after generation A CAS");
+        drop(daemon);
+
+        let deadline = Instant::now() + Duration::from_secs(45);
+        let (commit_b, proof_b) = loop {
+            match authority
+                .native_history_status(&key, claim_b)
+                .expect("read exact selected generation B history status")
+            {
+                backend_engine::SemanticHistoryPublicationStatus::Published {
+                    commit,
+                    proof,
+                    ..
+                } => break (commit, proof),
+                backend_engine::SemanticHistoryPublicationStatus::Pending { .. }
+                | backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }
+                | backend_engine::SemanticHistoryPublicationStatus::NotRequested { .. } => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "generation B V3 publication timed out"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                status => panic!("generation B V3 publication did not succeed: {status:?}"),
+            }
+        };
+        assert_eq!(proof_b.parent_commits.as_ref(), [*commit_a.as_bytes()]);
+        assert_eq!(proof_b.reachable_commit, commit_b);
+
+        let history = FileSemanticRangeStore::open(authority.store(), TransportLimits::default())
+            .expect("reopen branch history store");
+        let branch_tip = history
+            .history_ref(&target, HistoryRefKind::Branch, &branch)
+            .expect("read generation B branch")
+            .expect("generation B branch exists");
+        assert_eq!(branch_tip.commit().as_bytes(), &commit_b);
+        let ancestry_b = history
+            .history_ref_ancestry_proof(
+                &target,
+                HistoryRefKind::Branch,
+                &branch,
+                branch_tip.commit(),
+            )
+            .expect("prove generation B branch commit");
+        let stamp_b = authority
+            .resolve_current_selected(&key)
+            .expect("resolve committed generation B")
+            .stamp();
+        assert_ne!(stamp_a, stamp_b);
+        let replay_b = history
+            .replay_typed_v3_history(
+                &target,
+                HistoryRefKind::Branch,
+                &branch,
+                branch_tip.commit(),
+                &ancestry_b,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .expect("cold-replay generation B's exact typed closure");
+        assert_eq!(replay_b.commit().selected_stamp(), stamp_b);
+        assert_eq!(replay_b.commit().parents(), &[commit_a]);
+        assert_eq!(
+            replay_b.input_replay_status(),
+            TypedV3HistoryInputReplayStatus::Unproven
+        );
+        drop(replay_b);
+        drop(history);
+        drop(authority);
+        drop(fixture);
     }
 }
