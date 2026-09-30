@@ -685,7 +685,9 @@ fn mcp_binary() -> Option<PathBuf> {
         executable,
         sibling,
         std::env::var_os("PATH"),
-        std::env::var_os("CARGO_HOME").map(PathBuf::from),
+        std::env::var_os("NUDOX_CARGO_HOME")
+            .or_else(|| std::env::var_os("CARGO_HOME"))
+            .map(PathBuf::from),
         std::env::var_os("HOME").map(PathBuf::from),
     )
 }
