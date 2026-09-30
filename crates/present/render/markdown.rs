@@ -26,7 +26,7 @@ use crate::glyph::KindGlyph;
 use crate::identity::ProjectRef;
 use crate::outline::{OutlineEntry, OutlineTree};
 use crate::page::{MemberGroup, Page, Prose, RelationGroup, Source, Truncation};
-use crate::product::{CursorTarget, ProductView};
+use crate::product::{CursorTarget, ProductView, semantic_history_details};
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf};
 use crate::status::Status;
@@ -388,6 +388,9 @@ pub fn product(view: &ProductView) -> String {
         lines.push(head);
         if let Some(operand) = record.operand() {
             lines.push(format!("`{operand}`"));
+        }
+        if let Some(status) = record.history_status() {
+            lines.push(semantic_history_details(status));
         }
     }
     lines.push(format!("{} row(s)", view.records().len()));

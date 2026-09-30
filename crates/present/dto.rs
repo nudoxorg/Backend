@@ -773,6 +773,10 @@ pub struct ProductRecordDto {
     /// Source-scoped, version-specific lineage group for index search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_group: Option<backend_library::RegistryPackageSearchGroup>,
+    /// Exact owner-reported derived-history state for an immutable semantic
+    /// compiler generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_status: Option<backend_library::SemanticHistoryPublicationStatus>,
 }
 
 impl ProductDto {
@@ -793,6 +797,7 @@ impl ProductDto {
                     forge_package_detail: record.forge_package_detail().cloned(),
                     discovery: record.discovery_details().cloned(),
                     package_group: record.package_group().cloned(),
+                    history_status: record.history_status().cloned(),
                 })
                 .collect(),
             note: view.note().map(ToOwned::to_owned),
