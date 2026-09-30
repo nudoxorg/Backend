@@ -32,6 +32,14 @@ fn has(ledger: &Ledger, part: &str) -> bool {
     !said(ledger, part).is_empty()
 }
 
+#[test]
+fn package_hero_stacks_when_text_scale_leaves_no_readable_side_column() {
+    assert!(super::hero_stacks(px(320.0), 2.0));
+    assert!(super::hero_stacks(px(390.0), 2.0));
+    assert!(super::hero_stacks(px(390.0), 1.0));
+    assert!(!super::hero_stacks(px(900.0), 2.0));
+}
+
 /// The centre of the first text painted under a key containing `part`.
 fn centre(ledger: &Ledger, part: &str) -> (f32, f32) {
     let text = ledger

@@ -145,6 +145,10 @@ pub(super) fn body(
                     None,
                     Some("Reading the exact local registry release history…".into()),
                 ),
+                crate::runtime::releases::Read::Waiting => (
+                    None,
+                    Some("Waiting for an available release-read slot…".into()),
+                ),
                 crate::runtime::releases::Read::Unavailable(reason) => (
                     None,
                     Some(format!("Release history unavailable: {reason}").into()),
@@ -272,10 +276,19 @@ fn hero(
     let palette = ctx.palette;
     let record = dossier.record.known();
     let name = ctx.say(name.to_owned());
-    // The name is never ellipsized: it wraps at identifier boundaries and
-    // steps down only when one segment cannot fit the room beside the gem.
+    // At large text sizes, a phone-width page has no useful room beside the
+    // gem. Decide from this frame's effective content width, so text scale
+    // and actual layout room both participate in the breakpoint.
     let gem = PACKAGE_GEM.at(measure.fluid_room());
-    let room = (measure.width() - gem - measure.space(Space::Wide)).max(px(120.0));
+    let stacked = hero_stacks(measure.width(), measure.scale());
+    // The name is never ellipsized: it wraps at identifier boundaries and
+    // steps down only when one segment cannot fit its actual room.
+    let room = if stacked {
+        measure.width()
+    } else {
+        measure.width() - gem - measure.space(Space::Wide)
+    }
+    .max(px(0.0));
     let (lines, role) = crate::shell::text_fit::fit_name(&name, ty::HERO, measure, room, cx);
     ctx.hero
         .extend(lines.iter().map(|line| SharedString::from(line.clone())));
@@ -293,19 +306,33 @@ fn hero(
         let lede = ctx.say(description.split_whitespace().collect::<Vec<_>>().join(" "));
         words = words.child(
             text(ty::LEDE, measure, palette.ink2)
-                .max_w(measure.width() * 0.9)
+                .w_full()
+                .min_w_0()
+                .max_w_full()
                 .child(lede),
         );
     }
     // Who made it, read from its manifest (labelled: not an index fact).
     if !byline.is_empty() {
-        let mut line = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_x(measure.space(Space::Snug));
+        let mut line = if stacked {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_y(measure.space(Space::Tight))
+                .w_full()
+                .min_w_0()
+        } else {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x(measure.space(Space::Snug))
+                .w_full()
+                .min_w_0()
+        };
         for (index, part) in byline.iter().enumerate() {
-            if index > 0 {
+            if !stacked && index > 0 {
                 line = line.child(text(ty::SMALL, measure, palette.ink3).child("·"));
             }
             let ink = if part.contains('.') && part.contains('/') {
@@ -313,7 +340,23 @@ fn hero(
             } else {
                 palette.ink2
             };
-            line = line.child(text(ty::SMALL, measure, ink).child(ctx.say(part.clone())));
+            // `min_w_0` lets a long repository path wrap inside the column
+            // instead of forcing the flex row past the reader's right edge.
+            // Keep the full manifest value in the accessibility name too.
+            let full_value = part.clone();
+            line = line.child(
+                div()
+                    .min_w_0()
+                    .max_w_full()
+                    .when(stacked, |this| this.w_full())
+                    .aria_label(full_value.clone())
+                    .child(
+                        text(ty::SMALL, measure, ink)
+                            .min_w_0()
+                            .max_w_full()
+                            .child(ctx.say(full_value)),
+                    ),
+            );
         }
         words = words.child(line);
     }
@@ -397,27 +440,57 @@ fn hero(
                 }),
         );
     }
+    let title_and_gem = if stacked {
+        div()
+            .flex()
+            .flex_col()
+            .items_stretch()
+            .gap(measure.space(Space::Wide))
+            .w_full()
+            .min_w_0()
+            .child(
+                div()
+                    .flex()
+                    .justify_center()
+                    .w_full()
+                    .child(facet::paint::gem(Kind::Package).size(f32::from(gem))),
+            )
+            .child(words.w_full().min_w_0())
+    } else {
+        div()
+            .flex()
+            .items_center()
+            .gap(measure.space(Space::Wide))
+            .w_full()
+            .min_w_0()
+            .child(
+                facet::paint::gem(Kind::Package)
+                    .size(f32::from(gem))
+                    .flex_none(),
+            )
+            .child(words.flex_1().min_w_0())
+    };
     div()
         .flex()
         .flex_col()
         .gap(measure.space(Space::Roomy))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(measure.space(Space::Wide))
-                .min_w_0()
-                .child(
-                    facet::paint::gem(Kind::Package)
-                        .size(f32::from(gem))
-                        .flex_none(),
-                )
-                // The words take what the gem leaves, and wrap inside it.
-                .child(words.flex_1().min_w_0()),
-        )
+        .w(measure.width())
+        .max_w_full()
+        .min_w_0()
+        .child(title_and_gem)
         .child(marks)
         .into_any_element()
 }
+
+/// Stack the package gem above its words once the available width, adjusted
+/// for the user's text scale, cannot give both columns a readable measure.
+/// The breakpoint is in effective (100%-text) pixels, not nominal window
+/// width, so 200% text turns a 390px window into a genuinely narrow page.
+fn hero_stacks(available: gpui::Pixels, text_scale: f32) -> bool {
+    f32::from(available) / text_scale.max(f32::EPSILON) < HERO_INLINE_MIN_EFFECTIVE
+}
+
+const HERO_INLINE_MIN_EFFECTIVE: f32 = 420.0;
 
 /// Today, as `semver::ago` reads it (`YYYY-MM-DD`, UTC): the inverse of the
 /// days-from-civil arithmetic `facet::marks::semver::days` already uses, so
