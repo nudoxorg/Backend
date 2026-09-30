@@ -2,7 +2,6 @@
 
 use crate::options::{Format, Options};
 use backend_client::{LocalSemanticIndexClient, RemoteIndexCommandTransport, Session};
-use backend_engine::PackageReference;
 use backend_engine::application::{
     CompilerPackageTargetV2, GoPackageAuthorityWitness, LocalCompilerCapabilityState,
     LocalCompilerExecutionIdentity, LocalCompilerHost,
@@ -11,6 +10,9 @@ use backend_engine::cluster_transport::{
     ClusterExecutionClass, EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims,
     RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
     RemoteIndexSemanticSelection, ScopedClusterInvite, SecretKey, remote_index_now,
+};
+use backend_engine::{
+    IndexSearchCursor, PackageReference, ProductText, SurfaceCommand, SurfaceReply,
 };
 use backend_library::interface::PackageUrl;
 use backend_local_service::builtin::{
@@ -96,11 +98,11 @@ pub(super) const fn help_text() -> &'static str {
             backend [OPTIONS] cluster owner show\n\
             backend [OPTIONS] cluster owner grant list\n\
             backend [OPTIONS] cluster owner grant revoke --grant-id HEX\n\
-            backend [OPTIONS] cluster owner grant product create --client-peer HEX --capability-file PATH [--operations search,names,...]\n\
+            backend [OPTIONS] cluster owner grant product create --client-peer HEX --capability-file PATH [--operations search,names,index-search,...]\n\
             backend [OPTIONS] cluster owner grant semantic create --client-peer HEX --capability-file PATH --package PACKAGE --coordinate PKGURL --profile PROFILE\n\
             backend [OPTIONS] cluster client init [--key-file PATH]\n\
             backend [OPTIONS] cluster client connect [--key-file PATH] --owner-peer HEX --owner-address IP:PORT --capability-file PATH\n\
-            backend [OPTIONS] cluster client query [--key-file PATH] --owner-peer HEX --owner-address IP:PORT --capability-file PATH --operation search|names|document|source|outline|graph|related --value TEXT [--limit N]\n\
+            backend [OPTIONS] cluster client query [--key-file PATH] --owner-peer HEX --owner-address IP:PORT --capability-file PATH --operation search|names|document|source|outline|graph|related|index-search --value TEXT [--limit N] [--cursor TOKEN]\n\
             backend [OPTIONS] cluster client semantic-catalog --key-file PATH --owner-peer HEX --owner-address IP:PORT --capability-file PATH\n\
             backend [OPTIONS] cluster scope show --package PACKAGE --profile PROFILE [--coordinate PKGURL] [--package-root PATH]\n\
             backend [OPTIONS] cluster invite create --worker-peer HEX --worker-address IP:PORT --namespace HEX --recipe HEX --profile HEX --stage lower-ir --toolchain HEX --environment HEX --target-platform HEX [--ttl-seconds N]\n\
@@ -414,9 +416,53 @@ fn owner_grant_product(rest: &[String], options: &Options) -> Result<String, Fau
     let mut product_session = Session::connect(paths.endpoint()).map_err(client_fault)?;
     let revision = product_session.revision().map_err(client_fault)?;
     let operations = parse_product_operations(flags.get("operations").copied())?;
+    let index_search_snapshot = if operations.contains(&RemoteIndexQueryOperation::IndexSearch) {
+        let page = product_session
+            .surface(SurfaceCommand::IndexSearch {
+                query: ProductText::from_static("__remote-index-capability-snapshot__"),
+                limit: 1,
+                cursor: None,
+            })
+            .map_err(client_fault)?;
+        let SurfaceReply::IndexSearchPage(page) = page else {
+            return Err(usage(
+                "cluster owner grant product",
+                "local service did not return the typed index-search snapshot",
+            ));
+        };
+        let confirmed_page = product_session
+            .surface(SurfaceCommand::IndexSearch {
+                query: ProductText::from_static("__remote-index-capability-snapshot__"),
+                limit: 1,
+                cursor: None,
+            })
+            .map_err(client_fault)?;
+        let SurfaceReply::IndexSearchPage(confirmed_page) = confirmed_page else {
+            return Err(usage(
+                "cluster owner grant product",
+                "local service did not confirm the typed index-search snapshot",
+            ));
+        };
+        let confirmed_revision = product_session.revision().map_err(client_fault)?;
+        if confirmed_revision.root != revision.root {
+            return Err(usage(
+                "cluster owner grant product",
+                "product root changed while capturing the search snapshot; retry the grant",
+            ));
+        }
+        if confirmed_page.snapshot != page.snapshot {
+            return Err(usage(
+                "cluster owner grant product",
+                "index-search snapshot changed while capturing the grant; retry the grant",
+            ));
+        }
+        Some(page.snapshot)
+    } else {
+        None
+    };
     let (issued_at, expires_at, request_budget, byte_budget) = capability_limits(&flags)?;
     let claims = RemoteIndexCapabilityClaims {
-        version: 1,
+        version: 2,
         server: owner.endpoint_id(),
         client,
         grant_id: fresh_grant_id(),
@@ -428,6 +474,7 @@ fn owner_grant_product(rest: &[String], options: &Options) -> Result<String, Fau
         product: Some(RemoteIndexProductScope {
             view_root: *revision.root.as_bytes(),
             operations: operations.clone(),
+            index_search_snapshot,
         }),
         semantic: None,
     };
@@ -446,7 +493,7 @@ fn owner_grant_product(rest: &[String], options: &Options) -> Result<String, Fau
         return Err(error);
     }
     Ok(format!(
-        "Issued product read grant {} for client {} at view root {}.\nAllowed operations: {}\nCapability file: {}\nExpires at Unix millisecond {}.\n",
+        "Issued product read grant {} for client {} at view root {}.\nAllowed operations: {}\nIndex-search snapshot: {}\nCapability file: {}\nExpires at Unix millisecond {}.\n",
         hex(&capability.grant_id()),
         hex(client.as_bytes()),
         hex(&revision.root.as_bytes()[..]),
@@ -455,6 +502,7 @@ fn owner_grant_product(rest: &[String], options: &Options) -> Result<String, Fau
             .map(product_operation_name)
             .collect::<Vec<_>>()
             .join(", "),
+        index_search_snapshot.map_or_else(|| "not granted".to_owned(), |snapshot| hex(&snapshot)),
         path.display(),
         expires_at,
     ))
@@ -501,7 +549,7 @@ fn owner_grant_semantic(rest: &[String], options: &Options) -> Result<String, Fa
     let client = endpoint_id(required(&flags, "client-peer")?)?;
     let (issued_at, expires_at, request_budget, byte_budget) = capability_limits(&flags)?;
     let claims = RemoteIndexCapabilityClaims {
-        version: 1,
+        version: 2,
         server: owner.endpoint_id(),
         client,
         grant_id: fresh_grant_id(),
@@ -575,6 +623,7 @@ fn owner_grant_list(rest: &[String], options: &Options) -> Result<String, Fault>
                         serde_json::json!({
                             "viewRoot": hex(&scope.view_root),
                             "operations": scope.operations.iter().map(product_operation_name).collect::<Vec<_>>(),
+                            "indexSearchSnapshot": scope.index_search_snapshot.map(|snapshot| hex(&snapshot)),
                         })
                     });
                     let semantic = grant.semantic.as_ref().map(|scope| {
@@ -628,7 +677,7 @@ fn owner_grant_list(rest: &[String], options: &Options) -> Result<String, Fault>
                 ));
                 if let Some(scope) = grant.product {
                     output.push_str(&format!(
-                        "  product root {}; operations {}\n",
+                        "  product root {}; operations {}; index-search snapshot {}\n",
                         hex(&scope.view_root),
                         scope
                             .operations
@@ -636,6 +685,9 @@ fn owner_grant_list(rest: &[String], options: &Options) -> Result<String, Fault>
                             .map(product_operation_name)
                             .collect::<Vec<_>>()
                             .join(", "),
+                        scope
+                            .index_search_snapshot
+                            .map_or_else(|| "not granted".to_owned(), |snapshot| hex(&snapshot)),
                     ));
                 }
                 if let Some(scope) = grant.semantic {
@@ -740,11 +792,41 @@ fn client_connect(rest: &[String], options: &Options) -> Result<String, Fault> {
                 "product capability became stale while connecting; issue a new grant",
             ));
         }
+        let index_search_snapshot = if let Some(expected) = capability
+            .claims
+            .product
+            .as_ref()
+            .and_then(|scope| scope.index_search_snapshot)
+        {
+            let page = session
+                .surface(SurfaceCommand::IndexSearch {
+                    query: ProductText::from_static("__remote-index-capability-snapshot__"),
+                    limit: 1,
+                    cursor: None,
+                })
+                .map_err(client_fault)?;
+            let SurfaceReply::IndexSearchPage(page) = page else {
+                return Err(usage(
+                    "--capability-file",
+                    "remote service did not return the typed index-search snapshot",
+                ));
+            };
+            if page.snapshot != expected {
+                return Err(usage(
+                    "--capability-file",
+                    "index-search capability became stale while connecting; issue a new grant",
+                ));
+            }
+            hex(&expected)
+        } else {
+            "not granted".to_owned()
+        };
         return Ok(format!(
-            "Connected to remote index {} at {}.\nAuthorized product root: {}\nOperations: {}\nGrant: {}\n",
+            "Connected to remote index {} at {}.\nAuthorized product root: {}\nRemote index-search snapshot: {}\nOperations: {}\nGrant: {}\n",
             hex(owner.as_bytes()),
             address,
             hex(&revision.root.as_bytes()[..]),
+            index_search_snapshot,
             capability
                 .claims
                 .product
@@ -814,6 +896,7 @@ fn client_query(rest: &[String], options: &Options) -> Result<String, Fault> {
             "operation",
             "value",
             "limit",
+            "cursor",
         ],
         &[
             "owner-peer",
@@ -853,6 +936,12 @@ fn client_query(rest: &[String], options: &Options) -> Result<String, Fault> {
         })
         .transpose()?
         .unwrap_or(20);
+    if operation != RemoteIndexQueryOperation::IndexSearch && flags.contains_key("cursor") {
+        return Err(usage(
+            "--cursor",
+            "continuation cursors are supported only for index-search",
+        ));
+    }
     let transport = RemoteIndexCommandTransport::connect(secret, owner, address, capability)
         .map_err(client_fault)?;
     let mut session = Session::from_transport(
@@ -860,22 +949,44 @@ fn client_query(rest: &[String], options: &Options) -> Result<String, Fault> {
         transport,
     );
     let value = required(&flags, "value")?;
-    let reply = match operation {
-        RemoteIndexQueryOperation::Search => session.search(value, limit),
-        RemoteIndexQueryOperation::Names => session.names(value, limit),
-        RemoteIndexQueryOperation::Document => session.document(value),
-        RemoteIndexQueryOperation::Source => session.source(value),
-        RemoteIndexQueryOperation::Outline => session.outline(value),
-        RemoteIndexQueryOperation::Graph => session.graph(value),
-        RemoteIndexQueryOperation::Related => session.related(value),
+    let rendered = if operation == RemoteIndexQueryOperation::IndexSearch {
+        let cursor = flags
+            .get("cursor")
+            .map(|value| {
+                IndexSearchCursor::new((*value).to_owned())
+                    .map_err(|error| usage("--cursor", error.to_string()))
+            })
+            .transpose()?;
+        let query = ProductText::new(value.to_owned())
+            .map_err(|error| usage("--value", error.to_string()))?;
+        let reply = session
+            .surface(SurfaceCommand::IndexSearch {
+                query,
+                limit,
+                cursor,
+            })
+            .map_err(client_fault)?;
+        serde_json::to_string_pretty(&reply)
+    } else {
+        let reply = match operation {
+            RemoteIndexQueryOperation::Search => session.search(value, limit),
+            RemoteIndexQueryOperation::Names => session.names(value, limit),
+            RemoteIndexQueryOperation::Document => session.document(value),
+            RemoteIndexQueryOperation::Source => session.source(value),
+            RemoteIndexQueryOperation::Outline => session.outline(value),
+            RemoteIndexQueryOperation::Graph => session.graph(value),
+            RemoteIndexQueryOperation::Related => session.related(value),
+            RemoteIndexQueryOperation::IndexSearch => unreachable!("handled above"),
+        }
+        .map_err(client_fault)?;
+        serde_json::to_string_pretty(&reply)
     }
-    .map_err(client_fault)?;
-    serde_json::to_string_pretty(&reply)
-        .map(|mut value| {
-            value.push('\n');
-            value
-        })
-        .map_err(|error| storage_fault(&capability_path, error.to_string()))
+    .map(|mut value| {
+        value.push('\n');
+        value
+    })
+    .map_err(|error| storage_fault(&capability_path, error.to_string()))?;
+    Ok(rendered)
 }
 
 fn client_semantic_catalog(rest: &[String], options: &Options) -> Result<String, Fault> {
@@ -961,9 +1072,10 @@ fn parse_product_operation(value: &str) -> Result<RemoteIndexQueryOperation, Fau
         "outline" => Ok(RemoteIndexQueryOperation::Outline),
         "graph" => Ok(RemoteIndexQueryOperation::Graph),
         "related" => Ok(RemoteIndexQueryOperation::Related),
+        "index-search" => Ok(RemoteIndexQueryOperation::IndexSearch),
         _ => Err(usage(
             "--operations",
-            "choose search, names, document, source, outline, graph, or related",
+            "choose search, names, document, source, outline, graph, related, or index-search",
         )),
     }
 }
@@ -977,6 +1089,7 @@ fn product_operation_name(operation: &RemoteIndexQueryOperation) -> &'static str
         RemoteIndexQueryOperation::Outline => "outline",
         RemoteIndexQueryOperation::Graph => "graph",
         RemoteIndexQueryOperation::Related => "related",
+        RemoteIndexQueryOperation::IndexSearch => "index-search",
     }
 }
 

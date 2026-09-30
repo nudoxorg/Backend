@@ -75,6 +75,28 @@ backend --workspace "$CLIENT_DATA" cluster client query \
   --operation search --value cluster_deploy_smoke --limit 20
 ```
 
+To expose the same typed cross-plane package catalog search to a remote client,
+include `index-search` in the product grant. The owner binds that operation to
+the current composite index-search snapshot, which covers the product root,
+selected package catalog, and discovery revisions. Each page and continuation
+cursor is checked against that exact snapshot; if it changes, the client must
+receive a stale-snapshot result and the owner must issue a new grant. This
+scope does not authorize other product commands.
+
+```sh
+backend --workspace "$OWNER_DATA" --project "$PROJECT" \
+  cluster owner grant product create \
+  --client-peer "$CLIENT_PEER" \
+  --capability-file "$OWNER_DATA/catalog-read.cap" \
+  --operations index-search
+backend --workspace "$CLIENT_DATA" cluster client query \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/catalog-read.cap" \
+  --operation index-search --value identity --limit 10
+# Pass the returned data.next_cursor as --cursor to fetch the next page.
+```
+
 To exercise the installed CLI, real locald owner, and a separate remote client
 on one host, run the loopback journey after building both binaries:
 
@@ -91,12 +113,29 @@ query, checks durable response-byte usage remains within the signed budget,
 and removes its state on exit. Set `REMOTE_INDEX_RSS_LIMIT_KB` to tune the
 sampled process-memory ceiling for the host.
 
+The `run-remote-index-catalog-client.sh` journey exercises this cross-plane
+operation against a copied, frozen offline Maven discovery journal. It checks
+the typed snapshot and cursor chain across an owner cold restart and compares
+all returned source coordinates with independent labels. Set
+`REMOTE_MAVEN_CATALOG_JOURNAL` and `REMOTE_MAVEN_LABELS` to use equivalent
+local fixtures. For the frozen Maven replay, set both paths explicitly:
+
+```sh
+REMOTE_MAVEN_CATALOG_JOURNAL="$FROZEN_CATALOG_JOURNAL" \
+REMOTE_MAVEN_LABELS="$FROZEN_CATALOG_LABELS" \
+BACKEND_CLI=/path/to/backend-cli \
+BACKEND_LOCALD_BIN=/path/to/backend-locald \
+tests/journeys/run-remote-index-catalog-client.sh
+```
+
 The owner checks the exact selected product root before and after each query;
-the typed command also carries that root as its basis. If publication changes
-the root during a query, the client receives a stale-root result and must
-request a new grant. Grants also have request, response-byte, and expiry
-bounds. Restrict inbound UDP to the client's network and keep the owner peer
-ID and advertised address together when configuring clients.
+the typed command also carries that root as its basis. For `index-search`, it
+also checks the returned page snapshot and the current composite catalog and
+discovery snapshot before exposing the response. If either binding changes
+during a query, the client receives a typed stale result and must request a
+new grant. Grants also have request, response-byte, and expiry bounds. Restrict
+inbound UDP to the client's network and keep the owner peer ID and advertised
+address together when configuring clients.
 
 The owner keeps an owner-bound, checksummed grant ledger under its private
 workspace. Review active and revoked grants with `cluster owner grant list`;

@@ -122,6 +122,9 @@ impl CommandTransport for RemoteIndexCommandTransport {
             RemoteIndexOutcome::StaleProductRoot { expected, observed } => {
                 Err(ClientError::StaleRemoteRoot { expected, observed })
             }
+            RemoteIndexOutcome::StaleProductSnapshot { .. } => {
+                Err(ClientError::StaleRemoteCapability)
+            }
             RemoteIndexOutcome::StaleSemanticSelection => Err(ClientError::StaleSelection),
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::StaleCapability,

@@ -449,6 +449,9 @@ impl RemoteSemanticRangeConnection {
             RemoteIndexOutcome::StaleProductRoot { expected, observed } => {
                 Err(ClientError::StaleRemoteRoot { expected, observed })
             }
+            RemoteIndexOutcome::StaleProductSnapshot { .. } => {
+                Err(ClientError::StaleRemoteCapability)
+            }
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::StaleCapability,
             ) => Err(ClientError::StaleRemoteCapability),

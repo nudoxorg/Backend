@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Endpoint, TransportError, frame_error, read_frame_bounded, write_frame_bounded};
 
 /// Encrypted Iroh ALPN for a read-only remote index client session.
-pub const REMOTE_INDEX_ALPN: &[u8] = b"/backend/remote-index/1";
+pub const REMOTE_INDEX_ALPN: &[u8] = b"/backend/remote-index/2";
 /// Largest serialized remote-index capability or session hello.
 pub const MAX_REMOTE_INDEX_AUTH_BYTES: usize = 16 * 1024;
 /// Largest framed product or semantic message on one connection.
@@ -49,6 +49,8 @@ pub enum RemoteIndexQueryOperation {
     Graph,
     /// Read declarations related to one declaration.
     Related,
+    /// Search the selected acquired, discovered, and local package catalog.
+    IndexSearch,
 }
 
 /// A product query capability is fenced to exactly one materialized view root.
@@ -59,6 +61,9 @@ pub struct RemoteIndexProductScope {
     pub view_root: [u8; 32],
     /// Sorted, duplicate-free allowed product query operations.
     pub operations: Vec<RemoteIndexQueryOperation>,
+    /// Exact composite snapshot required for cross-plane index-search pages.
+    /// Present if and only if `operations` contains `IndexSearch`.
+    pub index_search_snapshot: Option<[u8; 32]>,
 }
 
 /// Exact selection identity for one semantic target admitted by locald.
@@ -98,7 +103,8 @@ pub enum RemoteIndexPermission {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteIndexCapabilityClaims {
-    /// Capability schema version. This version has no compatibility aliases.
+    /// Capability schema version. Version 2 binds discovery index pages to their
+    /// composite catalog/search snapshot as well as the product view root.
     pub version: u16,
     /// Iroh identity that issued the capability and serves the remote index.
     pub server: EndpointId,
@@ -266,6 +272,12 @@ pub enum RemoteIndexOutcome {
     Payload(Box<[u8]>),
     /// The product grant's view root is no longer the owner's selected root.
     StaleProductRoot {
+        expected: [u8; 32],
+        observed: [u8; 32],
+    },
+    /// The exact acquired/discovered/local search snapshot authorized by the
+    /// grant is no longer the current composite index snapshot.
+    StaleProductSnapshot {
         expected: [u8; 32],
         observed: [u8; 32],
     },
@@ -627,7 +639,7 @@ fn validate_claims(
     server: EndpointId,
     now_ms: u64,
 ) -> Result<(), RemoteIndexCapabilityError> {
-    if claims.version != 1
+    if claims.version != 2
         || claims.server != server
         || claims.client == server
         || claims.grant_id == [0; 16]
@@ -660,8 +672,13 @@ fn validate_claims(
     if let Some(product) = &claims.product
         && (product.view_root == [0; 32]
             || product.operations.is_empty()
-            || product.operations.len() > 7
-            || product.operations.windows(2).any(|pair| pair[0] >= pair[1]))
+            || product.operations.len() > 8
+            || product.operations.windows(2).any(|pair| pair[0] >= pair[1])
+            || product
+                .operations
+                .contains(&RemoteIndexQueryOperation::IndexSearch)
+                != product.index_search_snapshot.is_some()
+            || product.index_search_snapshot == Some([0; 32]))
     {
         return Err(RemoteIndexCapabilityError::Invalid("product scope"));
     }

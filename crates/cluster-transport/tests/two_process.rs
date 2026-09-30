@@ -63,6 +63,62 @@ fn temp_dir(label: &str) -> PathBuf {
     path
 }
 
+#[test]
+fn remote_index_search_grants_require_an_exact_composite_snapshot() {
+    let owner = secret(177);
+    let client = secret(178);
+    let issuer = RemoteIndexCapabilityIssuer::new(owner.clone());
+    let now = remote_index_now().expect("remote-index clock");
+    let claims = |operations, index_search_snapshot| RemoteIndexCapabilityClaims {
+        version: 2,
+        server: owner.public(),
+        client: client.public(),
+        grant_id: [179; 16],
+        issued_at_unix_ms: now,
+        expires_at_unix_ms: now + 60_000,
+        request_budget: 1,
+        byte_budget: 1024,
+        permissions: vec![RemoteIndexPermission::ProductRead],
+        product: Some(RemoteIndexProductScope {
+            view_root: [180; 32],
+            operations,
+            index_search_snapshot,
+        }),
+        semantic: None,
+    };
+
+    let valid = issuer
+        .issue(
+            claims(
+                vec![RemoteIndexQueryOperation::IndexSearch],
+                Some([181; 32]),
+            ),
+            now,
+        )
+        .expect("index-search capability with an exact composite snapshot");
+    let encoded = valid.encode().expect("bounded capability encoding");
+    assert_eq!(
+        RemoteIndexCapability::decode(&encoded).expect("canonical decode"),
+        valid
+    );
+    assert!(
+        issuer
+            .issue(
+                claims(vec![RemoteIndexQueryOperation::IndexSearch], None),
+                now,
+            )
+            .is_err()
+    );
+    assert!(
+        issuer
+            .issue(
+                claims(vec![RemoteIndexQueryOperation::Search], Some([181; 32]),),
+                now,
+            )
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn remote_index_capability_echo_works_from_an_independent_client_process() {
     let owner_secret = secret(133);
@@ -110,7 +166,7 @@ async fn remote_index_capability_echo_works_from_an_independent_client_process()
     let capability = issuer
         .issue(
             RemoteIndexCapabilityClaims {
-                version: 1,
+                version: 2,
                 server: endpoint.id(),
                 client: client_secret.public(),
                 grant_id: [135; 16],
@@ -122,6 +178,7 @@ async fn remote_index_capability_echo_works_from_an_independent_client_process()
                 product: Some(RemoteIndexProductScope {
                     view_root: [136; 32],
                     operations: vec![RemoteIndexQueryOperation::Search],
+                    index_search_snapshot: None,
                 }),
                 semantic: None,
             },

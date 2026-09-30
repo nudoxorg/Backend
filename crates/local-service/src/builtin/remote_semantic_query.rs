@@ -1,11 +1,14 @@
 //! Capability-gated Iroh access to the existing local command and hydration APIs.
 
-use backend_client::{CommandTransport, UnixCommandTransport};
+use backend_client::{CommandTransport, Session, UnixCommandTransport};
 use backend_engine::cluster_transport::{
     MAX_REMOTE_INDEX_BODY_BYTES, RemoteIndexCapability, RemoteIndexChannel, RemoteIndexOutcome,
     RemoteIndexReject, RemoteIndexRequest, RemoteIndexResponse, RemoteIndexSession,
 };
-use backend_library::{Command, CommandDto, CommandReply, decode_command_body, decode_reply_body};
+use backend_library::{
+    Command, CommandDto, CommandReply, ProductText, SurfaceCommand, SurfaceReply,
+    decode_command_body, decode_reply_body,
+};
 use backend_replication::{
     LocalControlClient, LocalControlLimits, LocalControlRequest, LocalControlResponse,
     SelectedGenerationStamp, SelectedSemanticImageChunk, SelectedSemanticImageGet,
@@ -689,6 +692,31 @@ fn serve_product_request(
             },
         };
     }
+    let index_search = matches!(
+        &command.command,
+        Command::Surface(SurfaceCommand::IndexSearch { .. })
+    );
+    let expected_search_snapshot = if index_search {
+        let Some(expected) = scope.index_search_snapshot else {
+            return denied();
+        };
+        let current = match product_index_search_snapshot(endpoint) {
+            Ok(snapshot) => snapshot,
+            Err(()) => return owner_unavailable(request.request_id),
+        };
+        if current != expected {
+            return RemoteIndexResponse {
+                request_id: request.request_id,
+                outcome: RemoteIndexOutcome::StaleProductSnapshot {
+                    expected,
+                    observed: current,
+                },
+            };
+        }
+        Some(expected)
+    } else {
+        None
+    };
     let mut transport = match UnixCommandTransport::connect(endpoint) {
         Ok(transport) => transport,
         Err(_) => return owner_unavailable(request.request_id),
@@ -706,10 +734,10 @@ fn serve_product_request(
         }
         Err(_) => return owner_unavailable(request.request_id),
     };
-    // The typed command carries its exact grant-root basis, and locald admits
-    // that basis while executing it. Re-read the selected root after the
-    // command so a concurrent publication cannot be reported as a current
-    // result from this capability.
+    // Commands with a typed basis are admitted against the grant root by the
+    // local owner. IndexSearch carries its own composite page snapshot, checked
+    // below against the signed scope and current owner state. Re-read the
+    // selected root after either command before exposing its reply.
     let after = match product_revision(endpoint) {
         Ok(revision) => revision,
         Err(()) => return owner_unavailable(request.request_id),
@@ -723,6 +751,34 @@ fn serve_product_request(
                 observed: after_root,
             },
         };
+    }
+    if let Some(expected) = expected_search_snapshot {
+        let observed_reply = match &reply.reply {
+            CommandReply::Surface(SurfaceReply::IndexSearchPage(page)) => page.snapshot,
+            _ => return owner_unavailable(request.request_id),
+        };
+        if observed_reply != expected {
+            return RemoteIndexResponse {
+                request_id: request.request_id,
+                outcome: RemoteIndexOutcome::StaleProductSnapshot {
+                    expected,
+                    observed: observed_reply,
+                },
+            };
+        }
+        let after_snapshot = match product_index_search_snapshot(endpoint) {
+            Ok(snapshot) => snapshot,
+            Err(()) => return owner_unavailable(request.request_id),
+        };
+        if after_snapshot != expected {
+            return RemoteIndexResponse {
+                request_id: request.request_id,
+                outcome: RemoteIndexOutcome::StaleProductSnapshot {
+                    expected,
+                    observed: after_snapshot,
+                },
+            };
+        }
     }
     let body = match backend_engine::encode_reply_dto(&reply) {
         Ok(body) if !body.is_empty() && body.len() <= MAX_REMOTE_INDEX_BODY_BYTES => body,
@@ -746,11 +802,27 @@ fn product_revision(endpoint: &Path) -> Result<backend_library::RevisionReceipt,
     }
 }
 
+fn product_index_search_snapshot(endpoint: &Path) -> Result<[u8; 32], ()> {
+    let mut session = Session::connect(endpoint).map_err(|_| ())?;
+    match session
+        .surface(SurfaceCommand::IndexSearch {
+            query: ProductText::from_static("__remote-index-capability-snapshot__"),
+            limit: 1,
+            cursor: None,
+        })
+        .map_err(|_| ())?
+    {
+        SurfaceReply::IndexSearchPage(page) => Ok(page.snapshot),
+        _ => Err(()),
+    }
+}
+
 fn product_operation(
     command: &Command,
 ) -> Option<backend_engine::cluster_transport::RemoteIndexQueryOperation> {
     use backend_engine::cluster_transport::RemoteIndexQueryOperation as Operation;
     match command {
+        Command::Surface(SurfaceCommand::IndexSearch { .. }) => Some(Operation::IndexSearch),
         Command::Search(_) => Some(Operation::Search),
         Command::Name(_) => Some(Operation::Names),
         Command::Document(_) => Some(Operation::Document),
@@ -1012,7 +1084,7 @@ mod tests {
         RemoteIndexCapabilityIssuer::new(owner)
             .issue(
                 RemoteIndexCapabilityClaims {
-                    version: 1,
+                    version: 2,
                     server,
                     client,
                     grant_id: [53; 16],
@@ -1024,6 +1096,7 @@ mod tests {
                     product: Some(RemoteIndexProductScope {
                         view_root: [54; 32],
                         operations: vec![RemoteIndexQueryOperation::Search],
+                        index_search_snapshot: None,
                     }),
                     semantic: None,
                 },

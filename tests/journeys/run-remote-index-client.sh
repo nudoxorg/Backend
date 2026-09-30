@@ -124,12 +124,12 @@ if [[ -z "$client_peer" ]]; then
 fi
 
 "$backend_cli" --workspace "$owner_data" --project "$fixture" \
-  cluster owner grant product create --client-peer "$client_peer" \
+  --endpoint "$endpoint" cluster owner grant product create --client-peer "$client_peer" \
   --capability-file "$capability_owner" --operations search >/dev/null
 cp "$capability_owner" "$capability_client"
 chmod 600 "$capability_client"
 "$backend_cli" --workspace "$owner_data" --project "$fixture" \
-  cluster owner grant semantic create --client-peer "$client_peer" \
+  --endpoint "$endpoint" cluster owner grant semantic create --client-peer "$client_peer" \
   --capability-file "$semantic_capability_owner" --package "$fixture" \
   --coordinate "$semantic_coordinate" --profile rust-2024 >/dev/null
 cp "$semantic_capability_owner" "$semantic_capability_client"
