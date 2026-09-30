@@ -455,7 +455,7 @@ fn a_lone_finding_says_its_words_at_rest(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_long_source_note_ellipsises_inside_a_narrow_cell_at_double_text_size(cx: &mut TestAppContext) {
+fn a_long_source_note_wraps_inside_a_narrow_cell_at_double_text_size(cx: &mut TestAppContext) {
     cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
     let (cx, _) = open(cx, |_, cx, _| {
         let m = cx.facet().measure(px(240.0));
@@ -464,7 +464,7 @@ fn a_long_source_note_ellipsises_inside_a_narrow_cell_at_double_text_size(cx: &m
             .into_any_element()
     });
     let note = ledger(cx).texts.into_iter().find(|text| text.key.ends_with("-note")).expect("the source note is published from the rendered frame");
-    assert_eq!(note.overflow, TextOverflow::Ellipsis, "the note declares its native ellipsis treatment: {note:?}");
+    assert_eq!(note.overflow, TextOverflow::Wrap, "the full source qualifier wraps instead of being silently truncated: {note:?}");
     assert!(note.natural_width > note.bounds.width, "the fixture exercises real overflow: {note:?}");
     assert!(note.bounds.x >= 20.0 && note.bounds.x + note.bounds.width <= 260.5, "the clipped note remains inside its 240px cell: {note:?}");
 }
