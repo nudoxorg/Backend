@@ -486,15 +486,11 @@ impl RegistryGateway {
             });
         }
         if let Err(error) = authority.persist(&self.advisory_path) {
-            if matches!(
-                &error,
-                backend_engine::advisory::AuthorityStorageError::CommittedButNotDurable(_)
-            ) {
+            if error.publication_committed() {
                 // The authority pathname now refers to this candidate, but a
-                // failed parent flush means cold recovery must decide whether
-                // the old or new journal survived. Retain both snapshot leases,
-                // but make all in-process observations unavailable until a
-                // successful retry or cold open confirms the selected journal.
+                // post-commit durability, lease, or retention operation failed.
+                // Keep the candidate and both generations available to retry;
+                // reads remain unavailable until persistence is confirmed.
                 authority.mark_persistence_uncertain();
                 self.advisory = Arc::new(authority);
                 self.slots.clear();

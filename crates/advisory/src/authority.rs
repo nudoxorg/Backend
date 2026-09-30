@@ -605,6 +605,21 @@ impl AdvisoryAuthority {
         path: impl AsRef<Path>,
         rename: impl FnOnce(&DirectoryCapability, &str, &str, bool) -> Result<(), DirectoryRenameError>,
     ) -> Result<(), AuthorityStorageError> {
+        self.persist_with_postcommit(
+            path,
+            rename,
+            |snapshot| snapshot.commit_persisted(),
+            |root, retained| OsvSnapshotRef::prune_unreferenced_generations(root, retained),
+        )
+    }
+
+    fn persist_with_postcommit(
+        &self,
+        path: impl AsRef<Path>,
+        rename: impl FnOnce(&DirectoryCapability, &str, &str, bool) -> Result<(), DirectoryRenameError>,
+        mut commit_snapshot: impl FnMut(&OsvSnapshotRef) -> Result<(), OsvSnapshotError>,
+        mut prune_snapshots: impl FnMut(&Path, &BTreeSet<String>) -> Result<bool, OsvSnapshotError>,
+    ) -> Result<(), AuthorityStorageError> {
         let path = path.as_ref();
         let parent = path.parent().ok_or(AuthorityStorageError::NoParent)?;
         let parent = if parent.as_os_str().is_empty() {
@@ -682,14 +697,12 @@ impl AdvisoryAuthority {
             }
         }
         if let Some(snapshot) = self.osv_snapshot.as_ref() {
-            snapshot
-                .commit_persisted()
-                .map_err(AuthorityStorageError::Snapshot)?;
+            commit_snapshot(snapshot)
+                .map_err(AuthorityStorageError::CommittedSnapshotLeaseTransition)?;
         }
         if let Some(snapshot) = self.osv_previous_snapshot.as_ref() {
-            snapshot
-                .commit_persisted()
-                .map_err(AuthorityStorageError::Snapshot)?;
+            commit_snapshot(snapshot)
+                .map_err(AuthorityStorageError::CommittedSnapshotLeaseTransition)?;
         }
         if self.osv_snapshot.is_some() || self.osv_previous_snapshot.is_some() {
             let mut keep = BTreeSet::new();
@@ -710,8 +723,8 @@ impl AdvisoryAuthority {
                 })
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| osv_snapshot_root(path));
-            OsvSnapshotRef::prune_unreferenced_generations(snapshot_root, &keep)
-                .map_err(AuthorityStorageError::Snapshot)?;
+            prune_snapshots(&snapshot_root, &keep)
+                .map_err(AuthorityStorageError::CommittedSnapshotRetention)?;
         }
         Ok(())
     }
@@ -1299,6 +1312,14 @@ pub enum AuthorityStorageError {
     /// The selected state name changed, but its directory flush failed. The
     /// new file may be visible now and must be resolved from disk on retry.
     CommittedButNotDurable(std::io::Error),
+    /// The authority file was committed, but an immutable snapshot lease could
+    /// not be transitioned to its selected-reader state. Keep this authority
+    /// and its generations alive until retry or cold recovery.
+    CommittedSnapshotLeaseTransition(OsvSnapshotError),
+    /// The authority file was committed, but post-publication snapshot
+    /// retention failed. Keep its selected generations alive and retry
+    /// maintenance or recover from the durable file before collection.
+    CommittedSnapshotRetention(OsvSnapshotError),
     /// Immutable OSV generation validation or retention failed.
     Snapshot(OsvSnapshotError),
     /// Persisted state was not valid JSON.
@@ -1320,6 +1341,19 @@ impl std::fmt::Display for AuthorityStorageError {
     }
 }
 impl std::error::Error for AuthorityStorageError {}
+
+impl AuthorityStorageError {
+    /// Whether the authority pathname was replaced before this error arose.
+    #[must_use]
+    pub const fn publication_committed(&self) -> bool {
+        matches!(
+            self,
+            Self::CommittedButNotDurable(_)
+                | Self::CommittedSnapshotLeaseTransition(_)
+                | Self::CommittedSnapshotRetention(_)
+        )
+    }
+}
 
 struct BoundedStateWriter<'a> {
     file: &'a mut fs::File,
@@ -1819,6 +1853,146 @@ mod tests {
                 .expect("collect unselected pre-commit candidate")
         );
         assert!(!snapshot_root.join(third).exists());
+    }
+
+    #[test]
+    fn committed_lease_transition_error_keeps_candidate_and_old_selection_retryable() {
+        fn stage(root: &Path, scope: OsvFeedScope, id: &str) -> (AuthorityFeed, String) {
+            let advisory = super::super::parse_osv(&osv_for(id, "Cargo"), 10).expect("OSV object");
+            let mut builder =
+                super::super::OsvSnapshotBuilder::create(root, scope, 10, 10, 10, 1024 * 1024)
+                    .expect("snapshot builder");
+            builder.push(&advisory).expect("stage advisory");
+            let snapshot = builder
+                .finish(*blake3::hash(id.as_bytes()).as_bytes())
+                .expect("seal snapshot");
+            let generation = snapshot.generation_id().to_owned();
+            (
+                AuthorityFeed::from_osv_snapshot(snapshot, 10, None, None),
+                generation,
+            )
+        }
+
+        let directory = tempfile::tempdir().expect("authority directory");
+        let authority_path = directory.path().join("authority.json");
+        let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        let (old_feed, old_generation) = stage(&snapshot_root, scope, "OSV-LEASE-OLD");
+        authority.apply(old_feed).expect("select old generation");
+        authority
+            .persist(&authority_path)
+            .expect("persist old authority");
+
+        let (new_feed, new_generation) = stage(&snapshot_root, scope, "OSV-LEASE-NEW");
+        authority.apply(new_feed).expect("select new generation");
+        let result = authority.persist_with_postcommit(
+            &authority_path,
+            |directory, source, destination, replace| {
+                directory.rename_with_outcome(source, destination, replace)
+            },
+            |snapshot| {
+                // Exercise the real exclusive-to-shared transition after the
+                // authority rename, then inject the reported transition error.
+                snapshot.commit_persisted()?;
+                Err(OsvSnapshotError::Io(std::io::Error::other(
+                    "injected lease-transition report failure",
+                )))
+            },
+            |root, retained| OsvSnapshotRef::prune_unreferenced_generations(root, retained),
+        );
+        assert!(matches!(
+            &result,
+            Err(AuthorityStorageError::CommittedSnapshotLeaseTransition(
+                OsvSnapshotError::Io(_)
+            ))
+        ));
+        assert!(
+            result
+                .as_ref()
+                .expect_err("post-commit lease error")
+                .publication_committed()
+        );
+
+        let selected_bytes = fs::read(&authority_path).expect("read replaced authority");
+        let selected: serde_json::Value =
+            serde_json::from_slice(&selected_bytes).expect("decode replaced authority");
+        assert_eq!(
+            selected["osv_snapshot"]["generation"],
+            serde_json::Value::String(new_generation.clone())
+        );
+        assert!(snapshot_root.join(&old_generation).is_dir());
+        assert!(snapshot_root.join(&new_generation).is_dir());
+        OsvSnapshotRef::prune_unreferenced_generations(&snapshot_root, &BTreeSet::new())
+            .expect("live selected readers protect both generations");
+        assert!(snapshot_root.join(&old_generation).is_dir());
+        assert!(snapshot_root.join(&new_generation).is_dir());
+
+        authority.mark_persistence_uncertain();
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let observation = authority.observe(&package, "1.0.0", false, false, 10, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Unavailable);
+        assert_eq!(observation.advisories.len(), 1);
+        assert_eq!(observation.advisories[0].key.canonical.0, "OSV-LEASE-NEW");
+
+        let retention_result = authority.persist_with_postcommit(
+            &authority_path,
+            |directory, source, destination, replace| {
+                directory.rename_with_outcome(source, destination, replace)
+            },
+            |snapshot| snapshot.commit_persisted(),
+            |root, retained| {
+                OsvSnapshotRef::prune_unreferenced_generations(root, retained)?;
+                Err(OsvSnapshotError::Io(std::io::Error::other(
+                    "injected retention report failure",
+                )))
+            },
+        );
+        assert!(matches!(
+            &retention_result,
+            Err(AuthorityStorageError::CommittedSnapshotRetention(
+                OsvSnapshotError::Io(_)
+            ))
+        ));
+        assert!(
+            retention_result
+                .as_ref()
+                .expect_err("post-commit retention error")
+                .publication_committed()
+        );
+        assert_eq!(
+            fs::read(&authority_path).expect("read authority after maintenance error"),
+            selected_bytes
+        );
+        assert!(snapshot_root.join(&old_generation).is_dir());
+        assert!(snapshot_root.join(&new_generation).is_dir());
+
+        authority
+            .persist(&authority_path)
+            .expect("retry snapshot lease transition");
+        authority.clear_persistence_uncertain();
+        assert_eq!(
+            fs::read(&authority_path).expect("read retried authority"),
+            selected_bytes
+        );
+        let reopened = AdvisoryAuthority::open(&authority_path, 100)
+            .expect("cold replay verifies selected and previous generations");
+        assert_eq!(
+            reopened
+                .osv_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(new_generation.as_str())
+        );
+        assert_eq!(
+            reopened
+                .osv_previous_snapshot
+                .as_ref()
+                .map(OsvSnapshotRef::generation_id),
+            Some(old_generation.as_str())
+        );
     }
 
     #[test]
