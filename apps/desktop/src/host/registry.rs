@@ -17,7 +17,9 @@
 //! production, the owner's own registry acquisition of `pkg:cargo/NAME@VERSION`);
 //! this source says so instead of fetching.
 
-pub(crate) use crate::model::release::{Availability, CrateName, Published, Release, Version};
+pub(crate) use crate::model::release::{
+    Availability, CrateName, Published, RegistryFact, Release, Version,
+};
 use facet::marks::semver;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -66,6 +68,8 @@ pub(crate) enum SourceError {
         release: Release,
         paths: Vec<PathBuf>,
     },
+    /// A local archive or app cache has no matching authority checksum.
+    UnverifiedArchive(Release),
     /// The release exists only as an archive or in this app's unpacked cache.
     NotUnpacked(Release),
 }
@@ -103,6 +107,10 @@ impl fmt::Display for SourceError {
                     .map(|path| path.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::UnverifiedArchive(release) => write!(
+                formatter,
+                "the local archive of {release} has no trusted checksum from its registry index"
             ),
             Self::NotUnpacked(release) => write!(
                 formatter,
@@ -154,19 +162,22 @@ pub(crate) trait RegistrySource: Send + Sync {
     fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError>;
 
     /// Where `release`'s tree is, or will be once its archive is unpacked
-    /// (the root the owner lists it under); `None` when reading it needs a
-    /// download. Nothing is unpacked.
+    /// (the root the owner lists it under); `None` when a download is needed,
+    /// the source is ambiguous, or its archive cannot be verified. Nothing is
+    /// unpacked.
     fn tree_of(&self, release: &Release) -> Option<PathBuf> {
         match self.availability(release) {
             Availability::Unpacked(tree) => Some(tree.canonicalize().unwrap_or(tree)),
-            Availability::Archive(_) | Availability::Download => None,
+            Availability::Archive(_)
+            | Availability::UnverifiedArchive(_)
+            | Availability::Download
+            | Availability::Ambiguous { .. } => None,
         }
     }
 }
 
-/// The local cargo cache, and a directory of this app's own for archives it
-/// unpacks (`<unpacked>/<name>-<version>/<name>-<version>`, the outer one a
-/// generated one-member Cargo workspace so cargo never walks up into another).
+/// The local Cargo cache, and a private directory of this app's own for
+/// verified archives (`<unpacked>/<authority>/<name>-<version>/...`).
 #[derive(Clone, Debug)]
 pub(crate) struct CargoCache {
     home: PathBuf,
@@ -212,7 +223,7 @@ impl CargoCache {
         }
     }
 
-    /// Effective Cargo home and registry index paths, in stable order.
+    /// Effective Cargo home and registry authority paths, in stable order.
     pub(crate) fn authority_key(&self) -> CargoAuthorityKey {
         let configured_root = self.source_root.as_ref().map(stable_path);
         CargoAuthorityKey(format!(
@@ -253,9 +264,20 @@ impl CargoCache {
 
     /// Cargo's downloaded archives, one directory per registry index.
     fn archive_dirs(&self) -> Vec<PathBuf> {
+        let allowed = self.source_root.as_ref().map(|_| {
+            self.source_dirs()
+                .into_iter()
+                .filter_map(|dir| dir.file_name().map(|name| name.to_os_string()))
+                .collect::<std::collections::BTreeSet<_>>()
+        });
         index_dirs(&self.home.join("registry").join("cache"))
             .into_iter()
-            .filter(|dir| is_crates_io_index(dir))
+            .filter(|dir| {
+                is_crates_io_index(dir)
+                    && allowed.as_ref().is_none_or(|allowed| {
+                        dir.file_name().is_some_and(|name| allowed.contains(name))
+                    })
+            })
             .map(stable_path)
             .collect()
     }
@@ -376,7 +398,7 @@ impl CargoCache {
 
     fn checksum_in_index(&self, index: &str, release: &Release) -> Option<String> {
         let mut checksums = self
-            .index_records(release.name.as_str())
+            .effective_index_records(release.name.as_str())
             .into_iter()
             .filter(|record| record.index == index && record.version == release.version.as_str())
             .filter_map(|record| record.checksum)
@@ -386,26 +408,139 @@ impl CargoCache {
         (checksums.len() == 1).then(|| checksums.remove(0))
     }
 
+    fn unique_release_checksum(&self, release: &Release) -> Option<String> {
+        let mut records = self
+            .effective_index_records(release.name.as_str())
+            .into_iter()
+            .filter(|record| record.version == release.version.as_str())
+            .collect::<Vec<_>>();
+        if records.len() != 1 {
+            return None;
+        }
+        records.pop()?.checksum
+    }
+
+    /// Only records in the configured Cargo source root are effective. With
+    /// no override, all cached crates.io indexes remain visible and duplicate
+    /// facts are represented as ambiguous instead of merged.
+    fn effective_index_records(&self, name: &str) -> Vec<IndexRecord> {
+        let records = self.index_records(name);
+        let Some(_) = self.source_root else {
+            return records;
+        };
+        let allowed = self
+            .source_dirs()
+            .into_iter()
+            .filter_map(|dir| {
+                dir.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        records
+            .into_iter()
+            .filter(|record| allowed.contains(&record.index))
+            .collect()
+    }
+
+    fn authority_digest(&self) -> String {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(self.authority_key().as_str().as_bytes());
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
     /// Where this app unpacks `release`.
     fn own_tree(&self, release: &Release) -> PathBuf {
         let stem = release.stem();
-        self.unpacked.join(&stem).join(stem)
+        self.unpacked
+            .join(self.authority_digest())
+            .join(&stem)
+            .join(stem)
+    }
+
+    fn release_checksum(&self, release: &Release, index: &str) -> Option<String> {
+        self.checksum_in_index(index, release)
+    }
+
+    fn cache_is_verified(&self, release: &Release, checksum: &str) -> bool {
+        archive::cache_matches(
+            &self.own_tree(release),
+            &self.authority_digest(),
+            release,
+            checksum,
+        )
     }
 
     fn locate(&self, release: &Release) -> Availability {
-        match self.unambiguous(release, self.cargo_trees(release)) {
-            Ok(Some(tree)) => return Availability::Unpacked(tree),
-            Err(_) => return Availability::Download,
-            Ok(None) => {}
+        let trees = self.cargo_trees(release);
+        let archives = self.archives(release);
+        let mut authorities = trees
+            .iter()
+            .chain(archives.iter())
+            .filter_map(|path| {
+                path.parent()?.file_name().map(|name| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        path.parent().map(Path::to_path_buf),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let index_dirs = self.index_dirs();
+        for record in self
+            .effective_index_records(release.name.as_str())
+            .into_iter()
+            .filter(|record| record.version == release.version.as_str())
+        {
+            if let Some(index) = index_dirs.iter().find(|index| {
+                index
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy() == record.index)
+            }) {
+                authorities.push((record.index, Some(index.clone())));
+            }
         }
-        let own = self.own_tree(release);
-        if own.join("Cargo.toml").is_file() {
-            return Availability::Unpacked(own);
+        authorities.sort_by(|left, right| left.0.cmp(&right.0));
+        authorities.dedup_by(|left, right| left.0 == right.0);
+        if authorities.len() > 1 {
+            return Availability::Ambiguous {
+                indexes: authorities
+                    .into_iter()
+                    .filter_map(|(_, path)| path)
+                    .collect(),
+            };
         }
-        match self.unambiguous(release, self.archives(release)) {
-            Ok(Some(archive)) => Availability::Archive(archive),
-            Ok(None) | Err(_) => Availability::Download,
+        if let Some(tree) = trees.into_iter().next() {
+            return Availability::Unpacked(tree);
         }
+
+        let archive = archives.into_iter().next();
+        if let Some(file) = archive.as_ref() {
+            let index = file
+                .parent()
+                .and_then(Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned());
+            let checksum = index
+                .as_deref()
+                .and_then(|index| self.release_checksum(release, index));
+            if let Some(checksum) = checksum {
+                if self.cache_is_verified(release, &checksum) {
+                    return Availability::Unpacked(self.own_tree(release));
+                }
+                return Availability::Archive(file.clone());
+            }
+            return Availability::UnverifiedArchive(file.clone());
+        }
+
+        // A verified app cache remains usable after the Cargo archive is
+        // removed, but only while this exact authority still publishes its
+        // recorded checksum.
+        if let Some(checksum) = self
+            .unique_release_checksum(release)
+            .filter(|checksum| self.cache_is_verified(release, checksum))
+        {
+            return Availability::Unpacked(self.own_tree(release));
+        }
+        Availability::Download
     }
 
     /// Every `name-version` stem on this machine: unpacked trees and archives.
@@ -435,7 +570,7 @@ impl CargoCache {
 impl RegistrySource for CargoCache {
     fn releases(&self, name: &CrateName) -> Vec<Published> {
         let mut versions = BTreeMap::<String, Vec<IndexRecord>>::new();
-        for record in self.index_records(name.as_str()) {
+        for record in self.effective_index_records(name.as_str()) {
             versions
                 .entry(record.version.clone())
                 .or_default()
@@ -448,21 +583,11 @@ impl RegistrySource for CargoCache {
                     name: name.clone(),
                     version: Version::new(&version).ok()?,
                 };
-                let first = records.first();
-                let consistent = first.is_some_and(|first| {
-                    records.iter().all(|record| {
-                        record.checksum == first.checksum
-                            && record.date == first.date
-                            && record.yanked == first.yanked
-                    })
-                });
                 Some(Published {
                     availability: self.locate(&release),
                     release,
-                    date: consistent
-                        .then(|| first.and_then(|record| record.date.clone()))
-                        .flatten(),
-                    yanked: consistent && first.is_some_and(|record| record.yanked),
+                    date: registry_fact(&records, |record| record.date.clone()),
+                    yanked: registry_fact(&records, |record| record.yanked),
                 })
             })
             .collect::<Vec<_>>();
@@ -479,8 +604,8 @@ impl RegistrySource for CargoCache {
                 out.push(Published {
                     availability: self.locate(&release),
                     release,
-                    date: None,
-                    yanked: false,
+                    date: RegistryFact::Missing,
+                    yanked: RegistryFact::Missing,
                 });
             }
         }
@@ -534,28 +659,24 @@ impl RegistrySource for CargoCache {
             // `resolve` unpacks it here, and the owner lists it by this path.
             Availability::Archive(_) => {
                 let own = self.own_tree(release);
-                Some(self.unpacked.canonicalize().map_or(own, |unpacked| {
-                    unpacked.join(release.stem()).join(release.stem())
-                }))
+                Some(own)
             }
-            Availability::Download => None,
+            Availability::UnverifiedArchive(_)
+            | Availability::Download
+            | Availability::Ambiguous { .. } => None,
         }
     }
 
     fn release_of(&self, root: &Path) -> Option<Release> {
         let root = root.canonicalize().ok()?;
-        let parent = root.parent()?;
         let stem = root.file_name()?.to_str()?;
-        let cargo = self
-            .source_dirs()
-            .iter()
-            .any(|dir| dir.canonicalize().is_ok_and(|dir| dir == parent));
-        let own = self
-            .unpacked
-            .canonicalize()
-            .is_ok_and(|unpacked| parent.parent() == Some(unpacked.as_path()))
-            && parent.file_name().and_then(|name| name.to_str()) == Some(stem);
-        (cargo || own).then(|| Release::from_stem(stem)).flatten()
+        let release = Release::from_stem(stem)?;
+        match self.locate(&release) {
+            Availability::Unpacked(tree) if tree.canonicalize().is_ok_and(|tree| tree == root) => {
+                Some(release)
+            }
+            _ => None,
+        }
     }
 
     fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> {
@@ -563,34 +684,51 @@ impl RegistrySource for CargoCache {
             release: release.clone(),
             reason: error.to_string(),
         };
-        if let Some(tree) = self.unambiguous(release, self.cargo_trees(release))? {
-            return Ok(SourceTree {
-                release: release.clone(),
-                root: tree.canonicalize().map_err(io)?,
-                origin: Origin::Cargo,
-            });
-        }
-        let own = self.own_tree(release);
-        if own.join("Cargo.toml").is_file() {
-            return Ok(SourceTree {
-                release: release.clone(),
-                root: own.canonicalize().map_err(io)?,
-                origin: Origin::AppCache,
-            });
-        }
-        let Some(file) = self.unambiguous(release, self.archives(release))? else {
-            return Err(SourceError::NeedsDownload(release.clone()));
+        let (root, origin) = match self.locate(release) {
+            Availability::Unpacked(tree) if self.own_tree(release) == tree => {
+                (tree, Origin::AppCache)
+            }
+            Availability::Unpacked(tree) => (tree, Origin::Cargo),
+            Availability::Archive(file) => {
+                let index = file
+                    .parent()
+                    .and_then(Path::file_name)
+                    .map(|name| name.to_string_lossy().into_owned());
+                let checksum = index
+                    .as_deref()
+                    .and_then(|index| self.release_checksum(release, index))
+                    .ok_or_else(|| SourceError::UnverifiedArchive(release.clone()))?;
+                let root = archive::unpack(
+                    &file,
+                    &checksum,
+                    &self.authority_digest(),
+                    release,
+                    &self.unpacked,
+                )?;
+                (root, Origin::Archive(file))
+            }
+            Availability::UnverifiedArchive(_) => {
+                return Err(SourceError::UnverifiedArchive(release.clone()));
+            }
+            Availability::Download => {
+                return Err(SourceError::NeedsDownload(release.clone()));
+            }
+            Availability::Ambiguous { indexes } => {
+                let paths = self
+                    .cargo_trees(release)
+                    .into_iter()
+                    .chain(self.archives(release))
+                    .collect::<Vec<_>>();
+                return Err(SourceError::Ambiguous {
+                    release: release.clone(),
+                    paths: if paths.is_empty() { indexes } else { paths },
+                });
+            }
         };
-        let index = file
-            .parent()
-            .and_then(Path::file_name)
-            .map(|name| name.to_string_lossy().into_owned());
-        let checksum = index.and_then(|index| self.checksum_in_index(&index, release));
-        let root = archive::unpack(&file, checksum.as_deref(), release, &self.unpacked)?;
         Ok(SourceTree {
             release: release.clone(),
             root: root.canonicalize().map_err(io)?,
-            origin: Origin::Archive(file),
+            origin,
         })
     }
 }
@@ -601,7 +739,34 @@ struct IndexRecord {
     version: String,
     checksum: Option<String>,
     date: Option<Arc<str>>,
-    yanked: bool,
+    yanked: Option<bool>,
+}
+
+fn registry_fact<T: Clone + Eq>(
+    records: &[IndexRecord],
+    value: impl Fn(&IndexRecord) -> Option<T>,
+) -> RegistryFact<T> {
+    if records.is_empty() {
+        return RegistryFact::Missing;
+    }
+    let indexes = records
+        .iter()
+        .map(|record| record.index.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if indexes.len() > 1 {
+        return RegistryFact::Ambiguous;
+    }
+    let values = records.iter().map(value).collect::<Vec<_>>();
+    let Some(first) = values.iter().flatten().next().cloned() else {
+        return RegistryFact::Missing;
+    };
+    if values.iter().flatten().any(|candidate| candidate != &first) {
+        RegistryFact::Ambiguous
+    } else if values.iter().any(Option::is_none) {
+        RegistryFact::Ambiguous
+    } else {
+        RegistryFact::Known(first)
+    }
 }
 
 fn cache_relative(name: &str) -> PathBuf {
@@ -633,10 +798,7 @@ fn parse_index_records(bytes: &[u8], index: String) -> Vec<IndexRecord> {
                 .and_then(serde_json::Value::as_str)
                 .and_then(|time| time.get(..10))
                 .map(Arc::<str>::from);
-            let yanked = value
-                .get("yanked")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
+            let yanked = value.get("yanked").and_then(serde_json::Value::as_bool);
             Some(IndexRecord {
                 index: index.clone(),
                 version,
