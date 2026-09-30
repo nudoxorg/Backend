@@ -248,25 +248,105 @@ fn pointer_and_keyboard_targets_resume_each_other(cx: &mut TestAppContext) {
 
 #[test]
 fn hover_sources_stay_scoped_to_their_window_id() {
-    use super::{Field, Held, Source, WindowField};
+    use super::{Field, Held, InteractionMode, WindowField};
     use gpui::WindowId;
 
     let first = WindowId::from(101);
     let second = WindowId::from(202);
     let mut fields = Field::default();
-    fields.windows.insert(first, WindowField {
-        pointer: Some(Held { id: "pointer-a".into(), subject: Subject::new("a"), source: Source::Pointer }),
-        keyboard: None,
-        active: Some(Source::Pointer),
-    });
-    fields.windows.insert(second, WindowField {
-        pointer: None,
-        keyboard: Some(Held { id: "keyboard-b".into(), subject: Subject::new("b"), source: Source::Keyboard }),
-        active: Some(Source::Keyboard),
-    });
+    fields.windows.insert(
+        first,
+        WindowField {
+            pointer: Some(Held {
+                id: "pointer-a".into(),
+                subject: Subject::new("a"),
+            }),
+            keyboard: None,
+            active: Some(InteractionMode::Pointer),
+        },
+    );
+    fields.windows.insert(
+        second,
+        WindowField {
+            pointer: None,
+            keyboard: Some(Held {
+                id: "keyboard-b".into(),
+                subject: Subject::new("b"),
+            }),
+            active: Some(InteractionMode::Keyboard),
+        },
+    );
 
-    assert_eq!(fields.windows.get(&first).and_then(WindowField::held).map(|held| held.id), Some("pointer-a".into()));
-    assert_eq!(fields.windows.get(&second).and_then(WindowField::held).map(|held| held.id), Some("keyboard-b".into()));
+    assert_eq!(
+        fields
+            .windows
+            .get(&first)
+            .and_then(WindowField::held)
+            .map(|held| held.id),
+        Some("pointer-a".into())
+    );
+    assert_eq!(
+        fields
+            .windows
+            .get(&second)
+            .and_then(WindowField::held)
+            .map(|held| held.id),
+        Some("keyboard-b".into())
+    );
+}
+
+/// A window's last pointer/focus identity must not outlive the window. One
+/// Field-owned observer handles every window instead of registering per
+/// hoverable or per event.
+#[gpui::test]
+fn closing_windows_releases_their_hover_entries(cx: &mut TestAppContext) {
+    let first = cx.add_window(|_, _| gpui::Empty);
+    let second = cx.add_window(|_, _| gpui::Empty);
+
+    for (window, id) in [(&first, "first"), (&second, "second")] {
+        window
+            .update(cx, |_, window, cx| {
+                super::focus(Some(FocusTarget::new(id, Subject::new(id))), window, cx);
+            })
+            .expect("test window remains open");
+    }
+    let state = cx.update(|cx| {
+        let field = cx.try_global::<super::Field>().expect("hover field exists");
+        (field.windows.len(), field.window_closed.is_some())
+    });
+    assert_eq!(
+        state,
+        (2, true),
+        "both windows share one installed close observer"
+    );
+
+    first
+        .update(cx, |_, window, _| window.remove_window())
+        .expect("first test window closes");
+    assert_eq!(
+        cx.update(|cx| {
+            cx.try_global::<super::Field>()
+                .expect("hover field exists")
+                .windows
+                .len()
+        }),
+        1,
+        "closing the first window releases only its own target"
+    );
+
+    second
+        .update(cx, |_, window, _| window.remove_window())
+        .expect("second test window closes");
+    assert_eq!(
+        cx.update(|cx| {
+            cx.try_global::<super::Field>()
+                .expect("hover field exists")
+                .windows
+                .len()
+        }),
+        0,
+        "the final close releases the last target too"
+    );
 }
 
 /// Navigation closes what floats and lets go of the hover target: the page

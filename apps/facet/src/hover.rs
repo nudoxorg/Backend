@@ -34,8 +34,8 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, Tone};
 use gpui::{
     AnyElement, App, Bounds, ColorExt, ElementId, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Window,
-    WindowId, fill, point, px, size,
+    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString,
+    Subscription, Window, WindowId, fill, point, px, size,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -197,9 +197,27 @@ impl WindowField {
 #[derive(Default)]
 struct Field {
     windows: HashMap<WindowId, WindowField>,
+    /// One app-lifetime observer removes each closed window's last target.
+    /// The callback only receives an App when invoked; it captures no global
+    /// or entity, so this subscription does not keep the app's state alive.
+    window_closed: Option<Subscription>,
 }
 
 impl Global for Field {}
+
+/// Installs one app-wide cleanup observer before the first window target is
+/// recorded. Keeping it on the global makes the observer's lifetime match
+/// the `Field`; the callback itself owns no `Field` reference.
+fn watch_window_closes(cx: &mut App) {
+    if cx.default_global::<Field>().window_closed.is_some() {
+        return;
+    }
+
+    let subscription = cx.on_window_closed(|cx, id| {
+        cx.default_global::<Field>().windows.remove(&id);
+    });
+    cx.default_global::<Field>().window_closed = Some(subscription);
+}
 
 fn held(window: &Window, cx: &App) -> Option<Held> {
     cx.try_global::<Field>()
@@ -216,6 +234,7 @@ fn target(window: &Window, cx: &App) -> Option<(ElementId, Subject)> {
 }
 
 fn set_pointer(value: Option<Held>, window: &mut Window, cx: &mut App) {
+    watch_window_closes(cx);
     let id = window.window_handle().window_id();
     let field = cx.default_global::<Field>();
     let before = field.windows.get(&id).and_then(WindowField::held);
@@ -286,6 +305,7 @@ pub fn lit(subject: &Subject, window: &Window, cx: &App) -> Lit {
 /// still lies under the pointer. A repeated synchronization of the same focus
 /// target does not steal the light from a more recent pointer move.
 pub fn focus(target: Option<FocusTarget>, window: &mut Window, cx: &mut App) {
+    watch_window_closes(cx);
     let id = window.window_handle().window_id();
     let field = cx.default_global::<Field>();
     let before = field.windows.get(&id).and_then(WindowField::held);
