@@ -7,6 +7,7 @@ use crate::{
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::num::NonZeroU64;
 
 /// Largest user-authored operand retained by the product service.
@@ -2640,16 +2641,12 @@ impl SurfaceReply {
                     .saturating_add(fixed_record_bound())
                     .saturating_add(package_reference_bound(&record.package))
                     .saturating_add(record.coordinate.as_str().len())
-                    .saturating_add(
-                        serde_json::to_vec(&record.history_status).map_or(0, |bytes| bytes.len()),
-                    )
+                    .saturating_add(serialized_json_size(&record.history_status))
             }),
             Self::SemanticVersionSelected(record) => fixed_record_bound()
                 .saturating_add(package_reference_bound(&record.package))
                 .saturating_add(record.coordinate.as_str().len())
-                .saturating_add(
-                    serde_json::to_vec(&record.history_status).map_or(0, |bytes| bytes.len()),
-                ),
+                .saturating_add(serialized_json_size(&record.history_status)),
             Self::IndexStarted(result) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(result).map_or(0, |bytes| bytes.len())),
             Self::IndexTerminal(terminal) => fixed_record_bound()
@@ -2709,6 +2706,30 @@ impl SurfaceReply {
 
 const fn fixed_record_bound() -> usize {
     512
+}
+
+#[derive(Default)]
+struct JsonSizeCounter(usize);
+
+impl Write for JsonSizeCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Counts the encoded size without allocating a temporary serialized copy.
+fn serialized_json_size(value: &impl Serialize) -> usize {
+    let mut counter = JsonSizeCounter::default();
+    if serde_json::to_writer(&mut counter, value).is_ok() {
+        counter.0
+    } else {
+        usize::MAX
+    }
 }
 
 fn text_bound(text: &ProductText) -> usize {
@@ -2959,6 +2980,31 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_status_budget_counts_encoded_bytes_without_underestimating() {
+        let statuses = [
+            SemanticHistoryPublicationStatus::NotSelected,
+            SemanticHistoryPublicationStatus::Deferred {
+                selection_id: [3; 32],
+                reason: "line\n\u{1}".repeat(150),
+            },
+            SemanticHistoryPublicationStatus::Refused {
+                selection_id: [9; 32],
+                reason: "x".repeat(MAX_SEMANTIC_HISTORY_STATUS_DETAIL_BYTES),
+            },
+            SemanticHistoryPublicationStatus::Superseded {
+                selection_id: [7; 32],
+            },
+        ];
+
+        for status in statuses {
+            let expected = serde_json::to_vec(&status)
+                .expect("status serializes")
+                .len();
+            assert_eq!(serialized_json_size(&status), expected);
+        }
+    }
 
     #[test]
     fn owner_index_job_contract_round_trips_with_project_bound_terminal() {
