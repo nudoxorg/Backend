@@ -12,6 +12,25 @@ command -v "$locald_bin" >/dev/null 2>&1 || {
   exit 69
 }
 
+rustc_path=${NUDOX_RUSTC:-$(command -v rustc || true)}
+cargo_path=${NUDOX_CARGO:-$(command -v cargo || true)}
+cargo_home=${NUDOX_CARGO_HOME:-${CARGO_HOME:-${HOME:-}/.cargo}}
+if [[ -z "$rustc_path" || ! -x "$rustc_path" ]]; then
+  printf "%s\n" "set NUDOX_RUSTC to an executable Rust compiler for the indexed fixture" >&2
+  exit 69
+fi
+if [[ -z "$cargo_path" || ! -x "$cargo_path" ]]; then
+  printf "%s\n" "set NUDOX_CARGO to an executable Cargo for the indexed fixture" >&2
+  exit 69
+fi
+if [[ ! -d "$cargo_home" ]]; then
+  printf "%s\n" "set NUDOX_CARGO_HOME to an existing Cargo home for the indexed fixture" >&2
+  exit 69
+fi
+rustc_path=$(cd "$(dirname "$rustc_path")" && pwd -P)/$(basename "$rustc_path")
+cargo_path=$(cd "$(dirname "$cargo_path")" && pwd -P)/$(basename "$cargo_path")
+cargo_home=$(cd "$cargo_home" && pwd -P)
+
 root=$(mktemp -d "${REMOTE_INDEX_TMPDIR:-/tmp}/backend-remote-index.XXXXXX")
 root=$(cd "$root" && pwd -P)
 owner_data=$root/owner
@@ -70,7 +89,9 @@ rss_limit_kb=${REMOTE_INDEX_RSS_LIMIT_KB:-2097152}
 start_locald() {
   (
     cd "$fixture"
-    exec "$locald_bin" --workspace "$owner_data" --endpoint "$endpoint" \
+    NUDOX_RUSTC="$rustc_path" NUDOX_CARGO="$cargo_path" \
+      NUDOX_CARGO_HOME="$cargo_home" exec "$locald_bin" \
+      --workspace "$owner_data" --endpoint "$endpoint" \
       --idle-timeout-ms 0
   ) >"$root/locald.log" 2>&1 &
   locald_pid=$!
