@@ -1856,6 +1856,9 @@ pub enum SemanticPlaneRecordError {
     /// A jumbo object store rejected a leaf or interior write.
     #[error("jumbo semantic value object store failed: {0}")]
     JumboObjectStore(String),
+    /// A jumbo object store returned a typed corruption or authority error.
+    #[error("jumbo semantic value object store rejected invalid state: {0}")]
+    JumboObjectStoreIntegrity(String),
     /// A jumbo object store is temporarily unavailable while admitting an
     /// object. Callers may retry after the store or its durability layer
     /// recovers; this does not certify that any partial output is publishable.

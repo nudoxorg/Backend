@@ -1273,7 +1273,13 @@ fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 }
 
 fn io_error(error: io::Error) -> StoreError {
-    StoreError::Io(error.to_string())
+    match error.kind() {
+        io::ErrorKind::Interrupted
+        | io::ErrorKind::WouldBlock
+        | io::ErrorKind::ResourceBusy
+        | io::ErrorKind::TimedOut => StoreError::TemporaryIo(error.to_string()),
+        _ => StoreError::Io(error.to_string()),
+    }
 }
 
 fn count_u32(count: usize) -> u32 {

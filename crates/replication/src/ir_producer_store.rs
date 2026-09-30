@@ -51,6 +51,9 @@ pub(crate) enum SelectedTypedPlaneProductionError {
     ResourceLimit(String),
     /// The selected image or its proposed typed output failed a closed check.
     Refused(String),
+    /// An opaque lower-layer failure was not classified strongly enough to
+    /// retry or report as a proven integrity violation.
+    UnclassifiedFailure(String),
 }
 
 impl std::fmt::Display for SelectedTypedPlaneProductionError {
@@ -58,7 +61,8 @@ impl std::fmt::Display for SelectedTypedPlaneProductionError {
         match self {
             Self::RetryableAvailability(detail)
             | Self::ResourceLimit(detail)
-            | Self::Refused(detail) => formatter.write_str(detail),
+            | Self::Refused(detail)
+            | Self::UnclassifiedFailure(detail) => formatter.write_str(detail),
         }
     }
 }
@@ -67,7 +71,7 @@ impl std::error::Error for SelectedTypedPlaneProductionError {}
 
 impl From<String> for SelectedTypedPlaneProductionError {
     fn from(detail: String) -> Self {
-        Self::Refused(detail)
+        Self::UnclassifiedFailure(detail)
     }
 }
 
@@ -78,6 +82,8 @@ impl From<SemanticPlaneRecordError> for SelectedTypedPlaneProductionError {
                 Self::RetryableAvailability(detail)
             }
             SemanticPlaneRecordError::JumboObjectStoreLimit(detail) => Self::ResourceLimit(detail),
+            SemanticPlaneRecordError::JumboObjectStore(detail) => Self::UnclassifiedFailure(detail),
+            SemanticPlaneRecordError::JumboObjectStoreIntegrity(detail) => Self::Refused(detail),
             error @ (SemanticPlaneRecordError::InvalidByteCeiling { .. }
             | SemanticPlaneRecordError::OversizedRow { .. }
             | SemanticPlaneRecordError::RowTooLarge
@@ -93,7 +99,7 @@ impl From<SemanticPlaneRecordError> for SelectedTypedPlaneProductionError {
 
 fn classify_semantic_store_error(error: StoreError) -> SemanticPlaneRecordError {
     match error {
-        StoreError::Io(_)
+        StoreError::TemporaryIo(_)
         | StoreError::PublicationAuthorityBusy
         | StoreError::PreparedWithSyncPending { .. }
         | StoreError::PublishedWithSyncPending(_) => {
@@ -101,6 +107,14 @@ fn classify_semantic_store_error(error: StoreError) -> SemanticPlaneRecordError 
         }
         StoreError::Bounds | StoreError::OversizedKey | StoreError::NeedsScopedRebuild => {
             SemanticPlaneRecordError::JumboObjectStoreLimit(format!("{error:?}"))
+        }
+        StoreError::Corrupt
+        | StoreError::UnsafePath
+        | StoreError::WrongBase
+        | StoreError::BeforeMismatch(_)
+        | StoreError::TargetMismatch
+        | StoreError::MalformedDelta => {
+            SemanticPlaneRecordError::JumboObjectStoreIntegrity(format!("{error:?}"))
         }
         _ => SemanticPlaneRecordError::JumboObjectStore(format!("{error:?}")),
     }
@@ -1643,7 +1657,7 @@ pub(crate) fn produce_selected_native_typed_plane_history_v3<Reader: SemanticRea
     )?;
     let mut source = ProducedSegmentSource::new(store, &artifacts.segment_admissions)?;
     let mut jumbo_source = ProducedJumboSource::new(store, &artifacts.jumbo_admissions)?;
-    let verified_content = derive_typed_plane_history_content_v3(
+    let verified_content = match derive_typed_plane_history_content_v3(
         build,
         artifacts.image_facts,
         input_claim,
@@ -1652,16 +1666,26 @@ pub(crate) fn produce_selected_native_typed_plane_history_v3<Reader: SemanticRea
         jumbo_limits,
         &mut source,
         &mut jumbo_source,
-    )
-    .map_err(|error: SemanticGenerationProofError| {
-        format!("verify selected-native typed V3 history output: {error}")
-    })?;
+    ) {
+        Ok(content) => content,
+        Err(error) => {
+            if let Some(store_error) = source
+                .take_store_error()
+                .or_else(|| jumbo_source.take_store_error())
+            {
+                return Err(SelectedTypedPlaneProductionError::from(
+                    classify_semantic_store_error(store_error),
+                ));
+            }
+            return Err(SelectedTypedPlaneProductionError::Refused(format!(
+                "verify selected-native typed V3 history output: {error}"
+            )));
+        }
+    };
     if jumbo_source.has_unreferenced_objects() {
-        return Err(
-            "typed V3 history producer emitted an unreferenced jumbo object"
-                .to_owned()
-                .into(),
-        );
+        return Err(SelectedTypedPlaneProductionError::Refused(
+            "typed V3 history producer emitted an unreferenced jumbo object".to_owned(),
+        ));
     }
     let verifier_io_metrics = source.io_metrics().checked_add(jumbo_source.io_metrics())?;
     drop(source);
@@ -1673,13 +1697,12 @@ pub(crate) fn produce_selected_native_typed_plane_history_v3<Reader: SemanticRea
         &artifacts.families,
         verified_content.content_root(),
         verified_content.generation_root(),
-    )?;
+    )
+    .map_err(SelectedTypedPlaneProductionError::Refused)?;
     if verified_content.input_claim() != input_claim {
-        return Err(
-            "typed V3 history roots differ from the selected persisted input claim"
-                .to_owned()
-                .into(),
-        );
+        return Err(SelectedTypedPlaneProductionError::Refused(
+            "typed V3 history roots differ from the selected persisted input claim".to_owned(),
+        ));
     }
     Ok(ProducedSelectedNativeTypedPlaneHistoryV3 {
         manifest,
@@ -1952,6 +1975,7 @@ struct ProducedSegmentSource<'store, 'receipts> {
     store: &'store FileStore,
     segments: &'receipts [DurableSemanticObjectAdmission],
     current: Vec<u8>,
+    store_error: Option<StoreError>,
     io_metrics: SemanticProducerVerifierIoMetrics,
 }
 
@@ -1969,8 +1993,13 @@ impl<'store, 'receipts> ProducedSegmentSource<'store, 'receipts> {
             store,
             segments: receipts,
             current: Vec::new(),
+            store_error: None,
             io_metrics: SemanticProducerVerifierIoMetrics::default(),
         })
+    }
+
+    fn take_store_error(&mut self) -> Option<StoreError> {
+        self.store_error.take()
     }
 
     fn io_metrics(&self) -> SemanticProducerVerifierIoMetrics {
@@ -2008,10 +2037,13 @@ impl TypedPlaneSegmentSourceV2 for ProducedSegmentSource<'_, '_> {
         {
             return Err("typed V2 manifest claim differs from durable segment receipt".to_owned());
         }
-        let object = self
-            .store
-            .read_object(receipt.object_id())
-            .map_err(|error| format!("reopen typed V2 produced segment: {error:?}"))?;
+        let object = match self.store.read_object(receipt.object_id()) {
+            Ok(object) => object,
+            Err(error) => {
+                self.store_error = Some(error.clone());
+                return Err(format!("reopen typed V2 produced segment: {error:?}"));
+            }
+        };
         if object.id() != receipt.object_id()
             || object.schema() != ProducedSemanticObjectKind::Segment.schema_identity()
             || object.bytes().len() as u64 != receipt.payload_bytes()
@@ -2054,6 +2086,7 @@ struct ProducedJumboSource<'store> {
     store: &'store FileStore,
     leaves: BTreeMap<JumboRopeObjectId, JumboObjectMapping>,
     interiors: BTreeMap<JumboRopeObjectId, JumboObjectMapping>,
+    store_error: Option<StoreError>,
     io_metrics: SemanticProducerVerifierIoMetrics,
 }
 
@@ -2066,6 +2099,7 @@ impl<'store> ProducedJumboSource<'store> {
             store,
             leaves: BTreeMap::new(),
             interiors: BTreeMap::new(),
+            store_error: None,
             io_metrics: SemanticProducerVerifierIoMetrics::default(),
         };
         for receipt in receipts {
@@ -2104,6 +2138,10 @@ impl<'store> ProducedJumboSource<'store> {
         self.io_metrics
     }
 
+    fn take_store_error(&mut self) -> Option<StoreError> {
+        self.store_error.take()
+    }
+
     fn read_object(
         &mut self,
         object_id: ObjectId,
@@ -2111,10 +2149,13 @@ impl<'store> ProducedJumboSource<'store> {
         expected_payload_bytes: u64,
         envelope_bytes: u64,
     ) -> Result<TypedObject, String> {
-        let object = self
-            .store
-            .read_object(object_id)
-            .map_err(|error| format!("reopen typed V2 jumbo object: {error:?}"))?;
+        let object = match self.store.read_object(object_id) {
+            Ok(object) => object,
+            Err(error) => {
+                self.store_error = Some(error.clone());
+                return Err(format!("reopen typed V2 jumbo object: {error:?}"));
+            }
+        };
         if object.id() != object_id
             || object.schema() != kind.schema_identity()
             || u64::try_from(object.bytes().len()).ok() != Some(expected_payload_bytes)
@@ -2230,7 +2271,7 @@ fn commit_and_read(
             || reopened.version() != object.version()
             || reopened.bytes() != expected_payload
         {
-            return Err(SemanticPlaneRecordError::JumboObjectStore(
+            return Err(SemanticPlaneRecordError::JumboObjectStoreIntegrity(
                 "FileStore read-back differs from the producer object".to_owned(),
             ));
         }
@@ -2307,10 +2348,16 @@ mod tests {
     #[test]
     fn selected_history_producer_classifies_only_typed_store_failures_as_retryable() {
         assert!(matches!(
-            SelectedTypedPlaneProductionError::from(classify_semantic_store_error(StoreError::Io(
-                "object read failed".to_owned()
-            ))),
+            SelectedTypedPlaneProductionError::from(classify_semantic_store_error(
+                StoreError::TemporaryIo("object read temporarily blocked".to_owned())
+            )),
             SelectedTypedPlaneProductionError::RetryableAvailability(_)
+        ));
+        assert!(matches!(
+            SelectedTypedPlaneProductionError::from(classify_semantic_store_error(StoreError::Io(
+                "permission denied".to_owned()
+            ))),
+            SelectedTypedPlaneProductionError::UnclassifiedFailure(_)
         ));
         assert!(matches!(
             SelectedTypedPlaneProductionError::from(classify_semantic_store_error(
@@ -2328,6 +2375,14 @@ mod tests {
             SelectedTypedPlaneProductionError::from(SemanticPlaneRecordError::JumboObjectStore(
                 "temporarily unavailable".to_owned()
             )),
+            SelectedTypedPlaneProductionError::UnclassifiedFailure(_)
+        ));
+        assert!(matches!(
+            SelectedTypedPlaneProductionError::from(
+                SemanticPlaneRecordError::JumboObjectStoreIntegrity(
+                    "stored object failed identity verification".to_owned()
+                )
+            ),
             SelectedTypedPlaneProductionError::Refused(_)
         ));
     }

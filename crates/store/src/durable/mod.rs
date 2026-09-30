@@ -193,7 +193,13 @@ fn sync_directory(path: &Path) -> Result<(), StoreError> {
 }
 
 fn io_error(error: &std::io::Error) -> StoreError {
-    StoreError::Io(error.to_string())
+    match error.kind() {
+        std::io::ErrorKind::Interrupted
+        | std::io::ErrorKind::WouldBlock
+        | std::io::ErrorKind::ResourceBusy
+        | std::io::ErrorKind::TimedOut => StoreError::TemporaryIo(error.to_string()),
+        _ => StoreError::Io(error.to_string()),
+    }
 }
 
 fn map_read_error(error: &std::io::Error) -> StoreError {
@@ -201,5 +207,29 @@ fn map_read_error(error: &std::io::Error) -> StoreError {
         StoreError::Corrupt
     } else {
         io_error(error)
+    }
+}
+
+#[cfg(test)]
+mod io_error_tests {
+    use super::{StoreError, io_error};
+
+    #[test]
+    fn retryable_filesystem_kinds_remain_distinct_from_permanent_io() {
+        for kind in [
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::ResourceBusy,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            assert!(matches!(
+                io_error(&std::io::Error::from(kind)),
+                StoreError::TemporaryIo(_)
+            ));
+        }
+        assert!(matches!(
+            io_error(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            StoreError::Io(_)
+        ));
     }
 }
