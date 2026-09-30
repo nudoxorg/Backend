@@ -187,6 +187,62 @@ fn clearing_keyboard_focus_preserves_the_pointer_target(cx: &mut TestAppContext)
     assert_eq!(cx.update(|window, cx| super::target(window, cx)), Some(("a".into(), Subject::new("present::SemanticLinkKind"))));
 }
 
+/// Pointer and keyboard targets are independent per window. A keyboard walk
+/// takes the light while focused, then blur restores the still-hovered word;
+/// if the pointer leaves first, keyboard focus becomes active again.
+#[gpui::test]
+fn pointer_and_keyboard_targets_resume_each_other(cx: &mut TestAppContext) {
+    let (seen, _drop, cx) = words(cx);
+    frame(cx);
+    cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
+    frame(cx);
+    assert_eq!(lit_of(&seen), (Some(Lit::Target), Some(Lit::Related), Some(Lit::Rest)));
+
+    cx.update(|window, cx| super::focus(Some(FocusTarget::new("b", Subject::new("present::SemanticLinkKind"))), window, cx));
+    frame(cx);
+    assert_eq!(lit_of(&seen), (Some(Lit::Related), Some(Lit::Target), Some(Lit::Rest)), "keyboard target takes precedence");
+
+    // The shell may synchronize the same focused target repeatedly. A recent
+    // pointer move still takes precedence until it leaves its hitbox.
+    cx.simulate_mouse_move(point(px(400.0), px(400.0)), None, Modifiers::none());
+    frame(cx);
+    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Target), Some(Lit::Rest)));
+    cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
+    cx.update(|window, cx| super::focus(Some(FocusTarget::new("b", Subject::new("present::SemanticLinkKind"))), window, cx));
+    frame(cx);
+    assert_eq!(lit_of(&seen), (Some(Lit::Target), Some(Lit::Related), Some(Lit::Rest)), "same-target sync does not steal the pointer light");
+
+    cx.simulate_mouse_move(point(px(400.0), px(400.0)), None, Modifiers::none());
+    frame(cx);
+    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Target), Some(Lit::Rest)), "leaving the pointer restores keyboard focus");
+
+    cx.update(|window, cx| super::focus(None, window, cx));
+    assert_eq!(cx.update(|window, cx| super::target(window, cx)), None, "blur clears the last remaining target");
+}
+
+#[test]
+fn hover_sources_stay_scoped_to_their_window_id() {
+    use super::{Field, Held, Source, WindowField};
+    use gpui::WindowId;
+
+    let first = WindowId::from(101);
+    let second = WindowId::from(202);
+    let mut fields = Field::default();
+    fields.windows.insert(first, WindowField {
+        pointer: Some(Held { id: "pointer-a".into(), subject: Subject::new("a"), source: Source::Pointer }),
+        keyboard: None,
+        active: Some(Source::Pointer),
+    });
+    fields.windows.insert(second, WindowField {
+        pointer: None,
+        keyboard: Some(Held { id: "keyboard-b".into(), subject: Subject::new("b"), source: Source::Keyboard }),
+        active: Some(Source::Keyboard),
+    });
+
+    assert_eq!(fields.windows.get(&first).and_then(WindowField::held).map(|held| held.id), Some("pointer-a".into()));
+    assert_eq!(fields.windows.get(&second).and_then(WindowField::held).map(|held| held.id), Some("keyboard-b".into()));
+}
+
 /// Navigation closes what floats and lets go of the hover target: the page
 /// under a still pointer is a different page.
 #[gpui::test]
