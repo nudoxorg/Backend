@@ -1371,6 +1371,7 @@ impl TantivySource {
     pub fn search(&self, query: &Query) -> Result<Vec<RankedHit>, TantivySourceError> {
         self.ensure_live()?;
         query.validate(self.limits)?;
+        preflight_query_scratch(query, 0, self.rank_budget.max_scratch_bytes)?;
         let max_hits = self
             .documents
             .live
@@ -1414,6 +1415,7 @@ impl TantivySource {
     ) -> Result<usize, TantivySourceError> {
         self.ensure_live()?;
         query.validate(self.limits)?;
+        preflight_query_scratch(query, 0, self.rank_budget.max_scratch_bytes)?;
         let mut total = 0usize;
         self.scan_ranked_hits(query, 0, |hit| {
             visit(hit);
@@ -1440,25 +1442,33 @@ impl TantivySource {
         if candidates.len() > self.limits.max_page {
             return Err(Error::SizeLimit.into());
         }
-        let searcher = self.reader.searcher();
-        let mut relevance = BTreeMap::new();
-        let mut scratch = Vec::new();
-        let mut best = Vec::new();
-        best.try_reserve_exact(query.terms.len())
-            .map_err(|_| Error::SizeLimit)?;
         let clause_bytes = query
             .terms
             .len()
             .checked_mul(std::mem::size_of::<Option<Relevance>>())
             .ok_or(Error::SizeLimit)?;
         let result_bound_bytes = candidates.len().checked_mul(128).ok_or(Error::SizeLimit)?;
-        ensure_rank_scratch_capacity(
-            clause_bytes
-                .checked_add(result_bound_bytes)
-                .ok_or(Error::SizeLimit)?,
+        preflight_query_scratch(
+            query,
+            result_bound_bytes,
             self.rank_budget.max_scratch_bytes,
         )?;
-        self.record_rank_scratch(clause_bytes.saturating_add(result_bound_bytes));
+        let searcher = self.reader.searcher();
+        let mut relevance = BTreeMap::new();
+        let mut scratch = Vec::new();
+        let mut best = Vec::new();
+        best.try_reserve_exact(query.terms.len())
+            .map_err(|_| Error::SizeLimit)?;
+        let base_scratch_bytes = query_scratch_bytes(query, result_bound_bytes)?;
+        let actual_clause_bytes = best
+            .capacity()
+            .checked_mul(std::mem::size_of::<Option<Relevance>>())
+            .ok_or(Error::SizeLimit)?;
+        let base_scratch_bytes = base_scratch_bytes
+            .checked_add(actual_clause_bytes.saturating_sub(clause_bytes))
+            .ok_or(Error::SizeLimit)?;
+        ensure_rank_scratch_capacity(base_scratch_bytes, self.rank_budget.max_scratch_bytes)?;
+        self.record_rank_scratch(base_scratch_bytes);
         for candidate in candidates.iter().copied() {
             let Some(ordinal) = self
                 .documents
@@ -1494,9 +1504,7 @@ impl TantivySource {
             if payload_length == 0 || payload_length > MAX_RANK_MATERIAL_BYTES {
                 return Err(Self::corrupt("rank payload length is outside its bound").into());
             }
-            let required = clause_bytes
-                .checked_add(result_bound_bytes)
-                .ok_or(Error::SizeLimit)?
+            let required = base_scratch_bytes
                 .checked_add(payload_length)
                 .ok_or(Error::SizeLimit)?;
             ensure_rank_scratch_capacity(required, self.rank_budget.max_scratch_bytes)?;
@@ -1505,9 +1513,7 @@ impl TantivySource {
                     .try_reserve_exact(payload_length.saturating_sub(scratch.len()))
                     .map_err(|_| Error::SizeLimit)?;
             }
-            let retained_scratch = clause_bytes
-                .checked_add(result_bound_bytes)
-                .ok_or(Error::SizeLimit)?
+            let retained_scratch = base_scratch_bytes
                 .checked_add(scratch.capacity())
                 .ok_or(Error::SizeLimit)?;
             ensure_rank_scratch_capacity(retained_scratch, self.rank_budget.max_scratch_bytes)?;
@@ -1564,10 +1570,9 @@ impl TantivySource {
         extra_scratch_bytes: usize,
         mut visit: impl FnMut(RankedHit) -> Result<(), TantivySourceError>,
     ) -> Result<usize, TantivySourceError> {
-        let searcher = self.reader.searcher();
-        let engine_query = self.compile_query(query);
-        let weight = engine_query.weight(EnableScoring::disabled_from_searcher(&searcher))?;
-        let mut material = Vec::new();
+        let base_scratch_bytes = query_scratch_bytes(query, extra_scratch_bytes)?;
+        ensure_rank_scratch_capacity(base_scratch_bytes, self.rank_budget.max_scratch_bytes)?;
+        self.record_rank_scratch(base_scratch_bytes);
         let mut best = Vec::new();
         best.try_reserve_exact(query.terms.len())
             .map_err(|_| Error::SizeLimit)?;
@@ -1576,8 +1581,25 @@ impl TantivySource {
             .len()
             .checked_mul(std::mem::size_of::<Option<Relevance>>())
             .ok_or(Error::SizeLimit)?;
+        let actual_clause_bytes = best
+            .capacity()
+            .checked_mul(std::mem::size_of::<Option<Relevance>>())
+            .ok_or(Error::SizeLimit)?;
+        let actual_base_scratch_bytes = base_scratch_bytes
+            .checked_add(actual_clause_bytes.saturating_sub(clause_bytes))
+            .ok_or(Error::SizeLimit)?;
+        ensure_rank_scratch_capacity(
+            actual_base_scratch_bytes,
+            self.rank_budget.max_scratch_bytes,
+        )?;
+        self.record_rank_scratch(actual_base_scratch_bytes);
+        // Admit the scorer allocations only after both the query representation
+        // and the per-clause rank scratch fit the source's declared allowance.
+        let searcher = self.reader.searcher();
+        let engine_query = self.compile_query(query);
+        let weight = engine_query.weight(EnableScoring::disabled_from_searcher(&searcher))?;
+        let mut material = Vec::new();
         let mut total = 0usize;
-        self.record_rank_scratch(clause_bytes.saturating_add(extra_scratch_bytes));
         self.rank_evaluations.fetch_add(1, Ordering::Relaxed);
         for (segment_ord, segment) in searcher.segment_readers().iter().enumerate() {
             let ordinals = segment.fast_fields().u64(ORDINAL_FIELD)?;
@@ -1599,9 +1621,8 @@ impl TantivySource {
                 if length == 0 || length > MAX_RANK_MATERIAL_BYTES {
                     return Err(Self::corrupt("rank payload length is outside its bound").into());
                 }
-                let required = clause_bytes
-                    .checked_add(extra_scratch_bytes)
-                    .and_then(|bytes| bytes.checked_add(length))
+                let required = actual_base_scratch_bytes
+                    .checked_add(length)
                     .ok_or(Error::SizeLimit)?;
                 ensure_rank_scratch_capacity(required, self.rank_budget.max_scratch_bytes)?;
                 self.record_rank_scratch(required);
@@ -1610,9 +1631,8 @@ impl TantivySource {
                         .try_reserve_exact(length.saturating_sub(material.len()))
                         .map_err(|_| Error::SizeLimit)?;
                 }
-                let retained_scratch = clause_bytes
-                    .checked_add(extra_scratch_bytes)
-                    .and_then(|bytes| bytes.checked_add(material.capacity()))
+                let retained_scratch = actual_base_scratch_bytes
+                    .checked_add(material.capacity())
                     .ok_or(Error::SizeLimit)?;
                 ensure_rank_scratch_capacity(retained_scratch, self.rank_budget.max_scratch_bytes)?;
                 self.record_rank_scratch(retained_scratch);
@@ -3079,20 +3099,22 @@ impl LexicalSource for TantivySource {
             .limit
             .checked_mul(std::mem::size_of::<RankedHit>())
             .ok_or(Error::SizeLimit)?;
-        ensure_rank_scratch_capacity(
-            heap_bytes
-                .checked_add(
-                    request
-                        .query
-                        .terms
-                        .len()
-                        .checked_mul(std::mem::size_of::<Option<Relevance>>())
-                        .ok_or(Error::SizeLimit)?,
-                )
-                .ok_or(Error::SizeLimit)?,
+        preflight_query_scratch(
+            &request.query,
+            heap_bytes,
             self.rank_budget.max_scratch_bytes,
         )?;
         let mut page = TopHits::new(request.limit)?;
+        let heap_bytes = page
+            .hits
+            .capacity()
+            .checked_mul(std::mem::size_of::<RankedHit>())
+            .ok_or(Error::SizeLimit)?;
+        preflight_query_scratch(
+            &request.query,
+            heap_bytes,
+            self.rank_budget.max_scratch_bytes,
+        )?;
         let mut eligible = 0usize;
         let mut before_boundary = 0usize;
         let mut boundary_seen = false;
@@ -3355,6 +3377,39 @@ fn ensure_rank_scratch_capacity(
         });
     }
     Ok(())
+}
+
+fn query_scratch_bytes(query: &Query, extra_bytes: usize) -> Result<usize, TantivySourceError> {
+    let clause_bytes = query
+        .terms
+        .len()
+        .checked_mul(std::mem::size_of::<Option<Relevance>>())
+        .ok_or(Error::SizeLimit)?;
+    let field_bytes = match &query.fields {
+        FieldSelection::All => 0,
+        FieldSelection::Only(field) => field.len(),
+    };
+    let term_setup_bytes = query.terms.iter().try_fold(0_usize, |total, term| {
+        // Query compilation owns the term bytes and a clause/scorer object;
+        // field-qualified terms also materialize their field prefix.
+        total
+            .checked_add(term.len().checked_mul(2).ok_or(Error::SizeLimit)?)
+            .and_then(|bytes| bytes.checked_add(field_bytes))
+            .and_then(|bytes| bytes.checked_add(256))
+            .ok_or(Error::SizeLimit)
+    })?;
+    clause_bytes
+        .checked_add(term_setup_bytes)
+        .and_then(|bytes| bytes.checked_add(extra_bytes))
+        .ok_or_else(|| Error::SizeLimit.into())
+}
+
+fn preflight_query_scratch(
+    query: &Query,
+    extra_bytes: usize,
+    budget_bytes: usize,
+) -> Result<(), TantivySourceError> {
+    ensure_rank_scratch_capacity(query_scratch_bytes(query, extra_bytes)?, budget_bytes)
 }
 
 fn material_for_doc<'a>(

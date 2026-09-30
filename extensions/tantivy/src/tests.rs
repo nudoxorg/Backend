@@ -1039,6 +1039,41 @@ fn exact_pages_stay_bounded_and_all_results_refuse_over_budget() {
 }
 
 #[test]
+fn oversized_query_scratch_is_refused_before_scorer_compilation() {
+    let limits = Limits {
+        max_terms: 64,
+        ..Limits::default()
+    };
+    let (binding, coverage) = binding(&[]);
+    let state = DocumentState::new(binding, coverage, Vec::new(), limits).expect("empty state");
+    let source = TantivySource::build(&state, limits)
+        .expect("empty projection")
+        .with_rank_snapshot_budget(
+            RankSnapshotBudget::new(2_048, 1_024).expect("nonzero query budget"),
+        );
+    let query = Query::new(
+        (0..32)
+            .map(|term| format!("absent-token-{term:02}"))
+            .collect(),
+        limits,
+    )
+    .expect("admitted no-hit query");
+
+    let error = source
+        .for_each_ranked_hit(&query, |_| {})
+        .expect_err("query setup must fit the explicit scratch budget");
+    assert!(matches!(
+        error,
+        TantivySourceError::RankSnapshotBudgetExceeded {
+            budget_bytes: 2_048,
+            required_bytes
+        } if required_bytes > 2_048
+    ));
+    assert_eq!(source.rank_evaluations(), 0);
+    assert_eq!(source.rank_docs_visited(), 0);
+}
+
+#[test]
 fn sparse_cold_reopen_residency_scales_with_live_rows_not_historical_slots() {
     static NEXT_ROOT: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
