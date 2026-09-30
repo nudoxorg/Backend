@@ -381,6 +381,12 @@ pub enum SemanticHistoryPublicationStatus {
     NotRequested { selection_id: [u8; 32] },
     /// A bounded worker is producing and admitting history for this selection.
     Pending { selection_id: [u8; 32] },
+    /// The committed selection is waiting for a bounded worker slot. The
+    /// owner reschedules it from the current selected-marker inventory.
+    Deferred {
+        selection_id: [u8; 32],
+        reason: String,
+    },
     /// The exact selected image is durably published at this V3 branch commit.
     Published {
         selection_id: [u8; 32],
