@@ -1,28 +1,41 @@
 //! Owner-side commands for the local compiler peer allowlist.
 
 use crate::options::{Format, Options};
+use backend_client::{LocalSemanticIndexClient, RemoteIndexCommandTransport, Session};
 use backend_engine::PackageReference;
 use backend_engine::application::{
     CompilerPackageTargetV2, GoPackageAuthorityWitness, LocalCompilerCapabilityState,
     LocalCompilerExecutionIdentity, LocalCompilerHost,
 };
-use backend_engine::cluster_transport::{ClusterExecutionClass, EndpointId, ScopedClusterInvite};
+use backend_engine::cluster_transport::{
+    ClusterExecutionClass, EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims,
+    RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
+    RemoteIndexSemanticSelection, ScopedClusterInvite, SecretKey, remote_index_now,
+};
 use backend_library::interface::PackageUrl;
 use backend_local_service::builtin::{
-    ProductCompilerScope, ProductCompilerTargetKind, product_compiler_scope,
+    ProductCompilerScope, ProductCompilerTargetKind, RemoteIndexUsage, product_compiler_scope,
 };
 use backend_local_service::cluster_owner::{ClusterOwnerConfig, ClusterOwnerConfigError};
 use backend_local_service::compiler_trust::{
     CompilerTrustError, TrustedCompilerWorkerGrant, TrustedCompilerWorkerPolicy,
 };
 use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
+use backend_replication::SemanticTargetKey;
 use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 
 const TRUST_FILE: &str = "compiler-worker-trust.v1";
 const OWNER_FILE: &str = "cluster-owner.v1";
+const REMOTE_CLIENT_FILE: &str = "remote-index-client.v1";
+const REMOTE_CLIENT_MAGIC: &[u8; 8] = b"BKRICL01";
+const REMOTE_CAPABILITY_MAGIC: &[u8; 8] = b"BKRICP01";
 
 /// Runs one owner-side cluster trust command without starting or contacting locald.
 pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> {
@@ -36,7 +49,30 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
         [owner, action, rest @ ..] if owner == "owner" => match action.as_str() {
             "init" => owner_init(rest, options),
             "show" => owner_show(rest, options),
+            "grant" => match rest {
+                [action, args @ ..] if action == "list" => owner_grant_list(args, options),
+                [action, args @ ..] if action == "revoke" => owner_grant_revoke(args, options),
+                [kind, action, args @ ..] if action == "create" => match kind.as_str() {
+                    "product" => owner_grant_product(args, options),
+                    "semantic" => owner_grant_semantic(args, options),
+                    _ => Err(usage("cluster owner grant", "choose product or semantic")),
+                },
+                _ => Err(usage(
+                    "cluster owner grant",
+                    "use product|semantic create, list, or revoke",
+                )),
+            },
             _ => Err(usage("cluster owner", "choose init or show")),
+        },
+        [client, action, rest @ ..] if client == "client" => match action.as_str() {
+            "init" => client_init(rest, options),
+            "connect" => client_connect(rest, options),
+            "query" => client_query(rest, options),
+            "semantic-catalog" => client_semantic_catalog(rest, options),
+            _ => Err(usage(
+                "cluster client",
+                "choose init, connect, query, or semantic-catalog",
+            )),
         },
         [invite, action, rest @ ..] if invite == "invite" && action == "create" => {
             invite_create(rest, options)
@@ -49,7 +85,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
         [] => Ok(help_text().to_owned()),
         _ => Err(usage(
             "cluster",
-            "use `cluster owner init|show`, `cluster scope show`, `cluster trust list|add|revoke`, or `cluster invite create`",
+            "use `cluster owner init|show|grant`, `cluster client init|connect|query|semantic-catalog`, `cluster scope show`, `cluster trust list|add|revoke`, or `cluster invite create`",
         )),
     }
 }
@@ -58,6 +94,14 @@ pub(super) const fn help_text() -> &'static str {
     "backend cluster — local compiler owner and explicit worker trust\n\n\
      Usage: backend [OPTIONS] cluster owner init --bind IP:PORT --advertise IP:PORT\n\
             backend [OPTIONS] cluster owner show\n\
+            backend [OPTIONS] cluster owner grant list\n\
+            backend [OPTIONS] cluster owner grant revoke --grant-id HEX\n\
+            backend [OPTIONS] cluster owner grant product create --client-peer HEX --capability-file PATH [--operations search,names,...]\n\
+            backend [OPTIONS] cluster owner grant semantic create --client-peer HEX --capability-file PATH --package PACKAGE --coordinate PKGURL --profile PROFILE\n\
+            backend [OPTIONS] cluster client init [--key-file PATH]\n\
+            backend [OPTIONS] cluster client connect [--key-file PATH] --owner-peer HEX --owner-address IP:PORT --capability-file PATH\n\
+            backend [OPTIONS] cluster client query [--key-file PATH] --owner-peer HEX --owner-address IP:PORT --capability-file PATH --operation search|names|document|source|outline|graph|related --value TEXT [--limit N]\n\
+            backend [OPTIONS] cluster client semantic-catalog --key-file PATH --owner-peer HEX --owner-address IP:PORT --capability-file PATH\n\
             backend [OPTIONS] cluster scope show --package PACKAGE --profile PROFILE [--coordinate PKGURL] [--package-root PATH]\n\
             backend [OPTIONS] cluster invite create --worker-peer HEX --worker-address IP:PORT --namespace HEX --recipe HEX --profile HEX --stage lower-ir --toolchain HEX --environment HEX --target-platform HEX [--ttl-seconds N]\n\
             backend [OPTIONS] cluster trust list\n\
@@ -349,6 +393,776 @@ fn owner_show(rest: &[String], options: &Options) -> Result<String, Fault> {
     }
 }
 
+fn owner_grant_product(rest: &[String], options: &Options) -> Result<String, Fault> {
+    let flags = parse_flags_with_required(
+        rest,
+        &[
+            "client-peer",
+            "capability-file",
+            "operations",
+            "ttl-seconds",
+            "request-budget",
+            "byte-budget",
+        ],
+        &["client-peer", "capability-file"],
+    )?;
+    let owner_path = owner_path(options)?;
+    let owner =
+        ClusterOwnerConfig::load(&owner_path).map_err(|error| owner_fault(&owner_path, error))?;
+    let client = endpoint_id(required(&flags, "client-peer")?)?;
+    let paths = workspace_paths(options)?;
+    let mut product_session = Session::connect(paths.endpoint()).map_err(client_fault)?;
+    let revision = product_session.revision().map_err(client_fault)?;
+    let operations = parse_product_operations(flags.get("operations").copied())?;
+    let (issued_at, expires_at, request_budget, byte_budget) = capability_limits(&flags)?;
+    let claims = RemoteIndexCapabilityClaims {
+        version: 1,
+        server: owner.endpoint_id(),
+        client,
+        grant_id: fresh_grant_id(),
+        issued_at_unix_ms: issued_at,
+        expires_at_unix_ms: expires_at,
+        request_budget,
+        byte_budget,
+        permissions: vec![RemoteIndexPermission::ProductRead],
+        product: Some(RemoteIndexProductScope {
+            view_root: *revision.root.as_bytes(),
+            operations: operations.clone(),
+        }),
+        semantic: None,
+    };
+    let capability = owner
+        .issue_remote_index_capability(claims, issued_at)
+        .map_err(|error| storage_fault(&owner_path, error.to_string()))?;
+    let usage_path = remote_usage_path(options)?;
+    let usage = RemoteIndexUsage::open(&usage_path, owner.endpoint_id())
+        .map_err(|error| storage_fault(&usage_path, error.to_string()))?;
+    usage
+        .register_capability(&capability, issued_at)
+        .map_err(|error| storage_fault(&usage_path, error.to_string()))?;
+    let path = PathBuf::from(required(&flags, "capability-file")?);
+    if let Err(error) = write_remote_capability(&path, &capability) {
+        let _ = usage.revoke(capability.grant_id());
+        return Err(error);
+    }
+    Ok(format!(
+        "Issued product read grant {} for client {} at view root {}.\nAllowed operations: {}\nCapability file: {}\nExpires at Unix millisecond {}.\n",
+        hex(&capability.grant_id()),
+        hex(client.as_bytes()),
+        hex(&revision.root.as_bytes()[..]),
+        operations
+            .iter()
+            .map(product_operation_name)
+            .collect::<Vec<_>>()
+            .join(", "),
+        path.display(),
+        expires_at,
+    ))
+}
+
+fn owner_grant_semantic(rest: &[String], options: &Options) -> Result<String, Fault> {
+    let flags = parse_flags_with_required(
+        rest,
+        &[
+            "client-peer",
+            "capability-file",
+            "package",
+            "coordinate",
+            "profile",
+            "ttl-seconds",
+            "request-budget",
+            "byte-budget",
+        ],
+        &[
+            "client-peer",
+            "capability-file",
+            "package",
+            "coordinate",
+            "profile",
+        ],
+    )?;
+    let profile_text = required(&flags, "profile")?;
+    let profile = LanguageProfile::try_from(profile_text)
+        .map_err(|_| usage("--profile", "use a canonical language profile spelling"))?;
+    let target = SemanticTargetKey::new(
+        required(&flags, "package")?.to_owned(),
+        required(&flags, "coordinate")?.to_owned(),
+        profile,
+    )
+    .map_err(|error| usage("cluster owner grant semantic", error.to_string()))?;
+    let paths = workspace_paths(options)?;
+    let mut semantic = LocalSemanticIndexClient::connect(paths.endpoint(), target.clone())
+        .map_err(client_fault)?;
+    let snapshot = semantic.fetch_selected_catalog().map_err(client_fault)?;
+    let stamp = snapshot.selected_stamp();
+    let owner_path = owner_path(options)?;
+    let owner =
+        ClusterOwnerConfig::load(&owner_path).map_err(|error| owner_fault(&owner_path, error))?;
+    let client = endpoint_id(required(&flags, "client-peer")?)?;
+    let (issued_at, expires_at, request_budget, byte_budget) = capability_limits(&flags)?;
+    let claims = RemoteIndexCapabilityClaims {
+        version: 1,
+        server: owner.endpoint_id(),
+        client,
+        grant_id: fresh_grant_id(),
+        issued_at_unix_ms: issued_at,
+        expires_at_unix_ms: expires_at,
+        request_budget,
+        byte_budget,
+        permissions: vec![RemoteIndexPermission::SemanticHydration],
+        product: None,
+        semantic: Some(RemoteIndexSemanticSelection {
+            package: target.package().to_owned(),
+            coordinate: target.coordinate().to_owned(),
+            profile: <[u8; 2]>::from(target.profile()),
+            namespace: *stamp.namespace(),
+            source_coordinate: *stamp.source_coordinate(),
+            selection_revision: stamp.selection_revision(),
+            selected_root: *stamp.selected_root(),
+            closure_id: *stamp.closure_id(),
+            catalog_root: *stamp.catalog_root().as_bytes(),
+        }),
+    };
+    let capability = owner
+        .issue_remote_index_capability(claims, issued_at)
+        .map_err(|error| storage_fault(&owner_path, error.to_string()))?;
+    let usage_path = remote_usage_path(options)?;
+    let usage = RemoteIndexUsage::open(&usage_path, owner.endpoint_id())
+        .map_err(|error| storage_fault(&usage_path, error.to_string()))?;
+    usage
+        .register_capability(&capability, issued_at)
+        .map_err(|error| storage_fault(&usage_path, error.to_string()))?;
+    let path = PathBuf::from(required(&flags, "capability-file")?);
+    if let Err(error) = write_remote_capability(&path, &capability) {
+        let _ = usage.revoke(capability.grant_id());
+        return Err(error);
+    }
+    Ok(format!(
+        "Issued semantic hydration grant {} for client {}.\nTarget: {} at {} (profile {}).\nSelected revision: {}; root {}; catalog root {}.\nCapability file: {}\nExpires at Unix millisecond {}.\n",
+        hex(&capability.grant_id()),
+        hex(client.as_bytes()),
+        target.package(),
+        target.coordinate(),
+        profile_text,
+        stamp.selection_revision(),
+        hex(stamp.selected_root()),
+        hex(stamp.catalog_root().as_bytes()),
+        path.display(),
+        expires_at,
+    ))
+}
+
+fn owner_grant_list(rest: &[String], options: &Options) -> Result<String, Fault> {
+    if !rest.is_empty() {
+        return Err(usage(
+            "cluster owner grant list",
+            "takes no command options",
+        ));
+    }
+    let owner_path = owner_path(options)?;
+    let owner =
+        ClusterOwnerConfig::load(&owner_path).map_err(|error| owner_fault(&owner_path, error))?;
+    let path = remote_usage_path(options)?;
+    let grants = RemoteIndexUsage::open(&path, owner.endpoint_id())
+        .and_then(|usage| usage.list())
+        .map_err(|error| storage_fault(&path, error.to_string()))?;
+    match options.format() {
+        Format::Json => {
+            let values = grants
+                .iter()
+                .map(|grant| {
+                    let product = grant.product.as_ref().map(|scope| {
+                        serde_json::json!({
+                            "viewRoot": hex(&scope.view_root),
+                            "operations": scope.operations.iter().map(product_operation_name).collect::<Vec<_>>(),
+                        })
+                    });
+                    let semantic = grant.semantic.as_ref().map(|scope| {
+                        serde_json::json!({
+                            "package": scope.package,
+                            "coordinate": scope.coordinate,
+                            "profile": hex(&scope.profile),
+                            "selectionRevision": scope.selection_revision,
+                            "selectedRoot": hex(&scope.selected_root),
+                            "catalogRoot": hex(&scope.catalog_root),
+                        })
+                    });
+                    serde_json::json!({
+                        "grantId": hex(&grant.grant_id),
+                        "clientPeer": hex(grant.client.as_bytes()),
+                        "expiresAtUnixMs": grant.expires_at_unix_ms,
+                        "revoked": grant.revoked,
+                        "requests": grant.requests,
+                        "requestBudget": grant.request_budget,
+                        "responseBytes": grant.response_bytes,
+                        "byteBudget": grant.byte_budget,
+                        "product": product,
+                        "semantic": semantic,
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_string_pretty(&values)
+                .map(|mut value| {
+                    value.push('\n');
+                    value
+                })
+                .map_err(|error| storage_fault(&path, error.to_string()))
+        }
+        Format::Human | Format::Markdown => {
+            if grants.is_empty() {
+                return Ok("No active remote index grants.\n".to_owned());
+            }
+            let mut output = String::new();
+            for grant in grants {
+                let state = if grant.revoked { "revoked" } else { "active" };
+                output.push_str(&format!(
+                    "grant {} — {} — client {} — expires {} — requests {}/{} bytes {}/{}\n",
+                    hex(&grant.grant_id),
+                    state,
+                    hex(grant.client.as_bytes()),
+                    grant.expires_at_unix_ms,
+                    grant.requests,
+                    grant.request_budget,
+                    grant.response_bytes,
+                    grant.byte_budget,
+                ));
+                if let Some(scope) = grant.product {
+                    output.push_str(&format!(
+                        "  product root {}; operations {}\n",
+                        hex(&scope.view_root),
+                        scope
+                            .operations
+                            .iter()
+                            .map(product_operation_name)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ));
+                }
+                if let Some(scope) = grant.semantic {
+                    output.push_str(&format!(
+                        "  semantic target {} at {} profile {}; selection {} root {} catalog {}\n",
+                        scope.package,
+                        scope.coordinate,
+                        hex(&scope.profile),
+                        scope.selection_revision,
+                        hex(&scope.selected_root),
+                        hex(&scope.catalog_root),
+                    ));
+                }
+            }
+            Ok(output)
+        }
+    }
+}
+
+fn owner_grant_revoke(rest: &[String], options: &Options) -> Result<String, Fault> {
+    let flags = parse_flags(rest, &["grant-id"])?;
+    let grant_id = fixed_hex::<16>(required(&flags, "grant-id")?)?;
+    let owner_path = owner_path(options)?;
+    let owner =
+        ClusterOwnerConfig::load(&owner_path).map_err(|error| owner_fault(&owner_path, error))?;
+    let path = remote_usage_path(options)?;
+    let usage = RemoteIndexUsage::open(&path, owner.endpoint_id())
+        .map_err(|error| storage_fault(&path, error.to_string()))?;
+    let changed = usage
+        .revoke(grant_id)
+        .map_err(|error| storage_fault(&path, error.to_string()))?;
+    Ok(if changed {
+        format!("Revoked remote index grant {}.\n", hex(&grant_id))
+    } else {
+        format!(
+            "Remote index grant {} was already revoked.\n",
+            hex(&grant_id)
+        )
+    })
+}
+
+fn client_init(rest: &[String], options: &Options) -> Result<String, Fault> {
+    let flags = parse_flags_with_required(rest, &["key-file"], &[])?;
+    let path = flags
+        .get("key-file")
+        .map_or_else(|| client_key_path(options), |path| Ok(PathBuf::from(*path)))?;
+    let secret = SecretKey::generate();
+    let mut bytes = Vec::with_capacity(REMOTE_CLIENT_MAGIC.len() + 32);
+    bytes.extend_from_slice(REMOTE_CLIENT_MAGIC);
+    bytes.extend_from_slice(&secret.to_bytes());
+    write_private_new(&path, &bytes)?;
+    Ok(format!(
+        "Created private remote-index client identity {}.\nKey file: {}\nThe private key stays in this file and is not printed.\n",
+        hex(secret.public().as_bytes()),
+        path.display(),
+    ))
+}
+
+fn client_connect(rest: &[String], options: &Options) -> Result<String, Fault> {
+    let flags = parse_flags_with_required(
+        rest,
+        &["key-file", "owner-peer", "owner-address", "capability-file"],
+        &["owner-peer", "owner-address", "capability-file"],
+    )?;
+    let key_path = flags
+        .get("key-file")
+        .map_or_else(|| client_key_path(options), |path| Ok(PathBuf::from(*path)))?;
+    let secret = load_client_secret(&key_path)?;
+    let capability_path = PathBuf::from(required(&flags, "capability-file")?);
+    let capability = load_remote_capability(&capability_path)?;
+    let owner = endpoint_id(required(&flags, "owner-peer")?)?;
+    let address = socket_address(required(&flags, "owner-address")?, "--owner-address")?;
+    capability
+        .verify(
+            owner,
+            secret.public(),
+            remote_index_now().map_err(|error| {
+                usage(
+                    "cluster client connect",
+                    format!("system clock unavailable: {error}"),
+                )
+            })?,
+        )
+        .map_err(|error| usage("--capability-file", error.to_string()))?;
+    if capability.claims.product.is_some() {
+        let transport =
+            RemoteIndexCommandTransport::connect(secret, owner, address, capability.clone())
+                .map_err(client_fault)?;
+        let mut session = Session::from_transport(
+            PathBuf::from(format!("iroh://{}@{}", hex(owner.as_bytes()), address)),
+            transport,
+        );
+        let revision = session.revision().map_err(client_fault)?;
+        if capability
+            .claims
+            .product
+            .as_ref()
+            .is_some_and(|scope| scope.view_root != *revision.root.as_bytes())
+        {
+            return Err(usage(
+                "--capability-file",
+                "product capability became stale while connecting; issue a new grant",
+            ));
+        }
+        return Ok(format!(
+            "Connected to remote index {} at {}.\nAuthorized product root: {}\nOperations: {}\nGrant: {}\n",
+            hex(owner.as_bytes()),
+            address,
+            hex(&revision.root.as_bytes()[..]),
+            capability
+                .claims
+                .product
+                .as_ref()
+                .map_or_else(String::new, |scope| scope
+                    .operations
+                    .iter()
+                    .map(product_operation_name)
+                    .collect::<Vec<_>>()
+                    .join(", ")),
+            hex(&capability.grant_id()),
+        ));
+    }
+    let scope = capability.claims.semantic.as_ref().ok_or_else(|| {
+        usage(
+            "--capability-file",
+            "capability has no supported remote read scope",
+        )
+    })?;
+    let profile = LanguageProfile::try_from(scope.profile)
+        .map_err(|_| usage("--capability-file", "semantic profile is invalid"))?;
+    let target = SemanticTargetKey::new(scope.package.clone(), scope.coordinate.clone(), profile)
+        .map_err(|error| usage("--capability-file", error.to_string()))?;
+    let mut semantic = LocalSemanticIndexClient::connect_remote(
+        secret,
+        owner,
+        address,
+        capability.clone(),
+        target,
+    )
+    .map_err(client_fault)?;
+    let snapshot = semantic.fetch_selected_catalog().map_err(client_fault)?;
+    if snapshot.selected_stamp().selection_revision() != scope.selection_revision
+        || snapshot.selected_root() != &scope.selected_root
+        || snapshot.selected_stamp().namespace() != &scope.namespace
+        || snapshot.selected_stamp().source_coordinate() != &scope.source_coordinate
+        || snapshot.selected_stamp().closure_id() != &scope.closure_id
+        || snapshot.selected_stamp().catalog_root().as_bytes() != &scope.catalog_root
+    {
+        return Err(usage(
+            "--capability-file",
+            "semantic selection changed; issue a new grant",
+        ));
+    }
+    Ok(format!(
+        "Connected to remote index {} at {}.\nAuthorized semantic target: {} at {} (profile {}).\nSelected revision: {}; root {}; catalog root {}.\nGrant: {}\n",
+        hex(owner.as_bytes()),
+        address,
+        scope.package,
+        scope.coordinate,
+        profile,
+        scope.selection_revision,
+        hex(&scope.selected_root),
+        hex(&scope.catalog_root),
+        hex(&capability.grant_id()),
+    ))
+}
+
+fn client_query(rest: &[String], options: &Options) -> Result<String, Fault> {
+    let flags = parse_flags_with_required(
+        rest,
+        &[
+            "key-file",
+            "owner-peer",
+            "owner-address",
+            "capability-file",
+            "operation",
+            "value",
+            "limit",
+        ],
+        &[
+            "owner-peer",
+            "owner-address",
+            "capability-file",
+            "operation",
+            "value",
+        ],
+    )?;
+    let key_path = flags
+        .get("key-file")
+        .map_or_else(|| client_key_path(options), |path| Ok(PathBuf::from(*path)))?;
+    let secret = load_client_secret(&key_path)?;
+    let capability_path = PathBuf::from(required(&flags, "capability-file")?);
+    let capability = load_remote_capability(&capability_path)?;
+    let owner = endpoint_id(required(&flags, "owner-peer")?)?;
+    let address = socket_address(required(&flags, "owner-address")?, "--owner-address")?;
+    let scope = capability.claims.product.as_ref().ok_or_else(|| {
+        usage(
+            "--capability-file",
+            "product query needs a product read capability",
+        )
+    })?;
+    let operation = parse_product_operation(required(&flags, "operation")?)?;
+    if !scope.operations.contains(&operation) {
+        return Err(usage(
+            "--operation",
+            "operation is not included in this signed capability",
+        ));
+    }
+    let limit = flags
+        .get("limit")
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| usage("--limit", "use an integer from 1 to 65535"))
+        })
+        .transpose()?
+        .unwrap_or(20);
+    let transport = RemoteIndexCommandTransport::connect(secret, owner, address, capability)
+        .map_err(client_fault)?;
+    let mut session = Session::from_transport(
+        PathBuf::from(format!("iroh://{}@{}", hex(owner.as_bytes()), address)),
+        transport,
+    );
+    let value = required(&flags, "value")?;
+    let reply = match operation {
+        RemoteIndexQueryOperation::Search => session.search(value, limit),
+        RemoteIndexQueryOperation::Names => session.names(value, limit),
+        RemoteIndexQueryOperation::Document => session.document(value),
+        RemoteIndexQueryOperation::Source => session.source(value),
+        RemoteIndexQueryOperation::Outline => session.outline(value),
+        RemoteIndexQueryOperation::Graph => session.graph(value),
+        RemoteIndexQueryOperation::Related => session.related(value),
+    }
+    .map_err(client_fault)?;
+    serde_json::to_string_pretty(&reply)
+        .map(|mut value| {
+            value.push('\n');
+            value
+        })
+        .map_err(|error| storage_fault(&capability_path, error.to_string()))
+}
+
+fn client_semantic_catalog(rest: &[String], options: &Options) -> Result<String, Fault> {
+    let flags = parse_flags_with_required(
+        rest,
+        &["key-file", "owner-peer", "owner-address", "capability-file"],
+        &["owner-peer", "owner-address", "capability-file"],
+    )?;
+    let key_path = flags
+        .get("key-file")
+        .map_or_else(|| client_key_path(options), |path| Ok(PathBuf::from(*path)))?;
+    let secret = load_client_secret(&key_path)?;
+    let capability_path = PathBuf::from(required(&flags, "capability-file")?);
+    let capability = load_remote_capability(&capability_path)?;
+    let owner = endpoint_id(required(&flags, "owner-peer")?)?;
+    let address = socket_address(required(&flags, "owner-address")?, "--owner-address")?;
+    let scope = capability.claims.semantic.as_ref().ok_or_else(|| {
+        usage(
+            "--capability-file",
+            "semantic catalog needs a semantic hydration capability",
+        )
+    })?;
+    let profile = LanguageProfile::try_from(scope.profile)
+        .map_err(|_| usage("--capability-file", "semantic profile is invalid"))?;
+    let target = SemanticTargetKey::new(scope.package.clone(), scope.coordinate.clone(), profile)
+        .map_err(|error| usage("--capability-file", error.to_string()))?;
+    let mut semantic = LocalSemanticIndexClient::connect_remote(
+        secret,
+        owner,
+        address,
+        capability.clone(),
+        target,
+    )
+    .map_err(client_fault)?;
+    let snapshot = semantic.fetch_selected_catalog().map_err(client_fault)?;
+    let stamp = snapshot.selected_stamp();
+    let image_ordinals = snapshot
+        .catalog()
+        .entries()
+        .iter()
+        .map(|entry| entry.image().artifact_ordinal())
+        .collect::<Vec<_>>();
+    Ok(format!(
+        "Remote semantic catalog admitted.\nTarget: {} at {} (profile {}).\nSelected revision: {}; root {}; catalog root {}.\nCatalog images: {}\nImage ordinals: {}\n",
+        scope.package,
+        scope.coordinate,
+        profile,
+        stamp.selection_revision(),
+        hex(stamp.selected_root()),
+        hex(stamp.catalog_root().as_bytes()),
+        image_ordinals.len(),
+        image_ordinals
+            .iter()
+            .map(|ordinal| ordinal.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    ))
+}
+
+fn parse_product_operations(value: Option<&&str>) -> Result<Vec<RemoteIndexQueryOperation>, Fault> {
+    let mut operations = value
+        .copied()
+        .unwrap_or("search,names,document,source,outline,graph,related")
+        .split(',')
+        .map(parse_product_operation)
+        .collect::<Result<Vec<_>, _>>()?;
+    operations.sort_unstable();
+    operations.dedup();
+    if operations.is_empty() {
+        return Err(usage(
+            "--operations",
+            "include at least one query operation",
+        ));
+    }
+    Ok(operations)
+}
+
+fn parse_product_operation(value: &str) -> Result<RemoteIndexQueryOperation, Fault> {
+    match value {
+        "search" => Ok(RemoteIndexQueryOperation::Search),
+        "names" => Ok(RemoteIndexQueryOperation::Names),
+        "document" => Ok(RemoteIndexQueryOperation::Document),
+        "source" => Ok(RemoteIndexQueryOperation::Source),
+        "outline" => Ok(RemoteIndexQueryOperation::Outline),
+        "graph" => Ok(RemoteIndexQueryOperation::Graph),
+        "related" => Ok(RemoteIndexQueryOperation::Related),
+        _ => Err(usage(
+            "--operations",
+            "choose search, names, document, source, outline, graph, or related",
+        )),
+    }
+}
+
+fn product_operation_name(operation: &RemoteIndexQueryOperation) -> &'static str {
+    match operation {
+        RemoteIndexQueryOperation::Search => "search",
+        RemoteIndexQueryOperation::Names => "names",
+        RemoteIndexQueryOperation::Document => "document",
+        RemoteIndexQueryOperation::Source => "source",
+        RemoteIndexQueryOperation::Outline => "outline",
+        RemoteIndexQueryOperation::Graph => "graph",
+        RemoteIndexQueryOperation::Related => "related",
+    }
+}
+
+fn capability_limits(flags: &BTreeMap<&str, &str>) -> Result<(u64, u64, u32, u64), Fault> {
+    let issued_at = remote_index_now().map_err(|error| {
+        usage(
+            "cluster owner grant",
+            format!("system clock unavailable: {error}"),
+        )
+    })?;
+    let ttl_seconds = flags
+        .get("ttl-seconds")
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| usage("--ttl-seconds", "use an integer from 60 to 2592000"))
+        })
+        .transpose()?
+        .unwrap_or(3600);
+    if !(60..=30 * 24 * 60 * 60).contains(&ttl_seconds) {
+        return Err(usage("--ttl-seconds", "use an integer from 60 to 2592000"));
+    }
+    let expires_at = issued_at
+        .checked_add(ttl_seconds.saturating_mul(1000))
+        .ok_or_else(|| usage("--ttl-seconds", "expiry overflow"))?;
+    let request_budget = flags
+        .get("request-budget")
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| usage("--request-budget", "use a positive request count"))
+        })
+        .transpose()?
+        .unwrap_or(10_000);
+    let byte_budget = flags
+        .get("byte-budget")
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| usage("--byte-budget", "use a positive byte count"))
+        })
+        .transpose()?
+        .unwrap_or(256 * 1024 * 1024);
+    if request_budget == 0 || byte_budget == 0 {
+        return Err(usage(
+            "cluster owner grant",
+            "request and byte budgets must be positive",
+        ));
+    }
+    Ok((issued_at, expires_at, request_budget, byte_budget))
+}
+
+fn fresh_grant_id() -> [u8; 16] {
+    let random = SecretKey::generate().to_bytes();
+    let mut grant_id = [0; 16];
+    grant_id.copy_from_slice(&random[..16]);
+    grant_id
+}
+
+fn workspace_paths(options: &Options) -> Result<backend_runtime::WorkspacePaths, Fault> {
+    backend_runtime::WorkspacePaths::discover(
+        options.project().cloned(),
+        options.workspace().cloned(),
+        options.endpoint().cloned(),
+    )
+    .map_err(|error| workspace_fault(options, error.to_string()))
+}
+
+fn client_key_path(options: &Options) -> Result<PathBuf, Fault> {
+    Ok(workspace_paths(options)?.data().join(REMOTE_CLIENT_FILE))
+}
+
+fn write_remote_capability(
+    path: &std::path::Path,
+    capability: &RemoteIndexCapability,
+) -> Result<(), Fault> {
+    let encoded = capability
+        .encode()
+        .map_err(|error| storage_fault(path, error.to_string()))?;
+    let mut bytes = Vec::with_capacity(REMOTE_CAPABILITY_MAGIC.len() + encoded.len());
+    bytes.extend_from_slice(REMOTE_CAPABILITY_MAGIC);
+    bytes.extend_from_slice(&encoded);
+    write_private_new(path, &bytes)
+}
+
+pub(crate) fn load_remote_capability(
+    path: &std::path::Path,
+) -> Result<RemoteIndexCapability, Fault> {
+    let bytes = read_bounded_file(
+        path,
+        backend_engine::cluster_transport::MAX_REMOTE_INDEX_AUTH_BYTES
+            + REMOTE_CAPABILITY_MAGIC.len(),
+    )?;
+    let payload = bytes
+        .strip_prefix(REMOTE_CAPABILITY_MAGIC.as_slice())
+        .ok_or_else(|| storage_fault(path, "invalid capability file header".to_owned()))?;
+    RemoteIndexCapability::decode(payload).map_err(|error| storage_fault(path, error.to_string()))
+}
+
+pub(crate) fn load_client_secret(path: &std::path::Path) -> Result<SecretKey, Fault> {
+    #[cfg(unix)]
+    {
+        let metadata =
+            fs::symlink_metadata(path).map_err(|error| storage_fault(path, error.to_string()))?;
+        if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o077 != 0 {
+            return Err(storage_fault(
+                path,
+                "client key file must be a private regular file with mode 0600".to_owned(),
+            ));
+        }
+    }
+    let bytes = read_bounded_file(path, REMOTE_CLIENT_MAGIC.len() + 32)?;
+    if bytes.len() != REMOTE_CLIENT_MAGIC.len() + 32
+        || bytes.get(..REMOTE_CLIENT_MAGIC.len()) != Some(REMOTE_CLIENT_MAGIC.as_slice())
+    {
+        return Err(storage_fault(path, "invalid client key file".to_owned()));
+    }
+    let secret: [u8; 32] = bytes[REMOTE_CLIENT_MAGIC.len()..]
+        .try_into()
+        .map_err(|_| storage_fault(path, "invalid client key length".to_owned()))?;
+    Ok(SecretKey::from_bytes(&secret))
+}
+
+fn read_bounded_file(path: &std::path::Path, maximum: usize) -> Result<Vec<u8>, Fault> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| storage_fault(path, error.to_string()))?;
+    if !metadata.file_type().is_file() || metadata.len() > maximum as u64 {
+        return Err(storage_fault(
+            path,
+            "file type or size is invalid".to_owned(),
+        ));
+    }
+    let mut file = File::open(path).map_err(|error| storage_fault(path, error.to_string()))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(maximum as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| storage_fault(path, error.to_string()))?;
+    if bytes.len() > maximum {
+        return Err(storage_fault(
+            path,
+            "file exceeded its size bound".to_owned(),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn write_private_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), Fault> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| storage_fault(path, error.to_string()))?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(path)
+        .map_err(|error| storage_fault(path, error.to_string()))?;
+    file.write_all(bytes)
+        .map_err(|error| storage_fault(path, error.to_string()))?;
+    file.sync_all()
+        .map_err(|error| storage_fault(path, error.to_string()))?;
+    #[cfg(unix)]
+    {
+        let mut permissions = file
+            .metadata()
+            .map_err(|error| storage_fault(path, error.to_string()))?
+            .permissions();
+        permissions.set_mode(0o600);
+        file.set_permissions(permissions)
+            .map_err(|error| storage_fault(path, error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn client_fault(error: impl std::fmt::Display) -> Fault {
+    Fault::new(
+        FaultSlug::Endpoint,
+        Operand::Text("remote index".to_owned()),
+        Cause::new(CauseSlug::Unreachable, error.to_string()),
+        Affordance::None,
+    )
+}
+
 fn invite_create(rest: &[String], options: &Options) -> Result<String, Fault> {
     let flags = parse_flags_with_required(
         rest,
@@ -609,6 +1423,14 @@ fn owner_path(options: &Options) -> Result<PathBuf, Fault> {
     Ok(paths.data().join(OWNER_FILE))
 }
 
+fn remote_usage_path(options: &Options) -> Result<PathBuf, Fault> {
+    let owner_path = owner_path(options)?;
+    let parent = owner_path
+        .parent()
+        .ok_or_else(|| storage_fault(&owner_path, "owner path has no parent".to_owned()))?;
+    Ok(parent.join("remote-index-grants.v1"))
+}
+
 fn trust_path(options: &Options) -> Result<PathBuf, Fault> {
     policy_path(options)
 }
@@ -706,12 +1528,12 @@ fn required<'value>(
         .ok_or_else(|| usage(format!("--{name}"), "a value is required"))
 }
 
-fn endpoint_id(value: &str) -> Result<EndpointId, Fault> {
+pub(crate) fn endpoint_id(value: &str) -> Result<EndpointId, Fault> {
     let bytes = fixed_hex::<32>(value)?;
     EndpointId::from_bytes(&bytes).map_err(|_| usage("--peer", "peer identity is invalid"))
 }
 
-fn socket_address(value: &str, operand: &str) -> Result<SocketAddr, Fault> {
+pub(crate) fn socket_address(value: &str, operand: &str) -> Result<SocketAddr, Fault> {
     value
         .parse::<SocketAddr>()
         .map_err(|_| usage(operand, "use a direct IP address and nonzero port"))

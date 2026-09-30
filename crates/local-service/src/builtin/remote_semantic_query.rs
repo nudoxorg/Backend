@@ -1,0 +1,1195 @@
+//! Capability-gated Iroh access to the existing local command and hydration APIs.
+
+use backend_client::{CommandTransport, UnixCommandTransport};
+use backend_engine::cluster_transport::{
+    MAX_REMOTE_INDEX_BODY_BYTES, RemoteIndexCapability, RemoteIndexChannel, RemoteIndexOutcome,
+    RemoteIndexReject, RemoteIndexRequest, RemoteIndexResponse, RemoteIndexSession,
+};
+use backend_library::{Command, CommandDto, CommandReply, decode_command_body, decode_reply_body};
+use backend_replication::{
+    LocalControlClient, LocalControlLimits, LocalControlRequest, LocalControlResponse,
+    SelectedGenerationStamp, SelectedSemanticImageChunk, SelectedSemanticImageGet,
+    SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet,
+    SemanticRangeChunk, SemanticRangeGet, SemanticTargetKey, decode_request, encode_response,
+};
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+const MAX_REMOTE_INDEX_CONNECTIONS: usize = 8;
+const MAX_REMOTE_INDEX_REQUESTS_PER_SESSION: u32 = 4_096;
+const MAX_REMOTE_INDEX_RESPONSE_BYTES: u64 = MAX_REMOTE_INDEX_BODY_BYTES as u64;
+const REMOTE_CONTROL_LIMITS: LocalControlLimits = LocalControlLimits {
+    max_frame: backend_replication::LOCAL_CONTROL_MAX_FRAME,
+    max_cursor: backend_replication::LOCAL_CONTROL_MAX_CURSOR,
+    max_error: backend_replication::LOCAL_CONTROL_MAX_ERROR,
+};
+const GRANT_USAGE_MAGIC: &[u8; 8] = b"BKRUGR01";
+const GRANT_USAGE_CHECKSUM_BYTES: usize = 32;
+const MAX_GRANT_USAGE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_GRANT_USAGE_ENTRIES: usize = 256;
+static NEXT_USAGE_TEMP: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct GrantUsage {
+    capability: RemoteIndexCapability,
+    requests: u32,
+    response_bytes: u64,
+    revoked: bool,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedGrantUsage {
+    version: u16,
+    owner: backend_engine::cluster_transport::EndpointId,
+    entries: BTreeMap<[u8; 16], GrantUsage>,
+}
+
+/// Public, key-free view of one owner-issued remote read grant.
+#[derive(Clone, Debug)]
+pub struct RemoteIndexGrantSummary {
+    /// Random grant identity printed by `cluster owner grant list`.
+    pub grant_id: [u8; 16],
+    /// Exact authorized Iroh client peer.
+    pub client: backend_engine::cluster_transport::EndpointId,
+    /// Expiry time in Unix milliseconds.
+    pub expires_at_unix_ms: u64,
+    /// Whether the owner has revoked this exact grant.
+    pub revoked: bool,
+    /// Cumulative admitted requests across reconnects and owner restarts.
+    pub requests: u32,
+    /// Signed request limit for this grant.
+    pub request_budget: u32,
+    /// Cumulative reserved response bytes across reconnects and owner restarts.
+    pub response_bytes: u64,
+    /// Signed response-byte limit for this grant.
+    pub byte_budget: u64,
+    /// Optional exact product root and operation scope.
+    pub product: Option<backend_engine::cluster_transport::RemoteIndexProductScope>,
+    /// Optional exact semantic target and selection scope.
+    pub semantic: Option<backend_engine::cluster_transport::RemoteIndexSemanticSelection>,
+}
+
+/// Durable owner-bound capability registry and cumulative budget meter.
+#[derive(Clone)]
+pub struct RemoteIndexUsage {
+    entries: Arc<Mutex<BTreeMap<[u8; 16], GrantUsage>>>,
+    path: Option<Arc<PathBuf>>,
+    owner: Option<backend_engine::cluster_transport::EndpointId>,
+    disabled: bool,
+}
+
+impl Default for RemoteIndexUsage {
+    fn default() -> Self {
+        Self {
+            entries: Arc::new(Mutex::new(BTreeMap::new())),
+            path: None,
+            owner: None,
+            disabled: false,
+        }
+    }
+}
+
+impl RemoteIndexUsage {
+    /// Opens the durable owner-bound capability registry and budget ledger.
+    pub fn open(
+        path: impl Into<PathBuf>,
+        owner: backend_engine::cluster_transport::EndpointId,
+    ) -> io::Result<Self> {
+        let path = path.into();
+        let _file_lock = lock_usage_ledger(&path)?;
+        let mut entries = read_usage_ledger(&path, owner)?;
+        let now = backend_engine::cluster_transport::remote_index_now()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        entries.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now);
+        let result = Self {
+            entries: Arc::new(Mutex::new(entries)),
+            path: Some(Arc::new(path)),
+            owner: Some(owner),
+            disabled: false,
+        };
+        {
+            let entries = result
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            result.persist(&entries)?;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn disabled() -> Self {
+        Self {
+            entries: Arc::new(Mutex::new(BTreeMap::new())),
+            path: None,
+            owner: None,
+            disabled: true,
+        }
+    }
+
+    /// Registers an exact owner-signed capability without resetting its existing meter.
+    pub fn register_capability(
+        &self,
+        capability: &RemoteIndexCapability,
+        now_ms: u64,
+    ) -> io::Result<()> {
+        if self.disabled {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger is disabled",
+            ));
+        }
+        let owner = self.owner.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger is not owner-bound",
+            )
+        })?;
+        capability
+            .verify(owner, capability.claims.client, now_ms)
+            .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+        let mut cached = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let path = self.path.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger has no durable path",
+            )
+        })?;
+        let _file_lock = lock_usage_ledger(path)?;
+        let mut entries = read_usage_ledger(path, owner)?;
+        entries.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now_ms);
+        let grant_id = capability.grant_id();
+        match entries.get(&grant_id) {
+            Some(existing) if existing.capability == *capability && !existing.revoked => {}
+            Some(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "grant identity is already registered or revoked",
+                ));
+            }
+            None if entries.len() >= MAX_GRANT_USAGE_ENTRIES => {
+                return Err(io::Error::other("remote-index grant registry is full"));
+            }
+            None => {
+                entries.insert(
+                    grant_id,
+                    GrantUsage {
+                        capability: capability.clone(),
+                        requests: 0,
+                        response_bytes: 0,
+                        revoked: false,
+                    },
+                );
+            }
+        }
+        self.persist(&entries)?;
+        *cached = entries;
+        Ok(())
+    }
+
+    /// Revokes one registered capability. Repeating a revoke is safe and returns `false`.
+    pub fn revoke(&self, grant_id: [u8; 16]) -> io::Result<bool> {
+        let owner = self.owner.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger is not owner-bound",
+            )
+        })?;
+        let mut cached = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let path = self.path.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger has no durable path",
+            )
+        })?;
+        let _file_lock = lock_usage_ledger(path)?;
+        let now = backend_engine::cluster_transport::remote_index_now()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        let mut entries = read_usage_ledger(path, owner)?;
+        entries.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now);
+        let grant = entries.get_mut(&grant_id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "active remote-index grant was not found",
+            )
+        })?;
+        if grant.capability.claims.server != owner {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "grant belongs to a different owner",
+            ));
+        }
+        let changed = !grant.revoked;
+        grant.revoked = true;
+        self.persist(&entries)?;
+        *cached = entries;
+        Ok(changed)
+    }
+
+    /// Lists current unexpired grant scopes and cumulative usage without exposing keys.
+    pub fn list(&self) -> io::Result<Vec<RemoteIndexGrantSummary>> {
+        let owner = self.owner.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger is not owner-bound",
+            )
+        })?;
+        let mut cached = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let path = self.path.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger has no durable path",
+            )
+        })?;
+        let _file_lock = lock_usage_ledger(path)?;
+        let now = backend_engine::cluster_transport::remote_index_now()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        let mut entries = read_usage_ledger(path, owner)?;
+        entries.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now);
+        let result = entries
+            .iter()
+            .map(|(grant_id, usage)| RemoteIndexGrantSummary {
+                grant_id: *grant_id,
+                client: usage.capability.claims.client,
+                expires_at_unix_ms: usage.capability.claims.expires_at_unix_ms,
+                revoked: usage.revoked,
+                requests: usage.requests,
+                request_budget: usage.capability.claims.request_budget,
+                response_bytes: usage.response_bytes,
+                byte_budget: usage.capability.claims.byte_budget,
+                product: usage.capability.claims.product.clone(),
+                semantic: usage.capability.claims.semantic.clone(),
+            })
+            .collect();
+        if entries.len() != cached.len()
+            || entries.iter().any(|(id, entry)| {
+                cached.get(id).map_or(true, |cached| {
+                    cached.capability != entry.capability
+                        || cached.revoked != entry.revoked
+                        || cached.requests != entry.requests
+                        || cached.response_bytes != entry.response_bytes
+                })
+            })
+        {
+            self.persist(&entries)?;
+        }
+        *cached = entries;
+        Ok(result)
+    }
+
+    fn charge_request(&self, capability: &RemoteIndexCapability) -> Result<(), RemoteIndexReject> {
+        if self.disabled {
+            return Err(RemoteIndexReject::OwnerUnavailable);
+        }
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner = self.owner.ok_or(RemoteIndexReject::OwnerUnavailable)?;
+        let path = self
+            .path
+            .as_deref()
+            .ok_or(RemoteIndexReject::OwnerUnavailable)?;
+        let _file_lock =
+            lock_usage_ledger(path).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+        let mut candidate =
+            read_usage_ledger(path, owner).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+        let now = backend_engine::cluster_transport::remote_index_now()
+            .map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+        candidate.retain(|_, usage| usage.capability.claims.expires_at_unix_ms > now);
+        let usage = candidate
+            .get_mut(&capability.claims.grant_id)
+            .ok_or(RemoteIndexReject::StaleCapability)?;
+        if usage.capability != *capability || usage.capability.claims.server != owner {
+            return Err(RemoteIndexReject::StaleCapability);
+        }
+        if usage.revoked {
+            return Err(RemoteIndexReject::CapabilityRevoked);
+        }
+        let next = usage.requests.saturating_add(1);
+        if next > capability.claims.request_budget || next > MAX_REMOTE_INDEX_REQUESTS_PER_SESSION {
+            return Err(RemoteIndexReject::ReplayOrBudget);
+        }
+        usage.requests = next;
+        self.persist(&candidate)
+            .map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+        *entries = candidate;
+        Ok(())
+    }
+
+    fn charge_response(
+        &self,
+        capability: &RemoteIndexCapability,
+        amount: usize,
+    ) -> Result<(), RemoteIndexReject> {
+        if self.disabled {
+            return Err(RemoteIndexReject::OwnerUnavailable);
+        }
+        let amount = u64::try_from(amount).map_err(|_| RemoteIndexReject::ReplayOrBudget)?;
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner = self.owner.ok_or(RemoteIndexReject::OwnerUnavailable)?;
+        let path = self
+            .path
+            .as_deref()
+            .ok_or(RemoteIndexReject::OwnerUnavailable)?;
+        let _file_lock =
+            lock_usage_ledger(path).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+        let mut candidate =
+            read_usage_ledger(path, owner).map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+        let usage = candidate
+            .get_mut(&capability.claims.grant_id)
+            .ok_or(RemoteIndexReject::StaleCapability)?;
+        if usage.capability != *capability || usage.capability.claims.server != owner {
+            return Err(RemoteIndexReject::StaleCapability);
+        }
+        if usage.revoked {
+            return Err(RemoteIndexReject::CapabilityRevoked);
+        }
+        let now = backend_engine::cluster_transport::remote_index_now()
+            .map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+        if capability.claims.expires_at_unix_ms <= now {
+            return Err(RemoteIndexReject::StaleCapability);
+        }
+        let next = usage
+            .response_bytes
+            .checked_add(amount)
+            .ok_or(RemoteIndexReject::ReplayOrBudget)?;
+        if next > capability.claims.byte_budget {
+            return Err(RemoteIndexReject::ReplayOrBudget);
+        }
+        usage.response_bytes = next;
+        self.persist(&candidate)
+            .map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
+        *entries = candidate;
+        Ok(())
+    }
+
+    fn persist(&self, entries: &BTreeMap<[u8; 16], GrantUsage>) -> io::Result<()> {
+        let Some(path) = self.path.as_deref() else {
+            return Ok(());
+        };
+        let owner = self.owner.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index grant ledger is not owner-bound",
+            )
+        })?;
+        let persisted = PersistedGrantUsage {
+            version: 1,
+            owner,
+            entries: entries.clone(),
+        };
+        let mut bytes = Vec::with_capacity(GRANT_USAGE_MAGIC.len() + entries.len() * 32);
+        bytes.extend_from_slice(GRANT_USAGE_MAGIC);
+        bytes.extend_from_slice(&postcard::to_allocvec(&persisted).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "remote-index usage serialization failed",
+            )
+        })?);
+        let checksum = blake3::hash(&bytes);
+        bytes.extend_from_slice(checksum.as_bytes());
+        if bytes.len() > MAX_GRANT_USAGE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "remote-index usage ledger is full",
+            ));
+        }
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let sequence = NEXT_USAGE_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), sequence));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let result = (|| {
+            let mut file = options.open(&temporary)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            #[cfg(unix)]
+            {
+                let mut permissions = file.metadata()?.permissions();
+                permissions.set_mode(0o600);
+                file.set_permissions(permissions)?;
+            }
+            fs::rename(&temporary, path)?;
+            #[cfg(unix)]
+            File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+}
+
+fn lock_usage_ledger(path: &Path) -> io::Result<File> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let lock_path = parent.join(format!("{name}.lock"));
+    match fs::symlink_metadata(&lock_path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "remote-index ledger lock has an invalid type",
+            ));
+        }
+        #[cfg(unix)]
+        Ok(metadata) if metadata.permissions().mode() & 0o777 != 0o600 => {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "remote-index ledger lock must have mode 0600",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let file = options.open(&lock_path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+fn read_usage_ledger(
+    path: &Path,
+    owner: backend_engine::cluster_transport::EndpointId,
+) -> io::Result<BTreeMap<[u8; 16], GrantUsage>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > MAX_GRANT_USAGE_BYTES as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote-index grant ledger has an invalid type or size",
+        ));
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o777 != 0o600 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "remote-index grant ledger must have mode 0600",
+        ));
+    }
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_GRANT_USAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_GRANT_USAGE_BYTES
+        || bytes.get(..GRANT_USAGE_MAGIC.len()) != Some(GRANT_USAGE_MAGIC.as_slice())
+        || bytes.len() < GRANT_USAGE_MAGIC.len() + GRANT_USAGE_CHECKSUM_BYTES
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote-index grant ledger header, truncation, or size is invalid",
+        ));
+    }
+    let content_end = bytes.len() - GRANT_USAGE_CHECKSUM_BYTES;
+    if blake3::hash(&bytes[..content_end]).as_bytes() != &bytes[content_end..] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote-index grant ledger checksum failed",
+        ));
+    }
+    let payload = &bytes[GRANT_USAGE_MAGIC.len()..content_end];
+    let persisted: PersistedGrantUsage = postcard::from_bytes(payload).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote-index grant ledger encoding is invalid",
+        )
+    })?;
+    let canonical = postcard::to_allocvec(&persisted).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote-index grant ledger could not be canonicalized",
+        )
+    })?;
+    if persisted.version != 1
+        || persisted.owner != owner
+        || persisted.entries.len() > MAX_GRANT_USAGE_ENTRIES
+        || canonical.as_slice() != payload
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote-index grant ledger version, owner, or contents are invalid",
+        ));
+    }
+    for (grant_id, usage) in &persisted.entries {
+        let capability = &usage.capability;
+        if capability.grant_id() != *grant_id
+            || capability.claims.server != owner
+            || usage.requests > capability.claims.request_budget
+            || usage.response_bytes > capability.claims.byte_budget
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "remote-index grant record does not match its signed scope or budgets",
+            ));
+        }
+        capability
+            .verify(
+                owner,
+                capability.claims.client,
+                capability.claims.issued_at_unix_ms,
+            )
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "remote-index grant signature failed ledger admission",
+                )
+            })?;
+    }
+    Ok(persisted.entries)
+}
+
+pub(crate) async fn serve_connection(
+    mut session: RemoteIndexSession,
+    local_endpoint: PathBuf,
+    usage: RemoteIndexUsage,
+) {
+    let capability = session.capability().clone();
+    let mut requests = 0_u32;
+    loop {
+        let request = match tokio::time::timeout(
+            backend_engine::cluster_transport::REMOTE_INDEX_SESSION_TIMEOUT,
+            session.receive_request(),
+        )
+        .await
+        {
+            Ok(Ok(request)) => request,
+            _ => return,
+        };
+        requests = requests.saturating_add(1);
+        let meter = usage.clone();
+        let request_capability = capability.clone();
+        let charged =
+            tokio::task::spawn_blocking(move || meter.charge_request(&request_capability))
+                .await
+                .unwrap_or(Err(RemoteIndexReject::OwnerUnavailable));
+        if requests > MAX_REMOTE_INDEX_REQUESTS_PER_SESSION || charged.is_err() {
+            let reason = charged.err().unwrap_or(RemoteIndexReject::ReplayOrBudget);
+            let _ = session
+                .send_response(&RemoteIndexResponse {
+                    request_id: request.request_id,
+                    outcome: RemoteIndexOutcome::Rejected(reason),
+                })
+                .await;
+            return;
+        }
+
+        let channel = session.channel();
+        let claims = capability.clone();
+        let endpoint = local_endpoint.clone();
+        let task = tokio::task::spawn_blocking(move || match channel {
+            RemoteIndexChannel::ProductQuery => serve_product_request(&endpoint, &claims, request),
+            RemoteIndexChannel::SemanticHydration => {
+                serve_semantic_request(&endpoint, &claims, request)
+            }
+        });
+        let response = match tokio::time::timeout(
+            backend_engine::cluster_transport::REMOTE_INDEX_SESSION_TIMEOUT,
+            task,
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            _ => return,
+        };
+        let encoded_len = match &response.outcome {
+            RemoteIndexOutcome::Payload(body) => body.len(),
+            _ => 48,
+        };
+        let meter = usage.clone();
+        let response_capability = capability.clone();
+        let charged = tokio::task::spawn_blocking(move || {
+            meter.charge_response(&response_capability, encoded_len)
+        })
+        .await
+        .unwrap_or(Err(RemoteIndexReject::OwnerUnavailable));
+        if encoded_len > MAX_REMOTE_INDEX_RESPONSE_BYTES as usize || charged.is_err() {
+            let reason = charged.err().unwrap_or(RemoteIndexReject::ReplayOrBudget);
+            let _ = session
+                .send_response(&RemoteIndexResponse {
+                    request_id: response.request_id,
+                    outcome: RemoteIndexOutcome::Rejected(reason),
+                })
+                .await;
+            return;
+        }
+        if session.send_response(&response).await.is_err() {
+            return;
+        }
+    }
+}
+
+fn serve_product_request(
+    endpoint: &Path,
+    capability: &RemoteIndexCapability,
+    request: RemoteIndexRequest,
+) -> RemoteIndexResponse {
+    let denied = || RemoteIndexResponse {
+        request_id: request.request_id,
+        outcome: RemoteIndexOutcome::Rejected(RemoteIndexReject::ScopeDenied),
+    };
+    let Some(scope) = capability.claims.product.as_ref() else {
+        return denied();
+    };
+    if request.body.len() > backend_library::MAX_COMMAND_BODY {
+        return invalid(request.request_id);
+    }
+    let command = match decode_command_body(&request.body) {
+        Ok(command) if command.request_id == request.request_id => command,
+        _ => return invalid(request.request_id),
+    };
+    let operation = match product_operation(&command.command) {
+        Some(operation) => operation,
+        None if matches!(command.command, Command::Revision) => None,
+        None => return denied(),
+    };
+    if operation.is_some_and(|operation| !scope.operations.contains(&operation)) {
+        return denied();
+    }
+    if let Some(basis) = product_basis(&command.command)
+        && basis.as_bytes() != &scope.view_root
+    {
+        return denied();
+    }
+
+    let revision = match product_revision(endpoint) {
+        Ok(revision) => revision,
+        Err(()) => return owner_unavailable(request.request_id),
+    };
+    let observed = revision.root().to_bytes();
+    if observed != scope.view_root {
+        return RemoteIndexResponse {
+            request_id: request.request_id,
+            outcome: RemoteIndexOutcome::StaleProductRoot {
+                expected: scope.view_root,
+                observed,
+            },
+        };
+    }
+    let mut transport = match UnixCommandTransport::connect(endpoint) {
+        Ok(transport) => transport,
+        Err(_) => return owner_unavailable(request.request_id),
+    };
+    let reply = match transport.request(command) {
+        Ok(reply) => reply,
+        Err(backend_client::ClientError::StaleCursor) => {
+            return RemoteIndexResponse {
+                request_id: request.request_id,
+                outcome: RemoteIndexOutcome::StaleProductRoot {
+                    expected: scope.view_root,
+                    observed,
+                },
+            };
+        }
+        Err(_) => return owner_unavailable(request.request_id),
+    };
+    // The typed command carries its exact grant-root basis, and locald admits
+    // that basis while executing it. Re-read the selected root after the
+    // command so a concurrent publication cannot be reported as a current
+    // result from this capability.
+    let after = match product_revision(endpoint) {
+        Ok(revision) => revision,
+        Err(()) => return owner_unavailable(request.request_id),
+    };
+    let after_root = after.root().to_bytes();
+    if after_root != scope.view_root {
+        return RemoteIndexResponse {
+            request_id: request.request_id,
+            outcome: RemoteIndexOutcome::StaleProductRoot {
+                expected: scope.view_root,
+                observed: after_root,
+            },
+        };
+    }
+    let body = match serde_json::to_vec(&reply) {
+        Ok(body) if !body.is_empty() && body.len() <= MAX_REMOTE_INDEX_BODY_BYTES => body,
+        _ => return owner_unavailable(request.request_id),
+    };
+    RemoteIndexResponse {
+        request_id: request.request_id,
+        outcome: RemoteIndexOutcome::Payload(body.into_boxed_slice()),
+    }
+}
+
+fn product_revision(endpoint: &Path) -> Result<backend_library::RevisionReceipt, ()> {
+    let mut transport = UnixCommandTransport::connect(endpoint).map_err(|_| ())?;
+    match transport
+        .request(CommandDto::new(1, Command::Revision))
+        .map_err(|_| ())?
+        .reply
+    {
+        CommandReply::Revision(revision) => Ok(revision),
+        _ => Err(()),
+    }
+}
+
+fn product_operation(
+    command: &Command,
+) -> Option<backend_engine::cluster_transport::RemoteIndexQueryOperation> {
+    use backend_engine::cluster_transport::RemoteIndexQueryOperation as Operation;
+    match command {
+        Command::Search(_) => Some(Operation::Search),
+        Command::Name(_) => Some(Operation::Names),
+        Command::Document(_) => Some(Operation::Document),
+        Command::Source(_) => Some(Operation::Source),
+        Command::Outline(_) | Command::OutlinePage { .. } => Some(Operation::Outline),
+        Command::Graph(_) | Command::GraphPage { .. } => Some(Operation::Graph),
+        Command::Related(_) => Some(Operation::Related),
+        _ => None,
+    }
+}
+
+fn product_basis(command: &Command) -> Option<backend_library::ViewRevision> {
+    match command {
+        Command::Search(query) => Some(query.basis()),
+        Command::Name(query) => Some(query.basis()),
+        Command::Document(query) | Command::Source(query) => Some(query.basis()),
+        Command::Outline(query) => Some(query.basis()),
+        Command::OutlinePage { page, .. } | Command::GraphPage { page, .. } => Some(page.basis()),
+        Command::Graph(query) | Command::Related(query) => Some(query.basis()),
+        _ => None,
+    }
+}
+
+fn serve_semantic_request(
+    endpoint: &Path,
+    capability: &RemoteIndexCapability,
+    request: RemoteIndexRequest,
+) -> RemoteIndexResponse {
+    let request_id = request.request_id;
+    let Some(scope) = capability.claims.semantic.as_ref() else {
+        return denied(request_id);
+    };
+    if request.body.len() > backend_replication::LOCAL_CONTROL_MAX_FRAME {
+        return invalid(request_id);
+    }
+    let local = match decode_request(&request.body, REMOTE_CONTROL_LIMITS) {
+        Ok(local) if local.request_id() == request.request_id => local,
+        Err(_) => return invalid(request_id),
+        _ => return invalid(request_id),
+    };
+    let permitted_bytes = match semantic_request_bytes(&local, scope) {
+        Some(bytes) => bytes,
+        None => return denied(request_id),
+    };
+    if permitted_bytes == 0 || permitted_bytes > MAX_REMOTE_INDEX_RESPONSE_BYTES {
+        return denied(request_id);
+    }
+    let mut client = match connect_local_control(endpoint) {
+        Ok(client) => client,
+        Err(_) => return owner_unavailable(request_id),
+    };
+    let response = match client.request(&local) {
+        Ok(response) => response,
+        Err(_) => return owner_unavailable(request_id),
+    };
+    let outcome = match admit_semantic_response(&local, response, scope) {
+        Ok(LocalControlResponse::SemanticStaleSelection { .. }) => {
+            RemoteIndexOutcome::StaleSemanticSelection
+        }
+        Ok(response) => match encode_response(&response, REMOTE_CONTROL_LIMITS) {
+            Ok(body) if !body.is_empty() && body.len() <= MAX_REMOTE_INDEX_BODY_BYTES => {
+                RemoteIndexOutcome::Payload(body.into_boxed_slice())
+            }
+            _ => RemoteIndexOutcome::Rejected(RemoteIndexReject::OwnerUnavailable),
+        },
+        Err(_) => RemoteIndexOutcome::Rejected(RemoteIndexReject::StaleCapability),
+    };
+    RemoteIndexResponse {
+        request_id,
+        outcome,
+    }
+}
+
+fn semantic_request_bytes(
+    request: &LocalControlRequest,
+    scope: &backend_engine::cluster_transport::RemoteIndexSemanticSelection,
+) -> Option<u64> {
+    match request {
+        LocalControlRequest::SemanticRangeGet { payload, .. } => {
+            let get = SemanticRangeGet::decode(payload).ok()?;
+            if get.request_id != request.request_id()
+                || !target_matches(&get.target, scope)
+                || !stamp_matches(get.selected_stamp, scope)
+            {
+                return None;
+            }
+            Some(get.byte_range.len)
+        }
+        LocalControlRequest::SemanticMetadataGet { payload, .. } => {
+            if let Ok(get) = SemanticCatalogGet::decode(payload) {
+                if get.request_id != request.request_id()
+                    || !target_matches(&get.target, scope)
+                    || get
+                        .selected_stamp
+                        .is_some_and(|stamp| !stamp_matches(stamp, scope))
+                    || get
+                        .catalog_root
+                        .is_some_and(|root| root.as_bytes() != &scope.catalog_root)
+                {
+                    return None;
+                }
+                Some(get.byte_range.len)
+            } else if let Ok(get) = SemanticManifestGet::decode(payload) {
+                if get.request_id != request.request_id()
+                    || !target_matches(&get.target, scope)
+                    || !stamp_matches(get.selected_stamp, scope)
+                    || get.catalog_root.as_bytes() != &scope.catalog_root
+                {
+                    return None;
+                }
+                Some(get.byte_range.len)
+            } else if let Ok(get) = SelectedSemanticImageGet::decode(payload) {
+                if get.request_id != request.request_id()
+                    || !target_matches(&get.target, scope)
+                    || !stamp_matches(get.selected_stamp, scope)
+                {
+                    return None;
+                }
+                Some(get.byte_range.len)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn admit_semantic_response(
+    request: &LocalControlRequest,
+    response: LocalControlResponse,
+    scope: &backend_engine::cluster_transport::RemoteIndexSemanticSelection,
+) -> Result<LocalControlResponse, ()> {
+    match (&response, request) {
+        (
+            LocalControlResponse::SemanticStaleSelection { .. },
+            LocalControlRequest::SemanticRangeGet { .. }
+            | LocalControlRequest::SemanticMetadataGet { .. },
+        ) => Ok(response),
+        (
+            LocalControlResponse::SemanticRangeChunk { payload, .. },
+            LocalControlRequest::SemanticRangeGet {
+                payload: get_bytes, ..
+            },
+        ) => {
+            let get = SemanticRangeGet::decode(get_bytes).map_err(|_| ())?;
+            let chunk = SemanticRangeChunk::decode(payload).map_err(|_| ())?;
+            if get.request_id != request.request_id()
+                || !stamp_matches(chunk.selected_stamp, scope)
+                || chunk.request_id != get.request_id
+                || chunk.byte_range != get.byte_range
+            {
+                return Err(());
+            }
+            Ok(response)
+        }
+        (
+            LocalControlResponse::SemanticMetadataChunk { payload, .. },
+            LocalControlRequest::SemanticMetadataGet {
+                payload: get_bytes, ..
+            },
+        ) => {
+            let exact = if let Ok(get) = SemanticCatalogGet::decode(get_bytes) {
+                let chunk = SemanticCatalogChunk::decode(payload).map_err(|_| ())?;
+                get.request_id == request.request_id()
+                    && target_matches(&chunk.target, scope)
+                    && stamp_matches(chunk.selected_stamp, scope)
+                    && chunk.catalog_root.as_bytes() == &scope.catalog_root
+                    && chunk.request_id == get.request_id
+                    && chunk.byte_range == get.byte_range
+            } else if let Ok(get) = SemanticManifestGet::decode(get_bytes) {
+                let chunk = SemanticManifestChunk::decode(payload).map_err(|_| ())?;
+                get.request_id == request.request_id()
+                    && target_matches(&chunk.target, scope)
+                    && stamp_matches(chunk.selected_stamp, scope)
+                    && chunk.catalog_root.as_bytes() == &scope.catalog_root
+                    && chunk.request_id == get.request_id
+                    && chunk.byte_range == get.byte_range
+            } else if let Ok(get) = SelectedSemanticImageGet::decode(get_bytes) {
+                let chunk = SelectedSemanticImageChunk::decode(payload).map_err(|_| ())?;
+                get.request_id == request.request_id()
+                    && target_matches(&chunk.target, scope)
+                    && stamp_matches(chunk.selected_stamp, scope)
+                    && chunk.request_id == get.request_id
+                    && chunk.byte_range == get.byte_range
+            } else {
+                false
+            };
+            if exact { Ok(response) } else { Err(()) }
+        }
+        _ => Err(()),
+    }
+}
+
+fn target_matches(
+    target: &SemanticTargetKey,
+    scope: &backend_engine::cluster_transport::RemoteIndexSemanticSelection,
+) -> bool {
+    target.package() == scope.package
+        && target.coordinate() == scope.coordinate
+        && <[u8; 2]>::from(target.profile()) == scope.profile
+}
+
+fn stamp_matches(
+    stamp: SelectedGenerationStamp,
+    scope: &backend_engine::cluster_transport::RemoteIndexSemanticSelection,
+) -> bool {
+    stamp.namespace() == &scope.namespace
+        && <[u8; 2]>::from(stamp.profile()) == scope.profile
+        && stamp.source_coordinate() == &scope.source_coordinate
+        && stamp.selection_revision() == scope.selection_revision
+        && stamp.selected_root() == &scope.selected_root
+        && stamp.closure_id() == &scope.closure_id
+        && stamp.catalog_root().as_bytes() == &scope.catalog_root
+}
+
+fn connect_local_control(
+    endpoint: &Path,
+) -> Result<LocalControlClient<backend_replication::LocalStream>, io::Error> {
+    let endpoint_ref = backend_replication::UnixEndpointRef::new(endpoint)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid local endpoint"))?;
+    let stream = backend_replication::LocalStream::connect(endpoint_ref.as_path())?;
+    backend_replication::AuthenticatedLocalPeer::authenticate(&stream, endpoint_ref.as_path())
+        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+    Ok(LocalControlClient::new(stream, REMOTE_CONTROL_LIMITS))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use backend_engine::cluster_transport::{
+        RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexPermission,
+        RemoteIndexProductScope, RemoteIndexQueryOperation, SecretKey,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch(label: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "backend-remote-index-usage-{label}-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("scratch directory");
+        path
+    }
+
+    fn capability(request_budget: u32, byte_budget: u64) -> RemoteIndexCapability {
+        let owner = SecretKey::from_bytes(&[51; 32]);
+        let client = SecretKey::from_bytes(&[52; 32]);
+        let now = backend_engine::cluster_transport::remote_index_now().expect("current time");
+        RemoteIndexCapabilityIssuer::new(owner)
+            .issue(
+                RemoteIndexCapabilityClaims {
+                    version: 1,
+                    server: owner.public(),
+                    client: client.public(),
+                    grant_id: [53; 16],
+                    issued_at_unix_ms: now,
+                    expires_at_unix_ms: now + 60_000,
+                    request_budget,
+                    byte_budget,
+                    permissions: vec![RemoteIndexPermission::ProductRead],
+                    product: Some(RemoteIndexProductScope {
+                        view_root: [54; 32],
+                        operations: vec![RemoteIndexQueryOperation::Search],
+                    }),
+                    semantic: None,
+                },
+                now,
+            )
+            .expect("signed test grant")
+    }
+
+    #[test]
+    fn grant_budgets_survive_ledger_cold_reopen_and_corruption_fails_closed() {
+        let root = scratch("restart");
+        let path = root.join("remote-index-grants.v1");
+        let capability = capability(2, 10);
+        let owner = capability.claims.server;
+        let usage = RemoteIndexUsage::open(&path, owner).expect("fresh ledger");
+        usage
+            .register_capability(&capability, capability.claims.issued_at_unix_ms)
+            .expect("register signed grant");
+        usage.charge_request(&capability).expect("first request");
+        usage
+            .charge_response(&capability, 8)
+            .expect("reserve bytes");
+        drop(usage);
+
+        let reopened = RemoteIndexUsage::open(&path, owner).expect("cold-reopened ledger");
+        assert!(
+            RemoteIndexUsage::open(
+                &path,
+                backend_engine::cluster_transport::SecretKey::from_bytes(&[99; 32]).public(),
+            )
+            .is_err()
+        );
+        reopened
+            .charge_request(&capability)
+            .expect("second request");
+        assert_eq!(
+            reopened.charge_request(&capability),
+            Err(RemoteIndexReject::ReplayOrBudget)
+        );
+        assert_eq!(
+            reopened.charge_response(&capability, 3),
+            Err(RemoteIndexReject::ReplayOrBudget)
+        );
+        drop(reopened);
+
+        let mut bytes = fs::read(&path).expect("read ledger");
+        let index = bytes.len().saturating_sub(GRANT_USAGE_CHECKSUM_BYTES + 1);
+        bytes[index] ^= 0x80;
+        fs::write(&path, bytes).expect("corrupt ledger fixture");
+        assert!(RemoteIndexUsage::open(&path, owner).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_grant_revocation_survives_cold_reopen_and_is_idempotent() {
+        let root = scratch("revoke");
+        let path = root.join("remote-index-grants.v1");
+        let capability = capability(4, 64);
+        let owner = capability.claims.server;
+        let usage = RemoteIndexUsage::open(&path, owner).expect("fresh ledger");
+        usage
+            .register_capability(&capability, capability.claims.issued_at_unix_ms)
+            .expect("register signed grant");
+        assert!(usage.revoke(capability.grant_id()).expect("revoke grant"));
+        drop(usage);
+
+        let reopened = RemoteIndexUsage::open(&path, owner).expect("reopen revoked ledger");
+        assert_eq!(
+            reopened.charge_request(&capability),
+            Err(RemoteIndexReject::CapabilityRevoked)
+        );
+        assert_eq!(
+            reopened.charge_response(&capability, 1),
+            Err(RemoteIndexReject::CapabilityRevoked)
+        );
+        assert!(
+            !reopened
+                .revoke(capability.grant_id())
+                .expect("repeat revoke")
+        );
+        let grants = reopened.list().expect("list grant");
+        assert_eq!(grants.len(), 1);
+        assert!(grants[0].revoked);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn independent_usage_handles_serialize_request_reservations() {
+        let root = scratch("concurrent");
+        let path = root.join("remote-index-grants.v1");
+        let capability = capability(20, 1_024);
+        let owner = capability.claims.server;
+        let first = RemoteIndexUsage::open(&path, owner).expect("fresh ledger");
+        first
+            .register_capability(&capability, capability.claims.issued_at_unix_ms)
+            .expect("register signed grant");
+        let second = RemoteIndexUsage::open(&path, owner).expect("independent ledger handle");
+        let test_capability = capability.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let first_barrier = Arc::clone(&barrier);
+        let first_capability = capability.clone();
+        let first_thread = std::thread::spawn(move || {
+            first_barrier.wait();
+            for _ in 0..10 {
+                first
+                    .charge_request(&first_capability)
+                    .expect("first handle reservation");
+            }
+        });
+        let second_barrier = Arc::clone(&barrier);
+        let second_thread = std::thread::spawn(move || {
+            second_barrier.wait();
+            for _ in 0..10 {
+                second
+                    .charge_request(&capability)
+                    .expect("second handle reservation");
+            }
+        });
+        barrier.wait();
+        first_thread.join().expect("first reservation thread");
+        second_thread.join().expect("second reservation thread");
+        let current = RemoteIndexUsage::open(&path, owner).expect("cold-read final ledger");
+        let grants = current.list().expect("read grant usage");
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].requests, 20);
+        assert_eq!(
+            current.charge_request(&test_capability),
+            Err(RemoteIndexReject::ReplayOrBudget)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+fn denied(request_id: u64) -> RemoteIndexResponse {
+    RemoteIndexResponse {
+        request_id,
+        outcome: RemoteIndexOutcome::Rejected(RemoteIndexReject::ScopeDenied),
+    }
+}
+
+fn invalid(request_id: u64) -> RemoteIndexResponse {
+    RemoteIndexResponse {
+        request_id,
+        outcome: RemoteIndexOutcome::Rejected(RemoteIndexReject::InvalidRequest),
+    }
+}
+
+fn owner_unavailable(request_id: u64) -> RemoteIndexResponse {
+    RemoteIndexResponse {
+        request_id,
+        outcome: RemoteIndexOutcome::Rejected(RemoteIndexReject::OwnerUnavailable),
+    }
+}
+
+pub(crate) fn connection_slots() -> Arc<tokio::sync::Semaphore> {
+    static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    Arc::clone(
+        SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_REMOTE_INDEX_CONNECTIONS))),
+    )
+}

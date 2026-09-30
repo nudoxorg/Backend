@@ -2,20 +2,21 @@
 
 This runbook installs one durable index owner and one or more compiler workers
 on private Linux or macOS machines. The owner serves local CLI and MCP through
-a Unix socket with mode `0600`; clients must run as the same effective user as
-locald. On a headless index host, that is the `nudox-index` service account.
-The desktop application runs a local owner under the launching login account,
-so it cannot attach to the separate headless service UID. A remote desktop
-client or proxy is not shipped. Iroh carries authenticated compiler
-assignments and results over direct UDP.
+a Unix socket with mode `0600`; local clients must run as the same effective
+user as locald. On a headless index host, that is the `nudox-index` service
+account. The desktop application runs a local owner under the launching login
+account, so it cannot attach to the separate headless service UID. Iroh also
+serves explicitly granted, read-only remote queries and semantic hydration
+over direct UDP; this is a separate signed-capability path and does not expose
+the Unix socket.
 
-The current cluster is a compiler-result path, not a remotely queryable index
-cluster. Iroh has no relay, public peer discovery, DNS lookup, or remote client
-query endpoint. A desktop app launched under a normal user account uses that
-user's local owner; it does not query the headless service. A workspace
-snapshot is not an OS sandbox: a grant authorizes coordinator-selected host
-execution. Use a dedicated service account and operating-system isolation
-appropriate to the compiler inputs you accept.
+Iroh has no relay, public peer discovery, or DNS lookup. Remote index clients
+need the owner's peer ID and direct advertised IP address. A desktop app
+launched under a normal user account uses that user's local owner; it does not
+automatically query the headless service. A workspace snapshot is not an OS
+sandbox: a compiler grant authorizes coordinator-selected host execution. Use
+a dedicated service account and operating-system isolation appropriate to the
+compiler inputs you accept.
 
 The Rust `ir-vcs` API computes borrowed snapshots and deltas over the
 canonical `Ir`/`SemanticReader`; it is not an Iroh query protocol.
@@ -31,6 +32,100 @@ segments are retained under the configured client store. S3 remains one possible
 location for immutable compiler objects: local clients use the same owner
 endpoint whether the owner reads an object from its disk CAS or S3, and the
 worker never receives the owner's S3 credentials.
+
+### Set up a remote read-only index client
+
+Create the client identity on the machine that will run the client. The key
+file stays private to that machine; the command prints only its public peer ID.
+Share that ID with the index owner. The owner must have locald running to read
+the current product root or semantic selection before signing a grant.
+
+```sh
+backend --workspace "$CLIENT_DATA" cluster client init --key-file "$CLIENT_DATA/remote-index-client.v1"
+```
+
+On the owner, issue a grant for one product view root and a closed set of
+operations. Copy the signed capability file to the client using your existing
+authenticated file-transfer channel. The capability is bound to the client
+peer ID and contains no private key.
+
+```sh
+backend --workspace "$OWNER_DATA" --project "$PROJECT" \
+  cluster owner grant product create \
+  --client-peer "$CLIENT_PEER" \
+  --capability-file "$OWNER_DATA/product-read.cap" \
+  --operations search,names,document,source,outline,graph,related
+```
+
+Connect and run the same proof-admitting product query API used by local
+clients. `--owner-peer` is the endpoint ID from `cluster owner show`;
+`--owner-address` is its direct advertised IP address and UDP port. `connect`
+sends a real bounded request and reports the grant scope without printing
+keys.
+
+```sh
+backend --workspace "$CLIENT_DATA" cluster client connect \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/product-read.cap"
+backend --workspace "$CLIENT_DATA" cluster client query \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/product-read.cap" \
+  --operation search --value cluster_deploy_smoke --limit 20
+```
+
+The owner checks the exact selected product root before and after each query;
+the typed command also carries that root as its basis. If publication changes
+the root during a query, the client receives a stale-root result and must
+request a new grant. Grants also have request, response-byte, and expiry
+bounds. Restrict inbound UDP to the client's network and keep the owner peer
+ID and advertised address together when configuring clients.
+
+The owner keeps an owner-bound, checksummed grant ledger under its private
+workspace. Review active and revoked grants with `cluster owner grant list`;
+revoke one client without rotating the owner identity with
+`cluster owner grant revoke --grant-id GRANT_ID`. Revocation survives owner
+restart, blocks newly admitted requests, and prevents a response that has not
+yet been sent. A corrupt ledger disables remote reads while local CLI, MCP,
+and compiler operation remain available.
+
+For semantic hydration, the owner creates a grant only after it has admitted
+the current catalog for the exact package, coordinate, and language profile.
+The grant is bound to the selection revision, source coordinate, selected
+root, closure, and catalog root. On the client, `semantic-catalog` opens the
+same bounded remote semantic channel used by
+`LocalSemanticIndexClient::connect_remote`; the API then uses the existing
+manifest, image, range-resume, Bao verification, and durable checkpoint
+operations. The local `semantic-hydrate` command above continues to use the
+Unix endpoint unless all remote connection flags are supplied; remote mode
+uses that same client API and durable range checkpoint.
+
+```sh
+backend --workspace "$OWNER_DATA" --project "$PROJECT" \
+  cluster owner grant semantic create \
+  --client-peer "$CLIENT_PEER" \
+  --capability-file "$OWNER_DATA/semantic-read.cap" \
+  --package 'pkg:cargo/my-app@1.2.3' \
+  --coordinate 'pkg:cargo/my-app@1.2.3' --profile rust-2024
+backend --workspace "$CLIENT_DATA" cluster client semantic-catalog \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/semantic-read.cap"
+backend semantic-hydrate \
+  --package 'pkg:cargo/my-app@1.2.3' \
+  --coordinate 'pkg:cargo/my-app@1.2.3' --profile rust-2024 \
+  --image-ordinal "$IMAGE_ORDINAL" --plane core \
+  --store "$CLIENT_DATA/my-app-semantic-cas" \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/semantic-read.cap"
+```
+
+If the product root or semantic selection changes, the old grant is stale;
+issue a new grant for the new selection. Product and semantic capabilities
+are read-only and independently scoped. They do not authorize compiler
+execution, publication, owner administration, or arbitrary local commands.
 
 Rust declaration documentation follows rust-analyzer's Rustdoc expansion for
 active `#[doc = include_str!("relative/path")]` attributes, including repeated

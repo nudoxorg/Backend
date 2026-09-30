@@ -6,11 +6,15 @@
 #![forbid(unsafe_code)]
 
 #[cfg(any(unix, windows))]
+mod remote_command;
+#[cfg(any(unix, windows))]
 mod semantic_range_local;
 mod subscription;
 #[cfg(any(unix, windows))]
 mod subscription_local;
 
+#[cfg(any(unix, windows))]
+pub use remote_command::RemoteIndexCommandTransport;
 #[cfg(any(unix, windows))]
 pub use semantic_range_local::{
     LocalSemanticIndexClient, LocalSemanticRangeTransport, SemanticCatalogSnapshot,
@@ -95,6 +99,17 @@ pub enum ClientError {
     StaleCursor,
     /// The exact selected semantic generation changed during a read or range admission.
     StaleSelection,
+    /// The signed remote grant names a product root that is no longer selected.
+    StaleRemoteRoot {
+        /// Exact view root authorized by the grant.
+        expected: [u8; 32],
+        /// Current owner view root.
+        observed: [u8; 32],
+    },
+    /// The owner rejected an expired or replaced remote grant.
+    StaleRemoteCapability,
+    /// The owner revoked this exact remote grant.
+    RemoteCapabilityRevoked,
 }
 
 impl fmt::Display for ClientError {
@@ -122,6 +137,15 @@ impl fmt::Display for ClientError {
             Self::StaleSelection => {
                 formatter.write_str("selected semantic generation is no longer current")
             }
+            Self::StaleRemoteRoot { .. } => {
+                formatter.write_str("remote grant is stale; renew it for the current view root")
+            }
+            Self::StaleRemoteCapability => {
+                formatter.write_str("remote grant is stale or expired; renew the grant")
+            }
+            Self::RemoteCapabilityRevoked => {
+                formatter.write_str("remote grant was revoked by its owner")
+            }
         }
     }
 }
@@ -135,6 +159,14 @@ pub trait CommandTransport {
     /// # Errors
     /// Returns a transport, protocol, correlation, or freshness error.
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError>;
+
+    /// Replaces the underlying connection while retaining this transport's endpoint and grant.
+    ///
+    /// Connectionless transports may keep their existing state. Implementations that own a
+    /// socket or remote session should open a fresh authenticated session here.
+    fn reconnect(&mut self) -> Result<(), ClientError> {
+        Ok(())
+    }
 }
 
 /// Command transport with an explicit coverage-capability path.
@@ -191,6 +223,7 @@ impl<E: LocalEngine + ?Sized> CertifiedCommandTransport for InProcessTransport<'
 pub struct UnixCommandTransport {
     stream: backend_replication::LocalStream,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
+    endpoint: Option<std::path::PathBuf>,
 }
 
 #[cfg(any(unix, windows))]
@@ -211,6 +244,7 @@ impl UnixCommandTransport {
         Ok(Self {
             stream,
             peer: Some(peer),
+            endpoint: Some(path.to_path_buf()),
         })
     }
 
@@ -218,7 +252,11 @@ impl UnixCommandTransport {
     #[must_use]
     pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
         let _ = configure(&stream);
-        Self { stream, peer: None }
+        Self {
+            stream,
+            peer: None,
+            endpoint: None,
+        }
     }
 
     /// Decodes one reply against a caller-owned exact expectation.
@@ -258,6 +296,16 @@ impl CommandTransport for UnixCommandTransport {
         let reply = self.decode(&body)?;
         admit_reply(&request, reply)
     }
+
+    fn reconnect(&mut self) -> Result<(), ClientError> {
+        let endpoint = self.endpoint.clone().ok_or_else(|| {
+            ClientError::Protocol(
+                "stream-backed command transport has no reconnect endpoint".to_owned(),
+            )
+        })?;
+        *self = Self::connect(endpoint)?;
+        Ok(())
+    }
 }
 
 #[cfg(any(unix, windows))]
@@ -289,7 +337,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 #[cfg(any(unix, windows))]
 pub struct Session {
     endpoint: std::path::PathBuf,
-    transport: UnixCommandTransport,
+    transport: Box<dyn CommandTransport>,
     next_request_id: u64,
     continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
 }
@@ -336,11 +384,24 @@ impl Session {
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, ClientError> {
         let endpoint = path.as_ref().to_path_buf();
         Ok(Self {
-            transport: UnixCommandTransport::connect(&endpoint)?,
+            transport: Box::new(UnixCommandTransport::connect(&endpoint)?),
             endpoint,
             next_request_id: 1,
             continuations: BTreeMap::new(),
         })
+    }
+
+    /// Builds the same revision-aware product session over another admitted command transport.
+    pub fn from_transport(
+        endpoint: impl Into<std::path::PathBuf>,
+        transport: impl CommandTransport + 'static,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            transport: Box::new(transport),
+            next_request_id: 1,
+            continuations: BTreeMap::new(),
+        }
     }
 
     /// Returns the endpoint this session was connected to.
@@ -431,7 +492,7 @@ impl Session {
     /// Returns an error when the endpoint is unavailable or cannot
     /// authenticate.
     pub fn reconnect(&mut self) -> Result<(), ClientError> {
-        self.transport = UnixCommandTransport::connect(&self.endpoint)?;
+        self.transport.reconnect()?;
         self.next_request_id = 1;
         Ok(())
     }

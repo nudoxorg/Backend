@@ -104,6 +104,17 @@ pub use probe::{
     ProbeObjectClaim, ProbeResourceCredits, ProbeRole, ProbeWorkerSnapshot,
     accept_probe_connection, connect_probe, probe_inventory_descriptor,
 };
+mod remote_index;
+pub use remote_index::{
+    MAX_REMOTE_INDEX_AUTH_BYTES, MAX_REMOTE_INDEX_BODY_BYTES, MAX_REMOTE_INDEX_BYTES,
+    MAX_REMOTE_INDEX_FRAME_BYTES, MAX_REMOTE_INDEX_GRANT_LIFETIME_MS, MAX_REMOTE_INDEX_REQUESTS,
+    MAX_REMOTE_INDEX_TARGET_BYTES, REMOTE_INDEX_ALPN, REMOTE_INDEX_SESSION_TIMEOUT,
+    RemoteIndexCapability, RemoteIndexCapabilityClaims, RemoteIndexCapabilityError,
+    RemoteIndexCapabilityIssuer, RemoteIndexChannel, RemoteIndexOutcome, RemoteIndexPermission,
+    RemoteIndexProductScope, RemoteIndexQueryOperation, RemoteIndexReject, RemoteIndexRequest,
+    RemoteIndexResponse, RemoteIndexSemanticSelection, RemoteIndexSession, RemoteIndexSessionHello,
+    accept_remote_index, connect_remote_index, remote_index_now, remote_index_owner_address,
+};
 
 /// Raw BLAKE3 digest of immutable payload bytes used by Bao.
 ///
@@ -2626,6 +2637,7 @@ pub async fn bind_direct(
             ALPN.to_vec(),
             CONTROL_ALPN.to_vec(),
             PROBE_ALPN.to_vec(),
+            REMOTE_INDEX_ALPN.to_vec(),
         ])
         .relay_mode(RelayMode::Disabled)
         .clear_address_lookup()
@@ -2681,6 +2693,37 @@ pub enum AcceptedClusterConnection {
     Artifact(ArtifactConnection),
     /// Authenticated compiler Have/capacity probe on the probe ALPN.
     Probe(ProbeConnection),
+    /// Signed-capability-gated query and hydration connection.
+    RemoteIndex(RemoteIndexConnection),
+}
+
+/// Remote-index ALPN selected by Iroh but not yet authorized by its signed client grant.
+pub struct RemoteIndexConnection {
+    connection: Connection,
+    local: EndpointId,
+}
+
+impl fmt::Debug for RemoteIndexConnection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RemoteIndexConnection")
+            .field("local", &self.local)
+            .field("peer", &self.connection.remote_id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl RemoteIndexConnection {
+    /// Authenticated Iroh peer identity. Application access still requires a valid grant.
+    #[must_use]
+    pub fn peer(&self) -> EndpointId {
+        self.connection.remote_id()
+    }
+
+    /// Verifies the owner-signed capability and opens the bounded request channel.
+    pub async fn accept(self) -> Result<RemoteIndexSession, TransportError> {
+        accept_remote_index(self.connection, self.local).await
+    }
 }
 
 /// An authenticated inbound probe connection selected by the ALPN dispatcher.
@@ -2960,6 +3003,11 @@ impl ClusterListener {
                                     local,
                                 }))
                             }
+                        }
+                        Ok(connection) if connection.alpn() == REMOTE_INDEX_ALPN => {
+                            Ok(AcceptedClusterConnection::RemoteIndex(
+                                RemoteIndexConnection { connection, local },
+                            ))
                         }
                         Ok(connection) => {
                             connection.close(1_u32.into(), b"unsupported cluster ALPN");
@@ -3429,9 +3477,17 @@ async fn write_frame<T: Serialize>(
     stream: &mut SendStream,
     value: &T,
 ) -> Result<(), TransportError> {
+    write_frame_bounded(stream, value, MAX_CONTROL_FRAME).await
+}
+
+async fn write_frame_bounded<T: Serialize>(
+    stream: &mut SendStream,
+    value: &T,
+    max_bytes: usize,
+) -> Result<(), TransportError> {
     let bytes = postcard::to_allocvec(value).map_err(frame_error)?;
-    if bytes.len() > MAX_CONTROL_FRAME {
-        return Err(TransportError::Frame("control frame exceeds limit".into()));
+    if max_bytes == 0 || bytes.is_empty() || bytes.len() > max_bytes {
+        return Err(TransportError::Frame("framed message exceeds limit".into()));
     }
     let len = u32::try_from(bytes.len())
         .map_err(|_| TransportError::Frame("control frame length overflow".into()))?;
@@ -3447,15 +3503,22 @@ async fn write_frame<T: Serialize>(
 }
 
 async fn read_frame<T: DeserializeOwned>(stream: &mut RecvStream) -> Result<T, TransportError> {
+    read_frame_bounded(stream, MAX_CONTROL_FRAME).await
+}
+
+async fn read_frame_bounded<T: DeserializeOwned>(
+    stream: &mut RecvStream,
+    max_bytes: usize,
+) -> Result<T, TransportError> {
     let mut prefix = [0_u8; 4];
     stream
         .read_exact(&mut prefix)
         .await
         .map_err(|error| TransportError::Iroh(error.to_string()))?;
     let len = u32::from_be_bytes(prefix) as usize;
-    if len == 0 || len > MAX_CONTROL_FRAME {
+    if max_bytes == 0 || len == 0 || len > max_bytes {
         return Err(TransportError::Frame(
-            "control frame length is invalid".into(),
+            "framed message length is invalid".into(),
         ));
     }
     let mut bytes = vec![0; len];

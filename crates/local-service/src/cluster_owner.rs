@@ -1,6 +1,9 @@
 //! Persisted direct-only identity and addressing for the local compiler owner.
 
-use backend_engine::cluster_transport::{EndpointId, ScopedClusterInvite, SecretKey};
+use backend_engine::cluster_transport::{
+    EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims, RemoteIndexCapabilityError,
+    RemoteIndexCapabilityIssuer, ScopedClusterInvite, SecretKey,
+};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -113,6 +116,15 @@ impl ClusterOwnerConfig {
             backend_engine::cluster_transport::ClusterExecutionClass::TrustedCoordinatorHostExecution,
         )
         .map_err(|_| ClusterOwnerConfigError::InvalidInvite)
+    }
+
+    /// Issues a read-only remote index grant without exposing the signing key.
+    pub fn issue_remote_index_capability(
+        &self,
+        claims: RemoteIndexCapabilityClaims,
+        now_ms: u64,
+    ) -> Result<RemoteIndexCapability, RemoteIndexCapabilityError> {
+        RemoteIndexCapabilityIssuer::new(self.secret_key()).issue(claims, now_ms)
     }
 
     fn encode(&self) -> Result<Vec<u8>, ClusterOwnerConfigError> {

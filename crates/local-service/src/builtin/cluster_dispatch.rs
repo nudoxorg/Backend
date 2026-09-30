@@ -5,6 +5,7 @@
 //! are kept together here so the local index path can hand Turso's exact attempt to one checked
 //! state machine.
 
+use super::remote_semantic_query::{self, RemoteIndexUsage};
 use crate::cluster_owner::{ClusterOwnerConfig, ClusterOwnerConfigError};
 use crate::compiler_trust::{
     CompilerTrustError, TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerGrant,
@@ -1996,6 +1997,8 @@ async fn run_owner_cluster_ingress(
     mut listener: ClusterListener,
     ingress: OwnerClusterIngress,
     artifact_state: ServerState,
+    local_endpoint: PathBuf,
+    remote_index_usage: RemoteIndexUsage,
 ) {
     let artifact_slots = Arc::new(tokio::sync::Semaphore::new(MAX_CLUSTER_ARTIFACT_SERVERS));
     let control_slots = Arc::new(tokio::sync::Semaphore::new(MAX_CLUSTER_CONTROL_CONNECTIONS));
@@ -2034,6 +2037,20 @@ async fn run_owner_cluster_ingress(
                     let _ = connection.serve(&state).await;
                 });
             }
+            Ok(AcceptedClusterConnection::RemoteIndex(connection)) => {
+                let permit = match remote_semantic_query::connection_slots().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => continue,
+                };
+                let endpoint = local_endpoint.clone();
+                let usage = remote_index_usage.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Ok(session) = connection.accept().await {
+                        remote_semantic_query::serve_connection(session, endpoint, usage).await;
+                    }
+                });
+            }
             Ok(AcceptedClusterConnection::Probe(_)) | Err(_) => {}
         }
     }
@@ -2064,6 +2081,7 @@ impl OwnerCompilerClusterRuntime {
         trust_policy_path: impl Into<PathBuf>,
         outboard_path: impl Into<PathBuf>,
         checkpoint_root: impl Into<PathBuf>,
+        local_endpoint: PathBuf,
     ) -> Result<Self, ClusterDispatchError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -2121,6 +2139,19 @@ impl OwnerCompilerClusterRuntime {
         )?;
         let admission_registry = OwnerClusterAdmissionRegistry::default();
         let ingress = OwnerClusterIngress::new(admission_registry.clone());
+        let usage_path = trust_policy_path
+            .parent()
+            .ok_or_else(|| ClusterDispatchError::Transport("trust path has no parent".into()))?
+            .join("remote-index-grants.v1");
+        let remote_index_usage = match RemoteIndexUsage::open(usage_path, expected_id) {
+            Ok(usage) => usage,
+            Err(error) => {
+                eprintln!(
+                    "locald: remote read-only index is disabled because its grant budget ledger could not be admitted: {error}"
+                );
+                RemoteIndexUsage::disabled()
+            }
+        };
         let (listener, artifact_state) = runtime
             .block_on(async {
                 ClusterListener::spawn_owner_router(
@@ -2136,6 +2167,8 @@ impl OwnerCompilerClusterRuntime {
             listener,
             ingress.clone(),
             artifact_state,
+            local_endpoint,
+            remote_index_usage,
         ));
         let no_result_retirement_task = runtime.spawn(run_no_result_retirement_collector(
             Arc::clone(&no_result_retirement),
@@ -2182,6 +2215,7 @@ impl OwnerCompilerClusterRuntime {
     pub(crate) fn open_if_configured(
         workspace: &Path,
         store: FileStore,
+        local_endpoint: &Path,
     ) -> Result<Option<Self>, ClusterDispatchError> {
         let owner_path = workspace.join(OWNER_CONFIG_FILE_NAME);
         match fs::symlink_metadata(&owner_path) {
@@ -2200,6 +2234,7 @@ impl OwnerCompilerClusterRuntime {
             trust_policy_path,
             outboard_path,
             checkpoint_root,
+            local_endpoint.to_path_buf(),
         )
         .map(Some)
     }
