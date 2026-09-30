@@ -772,6 +772,21 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
     let local = coordinator
         .search_local(LocalQuery::prefix("alpha", 2).expect("query"))
         .expect("local search");
+    let mut known_candidates = local
+        .matches
+        .iter()
+        .map(|(entity, _)| *entity)
+        .collect::<Vec<_>>();
+    assert!(known_candidates.len() > 1, "the oracle must exercise ordering");
+    known_candidates.reverse();
+    known_candidates.push(known_candidates[0]);
+    assert_eq!(
+        local
+            .lexical_relevance_for_candidates(&known_candidates)
+            .expect("resolve already-known candidates"),
+        local.matches,
+        "all-cached candidate scores must be sorted and deduplicated like exact lexical results"
+    );
     let lexical_ids = local
         .matches
         .iter()

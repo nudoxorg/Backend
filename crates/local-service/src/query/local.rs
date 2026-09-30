@@ -569,6 +569,8 @@ impl LocalAnswer {
             }
         }
         if remaining.is_empty() {
+            relevance.sort_unstable_by_key(|(entity, _)| *entity);
+            relevance.dedup_by_key(|(entity, _)| *entity);
             return Ok(relevance);
         }
 
