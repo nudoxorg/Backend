@@ -147,7 +147,7 @@ type Work<K, V> = dyn Fn(&K, &Cancellation) -> V + Send + Sync;
 pub(crate) struct Cancellation(Arc<std::sync::atomic::AtomicBool>);
 
 impl Cancellation {
-    fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
 

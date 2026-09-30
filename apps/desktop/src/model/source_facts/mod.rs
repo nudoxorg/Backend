@@ -540,7 +540,7 @@ fn read_cancellable(
         if dir.is_dir() { dir } else { root.join("src") }
     };
     let modules = match cancellation {
-        Some(cancellation) => docs::items_cancellable(&lib_root, root, || is_cancelled())?,
+        Some(_) => docs::items_cancellable(&lib_root, root, || is_cancelled())?,
         None => docs::items(&lib_root, root),
     };
     let root_file = {
@@ -557,7 +557,7 @@ fn read_cancellable(
             return None;
         }
         if let Some(doc) = match cancellation {
-            Some(cancellation) => {
+            Some(_) => {
                 docs::module_doc_cancellable(&lib_root, &root_file, &module.path, || is_cancelled())
             }
             None => docs::module_doc(&lib_root, &root_file, &module.path),
