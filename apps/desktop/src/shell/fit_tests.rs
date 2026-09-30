@@ -115,7 +115,7 @@ pub(crate) fn findings(ledger: &Ledger, width: f32, height: f32) -> Vec<Finding>
     }
     for target in &ledger.targets {
         let b = &target.bounds;
-        let reachable = ledger.scrolls.iter().any(|scroll| scroll.reaches(b));
+        let reachable = ledger.scrolls.iter().any(|scroll| scroll.reaches(b, &target.scroll_ancestors));
         if target.state.focusable && !b.within(width + 0.5, height + 0.5) && !reachable {
             out.push(Finding {
                 rule: "offscreen",
@@ -235,7 +235,8 @@ fn findings_name_what_is_wrong_with_a_pinned_frame() {
     let sample = |key: &str, x: f32, y: f32, width: f32, natural: f32| TextSample {
         key: key.to_owned(),
         bounds: BoundsSample { key: key.to_owned(), x, y, width, height: 16.0 },
-        paint_clip: None,
+        paint_clip: Some(BoundsSample { key: key.to_owned(), x: 0.0, y: 0.0, width: 360.0, height: 640.0 }),
+        scroll_ancestors: Vec::new(),
         natural_width: natural,
         overflow: TextOverflow::Clip,
         content: key.to_owned(),

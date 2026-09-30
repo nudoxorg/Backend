@@ -1,5 +1,5 @@
-//! Ephemeral graph selection. This is a measured selection in the temporary
-//! fixture, never a replacement navigation address or persisted history entry.
+//! Ephemeral graph selection. This is a measured selection in the current
+//! indexed world, never a replacement navigation address or persisted history entry.
 
 use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
@@ -25,7 +25,6 @@ pub(crate) struct GraphFocus {
 impl GraphFocus {
     pub(crate) fn active(&self, snapshot: &AppSnapshot) -> bool {
         snapshot.overlay().is_none()
-            && snapshot.route().at().is_none()
             && snapshot.key().same_authority(self.root)
             && snapshot.route() == &self.visit
             && matches!(
@@ -39,13 +38,13 @@ impl GraphFocus {
     }
 
     pub(crate) fn caption_path(&self) -> String {
-        format!("{} › {} · graph fixture", self.package, self.module)
+        format!("{} › {} · indexed graph", self.package, self.module)
     }
 
-    /// Plain fixture provenance, deliberately without a navigation scheme.
+    /// Plain indexed provenance, deliberately without a navigation scheme.
     pub(crate) fn status(&self) -> String {
         format!(
-            "Graph fixture · {}::{}::{}",
+            "Indexed graph · {}::{}::{}",
             self.package, self.module, self.name
         )
     }

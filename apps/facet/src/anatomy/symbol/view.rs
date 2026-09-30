@@ -29,7 +29,9 @@ pub enum Lang {
     Java,
     /// C#.
     CSharp,
-    /// C or C++.
+    /// C.
+    C,
+    /// C++.
     Cpp,
     /// Anything else.
     Other,
@@ -49,7 +51,8 @@ impl Lang {
             "go" => Self::Go,
             "java" => Self::Java,
             "c#" | "csharp" => Self::CSharp,
-            "c" | "c++" | "cpp" => Self::Cpp,
+            "c" => Self::C,
+            "c++" | "cpp" => Self::Cpp,
             _ => Self::Other,
         }
     }
@@ -65,6 +68,7 @@ impl Lang {
             Self::Go => "Go",
             Self::Java => "Java",
             Self::CSharp => "C#",
+            Self::C => "C",
             Self::Cpp => "C++",
             Self::Other => "",
         }

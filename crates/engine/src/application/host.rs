@@ -19,9 +19,10 @@ use std::{
     time::Duration,
 };
 
-use authority::NativeExecutables;
 use arrayvec::ArrayVec;
+use authority::NativeExecutables;
 use backend_compile::EmbeddingExecutable;
+use backend_frontend_rust::legacy::RustCargoMetadataPolicy;
 use backend_semantic::vocabulary::NativeTool;
 use backend_store::journal::PublicationLimits;
 use paths::create_directory;
@@ -162,6 +163,8 @@ pub struct LocalCompilerHost<Environment> {
     pub environment: Environment,
     /// Closed discovery policy.
     pub discovery: LocalHostDiscovery,
+    /// Cargo registry policy used while resolving Rust package metadata.
+    pub rust_cargo_metadata_policy: RustCargoMetadataPolicy,
 }
 
 impl<Environment> LocalCompilerHost<Environment> {
@@ -171,7 +174,18 @@ impl<Environment> LocalCompilerHost<Environment> {
         Self {
             environment,
             discovery,
+            rust_cargo_metadata_policy: RustCargoMetadataPolicy::Offline,
         }
+    }
+
+    /// Sets the explicit Cargo metadata acquisition policy for Rust authority.
+    #[must_use]
+    pub const fn with_rust_cargo_metadata_policy(
+        mut self,
+        policy: RustCargoMetadataPolicy,
+    ) -> Self {
+        self.rust_cargo_metadata_policy = policy;
+        self
     }
 }
 

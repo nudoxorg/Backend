@@ -256,12 +256,24 @@ pub(super) fn advance_history_gc(
             stats: HistoryGcStats::default(),
         });
     }
-    // Typed V2 admission stages each locator behind a durable marker while
-    // holding the history state lock. Reconcile only a bounded prefix here so
-    // a crash before commit admission cannot leave untracked sidecars behind.
+    // Typed admission stages each locator behind a durable marker while
+    // holding the history state lock. Reconcile bounded prefixes here so a
+    // crash before commit admission cannot leave untracked sidecars behind.
     let (mut processed, pending_locators_remain) =
         super::v2::reconcile_pending_typed_v2_locators(target_root, target)?;
     if pending_locators_remain {
+        return Ok(HistoryGcProgress {
+            processed_records: processed,
+            complete: false,
+            stats: HistoryGcStats::default(),
+        });
+    }
+    let (v3_processed, pending_v3_locators_remain) =
+        super::v3::reconcile_pending_typed_v3_locators(target_root, target)?;
+    processed = processed
+        .checked_add(v3_processed)
+        .ok_or_else(|| "semantic history GC work counter overflows".to_owned())?;
+    if pending_v3_locators_remain {
         return Ok(HistoryGcProgress {
             processed_records: processed,
             complete: false,
@@ -400,24 +412,13 @@ pub(super) fn advance_history_gc(
                     });
                 }
                 while state.sweep_offset < length && processed < MAX_HISTORY_GC_BATCH_RECORDS {
-                    let identity =
+                    let _identity =
                         history_index_id_at(&mut index, state.sweep_offset, HISTORY_INDEX_DOMAIN)?;
-                    if history_gc_marked(
-                        &epoch_root,
-                        identity,
-                        HistoryReachabilityClass::Candidate,
-                    )? && !history_gc_marked(
-                        &epoch_root,
-                        identity,
-                        HistoryReachabilityClass::Live,
-                    )? {
-                        remove_file(&history_commit_path(
-                            &history_root.join("commits"),
-                            identity,
-                        ))?;
-                        remove_file(&history_payload_root_path(target_root, identity))?;
-                        super::v2::remove_typed_v2_locator_for_commit(target_root, identity)?;
-                    }
+                    // Keep immutable commit objects until retention has written
+                    // its durable delete intent. That journal owns the unlink
+                    // and reclaimed-byte/count update as one recoverable step.
+                    // The candidate/live marks here still prove and validate the
+                    // complete unreachable ancestry before retention prunes it.
                     state.sweep_offset = state
                         .sweep_offset
                         .checked_add(HISTORY_INDEX_ENTRY_BYTES)

@@ -81,6 +81,22 @@ impl DocumentState {
         }
         entries.sort_by_key(|(id, _)| *id);
         let state = RelationState::from_entries(entries, coverage).map_err(Error::State)?;
+        Self::from_relation(binding, state, limits)
+    }
+
+    /// Admits an already materialized canonical relation without rebuilding
+    /// its persistent tree. This keeps selected-view query preparation from
+    /// copying the complete document bag a second time.
+    pub fn from_relation(
+        binding: Binding,
+        state: RelationState<IndexRelation>,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        let limits = limits.validate()?;
+        let coverage = state.coverage();
+        if !matches!(coverage, CoverageWitness::Complete(_) | CoverageWitness::Closed(_)) {
+            return Err(Error::IncompleteCoverage);
+        }
         validate_document_state(&state, limits)?;
         if state.root() != binding.root {
             return Err(Error::StaleRoot);

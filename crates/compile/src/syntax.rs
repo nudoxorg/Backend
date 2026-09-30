@@ -785,7 +785,7 @@ impl SyntaxFrontend {
                     definition.name,
                     definition.kind,
                     definition.line.get(),
-                    declaration_signature(definition.node, text),
+                    declaration_signature(self.language, definition.node, text),
                     documentation,
                 )?
                 .with_source_excerpt(SourceExcerpt::capture_bounded(declaration_source))
@@ -1052,22 +1052,36 @@ pub(crate) fn node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
     source.get(node.byte_range()).unwrap_or("")
 }
 
-fn signature_node(mut node: Node<'_>) -> Node<'_> {
-    for _ in 0..2 {
+fn signature_node(language: SourceLanguage, mut node: Node<'_>) -> Node<'_> {
+    let mut depth = 0;
+    loop {
+        if language != SourceLanguage::Clang && depth == 2 {
+            break;
+        }
         let Some(parent) = node.parent() else {
             break;
         };
-        if !matches!(
+        let declaration_parent = matches!(
             parent.kind(),
             "function_definition"
                 | "declaration"
                 | "export_statement"
                 | "decorated_definition"
                 | "template_declaration"
-        ) {
+        ) || language == SourceLanguage::Clang
+            && parent.kind() == "field_declaration";
+        let clang_declarator_parent = language == SourceLanguage::Clang
+            && parent
+                .child_by_field_name("declarator")
+                .is_some_and(|declarator| {
+                    declarator.start_byte() == node.start_byte()
+                        && declarator.end_byte() == node.end_byte()
+                });
+        if !declaration_parent && !clang_declarator_parent {
             break;
         }
         node = parent;
+        depth += 1;
     }
     node
 }
@@ -1099,13 +1113,41 @@ fn excerpt_node(mut node: Node<'_>) -> Node<'_> {
     node
 }
 
-fn declaration_signature(node: Node<'_>, source: &str) -> String {
-    let text = node_text(signature_node(node), source).trim();
+fn declaration_signature(language: SourceLanguage, node: Node<'_>, source: &str) -> String {
+    let root = signature_node(language, node);
+    let source_text = node_text(root, source);
+    if language == SourceLanguage::Clang {
+        // The grammar's declaration node already ends at the semicolon. A
+        // function definition instead exposes its body as a field on a node
+        // along the declarator's ancestor path. Its byte start is the exact end
+        // of the written signature. Keeping that range also preserves line
+        // breaks, nested function-pointer parameters, comments,
+        // preprocessor-adjacent attributes, and their source spacing.
+        let end = signature_body_start(node, root)
+            .map(|body_start| body_start.saturating_sub(root.start_byte()))
+            .filter(|end| *end <= source_text.len())
+            .unwrap_or(source_text.len());
+        return bounded(source_text.get(..end).unwrap_or(source_text).trim());
+    }
+
+    let text = source_text.trim();
     let end = text
         .find('{')
         .or_else(|| text.find('\n'))
         .unwrap_or(text.len());
     bounded(text[..end].trim())
+}
+
+fn signature_body_start(mut node: Node<'_>, root: Node<'_>) -> Option<usize> {
+    loop {
+        if let Some(body) = node.child_by_field_name("body") {
+            return Some(body.start_byte());
+        }
+        if node.start_byte() == root.start_byte() && node.end_byte() == root.end_byte() {
+            return None;
+        }
+        node = node.parent()?;
+    }
 }
 
 /// One declaration's documentation and the facts read from it and its parse.

@@ -3,6 +3,7 @@
 //! transient and never persisted; they are carried over untouched.
 
 use crate::model::{AppearancePreference, ContrastPreference, DensityPreference, MotionPreference, SettingsState};
+use crate::shell::system::SystemPreference;
 use facet::{Appearance, Contrast, Density, Facet, Reveal};
 
 /// What the window's surroundings contribute: the system's appearance and
@@ -13,6 +14,8 @@ pub(crate) struct Surroundings {
     pub dark: bool,
     /// The system's text scale (1.0 = its default).
     pub text: f32,
+    /// The OS reduce-motion setting, when a supported platform API provides it.
+    pub system_reduced_motion: SystemPreference<bool>,
     /// The display's zoom key.
     pub display: std::sync::Arc<str>,
 }
@@ -30,7 +33,11 @@ pub(crate) fn facet_for(settings: &SettingsState, around: &Surroundings, reveal:
             AppearancePreference::System => Appearance::Glacier,
         },
         text_scale: around.text * settings.zoom.factor(&around.display),
-        reduced_motion: settings.motion == MotionPreference::Reduced,
+        reduced_motion: match settings.motion {
+            MotionPreference::System => matches!(around.system_reduced_motion, SystemPreference::Known(true)),
+            MotionPreference::Full => false,
+            MotionPreference::Reduced => true,
+        },
         contrast: match settings.contrast {
             ContrastPreference::Normal => Contrast::Normal,
             ContrastPreference::High => Contrast::High,
@@ -53,6 +60,7 @@ mod tests {
         Surroundings {
             dark,
             text,
+            system_reduced_motion: SystemPreference::Unavailable,
             display: std::sync::Arc::from(display),
         }
     }
@@ -102,5 +110,28 @@ mod tests {
             far = far.step("x", ZoomStep::Out);
         }
         assert_eq!(far.percent("x"), 85);
+    }
+
+    #[test]
+    fn motion_preference_resolves_system_full_and_reduced_with_explicit_fallback() {
+        for (preference, system, expected) in [
+            (MotionPreference::System, SystemPreference::Known(false), false),
+            (MotionPreference::System, SystemPreference::Known(true), true),
+            (MotionPreference::System, SystemPreference::Unavailable, false),
+            (MotionPreference::Full, SystemPreference::Known(false), false),
+            (MotionPreference::Full, SystemPreference::Known(true), false),
+            (MotionPreference::Full, SystemPreference::Unavailable, false),
+            (MotionPreference::Reduced, SystemPreference::Known(false), true),
+            (MotionPreference::Reduced, SystemPreference::Known(true), true),
+            (MotionPreference::Reduced, SystemPreference::Unavailable, true),
+        ] {
+            let settings = SettingsState {
+                motion: preference,
+                ..SettingsState::default()
+            };
+            let mut around = around(false, 1.0, "wall");
+            around.system_reduced_motion = system;
+            assert_eq!(facet_for(&settings, &around, Reveal::default()).reduced_motion, expected, "{preference:?} with {system:?}");
+        }
     }
 }

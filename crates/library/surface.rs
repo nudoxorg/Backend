@@ -15,6 +15,8 @@ pub const MAX_PRODUCT_TEXT_BYTES: usize = 4096;
 pub const MAX_PRODUCT_ROWS: usize = 256;
 /// Largest opaque continuation token accepted by the shared index-search surface.
 pub const MAX_INDEX_SEARCH_CURSOR_BYTES: usize = 64 * 1024;
+/// Maximum number of owner progress events returned by one index progress read.
+pub const MAX_INDEX_PROGRESS_EVENTS: usize = 16;
 
 /// Nonempty, bounded, NUL-free product text.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -361,6 +363,51 @@ pub struct SemanticVersionRecord {
     /// field decode as `Unverified` instead of being claimed as current.
     #[serde(default)]
     pub freshness: SemanticVersionFreshness,
+    /// Status of the selected native-image typed V3 history sidecar.
+    ///
+    /// This is keyed by the exact committed owner-selection stamp. It is
+    /// separate from source-input freshness: a selected compiler generation
+    /// can be current even while its derived history publication is pending
+    /// or refused.
+    #[serde(default)]
+    pub history_status: SemanticHistoryPublicationStatus,
+}
+
+/// Typed status for derived native-image history publication.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SemanticHistoryPublicationStatus {
+    /// This semantic version is not the committed selected product version.
+    NotSelected,
+    /// The committed selection has not yet been reconciled with V3 history.
+    NotRequested { selection_id: [u8; 32] },
+    /// A bounded worker is producing and admitting history for this selection.
+    Pending { selection_id: [u8; 32] },
+    /// The committed selection is waiting for a bounded worker slot. The
+    /// owner reschedules it from the current selected-marker inventory.
+    Deferred {
+        selection_id: [u8; 32],
+        reason: String,
+    },
+    /// The exact selected image is durably published at this V3 branch commit.
+    Published {
+        selection_id: [u8; 32],
+        commit: [u8; 32],
+        reference: String,
+    },
+    /// History could not be produced or admitted for this selected image.
+    Refused {
+        selection_id: [u8; 32],
+        reason: String,
+    },
+    /// The marker advanced while this derived-history job was running.
+    Superseded { selection_id: [u8; 32] },
+}
+
+impl Default for SemanticHistoryPublicationStatus {
+    fn default() -> Self {
+        Self::NotSelected
+    }
 }
 
 /// Source-input status for one immutable semantic generation.
@@ -395,6 +442,264 @@ impl SemanticVersionRecord {
             return Err(ProductAdmissionError::SemanticVersionShape);
         }
         Ok(())
+    }
+}
+
+/// Owner-issued identity for one package-scoped index operation.
+///
+/// The package is part of the ticket so an old or mismatched cancellation
+/// request cannot address another project's active job.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexJobTicket {
+    id: NonZeroU64,
+    owner_epoch: [u8; 16],
+    package: PackageReference,
+}
+
+impl IndexJobTicket {
+    /// Creates an owner ticket from a nonzero sequence and exact package.
+    #[must_use]
+    pub const fn new(id: NonZeroU64, owner_epoch: [u8; 16], package: PackageReference) -> Self {
+        Self {
+            id,
+            owner_epoch,
+            package,
+        }
+    }
+
+    /// Returns the owner-local job sequence.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id.get()
+    }
+
+    /// Returns the process-local owner epoch that prevents a stale ticket from matching after
+    /// the owner restarts and its sequence begins again.
+    #[must_use]
+    pub const fn owner_epoch(&self) -> [u8; 16] {
+        self.owner_epoch
+    }
+
+    /// Returns the package bound to this job.
+    #[must_use]
+    pub const fn package(&self) -> &PackageReference {
+        &self.package
+    }
+}
+
+/// Coarse owner progress for one index job.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndexJobStage {
+    /// A pinned package is being acquired from its configured registry.
+    Acquiring,
+    /// A verified registry archive is being extracted into owner staging.
+    Staging,
+    /// The source tree is being read and admitted.
+    Scanning,
+    /// The selected compiler profiles are running.
+    Compiling,
+    /// Admitted compiler output is crossing the product publication boundary.
+    Publishing,
+}
+
+/// Immediate answer to an index start request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "data", rename_all = "kebab-case")]
+pub enum IndexStartResult {
+    /// The owner accepted the job and issued its exact cancellation ticket.
+    Started {
+        /// Owner-issued job ticket.
+        ticket: IndexJobTicket,
+        /// Current coarse progress stage.
+        stage: IndexJobStage,
+    },
+    /// Scanning or compilation reached a terminal outcome before the reply.
+    Terminal(IndexJobTerminal),
+}
+
+/// Truthful terminal receipt for one owner-managed index operation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexJobTerminal {
+    /// Exact job and project this outcome belongs to.
+    pub ticket: IndexJobTicket,
+    /// What the owner durably did with the admitted job.
+    pub outcome: IndexJobOutcome,
+}
+
+/// Terminal effect of one index job.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+pub enum IndexJobOutcome {
+    /// Semantic admission and the owner publication completed.
+    Published,
+    /// The candidate was refused and did not replace the prior publication.
+    Refused(ProductText),
+    /// The requested cancellation was observed before publication completed.
+    Cancelled,
+    /// The owner could not establish a terminal publication result.
+    Failed(ProductText),
+}
+
+/// Immediate result of a cancellation request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "terminal", rename_all = "kebab-case")]
+pub enum IndexCancelStatus {
+    /// The exact active job received a cancellation request.
+    Requested,
+    /// The job had already reached a terminal state.
+    Terminal(IndexJobTerminal),
+    /// No active or retained terminal job matched the exact ticket.
+    Unknown,
+}
+
+/// One typed milestone emitted while an owner-managed index job is running.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum IndexJobProgressKind {
+    /// The owner entered a new bounded operation stage.
+    StageChanged {
+        /// Current operation stage.
+        stage: IndexJobStage,
+    },
+    /// One exact semantic compiler profile was admitted to the compiler owner.
+    ProfileStarted {
+        /// Exact profile selected from the admitted package sources.
+        profile: SemanticLanguageProfile,
+        /// One-based profile position in this job.
+        ordinal: u16,
+        /// Number of profiles admitted for this job.
+        total: u16,
+    },
+    /// One exact semantic compiler profile finished and its immutable candidate was staged.
+    ProfileAdmitted {
+        /// Exact profile selected from the admitted package sources.
+        profile: SemanticLanguageProfile,
+        /// One-based profile position in this job.
+        ordinal: u16,
+        /// Number of profiles admitted for this job.
+        total: u16,
+    },
+}
+
+impl IndexJobProgressKind {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        match self {
+            Self::StageChanged { .. } => Ok(()),
+            Self::ProfileStarted {
+                profile,
+                ordinal,
+                total,
+            }
+            | Self::ProfileAdmitted {
+                profile,
+                ordinal,
+                total,
+            } => {
+                profile
+                    .profile()
+                    .map_err(|_| ProductAdmissionError::IndexProgressShape)?;
+                if *ordinal > 0 && *ordinal <= *total {
+                    Ok(())
+                } else {
+                    Err(ProductAdmissionError::IndexProgressShape)
+                }
+            }
+        }
+    }
+}
+
+/// One sequence-numbered owner progress fact, scoped to an exact job ticket.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexJobProgressEvent {
+    /// Exact job and package the event belongs to.
+    pub ticket: IndexJobTicket,
+    /// Strictly increasing sequence within this job.
+    pub sequence: u64,
+    /// Typed stage or profile milestone.
+    pub kind: IndexJobProgressKind,
+}
+
+impl IndexJobProgressEvent {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if self.sequence == 0 {
+            return Err(ProductAdmissionError::IndexProgressShape);
+        }
+        self.kind.admit()
+    }
+}
+
+/// One bounded page from the owner's retained index progress stream.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexProgressPage {
+    /// Exact job and package the event page belongs to.
+    pub ticket: IndexJobTicket,
+    /// Current stage of the admitted job.
+    pub stage: IndexJobStage,
+    /// Ordered progress events after the caller's cursor.
+    pub events: Box<[IndexJobProgressEvent]>,
+    /// Cursor after the last event in this page (or the input cursor when empty).
+    pub next_sequence: u64,
+    /// True when older events before this page have aged out of the bounded owner buffer.
+    pub truncated: bool,
+    /// True when more events after this page are immediately available.
+    pub has_more: bool,
+}
+
+impl IndexProgressPage {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if self.events.len() > MAX_INDEX_PROGRESS_EVENTS {
+            return Err(ProductAdmissionError::RowBound);
+        }
+        let mut prior_sequence = 0_u64;
+        for event in &self.events {
+            event.admit()?;
+            if event.ticket != self.ticket || event.sequence <= prior_sequence {
+                return Err(ProductAdmissionError::IndexProgressShape);
+            }
+            prior_sequence = event.sequence;
+        }
+        if prior_sequence > self.next_sequence
+            || (!self.events.is_empty() && prior_sequence != self.next_sequence)
+            || (self.has_more && self.events.len() != MAX_INDEX_PROGRESS_EVENTS)
+        {
+            return Err(ProductAdmissionError::IndexProgressShape);
+        }
+        Ok(())
+    }
+}
+
+/// Immediate observation of one exact owner index ticket.
+///
+/// Polling never holds the owner connection while work runs. A caller can
+/// advance the cursor from `Pending` pages until it observes a terminal
+/// receipt or an unknown ticket after retention expiry/owner restart.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+pub enum IndexJobObservation {
+    /// The job is still active and has a bounded progress page.
+    Pending(IndexProgressPage),
+    /// The exact ticket reached a durable terminal outcome.
+    Terminal(IndexJobTerminal),
+    /// The ticket is no longer active or retained by this owner process.
+    Unknown {
+        /// Ticket the caller asked about.
+        ticket: IndexJobTicket,
+        /// Current owner epoch, which differs from the ticket's epoch after a restart.
+        current_owner_epoch: [u8; 16],
+    },
+}
+
+impl IndexJobObservation {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        match self {
+            Self::Pending(page) => page.admit(),
+            Self::Terminal(_) | Self::Unknown { .. } => Ok(()),
+        }
     }
 }
 
@@ -580,6 +885,30 @@ pub enum SurfaceCommand {
         /// Absolute project directory (any directory inside the workspace).
         root: ProductText,
     },
+    /// Start indexing one local project without waiting for compilation.
+    IndexStart {
+        /// Local project directory or pinned package coordinate.
+        package: PackageReference,
+        /// Requested compiler execution class.
+        execution_intent: crate::CompileExecutionIntent,
+    },
+    /// Wait for the terminal receipt of one exact index job.
+    IndexAwait {
+        /// Owner-issued job and package identity.
+        ticket: IndexJobTicket,
+    },
+    /// Read a bounded page from one exact index job's retained progress stream.
+    IndexProgress {
+        /// Owner-issued job and package identity.
+        ticket: IndexJobTicket,
+        /// Return only events with a sequence greater than this cursor.
+        after_sequence: u64,
+    },
+    /// Request cancellation of one exact active index job.
+    IndexCancel {
+        /// Owner-issued job and package identity.
+        ticket: IndexJobTicket,
+    },
     /// Refresh every configured advisory source.
     AdvisoryRefresh,
 }
@@ -620,6 +949,10 @@ impl SurfaceCommand {
             Self::TreeOpen { .. } => CommandId::TreeOpen,
             Self::TreeClose { .. } => CommandId::TreeClose,
             Self::ProjectTree { .. } => CommandId::ProjectTree,
+            Self::IndexStart { .. } => CommandId::IndexStart,
+            Self::IndexAwait { .. } => CommandId::IndexAwait,
+            Self::IndexProgress { .. } => CommandId::IndexProgress,
+            Self::IndexCancel { .. } => CommandId::IndexCancel,
             Self::AdvisoryRefresh => CommandId::AdvisoryRefresh,
         }
     }
@@ -1863,6 +2196,14 @@ pub enum SurfaceReply {
     PackageVersions(Box<[RegistryPackageRecord]>),
     /// Immutable compiler generations for one exact package.
     SemanticVersions(Box<[SemanticVersionRecord]>),
+    /// Immediate status returned after an index start request.
+    IndexStarted(IndexStartResult),
+    /// Terminal receipt returned by an index waiter.
+    IndexTerminal(IndexJobTerminal),
+    /// Bounded typed progress facts returned for one exact index job.
+    IndexProgress(IndexJobObservation),
+    /// Immediate result of an owner-issued cancellation request.
+    IndexCancellation(IndexCancelStatus),
     /// Exact compiler generation selected by the durable owner.
     SemanticVersionSelected(SemanticVersionRecord),
     /// Latest package and history count.
@@ -1931,6 +2272,10 @@ impl SurfaceReply {
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
             Self::SemanticVersions(_) => CommandId::SemanticVersions,
+            Self::IndexStarted(_) => CommandId::IndexStart,
+            Self::IndexTerminal(_) => CommandId::IndexAwait,
+            Self::IndexProgress(_) => CommandId::IndexProgress,
+            Self::IndexCancellation(_) => CommandId::IndexCancel,
             Self::SemanticVersionSelected(_) => CommandId::SelectSemanticVersion,
             Self::PackageProfile { .. } => CommandId::PackageProfile,
             Self::Subscribed(_) => CommandId::Subscribe,
@@ -2013,6 +2358,14 @@ impl SurfaceReply {
                     return Err(ProductAdmissionError::SemanticVersionShape);
                 }
                 1
+            }
+            Self::IndexStarted(_) | Self::IndexTerminal(_) | Self::IndexCancellation(_) => 1,
+            Self::IndexProgress(observation) => {
+                observation.admit()?;
+                match observation {
+                    IndexJobObservation::Pending(page) => page.events.len(),
+                    IndexJobObservation::Terminal(_) | IndexJobObservation::Unknown { .. } => 1,
+                }
             }
             Self::Subscriptions(v) => v.len(),
             Self::Releases(v) => v.len(),
@@ -2175,6 +2528,14 @@ impl SurfaceReply {
             Self::SemanticVersionSelected(record) => fixed_record_bound()
                 .saturating_add(package_reference_bound(&record.package))
                 .saturating_add(record.coordinate.as_str().len()),
+            Self::IndexStarted(result) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(result).map_or(0, |bytes| bytes.len())),
+            Self::IndexTerminal(terminal) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(terminal).map_or(0, |bytes| bytes.len())),
+            Self::IndexProgress(page) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
+            Self::IndexCancellation(status) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(status).map_or(0, |bytes| bytes.len())),
             Self::Dependents(RegistryMetadata::NotRecorded(reason))
             | Self::Owner(RegistryMetadata::NotRecorded(reason)) => text_bound(reason),
             Self::Dependencies(crate::DependencyFacts::Known(records)) => {
@@ -2424,6 +2785,8 @@ pub enum ProductAdmissionError {
     ForgeAssociation,
     /// A package graph request or page is malformed or outside its bound.
     PackageGraphPage,
+    /// An index progress page contains mismatched tickets or invalid sequence/profile facts.
+    IndexProgressShape,
 }
 impl core::fmt::Display for ProductAdmissionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -2459,6 +2822,9 @@ impl core::fmt::Display for ProductAdmissionError {
                 "registry-to-forge lineage is invalid or has a stale identity"
             }
             Self::PackageGraphPage => "package graph request or page is invalid",
+            Self::IndexProgressShape => {
+                "index progress page has inconsistent sequence or profile facts"
+            }
         })
     }
 }
@@ -2466,6 +2832,136 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_index_job_contract_round_trips_with_project_bound_terminal() {
+        let package = PackageReference::parse("/workspace/demo").expect("package");
+        let ticket = IndexJobTicket::new(
+            NonZeroU64::new(7).expect("nonzero ticket"),
+            [3; 16],
+            package.clone(),
+        );
+        let command = SurfaceCommand::IndexStart {
+            package: package.clone(),
+            execution_intent: crate::CompileExecutionIntent::Interactive,
+        };
+        command.admit().expect("start admission");
+        let encoded = serde_json::to_vec(&command).expect("start encoding");
+        let decoded: SurfaceCommand = serde_json::from_slice(&encoded).expect("start decoding");
+        assert_eq!(decoded, command);
+        assert_eq!(decoded.id(), CommandId::IndexStart);
+
+        let progress_command = SurfaceCommand::IndexProgress {
+            ticket: ticket.clone(),
+            after_sequence: 3,
+        };
+        progress_command
+            .admit()
+            .expect("progress request admission");
+        let progress_command_wire =
+            serde_json::to_vec(&progress_command).expect("progress request encoding");
+        let decoded_progress_command: SurfaceCommand =
+            serde_json::from_slice(&progress_command_wire).expect("progress request decoding");
+        assert_eq!(decoded_progress_command, progress_command);
+        assert_eq!(decoded_progress_command.id(), CommandId::IndexProgress);
+
+        let started = SurfaceReply::IndexStarted(IndexStartResult::Started {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Compiling,
+        });
+        started.admit(CommandId::IndexStart).expect("start reply");
+        let terminal = SurfaceReply::IndexTerminal(IndexJobTerminal {
+            ticket: ticket.clone(),
+            outcome: IndexJobOutcome::Refused(
+                ProductText::new("compiler refused input").expect("bounded refusal"),
+            ),
+        });
+        terminal
+            .admit(CommandId::IndexAwait)
+            .expect("terminal reply");
+        let encoded = serde_json::to_vec(&terminal).expect("terminal encoding");
+        let decoded: SurfaceReply = serde_json::from_slice(&encoded).expect("terminal decoding");
+        assert_eq!(decoded, terminal);
+
+        let cancellation = SurfaceReply::IndexCancellation(IndexCancelStatus::Requested);
+        cancellation
+            .admit(CommandId::IndexCancel)
+            .expect("cancellation reply");
+
+        let progress =
+            SurfaceReply::IndexProgress(IndexJobObservation::Pending(IndexProgressPage {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Compiling,
+                events: vec![
+                    IndexJobProgressEvent {
+                        ticket: ticket.clone(),
+                        sequence: 4,
+                        kind: IndexJobProgressKind::StageChanged {
+                            stage: IndexJobStage::Compiling,
+                        },
+                    },
+                    IndexJobProgressEvent {
+                        ticket: ticket.clone(),
+                        sequence: 5,
+                        kind: IndexJobProgressKind::ProfileStarted {
+                            profile: SemanticLanguageProfile::from_name("rust").expect("profile"),
+                            ordinal: 1,
+                            total: 2,
+                        },
+                    },
+                ]
+                .into_boxed_slice(),
+                next_sequence: 5,
+                truncated: false,
+                has_more: false,
+            }));
+        progress
+            .admit(CommandId::IndexProgress)
+            .expect("progress reply admission");
+        let progress_wire = serde_json::to_vec(&progress).expect("progress reply encoding");
+        let decoded_progress: SurfaceReply =
+            serde_json::from_slice(&progress_wire).expect("progress reply decoding");
+        assert_eq!(decoded_progress, progress);
+
+        let malformed =
+            SurfaceReply::IndexProgress(IndexJobObservation::Pending(IndexProgressPage {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Compiling,
+                events: vec![IndexJobProgressEvent {
+                    ticket: ticket.clone(),
+                    sequence: 1,
+                    kind: IndexJobProgressKind::ProfileAdmitted {
+                        profile: SemanticLanguageProfile::from_name("rust").expect("profile"),
+                        ordinal: 0,
+                        total: 1,
+                    },
+                }]
+                .into_boxed_slice(),
+                next_sequence: 1,
+                truncated: false,
+                has_more: false,
+            }));
+        assert_eq!(
+            malformed.admit(CommandId::IndexProgress),
+            Err(ProductAdmissionError::IndexProgressShape)
+        );
+
+        let observed_terminal =
+            SurfaceReply::IndexProgress(IndexJobObservation::Terminal(IndexJobTerminal {
+                ticket: ticket.clone(),
+                outcome: IndexJobOutcome::Cancelled,
+            }));
+        observed_terminal
+            .admit(CommandId::IndexProgress)
+            .expect("terminal observation admission");
+        let unknown = SurfaceReply::IndexProgress(IndexJobObservation::Unknown {
+            ticket,
+            current_owner_epoch: [4; 16],
+        });
+        unknown
+            .admit(CommandId::IndexProgress)
+            .expect("unknown observation admission");
+    }
 
     #[test]
     fn advisory_command_and_reply_round_trip_with_safe_unknown_state() {

@@ -1267,7 +1267,7 @@ fn materialize(recipe: &Recipe, size: (u32, u32), options: &Options, store: &Sto
         let hash = state::input_hash(&input)?;
         inputs.push((input, hash));
     }
-    let key = state::key(&state_plan, &inputs, &state::build_id()?, &state::toolchain());
+    let key = state::key(&state_plan, &inputs, &state::build_id()?, &state::toolchain()?);
     let dir = store.state(&key);
     if store.ready(&key) && !options.remake_states {
         let _ = writeln!(report, "state: {recipe}: key {} ready (made earlier; evidence {})", key.short(), short(&dir.join("run/REPORT.txt").display().to_string()));
@@ -1770,7 +1770,7 @@ fn command(args: &[String]) -> Result<Verdict, String> {
     super::keep_index_in(
         index
             .or_else(|| std::env::var_os("NUDOX_HARNESS_STATE").map(|state| PathBuf::from(state).join("index")))
-            .unwrap_or_else(|| super::repo().join(".local/harness/journeys/index")),
+            .unwrap_or_else(|| super::configured_state().join("index")),
     );
     let out = out.unwrap_or_else(|| super::repo().join(".local/harness/journeys").join(&stem));
     // The live machine is this process's for the whole run (states it makes

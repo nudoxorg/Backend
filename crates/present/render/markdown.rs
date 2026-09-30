@@ -26,7 +26,7 @@ use crate::glyph::KindGlyph;
 use crate::identity::ProjectRef;
 use crate::outline::{OutlineEntry, OutlineTree};
 use crate::page::{MemberGroup, Page, Prose, RelationGroup, Source, Truncation};
-use crate::product::ProductView;
+use crate::product::{CursorTarget, ProductView, semantic_history_details};
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf};
 use crate::status::Status;
@@ -389,6 +389,9 @@ pub fn product(view: &ProductView) -> String {
         if let Some(operand) = record.operand() {
             lines.push(format!("`{operand}`"));
         }
+        if let Some(status) = record.history_status() {
+            lines.push(semantic_history_details(status));
+        }
     }
     lines.push(format!("{} row(s)", view.records().len()));
     index_search_page_footer(view, &mut lines);
@@ -411,6 +414,14 @@ fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
         page.result_count()
     ));
     if let Some(cursor) = page.next_cursor() {
-        lines.push(format!("next cursor (pass `--cursor`): `{cursor}`"));
+        let instruction = match page
+            .cursor_projection()
+            .map_or(CursorTarget::CliOption, |projection| projection.target())
+        {
+            CursorTarget::CliOption => "pass `--cursor`",
+            CursorTarget::McpIndexSearchTool => "pass as `cursor` to `backend.index_search`",
+            CursorTarget::SurfaceCommand => "set `command.cursor` in `backend.surface`",
+        };
+        lines.push(format!("next cursor ({instruction}): `{cursor}`"));
     }
 }

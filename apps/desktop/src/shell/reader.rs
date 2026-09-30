@@ -978,9 +978,10 @@ impl Reader {
         snapshot: &AppSnapshot,
         layout: &Layout,
         facet: &facet::Facet,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let body = self.body(place, false, snapshot, layout, facet, edge, cx);
+        let body = self.body(place, false, snapshot, layout, facet, edge, window, cx);
         div().absolute().top_0().left_0().right_0().bottom_0().child(masked(
             mask,
             offset(
@@ -1284,6 +1285,7 @@ impl Reader {
         layout: &Layout,
         facet: &facet::Facet,
         edge: Option<Edge>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let palette = facet.palette();
@@ -1323,7 +1325,7 @@ impl Reader {
                     .filter(|from| route_symbol(&place.route).as_ref() != Some(from)),
             };
             let hover = if current { &mut hover } else { &mut scratch_hover };
-            bodies::build(&place.route, place.overlay, snapshot, &pages, &mut ctx, hover, cx)
+            bodies::build(&place.route, place.overlay, snapshot, &pages, &mut ctx, hover, window, cx)
         };
         if current {
             self.hover = hover;
@@ -1493,7 +1495,7 @@ impl Render for Reader {
                         staged.outside[0]
                     };
                     root = root.child(masked(map_mask, framed));
-                    let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, Pixels::ZERO, &snapshot, &layout, &facet, cx);
+                    let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, Pixels::ZERO, &snapshot, &layout, &facet, window, cx);
                     root = root
                         .child(plate_ground(&staged))
                         .child(div().id("folding-plate").absolute().top_0().left_0().size_full().child(page))
@@ -1516,7 +1518,7 @@ impl Render for Reader {
         if !on_the_library {
             self.ring_flow.forget(cx);
         }
-        let body = self.body(&current, true, &snapshot, &layout, &facet, current_edge, cx);
+        let body = self.body(&current, true, &snapshot, &layout, &facet, current_edge, window, cx);
         if let Some(reader) = reader {
             self.follow(reader, cx);
         }
@@ -1551,14 +1553,14 @@ impl Render for Reader {
         } else {
             Vec::new()
         };
-        let scroller = Reveal {
+        let scroller = facet::probe::scroll_scope("reader-scroll", Reveal {
             pending: Rc::clone(&self.reveal),
             targets: self.targets.clone(),
             scroll: self.scroll.clone(),
             frame: Rc::clone(&self.frame),
             land,
             child: scroller.into_any_element(),
-        };
+        });
         let mut root = div().relative().size_full();
         // Where you were: the row a Close came back to, tinted under the page.
         let tint = self.tint_now(cx);
@@ -1580,7 +1582,7 @@ impl Render for Reader {
                 // the plate has not reached; the new page is on the plate.
                 for (index, mask) in staged.outside.into_iter().enumerate() {
                     if mask.size.height > Pixels::ZERO && mask.size.width > Pixels::ZERO {
-                        let page = self.still_page(&leaving, transit.scroll, mask, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                        let page = self.still_page(&leaving, transit.scroll, mask, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
                         root = root.child(div().id(("leaving", index)).absolute().top_0().left_0().size_full().child(page));
                     }
                 }
@@ -1592,7 +1594,7 @@ impl Render for Reader {
                 let [above, below] = staged.outside;
                 root = root.child(masked(above, scroller));
                 if below.size.height > Pixels::ZERO && below.size.width > Pixels::ZERO {
-                    let page = self.still_page(&current, self.scroll.offset(), below, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                    let page = self.still_page(&current, self.scroll.offset(), below, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
                     root = root.child(div().id("parent-below").absolute().top_0().left_0().size_full().child(page));
                 }
                 // What the fold has taken from the plate is the parent, not an
@@ -1603,10 +1605,10 @@ impl Render for Reader {
                     let top = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
                     Bounds::from_corners(point(staged.plate.left(), top), staged.plate.bottom_right())
                 });
-                let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, staged.inside_drift, &snapshot, &layout, &facet, cx);
+                let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, staged.inside_drift, &snapshot, &layout, &facet, window, cx);
                 root = root.child(plate_ground(&staged));
                 if let Some(folded) = folded.filter(|folded| folded.size.height > Pixels::ZERO && folded.size.width > Pixels::ZERO) {
-                    let parent = self.still_page(&current, self.scroll.offset(), folded, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                    let parent = self.still_page(&current, self.scroll.offset(), folded, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
                     root = root.child(div().id("parent-folded").absolute().top_0().left_0().size_full().child(parent));
                 }
                 root = root.child(div().id("leaving-plate").absolute().top_0().left_0().size_full().child(page));
@@ -1629,7 +1631,7 @@ impl Render for Reader {
             }
             _ => root = root.child(scroller),
         }
-        root.child(super::kit::scroll_probe("reader-scroll", self.scroll.clone()))
+        root.child(facet::probe::scroll_probe("reader-scroll", self.scroll.clone()))
             .child(glow)
             .text_color(palette.ink1.hsla())
             .font_family(facet::fonts::family(ty::BODY))

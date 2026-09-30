@@ -346,6 +346,9 @@ impl super::Doors for GalleryDoors {
     fn track(&self, _: gpui::SharedString, _: gpui::SharedString, _: Option<&super::Door>, element: gpui::AnyElement) -> gpui::AnyElement {
         element
     }
+    fn track_hoverable(&self, _: gpui::SharedString, _: gpui::SharedString, _: &super::Door, _: crate::hover::FocusTarget, element: gpui::AnyElement) -> gpui::AnyElement {
+        element
+    }
     fn say(&self, _: &str) {}
 }
 

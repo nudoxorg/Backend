@@ -23,7 +23,8 @@ use super::scope::{Crumbs, Located, Scope, locate};
 use super::state::{Change, Reach, RowState, StateBook};
 use crate::model::AppSnapshot;
 use crate::model::pages::{
-    DependencyScope, Known, OrbitModel, OutlineNode, OutlineTree, PackageDossier, PackageRef, PageKey, RecordSource, SearchQuery, Standing, SymbolRef,
+    DependencyScope, Known, OrbitModel, OutlineNode, OutlineTree, PackageDossier, PackageRef,
+    PageKey, RecordSource, SearchQuery, Standing, SymbolRef,
 };
 use crate::navigation::{ReleaseId, Route, SettingsPage};
 use crate::shell::jump::settings_name;
@@ -45,7 +46,7 @@ pub(super) struct Releases {
     pub viewing: Option<usize>,
     /// What moving between releases changes, when the release data has this
     /// package.
-    pub diffs: Option<&'static Crate>,
+    pub diffs: Option<std::sync::Arc<Crate>>,
 }
 
 /// What the way out does.
@@ -142,7 +143,7 @@ pub(super) struct Inputs<'a> {
     /// The declaration the reader is on.
     pub current: Option<SymbolRef>,
     /// The release data of this package.
-    pub diffs: Option<&'static Crate>,
+    pub diffs: Option<std::sync::Arc<Crate>>,
     /// The settings page open over the reader.
     pub settings: Option<SettingsPage>,
     /// What you hold.
@@ -177,7 +178,11 @@ fn narrowed_by_name(mut listing: Listing, query: &str) -> Listing {
         return listing;
     }
     if listing.matched.is_none() {
-        let of = listing.rows.iter().filter(|row| row.item().is_some()).count();
+        let of = listing
+            .rows
+            .iter()
+            .filter(|row| row.item().is_some())
+            .count();
         let mut kept: Vec<Row> = Vec::new();
         let mut heading: Option<Row> = None;
         let mut shown = 0;
@@ -202,7 +207,13 @@ fn narrowed_by_name(mut listing: Listing, query: &str) -> Listing {
         listing.matched = Some(Matched { shown, of });
     }
     if let Ok(search) = SearchQuery::new(query, SearchQuery::DEFAULT_LIMIT) {
-        let mut widen = Item::new(RowId::Widen, 0, Mark::Icon(Icon::Search), format!("{query} in the whole library"), Do::Widen(search));
+        let mut widen = Item::new(
+            RowId::Widen,
+            0,
+            Mark::Icon(Icon::Search),
+            format!("{query} in the whole library"),
+            Do::Widen(search),
+        );
         widen.trailing = Trailing::Words("↵".into());
         listing.rows.push(Row::Item(widen));
     }
@@ -214,20 +225,35 @@ fn narrowed_by_name(mut listing: Listing, query: &str) -> Listing {
 fn settings(inputs: &Inputs<'_>, current: SettingsPage) -> Listing {
     let rows = [
         (SettingsPage::Appearance, Icon::Eye),
-        (SettingsPage::Index, Icon::Server),
-        (SettingsPage::Help, Icon::Key),
+        (SettingsPage::Editor, Icon::File),
+        (SettingsPage::Agents, Icon::Users),
+        (SettingsPage::Connections, Icon::Link),
+        (SettingsPage::Privacy, Icon::Lock),
         (SettingsPage::Diagnostics, Icon::Info),
+        (SettingsPage::Index, Icon::Server),
+        (SettingsPage::Registry, Icon::Globe),
+        (SettingsPage::Legend, Icon::Diamond),
+        (SettingsPage::Help, Icon::Key),
     ]
     .into_iter()
     .map(|(page, icon)| {
-        let mut item = Item::new(RowId::Setting(page), 0, Mark::Icon(icon), settings_name(page), Do::Settings(page));
+        let mut item = Item::new(
+            RowId::Setting(page),
+            0,
+            Mark::Icon(icon),
+            settings_name(page),
+            Do::Settings(page),
+        );
         item.current = page == current;
         Row::Item(item)
     })
     .collect();
     Listing {
         head: Head {
-            step_out: Some(StepOut { label: "Nudox".into(), does: StepDoes::Go(inputs.route.clone()) }),
+            step_out: Some(StepOut {
+                label: "Nudox".into(),
+                does: StepDoes::Go(inputs.route.clone()),
+            }),
             title: None,
             releases: None,
             counts: None,
@@ -243,7 +269,13 @@ fn settings(inputs: &Inputs<'_>, current: SettingsPage) -> Listing {
 /// Whether an indexed package is one of your projects: a local package that
 /// stands at a project's folder or bears its name. The Library shows it
 /// once, under Yours, not again among the packages.
-fn is_a_project(package_root: &str, package_name: &str, local: bool, project_path: &str, project_label: &str) -> bool {
+fn is_a_project(
+    package_root: &str,
+    package_name: &str,
+    local: bool,
+    project_path: &str,
+    project_label: &str,
+) -> bool {
     local && (package_root == project_path || package_name == project_label)
 }
 
@@ -265,19 +297,40 @@ pub(crate) fn beside_your_projects<'a>(
     order: LibraryOrder,
 ) -> Vec<&'a crate::model::pages::IndexedPackage> {
     let yours = |package: &crate::model::pages::IndexedPackage| {
-        workspace.projects.iter().any(|project| is_a_project(package.package.as_str(), &package.name, package.package.is_local(), &project.path, &project.label))
+        workspace.projects.iter().any(|project| {
+            is_a_project(
+                package.package.as_str(),
+                &package.name,
+                package.package.is_local(),
+                &project.path,
+                &project.label,
+            )
+        })
     };
     let mut list: Vec<_> = indexed.iter().filter(|package| !yours(package)).collect();
     if order == LibraryOrder::Name {
-        list.sort_by(|a, b| (a.name.as_ref(), a.package.release_version(), a.package.as_str()).cmp(&(b.name.as_ref(), b.package.release_version(), b.package.as_str())));
+        list.sort_by(|a, b| {
+            (
+                a.name.as_ref(),
+                a.package.release_version(),
+                a.package.as_str(),
+            )
+                .cmp(&(
+                    b.name.as_ref(),
+                    b.package.release_version(),
+                    b.package.as_str(),
+                ))
+        });
     }
     list
 }
 
 fn library(inputs: &Inputs<'_>) -> Listing {
     let workspace = inputs.snapshot.workspace();
-    let library: Option<Vec<&crate::model::pages::IndexedPackage>> =
-        inputs.orbit.and_then(|model| model.indexed.known()).map(|list| beside_your_projects(list, workspace, LibraryOrder::Name));
+    let library: Option<Vec<&crate::model::pages::IndexedPackage>> = inputs
+        .orbit
+        .and_then(|model| model.indexed.known())
+        .map(|list| beside_your_projects(list, workspace, LibraryOrder::Name));
     let indexed = library.as_deref();
     let packages = indexed.map_or(0, <[_]>::len);
     let projects = workspace.projects.len();
@@ -287,8 +340,19 @@ fn library(inputs: &Inputs<'_>) -> Listing {
         if packages == 1 { "" } else { "s" }
     );
     // The count is what the list shows: your projects and the packages beside them.
-    let counts = Counts { contents: Some(projects + packages), versions: None, rests_on: None, used_by: Some(projects) };
-    let head = Head { title: Some(Title::Library { detail: detail.into() }), counts: Some(counts), ..Head::default() };
+    let counts = Counts {
+        contents: Some(projects + packages),
+        versions: None,
+        rests_on: None,
+        used_by: Some(projects),
+    };
+    let head = Head {
+        title: Some(Title::Library {
+            detail: detail.into(),
+        }),
+        counts: Some(counts),
+        ..Head::default()
+    };
     let project_rows = || {
         workspace.projects.iter().map(|project| {
             let mut item = Item::new(
@@ -325,7 +389,10 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                             package.name.to_string(),
                             route.map_or(Do::Nothing, Do::Go),
                         );
-                        item.current = reading.as_ref().is_some_and(|reading| super::scope::book_of(reading) == super::scope::book_of(&package.package));
+                        item.current = reading.as_ref().is_some_and(|reading| {
+                            super::scope::book_of(reading)
+                                == super::scope::book_of(&package.package)
+                        });
                         item.warm = Some(PageKey::Package(package.package.clone()));
                         item.hoists = Some(Scope::Package(package.package.clone()));
                         // The release, quiet beside the name: two releases
@@ -337,21 +404,31 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                         rows.push(Row::Item(item));
                     }
                 }
-                None => rows.push(Row::Note("The library's packages are still being read.".into())),
+                None => rows.push(Row::Note(
+                    "The library's packages are still being read.".into(),
+                )),
             }
         }
         Lens::UsedBy => {
             if projects == 0 {
-                rows.push(Row::Note("No project of yours uses the library yet.".into()));
+                rows.push(Row::Note(
+                    "No project of yours uses the library yet.".into(),
+                ));
             } else {
                 rows.push(Row::heading("Yours", projects));
                 rows.extend(project_rows());
             }
         }
-        Lens::Versions => rows.push(Row::Note("Newer releases across the library are not indexed yet.".into())),
+        Lens::Versions => rows.push(Row::Note(
+            "Newer releases across the library are not indexed yet.".into(),
+        )),
         Lens::RestsOn => rows.push(Row::Note("The library rests on nothing.".into())),
     }
-    Listing { head, rows, matched: None }
+    Listing {
+        head,
+        rows,
+        matched: None,
+    }
 }
 
 /// What tells apart packages that share a name (two checkouts of one
@@ -360,10 +437,16 @@ fn library(inputs: &Inputs<'_>) -> Listing {
 /// share, as a quiet word (`backend/…` beside `tree/…`). A registry release
 /// is told apart by its version, which its row already carries; a name no
 /// other row has needs nothing.
-pub(crate) fn told_apart(packages: &[&crate::model::pages::IndexedPackage]) -> Vec<Option<SharedString>> {
+pub(crate) fn told_apart(
+    packages: &[&crate::model::pages::IndexedPackage],
+) -> Vec<Option<SharedString>> {
     let folders = |package: &crate::model::pages::IndexedPackage| -> Vec<String> {
         let path = package.package.as_str().trim_end_matches(['/', '\\']);
-        let mut parts: Vec<String> = path.split(['/', '\\']).filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect();
+        let mut parts: Vec<String> = path
+            .split(['/', '\\'])
+            .filter(|part| !part.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
         parts.pop();
         parts
     };
@@ -373,14 +456,18 @@ pub(crate) fn told_apart(packages: &[&crate::model::pages::IndexedPackage]) -> V
         .map(|(index, package)| {
             // A release (a purl, or a registry tree in the cargo cache) is
             // told apart by its version, drawn beside it.
-            let folder = |package: &crate::model::pages::IndexedPackage| package.package.is_local() && package.package.release_version().is_none();
+            let folder = |package: &crate::model::pages::IndexedPackage| {
+                package.package.is_local() && package.package.release_version().is_none()
+            };
             if !folder(package) {
                 return None;
             }
             let twins: Vec<Vec<String>> = packages
                 .iter()
                 .enumerate()
-                .filter(|(other, twin)| *other != index && folder(twin) && twin.name == package.name)
+                .filter(|(other, twin)| {
+                    *other != index && folder(twin) && twin.name == package.name
+                })
                 .map(|(_, twin)| folders(twin))
                 .collect();
             if twins.is_empty() {
@@ -390,10 +477,19 @@ pub(crate) fn told_apart(packages: &[&crate::model::pages::IndexedPackage]) -> V
             // The nearest folder, from the name up, where this root parts
             // from every twin.
             let depth = (1..=own.len()).find(|depth| {
-                twins.iter().all(|twin| twin.len() < *depth || twin[twin.len() - depth] != own[own.len() - depth])
+                twins.iter().all(|twin| {
+                    twin.len() < *depth || twin[twin.len() - depth] != own[own.len() - depth]
+                })
             })?;
             let word = &own[own.len() - depth];
-            Some(if depth == 1 { format!("{word}/") } else { format!("{word}/…") }.into())
+            Some(
+                if depth == 1 {
+                    format!("{word}/")
+                } else {
+                    format!("{word}/…")
+                }
+                .into(),
+            )
         })
         .collect()
 }
@@ -406,10 +502,16 @@ fn up_label(inputs: &Inputs<'_>, tree: Option<&OutlineTree>) -> Option<StepOut> 
         Scope::Package(package) => package.display_name().to_owned().into(),
         Scope::Node(symbol) => tree
             .and_then(|tree| locate(tree, symbol))
-            .map_or_else(|| symbol.identity().name().to_owned(), |found| super::outline::label(found.node).0)
+            .map_or_else(
+                || symbol.identity().name().to_owned(),
+                |found| super::outline::label(found.node).0,
+            )
             .into(),
     };
-    Some(StepOut { label, does: StepDoes::Pop })
+    Some(StepOut {
+        label,
+        does: StepDoes::Pop,
+    })
 }
 
 fn package_scope(inputs: &Inputs<'_>, package: &PackageRef) -> Listing {
@@ -421,8 +523,11 @@ fn package_scope(inputs: &Inputs<'_>, package: &PackageRef) -> Listing {
         .unwrap_or_default();
     let head = Head {
         step_out: up_label(inputs, tree),
-        title: Some(Title::Book { name: package.display_name().to_owned().into(), version: version.into() }),
-        releases: dossier.and_then(|dossier| releases(inputs.route, dossier, inputs.diffs)),
+        title: Some(Title::Book {
+            name: package.display_name().to_owned().into(),
+            version: version.into(),
+        }),
+        releases: dossier.and_then(|dossier| releases(inputs.route, dossier, inputs.diffs.clone())),
         counts: Some(package_counts(inputs, package, dossier)),
         ..Head::default()
     };
@@ -437,11 +542,21 @@ fn package_scope(inputs: &Inputs<'_>, package: &PackageRef) -> Listing {
         Lens::RestsOn => dossier.map_or_else(Vec::new, rests_on),
         Lens::UsedBy => dossier.map_or_else(Vec::new, |dossier| used_by(inputs, dossier)),
     };
-    Listing { head, rows, matched }
+    Listing {
+        head,
+        rows,
+        matched,
+    }
 }
 
-fn package_counts(inputs: &Inputs<'_>, package: &PackageRef, dossier: Option<&PackageDossier>) -> Counts {
-    let Some(dossier) = dossier else { return Counts::default() };
+fn package_counts(
+    inputs: &Inputs<'_>,
+    package: &PackageRef,
+    dossier: Option<&PackageDossier>,
+) -> Counts {
+    let Some(dossier) = dossier else {
+        return Counts::default();
+    };
     let crates = inputs.book.crates().len();
     let dependents = dossier.dependents.known().map(|list| list.len());
     // Contents counts what its list can show: on the intro, the items the
@@ -449,7 +564,13 @@ fn package_counts(inputs: &Inputs<'_>, package: &PackageRef, dossier: Option<&Pa
     // of the outline, groups closed or open.
     let intro = !inputs.filter.is_active() && reader_lists_modules(inputs, package);
     Counts {
-        contents: dossier.outline.known().map(|tree| if intro { super::outline::items(tree) } else { super::outline::tree_names(tree) }),
+        contents: dossier.outline.known().map(|tree| {
+            if intro {
+                super::outline::items(tree)
+            } else {
+                super::outline::tree_names(tree)
+            }
+        }),
         versions: dossier.versions.known().map(|list| list.len()),
         rests_on: dossier.dependencies.known().map(|list| list.len()),
         used_by: (crates > 0 || dependents.is_some()).then(|| crates + dependents.unwrap_or(0)),
@@ -460,11 +581,19 @@ fn package_counts(inputs: &Inputs<'_>, package: &PackageRef, dossier: Option<&Pa
 /// module: the one place the sidebar must not list them.
 fn reader_lists_modules(inputs: &Inputs<'_>, package: &PackageRef) -> bool {
     matches!(inputs.route, Route::Package(_))
-        && crate::runtime::store::route_package(inputs.route).is_some_and(|reading| super::scope::book_of(&reading) == super::scope::book_of(package))
+        && crate::runtime::store::route_package(inputs.route).is_some_and(|reading| {
+            super::scope::book_of(&reading) == super::scope::book_of(package)
+        })
 }
 
-fn contents(inputs: &Inputs<'_>, package: &PackageRef, dossier: Option<&PackageDossier>) -> (Vec<Row>, Option<Matched>) {
-    let Some(dossier) = dossier else { return (Vec::new(), None) };
+fn contents(
+    inputs: &Inputs<'_>,
+    package: &PackageRef,
+    dossier: Option<&PackageDossier>,
+) -> (Vec<Row>, Option<Matched>) {
+    let Some(dossier) = dossier else {
+        return (Vec::new(), None);
+    };
     let tree = match &dossier.outline {
         Known::Known(tree) => tree,
         Known::Unknown(gap) => return (vec![Row::Note(gap_words(gap))], None),
@@ -484,7 +613,11 @@ fn contents(inputs: &Inputs<'_>, package: &PackageRef, dossier: Option<&PackageD
 }
 
 /// A narrowed list's rows and its count; an empty one says so.
-fn narrowed(mut rows: Vec<Row>, matched: Matched, filter: Filter<'_>) -> (Vec<Row>, Option<Matched>) {
+fn narrowed(
+    mut rows: Vec<Row>,
+    matched: Matched,
+    filter: Filter<'_>,
+) -> (Vec<Row>, Option<Matched>) {
     if !filter.is_active() {
         return (rows, None);
     }
@@ -497,7 +630,9 @@ fn narrowed(mut rows: Vec<Row>, matched: Matched, filter: Filter<'_>) -> (Vec<Ro
 /// Whether the reader is on this book (any release of it): what the pin and
 /// the release being read mean for a dossier.
 fn on_this_book(route: &Route, dossier: &PackageDossier) -> bool {
-    crate::runtime::store::route_package(route).is_some_and(|reading| super::scope::book_of(&reading) == super::scope::book_of(&dossier.package))
+    crate::runtime::store::route_package(route).is_some_and(|reading| {
+        super::scope::book_of(&reading) == super::scope::book_of(&dossier.package)
+    })
 }
 
 /// The release the reader pins in this book: the route's own, when the reader is on the book.
@@ -507,23 +642,36 @@ fn pin_of(route: &Route, dossier: &PackageDossier) -> Option<String> {
         Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok(),
         Route::Orbit(_) | Route::World => None,
     };
-    routed.filter(|_| on_this_book(route, dossier)).and_then(|package| package.version().map(str::to_owned))
+    routed
+        .filter(|_| on_this_book(route, dossier))
+        .and_then(|package| package.version().map(str::to_owned))
 }
 
 /// The release being read (not the pin), when the reader is on this book at another release.
 fn viewing_of<'a>(route: &'a Route, dossier: &PackageDossier) -> Option<&'a str> {
-    route.at().map(|at| at.as_str()).filter(|_| on_this_book(route, dossier))
+    route
+        .at()
+        .map(|at| at.as_str())
+        .filter(|_| on_this_book(route, dossier))
 }
 
 /// The version comb's releases and what it needs to draw the pin and the
 /// release being read.
-fn releases(route: &Route, dossier: &PackageDossier, diffs: Option<&'static Crate>) -> Option<Releases> {
+fn releases(
+    route: &Route,
+    dossier: &PackageDossier,
+    diffs: Option<std::sync::Arc<Crate>>,
+) -> Option<Releases> {
     let versions = dossier.versions.known()?;
     let mut list: Vec<_> = versions.iter().collect();
     list.reverse();
-    let viewing = viewing_of(route, dossier).and_then(|at| list.iter().position(|entry| entry.version.as_ref() == at));
+    let viewing = viewing_of(route, dossier)
+        .and_then(|at| list.iter().position(|entry| entry.version.as_ref() == at));
     let pinned = pin_of(route, dossier)
-        .and_then(|version| list.iter().position(|entry| entry.version.as_ref() == version))
+        .and_then(|version| {
+            list.iter()
+                .position(|entry| entry.version.as_ref() == version)
+        })
         .or_else(|| list.iter().position(|entry| entry.current));
     Some(Releases {
         list: list
@@ -549,11 +697,19 @@ fn releases(route: &Route, dossier: &PackageDossier, diffs: Option<&'static Crat
 /// back.
 fn versions(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
     let list = match &dossier.versions {
-        Known::Known(list) if list.is_empty() => return vec![Row::Note("No releases are recorded for this package.".into())],
+        Known::Known(list) if list.is_empty() => {
+            return vec![Row::Note(
+                "No releases are recorded for this package.".into(),
+            )];
+        }
         Known::Known(list) => list,
         Known::Unknown(gap) => return vec![Row::Note(gap_words(gap))],
     };
-    let pinned = pin_of(inputs.route, dossier).or_else(|| list.iter().find(|entry| entry.current).map(|entry| entry.version.to_string()));
+    let pinned = pin_of(inputs.route, dossier).or_else(|| {
+        list.iter()
+            .find(|entry| entry.current)
+            .map(|entry| entry.version.to_string())
+    });
     let viewing = viewing_of(inputs.route, dossier).map(str::to_owned);
     let changed = inputs.book.compared().map(|compared| compared.changed);
     let mut rows = vec![Row::heading("Releases", list.len())];
@@ -569,7 +725,13 @@ fn versions(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
             ReleaseMark::Other
         };
         let at = (!is_pin).then(|| ReleaseId::new(&version).ok()).flatten();
-        let mut item = Item::new(RowId::Release(version.as_str().into()), 0, Mark::Release(mark), version.clone(), Do::Release(at));
+        let mut item = Item::new(
+            RowId::Release(version.as_str().into()),
+            0,
+            Mark::Release(mark),
+            version.clone(),
+            Do::Release(at),
+        );
         item.current = is_viewing || (is_pin && viewing.is_none());
         item.dim = entry.standing == Standing::Yanked;
         item.sub = if is_pin {
@@ -581,8 +743,15 @@ fn versions(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
         } else {
             None
         };
-        if is_viewing && let Some(changed) = changed.and_then(|changed| u32::try_from(changed).ok()).filter(|changed| *changed > 0) {
-            item.trailing = Trailing::State(RowState { change: Change::Changes(changed), ..RowState::default() });
+        if is_viewing
+            && let Some(changed) = changed
+                .and_then(|changed| u32::try_from(changed).ok())
+                .filter(|changed| *changed > 0)
+        {
+            item.trailing = Trailing::State(RowState {
+                change: Change::Changes(changed),
+                ..RowState::default()
+            });
         }
         rows.push(Row::Item(item));
     }
@@ -643,7 +812,9 @@ fn used_by(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
             package_route(&record.package).map_or(Do::Nothing, Do::Go),
         );
         item.warm = Some(PageKey::Package(record.package.clone()));
-        item.trailing = record.version.known().map_or(Trailing::Nothing, |version| Trailing::Words(version.to_string().into()));
+        item.trailing = record.version.known().map_or(Trailing::Nothing, |version| {
+            Trailing::Words(version.to_string().into())
+        });
         Row::Item(item)
     };
     let (yours, others): (Vec<_>, Vec<_>) = dependents
@@ -669,9 +840,25 @@ fn used_by(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
 }
 
 fn crate_row(inputs: &Inputs<'_>, reach: &Reach) -> Item {
-    let mut item = Item::new(RowId::Crate(reach.by.clone()), 0, Mark::Kind(Kind::Module), reach.by.shared(), Do::Via(reach.by.clone()));
-    item.sub = Some(format!("{} item{}", reach.items, if reach.items == 1 { "" } else { "s" }).into());
-    item.trailing = Trailing::State(RowState { uses: Some(reach.uses), ..RowState::default() });
+    let mut item = Item::new(
+        RowId::Crate(reach.by.clone()),
+        0,
+        Mark::Kind(Kind::Module),
+        reach.by.shared(),
+        Do::Via(reach.by.clone()),
+    );
+    item.sub = Some(
+        format!(
+            "{} item{}",
+            reach.items,
+            if reach.items == 1 { "" } else { "s" }
+        )
+        .into(),
+    );
+    item.trailing = Trailing::State(RowState {
+        uses: Some(reach.uses),
+        ..RowState::default()
+    });
     item.current = inputs.filter.via == Some(&reach.by);
     item
 }
@@ -680,13 +867,25 @@ fn crate_row(inputs: &Inputs<'_>, reach: &Reach) -> Item {
 
 fn node_scope(inputs: &Inputs<'_>, symbol: &SymbolRef) -> Listing {
     let Some(package) = inputs.crumbs.package() else {
-        return Listing { head: bare_head(inputs), rows: vec![Row::Note("No package is open.".into())], matched: None };
+        return Listing {
+            head: bare_head(inputs),
+            rows: vec![Row::Note("No package is open.".into())],
+            matched: None,
+        };
     };
     let tree = inputs.dossier.and_then(|dossier| dossier.outline.known());
     let found = tree.and_then(|tree| locate(tree, symbol));
     let Some(Located { node, ancestors }) = found else {
-        let rows = if inputs.dossier.is_some() { vec![Row::Note("It is not in this release's outline.".into())] } else { Vec::new() };
-        return Listing { head: bare_head(inputs), rows, matched: None };
+        let rows = if inputs.dossier.is_some() {
+            vec![Row::Note("It is not in this release's outline.".into())]
+        } else {
+            Vec::new()
+        };
+        return Listing {
+            head: bare_head(inputs),
+            rows,
+            matched: None,
+        };
     };
     let members = super::outline::kids(node).count();
     let module = node.decl.kind == Some(backend_library::DeclarationKind::Module);
@@ -701,10 +900,22 @@ fn node_scope(inputs: &Inputs<'_>, symbol: &SymbolRef) -> Listing {
         title: Some(Title::Node {
             kind: crate::shell::kit::kind_of(node.decl.kind),
             name: super::outline::label(node).0.into(),
-            detail: format!("{}{} · {members} {noun}", super::outline::label(node).1.map(|quiet| format!("{quiet} · ")).unwrap_or_default(), node.decl.kind_name()).into(),
+            detail: format!(
+                "{}{} · {members} {noun}",
+                super::outline::label(node)
+                    .1
+                    .map(|quiet| format!("{quiet} · "))
+                    .unwrap_or_default(),
+                node.decl.kind_name()
+            )
+            .into(),
         }),
         counts: Some(Counts {
-            contents: Some(super::outline::kids(node).map(super::outline::names).sum::<usize>()),
+            contents: Some(
+                super::outline::kids(node)
+                    .map(super::outline::names)
+                    .sum::<usize>(),
+            ),
             versions: None,
             rests_on: None,
             used_by: None,
@@ -714,17 +925,32 @@ fn node_scope(inputs: &Inputs<'_>, symbol: &SymbolRef) -> Listing {
     let mut matched = None;
     let rows = match inputs.lens {
         Lens::Contents => {
-            let outline = Outline { package, current: inputs.current.as_ref(), folds: inputs.folds, book: inputs.book, filter: inputs.filter };
-            let Listed { rows, matched: count } = outline.node_rows(node, &ancestors);
+            let outline = Outline {
+                package,
+                current: inputs.current.as_ref(),
+                folds: inputs.folds,
+                book: inputs.book,
+                filter: inputs.filter,
+            };
+            let Listed {
+                rows,
+                matched: count,
+            } = outline.node_rows(node, &ancestors);
             let (rows, narrowed_count) = narrowed(rows, count, inputs.filter);
             matched = narrowed_count;
             rows
         }
-        Lens::Versions => vec![Row::Note("A declaration's history is not indexed yet.".into())],
+        Lens::Versions => vec![Row::Note(
+            "A declaration's history is not indexed yet.".into(),
+        )],
         Lens::RestsOn => vec![Row::Note("What it is made of is not indexed yet.".into())],
         Lens::UsedBy => node_users(inputs, node, &ancestors),
     };
-    Listing { head, rows, matched }
+    Listing {
+        head,
+        rows,
+        matched,
+    }
 }
 
 /// The crates of yours that use a hoisted item, the busiest first.
@@ -734,10 +960,22 @@ fn node_users(inputs: &Inputs<'_>, node: &OutlineNode, ancestors: &[&OutlineNode
     if users.is_empty() {
         return vec![Row::Note("No crate of yours is known to use it.".into())];
     }
-    let mut rows = vec![Row::Heading(Heading { words: "Your code".into(), count: Some(users.len()) })];
+    let mut rows = vec![Row::Heading(Heading {
+        words: "Your code".into(),
+        count: Some(users.len()),
+    })];
     for usage in users {
-        let mut item = Item::new(RowId::Crate(usage.by.clone()), 0, Mark::Kind(Kind::Module), usage.by.shared(), Do::Via(usage.by.clone()));
-        item.trailing = Trailing::State(RowState { uses: Some(usage.uses), ..RowState::default() });
+        let mut item = Item::new(
+            RowId::Crate(usage.by.clone()),
+            0,
+            Mark::Kind(Kind::Module),
+            usage.by.shared(),
+            Do::Via(usage.by.clone()),
+        );
+        item.trailing = Trailing::State(RowState {
+            uses: Some(usage.uses),
+            ..RowState::default()
+        });
         item.current = inputs.filter.via == Some(&usage.by);
         rows.push(Row::Item(item));
     }
@@ -746,7 +984,11 @@ fn node_users(inputs: &Inputs<'_>, node: &OutlineNode, ancestors: &[&OutlineNode
 
 /// A header with only the way out, for a scope whose node is not there.
 fn bare_head(inputs: &Inputs<'_>) -> Head {
-    Head { step_out: up_label(inputs, None), counts: Some(Counts::default()), ..Head::default() }
+    Head {
+        step_out: up_label(inputs, None),
+        counts: Some(Counts::default()),
+        ..Head::default()
+    }
 }
 
 #[cfg(test)]
@@ -754,11 +996,21 @@ mod tests {
     use super::*;
 
     fn dependency(name: &str) -> Row {
-        Row::Item(Item::new(RowId::Dependency(name.into()), 0, Mark::Kind(Kind::Package), name.to_owned(), Do::Nothing))
+        Row::Item(Item::new(
+            RowId::Dependency(name.into()),
+            0,
+            Mark::Kind(Kind::Package),
+            name.to_owned(),
+            Do::Nothing,
+        ))
     }
 
     fn listing(rows: Vec<Row>) -> Listing {
-        Listing { head: Head::default(), rows, matched: None }
+        Listing {
+            head: Head::default(),
+            rows,
+            matched: None,
+        }
     }
 
     fn words(listing: &Listing) -> Vec<String> {
@@ -775,7 +1027,11 @@ mod tests {
 
     fn indexed(root: &str) -> crate::model::pages::IndexedPackage {
         let package = PackageRef::parse(root).expect("a package");
-        crate::model::pages::IndexedPackage { name: package.display_name().into(), package, readiness: crate::model::pages::Readiness::Ready }
+        crate::model::pages::IndexedPackage {
+            name: package.display_name().into(),
+            package,
+            readiness: crate::model::pages::Readiness::Ready,
+        }
     }
 
     /// Two roots with one name (a checkout and a copy of it) are told apart
@@ -793,39 +1049,114 @@ mod tests {
             indexed("pkg:cargo/toml@1.1.6"),
         ];
         let refs: Vec<_> = list.iter().collect();
-        let apart: Vec<Option<String>> = told_apart(&refs).into_iter().map(|word| word.map(|word| word.to_string())).collect();
+        let apart: Vec<Option<String>> = told_apart(&refs)
+            .into_iter()
+            .map(|word| word.map(|word| word.to_string()))
+            .collect();
         assert_eq!(
             apart,
-            vec![Some("backend/…".to_owned()), Some("tree/…".to_owned()), None, Some("one/".to_owned()), Some("two/".to_owned()), None, None]
+            vec![
+                Some("backend/…".to_owned()),
+                Some("tree/…".to_owned()),
+                None,
+                Some("one/".to_owned()),
+                Some("two/".to_owned()),
+                None,
+                None
+            ]
         );
     }
 
     #[test]
     fn a_local_package_at_a_projects_folder_or_with_its_name_is_the_project_and_appears_once() {
-        assert!(is_a_project("/work/toml_pin", "toml_pin", true, "/work/toml_pin", "pin"), "the same folder");
-        assert!(is_a_project("/index/copy", "toml_pin", true, "/work/toml_pin", "toml_pin"), "the same name");
-        assert!(!is_a_project("pkg:cargo/toml_pin@0.1.0", "toml_pin", false, "/work/other", "toml_pin"), "a registry release is not your project, even with the name");
-        assert!(!is_a_project("/work/present", "present", true, "/work/toml_pin", "toml_pin"), "another local package stays a package");
+        assert!(
+            is_a_project("/work/toml_pin", "toml_pin", true, "/work/toml_pin", "pin"),
+            "the same folder"
+        );
+        assert!(
+            is_a_project(
+                "/index/copy",
+                "toml_pin",
+                true,
+                "/work/toml_pin",
+                "toml_pin"
+            ),
+            "the same name"
+        );
+        assert!(
+            !is_a_project(
+                "pkg:cargo/toml_pin@0.1.0",
+                "toml_pin",
+                false,
+                "/work/other",
+                "toml_pin"
+            ),
+            "a registry release is not your project, even with the name"
+        );
+        assert!(
+            !is_a_project(
+                "/work/present",
+                "present",
+                true,
+                "/work/toml_pin",
+                "toml_pin"
+            ),
+            "another local package stays a package"
+        );
     }
 
     #[test]
-    fn narrowing_a_flat_list_keeps_matches_under_their_headings_and_drops_a_heading_with_nothing_left() {
-        let rows = vec![Row::heading("Yours", 1), dependency("desktop"), Row::heading("In the library", 2), dependency("toml_pin"), dependency("serde")];
+    fn narrowing_a_flat_list_keeps_matches_under_their_headings_and_drops_a_heading_with_nothing_left()
+     {
+        let rows = vec![
+            Row::heading("Yours", 1),
+            dependency("desktop"),
+            Row::heading("In the library", 2),
+            dependency("toml_pin"),
+            dependency("serde"),
+        ];
         let narrowed = narrowed_by_name(listing(rows), "TOML");
-        assert_eq!(words(&narrowed), ["IN THE LIBRARY", "toml_pin", "TOML in the whole library"]);
-        assert_eq!(narrowed.matched, Some(Matched { shown: 1, of: 3 }), "one of the three rows");
-        let kept = narrowed.rows.iter().filter_map(Row::item).next().expect("the match");
-        assert_eq!(kept.hit, Some(0..4), "the typed words underlined, whatever their case");
+        assert_eq!(
+            words(&narrowed),
+            ["IN THE LIBRARY", "toml_pin", "TOML in the whole library"]
+        );
+        assert_eq!(
+            narrowed.matched,
+            Some(Matched { shown: 1, of: 3 }),
+            "one of the three rows"
+        );
+        let kept = narrowed
+            .rows
+            .iter()
+            .filter_map(Row::item)
+            .next()
+            .expect("the match");
+        assert_eq!(
+            kept.hit,
+            Some(0..4),
+            "the typed words underlined, whatever their case"
+        );
     }
 
     #[test]
     fn the_last_row_widens_the_words_to_find_and_is_there_even_when_nothing_matched() {
         let narrowed = narrowed_by_name(listing(vec![dependency("desktop")]), "zzz");
-        assert_eq!(words(&narrowed), ["Nothing here matches.", "zzz in the whole library"]);
+        assert_eq!(
+            words(&narrowed),
+            ["Nothing here matches.", "zzz in the whole library"]
+        );
         assert_eq!(narrowed.matched, Some(Matched { shown: 0, of: 1 }));
-        let widen = narrowed.rows.last().and_then(Row::item).expect("the widening row");
+        let widen = narrowed
+            .rows
+            .last()
+            .and_then(Row::item)
+            .expect("the widening row");
         assert_eq!(widen.id, RowId::Widen);
-        assert_eq!(widen.does, Do::Widen(SearchQuery::new("zzz", SearchQuery::DEFAULT_LIMIT).expect("query")), "Find gets exactly the typed words");
+        assert_eq!(
+            widen.does,
+            Do::Widen(SearchQuery::new("zzz", SearchQuery::DEFAULT_LIMIT).expect("query")),
+            "Find gets exactly the typed words"
+        );
         assert_eq!(widen.trailing, Trailing::Words("↵".into()));
     }
 
@@ -842,7 +1173,11 @@ mod tests {
         let mut already = listing(vec![dependency("glyph"), dependency("KindGlyph")]);
         already.matched = Some(Matched { shown: 1, of: 11 });
         let narrowed = narrowed_by_name(already, "kind");
-        assert_eq!(words(&narrowed), ["glyph", "KindGlyph", "kind in the whole library"], "the parent stays as context: only the widening row is added");
+        assert_eq!(
+            words(&narrowed),
+            ["glyph", "KindGlyph", "kind in the whole library"],
+            "the parent stays as context: only the widening row is added"
+        );
         assert_eq!(narrowed.matched, Some(Matched { shown: 1, of: 11 }));
     }
 }

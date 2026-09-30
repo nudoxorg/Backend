@@ -215,8 +215,6 @@ pub struct DataStore {
     /// it shows the world. Leaving the world drops it.
     tour: Option<(PackageRef, u64)>,
     tours: u64,
-    /// The fixture world's fault the window was last told of (told once).
-    world_fault: Option<super::fixture_world::WorldFault>,
     /// The owner behind the reads: its phase, and the pages held for it.
     owner: OwnerLink,
     /// The launch snapshot: seeded pages, and saving them for next time.
@@ -346,7 +344,6 @@ impl DataStore {
             tour: None,
             tours: 0,
             notice: None,
-            world_fault: None,
             owner: OwnerLink::serving(),
             keeper: SnapshotKeeper::default(),
         }
@@ -558,29 +555,10 @@ impl DataStore {
         }
     }
 
-    /// Tells the window once when the fixture world could not be read: the
-    /// graph and the hand's roads are then absent, and a person should know
-    /// why. Cheap to repeat (a views calls it from render).
-    fn announce_world_fault(&mut self, cx: &mut Context<Self>) {
-        let Some(fault) = super::fixture_world::fault(cx) else { return };
-        if self.world_fault.as_ref() == Some(&fault) {
-            return;
-        }
-        let notice = super::graph_focus::Notice {
-            visit: self.snapshot.route().clone(),
-            root: self.snapshot.key(),
-            message: Arc::from(format!("The world could not be read, so the graph and the hand's roads are missing. {fault}")),
-            retry: None,
-        };
-        self.world_fault = Some(fault);
-        self.set_notice(Some(notice), cx);
-    }
-
     /// Ensures one page is loaded at the current root. Idempotent: a page
     /// that is current or in flight costs nothing, so views may call this
     /// from render. A queued prefetch for the key is promoted.
     pub fn ensure(&mut self, key: PageKey, cx: &mut Context<Self>) -> Stamp {
-        self.announce_world_fault(cx);
         self.keep_focused_resident();
         match self.owner.phase() {
             OwnerPhase::Serving => {}

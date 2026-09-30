@@ -202,7 +202,7 @@ fn resume(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
         let name = backend_present::Identity::parse(symbol.id.as_str()).name().to_owned();
         (vec![("Continue at".to_owned(), false), (name, true)], route)
     } else {
-        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let view = crate::runtime::hand::hand_view_for(&hand, snapshot, cx);
         let last = view.cards.iter().max_by_key(|card| card.held.touched_at)?;
         let route = crate::shell::root::held_route(&last.held)?;
         let ago = ago(crate::shell::root::now_ms().saturating_sub(last.held.touched_at));

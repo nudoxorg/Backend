@@ -466,7 +466,7 @@ impl Element for Tracked {
             self.child.prepaint(window, cx);
             return None;
         }
-        facet::probe::record_target(
+        facet::probe::record_target_in(
             cx,
             &ElementId::Name(self.id.clone()),
             bounds,
@@ -477,6 +477,7 @@ impl Element for Tracked {
                 focusable: true,
                 clickable: true,
             },
+            window,
         );
         self.child.prepaint(window, cx);
         self.source.as_ref().map(|_| window.insert_hitbox(bounds, HitboxBehavior::Normal))

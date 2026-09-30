@@ -55,6 +55,10 @@ impl CommandSpec {
                 | CommandId::TreeOpen
                 | CommandId::TreeClose
                 | CommandId::ProjectTree
+                | CommandId::IndexStart
+                | CommandId::IndexAwait
+                | CommandId::IndexCancel
+                | CommandId::IndexProgress
                 | CommandId::AdvisoryRefresh
                 | CommandId::PackageGraphPage
         )
@@ -87,7 +91,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 43] = [
+pub const COMMANDS: [CommandSpec; 47] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -432,6 +436,38 @@ pub const COMMANDS: [CommandSpec; 43] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Registry,
     },
+    CommandSpec {
+        id: CommandId::IndexStart,
+        name: "index_start",
+        title: "Start Indexing",
+        description: "Start one package indexing job and return its owner-issued ticket.",
+        mutation: CommandMutation::Write,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::IndexAwait,
+        name: "index_await",
+        title: "Wait for Indexing",
+        description: "Wait for the terminal receipt of one owner-issued package indexing job.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::IndexCancel,
+        name: "index_cancel",
+        title: "Cancel Indexing",
+        description: "Request cancellation of one exact owner-issued package indexing job.",
+        mutation: CommandMutation::Write,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::IndexProgress,
+        name: "index_progress",
+        title: "Index Progress",
+        description: "Read the next bounded page of typed progress facts for one owner-issued package indexing job.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
 ];
 
 /// Finds one registry row.
@@ -480,6 +516,10 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::ForgeReference => 39,
         CommandId::ProjectTree => 40,
         CommandId::AdvisoryRefresh => 41,
+        CommandId::IndexStart => 43,
+        CommandId::IndexAwait => 44,
+        CommandId::IndexCancel => 45,
+        CommandId::IndexProgress => 46,
         CommandId::PackageGraphPage => 42,
     };
     COMMANDS[index]

@@ -950,7 +950,7 @@ fn rust_terminal<'diagnostic>(
 /// Writes a bounded Rust authority summary while retaining the exact typed cause separately.
 /// Cargo's raw error chain can contain absolute paths and process configuration, so the public
 /// bytes contain only a closed explanation and a validated package name when Cargo supplies one.
-fn rust_authority_diagnostic<'diagnostic>(
+pub(crate) fn rust_authority_diagnostic<'diagnostic>(
     output: Option<&'diagnostic mut [u8]>,
     cause: &backend_frontend_rust::legacy::RustAuthorityError,
     is_build_script: bool,
@@ -987,6 +987,16 @@ fn rust_authority_diagnostic<'diagnostic>(
             } else {
                 let _ = message.write_str("Rust Cargo workspace loading failed.");
             }
+        }
+        RustError::CargoMetadataIncomplete { policy, .. } => {
+            let policy = match policy {
+                backend_frontend_rust::legacy::RustCargoMetadataPolicy::Online => "online",
+                backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline => "offline",
+            };
+            let _ = write!(
+                message,
+                "Full Cargo dependency and feature resolution is incomplete under the {policy} policy; no-dependency metadata cannot authorize Rust semantics."
+            );
         }
         RustError::SourceNotLoaded { .. } => {
             let _ = message.write_str("rust-analyzer did not load the selected Cargo source.");
@@ -1638,5 +1648,60 @@ mod lifecycle_tests {
             panic!("the exact Rust workspace cause must remain attached");
         };
         assert_eq!(root, private_root);
+    }
+
+    #[test]
+    fn incomplete_cargo_metadata_keeps_typed_cause_and_safe_policy_diagnostic() {
+        use backend_frontend_rust::legacy::{
+            CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustCargoMetadataPolicy,
+            RustAuthorityError,
+        };
+
+        let source = source();
+        let recipe = recipe(source);
+        let private_root = std::path::PathBuf::from("/private/work/serde_core");
+        let cause = lower::rust::RustCollectError::Authority(
+            RustAuthorityError::CargoMetadataIncomplete {
+                root: private_root.clone(),
+                policy: RustCargoMetadataPolicy::Offline,
+                cause: CargoMetadataIncompleteCause::Preflight(
+                    CargoMetadataPreflightError::CommandFailed {
+                        phase: "metadata full",
+                        status: "exit status: 101".to_owned(),
+                        stderr: "no matching package named `quote` found at /private/cache".to_owned(),
+                    },
+                ),
+            },
+        );
+        let mut scratch = [0xa5; MAX_NATIVE_DIAGNOSTIC_BYTES];
+        let failure = rust_terminal(source, recipe, Some(&mut scratch), false, cause);
+        let CompileFailure::Authority { failure, .. } = failure else {
+            panic!("incomplete Cargo metadata must remain an authority terminal");
+        };
+        let projection = failure.projection();
+        assert_eq!(projection.phase, AuthorityPhase::Resolve);
+        assert_eq!(projection.class, AuthorityDiagnosticClass::Binding);
+        assert_eq!(
+            projection.diagnostic.primary,
+            b"Full Cargo dependency and feature resolution is incomplete under the offline policy; no-dependency metadata cannot authorize Rust semantics."
+        );
+        let AuthorityFailure::Rust {
+            cause:
+                RustAuthorityError::CargoMetadataIncomplete {
+                    root,
+                    policy: RustCargoMetadataPolicy::Offline,
+                    cause:
+                        CargoMetadataIncompleteCause::Preflight(
+                            CargoMetadataPreflightError::CommandFailed { stderr, .. },
+                        ),
+                },
+            ..
+        } = failure
+        else {
+            panic!("the concrete Cargo metadata cause must remain attached");
+        };
+        assert_eq!(root, private_root);
+        assert!(stderr.contains("quote"));
+        assert!(stderr.contains("/private/cache"));
     }
 }

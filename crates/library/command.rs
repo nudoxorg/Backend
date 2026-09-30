@@ -157,6 +157,14 @@ pub enum CommandId {
     ProjectTree,
     /// Refresh the configured advisory sources.
     AdvisoryRefresh,
+    /// Begin one owner-managed local package index job.
+    IndexStart,
+    /// Await one owner-issued index job ticket.
+    IndexAwait,
+    /// Cancel one owner-issued index job ticket.
+    IndexCancel,
+    /// Read one bounded page of progress for an owner-issued index job ticket.
+    IndexProgress,
     /// Read one package graph page fenced to its selected root and facts witness.
     PackageGraphPage,
     /// Read engine health.

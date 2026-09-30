@@ -1076,18 +1076,18 @@ fn matrix(options: &Options) -> Result<()> {
             .count();
         let texts: usize = results
             .iter()
-            .map(|result| result.linted.coverage.texts)
+            .map(|result| result.linted.coverage.clip_visible_texts)
             .sum();
         let targets: usize = results
             .iter()
-            .map(|result| result.linted.coverage.targets)
+            .map(|result| result.linted.coverage.clip_visible_targets)
             .sum();
         let covered = texts + targets > 0 || compared > 0;
         if !covered {
             uncovered += 1;
         }
         println!(
-            "{}: {}  ({texts} text boxes, {targets} targets linted; {compared} settled==reduced comparisons{})",
+            "{}: {}  ({texts} visible text boxes, {targets} visible targets; {compared} settled==reduced comparisons{})",
             scene.id,
             if covered {
                 format!("{} of {total} cells pass", total - failing.len())
@@ -1287,10 +1287,15 @@ fn lint(options: &Options) -> Result<()> {
             .into_iter()
             .next()
             .map_or_else(|| fail(format!("{}: no frame", scene.id)), Ok)?;
-        let linted = lint::lint(&frame.image, &frame.ledger, frame.drawn.viewport);
-        let covered = linted.coverage.texts > 0 || linted.coverage.targets > 0;
+        let linted = lint::lint_with_painted(
+            &frame.image,
+            &frame.ledger,
+            frame.drawn.viewport,
+            &frame.painted_texts,
+        );
+        let covered = linted.coverage.clip_visible_texts > 0 || linted.coverage.clip_visible_targets > 0;
         println!(
-            "{} {}: {}  {} texts ({} hidden, {} under a veil), {} targets ({} under a veil), contrast measured on {} ({} not){}",
+            "{} {}: {}  {} clip-visible of {} texts ({} hidden, {} under a veil), {} clip-visible of {} targets ({} under a veil), contrast measured on {} ({} not), native ink {} verified/{} unseen/{} unverified{}",
             scene.id,
             suffix(&shot, frame.time_ms),
             if !covered {
@@ -1300,13 +1305,18 @@ fn lint(options: &Options) -> Result<()> {
             } else {
                 "FAIL"
             },
+            linted.coverage.clip_visible_texts,
             linted.coverage.texts,
             linted.coverage.hidden_texts,
             linted.coverage.occluded_texts,
+            linted.coverage.clip_visible_targets,
             linted.coverage.targets,
             linted.coverage.occluded_targets,
             linted.coverage.contrast,
             linted.coverage.contrast_skipped,
+            linted.coverage.ink_verified_texts,
+            linted.coverage.ink_unseen_texts,
+            linted.coverage.ink_unverified_texts,
             linted
                 .lowest_contrast
                 .as_ref()
