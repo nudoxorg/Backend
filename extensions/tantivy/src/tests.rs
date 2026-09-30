@@ -1034,6 +1034,48 @@ fn exact_rank_build_refuses_over_budget_before_retaining_a_snapshot() {
 }
 
 #[test]
+fn sparse_cold_reopen_residency_scales_with_live_rows_not_historical_slots() {
+    static NEXT_ROOT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let sequence = NEXT_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-sparse-reopen-{}-{sequence}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).expect("create sparse projection directory");
+    let documents = vec![(document(73), vec![("name".into(), "sparse canary".into())])];
+    let state = state_for(documents, [0x7b; 32]);
+    let slot_count = 4_000_000_u32;
+    let ordinal = slot_count - 1;
+    crate::engine::test_support::write_sparse_durable_fixture(
+        &state,
+        &directory,
+        slot_count,
+        ordinal,
+    )
+    .expect("write valid sparse durable projection");
+
+    let source = TantivySource::open_in_dir(&state, Limits::default(), &directory)
+        .expect("cold-open sparse ordinal root");
+    assert_eq!(
+        crate::engine::test_support::ordinal_residency(&source),
+        (slot_count, 1, 92),
+        "resident ordinal and identity arrays must allocate by live rows"
+    );
+    assert_eq!(
+        source
+            .search(&Query::new(vec!["sparse".into()], Limits::default()).expect("query"))
+            .expect("search sparse reopened root")
+            .iter()
+            .map(|hit| hit.document)
+            .collect::<Vec<_>>(),
+        vec![document(73)]
+    );
+    drop(source);
+    std::fs::remove_dir_all(directory).expect("remove sparse projection directory");
+}
+
+#[test]
 fn a_rare_query_uses_sparse_ranks_instead_of_a_corpus_sized_vector() {
     let documents = (1..=128)
         .map(|ordinal| {

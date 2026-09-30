@@ -179,6 +179,115 @@ struct LiveDocument {
     postings: u32,
 }
 
+/// Compact live-document storage. Stable Tantivy ordinals may contain holes,
+/// so resident memory scales with live rows rather than historical slots.
+#[derive(Clone, Default)]
+struct DocumentTable {
+    slot_count: u32,
+    live: Vec<OrdinalDocument>,
+}
+
+#[derive(Clone, Copy)]
+struct OrdinalDocument {
+    ordinal: u32,
+    document: LiveDocument,
+}
+
+#[derive(Clone, Copy)]
+struct IdentityOrdinal {
+    fingerprint: [u8; 16],
+    ordinal: u32,
+}
+
+impl DocumentTable {
+    fn from_live(slot_count: u32, live: Vec<OrdinalDocument>) -> Result<Self, Error> {
+        let mut previous: Option<u32> = None;
+        for entry in &live {
+            if entry.ordinal >= slot_count || previous.is_some_and(|value| value >= entry.ordinal) {
+                return Err(Error::MalformedInput);
+            }
+            previous = Some(entry.ordinal);
+        }
+        Ok(Self { slot_count, live })
+    }
+
+    fn get(&self, ordinal: usize) -> Option<&LiveDocument> {
+        let ordinal = u32::try_from(ordinal).ok()?;
+        self.live
+            .binary_search_by_key(&ordinal, |entry| entry.ordinal)
+            .ok()
+            .map(|index| &self.live[index].document)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (usize, &LiveDocument)> {
+        self.live
+            .iter()
+            .map(|entry| (entry.ordinal as usize, &entry.document))
+    }
+
+    fn identity_index(&self) -> Vec<IdentityOrdinal> {
+        let mut identities = self
+            .live
+            .iter()
+            .map(|entry| IdentityOrdinal {
+                fingerprint: entity_fingerprint(entry.document.id),
+                ordinal: entry.ordinal,
+            })
+            .collect::<Vec<_>>();
+        identities.sort_unstable_by_key(|entry| (entry.fingerprint, entry.ordinal));
+        identities
+    }
+
+    fn ordinal_for_entity(&self, identities: &[IdentityOrdinal], id: EntityId) -> Option<usize> {
+        let fingerprint = entity_fingerprint(id);
+        let start = identities.partition_point(|entry| entry.fingerprint < fingerprint);
+        identities[start..]
+            .iter()
+            .take_while(|entry| entry.fingerprint == fingerprint)
+            .find_map(|entry| {
+                self.get(entry.ordinal as usize)
+                    .filter(|document| document.id == id)
+                    .map(|_| entry.ordinal as usize)
+            })
+    }
+
+    fn merge_replacements(mut self, mut replacements: Vec<OrdinalDocument>) -> Result<Self, Error> {
+        replacements.sort_unstable_by_key(|entry| entry.ordinal);
+        if replacements
+            .windows(2)
+            .any(|pair| pair[0].ordinal == pair[1].ordinal)
+        {
+            return Err(Error::MalformedInput);
+        }
+        let mut merged = Vec::with_capacity(self.live.len().saturating_add(replacements.len()));
+        let mut old = self.live.into_iter().peekable();
+        let mut new = replacements.into_iter().peekable();
+        loop {
+            match (old.peek(), new.peek()) {
+                (Some(left), Some(right)) if left.ordinal == right.ordinal => {
+                    return Err(Error::MalformedInput);
+                }
+                (Some(left), Some(right)) if left.ordinal < right.ordinal => {
+                    merged.push(old.next().ok_or(Error::MalformedInput)?);
+                }
+                (Some(_), Some(_)) => merged.push(new.next().ok_or(Error::MalformedInput)?),
+                (Some(_), None) => merged.push(old.next().ok_or(Error::MalformedInput)?),
+                (None, Some(_)) => merged.push(new.next().ok_or(Error::MalformedInput)?),
+                (None, None) => break,
+            }
+        }
+        self.live = merged;
+        Ok(self)
+    }
+}
+
+fn entity_fingerprint(id: EntityId) -> [u8; 16] {
+    let digest = blake3::hash(id.as_bytes());
+    let mut fingerprint = [0_u8; 16];
+    fingerprint.copy_from_slice(&digest.as_bytes()[..16]);
+    fingerprint
+}
+
 /// A real in-memory Tantivy projection pinned to one exact lexical binding.
 pub struct TantivySource {
     binding: Binding,
@@ -193,7 +302,8 @@ pub struct TantivySource {
     ordinal: Field,
     rank_weight: Field,
     rank_bytes: Field,
-    documents: Vec<Option<LiveDocument>>,
+    documents: DocumentTable,
+    identity_ordinals: Vec<IdentityOrdinal>,
     _root_lease: Option<File>,
     poisoned: bool,
     rank_budget: RankSnapshotBudget,
@@ -264,26 +374,18 @@ enum RankStorage {
 impl RankStorage {
     fn from_entries(
         mut entries: Vec<(usize, Relevance)>,
-        documents: &[Option<LiveDocument>],
+        documents: &DocumentTable,
         budget: RankSnapshotBudget,
     ) -> Result<Self, TantivySourceError> {
         for (ordinal, _) in &entries {
-            if documents
-                .get(*ordinal)
-                .and_then(|document| *document)
-                .is_none()
-            {
+            if documents.get(*ordinal).is_none() {
                 return Err(Error::MalformedInput.into());
             }
         }
         entries.sort_unstable_by(
             |(left_ordinal, left_relevance), (right_ordinal, right_relevance)| {
-                let left_id = documents
-                    .get(*left_ordinal)
-                    .and_then(|document| document.map(|document| document.id));
-                let right_id = documents
-                    .get(*right_ordinal)
-                    .and_then(|document| document.map(|document| document.id));
+                let left_id = documents.get(*left_ordinal).map(|document| document.id);
+                let right_id = documents.get(*right_ordinal).map(|document| document.id);
                 match (left_id, right_id) {
                     (Some(left_id), Some(right_id)) => compare_ranked_hits(
                         RankedHit {
@@ -307,8 +409,8 @@ impl RankStorage {
                     .ok_or(Error::SizeLimit)?,
             )
             .ok_or(Error::SizeLimit)?;
-        let dense_bytes = documents
-            .len()
+        let dense_bytes = usize::try_from(documents.slot_count)
+            .map_err(|_| Error::SizeLimit)?
             .checked_mul(10)
             .and_then(|bytes| {
                 entries
@@ -329,7 +431,7 @@ impl RankStorage {
             .map(|(ordinal, _)| u32::try_from(*ordinal).map_err(|_| Error::SizeLimit))
             .collect::<Result<Vec<_>, _>>()?;
         if dense_bytes < sparse_bytes {
-            let mut dense = vec![[0_u8; 10]; documents.len()];
+            let mut dense = vec![[0_u8; 10]; documents.slot_count as usize];
             for (ordinal, relevance) in entries {
                 let slot = dense.get_mut(ordinal).ok_or(Error::SizeLimit)?;
                 slot[..9].copy_from_slice(&CompactRelevance::from_relevance(relevance).0);
@@ -631,6 +733,7 @@ impl TantivySource {
         let documents =
             read_ordinal_map(state, projection_fingerprint(state.binding()), directory)?;
         let fields = projected.fields;
+        let identity_ordinals = documents.identity_index();
         Ok(Self {
             binding: state.binding(),
             coverage: state.coverage(),
@@ -645,6 +748,7 @@ impl TantivySource {
             rank_weight: fields.rank_weight,
             rank_bytes: fields.rank_bytes,
             documents,
+            identity_ordinals,
             _root_lease: None,
             poisoned: false,
             rank_budget: RankSnapshotBudget::default(),
@@ -971,13 +1075,14 @@ impl TantivySource {
             let _ = remove_projection_path(&staging);
             return Err(error.into());
         }
-        let mut staged = match Self::open_in_dir_with_budget(previous, limits, &staging, cache_budget) {
-            Ok(source) => source,
-            Err(error) => {
-                let _ = remove_projection_path(&staging);
-                return Err(error);
-            }
-        };
+        let mut staged =
+            match Self::open_in_dir_with_budget(previous, limits, &staging, cache_budget) {
+                Ok(source) => source,
+                Err(error) => {
+                    let _ = remove_projection_path(&staging);
+                    return Err(error);
+                }
+            };
         let revision = match staged.maintain(next, budget) {
             Ok(MaintainOutcome::Applied(revision)) => revision,
             Ok(MaintainOutcome::RebuildRequired) => {
@@ -1025,16 +1130,24 @@ impl TantivySource {
             return Err(Error::SizeLimit.into());
         }
         let mut writer = index.writer(WRITER_MEMORY_BYTES)?;
-        let mut documents = Vec::new();
+        let mut live = Vec::new();
         for (document, document_fields) in state.iter() {
-            let document_ordinal = u64::try_from(documents.len()).map_err(|_| Error::SizeLimit)?;
+            let document_ordinal = u64::try_from(live.len()).map_err(|_| Error::SizeLimit)?;
             let postings = write_fields(&writer, &fields, document_ordinal, document_fields)?;
-            documents.push(Some(LiveDocument {
-                id: document,
-                fields_digest: document_fields_digest(document_fields),
-                postings,
-            }));
+            live.push(OrdinalDocument {
+                ordinal: u32::try_from(document_ordinal).map_err(|_| Error::SizeLimit)?,
+                document: LiveDocument {
+                    id: document,
+                    fields_digest: document_fields_digest(document_fields),
+                    postings,
+                },
+            });
         }
+        let documents = DocumentTable::from_live(
+            u32::try_from(live.len()).map_err(|_| Error::SizeLimit)?,
+            live,
+        )?;
+        let identity_ordinals = documents.identity_index();
         writer.commit()?;
         // Join background merges so no thread is still rewriting the index
         // directory once the source is handed out.
@@ -1054,6 +1167,7 @@ impl TantivySource {
             rank_weight: fields.rank_weight,
             rank_bytes: fields.rank_bytes,
             documents,
+            identity_ordinals,
             _root_lease: None,
             poisoned: false,
             rank_budget: RankSnapshotBudget::default(),
@@ -1158,15 +1272,6 @@ impl TantivySource {
         if next.binding().workspace != self.binding.workspace {
             return Ok(None);
         }
-        let mut ordinals = BTreeMap::new();
-        for (ordinal, document) in self.documents.iter().enumerate() {
-            let Some(document) = document else {
-                continue;
-            };
-            if ordinals.insert(document.id, ordinal).is_some() {
-                return Err(Self::corrupt("duplicate live document identity"));
-            }
-        }
         let mut next_fields = BTreeMap::new();
         for (id, fields) in next.iter() {
             if next_fields.insert(id, fields).is_some() {
@@ -1175,19 +1280,21 @@ impl TantivySource {
         }
         let mut rewritten = Vec::new();
         let mut removed = Vec::new();
-        for (id, ordinal) in &ordinals {
-            let Some(current) = self.documents.get(*ordinal).copied().flatten() else {
-                return Err(Self::corrupt("live ordinal is empty"));
-            };
-            match next_fields.get(id) {
+        for (_, current) in self.documents.iter() {
+            let id = current.id;
+            match next_fields.get(&id) {
                 Some(fields) if document_fields_digest(fields) == current.fields_digest => {}
-                Some(_) => rewritten.push(*id),
-                None => removed.push(*id),
+                Some(_) => rewritten.push(id),
+                None => removed.push(id),
             }
         }
         let mut added = Vec::new();
         for id in next_fields.keys() {
-            if !ordinals.contains_key(id) {
+            if self
+                .documents
+                .ordinal_for_entity(&self.identity_ordinals, *id)
+                .is_none()
+            {
                 added.push(*id);
             }
         }
@@ -1219,7 +1326,7 @@ impl TantivySource {
         if term_count > budget.max_terms {
             return Ok(None);
         }
-        let resulting_slots = self.documents.len().saturating_add(added.len());
+        let resulting_slots = (self.documents.slot_count as usize).saturating_add(added.len());
         // Stable ordinals leave holes after deletion. Compact through a
         // complete rebuild before the sparse ordinal map grows without bound.
         if resulting_slots > MAX_ORDINAL_SLOTS
@@ -1229,26 +1336,35 @@ impl TantivySource {
         }
         let mut documents = self.documents.clone();
         let mut deletes = Vec::new();
+        let mut removed_ordinals = Vec::new();
         let mut retired_postings = 0u64;
         for id in removed.iter().chain(rewritten.iter()) {
-            let Some(ordinal) = ordinals.get(id).copied() else {
+            let Some(ordinal) = self
+                .documents
+                .ordinal_for_entity(&self.identity_ordinals, *id)
+            else {
                 return Err(Self::corrupt("planned document has no ordinal"));
             };
-            let Some(slot) = documents.get_mut(ordinal) else {
-                return Err(Self::corrupt("planned ordinal is outside the projection"));
-            };
-            let Some(current) = *slot else {
+            let Some(current) = self.documents.get(ordinal).copied() else {
                 return Err(Self::corrupt("planned ordinal is already empty"));
             };
             retired_postings = retired_postings
                 .checked_add(u64::from(current.postings))
                 .ok_or(Error::SizeLimit)?;
             deletes.push(u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?);
-            *slot = None;
+            removed_ordinals.push(u32::try_from(ordinal).map_err(|_| Error::SizeLimit)?);
         }
+        removed_ordinals.sort_unstable();
+        removed_ordinals.dedup();
+        documents
+            .live
+            .retain(|entry| removed_ordinals.binary_search(&entry.ordinal).is_err());
         let mut writes = Vec::new();
         for id in rewritten {
-            let Some(ordinal) = ordinals.get(&id).copied() else {
+            let Some(ordinal) = self
+                .documents
+                .ordinal_for_entity(&self.identity_ordinals, id)
+            else {
                 return Err(Self::corrupt("revised document has no ordinal"));
             };
             let Some(fields) = next_fields.get(&id) else {
@@ -1262,11 +1378,14 @@ impl TantivySource {
             });
         }
         for id in added {
-            let ordinal = u64::try_from(documents.len()).map_err(|_| Error::SizeLimit)?;
+            let ordinal = u64::from(documents.slot_count);
             let Some(fields) = next_fields.get(&id) else {
                 return Err(Self::corrupt("added document is missing its fields"));
             };
-            documents.push(None);
+            documents.slot_count = documents
+                .slot_count
+                .checked_add(1)
+                .ok_or(Error::SizeLimit)?;
             writes.push(PlannedWrite {
                 ordinal,
                 id,
@@ -1302,19 +1421,19 @@ impl TantivySource {
             rank_weight: self.rank_weight,
             rank_bytes: self.rank_bytes,
         };
+        let mut replacements = Vec::with_capacity(plan.writes.len());
         for write in plan.writes {
             let postings = write_fields(&writer, &fields, write.ordinal, &write.fields)?;
             added_postings = added_postings
                 .checked_add(u64::from(postings))
                 .ok_or(Error::SizeLimit)?;
-            let ordinal = usize::try_from(write.ordinal).map_err(|_| Error::SizeLimit)?;
-            let Some(slot) = plan.documents.get_mut(ordinal) else {
-                return Err(Error::SizeLimit.into());
-            };
-            *slot = Some(LiveDocument {
-                id: write.id,
-                fields_digest: write.fields_digest,
-                postings,
+            replacements.push(OrdinalDocument {
+                ordinal: u32::try_from(write.ordinal).map_err(|_| Error::SizeLimit)?,
+                document: LiveDocument {
+                    id: write.id,
+                    fields_digest: write.fields_digest,
+                    postings,
+                },
             });
         }
         writer.commit()?;
@@ -1326,7 +1445,8 @@ impl TantivySource {
             self.poisoned = true;
             return Err(error.into());
         }
-        self.documents = plan.documents;
+        self.documents = plan.documents.merge_replacements(replacements)?;
+        self.identity_ordinals = self.documents.identity_index();
         self.binding = next.binding();
         self.coverage = next.coverage();
         Ok(MaintainOutcome::Applied(ProjectionRevision {
@@ -1351,7 +1471,7 @@ impl TantivySource {
                 let document = self
                     .documents
                     .get(ordinal)
-                    .and_then(|document| document.map(|document| document.id))
+                    .map(|document| document.id)
                     .ok_or_else(|| Self::corrupt("rank ordinal is outside the binding"))?;
                 hits.push(RankedHit {
                     document,
@@ -1386,7 +1506,7 @@ impl TantivySource {
                 let document = self
                     .documents
                     .get(ordinal)
-                    .and_then(|document| document.map(|document| document.id))
+                    .map(|document| document.id)
                     .ok_or_else(|| Self::corrupt("rank ordinal is outside the binding"))?;
                 visit(RankedHit {
                     document,
@@ -1418,21 +1538,17 @@ impl TantivySource {
         if candidates.is_empty() {
             return Ok(BTreeMap::new());
         }
-        let requested = candidates
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
         self.with_ranked_snapshot(query, |snapshot| {
             let mut relevance = BTreeMap::new();
-            for (ordinal, document) in self.documents.iter().enumerate() {
-                let Some(document) = document else {
+            for candidate in candidates.iter().copied() {
+                let Some(ordinal) = self
+                    .documents
+                    .ordinal_for_entity(&self.identity_ordinals, candidate)
+                else {
                     continue;
                 };
-                if !requested.contains(&document.id) {
-                    continue;
-                }
                 if let Some(score) = snapshot.ranks.get(ordinal)? {
-                    relevance.insert(document.id, score);
+                    relevance.insert(candidate, score);
                 }
             }
             Ok(relevance)
@@ -1474,12 +1590,7 @@ impl TantivySource {
             })?;
         for ordinal in ranked_ordinals.keys() {
             let ordinal = usize::try_from(*ordinal).map_err(|_| Error::SizeLimit)?;
-            if self
-                .documents
-                .get(ordinal)
-                .and_then(|document| *document)
-                .is_none()
-            {
+            if self.documents.get(ordinal).is_none() {
                 return Err(Self::corrupt("posting ordinal is outside the binding"));
             }
         }
@@ -1540,18 +1651,11 @@ impl TantivySource {
     fn build_rank_snapshot(&self, query: &Query) -> Result<CachedRank, TantivySourceError> {
         let max_rows = self.rank_budget.max_scratch_bytes / RANK_SCRATCH_BYTES_PER_MATCH;
         let entries = if query.terms.is_empty() {
-            let live_rows = self
-                .documents
-                .iter()
-                .filter(|document| document.is_some())
-                .count();
+            let live_rows = self.documents.live.len();
             ensure_rank_scratch_capacity(live_rows, self.rank_budget.max_scratch_bytes)?;
             self.documents
                 .iter()
-                .enumerate()
-                .filter_map(|(ordinal, document)| {
-                    document.map(|_| (ordinal, Relevance::all_documents()))
-                })
+                .map(|(ordinal, _)| (ordinal, Relevance::all_documents()))
                 .collect::<Vec<_>>()
         } else {
             let mut candidates = self.query_clause_candidates(&query.terms[0], query, max_rows)?;
@@ -1754,32 +1858,25 @@ fn read_binding_stamp(directory: &Path) -> Result<[u8; 32], TantivySourceError> 
 fn write_ordinal_map(
     directory: &Path,
     fingerprint: [u8; 32],
-    documents: &[Option<LiveDocument>],
+    documents: &DocumentTable,
 ) -> Result<(), TantivySourceError> {
-    if documents.len() > MAX_ORDINAL_SLOTS {
+    if documents.slot_count as usize > MAX_ORDINAL_SLOTS {
         return Err(Error::SizeLimit.into());
     }
-    let live_count = documents
-        .iter()
-        .filter(|document| document.is_some())
-        .count();
+    let live_count = documents.live.len();
     let total_bytes = preflight_ordinal_map_capacity(live_count)?;
     let mut bytes = Vec::with_capacity(total_bytes);
     bytes.extend_from_slice(ORDINAL_MAP_MAGIC);
     bytes.extend_from_slice(&fingerprint);
-    bytes.extend_from_slice(
-        &u64::try_from(documents.len())
-            .map_err(|_| Error::SizeLimit)?
-            .to_le_bytes(),
-    );
+    bytes.extend_from_slice(&u64::from(documents.slot_count).to_le_bytes());
     bytes.extend_from_slice(
         &u64::try_from(live_count)
             .map_err(|_| Error::SizeLimit)?
             .to_le_bytes(),
     );
-    for (ordinal, document) in documents.iter().enumerate() {
-        let Some(document) = document else { continue };
-        let ordinal = u64::try_from(ordinal).map_err(|_| Error::SizeLimit)?;
+    for entry in &documents.live {
+        let ordinal = u64::from(entry.ordinal);
+        let document = &entry.document;
         bytes.extend_from_slice(&ordinal.to_le_bytes());
         bytes.extend_from_slice(document.id.as_bytes());
         bytes.extend_from_slice(&document.fields_digest);
@@ -1830,7 +1927,7 @@ fn read_ordinal_map(
     state: &DocumentState,
     fingerprint: [u8; 32],
     directory: &Path,
-) -> Result<Vec<Option<LiveDocument>>, TantivySourceError> {
+) -> Result<DocumentTable, TantivySourceError> {
     let path = directory.join(ORDINAL_MAP_FILE);
     let bytes = match read_bounded_regular_file(&path, MAX_ORDINAL_MAP_BYTES) {
         Ok(bytes) => bytes,
@@ -1890,7 +1987,8 @@ fn read_ordinal_map(
         ));
     }
     let mut seen = vec![false; expected.len()];
-    let mut documents = vec![None; slot_count];
+    let mut documents = Vec::with_capacity(live_count);
+    let mut previous_ordinal = None;
     for _ in 0..live_count {
         let Some(ordinal) =
             take_u64(&bytes, &mut offset).and_then(|ordinal| usize::try_from(ordinal).ok())
@@ -1919,11 +2017,12 @@ fn read_ordinal_map(
                 "durable projection ordinal witness is truncated",
             ));
         };
-        if ordinal >= slot_count || documents[ordinal].is_some() {
+        if ordinal >= slot_count || previous_ordinal.is_some_and(|previous| previous >= ordinal) {
             return Err(TantivySource::corrupt(
                 "durable projection ordinal is duplicated or outside the map",
             ));
         }
+        previous_ordinal = Some(ordinal);
         let expected_index = expected
             .binary_search_by(|(id, _)| id.as_bytes().cmp(&id_bytes))
             .map_err(|_| {
@@ -1959,14 +2058,21 @@ fn read_ordinal_map(
             ));
         }
         seen[expected_index] = true;
-        documents[ordinal] = Some(live);
+        documents.push(OrdinalDocument {
+            ordinal: u32::try_from(ordinal).map_err(|_| Error::SizeLimit)?,
+            document: live,
+        });
     }
     if offset != bytes.len() || seen.iter().any(|admitted| !admitted) {
         return Err(TantivySource::corrupt(
             "durable projection ordinal map omits a bound document",
         ));
     }
-    Ok(documents)
+    DocumentTable::from_live(
+        u32::try_from(slot_count).map_err(|_| Error::SizeLimit)?,
+        documents,
+    )
+    .map_err(|_| TantivySource::corrupt("durable projection ordinal table is malformed"))
 }
 
 fn write_projection_manifest(
@@ -2205,13 +2311,14 @@ fn projection_file_fingerprints(
 }
 
 fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, std::io::Error> {
-    let mut file = backend_platform::durability::open_regular_file_nofollow(path).map_err(|error| {
-        if is_nofollow_rejection(&error) {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, error)
-        } else {
-            error
-        }
-    })?;
+    let mut file =
+        backend_platform::durability::open_regular_file_nofollow(path).map_err(|error| {
+            if is_nofollow_rejection(&error) {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+            } else {
+                error
+            }
+        })?;
     let initial_length = file.metadata()?.len();
     if initial_length > maximum {
         return Err(std::io::Error::new(
@@ -2764,6 +2871,64 @@ pub(crate) mod test_support {
             .map_err(|_| super::TantivySource::corrupt("rank cache lock poisoned"))?;
         Ok(guard.as_ref().map_or(0, |rank| rank.ranks.byte_len()))
     }
+
+    pub(crate) fn ordinal_residency(source: &super::TantivySource) -> (u32, usize, usize) {
+        let live_bytes = source
+            .documents
+            .live
+            .capacity()
+            .saturating_mul(std::mem::size_of::<super::OrdinalDocument>());
+        let identity_bytes = source
+            .identity_ordinals
+            .capacity()
+            .saturating_mul(std::mem::size_of::<super::IdentityOrdinal>());
+        (
+            source.documents.slot_count,
+            source.documents.live.len(),
+            live_bytes.saturating_add(identity_bytes),
+        )
+    }
+
+    pub(crate) fn write_sparse_durable_fixture(
+        state: &super::DocumentState,
+        directory: &std::path::Path,
+        slot_count: u32,
+        ordinal: u32,
+    ) -> Result<(), super::TantivySourceError> {
+        let mut rows = state.iter();
+        let Some((id, fields)) = rows.next() else {
+            return Err(super::Error::MalformedInput.into());
+        };
+        if rows.next().is_some() || ordinal >= slot_count {
+            return Err(super::Error::MalformedInput.into());
+        }
+        let projected = super::projection_schema();
+        let index = super::Index::create_in_dir(directory, projected.schema)?;
+        let writer = index.writer(super::WRITER_MEMORY_BYTES)?;
+        let postings = super::write_fields(&writer, &projected.fields, u64::from(ordinal), fields)?;
+        writer.commit()?;
+        writer.wait_merging_threads()?;
+        let fingerprint = super::projection_fingerprint(state.binding());
+        let documents = super::DocumentTable::from_live(
+            slot_count,
+            vec![super::OrdinalDocument {
+                ordinal,
+                document: super::LiveDocument {
+                    id,
+                    fields_digest: super::document_fields_digest(fields),
+                    postings,
+                },
+            }],
+        )?;
+        super::write_ordinal_map(directory, fingerprint, &documents)?;
+        super::write_binding_stamp(directory, fingerprint)?;
+        super::write_projection_manifest(
+            directory,
+            fingerprint,
+            super::DurableCacheBudget::default(),
+        )?;
+        Ok(())
+    }
 }
 
 impl LexicalSource for TantivySource {
@@ -2807,7 +2972,6 @@ impl LexicalSource for TantivySource {
                     let selected = self
                         .documents
                         .get(ordinal)
-                        .and_then(|document| *document)
                         .ok_or_else(|| Self::corrupt("rank ordinal is outside the binding"))?;
                     let boundary = RankedHit {
                         document: selected.id,
@@ -2833,7 +2997,6 @@ impl LexicalSource for TantivySource {
                 let selected = self
                     .documents
                     .get(ordinal)
-                    .and_then(|document| *document)
                     .ok_or_else(|| Self::corrupt("rank ordinal is outside the binding"))?;
                 hits.push(RankedHit {
                     document: selected.id,
@@ -2869,7 +3032,7 @@ struct RevisionPlan {
     retired_postings: u64,
     deletes: Vec<u64>,
     writes: Vec<PlannedWrite>,
-    documents: Vec<Option<LiveDocument>>,
+    documents: DocumentTable,
 }
 
 struct PlannedWrite {
