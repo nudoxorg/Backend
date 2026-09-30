@@ -778,35 +778,21 @@ fn validate_store_directory(root: &Path, directory: &Path) -> io::Result<()> {
 }
 
 fn validate_directory_chain(directory: &Path) -> io::Result<()> {
-    // Reject links in every component that exists when checked. These opens
+    // Reject links in every component that exists when checked. These checks
     // do not pin ancestors across a later path operation; fully race-free
     // traversal needs the platform's handle-relative directory API.
-    let mut current = PathBuf::new();
-    for component in directory.components() {
-        match component {
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                current.push(component.as_os_str());
-            }
-            std::path::Component::Normal(component) => {
-                current.push(component);
-                backend_platform::durability::open_directory_readonly_nofollow(&current)?;
-            }
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "acquisition receipt path contains a parent component",
-                ));
-            }
-        }
-    }
-    if current.as_os_str().is_empty() {
+    if directory.as_os_str().is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "acquisition receipt directory is empty",
         ));
     }
-    backend_platform::durability::open_directory_readonly_nofollow(&current).map(|_| ())
+    validate_existing_directory_prefix(directory)?;
+    // Only the directory whose contents we own needs a readable handle.
+    // Known-path traversal through an ancestor needs search permission, not
+    // enumeration permission. Opening every ancestor rejects valid scoped
+    // access, including macOS grants to a folder inside protected Documents.
+    backend_platform::durability::open_directory_readonly_nofollow(directory).map(|_| ())
 }
 
 fn validate_existing_directory_prefix(directory: &Path) -> io::Result<()> {
@@ -830,9 +816,7 @@ fn validate_existing_directory_prefix(directory: &Path) -> io::Result<()> {
                             "acquisition receipt path contains a non-directory or link",
                         ));
                     }
-                    Ok(_) => {
-                        backend_platform::durability::open_directory_readonly_nofollow(&current)?;
-                    }
+                    Ok(_) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
                     Err(error) => return Err(error),
                 }
@@ -959,8 +943,8 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::acquisition::{
-        AcquisitionOutcome, AcquisitionRequest, DeltaChange, FactFreshness, ManifestEntry,
-        LeaseStore, MetadataRecord, Policy, ReleaseClaim, Resolve, TreeManifest,
+        AcquisitionOutcome, AcquisitionRequest, DeltaChange, FactFreshness, LeaseStore,
+        ManifestEntry, MetadataRecord, Policy, ReleaseClaim, Resolve, TreeManifest,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1442,6 +1426,72 @@ mod tests {
                 .recover(&request, record.owner_cursor, record.facts_frontier, 7)
                 .is_err()
         );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn receipt_store_survives_restart_beneath_a_search_only_ancestor() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if rustix::process::geteuid().is_root() {
+            // Root bypasses the permission boundary this regression exercises.
+            return;
+        }
+        struct RestorePermissions {
+            path: PathBuf,
+            permissions: fs::Permissions,
+        }
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.path, self.permissions.clone());
+            }
+        }
+
+        let root = temporary("search-only-ancestor");
+        let workspace = root.join("accessible-workspace");
+        fs::create_dir(&workspace).expect("create the granted workspace");
+        let restore = RestorePermissions {
+            path: root.clone(),
+            permissions: fs::metadata(&root)
+                .expect("ancestor metadata")
+                .permissions(),
+        };
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o300))
+            .expect("allow known-path traversal without enumeration");
+        assert_eq!(
+            backend_platform::durability::open_directory_readonly_nofollow(&root)
+                .expect_err("the ancestor cannot be opened for enumeration")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        let (mut record, request) = published_fixture();
+        let receipts = workspace.join("receipts");
+        let store = AcquisitionReceiptStore::open(&receipts).expect("open beneath scoped access");
+        let (locks, mut lease) = lease(&workspace, &request);
+        let published = store
+            .publish(record.clone(), &mut lease)
+            .expect("publish")
+            .expect("current lease publishes a receipt");
+        assert_ne!(
+            published, record.id,
+            "publication gives the placeholder its content identity"
+        );
+        record.id = published;
+        drop(lease);
+        drop(locks);
+        drop(store);
+
+        let cold =
+            AcquisitionReceiptStore::open(&receipts).expect("cold reopen beneath scoped access");
+        assert_eq!(
+            cold.recover(&request, record.owner_cursor, record.facts_frontier, 7)
+                .expect("read the exact durable receipt"),
+            Some(record)
+        );
+        drop(cold);
+        drop(restore);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
