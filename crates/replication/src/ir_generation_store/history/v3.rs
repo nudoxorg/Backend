@@ -6,6 +6,7 @@
 //! cycle. Commit/ref integration is deferred until V3 input authority can be
 //! checked by the history catalog.
 
+use super::v2::{create_typed_v2_locator, decode_typed_v2_locator};
 use super::*;
 
 const TYPED_V3_ROOT_DISCRIMINATOR: u8 = 3;

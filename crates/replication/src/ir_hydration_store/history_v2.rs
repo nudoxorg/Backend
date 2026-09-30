@@ -28,9 +28,12 @@ const MAX_TYPED_V2_STANDARD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TYPED_V2_LARGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_JUMBO_INTERIOR_BYTES: u64 = ROPE_NODE_WIRE_BYTES as u64;
 mod residency;
-pub(super) use residency::{
-    TypedV2Admission, TypedV2HistoryResidencyCache, TypedV2HistoryResidencyMetrics,
-    TypedV2HistoryResidencyReplay, TypedV2HistoryResidentReplay,
+use residency::{
+    TypedV2Admission, TypedV2ResidentKey, TypedV2ResidentObject, typed_v2_resident_key_digest,
+};
+pub use residency::{
+    TypedV2HistoryResidencyCache, TypedV2HistoryResidencyMetrics, TypedV2HistoryResidencyReplay,
+    TypedV2HistoryResidentReplay,
 };
 
 #[cfg(test)]
