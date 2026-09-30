@@ -6294,7 +6294,10 @@ mod tests {
                 if file_type.is_dir() {
                     measured_directory_bytes(&entry.path())
                 } else if file_type.is_file() {
-                    entry.metadata().map_or(0, |metadata| metadata.len())
+                    std::fs::symlink_metadata(entry.path())
+                        .ok()
+                        .filter(std::fs::Metadata::is_file)
+                        .map_or(0, |metadata| metadata.len())
                 } else {
                     0
                 }
