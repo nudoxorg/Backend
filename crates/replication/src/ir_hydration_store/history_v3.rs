@@ -490,6 +490,52 @@ impl FileSemanticRangeStore {
         })
     }
 
+    /// Checks whether a target-scoped V3 branch already names this exact
+    /// selected native image. This is an idempotency check for asynchronous
+    /// publication retries, not a payload-verification token; cold replay
+    /// still independently verifies the persisted closure before serving it.
+    pub fn selected_typed_v3_history_branch_current(
+        &self,
+        selected: &SelectedNativeHistoryImage<'_>,
+        branch: &crate::HistoryRefName,
+    ) -> Result<Option<crate::HistoryCommitId>, String> {
+        let _state_lock = self.acquire_state_lock()?;
+        let target = selected.target();
+        let Some(reference) = self.generations.history_ref(
+            target,
+            crate::HistoryRefKind::Branch,
+            branch,
+        )? else {
+            return Ok(None);
+        };
+        let commit_id = reference.commit();
+        let commit = self.generations.history_commit(target, commit_id)?;
+        if commit.generation_root().typed_v3_claim().is_none() {
+            return Ok(None);
+        }
+        let snapshot = self
+            .generations
+            .typed_v3_publication_snapshot(target, commit_id)?;
+        let persisted_manifest = snapshot.locator().validate()?;
+        let generation = self
+            .generations
+            .typed_v3_history_generation(target, commit_id)?;
+        if generation.target() == target
+            && generation.selected_stamp() == selected.selected_stamp()
+            && generation.image() == selected.image_key()
+            && generation.image_identity() == selected.image_identity()
+            && generation.manifest().root() == selected.manifest().root()
+            && commit.selected_stamp() == selected.selected_stamp()
+            && commit.manifest_root() == selected.manifest().root()
+            && persisted_manifest.root() == selected.manifest().root()
+            && persisted_manifest.input_claim() == selected.input_claim()
+        {
+            Ok(Some(commit_id))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Produces, verifies, and durably admits typed V3 history from the exact
     /// owner-selected native image. The selected manifest's opaque input
     /// claim is preserved for cold binding; this path does not persist or
@@ -1688,6 +1734,29 @@ mod tests {
             .expect("second successful branch CAS returns its V3 commit");
         assert_eq!(second_publication.previous(), Some(commit_id));
         assert_ne!(second_commit, commit_id);
+        assert_eq!(
+            store
+                .selected_typed_v3_history_branch_current(&selected_binding, &typed_branch)
+                .expect("read exact selected V3 branch tip"),
+            Some(second_commit),
+            "the retry check recognizes the exact committed selected image"
+        );
+        let absent_branch =
+            crate::HistoryRefName::new("selected-native-v3-absent").expect("empty branch name");
+        assert_eq!(
+            store
+                .selected_typed_v3_history_branch_current(&selected_binding, &absent_branch)
+                .expect("read absent selected V3 branch"),
+            None,
+            "the retry check does not invent a branch tip"
+        );
+        assert_eq!(
+            store
+                .selected_typed_v3_history_branch_current(&selected_binding, &local_cache)
+                .expect("read the separate transfer-cache branch"),
+            None,
+            "the selected V3 lineage does not reuse a V2 local-cache tip"
+        );
         let _lineage = store
             .history_ref_ancestry_proof(
                 &target,
