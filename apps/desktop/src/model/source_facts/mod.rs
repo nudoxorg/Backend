@@ -622,13 +622,16 @@ impl Service {
         package: &PackageRef,
         project: &Option<PathBuf>,
         authority: &Option<SourceAuthority>,
-        hints: &[(String, String)],
+        hints: &HashMap<String, String>,
     ) -> Option<Reading> {
         let slot = self.entries.get(package)?;
         if let Some(stored) = slot.project.as_ref() {
             if stored != project
                 || &slot.authority != authority
-                || slot.hints.as_deref() != Some(hints)
+                || !slot
+                    .hints
+                    .as_deref()
+                    .is_some_and(|identity| hints_match(identity, hints))
             {
                 return None;
             }
@@ -810,13 +813,15 @@ pub fn reading(
             generation: composition.generation,
         }
     });
-    let hint_identity = hint_identity(hints);
     if let Some(reading) = cx
         .default_global::<Service>()
-        .get(package, &wanted, &authority, &hint_identity)
+        .get(package, &wanted, &authority, hints)
     {
         return reading;
     }
+    // Canonicalize only when a new flight is needed. Cache hits compare the
+    // caller's map against stored pairs without allocating or sorting.
+    let hint_identity = hint_identity(hints);
     let Some((flight, cancellation)) =
         cx.default_global::<Service>()
             .begin(package.clone(), wanted.clone(), authority, hint_identity)
@@ -870,6 +875,13 @@ fn hint_identity(hints: &HashMap<String, String>) -> Vec<(String, String)> {
         .collect();
     identity.sort_unstable();
     identity
+}
+
+fn hints_match(identity: &[(String, String)], hints: &HashMap<String, String>) -> bool {
+    identity.len() == hints.len()
+        && identity
+            .iter()
+            .all(|(name, version)| hints.get(name) == Some(version))
 }
 
 /// Installs what a test or a capture harness has already read for a

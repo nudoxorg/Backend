@@ -8,7 +8,9 @@
 use super::docs::{first_paragraph, first_sentence, items_cancellable};
 use super::manifest::{self, Enabled};
 use super::scan::{Literals, mask, scan, scan_cancellable, sloc};
-use super::{Entry, Reading, SOURCE_FACTS_CAPACITY, Service, SourceAuthority, hint_identity};
+use super::{
+    Entry, Reading, SOURCE_FACTS_CAPACITY, Service, SourceAuthority, hint_identity,
+};
 use crate::model::pages::PackageRef;
 use crate::host::registry::CompositionGeneration;
 use facet::folio::state::{Build, Library, Unsafe};
@@ -130,7 +132,12 @@ fn source_facts_cache_keys_bind_exact_hints_and_registry_composition_generation(
         Reading::Absent("fixture result".into()),
     );
     assert!(matches!(
-        service.get(&package, &None, &authority, &exact_hints),
+        service.get(&package, &None, &authority, &hints),
+        Some(Reading::Absent(_))
+    ));
+
+    assert!(matches!(
+        service.get(&package, &None, &authority, &reordered_hints),
         Some(Reading::Absent(_))
     ));
 
@@ -138,7 +145,7 @@ fn source_facts_cache_keys_bind_exact_hints_and_registry_composition_generation(
     changed_hints.insert("serde".to_owned(), "1.0.221".to_owned());
     assert!(
         service
-            .get(&package, &None, &authority, &hint_identity(&changed_hints))
+            .get(&package, &None, &authority, &changed_hints)
             .is_none(),
         "changed resolver choices cannot reuse the previous dependency facts"
     );
@@ -149,7 +156,7 @@ fn source_facts_cache_keys_bind_exact_hints_and_registry_composition_generation(
     });
     assert!(
         service
-            .get(&package, &None, &other_authority, &exact_hints)
+            .get(&package, &None, &other_authority, &hints)
             .is_none(),
         "changed Cargo authority cannot reuse the previous source facts"
     );
@@ -163,7 +170,7 @@ fn source_facts_cache_keys_bind_exact_hints_and_registry_composition_generation(
     });
     assert!(
         service
-            .get(&package, &None, &replacement, &exact_hints)
+            .get(&package, &None, &replacement, &hints)
             .is_none(),
         "replacing a source provider invalidates source facts without pointer identity"
     );
