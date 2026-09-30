@@ -147,6 +147,15 @@ enum PostingSource<'a> {
     Term(&'a OrdinalPosting),
 }
 
+impl PostingSource<'_> {
+    fn cardinality(&self, all_releases: usize) -> usize {
+        match self {
+            Self::All => all_releases,
+            Self::Term(posting) => posting.len(),
+        }
+    }
+}
+
 enum PostingIterator<'a> {
     All(
         std::iter::Rev<
@@ -479,7 +488,7 @@ impl VersionedReleaseProjection {
                         term_keys_scanned: 0,
                     };
                 }
-                candidates.sort_by_key(|posting| posting.len());
+                candidates.sort_by_key(|posting| posting.cardinality(self.order.len()));
                 candidates.truncate(1);
                 PostingSources {
                     postings: candidates,
