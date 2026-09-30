@@ -10,8 +10,9 @@ use super::crest::{Advisories, Silence, advisories, stamp, unread};
 use super::features::{FeatureFacts, FeatureNode, feature_preview};
 use super::heads::{Place, Sighting, Signals, findings, heads};
 use super::shingles::{ModuleFacts, Spot, shingles};
-use super::state::{Build as Scripts, Extent, Fold, Library, Names, Nominal, Pose, Standing, Time, Unsafe, Use};
+use super::state::{Build as Scripts, Extent, Fold, Library, Nominal, Pose, Time, Unsafe, Use};
 use super::ticker::{Release, TickerFacts, ticker};
+use crate::data::release::{RegistryFact, SourceAvailability};
 use super::fixture::{self, Decl};
 use crate::Set;
 use crate::gallery::Scene;
@@ -203,9 +204,10 @@ fn tokio_ticker(reading: Option<&str>, dated: bool) -> TickerFacts {
         .iter()
         .map(|(v, d)| Release {
             version: (*v).to_owned(),
-            date: dated.then(|| (*d).to_owned()),
-            standing: if *v == "0.1.3" { Standing::Yanked } else { Standing::Available },
-            names: if *v == "0.1.7" { Names::Unread } else { Names::Read },
+            date: if dated { RegistryFact::Known((*d).to_owned()) } else { RegistryFact::Missing },
+            yanked: RegistryFact::Known(*v == "0.1.3"),
+            source: SourceAvailability::Available,
+            indexed: RegistryFact::Known(*v != "0.1.7"),
         })
         .collect();
     TickerFacts::new(&releases, Some("1.47.0"), "2026-09-28").reading(reading)
