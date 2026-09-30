@@ -2362,6 +2362,84 @@ fn deleting_and_prepending_documents_keeps_untouched_ordinals() {
 }
 
 #[test]
+fn single_row_revision_reuses_large_resident_ordinal_tables() {
+    let original = (1..=2_048_u64)
+        .map(|ordinal| {
+            (
+                document(ordinal),
+                vec![("name".into(), format!("marker{ordinal}"))],
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut source =
+        TantivySource::build(&state_for(original.clone(), [0x81; 32]), Limits::default())
+            .expect("large selected projection");
+    assert_eq!(
+        crate::engine::test_support::binding_work(&source),
+        (2_048, 24_576),
+        "cold admission validates three known terms and four postings per term for every row"
+    );
+
+    let (live_table, identity_table) =
+        crate::engine::test_support::resident_table_addresses(&source);
+    let rebound = source
+        .maintain(
+            &state_for(original.clone(), [0x82; 32]),
+            OverlayLimits::default(),
+        )
+        .expect("binding-only transition");
+    assert!(matches!(
+        rebound,
+        MaintainOutcome::Applied(ProjectionRevision {
+            kind: ProjectionKind::Rebound,
+            ..
+        })
+    ));
+    assert_eq!(
+        crate::engine::test_support::resident_table_addresses(&source),
+        (live_table, identity_table)
+    );
+    assert_eq!(
+        crate::engine::test_support::binding_work(&source),
+        (0, 0),
+        "a binding-only transition performs no posting rebinding"
+    );
+
+    let changed_id = document(1_024);
+    let mut changed = original;
+    changed
+        .iter_mut()
+        .find(|(id, _)| *id == changed_id)
+        .expect("target row")
+        .1[0]
+        .1 = "marker1024updated".into();
+    let changed_state = state_for(changed, [0x83; 32]);
+    let revised = source
+        .maintain(&changed_state, OverlayLimits::default())
+        .expect("one-row revision");
+    assert!(matches!(
+        revised,
+        MaintainOutcome::Applied(ProjectionRevision {
+            kind: ProjectionKind::Revised,
+            rewritten_documents: 1,
+            ..
+        })
+    ));
+    assert_eq!(
+        crate::engine::test_support::resident_table_addresses(&source),
+        (live_table, identity_table)
+    );
+    assert_eq!(
+        crate::engine::test_support::binding_work(&source),
+        (1, 16),
+        "a single edit binds and checks only its new segment row"
+    );
+    assert_eq!(term_hits(&source, "marker1024updated"), vec![changed_id]);
+    assert!(term_hits(&source, "marker1024").is_empty());
+    assert_eq!(term_hits(&source, "marker2048"), vec![document(2_048)]);
+}
+
+#[test]
 fn an_edit_past_the_budget_leaves_the_projection_unchanged() {
     let original = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
