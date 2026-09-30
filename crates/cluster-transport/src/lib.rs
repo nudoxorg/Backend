@@ -111,9 +111,10 @@ pub use remote_index::{
     MAX_REMOTE_INDEX_TARGET_BYTES, REMOTE_INDEX_ALPN, REMOTE_INDEX_SESSION_TIMEOUT,
     RemoteIndexCapability, RemoteIndexCapabilityClaims, RemoteIndexCapabilityError,
     RemoteIndexCapabilityIssuer, RemoteIndexChannel, RemoteIndexOutcome, RemoteIndexPermission,
-    RemoteIndexProductScope, RemoteIndexQueryOperation, RemoteIndexReject, RemoteIndexRequest,
-    RemoteIndexResponse, RemoteIndexSemanticSelection, RemoteIndexSession, RemoteIndexSessionHello,
-    accept_remote_index, connect_remote_index, remote_index_now, remote_index_owner_address,
+    RemoteIndexPreparedResponse, RemoteIndexProductScope, RemoteIndexQueryOperation,
+    RemoteIndexReject, RemoteIndexRequest, RemoteIndexResponse, RemoteIndexSemanticSelection,
+    RemoteIndexSession, RemoteIndexSessionHello, accept_remote_index, connect_remote_index,
+    prepare_remote_index_response, remote_index_now, remote_index_owner_address,
 };
 
 /// Raw BLAKE3 digest of immutable payload bytes used by Bao.
@@ -3486,6 +3487,14 @@ async fn write_frame_bounded<T: Serialize>(
     max_bytes: usize,
 ) -> Result<(), TransportError> {
     let bytes = postcard::to_allocvec(value).map_err(frame_error)?;
+    write_frame_bytes_bounded(stream, &bytes, max_bytes).await
+}
+
+async fn write_frame_bytes_bounded(
+    stream: &mut SendStream,
+    bytes: &[u8],
+    max_bytes: usize,
+) -> Result<(), TransportError> {
     if max_bytes == 0 || bytes.is_empty() || bytes.len() > max_bytes {
         return Err(TransportError::Frame("framed message exceeds limit".into()));
     }
@@ -3496,7 +3505,7 @@ async fn write_frame_bounded<T: Serialize>(
         .await
         .map_err(|error| TransportError::Iroh(error.to_string()))?;
     stream
-        .write_all(&bytes)
+        .write_all(bytes)
         .await
         .map_err(|error| TransportError::Iroh(error.to_string()))?;
     Ok(())

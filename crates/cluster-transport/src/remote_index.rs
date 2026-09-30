@@ -13,7 +13,10 @@ use iroh::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{Endpoint, TransportError, frame_error, read_frame_bounded, write_frame_bounded};
+use crate::{
+    Endpoint, TransportError, frame_error, read_frame_bounded, write_frame_bounded,
+    write_frame_bytes_bounded,
+};
 
 /// Encrypted Iroh ALPN for a read-only remote index client session.
 pub const REMOTE_INDEX_ALPN: &[u8] = b"/backend/remote-index/2";
@@ -297,6 +300,48 @@ pub struct RemoteIndexResponse {
     pub outcome: RemoteIndexOutcome,
 }
 
+/// Canonically serialized response frame prepared for exact budget admission.
+///
+/// The bytes are opaque so callers cannot account one representation and send
+/// another. `wire_bytes` includes the four-byte length prefix written on QUIC.
+pub struct RemoteIndexPreparedResponse {
+    request_id: u64,
+    encoded: Box<[u8]>,
+}
+
+impl RemoteIndexPreparedResponse {
+    /// Number of bytes written on the wire, including the length prefix.
+    #[must_use]
+    pub fn wire_bytes(&self) -> usize {
+        4 + self.encoded.len()
+    }
+}
+
+/// Encodes one typed response exactly as the remote-index session sends it.
+pub fn prepare_remote_index_response(
+    response: RemoteIndexResponse,
+) -> Result<RemoteIndexPreparedResponse, TransportError> {
+    if response.request_id == 0
+        || matches!(
+            &response.outcome,
+            RemoteIndexOutcome::Payload(body)
+                if body.is_empty() || body.len() > MAX_REMOTE_INDEX_BODY_BYTES
+        )
+    {
+        return Err(frame_error("remote-index response exceeds its bound"));
+    }
+    let request_id = response.request_id;
+    let encoded =
+        postcard::to_allocvec(&RemoteIndexMessage::Response(response)).map_err(frame_error)?;
+    if encoded.is_empty() || encoded.len() > MAX_REMOTE_INDEX_FRAME_BYTES {
+        return Err(frame_error("remote-index response exceeds its bound"));
+    }
+    Ok(RemoteIndexPreparedResponse {
+        request_id,
+        encoded: encoded.into_boxed_slice(),
+    })
+}
+
 /// First signed-session exchange and subsequent query/hydration messages.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -426,18 +471,23 @@ impl RemoteIndexSession {
         &mut self,
         response: &RemoteIndexResponse,
     ) -> Result<(), TransportError> {
-        if response.request_id == 0
-            || matches!(
-                &response.outcome,
-                RemoteIndexOutcome::Payload(body)
-                    if body.is_empty() || body.len() > MAX_REMOTE_INDEX_BODY_BYTES
-            )
-        {
-            return Err(frame_error("remote-index response exceeds its bound"));
+        let prepared = prepare_remote_index_response(response.clone())?;
+        self.send_prepared_response(prepared).await
+    }
+
+    /// Sends a response previously prepared for exact wire-byte admission.
+    pub async fn send_prepared_response(
+        &mut self,
+        response: RemoteIndexPreparedResponse,
+    ) -> Result<(), TransportError> {
+        if response.request_id == 0 {
+            return Err(frame_error(
+                "remote-index response has an invalid request ID",
+            ));
         }
-        write_frame_bounded(
+        write_frame_bytes_bounded(
             &mut self.send,
-            &RemoteIndexMessage::Response(response.clone()),
+            &response.encoded,
             MAX_REMOTE_INDEX_FRAME_BYTES,
         )
         .await
@@ -716,3 +766,26 @@ fn system_now_unix_ms() -> Result<u64, TransportError> {
 
 /// Maximum duration a single remote-index connection may remain active.
 pub const REMOTE_INDEX_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_response_reports_the_exact_canonical_wire_frame_size() {
+        let response = RemoteIndexResponse {
+            request_id: 17,
+            outcome: RemoteIndexOutcome::StaleProductRoot {
+                expected: [3; 32],
+                observed: [4; 32],
+            },
+        };
+        let expected = postcard::to_allocvec(&RemoteIndexMessage::Response(response.clone()))
+            .expect("canonical response encoding");
+        let prepared = prepare_remote_index_response(response).expect("prepared response");
+        assert_eq!(prepared.encoded.as_ref(), expected.as_slice());
+        assert_eq!(prepared.wire_bytes(), expected.len() + 4);
+        assert!(prepared.wire_bytes() > 64);
+    }
+}

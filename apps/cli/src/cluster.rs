@@ -26,7 +26,7 @@ use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 use backend_replication::SemanticTargetKey;
 use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 #[cfg(unix)]
@@ -720,7 +720,10 @@ fn owner_grant_revoke(rest: &[String], options: &Options) -> Result<String, Faul
         .revoke(grant_id)
         .map_err(|error| storage_fault(&path, error.to_string()))?;
     Ok(if changed {
-        format!("Revoked remote index grant {}.\n", hex(&grant_id))
+        format!(
+            "Revoked remote index grant {}. New requests and unadmitted results are blocked; an earlier admitted response may finish.\n",
+            hex(&grant_id)
+        )
     } else {
         format!(
             "Remote index grant {} was already revoked.\n",
@@ -731,9 +734,15 @@ fn owner_grant_revoke(rest: &[String], options: &Options) -> Result<String, Faul
 
 fn client_init(rest: &[String], options: &Options) -> Result<String, Fault> {
     let flags = parse_flags_with_required(rest, &["key-file"], &[])?;
-    let path = flags
-        .get("key-file")
-        .map_or_else(|| client_key_path(options), |path| Ok(PathBuf::from(*path)))?;
+    let path = if let Some(path) = flags.get("key-file") {
+        PathBuf::from(*path)
+    } else {
+        let paths = workspace_paths(options)?;
+        paths
+            .initialize_data_directory()
+            .map_err(|error| workspace_fault(options, error.to_string()))?;
+        paths.data().join(REMOTE_CLIENT_FILE)
+    };
     let secret = SecretKey::generate();
     let mut bytes = Vec::with_capacity(REMOTE_CLIENT_MAGIC.len() + 32);
     bytes.extend_from_slice(REMOTE_CLIENT_MAGIC);
@@ -1190,17 +1199,6 @@ pub(crate) fn load_remote_capability(
 }
 
 pub(crate) fn load_client_secret(path: &std::path::Path) -> Result<SecretKey, Fault> {
-    #[cfg(unix)]
-    {
-        let metadata =
-            fs::symlink_metadata(path).map_err(|error| storage_fault(path, error.to_string()))?;
-        if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o077 != 0 {
-            return Err(storage_fault(
-                path,
-                "client key file must be a private regular file with mode 0600".to_owned(),
-            ));
-        }
-    }
     let bytes = read_bounded_file(path, REMOTE_CLIENT_MAGIC.len() + 32)?;
     if bytes.len() != REMOTE_CLIENT_MAGIC.len() + 32
         || bytes.get(..REMOTE_CLIENT_MAGIC.len()) != Some(REMOTE_CLIENT_MAGIC.as_slice())
@@ -1214,15 +1212,19 @@ pub(crate) fn load_client_secret(path: &std::path::Path) -> Result<SecretKey, Fa
 }
 
 fn read_bounded_file(path: &std::path::Path, maximum: usize) -> Result<Vec<u8>, Fault> {
-    let metadata =
-        fs::symlink_metadata(path).map_err(|error| storage_fault(path, error.to_string()))?;
+    // Open and validate one private handle. A separate metadata check followed
+    // by File::open would permit a final-component symlink replacement race.
+    let mut file = backend_platform::durable::open_private_read(path)
+        .map_err(|error| storage_fault(path, error.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| storage_fault(path, error.to_string()))?;
     if !metadata.file_type().is_file() || metadata.len() > maximum as u64 {
         return Err(storage_fault(
             path,
             "file type or size is invalid".to_owned(),
         ));
     }
-    let mut file = File::open(path).map_err(|error| storage_fault(path, error.to_string()))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(maximum as u64 + 1)
         .read_to_end(&mut bytes)
@@ -1241,7 +1243,8 @@ fn write_private_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), Fault> 
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(std::path::Path::new("."));
-    fs::create_dir_all(parent).map_err(|error| storage_fault(path, error.to_string()))?;
+    backend_platform::durable::ensure_private_directory(parent)
+        .map_err(|error| storage_fault(parent, error.to_string()))?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1745,6 +1748,42 @@ mod tests {
     use backend_engine::cluster_transport::{ClusterExecutionClass, SecretKey};
     use backend_local_service::compiler_trust::TrustedCompilerWorkerPolicy;
     use backend_semantic::vocabulary::{GoVersion, NativeTool, RustEdition};
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_client_key_and_capability_reads_reject_final_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-remote-client-private-read-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).expect("create private test directory");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("set private directory mode");
+
+        let target = root.join("private-state");
+        let mut key_bytes = REMOTE_CLIENT_MAGIC.to_vec();
+        key_bytes.extend_from_slice(&[11; 32]);
+        std::fs::write(&target, key_bytes).expect("write private key fixture");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .expect("set private file mode");
+        assert!(load_client_secret(&target).is_ok());
+
+        let key_link = root.join("client-key-link");
+        symlink(&target, &key_link).expect("link client key fixture");
+        assert!(load_client_secret(&key_link).is_err());
+
+        let capability_link = root.join("capability-link");
+        symlink(&target, &capability_link).expect("link capability fixture");
+        assert!(read_bounded_file(&capability_link, 128).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn reported_scope_builds_worker_invite_and_wrong_environment_is_denied() {

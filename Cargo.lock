@@ -799,6 +799,7 @@ dependencies = [
  "backend-engine",
  "backend-library",
  "backend-local-service",
+ "backend-platform",
  "backend-present",
  "backend-replication",
  "backend-runtime",

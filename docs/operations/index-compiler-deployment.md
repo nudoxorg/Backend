@@ -37,6 +37,9 @@ worker never receives the owner's S3 credentials.
 
 Create the client identity on the machine that will run the client. The key
 file stays private to that machine; the command prints only its public peer ID.
+Keep both the key and copied capability in a private owner-only directory. The
+CLI opens them through the platform's no-follow private-file reader and checks
+the opened handle before reading; it never prints or logs the key bytes.
 Share that ID with the index owner. The owner must have locald running to read
 the current product root or semantic selection before signing a grant.
 
@@ -147,9 +150,36 @@ The owner keeps an owner-bound, checksummed grant ledger under its private
 workspace. Review active and revoked grants with `cluster owner grant list`;
 revoke one client without rotating the owner identity with
 `cluster owner grant revoke --grant-id GRANT_ID`. Revocation survives owner
-restart, blocks newly admitted requests, and prevents a response that has not
-yet been sent. A corrupt ledger disables remote reads while local CLI, MCP,
-and compiler operation remain available.
+restart and blocks newly admitted requests and results. Every query or
+hydration result/refusal frame that is sent, including typed stale outcomes,
+reserves its exact canonical wire size (the serialized typed frame plus its
+four-byte length prefix) before the QUIC write. Revocation linearizes against
+that durable response permit: a result whose permit has not been admitted is
+suppressed; a response admitted earlier may finish sending after the revoke
+command returns.
+A payload-free `CapabilityRevoked` notice may still be sent if its own exact
+bytes fit the remaining grant budget. A corrupt ledger disables remote reads
+while local CLI, MCP, and compiler operation remain available.
+
+### Remote-client regression matrix
+
+Run these checks against binaries built from the same reviewed source revision.
+The two-process journeys invoke the installed CLI against a real locald owner
+and use a separate Iroh client identity.
+
+| Control | Executable check | Pass condition |
+| --- | --- | --- |
+| Product query, semantic catalog, hydration, durable byte usage, cold owner restart, and per-grant revoke | `tests/journeys/run-remote-index-client.sh` | The indexed marker and admitted semantic ranges are returned; ledger bytes stay within the signed budget; after restart a revoked grant is rejected. |
+| Product-root/index-search snapshot, pagination cursor resume across owner restart, and bounded catalog response budget | `tests/journeys/run-remote-index-catalog-client.sh` with the frozen journal and independent labels | All 96 expected coordinates appear exactly once; each page matches the signed snapshot; request/byte and RSS ceilings hold. |
+| Exact canonical frame metering for large stale-root outcomes | `prepared_response_reports_the_exact_canonical_wire_frame_size` and `stale_root_response_reserves_its_full_canonical_wire_size` | The charged size equals the typed postcard frame actually sent, including both 32-byte roots and the frame prefix. |
+| Revoke before/after result admission | `response_admission_is_the_revoke_linearization_point` and `concurrent_revoke_and_response_admission_has_one_durable_winner` | Revoke-first refuses result admission; permit-first retains a valid in-flight send permit, while later request admission is denied. |
+| Interrupted/corrupt semantic range reconnect and resume over two processes | Extend the real client journey with a dropped range stream, corrupted range, owner restart, and resumed `semantic-hydrate` | No unverified bytes become complete; the client resumes the exact selected generation and finishes within signed request/byte budgets. |
+| Root/snapshot publication race during live query | Mutate the selected root or discovery snapshot while the installed remote query is in flight | The client receives a typed stale result or a closed refusal; no response is attached to a different current root/snapshot. |
+
+The first two rows are executable end-to-end journeys. The remaining rows are
+regression gates: source tests cover the frame and permit-order invariants, while
+range interruption and publication-race behavior still require live two-process
+coverage before claiming those scenarios as verified.
 
 For semantic hydration, the owner creates a grant only after it has admitted
 the current catalog for the exact package, coordinate, and language profile.

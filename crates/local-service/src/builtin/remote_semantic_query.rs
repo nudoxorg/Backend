@@ -4,6 +4,7 @@ use backend_client::{CommandTransport, Session, UnixCommandTransport};
 use backend_engine::cluster_transport::{
     MAX_REMOTE_INDEX_BODY_BYTES, RemoteIndexCapability, RemoteIndexChannel, RemoteIndexOutcome,
     RemoteIndexReject, RemoteIndexRequest, RemoteIndexResponse, RemoteIndexSession,
+    prepare_remote_index_response,
 };
 use backend_library::{
     Command, CommandDto, CommandReply, ProductText, SurfaceCommand, SurfaceReply,
@@ -51,6 +52,22 @@ struct PersistedGrantUsage {
     version: u16,
     owner: backend_engine::cluster_transport::EndpointId,
     entries: BTreeMap<[u8; 16], GrantUsage>,
+}
+
+/// Durable admission permit for one exact canonical response frame.
+///
+/// The ledger reservation is the response/revocation linearization point. A
+/// permit admitted before a revoke may finish sending after revoke returns;
+/// the permit holds no ledger lock across network I/O.
+#[must_use = "a response may be sent only after durable admission"]
+struct RemoteIndexResponsePermit {
+    grant_id: [u8; 16],
+    wire_bytes: u64,
+}
+
+enum RemoteResponseFailure {
+    Admission(RemoteIndexReject),
+    Transport,
 }
 
 /// Public, key-free view of one owner-issued remote read grant.
@@ -334,15 +351,34 @@ impl RemoteIndexUsage {
         Ok(())
     }
 
-    fn charge_response(
+    fn admit_response(
         &self,
         capability: &RemoteIndexCapability,
-        amount: usize,
-    ) -> Result<(), RemoteIndexReject> {
+        wire_bytes: usize,
+    ) -> Result<RemoteIndexResponsePermit, RemoteIndexReject> {
+        self.reserve_response_bytes(capability, wire_bytes, false)
+    }
+
+    /// Admits only the payload-free typed notice for an already revoked grant.
+    /// The denial itself is metered and does not admit or charge a request.
+    fn admit_revocation_notice(
+        &self,
+        capability: &RemoteIndexCapability,
+        wire_bytes: usize,
+    ) -> Result<RemoteIndexResponsePermit, RemoteIndexReject> {
+        self.reserve_response_bytes(capability, wire_bytes, true)
+    }
+
+    fn reserve_response_bytes(
+        &self,
+        capability: &RemoteIndexCapability,
+        wire_bytes: usize,
+        revocation_notice: bool,
+    ) -> Result<RemoteIndexResponsePermit, RemoteIndexReject> {
         if self.disabled {
             return Err(RemoteIndexReject::OwnerUnavailable);
         }
-        let amount = u64::try_from(amount).map_err(|_| RemoteIndexReject::ReplayOrBudget)?;
+        let amount = u64::try_from(wire_bytes).map_err(|_| RemoteIndexReject::ReplayOrBudget)?;
         let mut entries = self
             .entries
             .lock()
@@ -362,8 +398,11 @@ impl RemoteIndexUsage {
         if usage.capability != *capability || usage.capability.claims.server != owner {
             return Err(RemoteIndexReject::StaleCapability);
         }
-        if usage.revoked {
+        if usage.revoked && !revocation_notice {
             return Err(RemoteIndexReject::CapabilityRevoked);
+        }
+        if revocation_notice && !usage.revoked {
+            return Err(RemoteIndexReject::InvalidRequest);
         }
         let now = backend_engine::cluster_transport::remote_index_now()
             .map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
@@ -381,7 +420,10 @@ impl RemoteIndexUsage {
         self.persist(&candidate)
             .map_err(|_| RemoteIndexReject::OwnerUnavailable)?;
         *entries = candidate;
-        Ok(())
+        Ok(RemoteIndexResponsePermit {
+            grant_id: capability.claims.grant_id,
+            wire_bytes: amount,
+        })
     }
 
     fn persist(&self, entries: &BTreeMap<[u8; 16], GrantUsage>) -> io::Result<()> {
@@ -574,15 +616,23 @@ pub(crate) async fn serve_connection(
         };
         let next_request = requests.saturating_add(1);
         if next_request > MAX_REMOTE_INDEX_REQUESTS_PER_SESSION {
-            let _ = session
-                .send_response(&RemoteIndexResponse {
+            let _ = send_remote_response(
+                &mut session,
+                &usage,
+                &capability,
+                RemoteIndexResponse {
                     request_id: request.request_id,
                     outcome: RemoteIndexOutcome::Rejected(RemoteIndexReject::ReplayOrBudget),
-                })
-                .await;
+                },
+            )
+            .await;
             return;
         }
         requests = next_request;
+        // This durable reservation is the request admission point. If it wins
+        // a race with revoke, the bounded read-only owner call may still run;
+        // its separate response permit prevents a result from escaping if
+        // revoke wins before that result is admitted.
         let meter = usage.clone();
         let request_capability = capability.clone();
         let charged =
@@ -591,12 +641,16 @@ pub(crate) async fn serve_connection(
                 .unwrap_or(Err(RemoteIndexReject::OwnerUnavailable));
         if charged.is_err() {
             let reason = charged.err().unwrap_or(RemoteIndexReject::ReplayOrBudget);
-            let _ = session
-                .send_response(&RemoteIndexResponse {
+            let _ = send_remote_response(
+                &mut session,
+                &usage,
+                &capability,
+                RemoteIndexResponse {
                     request_id: request.request_id,
                     outcome: RemoteIndexOutcome::Rejected(reason),
-                })
-                .await;
+                },
+            )
+            .await;
             return;
         }
 
@@ -618,30 +672,89 @@ pub(crate) async fn serve_connection(
             Ok(Ok(response)) => response,
             _ => return,
         };
-        let encoded_len = match &response.outcome {
-            RemoteIndexOutcome::Payload(body) => body.len(),
-            _ => 48,
-        };
-        let meter = usage.clone();
-        let response_capability = capability.clone();
-        let charged = tokio::task::spawn_blocking(move || {
-            meter.charge_response(&response_capability, encoded_len)
-        })
-        .await
-        .unwrap_or(Err(RemoteIndexReject::OwnerUnavailable));
-        if encoded_len > MAX_REMOTE_INDEX_RESPONSE_BYTES as usize || charged.is_err() {
-            let reason = charged.err().unwrap_or(RemoteIndexReject::ReplayOrBudget);
-            let _ = session
-                .send_response(&RemoteIndexResponse {
-                    request_id: response.request_id,
-                    outcome: RemoteIndexOutcome::Rejected(reason),
+        if send_remote_response(&mut session, &usage, &capability, response)
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
+async fn send_remote_response(
+    session: &mut RemoteIndexSession,
+    usage: &RemoteIndexUsage,
+    capability: &RemoteIndexCapability,
+    response: RemoteIndexResponse,
+) -> Result<(), RemoteIndexReject> {
+    let request_id = response.request_id;
+    match admit_and_send_remote_response(session, usage, capability, response).await {
+        Ok(()) => Ok(()),
+        Err(RemoteResponseFailure::Transport) => Err(RemoteIndexReject::OwnerUnavailable),
+        Err(RemoteResponseFailure::Admission(reason)) => {
+            // If a result cannot be admitted under the remaining byte budget,
+            // send a small typed refusal only when that refusal itself obtains
+            // a durable byte permit. Revocation/ledger failure therefore sends
+            // no unmetered response bytes.
+            let rejected = RemoteIndexResponse {
+                request_id,
+                outcome: RemoteIndexOutcome::Rejected(reason),
+            };
+            admit_and_send_remote_response(session, usage, capability, rejected)
+                .await
+                .map_err(|failure| match failure {
+                    RemoteResponseFailure::Admission(reason) => reason,
+                    RemoteResponseFailure::Transport => RemoteIndexReject::OwnerUnavailable,
                 })
-                .await;
-            return;
         }
-        if session.send_response(&response).await.is_err() {
-            return;
+    }
+}
+
+async fn admit_and_send_remote_response(
+    session: &mut RemoteIndexSession,
+    usage: &RemoteIndexUsage,
+    capability: &RemoteIndexCapability,
+    response: RemoteIndexResponse,
+) -> Result<(), RemoteResponseFailure> {
+    let revocation_notice = matches!(
+        &response.outcome,
+        RemoteIndexOutcome::Rejected(RemoteIndexReject::CapabilityRevoked)
+    );
+    let prepared = prepare_remote_index_response(response)
+        .map_err(|_| RemoteResponseFailure::Admission(RemoteIndexReject::InvalidRequest))?;
+    let wire_bytes = prepared.wire_bytes();
+    let meter = usage.clone();
+    let response_capability = capability.clone();
+    let permit = tokio::task::spawn_blocking(move || {
+        if revocation_notice {
+            meter.admit_revocation_notice(&response_capability, wire_bytes)
+        } else {
+            meter.admit_response(&response_capability, wire_bytes)
         }
+    })
+    .await
+    .unwrap_or(Err(RemoteIndexReject::OwnerUnavailable))
+    .map_err(RemoteResponseFailure::Admission)?;
+    if permit.grant_id != capability.claims.grant_id
+        || usize::try_from(permit.wire_bytes).ok() != Some(wire_bytes)
+    {
+        return Err(RemoteResponseFailure::Admission(
+            RemoteIndexReject::OwnerUnavailable,
+        ));
+    }
+    // Revocation that wins before this permit prevents this response. If this
+    // permit wins, the admitted in-flight response may finish after revocation.
+    // The permit contains only its durable accounting proof; no ledger lock is
+    // held while this QUIC write awaits backpressure.
+    let sent = tokio::time::timeout(
+        backend_engine::cluster_transport::REMOTE_INDEX_SESSION_TIMEOUT,
+        session.send_prepared_response(prepared),
+    )
+    .await;
+    drop(permit);
+    match sent {
+        Ok(Ok(())) => Ok(()),
+        _ => Err(RemoteResponseFailure::Transport),
     }
 }
 
@@ -1141,9 +1254,7 @@ mod tests {
             .register_capability(&capability, capability.claims.issued_at_unix_ms)
             .expect("register signed grant");
         usage.charge_request(&capability).expect("first request");
-        usage
-            .charge_response(&capability, 8)
-            .expect("reserve bytes");
+        usage.admit_response(&capability, 8).expect("reserve bytes");
         drop(usage);
 
         let reopened = RemoteIndexUsage::open(&path, owner).expect("cold-reopened ledger");
@@ -1162,8 +1273,11 @@ mod tests {
             Err(RemoteIndexReject::ReplayOrBudget)
         );
         assert_eq!(
-            reopened.charge_response(&capability, 3),
-            Err(RemoteIndexReject::ReplayOrBudget)
+            reopened
+                .admit_response(&capability, 3)
+                .err()
+                .expect("over-budget response admission fails"),
+            RemoteIndexReject::ReplayOrBudget
         );
         drop(reopened);
 
@@ -1225,8 +1339,26 @@ mod tests {
             Err(RemoteIndexReject::CapabilityRevoked)
         );
         assert_eq!(
-            reopened.charge_response(&capability, 1),
-            Err(RemoteIndexReject::CapabilityRevoked)
+            reopened
+                .admit_response(&capability, 1)
+                .err()
+                .expect("revoked response admission fails"),
+            RemoteIndexReject::CapabilityRevoked
+        );
+        let denial = prepare_remote_index_response(RemoteIndexResponse {
+            request_id: 1,
+            outcome: RemoteIndexOutcome::Rejected(RemoteIndexReject::CapabilityRevoked),
+        })
+        .expect("prepare revoked-grant notice");
+        let denial_bytes = denial.wire_bytes();
+        let denial_bytes_u64 = u64::try_from(denial_bytes).expect("bounded denial frame fits u64");
+        let notice_permit = reopened
+            .admit_revocation_notice(&capability, denial_bytes)
+            .expect("meter typed revocation notice");
+        assert_eq!(notice_permit.wire_bytes, denial_bytes_u64);
+        assert_eq!(
+            reopened.list().expect("list revoked grant")[0].response_bytes,
+            denial_bytes_u64
         );
         assert!(
             !reopened
@@ -1236,6 +1368,151 @@ mod tests {
         let grants = reopened.list().expect("list grant");
         assert_eq!(grants.len(), 1);
         assert!(grants[0].revoked);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn response_admission_is_the_revoke_linearization_point() {
+        let before_root = scratch("revoke-before-response-admission");
+        let before_path = before_root.join("remote-index-grants.v1");
+        let before_capability = capability(4, 512);
+        let before = RemoteIndexUsage::open(&before_path, before_capability.claims.server)
+            .expect("open pre-admission ledger");
+        before
+            .register_capability(
+                &before_capability,
+                before_capability.claims.issued_at_unix_ms,
+            )
+            .expect("register pre-admission grant");
+        before
+            .revoke(before_capability.grant_id())
+            .expect("revoke before response permit");
+        assert_eq!(
+            before
+                .admit_response(&before_capability, 96)
+                .err()
+                .expect("revoked response admission fails"),
+            RemoteIndexReject::CapabilityRevoked
+        );
+        drop(before);
+        let _ = fs::remove_dir_all(before_root);
+
+        let after_root = scratch("revoke-after-response-admission");
+        let after_path = after_root.join("remote-index-grants.v1");
+        let after_capability = capability(4, 512);
+        let after = RemoteIndexUsage::open(&after_path, after_capability.claims.server)
+            .expect("open post-admission ledger");
+        after
+            .register_capability(&after_capability, after_capability.claims.issued_at_unix_ms)
+            .expect("register post-admission grant");
+        let permit = after
+            .admit_response(&after_capability, 96)
+            .expect("durable response permit wins");
+        assert!(
+            after
+                .revoke(after_capability.grant_id())
+                .expect("revoke after response admission")
+        );
+        assert_eq!(permit.grant_id, after_capability.grant_id());
+        assert_eq!(permit.wire_bytes, 96);
+        assert_eq!(
+            after.charge_request(&after_capability),
+            Err(RemoteIndexReject::CapabilityRevoked)
+        );
+        // Keeping this permit alive represents a response already admitted:
+        // a later revoke blocks new admissions but cannot unsend that frame.
+        drop(permit);
+        drop(after);
+        let _ = fs::remove_dir_all(after_root);
+    }
+
+    #[test]
+    fn concurrent_revoke_and_response_admission_has_one_durable_winner() {
+        let root = scratch("revoke-admission-race");
+        for sequence in 0..8 {
+            let path = root.join(format!("remote-index-grants-{sequence}.v1"));
+            let capability = capability(4, 512);
+            let owner = capability.claims.server;
+            let admitting = RemoteIndexUsage::open(&path, owner).expect("open race ledger");
+            admitting
+                .register_capability(&capability, capability.claims.issued_at_unix_ms)
+                .expect("register race grant");
+            let revoking = RemoteIndexUsage::open(&path, owner).expect("open second ledger handle");
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+
+            let admit_barrier = Arc::clone(&barrier);
+            let admit_capability = capability.clone();
+            let admit_thread = std::thread::spawn(move || {
+                admit_barrier.wait();
+                admitting.admit_response(&admit_capability, 96)
+            });
+
+            let revoke_barrier = Arc::clone(&barrier);
+            let grant_id = capability.grant_id();
+            let revoke_thread = std::thread::spawn(move || {
+                revoke_barrier.wait();
+                revoking.revoke(grant_id)
+            });
+            barrier.wait();
+
+            let response_permit = admit_thread.join().expect("join response admission");
+            let revoked = revoke_thread
+                .join()
+                .expect("join concurrent revoke")
+                .expect("persist concurrent revoke");
+            assert!(revoked);
+            let admitted = match response_permit {
+                Ok(permit) => {
+                    assert_eq!(permit.grant_id, capability.grant_id());
+                    assert_eq!(permit.wire_bytes, 96);
+                    true
+                }
+                Err(RemoteIndexReject::CapabilityRevoked) => false,
+                Err(reason) => panic!("unexpected response admission failure: {reason:?}"),
+            };
+
+            let reopened = RemoteIndexUsage::open(&path, owner).expect("read race outcome");
+            let summary = reopened.list().expect("list race outcome");
+            assert!(summary[0].revoked);
+            assert_eq!(summary[0].response_bytes, if admitted { 96 } else { 0 });
+            assert_eq!(
+                reopened.charge_request(&capability),
+                Err(RemoteIndexReject::CapabilityRevoked)
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_root_response_reserves_its_full_canonical_wire_size() {
+        let response = RemoteIndexResponse {
+            request_id: 7,
+            outcome: RemoteIndexOutcome::StaleProductRoot {
+                expected: [1; 32],
+                observed: [2; 32],
+            },
+        };
+        let prepared = prepare_remote_index_response(response).expect("prepare typed response");
+        let wire_bytes = prepared.wire_bytes();
+        assert!(wire_bytes > 64, "stale-root frame must include both roots");
+        let wire_bytes_u64 = u64::try_from(wire_bytes).expect("bounded frame size fits u64");
+
+        let root = scratch("canonical-response-meter");
+        let path = root.join("remote-index-grants.v1");
+        let capability = capability(2, wire_bytes_u64);
+        let usage =
+            RemoteIndexUsage::open(&path, capability.claims.server).expect("open response meter");
+        usage
+            .register_capability(&capability, capability.claims.issued_at_unix_ms)
+            .expect("register response meter");
+        let permit = usage
+            .admit_response(&capability, wire_bytes)
+            .expect("reserve exact canonical wire size");
+        assert_eq!(permit.wire_bytes, wire_bytes_u64);
+        assert_eq!(
+            usage.list().expect("read usage")[0].response_bytes,
+            wire_bytes_u64
+        );
         let _ = fs::remove_dir_all(root);
     }
 
