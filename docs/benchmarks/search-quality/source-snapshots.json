@@ -166,13 +166,13 @@
     },
     {
       "path": "tests/journeys/tests/index_tentpole.rs",
-      "sha256": "b7cdf48a95419ff68c3746152f350d7617c100cb2ffd39e015f44c337a4d428e",
-      "snapshot_id": "workspace-file:sha256:b7cdf48a95419ff68c3746152f350d7617c100cb2ffd39e015f44c337a4d428e"
+      "sha256": "0bc5978ef990106663be36d0ca9e3548d8a1a39fe9f591f26c9e34242cd3ab45",
+      "snapshot_id": "workspace-file:sha256:0bc5978ef990106663be36d0ca9e3548d8a1a39fe9f591f26c9e34242cd3ab45"
     },
     {
       "path": "tests/journeys/tests/registry_discovery.rs",
-      "sha256": "6b7802f24392104b721acdac4fa0dba7e48075da1b2ace488203e8d31b44c346",
-      "snapshot_id": "workspace-file:sha256:6b7802f24392104b721acdac4fa0dba7e48075da1b2ace488203e8d31b44c346"
+      "sha256": "b695d2f0acd0a69b9ed1ee5c96443df2e6348bf210b9050a382ef1b9379b29df",
+      "snapshot_id": "workspace-file:sha256:b695d2f0acd0a69b9ed1ee5c96443df2e6348bf210b9050a382ef1b9379b29df"
     },
     {
       "path": "docs/benchmarks/search-quality/adapter/Cargo.lock",
@@ -234,13 +234,13 @@
     {
       "note": "Fixture source; fixture values are not claims about current live registry metadata.",
       "path": "tests/journeys/tests/registry_discovery.rs",
-      "sha256": "6b7802f24392104b721acdac4fa0dba7e48075da1b2ace488203e8d31b44c346",
+      "sha256": "b695d2f0acd0a69b9ed1ee5c96443df2e6348bf210b9050a382ef1b9379b29df",
       "snapshot_id": "workspace-fixture:registry-discovery-cargo-yank"
     },
     {
       "note": "Fixture source; fixture values are not claims about current live registry metadata.",
       "path": "tests/journeys/tests/index_tentpole.rs",
-      "sha256": "b7cdf48a95419ff68c3746152f350d7617c100cb2ffd39e015f44c337a4d428e",
+      "sha256": "0bc5978ef990106663be36d0ca9e3548d8a1a39fe9f591f26c9e34242cd3ab45",
       "snapshot_id": "workspace-fixture:tentpole-manifest-dependencies"
     },
     {
