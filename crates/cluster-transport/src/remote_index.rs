@@ -414,6 +414,7 @@ pub struct RemoteIndexSession {
     receive: RecvStream,
     hello: RemoteIndexSessionHello,
     last_request_id: u64,
+    last_responded_request_id: u64,
     last_sent_request_id: u64,
 }
 
@@ -449,6 +450,13 @@ impl RemoteIndexSession {
 
     /// Receives one bounded request whose ID increases within this session.
     pub async fn receive_request(&mut self) -> Result<RemoteIndexRequest, TransportError> {
+        if self.last_request_id != self.last_responded_request_id {
+            self.connection
+                .close(1_u32.into(), b"previous request is still in flight");
+            return Err(frame_error(
+                "previous remote-index request has no correlated response",
+            ));
+        }
         let RemoteIndexMessage::Request(request) =
             read_frame_bounded(&mut self.receive, MAX_REMOTE_INDEX_FRAME_BYTES).await?
         else {
@@ -480,9 +488,15 @@ impl RemoteIndexSession {
         &mut self,
         response: RemoteIndexPreparedResponse,
     ) -> Result<(), TransportError> {
-        if response.request_id == 0 {
+        if !remote_response_can_be_sent(
+            response.request_id,
+            self.last_request_id,
+            self.last_responded_request_id,
+        ) {
+            self.connection
+                .close(1_u32.into(), b"request correlation mismatch");
             return Err(frame_error(
-                "remote-index response has an invalid request ID",
+                "remote-index response does not match the outstanding request",
             ));
         }
         write_frame_bytes_bounded(
@@ -490,7 +504,9 @@ impl RemoteIndexSession {
             &response.encoded,
             MAX_REMOTE_INDEX_FRAME_BYTES,
         )
-        .await
+        .await?;
+        self.last_responded_request_id = response.request_id;
+        Ok(())
     }
 
     /// Sends one bounded query/hydration request with a strictly increasing ID.
@@ -576,6 +592,7 @@ pub async fn connect_remote_index(
                 receive,
                 hello,
                 last_request_id: 0,
+                last_responded_request_id: 0,
                 last_sent_request_id: 0,
             })
         }
@@ -654,6 +671,7 @@ pub async fn accept_remote_index(
         receive,
         hello,
         last_request_id: 0,
+        last_responded_request_id: 0,
         last_sent_request_id: 0,
     })
 }
@@ -767,6 +785,16 @@ fn system_now_unix_ms() -> Result<u64, TransportError> {
 /// Maximum duration a single remote-index connection may remain active.
 pub const REMOTE_INDEX_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn remote_response_can_be_sent(
+    response_id: u64,
+    last_request_id: u64,
+    last_responded_request_id: u64,
+) -> bool {
+    response_id != 0
+        && response_id == last_request_id
+        && last_request_id != last_responded_request_id
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
@@ -787,5 +815,14 @@ mod tests {
         assert_eq!(prepared.encoded.as_ref(), expected.as_slice());
         assert_eq!(prepared.wire_bytes(), expected.len() + 4);
         assert!(prepared.wire_bytes() > 64);
+    }
+
+    #[test]
+    fn response_id_must_match_one_outstanding_request() {
+        assert!(!remote_response_can_be_sent(1, 0, 0));
+        assert!(!remote_response_can_be_sent(2, 1, 0));
+        assert!(remote_response_can_be_sent(1, 1, 0));
+        assert!(!remote_response_can_be_sent(1, 1, 1));
+        assert!(!remote_response_can_be_sent(2, 1, 1));
     }
 }
