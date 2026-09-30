@@ -5,9 +5,10 @@
 //! page: every name at a glance, and each shingle is a real, clickable item.
 //!
 //! - **Layout.** Justified rows of regions in the order given: a region
-//!   holds its label (never dropped, never clipped) and its shingles on one
-//!   grid; a row's regions share its height and the row is stretched to the
-//!   full width in proportion to what they hold. The height follows from
+//!   holds its full label (wrapped inside the map at narrow widths) and its
+//!   shingles on one grid; oversized regions fit the map rather than leaking
+//!   past its clip. A row's regions share its height and the row is stretched
+//!   to the full width in proportion to what they hold. The height follows from
 //!   the rows. The shingle size follows the container ([`Measure::fluid`]),
 //!   so a 2560 px window has larger, not lonelier, shingles.
 //! - **Hover.** A region brightens its outline and reads itself in the foot
@@ -23,15 +24,15 @@
 use super::cards::Change;
 use super::flight::{Carrying, Stone};
 use super::state::{Extent, Time, Use};
-use crate::data::text::{shape, shape_fit};
+use crate::data::text::{font, shape, shape_fit};
 use crate::measure::Measure;
 use crate::paint::geom::{Fill, Poly};
 use crate::probe::{self, TextOverflow, TextSample};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Family, TypeRole, ty};
 use gpui::{
-    App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style, Window, px,
+    App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style, TextAlign, TextRun, Window, px,
 };
 use std::rc::Rc;
 
@@ -85,11 +86,34 @@ const MAX_COLUMNS: usize = 30;
 const GAP: f32 = 3.0;
 /// The mono advance of the label face, in em.
 const ADVANCE: f32 = 0.6;
-const LABEL: TypeRole = TypeRole { weight: 500.0, size: 11.5, line: 15.0, ..ty::MONO_SMALL };
-const PLATE: TypeRole = TypeRole { weight: 500.0, size: 12.0, line: 16.0, ..ty::MONO_SMALL };
-const FOOT_NAME: TypeRole = TypeRole { weight: 600.0, size: 12.5, line: 18.0, ..ty::MONO_SMALL };
-const FOOT_DOC: TypeRole = TypeRole { size: 13.5, line: 18.0, ..ty::CAPTION };
-const FOOT_MORE: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::SMALL };
+const LABEL: TypeRole = TypeRole {
+    weight: 500.0,
+    size: 11.5,
+    line: 15.0,
+    ..ty::MONO_SMALL
+};
+const PLATE: TypeRole = TypeRole {
+    weight: 500.0,
+    size: 12.0,
+    line: 16.0,
+    ..ty::MONO_SMALL
+};
+const FOOT_NAME: TypeRole = TypeRole {
+    weight: 600.0,
+    size: 12.5,
+    line: 18.0,
+    ..ty::MONO_SMALL
+};
+const FOOT_DOC: TypeRole = TypeRole {
+    size: 13.5,
+    line: 18.0,
+    ..ty::CAPTION
+};
+const FOOT_MORE: TypeRole = TypeRole {
+    size: 12.0,
+    line: 16.0,
+    ..ty::SMALL
+};
 
 /// A region laid out: its rect and where its shingles sit.
 #[derive(Clone, Debug, PartialEq)]
@@ -98,6 +122,8 @@ pub struct Region {
     pub rect: (f32, f32, f32, f32),
     /// Shingle columns.
     pub columns: usize,
+    /// Wrapped label lines in this region.
+    pub label_lines: usize,
     /// The first shingle's origin, relative to the map.
     pub origin: (f32, f32),
 }
@@ -115,18 +141,51 @@ pub struct Layout {
     pub k: f32,
 }
 
-/// Lays `modules` (`(label characters, shingles)`) out in `width` px at
-/// scale `k`.
+impl Layout {
+    /// The native measured target bounds for each region, in map-local coordinates.
+    #[must_use]
+    pub fn region_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.regions
+            .iter()
+            .map(|region| {
+                Bounds::new(
+                    gpui::point(px(region.rect.0), px(region.rect.1)),
+                    gpui::size(px(region.rect.2), px(region.rect.3)),
+                )
+            })
+            .collect()
+    }
+}
+
+/// Lays modules (`label characters`, `shingles`) out in `width` px at scale
+/// `k`. Production layout uses the same row solver with text-system measured
+/// label widths and wrap counts.
 #[must_use]
 pub fn layout(modules: &[(usize, usize)], width: f32, k: f32) -> Layout {
-    let (pitch, stone, pad, band, gap) = (PITCH * k, STONE * k, PAD * k, LABEL_BAND * k, GAP * k);
+    layout_sized(modules, None, None, LABEL.line * k, width, k)
+}
+
+fn layout_sized(
+    modules: &[(usize, usize)],
+    label_widths: Option<&[f32]>,
+    labels: Option<(&[SharedString], TypeRole, &Window)>,
+    label_line_height: f32,
+    width: f32,
+    k: f32,
+) -> Layout {
+    let width = width.max(0.0);
+    let (pitch, stone) = (PITCH * k, STONE * k);
+    let pad = (PAD * k).min((width - stone).max(0.0) * 0.5);
+    let gap = (GAP * k).min(width);
     let char_w = LABEL.size * ADVANCE * k * 1.02;
     #[allow(clippy::cast_precision_loss)]
     let want: Vec<f32> = modules
         .iter()
-        .map(|&(chars, items)| {
+        .enumerate()
+        .map(|(index, &(chars, items))| {
             let cols = items.div_ceil(3).clamp(1, MAX_COLUMNS);
-            (chars as f32 * char_w).max(cols as f32 * pitch - (pitch - stone)) + 2.0 * pad
+            let label = label_widths.map_or(chars as f32 * char_w, |widths| widths[index]);
+            ((label).max(cols as f32 * pitch - (pitch - stone)) + 2.0 * pad).min(width)
         })
         .collect();
     let mut rows: Vec<Vec<usize>> = Vec::new();
@@ -147,6 +206,7 @@ pub fn layout(modules: &[(usize, usize)], width: f32, k: f32) -> Layout {
         Region {
             rect: (0.0, 0.0, 0.0, 0.0),
             columns: 1,
+            label_lines: 1,
             origin: (0.0, 0.0),
         };
         modules.len()
@@ -156,7 +216,11 @@ pub fn layout(modules: &[(usize, usize)], width: f32, k: f32) -> Layout {
     for (row_index, row) in rows.iter().enumerate() {
         #[allow(clippy::cast_precision_loss)]
         let base: f32 = row.iter().map(|&i| want[i]).sum::<f32>() + gap * (row.len() as f32 - 1.0);
-        let slack = if row_index == last && base < width * 0.7 { 0.0 } else { (width - base).max(0.0) };
+        let slack = if row_index == last && base < width * 0.7 {
+            0.0
+        } else {
+            (width - base).max(0.0)
+        };
         #[allow(clippy::cast_precision_loss)]
         let weight: f32 = row.iter().map(|&i| modules[i].1 as f32).sum::<f32>().max(1.0);
         let mut x = 0.0_f32;
@@ -166,21 +230,35 @@ pub fn layout(modules: &[(usize, usize)], width: f32, k: f32) -> Layout {
             // Spare room widens a region, but a big module grows down, not
             // into one long strip.
             #[allow(clippy::cast_precision_loss)]
-            let w = (want[i] + slack * modules[i].1 as f32 / weight).min(want[i].max(MAX_COLUMNS as f32 * pitch + 2.0 * pad));
+            let w = (want[i] + slack * modules[i].1 as f32 / weight).min((width - x).max(0.0));
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let columns = (((w - 2.0 * pad + (pitch - stone)) / pitch).floor() as usize).max(1);
+            let columns = (((w - 2.0 * pad + (pitch - stone)).max(0.0) / pitch).floor() as usize).max(1);
             let lines = modules[i].1.div_ceil(columns);
+            let label_lines = if let Some((labels, role, window)) = labels {
+                wrapped_line_count(&labels[i], role, (w - 2.0 * pad).max(1.0), window)
+            } else {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                ((label_widths.map_or(modules[i].0 as f32 * char_w, |widths| widths[i]) / (w - 2.0 * pad).max(1.0)).ceil() as usize).max(1)
+            };
             tallest = tallest.max(lines);
-            placed.push((i, x, w, columns));
+            placed.push((i, x, w, columns, label_lines));
             x += w + gap;
         }
         #[allow(clippy::cast_precision_loss)]
-        let h = band + 2.0 * pad + tallest.max(1) as f32 * pitch - (pitch - stone);
-        for (i, x, w, columns) in placed {
+        let label_band = (LABEL_BAND * k).max(
+            placed
+                .iter()
+                .map(|(_, _, _, _, lines)| *lines as f32 * label_line_height + 4.0 * k)
+                .fold(0.0, f32::max),
+        );
+        #[allow(clippy::cast_precision_loss)]
+        let h = label_band + 2.0 * pad + tallest.max(1) as f32 * pitch - (pitch - stone);
+        for (i, x, w, columns, label_lines) in placed {
             regions[i] = Region {
                 rect: (x, y, w, h),
                 columns,
-                origin: (x + pad, y + pad + band),
+                label_lines,
+                origin: (x + pad, y + pad + label_band),
             };
         }
         y += h + gap;
@@ -191,6 +269,69 @@ pub fn layout(modules: &[(usize, usize)], width: f32, k: f32) -> Layout {
         regions,
         k,
     }
+}
+
+fn wrap_label(text: SharedString, role: TypeRole, width: f32, window: &Window) -> Vec<gpui::WrappedLine> {
+    let run = TextRun {
+        len: text.len(),
+        font: font(role),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+        letter_spacing: (role.tracking.abs() > f32::EPSILON).then(|| px(role.tracking * role.size)),
+    };
+    window
+        .text_system()
+        .shape_text(text, px(role.size), &[run], Some(px(width.max(1.0))), None)
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+fn paint_wrapped(text: SharedString, role: TypeRole, ink: Hsla, width: f32, x: f32, y: f32, window: &mut Window, cx: &mut App) -> (f32, f32) {
+    let natural = shape(text.clone(), role, ink, window).width();
+    let wrapped = wrap_label(text, role, width, window);
+    let mut cursor = y;
+    for line in &wrapped {
+        line.paint(gpui::point(px(x), px(cursor)), px(role.line), TextAlign::Left, None, window, cx)
+            .ok();
+        #[allow(clippy::cast_precision_loss)]
+        {
+            cursor += (1 + line.wrap_boundaries().len()) as f32 * role.line;
+        }
+    }
+    (natural, (cursor - y).max(role.line))
+}
+
+fn wrapped_line_count(text: &str, role: TypeRole, width: f32, window: &Window) -> usize {
+    wrap_label(text.to_owned().into(), role, width, window)
+        .iter()
+        .map(|line| 1 + line.wrap_boundaries().len())
+        .sum::<usize>()
+        .max(1)
+}
+
+/// Measures one immutable map layout for both its native paint element and
+/// the host's keyboard targets.
+#[must_use]
+pub fn measured(modules: &[ModuleFacts], measure: &Measure, window: &Window) -> Rc<Layout> {
+    let k = measure.scale() * (0.94 + 0.42 * measure.t());
+    let sizes: Vec<(usize, usize)> = modules.iter().map(|module| (module.name.chars().count(), module.shingles.len())).collect();
+    let role = scaled(measure.role(LABEL), k / measure.scale());
+    let widths: Vec<f32> = modules
+        .iter()
+        .map(|module| shape(module.name.clone(), role, Hsla::default(), window).width())
+        .collect();
+    let labels: Vec<SharedString> = modules.iter().map(|module| module.name.clone()).collect();
+    Rc::new(layout_sized(
+        &sizes,
+        Some(&widths),
+        Some((&labels, role, window)),
+        role.line,
+        f32::from(measure.width()),
+        k,
+    ))
 }
 
 /// What the pointer or the walk is on.
@@ -245,6 +386,9 @@ pub type Open = Rc<dyn Fn(usize, Option<usize>, &mut Window, &mut App)>;
 
 struct State {
     hover: Option<Spot>,
+    /// The semantic focus seen when the pointer last moved. A changed
+    /// keyboard target makes an old pointer position stale until it moves.
+    rest: Option<Spot>,
 }
 
 /// The map (see [`shingles`]).
@@ -257,6 +401,7 @@ pub struct Shingles {
     rest: Option<Spot>,
     on_open: Option<Open>,
     on_carry: Option<Rc<dyn Fn(Carrying, &mut Window, &mut App)>>,
+    geometry: Option<Rc<Layout>>,
 }
 
 /// A shingle map of `modules` as wide as `measure` gives it.
@@ -271,6 +416,7 @@ pub fn shingles(id: impl Into<ElementId>, modules: Rc<[ModuleFacts]>, measure: &
         rest: None,
         on_open: None,
         on_carry: None,
+        geometry: None,
     }
 }
 
@@ -296,6 +442,13 @@ impl Shingles {
         self
     }
 
+    /// Reuses the measured geometry that also positions the host's keyboard targets.
+    #[must_use]
+    pub fn geometry(mut self, geometry: Rc<Layout>) -> Self {
+        self.geometry = Some(geometry);
+        self
+    }
+
     /// Called when a region, or a shingle in it, is clicked (or Enter walks
     /// onto it).
     #[must_use]
@@ -317,24 +470,37 @@ impl Shingles {
         self.measure.scale() * (0.94 + 0.42 * self.measure.t())
     }
 
-    fn layout(&self) -> Layout {
-        let modules: Vec<(usize, usize)> = self.modules.iter().map(|m| (m.name.chars().count(), m.shingles.len())).collect();
-        layout(&modules, f32::from(self.measure.width()), self.k())
+    fn layout(&self, window: &Window) -> Rc<Layout> {
+        self.geometry.clone().unwrap_or_else(|| measured(&self.modules, &self.measure, window))
     }
 
-    fn foot(&self) -> f32 {
-        26.0 * self.measure.scale()
+    fn foot(&self, window: &Window) -> f32 {
+        let width = f32::from(self.measure.width());
+        let scale = self.measure.scale();
+        let name_role = self.measure.role(FOOT_NAME);
+        let more_role = self.measure.role(FOOT_MORE);
+        let mut height = 26.0 * scale;
+        for module in self.modules.iter() {
+            let name = shape(module.name.clone(), name_role, Hsla::default(), window);
+            let more: SharedString = foot_more(module).into();
+            let more_width = shape(more.clone(), more_role, Hsla::default(), window).width();
+            let go: SharedString = if module.extent == Extent::Page {
+                "opens its own page".into()
+            } else {
+                "opens here".into()
+            };
+            let go_width = shape(go.clone(), more_role, Hsla::default(), window).width();
+            let room = width - name.width() - more_width - go_width - 52.0 * scale;
+            if room < 0.0 {
+                #[allow(clippy::cast_precision_loss)]
+                let rows = wrapped_line_count(&module.name, name_role, width, window) as f32 * name_role.line
+                    + wrapped_line_count(&more, more_role, width, window) as f32 * more_role.line
+                    + wrapped_line_count(&go, more_role, width, window) as f32 * more_role.line;
+                height = height.max(rows + 8.0 * scale);
+            }
+        }
+        height
     }
-}
-
-/// Where each module's region sits, `(x, y, width, height)` relative to the
-/// map's own corner, for a map of `modules` drawn at `measure`: what a host
-/// needs to give the keyboard a door onto each region.
-#[must_use]
-pub fn rects(modules: &[ModuleFacts], measure: &Measure) -> Vec<Bounds<Pixels>> {
-    let k = measure.scale() * (0.94 + 0.42 * measure.t());
-    let sizes: Vec<(usize, usize)> = modules.iter().map(|m| (m.name.chars().count(), m.shingles.len())).collect();
-    layout(&sizes, f32::from(measure.width()), k).regions.iter().map(|region| Bounds::new(gpui::point(px(region.rect.0), px(region.rect.1)), gpui::size(px(region.rect.2), px(region.rect.3)))).collect()
 }
 
 impl IntoElement for Shingles {
@@ -347,7 +513,7 @@ impl IntoElement for Shingles {
 /// What the map keeps between layout and paint.
 pub struct MapLayout {
     state: Entity<State>,
-    layout: Layout,
+    layout: Rc<Layout>,
 }
 
 impl Element for Shingles {
@@ -369,11 +535,12 @@ impl Element for Shingles {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, MapLayout) {
-        let state = window.use_keyed_state("shingles", cx, |_, _| State { hover: None });
-        let layout = self.layout();
+        let state = window.use_keyed_state("shingles", cx, |_, _| State { hover: None, rest: None });
+        let layout = self.layout(window);
+        let foot = self.foot(window);
         let mut style = Style::default();
         style.size.width = px(f32::from(self.measure.width())).into();
-        style.size.height = px(layout.height + self.foot() + 8.0 * self.measure.scale()).into();
+        style.size.height = px(layout.height + foot + 8.0 * self.measure.scale()).into();
         style.flex_shrink = 0.0;
         (window.request_layout(style, [], cx), MapLayout { state, layout })
     }
@@ -408,7 +575,8 @@ impl Element for Shingles {
         let width = f32::from(bounds.size.width);
         // What is lit: what the pointer is on, else what the host rests it on
         // (the keyboard's focus, a scene).
-        let hover = map.state.read(cx).hover.or(self.rest);
+        let current_state = map.state.read(cx);
+        let hover = crate::hover::visible_target(current_state.hover, current_state.rest, self.rest);
         let lit_region = match hover {
             Some(Spot::Region(i) | Spot::Shingle(i, _)) => Some(i),
             None => None,
@@ -418,7 +586,11 @@ impl Element for Shingles {
         let chamfer = (stone * 0.3).max(1.5);
 
         // Regions: a whisper of fill and a hairline; the lit one brightens.
-        let tint: Hsla = if self.time == Time::Past { palette.amber.base.alpha(0.06).into() } else { palette.peri.base.alpha(0.05).into() };
+        let tint: Hsla = if self.time == Time::Past {
+            palette.amber.base.alpha(0.06).into()
+        } else {
+            palette.peri.base.alpha(0.05).into()
+        };
         let mut fills = Fill::new();
         let mut lines = Fill::new();
         let mut bright = Fill::new();
@@ -455,12 +627,18 @@ impl Element for Shingles {
         let mut swelled: Option<(Poly, Hsla, usize, usize)> = None;
         for (i, module) in modules.iter().enumerate() {
             for (j, shingle) in module.shingles.iter().enumerate() {
-                let Some((sx, sy)) = map.layout.shingle(i, j) else { continue };
+                let Some((sx, sy)) = map.layout.shingle(i, j) else {
+                    continue;
+                };
                 let colour = shingle_ink(shingle, self.time, palette);
                 if hover == Some(Spot::Shingle(i, j)) {
                     let e = stone * 1.5;
                     let poly = Poly::chamfer(ox + sx - (e - stone) * 0.5, oy + sy - (e - stone) * 0.5, e, e, chamfer * 1.4);
-                    let full = if shingle.yours.is_yours() { palette.mint.base } else { palette.family(shingle.family).hue };
+                    let full = if shingle.yours.is_yours() {
+                        palette.mint.base
+                    } else {
+                        palette.family(shingle.family).hue
+                    };
                     swelled = Some((poly, full.into(), i, j));
                     continue;
                 }
@@ -472,25 +650,38 @@ impl Element for Shingles {
         }
 
         // Labels: always drawn, always whole (the layout gave them room).
-        let label_role = self.measure.role(LABEL);
+        let label_role = scaled(self.measure.role(LABEL), k / scale);
         let mut painted: Vec<(SharedString, Bounds<Pixels>, f32)> = Vec::new();
         for (i, module) in modules.iter().enumerate() {
             let region = &map.layout.regions[i];
             let (rx, ry, rw, _) = region.rect;
-            let ink: Hsla = if lit_region == Some(i) || self.open == Some(i) { palette.ink0.into() } else { palette.ink1.into() };
-            let label = shape_fit(&module.name, scaled(label_role, k / scale), ink, rw - 2.0 * PAD * k, window);
-            let (lx, ly) = (ox + rx + PAD * k, oy + ry + PAD * k + label.ascent());
-            label.paint(lx, ly, window, cx);
+            let pad = region.origin.0 - rx;
+            let label_width = (rw - 2.0 * pad).max(1.0);
+            let ink: Hsla = if lit_region == Some(i) || self.open == Some(i) {
+                palette.ink0.into()
+            } else {
+                palette.ink1.into()
+            };
+            let natural = shape(module.name.clone(), label_role, ink, window);
+            let wrapped = wrap_label(module.name.clone(), label_role, label_width, window);
+            let (lx, mut ly) = (ox + rx + pad, oy + ry + pad);
+            for line in &wrapped {
+                line.paint(gpui::point(px(lx), px(ly)), px(label_role.line), TextAlign::Left, None, window, cx)
+                    .ok();
+                #[allow(clippy::cast_precision_loss)]
+                ly += (1 + line.wrap_boundaries().len()) as f32 * label_role.line;
+            }
+            let label_height = (ly - (oy + ry + pad)).max(label_role.line);
             painted.push((
                 module.name.clone(),
-                Bounds::new(gpui::point(px(lx), px(ly - label.ascent())), gpui::size(px(label.width()), px(label.line_height()))),
-                label.width(),
+                Bounds::new(gpui::point(px(lx), px(oy + ry + pad)), gpui::size(px(label_width), px(label_height))),
+                natural.width(),
             ));
         }
         if probe::enabled(cx) {
             for (name, at, natural) in painted {
                 let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), SharedString::from(format!("region-{name}")));
-                publish(cx, &key, at, &name, label_role, natural, window);
+                publish(cx, &key, at, &name, label_role, natural, TextOverflow::Wrap, label_role.size * 2.0, window);
             }
             // Where every shingle stands, for tests that rest on one.
             for (i, module) in modules.iter().enumerate() {
@@ -535,7 +726,7 @@ impl Element for Shingles {
                         gpui::size(px(text.width()), px(text.line_height())),
                     );
                     let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "plate".into());
-                    publish(cx, &key, at, &name, plate_role, text.width(), window);
+                    publish(cx, &key, at, &name, plate_role, text.width(), TextOverflow::Clip, text.width(), window);
                 }
             }
         }
@@ -544,43 +735,91 @@ impl Element for Shingles {
         if let Some(i) = lit_region {
             let module = &modules[i];
             let foot_y = oy + map.layout.height + 8.0 * scale;
-            let mut x = ox;
-            let name = shape(module.name.clone(), self.measure.role(FOOT_NAME), palette.ink0.into(), window);
-            let base = foot_y + name.ascent() + 2.0 * scale;
-            name.paint(x, base, window, cx);
-            if probe::enabled(cx) {
-                let at = Bounds::new(gpui::point(px(x), px(base - name.ascent())), gpui::size(px(name.width()), px(name.line_height())));
-                let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-name".into());
-                publish(cx, &key, at, &module.name, self.measure.role(FOOT_NAME), name.width(), window);
-            }
-            x += name.width() + 12.0 * scale;
+            let name_role = self.measure.role(FOOT_NAME);
+            let more_role = self.measure.role(FOOT_MORE);
+            let name = shape(module.name.clone(), name_role, palette.ink0.into(), window);
             let more_words: SharedString = foot_more(module).into();
-            let more = shape(more_words.clone(), self.measure.role(FOOT_MORE), palette.ink2.into(), window);
-            let go_words: SharedString = if module.extent == Extent::Page { "opens its own page".into() } else { "opens here".into() };
-            let go = shape(go_words.clone(), self.measure.role(FOOT_MORE), palette.peri_hi.into(), window);
-            let room = width - (x - ox) - more.width() - go.width() - 40.0 * scale;
-            if let Some(doc) = module.doc.as_ref().filter(|_| room > 60.0 * scale) {
-                let text = shape_fit(doc, self.measure.role(FOOT_DOC), palette.ink1.into(), room, window);
-                text.paint(x, base, window, cx);
+            let more = shape(more_words.clone(), more_role, palette.ink2.into(), window);
+            let go_words: SharedString = if module.extent == Extent::Page {
+                "opens its own page".into()
+            } else {
+                "opens here".into()
+            };
+            let go = shape(go_words.clone(), more_role, palette.peri_hi.into(), window);
+            let room = width - name.width() - more.width() - go.width() - 52.0 * scale;
+            if room < 0.0 {
+                let (natural, height) = paint_wrapped(module.name.clone(), name_role, palette.ink0.into(), width, ox, foot_y, window, cx);
                 if probe::enabled(cx) {
-                    let at = Bounds::new(gpui::point(px(x), px(base - text.ascent())), gpui::size(px(text.width()), px(text.line_height())));
-                    let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-doc".into());
-                    publish(cx, &key, at, doc, self.measure.role(FOOT_DOC), text.width(), window);
+                    let at = Bounds::new(gpui::point(px(ox), px(foot_y)), gpui::size(px(width), px(height)));
+                    let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-name".into());
+                    publish(cx, &key, at, &module.name, name_role, natural, TextOverflow::Wrap, name_role.size * 2.0, window);
                 }
-                x += text.width() + 14.0 * scale;
-            }
-            more.paint(x, base, window, cx);
-            if probe::enabled(cx) {
-                let at = Bounds::new(gpui::point(px(x), px(base - more.ascent())), gpui::size(px(more.width()), px(more.line_height())));
-                let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-more".into());
-                publish(cx, &key, at, &more_words, self.measure.role(FOOT_MORE), more.width(), window);
-            }
-            let gx = ox + width - go.width();
-            go.paint(gx, base, window, cx);
-            if probe::enabled(cx) {
-                let at = Bounds::new(gpui::point(px(gx), px(base - go.ascent())), gpui::size(px(go.width()), px(go.line_height())));
-                let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-go".into());
-                publish(cx, &key, at, &go_words, self.measure.role(FOOT_MORE), go.width(), window);
+                let mut y = foot_y + height + 4.0 * scale;
+                let (natural, height) = paint_wrapped(more_words.clone(), more_role, palette.ink2.into(), width, ox, y, window, cx);
+                if probe::enabled(cx) {
+                    let at = Bounds::new(gpui::point(px(ox), px(y)), gpui::size(px(width), px(height)));
+                    let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-more".into());
+                    publish(cx, &key, at, &more_words, more_role, natural, TextOverflow::Wrap, more_role.size * 2.0, window);
+                }
+                y += height + 4.0 * scale;
+                let (natural, height) = paint_wrapped(go_words.clone(), more_role, palette.peri_hi.into(), width, ox, y, window, cx);
+                if probe::enabled(cx) {
+                    let at = Bounds::new(gpui::point(px(ox), px(y)), gpui::size(px(width), px(height)));
+                    let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-go".into());
+                    publish(cx, &key, at, &go_words, more_role, natural, TextOverflow::Wrap, more_role.size * 2.0, window);
+                }
+            } else {
+                let mut x = ox;
+                let base = foot_y + name.ascent() + 2.0 * scale;
+                name.paint(x, base, window, cx);
+                if probe::enabled(cx) {
+                    let at = Bounds::new(
+                        gpui::point(px(x), px(base - name.ascent())),
+                        gpui::size(px(name.width()), px(name.line_height())),
+                    );
+                    let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-name".into());
+                    publish(cx, &key, at, &module.name, name_role, name.width(), TextOverflow::Clip, name.width(), window);
+                }
+                x += name.width() + 12.0 * scale;
+                if let Some(doc) = module.doc.as_ref().filter(|_| room > 60.0 * scale) {
+                    let text = shape_fit(doc, self.measure.role(FOOT_DOC), palette.ink1.into(), room, window);
+                    text.paint(x, base, window, cx);
+                    if probe::enabled(cx) {
+                        let at = Bounds::new(
+                            gpui::point(px(x), px(base - text.ascent())),
+                            gpui::size(px(text.width()), px(text.line_height())),
+                        );
+                        let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-doc".into());
+                        publish(
+                            cx,
+                            &key,
+                            at,
+                            doc,
+                            self.measure.role(FOOT_DOC),
+                            text.width(),
+                            TextOverflow::Clip,
+                            text.width(),
+                            window,
+                        );
+                    }
+                    x += text.width() + 14.0 * scale;
+                }
+                more.paint(x, base, window, cx);
+                if probe::enabled(cx) {
+                    let at = Bounds::new(
+                        gpui::point(px(x), px(base - more.ascent())),
+                        gpui::size(px(more.width()), px(more.line_height())),
+                    );
+                    let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-more".into());
+                    publish(cx, &key, at, &more_words, more_role, more.width(), TextOverflow::Clip, more.width(), window);
+                }
+                let gx = ox + width - go.width();
+                go.paint(gx, base, window, cx);
+                if probe::enabled(cx) {
+                    let at = Bounds::new(gpui::point(px(gx), px(base - go.ascent())), gpui::size(px(go.width()), px(go.line_height())));
+                    let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "foot-go".into());
+                    publish(cx, &key, at, &go_words, more_role, go.width(), TextOverflow::Clip, go.width(), window);
+                }
             }
         }
 
@@ -588,7 +827,7 @@ impl Element for Shingles {
         let layout = map.layout.clone();
         let hit_modules = modules.clone();
         {
-            let (state, hitbox) = (map.state.clone(), hitbox.clone());
+            let (state, hitbox, rest) = (map.state.clone(), hitbox.clone(), self.rest);
             let layout = layout.clone();
             let modules = hit_modules.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
@@ -599,9 +838,10 @@ impl Element for Shingles {
                     .is_hovered(window)
                     .then(|| layout.at(&modules, f32::from(event.position.x) - ox, f32::from(event.position.y) - oy))
                     .flatten();
-                if state.read(cx).hover != next {
+                if state.read(cx).hover != next || state.read(cx).rest != rest {
                     state.update(cx, |state, cx| {
                         state.hover = next;
+                        state.rest = rest;
                         cx.notify();
                     });
                 }
@@ -642,7 +882,10 @@ impl Element for Shingles {
                             .enumerate()
                             .filter_map(|(index, shingle)| {
                                 let (x, y) = hit_layout.shingle(module, index)?;
-                                Some(Stone { from: Bounds::new(gpui::point(px(ox + x), px(oy + y)), gpui::size(px(stone), px(stone))), ink: shingle_ink(shingle, time, palette) })
+                                Some(Stone {
+                                    from: Bounds::new(gpui::point(px(ox + x), px(oy + y)), gpui::size(px(stone), px(stone))),
+                                    ink: shingle_ink(shingle, time, palette),
+                                })
                             })
                             .collect();
                         on_carry(Carrying { module, stones }, window, cx);
@@ -700,27 +943,39 @@ pub fn foot_more(module: &ModuleFacts) -> String {
     if yours > 0 {
         parts.push(format!("you use {yours}"));
     }
-    if parts.is_empty() {
-        "nothing public".to_owned()
-    } else {
-        parts.join(" · ")
-    }
+    if parts.is_empty() { "nothing public".to_owned() } else { parts.join(" · ") }
 }
 
-fn publish(cx: &mut App, key: &ElementId, at: Bounds<Pixels>, content: &str, role: TypeRole, natural: f32, window: &Window) {
+fn publish(
+    cx: &mut App,
+    key: &ElementId,
+    at: Bounds<Pixels>,
+    content: &str,
+    role: TypeRole,
+    natural: f32,
+    overflow: TextOverflow,
+    min_width: f32,
+    window: &Window,
+) {
     probe::record_text_in(
         cx,
         key,
         at,
         TextSample {
             key: String::new(),
-            bounds: probe::BoundsSample { key: String::new(), x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+            bounds: probe::BoundsSample {
+                key: String::new(),
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
             paint_clip: None,
             scroll_ancestors: probe::current_scroll_ancestors(),
             natural_width: natural,
-            overflow: TextOverflow::Clip,
+            overflow,
             content: content.to_owned(),
-            min_width: natural,
+            min_width,
             line_height: role.line,
             size: role.size,
             weight: role.weight,
@@ -751,7 +1006,11 @@ mod tests {
             let l = layout(&modules(&counts), width, 1.0);
             assert_eq!(l.regions.len(), counts.len());
             for (i, a) in l.regions.iter().enumerate() {
-                assert!(a.rect.0 >= -0.01 && a.rect.0 + a.rect.2 <= width + 0.5, "{width}: region {i} leaves the map: {:?}", a.rect);
+                assert!(
+                    a.rect.0 >= -0.01 && a.rect.0 + a.rect.2 <= width + 0.5,
+                    "{width}: region {i} leaves the map: {:?}",
+                    a.rect
+                );
                 for b in l.regions.iter().skip(i + 1) {
                     assert!(!overlap(a.rect, b.rect), "{width}: {:?} overlaps {:?}", a.rect, b.rect);
                 }
@@ -760,17 +1019,88 @@ mod tests {
             for (i, region) in l.regions.iter().enumerate() {
                 for j in 0..counts[i] {
                     let (x, y) = l.shingle(i, j).expect("shingle");
-                    assert!(x >= region.rect.0 && x + 10.0 <= region.rect.0 + region.rect.2 + 0.01, "{width}: shingle {i}/{j} escapes its region in x");
-                    assert!(y >= region.rect.1 && y + 10.0 <= region.rect.1 + region.rect.3 + 0.01, "{width}: shingle {i}/{j} escapes its region in y");
+                    assert!(
+                        x >= region.rect.0 && x + 10.0 <= region.rect.0 + region.rect.2 + 0.01,
+                        "{width}: shingle {i}/{j} escapes its region in x"
+                    );
+                    assert!(
+                        y >= region.rect.1 && y + 10.0 <= region.rect.1 + region.rect.3 + 0.01,
+                        "{width}: shingle {i}/{j} escapes its region in y"
+                    );
                 }
             }
         }
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn long_unbreakable_labels_wrap_inside_narrow_map_geometry() {
+        for width in [96.0, 128.0, 192.0, 256.0] {
+            for k in [1.0, 2.0] {
+                let counts = [1, 3, 60];
+                let input = [(180, counts[0]), (24, counts[1]), (8, counts[2])];
+                let l = layout(&input, width, k);
+                assert_eq!(l.regions.len(), input.len());
+                let mut wrapped = false;
+                for (i, region) in l.regions.iter().enumerate() {
+                    assert!(region.rect.0 >= -0.01, "{width}@{k}: region {i} starts outside the map: {:?}", region.rect);
+                    assert!(
+                        region.rect.0 + region.rect.2 <= width + 0.01,
+                        "{width}@{k}: region {i} exceeds the map: {:?}",
+                        region.rect
+                    );
+                    wrapped |= region.label_lines > 1;
+                    let pad = region.origin.0 - region.rect.0;
+                    let band = region.origin.1 - region.rect.1 - pad;
+                    assert!(
+                        band + 0.01 >= region.label_lines as f32 * super::LABEL.line * k,
+                        "label band is too short: {region:?}"
+                    );
+                    for index in 0..counts[i] {
+                        let (x, y) = l.shingle(i, index).expect("shingle");
+                        assert!(
+                            x >= region.rect.0 && x + super::STONE * k <= region.rect.0 + region.rect.2 + 0.01,
+                            "{width}@{k}: shingle {i}/{index} escapes its region"
+                        );
+                        assert!(
+                            y + super::STONE * k <= region.rect.1 + region.rect.3 + 0.01,
+                            "{width}@{k}: shingle {i}/{index} escapes its region"
+                        );
+                    }
+                    for other in l.regions.iter().skip(i + 1) {
+                        assert!(
+                            !overlap(region.rect, other.rect),
+                            "{width}@{k}: regions overlap: {:?} / {:?}",
+                            region.rect,
+                            other.rect
+                        );
+                    }
+                }
+                assert!(wrapped, "{width}@{k}: no long label wrapped");
+            }
+        }
+    }
+
+    #[test]
+    fn keyboard_region_bounds_are_the_map_layout_bounds() {
+        let layout = layout(&[(12, 2), (8, 3), (16, 1)], 256.0, 2.0);
+        let bounds = layout.region_bounds();
+        assert_eq!(bounds.len(), layout.regions.len());
+        for (region, bounds) in layout.regions.iter().zip(bounds) {
+            assert!((f32::from(bounds.origin.x) - region.rect.0).abs() <= 0.01);
+            assert!((f32::from(bounds.origin.y) - region.rect.1).abs() <= 0.01);
+            assert!((f32::from(bounds.size.width) - region.rect.2).abs() <= 0.01);
+            assert!((f32::from(bounds.size.height) - region.rect.3).abs() <= 0.01);
+        }
+    }
+
+    #[test]
     fn a_wider_window_makes_fewer_taller_rows_never_more() {
         let counts = [15, 14, 12, 10, 8, 7, 6, 6, 5, 5, 3, 3, 2, 2, 2, 1];
-        let heights: Vec<f32> = [800.0, 1000.0, 1440.0, 2200.0].iter().map(|w| layout(&modules(&counts), *w, 1.0).height).collect();
+        let heights: Vec<f32> = [800.0, 1000.0, 1440.0, 2200.0]
+            .iter()
+            .map(|w| layout(&modules(&counts), *w, 1.0).height)
+            .collect();
         for pair in heights.windows(2) {
             assert!(pair[1] <= pair[0] + 0.01, "the map grew taller as the window widened: {heights:?}");
         }
@@ -781,7 +1111,19 @@ mod tests {
         let l = layout(&modules(&[9, 3]), 600.0, 1.0);
         let mods: Vec<ModuleFacts> = [9usize, 3]
             .iter()
-            .map(|n| ModuleFacts::new("m", (0..*n).map(|i| ShingleFacts { name: format!("s{i}").into(), family: Family::Type, yours: Use::Elsewhere, state: None }).collect()))
+            .map(|n| {
+                ModuleFacts::new(
+                    "m",
+                    (0..*n)
+                        .map(|i| ShingleFacts {
+                            name: format!("s{i}").into(),
+                            family: Family::Type,
+                            yours: Use::Elsewhere,
+                            state: None,
+                        })
+                        .collect(),
+                )
+            })
             .collect();
         let (x, y) = l.shingle(0, 4).expect("shingle");
         assert_eq!(l.at(&mods, x + 4.0, y + 4.0), Some(Spot::Shingle(0, 4)));
@@ -795,7 +1137,12 @@ mod tests {
 
     #[test]
     fn a_foot_counts_what_a_module_holds_in_words() {
-        let mk = |family| ShingleFacts { name: "x".into(), family, yours: Use::Elsewhere, state: None };
+        let mk = |family| ShingleFacts {
+            name: "x".into(),
+            family,
+            yours: Use::Elsewhere,
+            state: None,
+        };
         let mut module = ModuleFacts::new("sync", vec![mk(Family::Type), mk(Family::Type), mk(Family::Callable), mk(Family::Contract)]);
         assert_eq!(foot_more(&module), "2 types · 1 function · 1 trait");
         module.shingles[0].yours = Use::Yours;

@@ -399,17 +399,18 @@ impl RenderOnce for FeaturePreview {
         let scroll = scroll_state.read(cx).handle.clone();
         let scroll_key = format!("folio-feature-scroll-{}", self.id);
 
+        let profile = wrap(key(&self.id, "profile"), "read only · manifest defaults", SMALL, palette.ink3, &measure, None);
         let mut head = div().flex().flex_wrap().items_baseline().gap_x(measure.space(Space::Snug));
+        head = head.child(one(key(&self.id, "label"), "Features", LABEL, palette.ink3, &measure));
+        if measure.effective() < 360.0 {
+            // Keep the manifest fact in a real full-width row on narrow,
+            // enlarged layouts. As an intrinsic flex item, this status could
+            // otherwise paint past the reader mask.
+            head = head.child(div().w_full().min_w_0().child(profile));
+        } else {
+            head = head.child(profile);
+        }
         head = head
-            .child(one(key(&self.id, "label"), "Features", LABEL, palette.ink3, &measure))
-            .child(wrap(
-                key(&self.id, "profile"),
-                "read only · manifest defaults",
-                SMALL,
-                palette.ink3,
-                &measure,
-                None,
-            ))
             .child(one(key(&self.id, "on"), resolved.on.len().to_string(), NUMBER, palette.ink0, &measure))
             .child(one(key(&self.id, "of"), format!("of {} on", facts.names.len()), LABEL, palette.ink3, &measure));
         if !resolved.pulled.is_empty() {
