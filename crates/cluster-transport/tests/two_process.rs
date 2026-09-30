@@ -128,7 +128,7 @@ async fn remote_index_capability_echo_works_from_an_independent_client_process()
             now,
         )
         .expect("owner-signed read capability");
-    let body = (0..64 * 1024)
+    let body = (0_usize..64 * 1024)
         .map(|index| (index.wrapping_mul(31) % 251) as u8)
         .collect::<Vec<_>>();
     let serving = tokio::spawn(async move {
