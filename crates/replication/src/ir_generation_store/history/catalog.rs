@@ -901,7 +901,7 @@ impl LocalSemanticGenerationFiles {
     }
 }
 
-pub(super) fn generation_from_record(
+pub(in crate::ir_generation_store) fn generation_from_record(
     record: GenerationRecord,
     stamp: SelectedGenerationStamp,
 ) -> Result<LocalSemanticGeneration, String> {

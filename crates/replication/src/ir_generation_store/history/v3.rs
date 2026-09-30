@@ -11,6 +11,7 @@ use super::catalog::validate_history_commit_node;
 use super::codec::{append_commit_index, identify_history_record, prepare_history_layout};
 use super::v2::{create_typed_v2_locator, decode_typed_v2_locator};
 use super::*;
+use backend_semantic::ir::SemanticPlaneImageKey;
 
 const TYPED_V3_ROOT_DISCRIMINATOR: u8 = 3;
 const TYPED_V3_ROOT_DOMAIN: &[u8] = b"backend.semantic.history-typed-v3-root-claim.v1\0";

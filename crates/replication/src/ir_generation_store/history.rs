@@ -40,7 +40,8 @@ mod v2;
 mod v3;
 
 pub(super) use catalog::{
-    may_prune_generation_records, read_history_catalog_snapshot, validate_commit_generation,
+    generation_from_record, may_prune_generation_records, read_history_catalog_snapshot,
+    validate_commit_generation,
 };
 use codec::decode_history_index_intent;
 pub(super) use codec::{
