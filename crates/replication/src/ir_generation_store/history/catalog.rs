@@ -440,9 +440,26 @@ impl LocalSemanticGenerationFiles {
         proposal: UnpublishedHistoryProposal,
         source: &mut S,
     ) -> Result<HistoryAdmissionReceipt, String> {
+        self.admit_history_proposal_with_error::<S, String>(proposal, source)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn admit_history_proposal_typed<S: SelectedGenerationSource>(
+        &self,
+        proposal: UnpublishedHistoryProposal,
+        source: &mut S,
+    ) -> Result<HistoryAdmissionReceipt, HistoryMutationError> {
+        self.admit_history_proposal_with_error::<S, HistoryMutationError>(proposal, source)
+    }
+
+    fn admit_history_proposal_with_error<S: SelectedGenerationSource, E: HistoryMutationFailure>(
+        &self,
+        proposal: UnpublishedHistoryProposal,
+        source: &mut S,
+    ) -> Result<HistoryAdmissionReceipt, E> {
         let target_root = self.target_root(&proposal.record.target);
         super::retention::recover_pending_delete(&target_root)?;
-        let commits_root = prepare_history_layout(&target_root)?;
+        let commits_root = prepare_history_layout_typed(&target_root).map_err(E::from_typed)?;
         let generation = load_record(
             &target_root,
             proposal.record.generation,
@@ -456,14 +473,18 @@ impl LocalSemanticGenerationFiles {
         let path = history_commit_path(&commits_root, proposal.identity);
         let created = match fs::read(&path) {
             Ok(existing) if existing == bytes => false,
-            Ok(_) => return Err("immutable semantic history identity collision".to_owned()),
+            Ok(_) => {
+                return Err("immutable semantic history identity collision"
+                    .to_owned()
+                    .into());
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 bump_history_commit_epoch(&target_root.join("history"))?;
                 backend_platform::durable::write_private_atomic(&path, &bytes)
-                    .map_err(display_io)?;
+                    .map_err(|error| E::retryable_io(display_io(error)))?;
                 true
             }
-            Err(error) => return Err(display_io(error)),
+            Err(error) => return Err(E::retryable_io(display_io(error))),
         };
         #[cfg(test)]
         if created {
@@ -473,7 +494,7 @@ impl LocalSemanticGenerationFiles {
         if admitted != proposal.record {
             return Err("admitted semantic history commit differs from its proposal".to_owned());
         }
-        append_commit_index(&target_root, proposal.identity)?;
+        append_commit_index_typed(&target_root, proposal.identity).map_err(E::from_typed)?;
         Ok(HistoryAdmissionReceipt {
             commit: AdmittedHistoryCommit { record: admitted },
             created,
@@ -702,7 +723,7 @@ impl LocalSemanticGenerationFiles {
     ) -> Result<HistoryRefUpdateReceipt, E> {
         let target_root = self.target_root(target);
         super::retention::recover_pending_delete(&target_root)?;
-        let commits_root = prepare_history_layout(&target_root)?;
+        let commits_root = prepare_history_layout_typed(&target_root).map_err(E::from_typed)?;
         let (mut catalog, _) =
             read_history_catalog_snapshot_typed(&target_root).map_err(E::from_typed)?;
         validate_catalog_tips(&target_root, target, &catalog)?;

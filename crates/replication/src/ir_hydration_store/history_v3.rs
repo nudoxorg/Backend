@@ -990,13 +990,9 @@ impl FileSemanticRangeStore {
             })?;
         let commit = proposal.identity();
         self.generations
-            .stage_typed_v3_locator(target, commit, admission.locator())
-            .map_err(|detail| {
-                refused(
-                    SelectedTypedV3HistoryOperation::StageLocator,
-                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
-                    detail,
-                )
+            .stage_typed_v3_locator_typed(target, commit, admission.locator())
+            .map_err(|error| {
+                history_mutation_failure(SelectedTypedV3HistoryOperation::StageLocator, error)
             })?;
         let receipt = match self.generations.admit_typed_v3_history_proposal(
             proposal,
@@ -1007,30 +1003,25 @@ impl FileSemanticRangeStore {
         ) {
             Ok(receipt) => receipt,
             Err(error) => {
-                self.generations
+                let failure =
+                    history_mutation_failure(SelectedTypedV3HistoryOperation::PersistCommit, error);
+                if let Err(recovery) = self
+                    .generations
                     .reconcile_typed_v3_locator_admission(target, commit)
-                    .map_err(|recovery| {
-                        refused(
-                            SelectedTypedV3HistoryOperation::ReconcileLocator,
-                            SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
-                            format!("{error}; typed V3 locator recovery failed: {recovery}"),
-                        )
-                    })?;
-                return Err(refused(
-                    SelectedTypedV3HistoryOperation::PersistCommit,
-                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
-                    error,
-                ));
+                {
+                    return Err(refused(
+                        SelectedTypedV3HistoryOperation::ReconcileLocator,
+                        SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                        format!("{failure}; typed V3 locator recovery failed: {recovery}"),
+                    ));
+                }
+                return Err(failure);
             }
         };
         self.generations
-            .finish_typed_v3_locator_admission(target, commit)
-            .map_err(|detail| {
-                refused(
-                    SelectedTypedV3HistoryOperation::ReconcileLocator,
-                    SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
-                    detail,
-                )
+            .finish_typed_v3_locator_admission_typed(target, commit)
+            .map_err(|error| {
+                history_mutation_failure(SelectedTypedV3HistoryOperation::ReconcileLocator, error)
             })?;
 
         let content = *admission.content();
