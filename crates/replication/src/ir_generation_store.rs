@@ -4699,7 +4699,7 @@ mod tests {
         assert_eq!(cold_restart_residency.metrics().entries, 0);
         reset_history_replay_load_counts();
         crate::ir_hydration_store::reset_typed_v2_closure_reopen_count();
-        let cold_restart = reopened
+        let cold_restart = reopened_range_store
             .replay_typed_v2_history_with_residency(
                 &mut cold_restart_residency,
                 &generation.target,
